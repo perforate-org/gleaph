@@ -1550,6 +1550,7 @@ fn stale_mid_diamond_weighted_search_finds_cheaper_three_hop_path() {
         &BTreeMap::new(),
         Some(&decoders),
         true,
+        true,
     )
     .expect("search");
     let path = materialize_path_from_search_states(

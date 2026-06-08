@@ -91,14 +91,24 @@ pub(crate) fn edge_binding_for_scanned_expand(
     direction: EdgeDirection,
     edge: Edge,
 ) -> Result<EdgeBinding, PlanQueryError> {
+    edge_binding_handle_for_scanned_expand(store, probe_vertex_id, direction, &edge)
+        .map(|handle| EdgeBinding::from_edge(handle, edge))
+}
+
+/// Builds an edge handle for a scanned CSR row without copying stored payload bytes.
+pub(crate) fn edge_binding_handle_for_scanned_expand(
+    store: &GraphStore,
+    probe_vertex_id: VertexId,
+    direction: EdgeDirection,
+    edge: &Edge,
+) -> Result<EdgeHandle, PlanQueryError> {
     let owner_vertex_id =
-        canonical_forward_owner_for_expand(store, probe_vertex_id, direction, &edge)?;
-    let handle = EdgeHandle {
+        canonical_forward_owner_for_expand(store, probe_vertex_id, direction, edge)?;
+    Ok(EdgeHandle {
         owner_vertex_id,
         label_id: LaraLabelId::from_raw(edge.label_id),
         slot_index: edge.edge_slot_index.raw(),
-    };
-    Ok(EdgeBinding::from_edge(handle, edge))
+    })
 }
 
 pub(crate) fn edge_binding_for_expand(

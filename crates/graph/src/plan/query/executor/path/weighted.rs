@@ -9,7 +9,7 @@ use gleaph_gql::numeric_order::{NormalizedNumeric, NumericOrderError, normalized
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
-use gleaph_graph_kernel::entry::{EdgeLabelId, PreparedWeightDecoder};
+use gleaph_graph_kernel::entry::{EdgeLabelId, PreparedWeightDecoder, WeightDecodeError};
 use ic_stable_lara::VertexId;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
@@ -28,10 +28,13 @@ use crate::facade::GraphStore;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::EdgeBinding;
 use crate::plan::query::executor::context::QueryExprEvaluator;
-use crate::plan::query::executor::expand::{ExpandDst, expand_candidates_into};
+use crate::plan::query::executor::expand::{
+    ExpandDst, edge_binding_handle_for_scanned_expand, expand_candidates_into,
+};
 use crate::plan::query::executor::{EdgeSequenceOrder, PlanBinding};
 use crate::plan::query::gleaph_weight;
 use crate::plan::query::row::PlanRow;
+use gleaph_graph_kernel::entry::EdgePayload;
 
 pub(crate) fn weighted_shortest_can_use_hop_count(mode: ShortestMode, cost_expr: &Expr) -> bool {
     let ExprKind::Literal(value) = &cost_expr.kind else {
@@ -323,6 +326,7 @@ pub(crate) fn weighted_shortest_paths_between(
     parameters: &BTreeMap<String, Value>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     store_hop_edges: bool,
+    emit_edge_binding: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
@@ -402,109 +406,199 @@ pub(crate) fn weighted_shortest_paths_between(
             continue;
         }
 
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _expand_scope = bench_scope("weighted_shortest_expand");
-        candidates.clear();
-        match fixed_label_expand {
-            Some(prep) => prep.expand_into(
-                store,
-                current,
-                &mut candidates,
-                ShortestExpandOptions {
-                    load_payloads: true,
-                    payload_scratch: Some(&mut payload_scratch),
-                },
-            )?,
-            None => {
+        if let (Some(prep), Some(decoder), false) = (
+            fixed_label_expand.as_ref(),
+            direct_gleaph_weight_decoder,
+            emit_edge_binding,
+        ) {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _expand_scope = bench_scope("weighted_shortest_expand");
+            let base_cost = entry.cost.clone();
+            prep.expand_payload_slices(store, current, &mut payload_scratch, |edge, payload| {
+                let Ok(Some(ExpandDst::Local(next))) = ExpandDst::from_edge(store, edge) else {
+                    return Ok(());
+                };
                 #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                let _generic_scope = bench_scope("weighted_shortest_expand_generic");
-                expand_candidates_into(
+                let _relax_scope = bench_scope("weighted_shortest_relax");
+                let hop_edge = if store_hop_edges {
+                    Some(EdgeBinding {
+                        handle: edge_binding_handle_for_scanned_expand(
+                            store, current, direction, edge,
+                        )?,
+                        payload: EdgePayload::EMPTY,
+                    })
+                } else {
+                    None
+                };
+                relax_weighted_shortest_neighbor(
+                    next,
+                    &base_cost,
+                    depth,
+                    state_idx,
+                    &mut states,
+                    &mut heap,
+                    &mut tie,
+                    &mut found_min_cost,
+                    any_best_cost.as_mut(),
+                    hop_edge,
+                    || {
+                        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                        let _scope = bench_scope("weighted_shortest_hop_cost_decode_direct");
+                        decode_direct_gleaph_weight_hop_cost_from_payload(decoder, payload)
+                    },
+                )
+            })?;
+        } else {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _expand_scope = bench_scope("weighted_shortest_expand");
+            candidates.clear();
+            match fixed_label_expand {
+                Some(prep) => prep.expand_into(
                     store,
                     current,
-                    direction,
-                    label_id,
-                    EdgeSequenceOrder::Descending,
-                    None,
-                    None,
-                    None,
-                    &BTreeMap::new(),
                     &mut candidates,
+                    ShortestExpandOptions {
+                        load_payloads: true,
+                        payload_scratch: Some(&mut payload_scratch),
+                    },
+                )?,
+                None => {
+                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                    let _generic_scope = bench_scope("weighted_shortest_expand_generic");
+                    expand_candidates_into(
+                        store,
+                        current,
+                        direction,
+                        label_id,
+                        EdgeSequenceOrder::Descending,
+                        None,
+                        None,
+                        None,
+                        &BTreeMap::new(),
+                        &mut candidates,
+                    )?;
+                }
+            }
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _relax_scope = bench_scope("weighted_shortest_relax");
+            let base_cost = entry.cost.clone();
+            for (edge_dst, edge_binding) in &candidates {
+                let ExpandDst::Local(next) = *edge_dst else {
+                    continue;
+                };
+                relax_weighted_shortest_neighbor(
+                    next,
+                    &base_cost,
+                    depth,
+                    state_idx,
+                    &mut states,
+                    &mut heap,
+                    &mut tie,
+                    &mut found_min_cost,
+                    any_best_cost.as_mut(),
+                    store_hop_edges.then(|| edge_binding.clone()),
+                    || {
+                        if use_hop_cost_cache {
+                            let outer = weighted_hop_cache_outer_key(edge_binding);
+                            let value_key = weighted_hop_cache_value_key(edge_binding);
+                            if let Some(cost) =
+                                hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key))
+                            {
+                                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                                let _scope = bench_scope("weighted_shortest_hop_cost_cache_hit");
+                                return Ok(cost.clone());
+                            }
+                            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                            let _scope = bench_scope("weighted_shortest_hop_cost_cache_miss");
+                            let cost = eval_shortest_hop_cost(
+                                store,
+                                cost_expr,
+                                edge_var,
+                                edge_binding.clone(),
+                                parameters,
+                                gleaph_weight_decoders,
+                            )?;
+                            hop_cost_cache
+                                .entry(outer)
+                                .or_default()
+                                .insert(value_key, cost.clone());
+                            Ok(cost)
+                        } else {
+                            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                            let _scope = bench_scope("weighted_shortest_hop_cost_decode_direct");
+                            let decoder = direct_gleaph_weight_decoder
+                                .expect("direct GLEAPH.WEIGHT path requires prepared decoder");
+                            decode_direct_gleaph_weight_hop_cost(decoder, edge_binding.clone())
+                        }
+                    },
                 )?;
             }
-        }
-        #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _relax_scope = bench_scope("weighted_shortest_relax");
-        for (edge_dst, edge_binding) in candidates.iter().cloned() {
-            let ExpandDst::Local(next) = edge_dst else {
-                continue;
-            };
-            if any_best_cost.is_none() && path_search_contains_vertex(&states, state_idx, next) {
-                continue;
-            }
-            let hop_cost = if use_hop_cost_cache {
-                let outer = weighted_hop_cache_outer_key(&edge_binding);
-                let value_key = weighted_hop_cache_value_key(&edge_binding);
-                if let Some(cost) = hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key)) {
-                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                    let _scope = bench_scope("weighted_shortest_hop_cost_cache_hit");
-                    cost.clone()
-                } else {
-                    #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                    let _scope = bench_scope("weighted_shortest_hop_cost_cache_miss");
-                    let cost = eval_shortest_hop_cost(
-                        store,
-                        cost_expr,
-                        edge_var,
-                        edge_binding.clone(),
-                        parameters,
-                        gleaph_weight_decoders,
-                    )?;
-                    hop_cost_cache
-                        .entry(outer)
-                        .or_default()
-                        .insert(value_key, cost.clone());
-                    cost
-                }
-            } else {
-                #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                let _scope = bench_scope("weighted_shortest_hop_cost_decode_direct");
-                let decoder = direct_gleaph_weight_decoder
-                    .expect("direct GLEAPH.WEIGHT path requires prepared decoder");
-                decode_direct_gleaph_weight_hop_cost(decoder, edge_binding.clone())?
-            };
-            let next_cost = entry.cost.checked_add(&hop_cost)?;
-            if let Some(ref min) = found_min_cost
-                && matches!(next_cost.cmp(min), Ordering::Greater)
-            {
-                continue;
-            }
-            if let Some(best_cost) = any_best_cost.as_mut() {
-                let next_vertex = u32::from(next);
-                if best_cost
-                    .get(&next_vertex)
-                    .is_some_and(|best| !matches!(next_cost.cmp(best), Ordering::Less))
-                {
-                    continue;
-                }
-                best_cost.insert(next_vertex, next_cost.clone());
-            }
-            tie += 1;
-            let next_state_idx = states.len();
-            states.push(PathSearchNode {
-                current: next,
-                previous: Some(state_idx),
-                edge: store_hop_edges.then_some(edge_binding.clone()),
-                depth: depth + 1,
-            });
-            heap.push(WeightedQueueEntry {
-                cost: next_cost,
-                tie,
-                state_idx: next_state_idx,
-            });
         }
     }
 
     Ok(ShortestPathSearchResult { states, found })
+}
+
+fn relax_weighted_shortest_neighbor(
+    next: VertexId,
+    base_cost: &WeightedCost,
+    depth: u64,
+    state_idx: usize,
+    states: &mut Vec<PathSearchNode>,
+    heap: &mut BinaryHeap<WeightedQueueEntry>,
+    tie: &mut u64,
+    found_min_cost: &mut Option<WeightedCost>,
+    any_best_cost: Option<&mut IntMap<u32, WeightedCost>>,
+    hop_edge: Option<EdgeBinding>,
+    hop_cost: impl FnOnce() -> Result<WeightedCost, PlanQueryError>,
+) -> Result<(), PlanQueryError> {
+    if any_best_cost.is_none() && path_search_contains_vertex(states, state_idx, next) {
+        return Ok(());
+    }
+    let hop_cost = hop_cost()?;
+    let next_cost = base_cost.checked_add(&hop_cost)?;
+    if let Some(min) = &*found_min_cost
+        && matches!(next_cost.cmp(min), Ordering::Greater)
+    {
+        return Ok(());
+    }
+    if let Some(best_cost) = any_best_cost {
+        let next_vertex = u32::from(next);
+        if best_cost
+            .get(&next_vertex)
+            .is_some_and(|best| !matches!(next_cost.cmp(best), Ordering::Less))
+        {
+            return Ok(());
+        }
+        best_cost.insert(next_vertex, next_cost.clone());
+    }
+    *tie += 1;
+    let next_state_idx = states.len();
+    states.push(PathSearchNode {
+        current: next,
+        previous: Some(state_idx),
+        edge: hop_edge,
+        depth: depth + 1,
+    });
+    heap.push(WeightedQueueEntry {
+        cost: next_cost,
+        tie: *tie,
+        state_idx: next_state_idx,
+    });
+    Ok(())
+}
+
+fn decode_direct_gleaph_weight_hop_cost_from_payload(
+    decoder: &PreparedWeightDecoder,
+    payload: &[u8],
+) -> Result<WeightedCost, PlanQueryError> {
+    let weight =
+        decoder
+            .decode(payload)
+            .map_err(|e: WeightDecodeError| PlanQueryError::GleaphWeight {
+                message: format!("edge payload decode failed: {e}"),
+            })?;
+    Ok(WeightedCost::from_validated_non_negative_float32(weight))
 }
 
 fn eval_shortest_hop_cost(
@@ -590,10 +684,5 @@ pub(crate) fn decode_direct_gleaph_weight_hop_cost(
     decoder: &PreparedWeightDecoder,
     edge_binding: EdgeBinding,
 ) -> Result<WeightedCost, PlanQueryError> {
-    let weight = gleaph_weight::decode_traversal_edge_weight_prepared(
-        decoder,
-        edge_binding.payload_len(),
-        edge_binding.payload_bytes_slice(),
-    )?;
-    Ok(WeightedCost::from_validated_non_negative_float32(weight))
+    decode_direct_gleaph_weight_hop_cost_from_payload(decoder, edge_binding.payload_bytes_slice())
 }

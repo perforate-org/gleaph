@@ -162,6 +162,7 @@ pub(crate) async fn execute_shortest_path(
                 parameters,
                 gleaph_weight_decoders,
                 store_hop_edges,
+                emit_edge_binding,
             )?,
         };
         let ShortestPathSearchResult { states, found } = paths;
@@ -387,6 +388,80 @@ impl ShortestFixedLabelExpand {
                 if let Some(err) = expand_err {
                     return Err(err);
                 }
+            }
+        }
+        Ok(())
+    }
+
+    /// Expands fixed-label edges while passing payload bytes by reference (no `Edge` clone).
+    pub(crate) fn expand_payload_slices<Visit>(
+        self,
+        store: &GraphStore,
+        current: VertexId,
+        scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
+        mut visit: Visit,
+    ) -> Result<(), PlanQueryError>
+    where
+        Visit: FnMut(&Edge, &[u8]) -> Result<(), PlanQueryError>,
+    {
+        match self {
+            Self::Forward { label } => {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("shortest_fixed_expand_forward_slices");
+                let mut expand_err = None;
+                let mut visit_edge = |edge: &Edge, payload: &[u8]| {
+                    if expand_err.is_some() {
+                        return;
+                    }
+                    match visit(edge, payload) {
+                        Ok(()) => {}
+                        Err(err) => expand_err = Some(err),
+                    }
+                };
+                store
+                    .for_each_directed_out_edges_for_label_with_payload_slices_reusing(
+                        current,
+                        label,
+                        OutEdgeOrder::Descending,
+                        scratch,
+                        &mut visit_edge,
+                    )
+                    .map_err(PlanQueryError::from)?;
+                if let Some(err) = expand_err {
+                    return Err(err);
+                }
+            }
+            Self::Reverse { label } => {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _scope = bench_scope("shortest_fixed_expand_reverse_slices");
+                let mut expand_err = None;
+                let mut visit_edge = |edge: &Edge, payload: &[u8]| {
+                    if expand_err.is_some() {
+                        return;
+                    }
+                    match visit(edge, payload) {
+                        Ok(()) => {}
+                        Err(err) => expand_err = Some(err),
+                    }
+                };
+                store
+                    .for_each_directed_in_edges_for_label_with_payload_slices_reusing(
+                        current,
+                        label,
+                        OutEdgeOrder::Descending,
+                        scratch,
+                        &mut visit_edge,
+                    )
+                    .map_err(PlanQueryError::from)?;
+                if let Some(err) = expand_err {
+                    return Err(err);
+                }
+            }
+            Self::Undirected { .. } => {
+                return Err(PlanQueryError::UnsupportedOp(
+                    "weighted shortest-path slice expand does not support undirected labels yet"
+                        .into(),
+                ));
             }
         }
         Ok(())
