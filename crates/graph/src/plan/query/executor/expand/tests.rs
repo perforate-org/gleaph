@@ -1000,6 +1000,96 @@ fn gleaph_weight_accepts_edge_payload_profile_without_legacy_weight_profile() {
 }
 
 #[test]
+fn gql_union_label_expr_return_gleaph_weight_decodes_per_edge_label() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["ExpandUnionWgtA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b1 = store
+        .insert_vertex_named(["ExpandUnionWgtB"], Vec::<(&str, Value)>::new())
+        .expect("b1");
+    let b2 = store
+        .insert_vertex_named(["ExpandUnionWgtB"], Vec::<(&str, Value)>::new())
+        .expect("b2");
+    let knows = crate::test_labels::edge_label_id_for_name("ExpandUnionWgtKnows");
+    let likes = crate::test_labels::edge_label_id_for_name("ExpandUnionWgtLikes");
+    for label_id in [knows, likes] {
+        store
+            .install_edge_label_payload_profile_at_init(
+                label_id,
+                EdgePayloadProfile {
+                    byte_width: 2,
+                    encoding: EdgePayloadEncoding::WeightRawU16,
+                },
+            )
+            .unwrap();
+    }
+    store
+        .insert_directed_edge_with_payload_bytes(a, b1, Some(knows), &5u16.to_le_bytes())
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(a, b2, Some(likes), &9u16.to_le_bytes())
+        .unwrap();
+
+    let plan = plan_gql(
+        "MATCH (a:ExpandUnionWgtA)-[e:ExpandUnionWgtKnows|ExpandUnionWgtLikes]->(b:ExpandUnionWgtB) \
+         RETURN GLEAPH.WEIGHT(e) AS w ORDER BY w",
+    );
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("union label_expr gleaph weight return");
+
+    assert_eq!(result.rows.len(), 2);
+    assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(5.0)));
+    assert_eq!(result.rows[1].get("w"), Some(&Value::Float32(9.0)));
+}
+
+#[test]
+fn gql_union_label_expr_where_gleaph_weight_equality_fuses_and_filters() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["ExpandUnionWgtEqA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let match_b = store
+        .insert_vertex_named(["ExpandUnionWgtEqB"], Vec::<(&str, Value)>::new())
+        .expect("match");
+    let skip_b = store
+        .insert_vertex_named(["ExpandUnionWgtEqB"], Vec::<(&str, Value)>::new())
+        .expect("skip");
+    let knows = crate::test_labels::edge_label_id_for_name("ExpandUnionWgtEqKnows");
+    let likes = crate::test_labels::edge_label_id_for_name("ExpandUnionWgtEqLikes");
+    for label_id in [knows, likes] {
+        store
+            .install_edge_label_payload_profile_at_init(
+                label_id,
+                EdgePayloadProfile {
+                    byte_width: 2,
+                    encoding: EdgePayloadEncoding::WeightRawU16,
+                },
+            )
+            .unwrap();
+    }
+    store
+        .insert_directed_edge_with_payload_bytes(a, match_b, Some(knows), &7u16.to_le_bytes())
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(a, skip_b, Some(likes), &9u16.to_le_bytes())
+        .unwrap();
+
+    let plan = plan_gql(
+        "MATCH (a:ExpandUnionWgtEqA)-[e:ExpandUnionWgtEqKnows|ExpandUnionWgtEqLikes]->(b:ExpandUnionWgtEqB) \
+         WHERE GLEAPH.WEIGHT(e) = 7 RETURN b",
+    );
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("union label_expr gleaph weight where");
+
+    assert_eq!(result.rows.len(), 1);
+}
+
+#[test]
 fn gql_gleaph_weight_equality_uses_edge_payload_predicate_expand() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};

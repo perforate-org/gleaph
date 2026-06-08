@@ -184,13 +184,6 @@ fn decoder_for_gleaph_weight_edge(
             indexed_edge_equality,
             hop_aux_binding,
         } => {
-            if label_expr.is_some() {
-                return Err(PlanQueryError::GleaphWeight {
-                    message: format!(
-                        "GLEAPH.WEIGHT({edge_var}): edge pattern must use a single fixed label, not a label expression"
-                    ),
-                });
-            }
             if var_len.is_some() {
                 return Err(PlanQueryError::GleaphWeight {
                     message: format!(
@@ -198,17 +191,28 @@ fn decoder_for_gleaph_weight_edge(
                     ),
                 });
             }
-            if indexed_edge_equality.is_some() {
-                return Err(PlanQueryError::GleaphWeight {
-                    message: format!(
-                        "GLEAPH.WEIGHT({edge_var}): indexed edge equality expansion is not supported"
-                    ),
-                });
-            }
             if hop_aux_binding.is_some() {
                 return Err(PlanQueryError::GleaphWeight {
                     message: format!(
                         "GLEAPH.WEIGHT({edge_var}): hop auxiliary bindings are not supported"
+                    ),
+                });
+            }
+            if let Some(expr) = label_expr {
+                validate_label_expr_edge_weight_profiles(store, execution, edge_var, expr)?;
+                let first_name = first_edge_label_name_in_expr(expr).ok_or_else(|| {
+                    PlanQueryError::GleaphWeight {
+                        message: format!(
+                            "GLEAPH.WEIGHT({edge_var}): label expression does not name any edge labels"
+                        ),
+                    }
+                })?;
+                return finish_decoder_from_label_name(store, execution, edge_var, first_name);
+            }
+            if indexed_edge_equality.is_some() {
+                return Err(PlanQueryError::GleaphWeight {
+                    message: format!(
+                        "GLEAPH.WEIGHT({edge_var}): indexed edge equality expansion is not supported"
                     ),
                 });
             }
