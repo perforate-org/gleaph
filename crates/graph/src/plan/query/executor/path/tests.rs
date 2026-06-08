@@ -638,33 +638,109 @@ fn all_shortest_path_returns_all_equal_depth_paths() {
 }
 
 #[test]
-fn shortest_path_rejects_unsupported_mode_and_label_expr() {
+fn shortest_k_returns_up_to_k_paths_by_hop_count() {
     let store = GraphStore::new();
-    let k_err = store
-        .execute_plan_query(
-            &plan(vec![PlanOp::ShortestPath {
+    let a = store
+        .insert_vertex_named(["ShortestKSource"], [("name", Value::Text("a".into()))])
+        .expect("insert a");
+    let b1 = store
+        .insert_vertex_named(["ShortestKMid"], [("name", Value::Text("b1".into()))])
+        .expect("insert b1");
+    let b2 = store
+        .insert_vertex_named(["ShortestKMid"], [("name", Value::Text("b2".into()))])
+        .expect("insert b2");
+    let long = store
+        .insert_vertex_named(["ShortestKLong"], [("name", Value::Text("long".into()))])
+        .expect("insert long");
+    let c = store
+        .insert_vertex_named(["ShortestKTarget"], [("name", Value::Text("c".into()))])
+        .expect("insert c");
+    store
+        .insert_directed_edge_named(a, b1, Some("ShortestKRel"), Vec::<(&str, Value)>::new())
+        .expect("insert a-b1");
+    store
+        .insert_directed_edge_named(b1, c, Some("ShortestKRel"), Vec::<(&str, Value)>::new())
+        .expect("insert b1-c");
+    store
+        .insert_directed_edge_named(a, b2, Some("ShortestKRel"), Vec::<(&str, Value)>::new())
+        .expect("insert a-b2");
+    store
+        .insert_directed_edge_named(b2, c, Some("ShortestKRel"), Vec::<(&str, Value)>::new())
+        .expect("insert b2-c");
+    store
+        .insert_directed_edge_named(a, long, Some("ShortestKRel"), Vec::<(&str, Value)>::new())
+        .expect("insert a-long");
+    store
+        .insert_directed_edge_named(long, c, Some("ShortestKRel"), Vec::<(&str, Value)>::new())
+        .expect("insert long-c");
+
+    let base_plan = || {
+        plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("ShortestKSource".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("ShortestKTarget".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
                 src: "a".into(),
-                dst: "b".into(),
+                dst: "c".into(),
                 edge: "e".into(),
                 path_var: Some("p".into()),
                 emit_edge_binding: true,
                 emit_path_binding: true,
                 mode: ShortestMode::ShortestK(2),
                 direction: EdgeDirection::PointingRight,
-                label: None,
+                label: Some("ShortestKRel".into()),
                 label_expr: None,
-                var_len: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(3),
+                }),
                 cost: ShortestPathCost::HopCount,
-            }]),
-            &params(),
-            GqlExecutionContext::default(),
-        )
-        .expect_err("ShortestK should be unsupported");
-    assert!(matches!(
-        k_err,
-        PlanQueryError::UnsupportedOp("ShortestPath.ShortestK")
-    ));
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p")],
+                distinct: false,
+            },
+        ])
+    };
 
+    let two = store
+        .execute_plan_query(&base_plan(), &params(), GqlExecutionContext::default())
+        .expect("shortest 2");
+    assert_eq!(two.rows.len(), 2);
+    for row in &two.rows {
+        let elements = match row.get("p") {
+            Some(Value::Path(elements)) => elements,
+            other => panic!("expected path, got {other:?}"),
+        };
+        assert_eq!(elements.len(), 5, "expected 2-hop path shape");
+        assert_path_vertex_local(&store, &elements[0], a);
+        assert_path_vertex_local(&store, &elements[4], c);
+    }
+
+    let mut plan_three = base_plan();
+    if let Some(PlanOp::ShortestPath { mode, .. }) = plan_three
+        .ops
+        .iter_mut()
+        .find(|op| matches!(op, PlanOp::ShortestPath { .. }))
+    {
+        *mode = ShortestMode::ShortestK(3);
+    }
+    let three = store
+        .execute_plan_query(&plan_three, &params(), GqlExecutionContext::default())
+        .expect("shortest 3");
+    assert_eq!(three.rows.len(), 3);
+}
+
+#[test]
+fn shortest_path_rejects_unsupported_label_expr() {
+    let store = GraphStore::new();
     let label_expr_err = store
         .execute_plan_query(
             &plan(vec![PlanOp::ShortestPath {

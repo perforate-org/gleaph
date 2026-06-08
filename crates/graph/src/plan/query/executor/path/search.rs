@@ -1,5 +1,7 @@
-use std::collections::BTreeMap;
+use std::cmp::Ordering;
+use std::collections::{BTreeMap, BinaryHeap};
 
+use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 use gleaph_graph_kernel::entry::EdgeLabelId;
@@ -17,6 +19,35 @@ use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::EdgeSequenceOrder;
 use crate::plan::query::executor::expand::{ExpandDst, expand_candidates_into};
 
+struct HopQueueEntry {
+    depth: u64,
+    tie: u64,
+    state_idx: usize,
+}
+
+impl Eq for HopQueueEntry {}
+
+impl PartialEq for HopQueueEntry {
+    fn eq(&self, other: &Self) -> bool {
+        self.depth == other.depth && self.tie == other.tie
+    }
+}
+
+impl Ord for HopQueueEntry {
+    fn cmp(&self, other: &Self) -> Ordering {
+        match self.depth.cmp(&other.depth).reverse() {
+            Ordering::Equal => other.tie.cmp(&self.tie),
+            non_eq => non_eq,
+        }
+    }
+}
+
+impl PartialOrd for HopQueueEntry {
+    fn partial_cmp(&self, other: &Self) -> Option<Ordering> {
+        Some(self.cmp(other))
+    }
+}
+
 pub(crate) fn shortest_paths_between(
     store: &GraphStore,
     src: VertexId,
@@ -28,6 +59,20 @@ pub(crate) fn shortest_paths_between(
     store_hop_edges: bool,
     load_edge_payloads: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
+    if let ShortestMode::ShortestK(k) = mode {
+        return shortest_k_hop_paths_between(
+            store,
+            src,
+            dst,
+            direction,
+            label_id,
+            var_len,
+            k,
+            store_hop_edges,
+            load_edge_payloads,
+        );
+    }
+
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
         max: Some(1),
@@ -145,6 +190,126 @@ pub(crate) fn shortest_paths_between(
                 continue;
             }
             queue.push(next_state_idx);
+        }
+    }
+
+    Ok(ShortestPathSearchResult { states, found })
+}
+
+fn shortest_k_hop_paths_between(
+    store: &GraphStore,
+    src: VertexId,
+    dst: VertexId,
+    direction: EdgeDirection,
+    label_id: Option<EdgeLabelId>,
+    var_len: &Option<VarLenSpec>,
+    k: u64,
+    store_hop_edges: bool,
+    load_edge_payloads: bool,
+) -> Result<ShortestPathSearchResult, PlanQueryError> {
+    let k = usize::try_from(k).map_err(|_| PlanQueryError::InvalidLimit {
+        value: Value::Uint64(k),
+    })?;
+    let bounds = var_len.unwrap_or(VarLenSpec {
+        min: 1,
+        max: Some(1),
+    });
+    let vertex_count = u64::from(u32::from(store.vertex_count()));
+    let max_hops = bounds.max.unwrap_or_else(|| vertex_count.saturating_sub(1));
+
+    let mut states = vec![PathSearchNode {
+        current: src,
+        previous: None,
+        edge: None,
+        depth: 0,
+    }];
+    if k == 0 {
+        return Ok(ShortestPathSearchResult {
+            states,
+            found: Vec::new(),
+        });
+    }
+
+    let mut heap = BinaryHeap::new();
+    let mut tie = 0u64;
+    heap.push(HopQueueEntry {
+        depth: 0,
+        tie,
+        state_idx: 0,
+    });
+
+    let mut found = Vec::with_capacity(k.min(8));
+    let mut candidates = Vec::new();
+    let fixed_label_expand = match label_id {
+        Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
+        None => None,
+    };
+
+    while let Some(entry) = heap.pop() {
+        if found.len() >= k {
+            break;
+        }
+        let state_idx = entry.state_idx;
+        let current = states[state_idx].current;
+        let depth = states[state_idx].depth;
+        if depth >= bounds.min && current == dst {
+            found.push(state_idx);
+            continue;
+        }
+        if depth >= max_hops {
+            continue;
+        }
+
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _expand_scope = bench_scope("shortest_k_expand");
+        candidates.clear();
+        match fixed_label_expand {
+            Some(prep) => prep.expand_into(
+                store,
+                current,
+                &mut candidates,
+                ShortestExpandOptions {
+                    load_payloads: load_edge_payloads,
+                    payload_scratch: None,
+                },
+            )?,
+            None => {
+                expand_candidates_into(
+                    store,
+                    current,
+                    direction,
+                    label_id,
+                    EdgeSequenceOrder::Descending,
+                    None,
+                    None,
+                    None,
+                    &BTreeMap::new(),
+                    &mut candidates,
+                )?;
+            }
+        }
+
+        for (edge_dst, edge_binding) in candidates.iter().cloned() {
+            let ExpandDst::Local(next) = edge_dst else {
+                continue;
+            };
+            if path_search_contains_vertex(&states, state_idx, next) {
+                continue;
+            }
+            let next_depth = depth + 1;
+            tie += 1;
+            let next_state_idx = states.len();
+            states.push(PathSearchNode {
+                current: next,
+                previous: Some(state_idx),
+                edge: store_hop_edges.then_some(edge_binding),
+                depth: next_depth,
+            });
+            heap.push(HopQueueEntry {
+                depth: next_depth,
+                tie,
+                state_idx: next_state_idx,
+            });
         }
     }
 

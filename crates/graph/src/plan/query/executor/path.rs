@@ -95,9 +95,6 @@ pub(crate) async fn execute_shortest_path(
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     remaining_ops: &[PlanOp],
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    if matches!(mode, ShortestMode::ShortestK(_)) {
-        return Err(PlanQueryError::UnsupportedOp("ShortestPath.ShortestK"));
-    }
     if label_expr.is_some() {
         return Err(PlanQueryError::UnsupportedOp("ShortestPath.label_expr"));
     }
