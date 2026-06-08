@@ -1636,6 +1636,62 @@ mod bench_setup_tests {
     }
 
     #[test]
+    fn repeated_edge_cost_cache_payload_batch_path_on_hot_vertices() {
+        use ic_stable_lara::{OutEdgeOrder, labeled::LabeledEdgePayloadBatchScratch};
+
+        let store = GraphStore::new();
+        let start = u32::from(store.vertex_count());
+        let (src, _dst) = setup_repeated_edge_cost_cache_graph(&store);
+        let end = u32::from(store.vertex_count());
+        let road = catalog_edge_label(&store, "BenchWspWgtEdge");
+        let hub_label = crate::test_labels::vertex_label_id_for_name("BenchWspHub");
+
+        let mut hub = None;
+        for raw in start..end {
+            let vid = VertexId::from(raw);
+            let vertex = store.vertex(vid).expect("vertex");
+            if store.vertex_has_label(vid, vertex, hub_label) {
+                hub = Some(vid);
+            }
+        }
+        let hub = hub.expect("hub");
+
+        let mut scratch = LabeledEdgePayloadBatchScratch::default();
+        let mut hub_dense = None;
+        store
+            .visit_directed_out_edge_payload_batches_for_label(
+                hub,
+                road,
+                OutEdgeOrder::Descending,
+                &mut scratch,
+                |batch| hub_dense = Some(batch.dense),
+            )
+            .expect("hub payload batches");
+
+        let mut src_dense = None;
+        store
+            .visit_directed_out_edge_payload_batches_for_label(
+                src,
+                road,
+                OutEdgeOrder::Descending,
+                &mut scratch,
+                |batch| src_dense = Some(batch.dense),
+            )
+            .expect("src payload batches");
+
+        assert_eq!(
+            hub_dense,
+            Some(true),
+            "hub bucket (24 live edges) should stay dense-eligible"
+        );
+        assert_eq!(
+            src_dense,
+            Some(false),
+            "src bucket (48 parallel edges) should use sparse payload batch path"
+        );
+    }
+
+    #[test]
     fn repeated_edge_cost_cache_setup_preserves_full_topology() {
         let store = GraphStore::new();
         let start = u32::from(store.vertex_count());
