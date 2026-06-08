@@ -1176,20 +1176,20 @@ mod tests {
     }
 
     #[test]
-    fn adhoc_gleaph_cost_rejects_shortest_k() {
+    fn adhoc_gleaph_cost_shortest_k_returns_weighted_paths() {
         let store = GraphStore::new();
         setup_gql_weighted_graph(&store);
         let params = BTreeMap::new();
-        let err = pollster::block_on(run_adhoc_gql(
+        let out = pollster::block_on(run_adhoc_gql(
             store,
-            "MATCH SHORTEST 2 (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY GLEAPH.WEIGHT(e) RETURN a",
+            "MATCH SHORTEST 2 (a:WgtGqlA)-[e:WgtGqlRoad]->{1,5}(c:WgtGqlC) GLEAPH.COST BY GLEAPH.WEIGHT(e) RETURN c",
             &params,
             None,
             GqlCanisterExecutionMode::CompositeQuery,
             GqlExecutionContext::default(),
         ))
-        .expect_err("weighted shortest k");
-        assert!(err.to_string().contains("weighted SHORTEST k"), "{err}");
+        .expect("weighted shortest k");
+        assert_eq!(out.rows.len(), 2);
     }
 
     #[test]

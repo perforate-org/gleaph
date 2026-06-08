@@ -20,16 +20,11 @@ impl PathPatternExtensionHandler for GleaphPathExtensionHandler {
         &self,
         ctx: &PathPatternExtensionContext<'_>,
     ) -> Result<ShortestPathCost, PlannerError> {
-        let Some(shortest_mode) = ctx.shortest_mode else {
+        let Some(_shortest_mode) = ctx.shortest_mode else {
             return Err(PlannerError::UnsupportedExtension(
                 "GLEAPH.COST is only supported on shortest-path patterns".into(),
             ));
         };
-        if matches!(shortest_mode, ShortestMode::ShortestK(_)) {
-            return Err(PlannerError::UnsupportedExtension(
-                "weighted SHORTEST k is not supported".into(),
-            ));
-        }
         if ctx.extensions.len() != 1 {
             return Err(PlannerError::UnsupportedExtension(
                 "GLEAPH.COST requires exactly one extension clause".into(),

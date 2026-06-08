@@ -351,6 +351,26 @@ pub(crate) fn weighted_shortest_paths_between(
     store_hop_edges: bool,
     emit_edge_binding: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
+    if let ShortestMode::ShortestK(k) = mode {
+        return weighted_shortest_k_paths_between(
+            store,
+            src,
+            dst,
+            direction,
+            label_id,
+            label_expr,
+            execution,
+            var_len,
+            k,
+            edge_var,
+            cost_expr,
+            parameters,
+            gleaph_weight_decoders,
+            store_hop_edges,
+            emit_edge_binding,
+        );
+    }
+
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
         max: Some(1),
@@ -562,6 +582,209 @@ pub(crate) fn weighted_shortest_paths_between(
                         } else {
                             #[cfg(all(feature = "canbench", target_family = "wasm"))]
                             let _scope = bench_scope("weighted_shortest_hop_cost_decode_direct");
+                            let decoder = direct_gleaph_weight_decoder
+                                .expect("direct GLEAPH.WEIGHT path requires prepared decoder");
+                            decode_direct_gleaph_weight_hop_cost(decoder, edge_binding.clone())
+                        }
+                    },
+                )?;
+            }
+        }
+    }
+
+    Ok(ShortestPathSearchResult { states, found })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn weighted_shortest_k_paths_between(
+    store: &GraphStore,
+    src: VertexId,
+    dst: VertexId,
+    direction: EdgeDirection,
+    label_id: Option<EdgeLabelId>,
+    label_expr: Option<&LabelExpr>,
+    execution: &GqlExecutionContext,
+    var_len: &Option<VarLenSpec>,
+    k: u64,
+    edge_var: &str,
+    cost_expr: &Expr,
+    parameters: &BTreeMap<String, Value>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    store_hop_edges: bool,
+    emit_edge_binding: bool,
+) -> Result<ShortestPathSearchResult, PlanQueryError> {
+    let k = usize::try_from(k).map_err(|_| PlanQueryError::InvalidLimit {
+        value: Value::Uint64(k),
+    })?;
+    let bounds = var_len.unwrap_or(VarLenSpec {
+        min: 1,
+        max: Some(1),
+    });
+    let vertex_count = u64::from(u32::from(store.vertex_count()));
+    let max_hops = bounds.max.unwrap_or_else(|| vertex_count.saturating_sub(1));
+
+    let mut states = vec![PathSearchNode {
+        current: src,
+        previous: None,
+        edge: None,
+        depth: 0,
+    }];
+    if k == 0 {
+        return Ok(ShortestPathSearchResult {
+            states,
+            found: Vec::new(),
+        });
+    }
+
+    let mut heap = BinaryHeap::new();
+    let mut tie = 0u64;
+    heap.push(WeightedQueueEntry {
+        cost: WeightedCost::zero(),
+        tie,
+        state_idx: 0,
+    });
+
+    let mut found = Vec::with_capacity(k.min(8));
+    let mut found_min_cost = None;
+    let mut hop_cost_cache: WeightedHopCostCache = IntMap::default();
+    let direct_gleaph_weight_decoder =
+        direct_gleaph_weight_hop_cost_decoder(cost_expr, edge_var, gleaph_weight_decoders)?;
+    let use_hop_cost_cache = direct_gleaph_weight_decoder.is_none();
+    let mut candidates = Vec::new();
+    let mut payload_scratch = LabeledEdgePayloadBatchScratch::<Edge>::default();
+    let fixed_label_expand = match label_id {
+        Some(lid) => Some(ShortestFixedLabelExpand::new(direction, lid)?),
+        None => None,
+    };
+
+    while let Some(entry) = heap.pop() {
+        if found.len() >= k {
+            break;
+        }
+        let state_idx = entry.state_idx;
+        let current = states[state_idx].current;
+        let depth = states[state_idx].depth;
+        if depth >= bounds.min && current == dst {
+            found.push(state_idx);
+            continue;
+        }
+        if depth >= max_hops {
+            continue;
+        }
+
+        if let (Some(prep), Some(decoder), false) = (
+            fixed_label_expand.as_ref(),
+            direct_gleaph_weight_decoder,
+            emit_edge_binding,
+        ) {
+            let base_cost = entry.cost.clone();
+            prep.expand_payload_batches(store, current, &mut payload_scratch, |batch| {
+                let width = usize::from(batch.byte_width);
+                for (edge, payload) in batch
+                    .edges
+                    .iter()
+                    .zip(batch.payload_bytes.chunks_exact(width))
+                {
+                    let Some(EdgeTarget::Local(next)) = edge.edge_target() else {
+                        continue;
+                    };
+                    let hop_edge = if store_hop_edges {
+                        Some(EdgeBinding {
+                            handle: edge_binding_handle_for_scanned_expand(
+                                store, current, direction, edge,
+                            )?,
+                            payload: EdgePayload::EMPTY,
+                        })
+                    } else {
+                        None
+                    };
+                    relax_weighted_shortest_neighbor(
+                        next,
+                        &base_cost,
+                        depth,
+                        state_idx,
+                        &mut states,
+                        &mut heap,
+                        &mut tie,
+                        &mut found_min_cost,
+                        None,
+                        hop_edge,
+                        || decode_direct_gleaph_weight_hop_cost_from_payload(decoder, payload),
+                    )?;
+                }
+                Ok(())
+            })?;
+        } else {
+            candidates.clear();
+            match fixed_label_expand {
+                Some(prep) => prep.expand_into(
+                    store,
+                    current,
+                    &mut candidates,
+                    ShortestExpandOptions {
+                        load_payloads: true,
+                        payload_scratch: Some(&mut payload_scratch),
+                    },
+                )?,
+                None => {
+                    expand_candidates_into(
+                        store,
+                        current,
+                        direction,
+                        label_id,
+                        EdgeSequenceOrder::Descending,
+                        None,
+                        None,
+                        None,
+                        &BTreeMap::new(),
+                        &mut candidates,
+                    )?;
+                }
+            }
+            let base_cost = entry.cost.clone();
+            for (edge_dst, edge_binding) in &candidates {
+                if let Some(expr) = label_expr
+                    && !edge_binding_matches_label_expr(execution, expr, edge_binding)
+                {
+                    continue;
+                }
+                let ExpandDst::Local(next) = *edge_dst else {
+                    continue;
+                };
+                relax_weighted_shortest_neighbor(
+                    next,
+                    &base_cost,
+                    depth,
+                    state_idx,
+                    &mut states,
+                    &mut heap,
+                    &mut tie,
+                    &mut found_min_cost,
+                    None,
+                    store_hop_edges.then(|| edge_binding.clone()),
+                    || {
+                        if use_hop_cost_cache {
+                            let outer = weighted_hop_cache_outer_key(edge_binding);
+                            let value_key = weighted_hop_cache_value_key(edge_binding);
+                            if let Some(cost) =
+                                hop_cost_cache.get(&outer).and_then(|m| m.get(&value_key))
+                            {
+                                return Ok(cost.clone());
+                            }
+                            let cost = eval_shortest_hop_cost(
+                                store,
+                                cost_expr,
+                                edge_var,
+                                edge_binding.clone(),
+                                parameters,
+                                gleaph_weight_decoders,
+                            )?;
+                            hop_cost_cache
+                                .entry(outer)
+                                .or_default()
+                                .insert(value_key, cost.clone());
+                            Ok(cost)
+                        } else {
                             let decoder = direct_gleaph_weight_decoder
                                 .expect("direct GLEAPH.WEIGHT path requires prepared decoder");
                             decode_direct_gleaph_weight_hop_cost(decoder, edge_binding.clone())

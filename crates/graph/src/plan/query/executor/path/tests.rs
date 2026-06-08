@@ -1302,6 +1302,151 @@ fn weighted_shortest_path_prefers_lower_total_cost_over_fewer_hops() {
     assert_path_vertex_local(&store, &elements[4], c);
 }
 
+#[test]
+fn weighted_shortest_k_returns_paths_by_total_cost() {
+    let store = GraphStore::new();
+    let (a, _b, c) = setup_weighted_road_graph(&store);
+    let one = store
+        .execute_plan_query(
+            &weighted_shortest_plan_with_cost_mode(
+                gleaph_weight_call("e"),
+                ShortestMode::ShortestK(1),
+            ),
+            &params(),
+            GqlExecutionContext::default(),
+        )
+        .expect("weighted shortest 1");
+    assert_eq!(one.rows.len(), 1);
+    assert_eq!(path_column(&one, "p").len(), 5, "cheapest path is 2-hop");
+
+    let two = store
+        .execute_plan_query(
+            &weighted_shortest_plan_with_cost_mode(
+                gleaph_weight_call("e"),
+                ShortestMode::ShortestK(2),
+            ),
+            &params(),
+            GqlExecutionContext::default(),
+        )
+        .expect("weighted shortest 2");
+    assert_eq!(two.rows.len(), 2);
+    let first_path = match two.rows[0].get("p") {
+        Some(Value::Path(elements)) => elements,
+        other => panic!("expected path, got {other:?}"),
+    };
+    let second_path = match two.rows[1].get("p") {
+        Some(Value::Path(elements)) => elements,
+        other => panic!("expected path, got {other:?}"),
+    };
+    assert_eq!(first_path.len(), 5);
+    assert_eq!(second_path.len(), 3, "second path is direct");
+    assert_path_vertex_local(&store, first_path.last().expect("end"), c);
+    assert_path_vertex_local(&store, second_path.last().expect("end"), c);
+    assert_path_vertex_local(&store, &first_path[0], a);
+}
+
+#[test]
+fn weighted_shortest_k_prefers_lower_cost_over_extra_hop_paths() {
+    use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["WgtKSource"], Vec::<(&str, Value)>::new())
+        .expect("insert a");
+    let b1 = store
+        .insert_vertex_named(["WgtKMid"], Vec::<(&str, Value)>::new())
+        .expect("insert b1");
+    let b2 = store
+        .insert_vertex_named(["WgtKMid"], Vec::<(&str, Value)>::new())
+        .expect("insert b2");
+    let long = store
+        .insert_vertex_named(["WgtKLong"], Vec::<(&str, Value)>::new())
+        .expect("insert long");
+    let target = store
+        .insert_vertex_named(["WgtKTarget"], Vec::<(&str, Value)>::new())
+        .expect("insert target");
+    let label_id = crate::test_labels::edge_label_id_for_name("WgtKRoad");
+    store
+        .install_edge_label_weight_profile_at_init(
+            label_id,
+            EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            },
+        )
+        .expect("weight profile");
+    let road = catalog_edge_label(&store, "WgtKRoad");
+    let cheap = 1u16.to_le_bytes();
+    let expensive = 50u16.to_le_bytes();
+    store
+        .insert_directed_edge_with_payload_bytes(a, b1, Some(road), &cheap)
+        .expect("a-b1");
+    store
+        .insert_directed_edge_with_payload_bytes(b1, target, Some(road), &cheap)
+        .expect("b1-target");
+    store
+        .insert_directed_edge_with_payload_bytes(a, b2, Some(road), &cheap)
+        .expect("a-b2");
+    store
+        .insert_directed_edge_with_payload_bytes(b2, target, Some(road), &cheap)
+        .expect("b2-target");
+    store
+        .insert_directed_edge_with_payload_bytes(a, long, Some(road), &expensive)
+        .expect("a-long");
+    store
+        .insert_directed_edge_with_payload_bytes(long, target, Some(road), &expensive)
+        .expect("long-target");
+
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("WgtKSource".into()),
+            property_projection: None,
+        },
+        PlanOp::NodeScan {
+            variable: "c".into(),
+            label: Some("WgtKTarget".into()),
+            property_projection: None,
+        },
+        PlanOp::ShortestPath {
+            src: "a".into(),
+            dst: "c".into(),
+            edge: "e".into(),
+            path_var: Some("p".into()),
+            emit_edge_binding: true,
+            emit_path_binding: true,
+            mode: ShortestMode::ShortestK(2),
+            direction: EdgeDirection::PointingRight,
+            label: Some("WgtKRoad".into()),
+            label_expr: None,
+            var_len: Some(VarLenSpec {
+                min: 1,
+                max: Some(3),
+            }),
+            cost: ShortestPathCost::EdgeCostExpr {
+                edge_var: "e".into(),
+                expr: gleaph_weight_call("e"),
+            },
+        },
+        PlanOp::Project {
+            columns: vec![project(var("p"), "p")],
+            distinct: false,
+        },
+    ]);
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("weighted shortest k");
+    assert_eq!(result.rows.len(), 2);
+    for row in &result.rows {
+        let elements = match row.get("p") {
+            Some(Value::Path(elements)) => elements,
+            other => panic!("expected path, got {other:?}"),
+        };
+        assert_eq!(elements.len(), 5, "expected cheap 2-hop paths only");
+        assert_path_vertex_local(&store, &elements[0], a);
+        assert_path_vertex_local(&store, &elements[4], target);
+    }
+}
+
 /// Graph where a cheaper arrival at `x` exhausts the hop bound while a higher-cost arrival
 /// can still reach `dst` (s->x cost 2 depth 1, s->a->x cost 1 depth 2, x->dst cost 1, max=2).
 fn setup_hop_bound_cheaper_vertex_unusable_graph(store: &GraphStore) -> (VertexId, VertexId) {
