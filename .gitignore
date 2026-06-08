@@ -15,4 +15,5 @@ frontend-old/
 old_crates/
 escape_crates/
 
+reference/
 crates/gql/reference/
