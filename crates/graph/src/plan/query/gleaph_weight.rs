@@ -173,24 +173,18 @@ fn decoder_for_gleaph_weight_edge(
         EdgeProducer::Expand {
             label,
             label_expr,
-            var_len,
+            var_len: _,
             indexed_edge_equality,
             hop_aux_binding,
         }
         | EdgeProducer::ExpandFilter {
             label,
             label_expr,
-            var_len,
+            var_len: _,
             indexed_edge_equality,
             hop_aux_binding,
         } => {
-            if var_len.is_some() {
-                return Err(PlanQueryError::GleaphWeight {
-                    message: format!(
-                        "GLEAPH.WEIGHT({edge_var}): variable-length edge patterns are not supported"
-                    ),
-                });
-            }
+            // Variable-length expand binds `edge_var` to the last traversed edge only.
             if hop_aux_binding.is_some() {
                 return Err(PlanQueryError::GleaphWeight {
                     message: format!(

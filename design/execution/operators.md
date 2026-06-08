@@ -34,7 +34,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 
 | PlanOp | Status | Federation |
 |--------|--------|------------|
-| `Expand` | Partial | `{min,max}` hop-count var-length; `label_expr` (`-/A\|B/->`, `-[e:A\|B]->`); index/payload/vector fusion per named label in `label_expr`; `GLEAPH.WEIGHT` decode per bound edge label |
+| `Expand` | Partial | `{min,max}` hop-count var-length; `label_expr` (`-/A\|B/->`, `-[e:A\|B]->`); index/payload/vector fusion per named label in `label_expr`; `GLEAPH.WEIGHT(e)` on var-length binds the **last hop** edge only |
 | `ExpandFilter` | Partial | Same var-length and `label_expr` support as `Expand` |
 | `ShortestPath` | Partial | `ShortestK` (hop-count and `GLEAPH.COST`); `label_expr` (`-/A\|B/->`, including weighted) |
 | `WorstCaseOptimalJoin` | Partial | Cyclic patterns |
