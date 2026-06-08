@@ -2,6 +2,7 @@
 
 use std::sync::Arc;
 
+use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, EdgePayload};
 use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
@@ -66,6 +67,21 @@ pub(crate) fn edge_binding_for_federated_expand_hit(
     } else {
         Ok(EdgeBinding::from_federated_neighbor_hit(hit))
     }
+}
+
+/// Per-hop auxiliary scalar for `{edge}__hop_aux` (inline edge payload bytes).
+pub(crate) fn hop_aux_scalar(edge: &EdgeBinding) -> Value {
+    let bytes = edge.payload_bytes_slice();
+    if bytes.is_empty() {
+        Value::Null
+    } else {
+        Value::Bytes(bytes.to_vec())
+    }
+}
+
+/// Per-hop auxiliary group for variable-length `{edge}__hop_aux`.
+pub(crate) fn hop_aux_group(edges: &[EdgeBinding]) -> Value {
+    Value::List(edges.iter().map(hop_aux_scalar).collect())
 }
 
 /// Collect traversed edges for a variable-length path state, in hop order (first → last).

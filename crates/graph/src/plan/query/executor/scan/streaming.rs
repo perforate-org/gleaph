@@ -332,6 +332,7 @@ fn stream_row_through_ops(
                     bounds,
                     &[],
                     *emit_edge_binding,
+                    hop_aux_binding.as_ref(),
                     near_group_var.as_ref(),
                     far_group_var.as_ref(),
                     path_var.as_ref(),
@@ -365,6 +366,7 @@ fn stream_row_through_ops(
                     EdgeSequenceOrder::Descending,
                     &[],
                     *emit_edge_binding,
+                    hop_aux_binding.as_ref(),
                     indexed_edge_equality.as_ref(),
                     edge_payload_predicate.as_ref(),
                     edge_vector_predicate.as_ref(),
@@ -424,6 +426,7 @@ fn stream_row_through_ops(
                     bounds,
                     dst_filter,
                     *emit_edge_binding,
+                    hop_aux_binding.as_ref(),
                     near_group_var.as_ref(),
                     far_group_var.as_ref(),
                     path_var.as_ref(),
@@ -457,6 +460,7 @@ fn stream_row_through_ops(
                     EdgeSequenceOrder::Descending,
                     dst_filter,
                     *emit_edge_binding,
+                    hop_aux_binding.as_ref(),
                     indexed_edge_equality.as_ref(),
                     edge_payload_predicate.as_ref(),
                     edge_vector_predicate.as_ref(),
@@ -569,6 +573,7 @@ fn stream_var_len_expand(
     var_len: &gleaph_gql_planner::plan::VarLenSpec,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
+    hop_aux_binding: Option<&Str>,
     near_group_var: Option<&Str>,
     far_group_var: Option<&Str>,
     path_var: Option<&Str>,
@@ -618,6 +623,7 @@ fn stream_var_len_expand(
         var_len,
         dst_filter,
         emit_edge_binding,
+        hop_aux_binding,
         near_group_var,
         far_group_var,
         path_var,
@@ -669,6 +675,7 @@ fn stream_expand(
     sequence_order: EdgeSequenceOrder,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
+    hop_aux_binding: Option<&Str>,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     edge_payload_predicate: Option<&EdgePayloadPredicate>,
     edge_vector_predicate: Option<&EdgeVectorPredicate>,
@@ -697,6 +704,7 @@ fn stream_expand(
     };
     let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());
     let edge_key = emit_edge_binding.then(|| edge.to_string());
+    let hop_aux_key = hop_aux_binding.map(|name| name.as_ref());
     let dst_key = dst.to_string();
     let csr_expand_fast_path = (edge_payload_predicate.is_none()
         && edge_vector_predicate.is_none())
@@ -742,6 +750,7 @@ fn stream_expand(
                 store,
                 &row,
                 edge_key.as_deref(),
+                hop_aux_key,
                 dst_key.as_str(),
                 edge_dst,
                 edge_binding,
@@ -828,6 +837,7 @@ fn stream_expand(
                 store,
                 &row,
                 edge_key.as_deref(),
+                hop_aux_key,
                 dst_key.as_str(),
                 edge_dst,
                 edge_binding,
@@ -906,6 +916,7 @@ fn stream_expand(
             store,
             &row,
             edge_key.as_deref(),
+            hop_aux_key,
             dst_key.as_str(),
             edge_dst,
             edge_binding,

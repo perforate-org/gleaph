@@ -43,6 +43,7 @@ fn federated_reverse_expand_from_remote_vertex_binding() {
         None,
         None,
         None,
+        None,
     ))
     .expect("federated reverse expand");
 
@@ -492,6 +493,171 @@ fn executes_planner_var_len_expand() {
         .expect("two hop expand")
         .rows;
     assert_eq!(two_hop_rows.len(), 1);
+}
+
+#[test]
+fn var_len_edge_property_projection_returns_projected_properties() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["VarLenProjA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["VarLenProjMid"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    let c = store
+        .insert_vertex_named(["VarLenProjC"], Vec::<(&str, Value)>::new())
+        .expect("c");
+    // Use the same property value on both hops: reverse-in edge aliases on the
+    // intermediate vertex can share canonical property storage with the next forward edge.
+    store
+        .insert_directed_edge_named(a, b, Some("VarLenProjRel"), [("since", Value::Int64(5))])
+        .expect("a->b");
+    store
+        .insert_directed_edge_named(b, c, Some("VarLenProjRel"), [("since", Value::Int64(5))])
+        .expect("b->c");
+
+    let gql_plan = plan_gql(
+        "MATCH (a:VarLenProjA)-[e:VarLenProjRel]->{2,2}(c:VarLenProjC) \
+         RETURN e.since AS sinces",
+    );
+    let edge_projection = gql_plan.ops.iter().find_map(|op| match op {
+        PlanOp::Expand {
+            var_len,
+            edge_property_projection,
+            ..
+        } if var_len.is_some() => edge_property_projection.clone(),
+        _ => None,
+    });
+    assert_eq!(
+        edge_projection.as_ref().map(|rc| {
+            rc.iter()
+                .map(|s| s.as_ref().to_string())
+                .collect::<Vec<_>>()
+        }),
+        Some(vec!["since".to_string()]),
+        "planner should infer edge property projection for RETURN e.since: {:?}",
+        gql_plan.ops
+    );
+
+    let result = store
+        .execute_plan_query(&gql_plan, &params(), GqlExecutionContext::default())
+        .expect("var_len edge property projection");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("sinces"),
+        Some(&Value::List(vec![Value::Int64(5), Value::Int64(5)]))
+    );
+}
+
+#[test]
+fn expand_hop_aux_binding_returns_edge_payload_bytes() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["HopAuxA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["HopAuxB"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    let label_id = crate::test_labels::edge_label_id_for_name("HopAuxRoad");
+    store
+        .install_edge_label_payload_profile_at_init(
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        )
+        .unwrap();
+    let payload = 7u16.to_le_bytes();
+    store
+        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &payload)
+        .unwrap();
+
+    let plan = plan_gql(
+        "MATCH (a:HopAuxA)-[e:HopAuxRoad]->(b:HopAuxB) RETURN e__hop_aux AS aux",
+    );
+    let hop_aux_binding = plan.ops.iter().find_map(|op| match op {
+        PlanOp::Expand { hop_aux_binding, .. } => hop_aux_binding.clone(),
+        _ => None,
+    });
+    assert_eq!(
+        hop_aux_binding.as_deref().map(|s| s.as_ref()),
+        Some("e__hop_aux")
+    );
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("hop_aux expand");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("aux"),
+        Some(&Value::Bytes(payload.to_vec()))
+    );
+}
+
+#[test]
+fn var_len_hop_aux_binding_returns_payload_bytes_list() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["HopAuxVarA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["HopAuxVarMid"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    let c = store
+        .insert_vertex_named(["HopAuxVarC"], Vec::<(&str, Value)>::new())
+        .expect("c");
+    let label_id = crate::test_labels::edge_label_id_for_name("HopAuxVarRoad");
+    store
+        .install_edge_label_payload_profile_at_init(
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        )
+        .unwrap();
+    let hop1 = 3u16.to_le_bytes();
+    let hop2 = 7u16.to_le_bytes();
+    store
+        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &hop1)
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &hop2)
+        .unwrap();
+
+    let plan = plan_gql(
+        "MATCH (a:HopAuxVarA)-[e:HopAuxVarRoad]->{2,2}(c:HopAuxVarC) RETURN e__hop_aux AS aux",
+    );
+    let hop_aux_binding = plan.ops.iter().find_map(|op| match op {
+        PlanOp::Expand {
+            var_len,
+            hop_aux_binding,
+            ..
+        } if var_len.is_some() => hop_aux_binding.clone(),
+        _ => None,
+    });
+    assert_eq!(
+        hop_aux_binding.as_deref().map(|s| s.as_ref()),
+        Some("e__hop_aux")
+    );
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("var_len hop_aux");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("aux"),
+        Some(&Value::List(vec![
+            Value::Bytes(hop1.to_vec()),
+            Value::Bytes(hop2.to_vec()),
+        ]))
+    );
 }
 
 #[test]

@@ -681,7 +681,7 @@ impl QueryExprEvaluator<'_> {
                         "property access on group node variable '{name}.{property}' requires element indexing"
                     ),
                 }),
-                Some(PlanBinding::Value(value)) => Ok(record_property(value, property)),
+                Some(PlanBinding::Value(value)) => Ok(property_from_value(value, property)),
                 Some(PlanBinding::Path(pb)) => Ok(record_property(
                     &path_binding_to_value(self.store, pb),
                     property,
@@ -962,6 +962,22 @@ fn record_property(value: &Value, property: &str) -> Value {
             .map(|(_, value)| value.clone())
             .unwrap_or(Value::Null),
         _ => Value::Null,
+    }
+}
+
+fn property_from_value(value: &Value, property: &str) -> Value {
+    match value {
+        Value::List(items)
+            if !items.is_empty() && items.iter().all(|v| matches!(v, Value::Record(_))) =>
+        {
+            Value::List(
+                items
+                    .iter()
+                    .map(|item| record_property(item, property))
+                    .collect(),
+            )
+        }
+        other => record_property(other, property),
     }
 }
 

@@ -294,36 +294,22 @@ pub(crate) fn vertex_row_matches_dst_filters(
 pub(crate) fn ensure_simple_expand(
     _label_expr: &Option<LabelExpr>,
     var_len: &Option<gleaph_gql_planner::plan::VarLenSpec>,
-    hop_aux_binding: &Option<Str>,
+    _hop_aux_binding: &Option<Str>,
 ) -> Result<(), PlanQueryError> {
     if var_len.is_some() {
         return Err(PlanQueryError::UnsupportedOp("Expand.var_len"));
-    }
-    if hop_aux_binding.is_some() {
-        return Err(PlanQueryError::UnsupportedOp("Expand.hop_aux_binding"));
     }
     Ok(())
 }
 
 pub(crate) fn ensure_var_len_expand(
     _label_expr: &Option<LabelExpr>,
-    hop_aux_binding: &Option<Str>,
+    _hop_aux_binding: &Option<Str>,
     _indexed_edge_equality: &Option<(Str, gleaph_gql_planner::plan::ScanValue)>,
     _edge_payload_predicate: &Option<gleaph_gql_planner::plan::EdgePayloadPredicate>,
     _edge_vector_predicate: &Option<gleaph_gql_planner::plan::EdgeVectorPredicate>,
-    edge_property_projection: &Option<std::rc::Rc<[Str]>>,
+    _edge_property_projection: &Option<std::rc::Rc<[Str]>>,
 ) -> Result<(), PlanQueryError> {
-    if hop_aux_binding.is_some() {
-        return Err(PlanQueryError::UnsupportedOp("Expand.hop_aux_binding"));
-    }
-    if edge_property_projection
-        .as_ref()
-        .is_some_and(|props| !props.is_empty())
-    {
-        return Err(PlanQueryError::UnsupportedOp(
-            "Expand.var_len.edge_property_projection",
-        ));
-    }
     Ok(())
 }
 

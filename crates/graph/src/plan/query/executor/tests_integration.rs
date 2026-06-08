@@ -62,6 +62,7 @@ fn explicit_empty_resolved_table_fails_labeled_expand() {
         None,
         None,
         None,
+        None,
     ))
     .expect_err("missing resolved edge label must fail");
     assert!(matches!(

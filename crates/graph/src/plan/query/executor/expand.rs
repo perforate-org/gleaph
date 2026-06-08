@@ -252,6 +252,7 @@ pub(crate) fn build_expanded_row(
     store: &GraphStore,
     row: &PlanRow,
     edge_key: Option<&str>,
+    hop_aux_key: Option<&str>,
     dst_key: &str,
     dst: ExpandDst,
     edge_binding: EdgeBinding,
@@ -259,8 +260,16 @@ pub(crate) fn build_expanded_row(
     dst_property_projection: Option<&[Str]>,
 ) -> Result<PlanRow, PlanQueryError> {
     let dst_binding = expand_dst_binding(store, dst, dst_property_projection)?;
+    let hop_aux_binding = hop_aux_key.map(|key| {
+        (
+            key,
+            PlanBinding::Value(crate::plan::query::executor::bindings::hop_aux_scalar(
+                &edge_binding,
+            )),
+        )
+    });
     let expanded = if let Some(edge_key) = edge_key {
-        let edge_binding = if edge_property_projection.is_some_and(|props| !props.is_empty()) {
+        let edge_plan_binding = if edge_property_projection.is_some_and(|props| !props.is_empty()) {
             PlanBinding::Value(edge_to_projected_record(
                 store,
                 edge_binding,
@@ -269,16 +278,22 @@ pub(crate) fn build_expanded_row(
         } else {
             PlanBinding::Edge(edge_binding)
         };
+        let mut pairs = vec![(edge_key, edge_plan_binding), (dst_key, dst_binding)];
+        if let Some((key, binding)) = hop_aux_binding {
+            pairs.push((key, binding));
+        }
         match arena {
-            Some(arena) => {
-                row.fork_with_arena(arena, [(edge_key, edge_binding), (dst_key, dst_binding)])
-            }
-            None => row.fork([(edge_key, edge_binding), (dst_key, dst_binding)]),
+            Some(arena) => row.fork_with_arena(arena, pairs),
+            None => row.fork(pairs),
         }
     } else {
+        let mut pairs = vec![(dst_key, dst_binding)];
+        if let Some((key, binding)) = hop_aux_binding {
+            pairs.push((key, binding));
+        }
         match arena {
-            Some(arena) => row.fork_with_arena(arena, [(dst_key, dst_binding)]),
-            None => row.fork([(dst_key, dst_binding)]),
+            Some(arena) => row.fork_with_arena(arena, pairs),
+            None => row.fork(pairs),
         }
     };
     Ok(expanded)

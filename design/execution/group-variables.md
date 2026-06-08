@@ -1,6 +1,6 @@
 # Group variables (variable-length edge and node groups)
 
-**Status:** Phase 1–3 implemented (edge group, vertex groups, var_len `path_var`)
+**Status:** Phase 1–4 implemented (edge group, vertex groups, var_len `path_var`, `hop_aux_binding`)
 
 ## Purpose
 
@@ -14,9 +14,10 @@ Align variable-length expand semantics with GQL **group variables**: outside the
 | `{min,max}` `Expand` with `emit_edge_binding` | `PlanBinding::EdgeGroup(Arc<[EdgeBinding]>)` |
 | `{min,max}` `Expand` with `near_group_var` / `far_group_var` | `PlanBinding::VertexGroup(Arc<[VertexId]>)` per hop |
 | `{min,max}` `Expand` with `emit_path_binding` | `PlanBinding::Path(PathBinding)` (lazy, materializes to `Value::Path`) |
-| Materialized `RETURN e` / `RETURN u` / `RETURN p` | `Value::List` or `Value::Path` |
+| `{min,max}` `Expand` with `hop_aux_binding` | `PlanBinding::Value` — `Value::List` of `Value::Bytes` per hop (inline payload) |
+| Single-hop `Expand` with `hop_aux_binding` | `PlanBinding::Value(Value::Bytes)` or `Value::Null` when payload empty |
 
-`depth = 0` paths (when `min = 0`) bind empty groups (`EdgeGroup([])`, `VertexGroup([])`).
+`depth = 0` paths (when `min = 0`) bind empty groups (`EdgeGroup([])`, `VertexGroup([])`, empty hop_aux list).
 
 ### Quantified subpath planning
 
@@ -35,6 +36,7 @@ Patterns like `MATCH (a)((u)-[e:L]->(v)){m,n}(c)` lower to one `PlanOp::Expand` 
 | Expression | Status |
 |------------|--------|
 | `RETURN e`, `RETURN u` | OK → list of records |
+| `RETURN e__hop_aux` | OK → `Value::Bytes` (single hop) or `Value::List` of bytes (var_len) |
 | `RETURN p` | OK → `Value::Path` |
 | `CARDINALITY(e)`, `CARDINALITY(u)` | OK |
 | `GLEAPH.WEIGHT(e[-1])`, `u[0]`, `v[-1]` | OK (Cypher list index; requires `cypher` feature on `gleaph-gql`) |
@@ -52,7 +54,7 @@ Patterns like `MATCH (a)((u)-[e:L]->(v)){m,n}(c)` lower to one `PlanOp::Expand` 
 
 ## Non-goals (later phases)
 
-- `hop_aux_binding` executor (per-hop opaque bytes group)
+- `EdgeBindEndpoints` executor (leading-edge index bind path)
 
 ## Related
 

@@ -24,7 +24,7 @@ use super::{
 use crate::facade::GraphStore;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::{
-    edge_binding_for_federated_expand_hit, federated_expand_label_id_raw,
+    edge_binding_for_federated_expand_hit, federated_expand_label_id_raw, hop_aux_scalar,
 };
 use crate::plan::query::executor::context::{ExecuteCtx, QueryExprEvaluator};
 use crate::plan::query::executor::{
@@ -41,6 +41,7 @@ fn expand_rows_from_federated_expand_hits(
     dst: &str,
     edge: &str,
     emit_edge_binding: bool,
+    hop_aux_key: Option<&str>,
     dst_property_projection: Option<&[Str]>,
     dst_filter: &[Expr],
     label_expr: Option<&LabelExpr>,
@@ -92,12 +93,28 @@ fn expand_rows_from_federated_expand_hits(
             {
                 continue;
             }
-            row.fork([
+            let mut pairs = vec![
                 (dst, dst_binding),
-                (edge_key.as_str(), PlanBinding::Edge(edge_binding)),
-            ])
+                (edge_key.as_str(), PlanBinding::Edge(edge_binding.clone())),
+            ];
+            if let Some(hop_aux_key) = hop_aux_key {
+                pairs.push((
+                    hop_aux_key,
+                    PlanBinding::Value(hop_aux_scalar(&edge_binding)),
+                ));
+            }
+            row.fork(pairs)
         } else {
-            row.fork([(dst, dst_binding)])
+            let mut pairs = vec![(dst, dst_binding)];
+            if let Some(hop_aux_key) = hop_aux_key {
+                let edge_binding =
+                    edge_binding_for_federated_expand_hit(store, hit, routing.shard_id)?;
+                pairs.push((
+                    hop_aux_key,
+                    PlanBinding::Value(hop_aux_scalar(&edge_binding)),
+                ));
+            }
+            row.fork(pairs)
         };
         if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
             continue;
@@ -121,6 +138,7 @@ pub(crate) async fn execute_expand(
     sequence_order: EdgeSequenceOrder,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
+    hop_aux_binding: Option<&Str>,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     edge_payload_predicate: Option<&EdgePayloadPredicate>,
     edge_vector_predicate: Option<&EdgeVectorPredicate>,
@@ -145,6 +163,7 @@ pub(crate) async fn execute_expand(
     let evaluator = ctx.expr_evaluator(None);
     let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst.as_ref());
     let edge_key = emit_edge_binding.then(|| edge.to_string());
+    let hop_aux_key = hop_aux_binding.map(|name| name.as_ref());
     let dst_key = dst.to_string();
     let csr_expand_fast_path = (edge_payload_predicate.is_none()
         && edge_vector_predicate.is_none())
@@ -155,6 +174,7 @@ pub(crate) async fn execute_expand(
         label_id,
         direction,
         emit_edge_binding,
+        hop_aux_binding,
         indexed_edge_equality,
         edge_payload_predicate,
         edge_vector_predicate,
@@ -203,6 +223,7 @@ pub(crate) async fn execute_expand(
                 dst.as_ref(),
                 edge.as_ref(),
                 emit_edge_binding,
+                hop_aux_key,
                 dst_property_projection,
                 dst_filter,
                 label_expr,
@@ -243,6 +264,7 @@ pub(crate) async fn execute_expand(
                 dst.as_ref(),
                 edge.as_ref(),
                 emit_edge_binding,
+                hop_aux_key,
                 dst_property_projection,
                 dst_filter,
                 label_expr,
@@ -283,6 +305,7 @@ pub(crate) async fn execute_expand(
                 dst.as_ref(),
                 edge.as_ref(),
                 emit_edge_binding,
+                hop_aux_key,
                 dst_property_projection,
                 dst_filter,
                 label_expr,
@@ -354,6 +377,7 @@ pub(crate) async fn execute_expand(
                     store,
                     &row,
                     edge_key.as_deref(),
+                    hop_aux_key,
                     dst_key.as_str(),
                     edge_dst,
                     edge_binding,
@@ -445,6 +469,7 @@ pub(crate) async fn execute_expand(
                 store,
                 &row,
                 edge_key.as_deref(),
+                hop_aux_key,
                 dst_key.as_str(),
                 edge_dst,
                 edge_binding,
@@ -466,6 +491,7 @@ fn prepare_vector_dst_only_expand_predicate(
     label_id: Option<EdgeLabelId>,
     direction: EdgeDirection,
     emit_edge_binding: bool,
+    hop_aux_binding: Option<&Str>,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     edge_payload_predicate: Option<&EdgePayloadPredicate>,
     edge_vector_predicate: Option<&EdgeVectorPredicate>,
@@ -473,6 +499,7 @@ fn prepare_vector_dst_only_expand_predicate(
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Option<(EdgeLabelId, PreparedEdgeVectorThreshold)>, PlanQueryError> {
     if emit_edge_binding
+        || hop_aux_binding.is_some()
         || indexed_edge_equality.is_some()
         || edge_payload_predicate.is_some()
         || edge_vector_predicate.is_none()

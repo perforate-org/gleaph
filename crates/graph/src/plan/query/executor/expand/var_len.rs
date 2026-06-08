@@ -12,7 +12,9 @@ use gleaph_gql_planner::plan::{
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::VertexId;
 
-use super::super::bindings::{edge_bindings_along_var_len_path, vertices_along_var_len_path};
+use super::super::bindings::{
+    edge_bindings_along_var_len_path, hop_aux_group, vertices_along_var_len_path,
+};
 use super::super::context::ExecuteCtx;
 use super::super::path::{PathBinding, PathSearchNode, local_shard_id};
 use super::{
@@ -20,9 +22,9 @@ use super::{
     expand_dst_binding, expand_dst_matches_prebound_vertex,
 };
 use crate::plan::query::error::PlanQueryError;
-use crate::plan::query::executor::bindings::EdgeBinding;
 use crate::plan::query::executor::{
-    EdgeSequenceOrder, PlanBinding, row_matches_all, vertex_binding_for_traversal,
+    EdgeSequenceOrder, PlanBinding, edge_to_projected_record, row_matches_all,
+    vertex_binding_for_traversal,
 };
 use crate::plan::query::row::PlanRow;
 
@@ -57,6 +59,7 @@ pub(crate) async fn execute_var_len_expand(
     var_len: &VarLenSpec,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
+    hop_aux_binding: Option<&Str>,
     near_group_var: Option<&Str>,
     far_group_var: Option<&Str>,
     path_var: Option<&Str>,
@@ -105,6 +108,7 @@ pub(crate) async fn execute_var_len_expand(
             var_len,
             dst_filter,
             emit_edge_binding,
+            hop_aux_binding,
             near_group_var,
             far_group_var,
             path_var,
@@ -136,6 +140,7 @@ pub(crate) fn collect_var_len_expand_rows(
     var_len: &VarLenSpec,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
+    hop_aux_binding: Option<&Str>,
     near_group_var: Option<&Str>,
     far_group_var: Option<&Str>,
     path_var: Option<&Str>,
@@ -165,6 +170,7 @@ pub(crate) fn collect_var_len_expand_rows(
     let mut head = 0usize;
     let mut candidates = Vec::new();
     let edge_key = emit_edge_binding.then(|| edge.to_string());
+    let hop_aux_key = hop_aux_binding.map(|name| name.to_string());
     let near_key = near_group_var.map(|v| v.to_string());
     let far_key = far_group_var.map(|v| v.to_string());
     let path_key = emit_path_binding
@@ -185,6 +191,7 @@ pub(crate) fn collect_var_len_expand_rows(
                     store,
                     row,
                     edge_key.as_deref(),
+                    hop_aux_key.as_deref(),
                     near_key.as_deref(),
                     far_key.as_deref(),
                     path_key.as_deref(),
@@ -250,6 +257,7 @@ fn build_var_len_row(
     store: &crate::facade::GraphStore,
     row: &PlanRow,
     edge_key: Option<&str>,
+    hop_aux_key: Option<&str>,
     near_key: Option<&str>,
     far_key: Option<&str>,
     path_key: Option<&str>,
@@ -263,15 +271,41 @@ fn build_var_len_row(
 ) -> Result<PlanRow, PlanQueryError> {
     let dst_binding = expand_dst_binding(store, dst, dst_property_projection)?;
     let mut updates = vec![(dst_key, dst_binding)];
-    if let Some(edge_key) = edge_key {
-        let edges = edge_bindings_along_var_len_path(
+    let path_edges = (edge_key.is_some() || hop_aux_key.is_some()).then(|| {
+        edge_bindings_along_var_len_path(
             states,
             state_idx,
             |state| state.edge.as_ref(),
             |state| state.previous,
-        );
-        let _ = edge_property_projection;
-        updates.push((edge_key, PlanBinding::EdgeGroup(edges)));
+        )
+    });
+    if let Some(edge_key) = edge_key {
+        let edges = path_edges
+            .as_ref()
+            .expect("edge or hop_aux requested path edges");
+        let edge_binding = if edge_property_projection.is_some_and(|props| !props.is_empty()) {
+            let list = edges
+                .iter()
+                .cloned()
+                .map(|edge| {
+                    edge_to_projected_record(
+                        store,
+                        edge,
+                        edge_property_projection.expect("checked non-empty"),
+                    )
+                })
+                .collect::<Result<Vec<_>, _>>()?;
+            PlanBinding::Value(Value::List(list))
+        } else {
+            PlanBinding::EdgeGroup(edges.clone())
+        };
+        updates.push((edge_key, edge_binding));
+    }
+    if let Some(hop_aux_key) = hop_aux_key {
+        let edges = path_edges
+            .as_ref()
+            .expect("edge or hop_aux requested path edges");
+        updates.push((hop_aux_key, PlanBinding::Value(hop_aux_group(edges))));
     }
     if let Some(near_key) = near_key {
         let vertices = vertices_along_var_len_path(
