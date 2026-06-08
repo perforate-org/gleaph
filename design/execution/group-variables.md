@@ -52,10 +52,6 @@ Patterns like `MATCH (a)((u)-[e:L]->(v)){m,n}(c)` lower to one `PlanOp::Expand` 
 
 `PlanOp::Expand` / `ExpandFilter` carry optional `near_group_var`, `far_group_var`, `path_var`, and `emit_path_binding` on the plan wire. `PLAN_WIRE_VERSION` remains **1** during active development (wire layout may change without a version bump until the format stabilizes).
 
-## Non-goals (later phases)
-
-- `EdgeBindEndpoints` executor (leading-edge index bind path)
-
 ## Related
 
 - [operators.md](./operators.md)

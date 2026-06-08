@@ -227,7 +227,7 @@ impl ExpandDst {
     }
 }
 
-fn expand_dst_binding(
+pub(crate) fn expand_dst_binding(
     store: &GraphStore,
     dst: ExpandDst,
     dst_property_projection: Option<&[Str]>,

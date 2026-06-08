@@ -2,9 +2,11 @@
 
 use crate::plan::query::row::PlanRow;
 
+mod edge_index;
 mod index;
 mod streaming;
 
+pub(crate) use edge_index::{execute_edge_bind_endpoints, execute_edge_index_scan};
 pub(crate) use index::{
     execute_conditional_index_scan, execute_index_intersection, execute_index_scan,
     execute_node_scan, federation_routing, resolve_scan_payload_bytes,

@@ -19,8 +19,9 @@ use super::join::{execute_cartesian_product, execute_hash_join, merge_rows};
 use super::path::execute_shortest_path;
 use super::scan::{
     LIMITED_STREAMING_REMOTE_EXPAND_SOURCE, execute_conditional_index_scan,
-    execute_index_intersection, execute_index_scan, execute_limited_streaming_prefix,
-    execute_node_scan, limited_streaming_prefix_limit_idx,
+    execute_edge_bind_endpoints, execute_edge_index_scan, execute_index_intersection,
+    execute_index_scan, execute_limited_streaming_prefix, execute_node_scan,
+    limited_streaming_prefix_limit_idx,
 };
 use super::set_operation::execute_set_operation;
 use super::{
@@ -497,6 +498,34 @@ pub(crate) fn execute_ops_from<'a>(
                     )
                     .await?
                 }
+                PlanOp::EdgeIndexScan {
+                    variable,
+                    property,
+                    value,
+                    property_projection: _,
+                } => execute_edge_index_scan(store, rows, variable, property, value, parameters)?,
+                PlanOp::EdgeBindEndpoints {
+                    edge,
+                    near,
+                    far,
+                    direction,
+                    label,
+                    near_property_projection,
+                    far_property_projection,
+                    hop_aux_binding,
+                } => execute_edge_bind_endpoints(
+                    store,
+                    &ctx.execution,
+                    rows,
+                    edge,
+                    near,
+                    far,
+                    *direction,
+                    label.as_deref(),
+                    near_property_projection.as_deref(),
+                    far_property_projection.as_deref(),
+                    hop_aux_binding.as_ref(),
+                )?,
                 PlanOp::PropertyFilter { predicates, .. } => rows
                     .into_iter()
                     .filter_map(|row| match row_matches_all(&evaluator, &row, predicates) {
@@ -1804,15 +1833,6 @@ mod tests {
     fn unsupported_operator_returns_stable_error() {
         let store = GraphStore::new();
         let cases = vec![
-            (
-                PlanOp::EdgeIndexScan {
-                    variable: "e".into(),
-                    property: "w".into(),
-                    value: ScanValue::Literal(Value::Int64(1)),
-                    property_projection: None,
-                },
-                "EdgeIndexScan",
-            ),
             (
                 PlanOp::CallProcedure {
                     name: vec!["db".into(), "labels".into()],

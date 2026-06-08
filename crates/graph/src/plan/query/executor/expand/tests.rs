@@ -575,11 +575,11 @@ fn expand_hop_aux_binding_returns_edge_payload_bytes() {
         .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &payload)
         .unwrap();
 
-    let plan = plan_gql(
-        "MATCH (a:HopAuxA)-[e:HopAuxRoad]->(b:HopAuxB) RETURN e__hop_aux AS aux",
-    );
+    let plan = plan_gql("MATCH (a:HopAuxA)-[e:HopAuxRoad]->(b:HopAuxB) RETURN e__hop_aux AS aux");
     let hop_aux_binding = plan.ops.iter().find_map(|op| match op {
-        PlanOp::Expand { hop_aux_binding, .. } => hop_aux_binding.clone(),
+        PlanOp::Expand {
+            hop_aux_binding, ..
+        } => hop_aux_binding.clone(),
         _ => None,
     });
     assert_eq!(

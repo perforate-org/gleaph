@@ -1,4 +1,5 @@
 use super::super::test_support::*;
+use crate::plan::query::executor::execute_plan_query_bindings_with_initial_rows;
 use pollster;
 #[test]
 fn federated_index_scan_materializes_foreign_shard_hit_as_remote_vertex() {
@@ -1500,4 +1501,192 @@ fn aggregate_count_star_after_node_scan() {
         .expect("count");
     assert_eq!(result.rows.len(), 1);
     assert_eq!(result.rows[0].get("cnt"), Some(&Value::Int64(2)));
+}
+
+#[test]
+fn leading_edge_index_scan_binds_matching_edges_and_endpoints() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["LeadIdxA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b_match = store
+        .insert_vertex_named(["LeadIdxB"], Vec::<(&str, Value)>::new())
+        .expect("b match");
+    let b_miss = store
+        .insert_vertex_named(["LeadIdxB"], Vec::<(&str, Value)>::new())
+        .expect("b miss");
+    store
+        .insert_directed_edge_named(
+            a,
+            b_match,
+            Some("LeadIdxRel"),
+            [("weight", Value::Int64(5))],
+        )
+        .expect("match edge");
+    store
+        .insert_directed_edge_named(a, b_miss, Some("LeadIdxRel"), [("weight", Value::Int64(9))])
+        .expect("miss edge");
+
+    let plan = plan(vec![
+        PlanOp::EdgeIndexScan {
+            variable: "e".into(),
+            property: "weight".into(),
+            value: ScanValue::Literal(Value::Int64(5)),
+            property_projection: None,
+        },
+        PlanOp::EdgeBindEndpoints {
+            edge: "e".into(),
+            near: "__anon_near".into(),
+            far: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("LeadIdxRel".into()),
+            near_property_projection: None,
+            far_property_projection: None,
+            hop_aux_binding: None,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ]);
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("leading edge index scan");
+
+    assert_eq!(result.rows.len(), 1);
+}
+
+#[test]
+fn leading_edge_bind_endpoints_hop_aux_returns_payload_bytes() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["LeadHopA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["LeadHopB"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    let label_id = crate::test_labels::edge_label_id_for_name("LeadHopRoad");
+    store
+        .install_edge_label_payload_profile_at_init(
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        )
+        .unwrap();
+    let weight_prop = store
+        .get_or_insert_property_id("weight")
+        .expect("weight property");
+    let payload = 7u16.to_le_bytes();
+    let edge = store
+        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &payload)
+        .expect("edge");
+    store
+        .set_edge_property(edge, weight_prop, Value::Int64(7))
+        .expect("edge property");
+
+    let plan = plan(vec![
+        PlanOp::EdgeIndexScan {
+            variable: "e".into(),
+            property: "weight".into(),
+            value: ScanValue::Literal(Value::Int64(7)),
+            property_projection: None,
+        },
+        PlanOp::EdgeBindEndpoints {
+            edge: "e".into(),
+            near: "__anon_near".into(),
+            far: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("LeadHopRoad".into()),
+            near_property_projection: None,
+            far_property_projection: None,
+            hop_aux_binding: Some("e__hop_aux".into()),
+        },
+        PlanOp::Project {
+            columns: vec![project(var("e__hop_aux"), "aux")],
+            distinct: false,
+        },
+    ]);
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("leading edge hop_aux");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("aux"),
+        Some(&Value::Bytes(payload.to_vec()))
+    );
+}
+
+#[test]
+fn leading_edge_bind_endpoints_honors_prebound_far_vertex() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["LeadPreA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b_match = store
+        .insert_vertex_named(["LeadPreB"], Vec::<(&str, Value)>::new())
+        .expect("b match");
+    let b_other = store
+        .insert_vertex_named(["LeadPreB"], Vec::<(&str, Value)>::new())
+        .expect("b other");
+    store
+        .insert_directed_edge_named(
+            a,
+            b_match,
+            Some("LeadPreRel"),
+            [("weight", Value::Int64(3))],
+        )
+        .expect("match edge");
+    store
+        .insert_directed_edge_named(
+            a,
+            b_other,
+            Some("LeadPreRel"),
+            [("weight", Value::Int64(3))],
+        )
+        .expect("other edge");
+
+    let plan = plan(vec![
+        PlanOp::EdgeIndexScan {
+            variable: "e".into(),
+            property: "weight".into(),
+            value: ScanValue::Literal(Value::Int64(3)),
+            property_projection: None,
+        },
+        PlanOp::EdgeBindEndpoints {
+            edge: "e".into(),
+            near: "__anon_near".into(),
+            far: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("LeadPreRel".into()),
+            near_property_projection: None,
+            far_property_projection: None,
+            hop_aux_binding: None,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ]);
+
+    let mut seed = PlanRow::new();
+    seed.insert("b".to_owned(), PlanBinding::Vertex(b_match));
+    let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
+        &store,
+        &plan,
+        &params(),
+        None,
+        GqlExecutionContext::default(),
+        vec![seed],
+        false,
+    ))
+    .expect("prebound far");
+
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(rows[0].get("b"), Some(PlanBinding::Vertex(id)) if *id == b_match));
 }

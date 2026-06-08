@@ -1,0 +1,173 @@
+//! Leading-edge equality index scan and endpoint binding.
+
+use std::collections::BTreeMap;
+
+use gleaph_gql::Value;
+use gleaph_gql::types::EdgeDirection;
+use gleaph_gql_planner::plan::{ScanValue, Str};
+use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
+use ic_stable_lara::BucketLabelKey as LaraLabelId;
+
+use crate::facade::catalog_edge_label_from_wire;
+use crate::facade::{EdgeHandle, GraphStore};
+use crate::gql_execution_context::GqlExecutionContext;
+use crate::index::edge_equal;
+use crate::plan::query::error::PlanQueryError;
+use crate::plan::query::executor::bindings::{EdgeBinding, hop_aux_scalar};
+use crate::plan::query::executor::expand::{
+    ExpandDst, expand_dst_binding, expand_dst_matches_prebound_vertex,
+};
+use crate::plan::query::executor::{PlanBinding, resolve_scan_payload_bytes};
+use crate::plan::query::row::PlanRow;
+
+fn property_id_for_scan(store: &GraphStore, property_name: &str) -> Result<u32, PlanQueryError> {
+    store
+        .property_id(property_name)
+        .map(|p| p.raw())
+        .ok_or(PlanQueryError::UnsupportedOp(
+            "EdgeIndexScan.unknown_property",
+        ))
+}
+
+fn edge_binding_from_posting(
+    store: &GraphStore,
+    owner_vertex_id: ic_stable_lara::VertexId,
+    label_id: u16,
+    slot_index: u32,
+) -> Result<Option<EdgeBinding>, PlanQueryError> {
+    let handle = EdgeHandle {
+        owner_vertex_id,
+        label_id: LaraLabelId::from_raw(label_id),
+        slot_index,
+    };
+    let Some(edge) = store.find_outgoing_edge_record(handle)? else {
+        return Ok(None);
+    };
+    Ok(Some(EdgeBinding::from_edge(handle, edge)))
+}
+
+fn expand_endpoints_for_direction(
+    store: &GraphStore,
+    handle: EdgeHandle,
+    edge: &Edge,
+    direction: EdgeDirection,
+) -> Result<Option<(ExpandDst, ExpandDst)>, PlanQueryError> {
+    let neighbor = ExpandDst::from_edge(store, edge)?;
+    let owner = ExpandDst::Local(handle.owner_vertex_id);
+    let Some(neighbor) = neighbor else {
+        return Ok(None);
+    };
+    Ok(Some(match direction {
+        EdgeDirection::PointingRight => (owner, neighbor),
+        EdgeDirection::PointingLeft => (neighbor, owner),
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    }))
+}
+
+fn edge_binding_matches_label(
+    binding: &EdgeBinding,
+    label: Option<EdgeLabelId>,
+) -> Result<bool, PlanQueryError> {
+    let Some(expected) = label else {
+        return Ok(true);
+    };
+    let wire = binding.handle.label_id;
+    let catalog = catalog_edge_label_from_wire(wire);
+    Ok(catalog == Some(expected))
+}
+
+pub(crate) fn execute_edge_index_scan(
+    store: &GraphStore,
+    rows: Vec<PlanRow>,
+    variable: &Str,
+    property: &Str,
+    scan_value: &ScanValue,
+    parameters: &BTreeMap<String, Value>,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let property_id = gleaph_graph_kernel::entry::PropertyId::from_raw(property_id_for_scan(
+        store,
+        property.as_ref(),
+    )?);
+    let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
+        return Ok(Vec::new());
+    };
+    let Some(postings) = edge_equal::lookup_equal(property_id, &expected) else {
+        return Ok(Vec::new());
+    };
+    let mut out = Vec::new();
+    for row in rows {
+        for posting in &postings {
+            let Some(edge_binding) = edge_binding_from_posting(
+                store,
+                posting.owner_vertex_id,
+                posting.label_id,
+                posting.slot_index,
+            )?
+            else {
+                continue;
+            };
+            out.push(row.fork([(variable.as_ref(), PlanBinding::Edge(edge_binding))]));
+        }
+    }
+    Ok(out)
+}
+
+pub(crate) fn execute_edge_bind_endpoints(
+    store: &GraphStore,
+    execution: &GqlExecutionContext,
+    rows: Vec<PlanRow>,
+    edge: &Str,
+    near: &Str,
+    far: &Str,
+    direction: EdgeDirection,
+    label: Option<&str>,
+    near_property_projection: Option<&[Str]>,
+    far_property_projection: Option<&[Str]>,
+    hop_aux_binding: Option<&Str>,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
+    let label_id = match label {
+        Some(name) => execution
+            .resolved_edge_label_id(name)
+            .map(Some)
+            .ok_or_else(|| PlanQueryError::MissingResolvedLabel {
+                namespace: "edge",
+                name: name.to_owned(),
+            })?,
+        None => None,
+    };
+
+    let mut out = Vec::new();
+    for row in rows {
+        let Some(PlanBinding::Edge(edge_binding)) = row.get(edge.as_ref()) else {
+            return Err(PlanQueryError::MissingBinding {
+                variable: edge.to_string(),
+            });
+        };
+        if !edge_binding_matches_label(edge_binding, label_id)? {
+            continue;
+        }
+        let handle = edge_binding.handle;
+        let Some(edge_record) = store.find_outgoing_edge_record(handle)? else {
+            continue;
+        };
+        let Some((near_dst, far_dst)) =
+            expand_endpoints_for_direction(store, handle, &edge_record, direction)?
+        else {
+            continue;
+        };
+        if !expand_dst_matches_prebound_vertex(&row, far, far_dst) {
+            continue;
+        }
+        let near_binding = expand_dst_binding(store, near_dst, near_property_projection)?;
+        let far_binding = expand_dst_binding(store, far_dst, far_property_projection)?;
+        let mut updates = vec![(near.as_ref(), near_binding), (far.as_ref(), far_binding)];
+        if let Some(hop_key) = hop_aux_binding {
+            updates.push((
+                hop_key.as_ref(),
+                PlanBinding::Value(hop_aux_scalar(edge_binding)),
+            ));
+        }
+        out.push(row.fork(updates));
+    }
+    Ok(out)
+}
