@@ -43,12 +43,7 @@ impl PathPatternExtensionHandler for GleaphPathExtensionHandler {
                 "GLEAPH.COST requires a single-edge shortest-path pattern".into(),
             )
         })?;
-        if single.label_expr.is_some() {
-            return Err(PlannerError::UnsupportedExtension(
-                "GLEAPH.COST does not support label expressions on the edge pattern".into(),
-            ));
-        }
-        if single.label.is_none() {
+        if single.label.is_none() && single.label_expr.is_none() {
             return Err(PlannerError::UnsupportedExtension(
                 "GLEAPH.COST requires a single fixed edge label".into(),
             ));
@@ -444,6 +439,30 @@ mod tests {
     fn gleaph_cost_accepts_gleaph_weight() {
         assert!(matches!(
             plan_cost(gleaph_weight("e")),
+            ShortestPathCost::EdgeCostExpr { edge_var, .. } if &*edge_var == "e"
+        ));
+    }
+
+    #[test]
+    fn gleaph_cost_accepts_union_label_expr_on_shortest_path() {
+        let mut edge = single_edge();
+        edge.label = None;
+        edge.label_expr = Some(gleaph_gql::types::LabelExpr::Or(
+            Box::new(gleaph_gql::types::LabelExpr::Name("KNOWS".into())),
+            Box::new(gleaph_gql::types::LabelExpr::Name("LIKES".into())),
+        ));
+        let ext = PathPatternExtension {
+            span: Span::DUMMY,
+            name: gleaph_cost_extension(),
+            expr: gleaph_weight("e"),
+        };
+        assert!(matches!(
+            GleaphPathExtensionHandler.plan_shortest_path_cost(&ctx(
+                &[ext],
+                Some(ShortestMode::AnyShortest),
+                Some(edge),
+            ))
+            .expect("union label_expr with GLEAPH.COST should plan"),
             ShortestPathCost::EdgeCostExpr { edge_var, .. } if &*edge_var == "e"
         ));
     }

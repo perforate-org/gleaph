@@ -11,12 +11,13 @@ use gleaph_gql_planner::plan::{
     PlanOp, ProjectColumn, ScanValue, ShortestPathCost, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
-    DecodedEdgePayload, EdgePayloadProfileError, PreparedEdgePayloadDecoder, PreparedWeightDecoder,
-    WeightDecodeError, WeightProfilePrepareError, decode_edge_payload,
+    DecodedEdgePayload, EdgeLabelId, EdgePayloadProfileError, PreparedEdgePayloadDecoder,
+    PreparedWeightDecoder, WeightDecodeError, WeightProfilePrepareError, decode_edge_payload,
 };
 
 use crate::facade::{EdgeHandle, GraphStore, catalog_edge_label_from_wire};
 use crate::gql_execution_context::GqlExecutionContext;
+use crate::plan::query::executor::EdgeBinding;
 
 use super::error::PlanQueryError;
 
@@ -223,12 +224,16 @@ fn decoder_for_gleaph_weight_edge(
             label_expr,
             var_len: _,
         } => {
-            if label_expr.is_some() {
-                return Err(PlanQueryError::GleaphWeight {
-                    message: format!(
-                        "GLEAPH.WEIGHT({edge_var}): shortest-path edge pattern must use a single fixed label"
-                    ),
-                });
+            if let Some(expr) = label_expr {
+                validate_label_expr_edge_weight_profiles(store, execution, edge_var, expr)?;
+                let first_name = first_edge_label_name_in_expr(expr).ok_or_else(|| {
+                    PlanQueryError::GleaphWeight {
+                        message: format!(
+                            "GLEAPH.WEIGHT({edge_var}): label expression does not name any edge labels"
+                        ),
+                    }
+                })?;
+                return finish_decoder_from_label_name(store, execution, edge_var, first_name);
             }
             let label_name = label.ok_or_else(|| PlanQueryError::GleaphWeight {
                 message: format!(
@@ -252,6 +257,15 @@ fn finish_decoder_from_label_name(
             namespace: "edge",
             name: label_name.to_owned(),
         })?;
+    prepared_weight_decoder_for_catalog_label(store, edge_var, label_name, label_id)
+}
+
+fn prepared_weight_decoder_for_catalog_label(
+    store: &GraphStore,
+    edge_var: &str,
+    label_name: &str,
+    label_id: EdgeLabelId,
+) -> Result<PreparedWeightDecoder, PlanQueryError> {
     if !label_id.is_catalog_allocatable() {
         return Err(PlanQueryError::GleaphWeight {
             message: format!(
@@ -280,6 +294,71 @@ fn finish_decoder_from_label_name(
         |e: WeightProfilePrepareError| PlanQueryError::GleaphWeight {
             message: format!("GLEAPH.WEIGHT({edge_var}): invalid weight profile: {e}"),
         },
+    )
+}
+
+fn validate_label_expr_edge_weight_profiles(
+    store: &GraphStore,
+    execution: &GqlExecutionContext,
+    edge_var: &str,
+    expr: &LabelExpr,
+) -> Result<(), PlanQueryError> {
+    let mut names = BTreeSet::new();
+    for_each_edge_label_name_in_expr(expr, &mut |name| {
+        names.insert(name.to_owned());
+    });
+    if names.is_empty() {
+        return Err(PlanQueryError::GleaphWeight {
+            message: format!(
+                "GLEAPH.WEIGHT({edge_var}): label expression does not name any edge labels"
+            ),
+        });
+    }
+    for name in names {
+        finish_decoder_from_label_name(store, execution, edge_var, &name)?;
+    }
+    Ok(())
+}
+
+fn first_edge_label_name_in_expr(expr: &LabelExpr) -> Option<&str> {
+    match expr {
+        LabelExpr::Name(name) => Some(name.as_str()),
+        LabelExpr::And(left, right) | LabelExpr::Or(left, right) => {
+            first_edge_label_name_in_expr(left).or_else(|| first_edge_label_name_in_expr(right))
+        }
+        LabelExpr::Not(inner) => first_edge_label_name_in_expr(inner),
+        LabelExpr::Wildcard => None,
+    }
+}
+
+fn for_each_edge_label_name_in_expr(expr: &LabelExpr, f: &mut impl FnMut(&str)) {
+    match expr {
+        LabelExpr::Name(name) => f(name.as_str()),
+        LabelExpr::And(left, right) | LabelExpr::Or(left, right) => {
+            for_each_edge_label_name_in_expr(left, f);
+            for_each_edge_label_name_in_expr(right, f);
+        }
+        LabelExpr::Not(inner) => for_each_edge_label_name_in_expr(inner, f),
+        LabelExpr::Wildcard => {}
+    }
+}
+
+/// Hop cost for weighted shortest-path search when edge labels vary within a `label_expr`.
+pub(crate) fn decode_shortest_hop_cost_from_edge_binding(
+    store: &GraphStore,
+    edge_binding: &EdgeBinding,
+) -> Result<f32, PlanQueryError> {
+    let catalog = catalog_edge_label_from_wire(edge_binding.handle.label_id).ok_or_else(|| {
+        PlanQueryError::GleaphWeight {
+            message: "weighted shortest-path hop encountered an unlabeled edge".into(),
+        }
+    })?;
+    let label_name = catalog.raw().to_string();
+    let decoder = prepared_weight_decoder_for_catalog_label(store, "edge", &label_name, catalog)?;
+    decode_traversal_edge_weight_prepared(
+        &decoder,
+        edge_binding.payload_len(),
+        edge_binding.payload_bytes_slice(),
     )
 }
 

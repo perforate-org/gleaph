@@ -1346,6 +1346,106 @@ fn weighted_shortest_k_returns_paths_by_total_cost() {
 }
 
 #[test]
+fn weighted_shortest_union_label_expr_prefers_lower_cost_label() {
+    use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["WgtUnionSrc"], Vec::<(&str, Value)>::new())
+        .expect("insert a");
+    let cheap_target = store
+        .insert_vertex_named(["WgtUnionDst"], [("name", Value::Text("cheap".into()))])
+        .expect("insert cheap target");
+    let _expensive_target = store
+        .insert_vertex_named(["WgtUnionExpDst"], [("name", Value::Text("expensive".into()))])
+        .expect("insert expensive target");
+    let knows = crate::test_labels::edge_label_id_for_name("WgtUnionKnows");
+    let likes = crate::test_labels::edge_label_id_for_name("WgtUnionLikes");
+    for label_id in [knows, likes] {
+        store
+            .install_edge_label_weight_profile_at_init(
+                label_id,
+                EdgeWeightProfile {
+                    encoding: WeightEncoding::RawU16,
+                },
+            )
+            .expect("weight profile");
+    }
+    let knows_wire = catalog_edge_label(&store, "WgtUnionKnows");
+    let likes_wire = catalog_edge_label(&store, "WgtUnionLikes");
+    store
+        .insert_directed_edge_with_payload_bytes(
+            a,
+            cheap_target,
+            Some(knows_wire),
+            &1u16.to_le_bytes(),
+        )
+        .expect("cheap knows");
+    store
+        .insert_directed_edge_with_payload_bytes(
+            a,
+            _expensive_target,
+            Some(likes_wire),
+            &100u16.to_le_bytes(),
+        )
+        .expect("expensive likes");
+
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("WgtUnionSrc".into()),
+            property_projection: None,
+        },
+        PlanOp::NodeScan {
+            variable: "b".into(),
+            label: Some("WgtUnionDst".into()),
+            property_projection: None,
+        },
+        PlanOp::ShortestPath {
+            src: "a".into(),
+            dst: "b".into(),
+            edge: "e".into(),
+            path_var: Some("p".into()),
+            emit_edge_binding: true,
+            emit_path_binding: true,
+            mode: ShortestMode::AnyShortest,
+            direction: EdgeDirection::PointingRight,
+            label: None,
+            label_expr: Some(LabelExpr::Or(
+                Box::new(LabelExpr::Name("WgtUnionKnows".into())),
+                Box::new(LabelExpr::Name("WgtUnionLikes".into())),
+            )),
+            var_len: Some(VarLenSpec {
+                min: 1,
+                max: Some(3),
+            }),
+            cost: ShortestPathCost::EdgeCostExpr {
+                edge_var: "e".into(),
+                expr: gleaph_weight_call("e"),
+            },
+        },
+        PlanOp::Project {
+            columns: vec![project(
+                Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::var("b")),
+                    property: "name".into(),
+                }),
+                "b_name",
+            )],
+            distinct: false,
+        },
+    ]);
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("weighted shortest with union label_expr");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("b_name"),
+        Some(&Value::Text("cheap".into()))
+    );
+}
+
+#[test]
 fn weighted_shortest_k_prefers_lower_cost_over_extra_hop_paths() {
     use gleaph_graph_kernel::entry::{EdgeWeightProfile, WeightEncoding};
     let store = GraphStore::new();

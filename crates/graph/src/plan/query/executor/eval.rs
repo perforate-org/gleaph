@@ -100,11 +100,16 @@ fn try_eval_gleaph_weight(
     match binding {
         PlanBinding::Value(Value::Null) => Ok(Some(Value::Null)),
         PlanBinding::Edge(edge) => {
-            let w = super::super::gleaph_weight::decode_traversal_edge_weight_prepared(
-                decoder,
-                edge.payload_len(),
-                edge.payload_bytes_slice(),
-            )?;
+            let w = super::super::gleaph_weight::decode_shortest_hop_cost_from_edge_binding(
+                _store, edge,
+            )
+            .or_else(|_| {
+                super::super::gleaph_weight::decode_traversal_edge_weight_prepared(
+                    decoder,
+                    edge.payload_len(),
+                    edge.payload_bytes_slice(),
+                )
+            })?;
             Ok(Some(Value::Float32(w)))
         }
         _ => Err(PlanQueryError::GleaphWeight {

@@ -571,6 +571,7 @@ pub(crate) fn weighted_shortest_paths_between(
                                 cost_expr,
                                 edge_var,
                                 edge_binding.clone(),
+                                label_expr,
                                 parameters,
                                 gleaph_weight_decoders,
                             )?;
@@ -579,6 +580,12 @@ pub(crate) fn weighted_shortest_paths_between(
                                 .or_default()
                                 .insert(value_key, cost.clone());
                             Ok(cost)
+                        } else if label_expr.is_some() {
+                            let w = gleaph_weight::decode_shortest_hop_cost_from_edge_binding(
+                                store,
+                                edge_binding,
+                            )?;
+                            Ok(WeightedCost::from_validated_non_negative_float32(w))
                         } else {
                             #[cfg(all(feature = "canbench", target_family = "wasm"))]
                             let _scope = bench_scope("weighted_shortest_hop_cost_decode_direct");
@@ -776,6 +783,7 @@ fn weighted_shortest_k_paths_between(
                                 cost_expr,
                                 edge_var,
                                 edge_binding.clone(),
+                                label_expr,
                                 parameters,
                                 gleaph_weight_decoders,
                             )?;
@@ -784,6 +792,12 @@ fn weighted_shortest_k_paths_between(
                                 .or_default()
                                 .insert(value_key, cost.clone());
                             Ok(cost)
+                        } else if label_expr.is_some() {
+                            let w = gleaph_weight::decode_shortest_hop_cost_from_edge_binding(
+                                store,
+                                edge_binding,
+                            )?;
+                            Ok(WeightedCost::from_validated_non_negative_float32(w))
                         } else {
                             let decoder = direct_gleaph_weight_decoder
                                 .expect("direct GLEAPH.WEIGHT path requires prepared decoder");
@@ -876,9 +890,14 @@ fn eval_shortest_hop_cost(
     expr: &Expr,
     edge_var: &str,
     edge_binding: EdgeBinding,
+    label_expr: Option<&LabelExpr>,
     parameters: &BTreeMap<String, Value>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
 ) -> Result<WeightedCost, PlanQueryError> {
+    if label_expr.is_some() {
+        let w = gleaph_weight::decode_shortest_hop_cost_from_edge_binding(store, &edge_binding)?;
+        return Ok(WeightedCost::from_validated_non_negative_float32(w));
+    }
     if let Some(cost) = eval_direct_gleaph_weight_hop_cost(
         expr,
         edge_var,
