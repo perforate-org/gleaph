@@ -3,11 +3,16 @@
 //! Production label names are resolved by the router. Tests and benchmarks often build fixtures
 //! directly in `gleaph-graph`, so they use deterministic name-derived ids without stable storage.
 
+use std::collections::HashMap;
+use std::sync::Mutex;
+
 use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 use ic_stable_lara::VertexId;
+
+static EDGE_LABEL_NAMES: Mutex<Option<HashMap<u16, String>>> = Mutex::new(None);
 
 impl GraphStore {
     pub(crate) fn insert_vertex_named(
@@ -67,7 +72,22 @@ pub(crate) fn vertex_label_id_for_name(name: &str) -> VertexLabelId {
 }
 
 pub(crate) fn edge_label_id_for_name(name: &str) -> EdgeLabelId {
-    EdgeLabelId::from_raw(1 + (stable_hash(name) % 0x7ffe) as u16)
+    let id = EdgeLabelId::from_raw(1 + (stable_hash(name) % 0x7ffe) as u16);
+    EDGE_LABEL_NAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(id.raw(), name.to_owned());
+    id
+}
+
+pub(crate) fn edge_label_name_for_id(id: EdgeLabelId) -> Option<String> {
+    EDGE_LABEL_NAMES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()?
+        .get(&id.raw())
+        .cloned()
 }
 
 fn nonzero_hash_u16(name: &str) -> u16 {

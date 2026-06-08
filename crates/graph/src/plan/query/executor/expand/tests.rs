@@ -33,6 +33,7 @@ fn federated_reverse_expand_from_remote_vertex_binding() {
         &"a".into(),
         EdgeDirection::PointingLeft,
         None,
+        None,
         &ctx.execution,
         EdgeSequenceOrder::Descending,
         &[],
@@ -112,6 +113,74 @@ fn executes_planner_one_hop_expand() {
         Some(&Value::Text("Planner Expand Bob".into()))
     );
     assert_eq!(result.rows[0].get("since"), Some(&Value::Int64(2026)));
+}
+
+#[test]
+fn executes_planner_union_label_expr_expand() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["UnionLabelExprSource"], Vec::<(&str, Value)>::new())
+        .expect("insert source");
+    let knows_target = store
+        .insert_vertex_named(
+            ["UnionLabelExprTarget"],
+            [("name", Value::Text("Knows Bob".into()))],
+        )
+        .expect("insert knows target");
+    let likes_target = store
+        .insert_vertex_named(
+            ["UnionLabelExprTarget"],
+            [("name", Value::Text("Likes Carol".into()))],
+        )
+        .expect("insert likes target");
+    let hates_target = store
+        .insert_vertex_named(
+            ["UnionLabelExprTarget"],
+            [("name", Value::Text("Hates Dave".into()))],
+        )
+        .expect("insert hates target");
+    store
+        .insert_directed_edge_named(
+            a,
+            knows_target,
+            Some("UnionLabelExprKnows"),
+            Vec::<(&str, Value)>::new(),
+        )
+        .expect("knows edge");
+    store
+        .insert_directed_edge_named(
+            a,
+            likes_target,
+            Some("UnionLabelExprLikes"),
+            Vec::<(&str, Value)>::new(),
+        )
+        .expect("likes edge");
+    store
+        .insert_directed_edge_named(
+            a,
+            hates_target,
+            Some("UnionLabelExprHates"),
+            Vec::<(&str, Value)>::new(),
+        )
+        .expect("hates edge");
+
+    let plan = plan_gql(
+        "MATCH (a:UnionLabelExprSource)-/UnionLabelExprKnows|UnionLabelExprLikes/->\
+             (b:UnionLabelExprTarget) RETURN b.name AS b_name ORDER BY b_name",
+    );
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute union label_expr expand");
+
+    assert_eq!(result.rows.len(), 2);
+    assert_eq!(
+        result.rows[0].get("b_name"),
+        Some(&Value::Text("Knows Bob".into()))
+    );
+    assert_eq!(
+        result.rows[1].get("b_name"),
+        Some(&Value::Text("Likes Carol".into()))
+    );
 }
 
 #[test]

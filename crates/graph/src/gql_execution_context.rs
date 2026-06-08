@@ -55,6 +55,24 @@ impl GqlExecutionContext {
         }
     }
 
+    pub fn resolved_edge_label_name(&self, id: EdgeLabelId) -> Option<String> {
+        if let Some(labels) = &self.resolved_labels {
+            return labels
+                .edge
+                .iter()
+                .find(|label| label.id == id)
+                .map(|label| label.name.clone());
+        }
+        #[cfg(any(test, feature = "canbench"))]
+        {
+            crate::test_labels::edge_label_name_for_id(id)
+        }
+        #[cfg(not(any(test, feature = "canbench")))]
+        {
+            None
+        }
+    }
+
     pub fn requires_resolved_labels(&self) -> bool {
         self.resolved_labels.is_some()
     }

@@ -288,13 +288,10 @@ pub(crate) fn vertex_row_matches_dst_filters(
 }
 
 pub(crate) fn ensure_simple_expand(
-    label_expr: &Option<LabelExpr>,
+    _label_expr: &Option<LabelExpr>,
     var_len: &Option<gleaph_gql_planner::plan::VarLenSpec>,
     hop_aux_binding: &Option<Str>,
 ) -> Result<(), PlanQueryError> {
-    if label_expr.is_some() {
-        return Err(PlanQueryError::UnsupportedOp("Expand.label_expr"));
-    }
     if var_len.is_some() {
         return Err(PlanQueryError::UnsupportedOp("Expand.var_len"));
     }
@@ -305,16 +302,13 @@ pub(crate) fn ensure_simple_expand(
 }
 
 pub(crate) fn ensure_var_len_expand(
-    label_expr: &Option<LabelExpr>,
+    _label_expr: &Option<LabelExpr>,
     hop_aux_binding: &Option<Str>,
     indexed_edge_equality: &Option<(Str, gleaph_gql_planner::plan::ScanValue)>,
     edge_payload_predicate: &Option<gleaph_gql_planner::plan::EdgePayloadPredicate>,
     edge_vector_predicate: &Option<gleaph_gql_planner::plan::EdgeVectorPredicate>,
     edge_property_projection: &Option<std::rc::Rc<[Str]>>,
 ) -> Result<(), PlanQueryError> {
-    if label_expr.is_some() {
-        return Err(PlanQueryError::UnsupportedOp("Expand.label_expr"));
-    }
     if hop_aux_binding.is_some() {
         return Err(PlanQueryError::UnsupportedOp("Expand.hop_aux_binding"));
     }

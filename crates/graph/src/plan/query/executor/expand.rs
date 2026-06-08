@@ -479,6 +479,8 @@ pub(crate) use candidates::{ExpandCandidate, expand_candidates_into};
 mod tests;
 
 mod execute;
+mod label_expr;
 mod var_len;
 pub(crate) use execute::{execute_expand, expand_dst_matches_prebound_vertex};
+pub(crate) use label_expr::{edge_binding_matches_label_expr, edge_matches_label_expr};
 pub(crate) use var_len::{collect_var_len_expand_rows, execute_var_len_expand};

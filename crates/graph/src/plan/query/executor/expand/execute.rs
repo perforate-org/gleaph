@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
-use gleaph_gql::types::EdgeDirection;
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorPredicate, ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, PreparedWeightDecoder};
 use gleaph_graph_kernel::federation::{
@@ -14,6 +14,7 @@ use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::LabeledEdgePayloadBatchScratch;
 
 use super::candidates::{expand_candidates_into, expand_vector_dst_only_rows_into};
+use super::label_expr::{edge_binding_matches_label_expr, edge_matches_label_expr};
 use super::predicates::PreparedEdgeVectorThreshold;
 use super::{
     EdgeEqualityStreamFilter, ExpandDst, build_expanded_row, csr_offset_fast_path_for_expand,
@@ -42,6 +43,8 @@ fn expand_rows_from_federated_expand_hits(
     emit_edge_binding: bool,
     dst_property_projection: Option<&[Str]>,
     dst_filter: &[Expr],
+    label_expr: Option<&LabelExpr>,
+    execution: &crate::gql_execution_context::GqlExecutionContext,
     parameters: &BTreeMap<String, Value>,
     caller: Option<Principal>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
@@ -83,12 +86,16 @@ fn expand_rows_from_federated_expand_hits(
         }
 
         let expanded = if let Some(edge_key) = edge_key.as_ref() {
-            let edge_binding = PlanBinding::Edge(edge_binding_for_federated_expand_hit(
-                store,
-                hit,
-                routing.shard_id,
-            )?);
-            row.fork([(dst, dst_binding), (edge_key.as_str(), edge_binding)])
+            let edge_binding = edge_binding_for_federated_expand_hit(store, hit, routing.shard_id)?;
+            if let Some(expr) = label_expr
+                && !edge_binding_matches_label_expr(execution, expr, &edge_binding)
+            {
+                continue;
+            }
+            row.fork([
+                (dst, dst_binding),
+                (edge_key.as_str(), PlanBinding::Edge(edge_binding)),
+            ])
         } else {
             row.fork([(dst, dst_binding)])
         };
@@ -109,6 +116,7 @@ pub(crate) async fn execute_expand(
     dst: &Str,
     direction: EdgeDirection,
     label: Option<&str>,
+    label_expr: Option<&LabelExpr>,
     execution: &crate::gql_execution_context::GqlExecutionContext,
     sequence_order: EdgeSequenceOrder,
     dst_filter: &[Expr],
@@ -197,6 +205,8 @@ pub(crate) async fn execute_expand(
                 emit_edge_binding,
                 dst_property_projection,
                 dst_filter,
+                label_expr,
+                execution,
                 parameters,
                 caller,
                 gleaph_weight_decoders,
@@ -235,6 +245,8 @@ pub(crate) async fn execute_expand(
                 emit_edge_binding,
                 dst_property_projection,
                 dst_filter,
+                label_expr,
+                execution,
                 parameters,
                 caller,
                 gleaph_weight_decoders,
@@ -273,6 +285,8 @@ pub(crate) async fn execute_expand(
                 emit_edge_binding,
                 dst_property_projection,
                 dst_filter,
+                label_expr,
+                execution,
                 parameters,
                 caller,
                 gleaph_weight_decoders,
@@ -292,6 +306,11 @@ pub(crate) async fn execute_expand(
         if let Some(fast_path) = csr_expand_fast_path {
             let mut offset_slot = 0;
             let mut visit = |edge: Edge| {
+                if let Some(expr) = label_expr
+                    && !edge_matches_label_expr(execution, expr, &edge)
+                {
+                    return Ok(false);
+                }
                 let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
                     return Ok(false);
                 };
@@ -394,6 +413,11 @@ pub(crate) async fn execute_expand(
             &mut candidates,
         )?;
         for (edge_dst, edge_binding) in candidates.iter().cloned() {
+            if let Some(expr) = label_expr
+                && !edge_binding_matches_label_expr(execution, expr, &edge_binding)
+            {
+                continue;
+            }
             if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
                 continue;
             }

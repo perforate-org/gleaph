@@ -3,7 +3,7 @@ use std::collections::BTreeMap;
 use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
-use gleaph_gql::types::EdgeDirection;
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{
     AggregateSpec, EdgePayloadPredicate, EdgeVectorPredicate, PlanOp, ScanValue, Str,
 };
@@ -18,7 +18,8 @@ use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::context::QueryExprEvaluator;
 use crate::plan::query::executor::expand::{
     EdgeEqualityStreamFilter, ExpandDst, build_expanded_row, collect_var_len_expand_rows,
-    csr_offset_fast_path_for_expand, edge_binding_for_scanned_expand, edge_equality_stream_filter,
+    csr_offset_fast_path_for_expand, edge_binding_for_scanned_expand,
+    edge_binding_matches_label_expr, edge_equality_stream_filter, edge_matches_label_expr,
     edge_matches_stream_filter, expand_accepts_remote_dst, expand_candidates_into,
     expand_dst_matches_prebound_vertex, visit_csr_expand_fast_path,
 };
@@ -322,6 +323,7 @@ fn stream_row_through_ops(
                     dst,
                     *direction,
                     label.as_deref(),
+                    label_expr.as_ref(),
                     execution,
                     bounds,
                     &[],
@@ -347,6 +349,7 @@ fn stream_row_through_ops(
                     dst,
                     *direction,
                     label.as_deref(),
+                    label_expr.as_ref(),
                     execution,
                     EdgeSequenceOrder::Descending,
                     &[],
@@ -401,6 +404,7 @@ fn stream_row_through_ops(
                     dst,
                     *direction,
                     label.as_deref(),
+                    label_expr.as_ref(),
                     execution,
                     bounds,
                     dst_filter,
@@ -426,6 +430,7 @@ fn stream_row_through_ops(
                     dst,
                     *direction,
                     label.as_deref(),
+                    label_expr.as_ref(),
                     execution,
                     EdgeSequenceOrder::Descending,
                     dst_filter,
@@ -537,6 +542,7 @@ fn stream_var_len_expand(
     dst: &Str,
     direction: EdgeDirection,
     label: Option<&str>,
+    label_expr: Option<&LabelExpr>,
     execution: &GqlExecutionContext,
     var_len: &gleaph_gql_planner::plan::VarLenSpec,
     dst_filter: &[Expr],
@@ -578,6 +584,8 @@ fn stream_var_len_expand(
         dst,
         direction,
         label_id,
+        label_expr,
+        execution,
         var_len,
         dst_filter,
         emit_edge_binding,
@@ -619,6 +627,7 @@ fn stream_expand(
     dst: &Str,
     direction: EdgeDirection,
     label: Option<&str>,
+    label_expr: Option<&LabelExpr>,
     execution: &GqlExecutionContext,
     sequence_order: EdgeSequenceOrder,
     dst_filter: &[Expr],
@@ -677,6 +686,11 @@ fn stream_expand(
             // `skip_then_visit_each_*` applies the global OFFSET inside the CSR iterator; clear
             // the sink-side skip before downstream `LimitedRows::push`.
             sink.offset_remaining = 0;
+            if let Some(expr) = label_expr
+                && !edge_matches_label_expr(execution, expr, &edge)
+            {
+                return Ok(false);
+            }
             let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
                 return Ok(false);
             };
@@ -731,6 +745,11 @@ fn stream_expand(
         let mut visit = |edge: Edge| {
             #[cfg(test)]
             super::EDGE_STREAM_VISITS.with(|visits| visits.set(visits.get() + 1));
+            if let Some(expr) = label_expr
+                && !edge_matches_label_expr(execution, expr, &edge)
+            {
+                return Ok(false);
+            }
             let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
                 return Ok(false);
             };
@@ -818,6 +837,11 @@ fn stream_expand(
         &mut candidates,
     )?;
     for (edge_dst, edge_binding) in candidates.iter().cloned() {
+        if let Some(expr) = label_expr
+            && !edge_binding_matches_label_expr(execution, expr, &edge_binding)
+        {
+            continue;
+        }
         if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
             continue;
         }

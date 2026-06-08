@@ -4,15 +4,15 @@ use std::collections::BTreeMap;
 
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
-use gleaph_gql::types::EdgeDirection;
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{Str, VarLenSpec};
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::VertexId;
 
 use super::super::context::ExecuteCtx;
 use super::{
-    ExpandDst, build_expanded_row, expand_candidates_into, expand_dst_binding,
-    expand_dst_matches_prebound_vertex,
+    ExpandDst, build_expanded_row, edge_binding_matches_label_expr, expand_candidates_into,
+    expand_dst_binding, expand_dst_matches_prebound_vertex,
 };
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::EdgeBinding;
@@ -54,6 +54,7 @@ pub(crate) async fn execute_var_len_expand(
     dst: &Str,
     direction: EdgeDirection,
     label: Option<&str>,
+    label_expr: Option<&LabelExpr>,
     execution: &crate::gql_execution_context::GqlExecutionContext,
     var_len: &VarLenSpec,
     dst_filter: &[Expr],
@@ -94,6 +95,8 @@ pub(crate) async fn execute_var_len_expand(
             dst,
             direction,
             label_id,
+            label_expr,
+            execution,
             var_len,
             dst_filter,
             emit_edge_binding,
@@ -115,6 +118,8 @@ pub(crate) fn collect_var_len_expand_rows(
     dst: &Str,
     direction: EdgeDirection,
     label_id: Option<EdgeLabelId>,
+    label_expr: Option<&LabelExpr>,
+    execution: &crate::gql_execution_context::GqlExecutionContext,
     var_len: &VarLenSpec,
     dst_filter: &[Expr],
     emit_edge_binding: bool,
@@ -184,6 +189,11 @@ pub(crate) fn collect_var_len_expand_rows(
             &mut candidates,
         )?;
         for (edge_dst, edge_binding) in candidates.iter().cloned() {
+            if let Some(expr) = label_expr
+                && !edge_binding_matches_label_expr(execution, expr, &edge_binding)
+            {
+                continue;
+            }
             let ExpandDst::Local(next) = edge_dst else {
                 continue;
             };

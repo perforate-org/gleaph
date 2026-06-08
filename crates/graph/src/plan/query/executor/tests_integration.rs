@@ -52,6 +52,7 @@ fn explicit_empty_resolved_table_fails_labeled_expand() {
         &"b".into(),
         EdgeDirection::PointingRight,
         Some("MissingEdgeLabel"),
+        None,
         &ctx.execution,
         EdgeSequenceOrder::Descending,
         &[],
