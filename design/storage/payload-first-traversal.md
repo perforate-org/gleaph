@@ -1,6 +1,6 @@
 # Payload-first labeled edge traversal
 
-**Status:** Partially Implemented (M1 dense phase-1 API)
+**Status:** Partially Implemented (M1–M2 dense/sparse phase-2 edge read)
 
 ## Purpose
 
@@ -101,8 +101,8 @@ New code should prefer the two-phase API when filtering is possible.
 | Method | Status | Role |
 |--------|--------|------|
 | `visit_out_edge_payload_batches_for_label` | Implemented | Combined batch; keep for simple callers |
-| `visit_out_payload_value_batches_for_label` | **Planned** | Phase 1 only |
-| `read_directed_out_edge_slots_for_label` | **Planned** | Phase 2 only |
+| `visit_out_payload_value_batches_for_label` | Implemented (dense) | Phase 1 only |
+| `read_directed_out_edge_slots_for_label` | Implemented | Phase 2 only |
 | `for_each_directed_out_edges_for_label_topology_unchecked` | Implemented | No payload |
 
 Executor routing:
@@ -174,7 +174,7 @@ Options for later:
 |------|-------------|--------------|
 | M0 | Document + bench scopes (`labeled_visit_payload_value_batches`, `labeled_read_edge_slots`) | canbench pattern runs |
 | M1 | Dense `visit_out_payload_value_batches_for_label` | **Implemented** — `values.rs` batch order + parity tests |
-| M2 | Dense `read_out_edge_slots_for_label` | Slot/labe/id parity vs combined batch |
+| M2 | `read_out_edge_slots_for_label` (dense bulk + sparse/log) | **Implemented** — slot/order parity + phase-1/2 integration test |
 | M3 | Facade wrappers + predicate expand switched | `expand` tests, `filtered_expand_*` |
 | M4 | Equality-index expand uses phase 2 only | `edge_equality` expand tests |
 | M5 | Weighted shortest: prepared decoder + optional zip refactor | `weighted_shortest_edge_cost_cache` canbench |
