@@ -24,6 +24,10 @@ pub struct LabeledEdgePayloadBatchScratch<E> {
     pub edges: Vec<E>,
     /// Flattened value bytes: `edges.len() * batch.byte_width.byte_width()` bytes.
     pub payload_bytes: Vec<u8>,
+    /// Reusable bulk-read buffer for contiguous edge slab IO.
+    pub(super) io_edge_bytes: Vec<u8>,
+    /// Reusable bulk-read buffer for contiguous payload slab IO.
+    pub(super) io_payload_bytes: Vec<u8>,
 }
 
 impl<E> Default for LabeledEdgePayloadBatchScratch<E> {
@@ -31,6 +35,8 @@ impl<E> Default for LabeledEdgePayloadBatchScratch<E> {
         Self {
             edges: Vec::new(),
             payload_bytes: Vec::new(),
+            io_edge_bytes: Vec::new(),
+            io_payload_bytes: Vec::new(),
         }
     }
 }
@@ -40,6 +46,28 @@ impl<E> LabeledEdgePayloadBatchScratch<E> {
     pub fn clear(&mut self) {
         self.edges.clear();
         self.payload_bytes.clear();
+    }
+
+    pub(super) fn io_edge_slice_mut(&mut self, len: usize) -> &mut [u8] {
+        if self.io_edge_bytes.len() < len {
+            self.io_edge_bytes.resize(len, 0);
+        }
+        &mut self.io_edge_bytes[..len]
+    }
+
+    pub(super) fn io_edge_slice(&self, len: usize) -> &[u8] {
+        &self.io_edge_bytes[..len]
+    }
+
+    pub(super) fn io_payload_slice_mut(&mut self, len: usize) -> &mut [u8] {
+        if self.io_payload_bytes.len() < len {
+            self.io_payload_bytes.resize(len, 0);
+        }
+        &mut self.io_payload_bytes[..len]
+    }
+
+    pub(super) fn io_payload_slice(&self, len: usize) -> &[u8] {
+        &self.io_payload_bytes[..len]
     }
 }
 

@@ -107,6 +107,16 @@ fn read_weight_u16(bytes: &[u8]) -> u16 {
 }
 
 impl PreparedWeightDecoder {
+    /// Decodes a raw `u16` payload without widening to `f32`.
+    ///
+    /// Returns `None` when this decoder is not [`PreparedWeightDecoder::RawU16`].
+    pub fn decode_raw_u16(&self, bytes: &[u8]) -> Option<u16> {
+        match self {
+            Self::RawU16 => Some(read_weight_u16(bytes)),
+            _ => None,
+        }
+    }
+
     /// Decodes stored edge-payload bytes into a validated non-negative finite `f32` weight.
     pub fn decode(&self, bytes: &[u8]) -> Result<f32, WeightDecodeError> {
         use half::f16;
@@ -162,6 +172,8 @@ mod tests {
     #[test]
     fn prepared_decoder_raw_u16_round_trip() {
         let decoder = PreparedWeightDecoder::RawU16;
+        assert_eq!(decoder.decode_raw_u16(&7u16.to_le_bytes()), Some(7));
+        assert_eq!(decoder.decode_raw_u16(&0u16.to_le_bytes()), Some(0));
         assert_eq!(decoder.decode(&0u16.to_le_bytes()).expect("decode"), 0.0);
         assert_eq!(
             decoder.decode(&65535u16.to_le_bytes()).expect("decode"),

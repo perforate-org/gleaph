@@ -1467,15 +1467,23 @@ where
             scratch.edges.reserve(take as usize);
             scratch.payload_bytes.reserve(take as usize * width);
 
-            let mut raw_edges = vec![0u8; take as usize * E::BYTES];
-            self.edges
-                .read_slots_contiguous(bucket.edge_start() + u64::from(first_slot), &mut raw_edges);
+            let edge_bytes = take as usize * E::BYTES;
+            let payload_bytes = take as usize * width;
+            {
+                let raw_edges = scratch.io_edge_slice_mut(edge_bytes);
+                self.edges
+                    .read_slots_contiguous(bucket.edge_start() + u64::from(first_slot), raw_edges);
+            }
             let payload_offset = bucket
                 .payload_offset()
                 .checked_add(u64::from(first_slot) * u64::from(bucket.payload_byte_width()))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let mut raw_values = vec![0u8; take as usize * width];
-            self.values.read_bytes(payload_offset, &mut raw_values);
+            {
+                let raw_values = scratch.io_payload_slice_mut(payload_bytes);
+                self.values.read_bytes(payload_offset, raw_values);
+            }
+            let raw_edges = &scratch.io_edge_bytes[..edge_bytes];
+            let raw_values = &scratch.io_payload_bytes[..payload_bytes];
 
             match order {
                 OutEdgeOrder::Ascending => {

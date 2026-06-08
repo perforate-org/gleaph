@@ -128,6 +128,23 @@ impl WeightedCost {
         if matches!(hop.order_key, WeightedCostOrderKey::Zero) {
             return Ok(self.clone());
         }
+        if let (WeightedCostOrderKey::Uint128(left), WeightedCostOrderKey::Uint128(right)) =
+            (&self.order_key, &hop.order_key)
+        {
+            let sum = left
+                .checked_add(*right)
+                .ok_or_else(|| PlanQueryError::GleaphCost {
+                    message: "shortest-path edge cost overflow".into(),
+                })?;
+            return Ok(Self {
+                value: Value::Uint128(sum),
+                order_key: if sum == 0 {
+                    WeightedCostOrderKey::Zero
+                } else {
+                    WeightedCostOrderKey::Uint128(sum)
+                },
+            });
+        }
         if let (Value::Float32(left), Value::Float32(right)) = (&self.value, &hop.value) {
             let sum = left + right;
             if !sum.is_finite() {
@@ -592,6 +609,17 @@ fn decode_direct_gleaph_weight_hop_cost_from_payload(
     decoder: &PreparedWeightDecoder,
     payload: &[u8],
 ) -> Result<WeightedCost, PlanQueryError> {
+    if let Some(weight) = decoder.decode_raw_u16(payload) {
+        let weight = u128::from(weight);
+        return Ok(WeightedCost {
+            value: Value::Uint16(weight as u16),
+            order_key: if weight == 0 {
+                WeightedCostOrderKey::Zero
+            } else {
+                WeightedCostOrderKey::Uint128(weight)
+            },
+        });
+    }
     let weight =
         decoder
             .decode(payload)
