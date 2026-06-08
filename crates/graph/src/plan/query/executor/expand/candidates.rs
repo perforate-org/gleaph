@@ -3,7 +3,7 @@ use std::collections::{BTreeMap, BTreeSet};
 use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
-use gleaph_gql::types::EdgeDirection;
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorPredicate, ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
@@ -12,6 +12,7 @@ use ic_stable_lara::labeled::{
     LabeledEdgePayloadBatchScratch, LabeledPayloadValueBatchScratch, OutEdgeOrder,
 };
 
+use super::label_expr::fusion_edge_label_ids_for_expr;
 use super::predicates::{PreparedEdgePayloadPredicate, PreparedEdgeVectorThreshold};
 use super::{
     ExpandDst, edge_matches_indexed_equality, expand_accepts_remote_dst, expand_dst_binding,
@@ -19,6 +20,7 @@ use super::{
     row_matches_all,
 };
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
+use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::edge_equal;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::EdgeBinding;
@@ -413,6 +415,95 @@ pub(super) fn expand_vector_dst_only_rows_into(
         return Err(err);
     }
     Ok(())
+}
+
+/// Expand with index/payload/vector predicates decomposed across labels in `label_expr`.
+///
+/// Returns `true` when fusion ran (including zero matches). Returns `false` when the caller
+/// should use the generic `expand_candidates_into` path.
+pub(crate) fn expand_candidates_with_label_expr_fusion_into(
+    store: &GraphStore,
+    execution: &GqlExecutionContext,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    label_expr: &LabelExpr,
+    sequence_order: EdgeSequenceOrder,
+    indexed_edge_equality: Option<&(Str, ScanValue)>,
+    edge_payload_predicate: Option<&EdgePayloadPredicate>,
+    edge_vector_predicate: Option<&EdgeVectorPredicate>,
+    parameters: &BTreeMap<String, Value>,
+    out: &mut Vec<ExpandCandidate>,
+) -> Result<bool, PlanQueryError> {
+    let has_predicate = indexed_edge_equality.is_some()
+        || edge_payload_predicate.is_some()
+        || edge_vector_predicate.is_some();
+    if !has_predicate {
+        return Ok(false);
+    }
+    let Some(label_ids) = fusion_edge_label_ids_for_expr(execution, label_expr) else {
+        return Ok(false);
+    };
+    for label_id in label_ids {
+        expand_candidates_into(
+            store,
+            src_id,
+            direction,
+            Some(label_id),
+            sequence_order,
+            indexed_edge_equality,
+            edge_payload_predicate,
+            edge_vector_predicate,
+            parameters,
+            out,
+        )?;
+    }
+    Ok(true)
+}
+
+pub(crate) fn expand_candidates_for_expand_op_into(
+    store: &GraphStore,
+    execution: &GqlExecutionContext,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    edge_label_id: Option<EdgeLabelId>,
+    label_expr: Option<&LabelExpr>,
+    sequence_order: EdgeSequenceOrder,
+    indexed_edge_equality: Option<&(Str, ScanValue)>,
+    edge_payload_predicate: Option<&EdgePayloadPredicate>,
+    edge_vector_predicate: Option<&EdgeVectorPredicate>,
+    parameters: &BTreeMap<String, Value>,
+    out: &mut Vec<ExpandCandidate>,
+) -> Result<(), PlanQueryError> {
+    if edge_label_id.is_none()
+        && let Some(expr) = label_expr
+        && expand_candidates_with_label_expr_fusion_into(
+            store,
+            execution,
+            src_id,
+            direction,
+            expr,
+            sequence_order,
+            indexed_edge_equality,
+            edge_payload_predicate,
+            edge_vector_predicate,
+            parameters,
+            out,
+        )?
+    {
+        return Ok(());
+    }
+    expand_candidates_into(
+        store,
+        src_id,
+        direction,
+        edge_label_id,
+        sequence_order,
+        indexed_edge_equality,
+        edge_payload_predicate,
+        edge_vector_predicate,
+        parameters,
+        out,
+    )
 }
 
 pub(crate) fn expand_candidates_into(

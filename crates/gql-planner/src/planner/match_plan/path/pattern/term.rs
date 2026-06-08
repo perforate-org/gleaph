@@ -270,7 +270,7 @@ pub(super) fn plan_path_term(
                                 edge_var,
                                 edge,
                                 stats,
-                                label_str.is_some() && label_expr.is_none() && var_len.is_none(),
+                                var_len.is_none() && (label_str.is_some() || label_expr.is_some()),
                                 where_conjuncts,
                             )
                         };

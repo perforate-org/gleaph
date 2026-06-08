@@ -184,6 +184,125 @@ fn executes_planner_union_label_expr_expand() {
 }
 
 #[test]
+fn union_label_expr_edge_payload_predicate_fuses_per_label() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["UnionPayloadFusionA"], Vec::<(&str, Value)>::new())
+        .expect("insert source");
+    let knows_match = store
+        .insert_vertex_named(
+            ["UnionPayloadFusionTarget"],
+            [("name", Value::Text("Knows match".into()))],
+        )
+        .expect("knows match");
+    let knows_skip = store
+        .insert_vertex_named(
+            ["UnionPayloadFusionTarget"],
+            [("name", Value::Text("Knows skip".into()))],
+        )
+        .expect("knows skip");
+    let likes_match = store
+        .insert_vertex_named(
+            ["UnionPayloadFusionTarget"],
+            [("name", Value::Text("Likes match".into()))],
+        )
+        .expect("likes match");
+    let likes_skip = store
+        .insert_vertex_named(
+            ["UnionPayloadFusionTarget"],
+            [("name", Value::Text("Likes skip".into()))],
+        )
+        .expect("likes skip");
+    let knows_label = crate::test_labels::edge_label_id_for_name("UnionPayloadFusionKnows");
+    let likes_label = crate::test_labels::edge_label_id_for_name("UnionPayloadFusionLikes");
+    for label_id in [knows_label, likes_label] {
+        store
+            .install_edge_label_payload_profile_at_init(
+                label_id,
+                EdgePayloadProfile {
+                    byte_width: 2,
+                    encoding: EdgePayloadEncoding::WeightRawU16,
+                },
+            )
+            .unwrap();
+    }
+    store
+        .insert_directed_edge_with_payload_bytes(
+            a,
+            knows_match,
+            Some(knows_label),
+            &7u16.to_le_bytes(),
+        )
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(
+            a,
+            knows_skip,
+            Some(knows_label),
+            &9u16.to_le_bytes(),
+        )
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(
+            a,
+            likes_match,
+            Some(likes_label),
+            &7u16.to_le_bytes(),
+        )
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(
+            a,
+            likes_skip,
+            Some(likes_label),
+            &9u16.to_le_bytes(),
+        )
+        .unwrap();
+
+    let label_expr = LabelExpr::Or(
+        Box::new(LabelExpr::Name("UnionPayloadFusionKnows".into())),
+        Box::new(LabelExpr::Name("UnionPayloadFusionLikes".into())),
+    );
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("UnionPayloadFusionA".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "a".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: None,
+            label_expr: Some(label_expr),
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_payload_predicate: Some(EdgePayloadPredicate {
+                op: CmpOp::Eq,
+                value: ScanValue::Literal(Value::Int64(7)),
+            }),
+            edge_vector_predicate: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: true,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ]);
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute union label_expr payload fusion");
+
+    assert_eq!(result.rows.len(), 2);
+}
+
+#[test]
 fn executes_planner_var_len_expand() {
     let store = GraphStore::new();
     let a = store

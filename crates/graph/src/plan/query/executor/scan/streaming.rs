@@ -20,7 +20,7 @@ use crate::plan::query::executor::expand::{
     EdgeEqualityStreamFilter, ExpandDst, build_expanded_row, collect_var_len_expand_rows,
     csr_offset_fast_path_for_expand, edge_binding_for_scanned_expand,
     edge_binding_matches_label_expr, edge_equality_stream_filter, edge_matches_label_expr,
-    edge_matches_stream_filter, expand_accepts_remote_dst, expand_candidates_into,
+    edge_matches_stream_filter, expand_accepts_remote_dst, expand_candidates_for_expand_op_into,
     expand_dst_matches_prebound_vertex, visit_csr_expand_fast_path,
 };
 use crate::plan::query::executor::{
@@ -824,11 +824,13 @@ fn stream_expand(
     }
 
     let mut candidates = Vec::new();
-    expand_candidates_into(
+    expand_candidates_for_expand_op_into(
         store,
+        execution,
         src_id,
         direction,
         label_id,
+        label_expr,
         EdgeSequenceOrder::Descending,
         indexed_edge_equality,
         edge_payload_predicate,

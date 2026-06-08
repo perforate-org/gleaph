@@ -13,7 +13,7 @@ use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::LabeledEdgePayloadBatchScratch;
 
-use super::candidates::{expand_candidates_into, expand_vector_dst_only_rows_into};
+use super::candidates::{expand_candidates_for_expand_op_into, expand_vector_dst_only_rows_into};
 use super::label_expr::{edge_binding_matches_label_expr, edge_matches_label_expr};
 use super::predicates::PreparedEdgeVectorThreshold;
 use super::{
@@ -400,11 +400,13 @@ pub(crate) async fn execute_expand(
             continue;
         }
         candidates.clear();
-        expand_candidates_into(
+        expand_candidates_for_expand_op_into(
             store,
+            execution,
             src_id,
             direction,
             label_id,
+            label_expr,
             sequence_order,
             indexed_edge_equality,
             edge_payload_predicate,
