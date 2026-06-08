@@ -174,14 +174,14 @@ fn decoder_for_gleaph_weight_edge(
             label,
             label_expr,
             var_len: _,
-            indexed_edge_equality,
+            indexed_edge_equality: _,
             hop_aux_binding,
         }
         | EdgeProducer::ExpandFilter {
             label,
             label_expr,
             var_len: _,
-            indexed_edge_equality,
+            indexed_edge_equality: _,
             hop_aux_binding,
         } => {
             // Variable-length expand binds `edge_var` to the last traversed edge only.
@@ -202,13 +202,6 @@ fn decoder_for_gleaph_weight_edge(
                     }
                 })?;
                 return finish_decoder_from_label_name(store, execution, edge_var, first_name);
-            }
-            if indexed_edge_equality.is_some() {
-                return Err(PlanQueryError::GleaphWeight {
-                    message: format!(
-                        "GLEAPH.WEIGHT({edge_var}): indexed edge equality expansion is not supported"
-                    ),
-                });
             }
             let label_name = label.ok_or_else(|| PlanQueryError::GleaphWeight {
                 message: format!(

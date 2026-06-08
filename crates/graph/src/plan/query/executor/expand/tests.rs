@@ -826,6 +826,85 @@ fn expand_indexed_edge_equality_filters_candidates() {
 }
 
 #[test]
+fn indexed_edge_equality_expand_return_gleaph_weight() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["IdxEqWgtA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b_match = store
+        .insert_vertex_named(["IdxEqWgtB"], Vec::<(&str, Value)>::new())
+        .expect("b match");
+    let b_miss = store
+        .insert_vertex_named(["IdxEqWgtB"], Vec::<(&str, Value)>::new())
+        .expect("b miss");
+    let label_id = crate::test_labels::edge_label_id_for_name("IdxEqWgtRel");
+    store
+        .install_edge_label_payload_profile_at_init(
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        )
+        .unwrap();
+    let weight_prop = store
+        .get_or_insert_property_id("weight")
+        .expect("weight property");
+    let match_edge = store
+        .insert_directed_edge_with_payload_bytes(a, b_match, Some(label_id), &5u16.to_le_bytes())
+        .expect("match edge");
+    store
+        .set_edge_property(match_edge, weight_prop, Value::Int64(5))
+        .expect("match edge property");
+    let miss_edge = store
+        .insert_directed_edge_with_payload_bytes(a, b_miss, Some(label_id), &9u16.to_le_bytes())
+        .expect("miss edge");
+    store
+        .set_edge_property(miss_edge, weight_prop, Value::Int64(9))
+        .expect("miss edge property");
+
+    let gleaph_weight = Expr::new(ExprKind::FunctionCall {
+        name: ObjectName::qualified(vec!["GLEAPH".into(), "WEIGHT".into()]),
+        args: vec![var("e")],
+        distinct: false,
+    });
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("IdxEqWgtA".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "a".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("IdxEqWgtRel".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: Some(("weight".into(), ScanValue::Literal(Value::Int64(5)))),
+            edge_payload_predicate: None,
+            edge_vector_predicate: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: true,
+        },
+        PlanOp::Project {
+            columns: vec![project(gleaph_weight, "w")],
+            distinct: false,
+        },
+    ]);
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("indexed expand with gleaph weight return");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].get("w"), Some(&Value::Float32(5.0)));
+}
+
+#[test]
 fn expand_applies_dst_property_projection_for_property_return() {
     let store = GraphStore::new();
     let a = store
