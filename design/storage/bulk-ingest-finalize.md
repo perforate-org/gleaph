@@ -195,6 +195,66 @@ flowchart LR
 
 Finalize **complements** post-insert drain; it does not remove it.
 
+## Observed canbench impact (post-insert maintenance, `c16a247f`)
+
+Commit `perf(graph): drain LARA maintenance after edge inserts` added
+`run_post_edge_insert_maintenance()` on every `GraphStore` edge insert and
+**removed** bench-only setup hooks from `setup_repeated_edge_cost_cache_graph`:
+
+- `drain_lara_maintenance()` (unlimited budget, once mid-setup)
+- `mark_compact_vertex_edge_span(Forward, src, 0)` + final unlimited drain
+
+Re-running canbench after that change showed regressions in `canbench_results.yml`.
+**Do not attribute all of them to insert-time drain.** Split by what each bench
+measures.
+
+### By benchmark
+
+| Bench | Approx. change | Cause |
+|-------|----------------|-------|
+| `bench_graph_profile_setup_50kscan` | +0.23% (~1.17K ix/edge on 50k edges) | **Yes — insert-time drain.** Setup is measured inside `bench_fn`; each edge insert pays post-insert maintenance. Matches prior ~1.2K/insert estimate. |
+| `bench_graph_weighted_shortest_repeated_edge_cost_cache_48prefix_24hub_out` | **+10%** (3.12M → 3.44M total) | **No — not drain during query.** `bench_fn` measures only `execute_shortest_plan`. Regression is **setup graph shape**: removed `mark_compact_vertex_edge_span` on `src`. |
+| `bench_graph_hop_count_shortest_converging_hub_48prefix_24hub_out` | +0.9% | Same shared setup as WSP; smaller effect (hop-count path, not weighted payload-batch hot path). |
+| `bench_graph_expand_vector_l2_24scan_8match` | +0.25% | **Noise / negligible.** Query measured after tiny setup (24 edges). |
+| `ic-stable-lara` benches | Mixed up/down | **Unrelated** to GraphStore insert drain (direct LARA, no facade hook). |
+
+### WSP query regression detail
+
+Scopes under `bench_graph_weighted_shortest_repeated_*` (query phase only):
+
+| Scope | Before | After | Notes |
+|-------|--------|-------|-------|
+| `shortest_fixed_expand_forward_slices` (calls) | 28 | 32 | More expand iterations |
+| `shortest_fixed_expand_forward_slices` (ix) | ~899K | ~1.19M | Higher ix per call as well |
+| `weighted_shortest_relax` (calls) | 98 | 102 | Follows expand count |
+
+`repeated_edge_cost_cache_payload_batch_path_on_hot_vertices` still reports
+`batch.dense == true` for `src` after current setup-only post-insert drain.
+**Dense-eligible is necessary but not equivalent** to the old bench path that
+ran `mark_compact_vertex_edge_span` after all 48 parallel edges were present.
+Incremental per-insert drain can fold overflow to dense while leaving a bucket
+that is slower on the weighted shortest payload-batch expand path than after
+explicit vertex-edge-span compaction.
+
+This is the same production gap finalize is meant to close: post-insert drain
+alone does not reproduce the aggressive reclaim that the WSP baseline assumed.
+
+### Bench baseline policy (until finalize exists)
+
+| Option | Pros | Cons |
+|--------|------|------|
+| **A. Restore setup-only `mark_compact` + drain** in `setup_repeated_edge_cost_cache_graph` | Restores ~3.12M WSP baseline quickly; models “ingest then finalize” shape | Diverges setup from bare production insert path |
+| **B. Keep production-like setup; accept higher WSP baseline** | Bench setup matches production insert behavior | Regresses `canbench_results.yml` vs pre-`c16a247f` WSP row |
+| **C. Implement finalize (P0/P4); call from setup** | Aligns bench and production on one API | Requires implementation |
+
+**Recommendation:** treat **A** as a temporary bench-only hook until **C** lands;
+document in bench comments that it stands in for planned finalize, not for
+per-insert maintenance. Do not re-add `mark_compact` to the production insert
+hot path.
+
+`profile_setup_50kscan` regression is expected and should be reflected in
+baseline when persisting results after `c16a247f`; it measures real ingest cost.
+
 ## Implementation phases (when resumed)
 
 | Phase | Deliverable | Verification |
