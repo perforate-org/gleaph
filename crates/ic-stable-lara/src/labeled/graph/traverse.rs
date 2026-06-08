@@ -35,6 +35,36 @@ fn bucket_dense_payload_eligible(bucket: &LabelBucket) -> bool {
         && bucket.stored_slots == bucket.degree()
 }
 
+fn order_slot_indices(slots: &[u32], order: OutEdgeOrder) -> Vec<u32> {
+    let mut ordered = slots.to_vec();
+    match order {
+        OutEdgeOrder::Ascending => ordered.sort_unstable(),
+        OutEdgeOrder::Descending => ordered.sort_unstable_by(|a, b| b.cmp(a)),
+    }
+    ordered.dedup();
+    ordered
+}
+
+fn ascending_contiguous_slot_runs(slots: &[u32]) -> Vec<(u32, u32)> {
+    if slots.is_empty() {
+        return Vec::new();
+    }
+    let mut runs = Vec::new();
+    let mut first = slots[0];
+    let mut count = 1u32;
+    for &slot in &slots[1..] {
+        if slot == first + count {
+            count += 1;
+        } else {
+            runs.push((first, count));
+            first = slot;
+            count = 1;
+        }
+    }
+    runs.push((first, count));
+    runs
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(super) struct ContiguousBucketRun {
     base: u64,
@@ -1151,6 +1181,175 @@ where
             remaining -= take;
         }
         Ok(())
+    }
+
+    /// Reads topology-only outgoing edge rows for the requested bucket slot indices.
+    ///
+    /// Dense buckets bulk-read contiguous slab spans; sparse and log-backed buckets resolve each
+    /// slot individually. Deleted and out-of-range slots are skipped without error.
+    pub fn read_out_edge_slots_for_label<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slots: &[u32],
+        order: OutEdgeOrder,
+        mut visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(E),
+    {
+        if slots.is_empty() {
+            return Ok(());
+        }
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return Ok(());
+        }
+        let BucketSearch::Found { slot, bucket } = self.find_bucket(src, &vertex, label_id)? else {
+            return Ok(());
+        };
+        if bucket.degree() == 0 {
+            return Ok(());
+        }
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+        let visit_order = order_slot_indices(slots, order);
+        if bucket_dense_payload_eligible(&bucket) {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _bench_scope = bench_scope("labeled_read_dense_out_edge_slots");
+            let mut loaded =
+                self.read_dense_out_edge_topology_slots(&bucket, label_id, &visit_order)?;
+            loaded.sort_unstable_by_key(|(slot, _)| *slot);
+            for slot in visit_order {
+                if let Ok(idx) = loaded.binary_search_by_key(&slot, |(s, _)| *s) {
+                    visit(loaded[idx].1.clone());
+                }
+            }
+            return Ok(());
+        }
+
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _bench_scope = bench_scope("labeled_read_sparse_out_edge_slots");
+        for slot_index in visit_order {
+            if let Some(edge) = self.read_out_edge_topology_at_slot(
+                src,
+                &vertex,
+                bucket_index,
+                &bucket,
+                slot_index,
+                label_id,
+            )? {
+                visit(edge);
+            }
+        }
+        Ok(())
+    }
+
+    fn read_dense_out_edge_topology_slots(
+        &self,
+        bucket: &LabelBucket,
+        label_id: BucketLabelKey,
+        slots: &[u32],
+    ) -> Result<Vec<(u32, E)>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let mut asc = slots.to_vec();
+        asc.sort_unstable();
+        asc.dedup();
+        let mut loaded = Vec::with_capacity(asc.len());
+        for (first_slot, count) in ascending_contiguous_slot_runs(&asc) {
+            if first_slot >= bucket.stored_slots {
+                continue;
+            }
+            let take = count.min(bucket.stored_slots.saturating_sub(first_slot));
+            if take == 0 {
+                continue;
+            }
+            let mut raw_edges = vec![0u8; take as usize * E::BYTES];
+            self.edges
+                .read_slots_contiguous(bucket.edge_start() + u64::from(first_slot), &mut raw_edges);
+            for i in 0..take as usize {
+                let slot = first_slot + i as u32;
+                let edge_off = i * E::BYTES;
+                let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES])
+                    .with_slot_index(slot)
+                    .with_label_id(label_id.raw());
+                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                    continue;
+                }
+                loaded.push((slot, edge));
+            }
+        }
+        Ok(loaded)
+    }
+
+    fn read_out_edge_topology_at_slot(
+        &self,
+        src: VertexId,
+        _vertex: &LabeledVertex,
+        _bucket_index: u32,
+        bucket: &LabelBucket,
+        slot_index: u32,
+        label_id: BucketLabelKey,
+    ) -> Result<Option<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if slot_index >= self.bucket_reserved_edge_slots(src, bucket) {
+            return Ok(None);
+        }
+        if bucket.overflow_log_head() < 0 {
+            if slot_index >= bucket.stored_slots {
+                return Ok(None);
+            }
+            let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let edge = self
+                .edges
+                .read_slot(edge_slot)
+                .with_slot_index(slot_index)
+                .with_label_id(label_id.raw());
+            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                return Ok(None);
+            }
+            return Ok(Some(edge));
+        }
+
+        let slab_prefix = self.bucket_slab_prefix_slots(src, bucket);
+        if slot_index < slab_prefix {
+            let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let edge = self
+                .edges
+                .read_slot(edge_slot)
+                .with_slot_index(slot_index)
+                .with_label_id(label_id.raw());
+            if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                return Ok(None);
+            }
+            return Ok(Some(edge));
+        }
+
+        let log_ordinal = slot_index
+            .checked_sub(slab_prefix)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let leaf = self.payload_log_leaf(src);
+        let chain = self
+            .edges
+            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
+        let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
+            return Ok(None);
+        };
+        let (_, src_tag, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+        if src_tag < 0 || edge.is_tombstone_edge() {
+            return Ok(None);
+        }
+        Ok(Some(
+            edge.with_slot_index(slot_index)
+                .with_label_id(label_id.raw()),
+        ))
     }
 
     fn visit_dense_out_edge_payload_batches_for_bucket<Visit>(

@@ -1288,6 +1288,225 @@ mod tests {
     }
 
     #[test]
+    fn dense_read_out_edge_slots_follow_requested_order() {
+        let graph = payload_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .unwrap();
+        for (target, weight) in [(1, 10u16), (2, 20u16), (3, 30u16)] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                )
+                .unwrap();
+        }
+
+        let mut asc = Vec::new();
+        graph
+            .read_out_edge_slots_for_label(
+                VertexId::from(0),
+                road,
+                &[0, 1, 2],
+                OutEdgeOrder::Ascending,
+                |edge| asc.push(edge.target),
+            )
+            .unwrap();
+        assert_eq!(asc, vec![1, 2, 3]);
+
+        let mut desc = Vec::new();
+        graph
+            .read_out_edge_slots_for_label(
+                VertexId::from(0),
+                road,
+                &[0, 1, 2],
+                OutEdgeOrder::Descending,
+                |edge| desc.push(edge.target),
+            )
+            .unwrap();
+        assert_eq!(desc, vec![3, 2, 1]);
+
+        let mut subset = Vec::new();
+        graph
+            .read_out_edge_slots_for_label(
+                VertexId::from(0),
+                road,
+                &[2, 0],
+                OutEdgeOrder::Descending,
+                |edge| subset.push(edge.target),
+            )
+            .unwrap();
+        assert_eq!(subset, vec![3, 1]);
+    }
+
+    #[test]
+    fn dense_read_out_edge_slots_match_topology_foreach() {
+        let graph = payload_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .unwrap();
+        for (target, weight) in [(1, 10u16), (2, 20u16), (3, 30u16)] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                )
+                .unwrap();
+        }
+
+        let mut from_foreach = Vec::new();
+        graph
+            .for_each_edges_for_label_topology_ordered(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                |edge| from_foreach.push((edge.edge_slot_index_raw(), edge.target)),
+            )
+            .unwrap();
+
+        let slots: Vec<u32> = from_foreach.iter().map(|(slot, _)| *slot).collect();
+        let mut from_read = Vec::new();
+        graph
+            .read_out_edge_slots_for_label(
+                VertexId::from(0),
+                road,
+                &slots,
+                OutEdgeOrder::Descending,
+                |edge| from_read.push((edge.edge_slot_index_raw(), edge.target)),
+            )
+            .unwrap();
+        assert_eq!(from_read, from_foreach);
+    }
+
+    #[test]
+    fn payload_first_dense_phase_matches_combined_batch_edges() {
+        let graph = payload_test_graph();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .unwrap();
+        for (target, weight) in [(1, 10u16), (2, 20u16), (3, 30u16)] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                )
+                .unwrap();
+        }
+
+        let mut value_scratch = LabeledPayloadValueBatchScratch::default();
+        let mut match_slots = Vec::new();
+        graph
+            .visit_out_payload_value_batches_for_label(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                &mut value_scratch,
+                |batch| {
+                    let width = usize::from(batch.byte_width);
+                    for (idx, slot) in batch.slot_indices.iter().enumerate() {
+                        let start = idx * width;
+                        let weight =
+                            u16::from_le_bytes([batch.values[start], batch.values[start + 1]]);
+                        if weight >= 20 {
+                            match_slots.push(*slot);
+                        }
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(match_slots, vec![2, 1]);
+
+        let mut two_phase = Vec::new();
+        graph
+            .read_out_edge_slots_for_label(
+                VertexId::from(0),
+                road,
+                &match_slots,
+                OutEdgeOrder::Descending,
+                |edge| two_phase.push(edge.target),
+            )
+            .unwrap();
+        assert_eq!(two_phase, vec![3, 2]);
+
+        let mut batch_scratch = LabeledEdgePayloadBatchScratch::default();
+        let mut combined = Vec::new();
+        graph
+            .visit_out_edge_payload_batches_for_label(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Descending,
+                &mut batch_scratch,
+                |batch| {
+                    let width = usize::from(batch.byte_width);
+                    for (edge, value) in batch
+                        .edges
+                        .iter()
+                        .zip(batch.payload_bytes.chunks_exact(width))
+                    {
+                        let weight = u16::from_le_bytes([value[0], value[1]]);
+                        if weight >= 20 {
+                            combined.push(edge.target);
+                        }
+                    }
+                },
+            )
+            .unwrap();
+        assert_eq!(two_phase, combined);
+    }
+
+    #[test]
+    fn sparse_read_out_edge_slots_resolve_log_backed_indices() {
+        let graph = payload_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .unwrap();
+        for target in 1..=33u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                )
+                .unwrap();
+        }
+
+        let mut from_foreach = Vec::new();
+        graph
+            .for_each_edges_for_label_topology_ordered(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Ascending,
+                |edge| from_foreach.push((edge.edge_slot_index_raw(), edge.target)),
+            )
+            .unwrap();
+        let first = from_foreach.first().copied().expect("first edge");
+        let last = from_foreach.last().copied().expect("last edge");
+
+        let mut read = Vec::new();
+        graph
+            .read_out_edge_slots_for_label(
+                VertexId::from(0),
+                road,
+                &[first.0, last.0],
+                OutEdgeOrder::Ascending,
+                |edge| read.push((edge.edge_slot_index_raw(), edge.target)),
+            )
+            .unwrap();
+        assert_eq!(read, vec![first, last]);
+    }
+
+    #[test]
     fn dense_edge_payload_batches_follow_requested_order() {
         let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();

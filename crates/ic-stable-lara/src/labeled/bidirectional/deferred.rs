@@ -1026,6 +1026,41 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Visits forward outgoing payload bytes for one label in `order` (dense buckets only).
+    pub fn visit_out_payload_value_batches_for_label<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        order: OutEdgeOrder,
+        scratch: &mut crate::labeled::LabeledPayloadValueBatchScratch,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: for<'b> FnMut(crate::labeled::LabeledPayloadValueBatch<'b>),
+    {
+        self.forward
+            .visit_out_payload_value_batches_for_label(src, label_id, order, scratch, visit)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Reads forward outgoing edge rows for the requested slot indices (topology only).
+    pub fn read_out_edge_slots_for_label<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slots: &[u32],
+        order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(E),
+    {
+        self.forward
+            .read_out_edge_slots_for_label(src, label_id, slots, order, visit)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
     /// Visits forward outgoing edges and parallel value bytes for one label in `order`.
     pub fn visit_out_edge_payload_batches_for_label<Visit>(
         &self,
