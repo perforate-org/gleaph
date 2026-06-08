@@ -46,8 +46,8 @@ pub use gleaph_gql::token::Span;
 pub use gleaph_gql::types::{EdgeDirection, LabelExpr};
 pub use gleaph_gql::{Value, value_to_index_key_bytes};
 pub use gleaph_gql_planner::plan::{
-    AggregateSpec, ConditionalScanCandidate, PlanOp, ProjectColumn, ScanValue, ShortestMode,
-    ShortestPathCost, Str, VarLenSpec, WcojEdge,
+    AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PlanOp, ProjectColumn, ScanValue,
+    ShortestMode, ShortestPathCost, Str, VarLenSpec, WcojEdge,
 };
 pub use gleaph_graph_kernel::entry::EdgeSlotIndex;
 pub use gleaph_graph_kernel::federation::FederatedExpandNeighbor;
@@ -60,9 +60,24 @@ pub use std::rc::Rc;
 #[derive(Default)]
 pub struct MockPropertyIndex {
     pub equal_hits: RefCell<Vec<PostingHit>>,
+    /// Per `(property_id, encoded value)` hits; overrides [`Self::equal_hits`] when set.
+    pub equal_hits_by_key: RefCell<BTreeMap<(u32, Vec<u8>), Vec<PostingHit>>>,
     pub range_hits: RefCell<Vec<PostingHit>>,
     pub equal_calls: RefCell<Vec<(u32, Vec<u8>)>>,
     pub range_calls: RefCell<Vec<(u32, PostingRangeRequest)>>,
+}
+
+impl MockPropertyIndex {
+    pub fn set_equal_hits_for(
+        &self,
+        property_id: u32,
+        value_bytes: Vec<u8>,
+        hits: Vec<PostingHit>,
+    ) {
+        self.equal_hits_by_key
+            .borrow_mut()
+            .insert((property_id, value_bytes), hits);
+    }
 }
 
 #[async_trait(?Send)]
@@ -72,7 +87,12 @@ impl PropertyIndexLookup for MockPropertyIndex {
         property_id: u32,
         value: Vec<u8>,
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
-        self.equal_calls.borrow_mut().push((property_id, value));
+        self.equal_calls
+            .borrow_mut()
+            .push((property_id, value.clone()));
+        if let Some(hits) = self.equal_hits_by_key.borrow().get(&(property_id, value)) {
+            return Ok(hits.clone());
+        }
         Ok(self.equal_hits.borrow().clone())
     }
 

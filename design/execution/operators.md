@@ -21,7 +21,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 | `EdgeIndexScan` | Exec | Often paired with `EdgeBindEndpoints` |
 | `EdgeBindEndpoints` | Exec | Binds near/far from edge record |
 | `ConditionalIndexScan` | Exec | Param-dependent index vs fallback scan |
-| `IndexIntersection` | Partial | Planner may emit; check executor |
+| `IndexIntersection` | Exec | Federated index client; equality scans intersected per variable |
 
 ## Filter
 

@@ -1690,3 +1690,201 @@ fn leading_edge_bind_endpoints_honors_prebound_far_vertex() {
     assert_eq!(rows.len(), 1);
     assert!(matches!(rows[0].get("b"), Some(PlanBinding::Vertex(id)) if *id == b_match));
 }
+
+#[test]
+fn index_intersection_returns_vertices_in_both_postings() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let vid1 = store
+        .insert_vertex_named(["Ix1"], [("uid", Value::Text("alice".into()))])
+        .expect("vid1");
+    let vid2 = store
+        .insert_vertex_named(
+            ["Ix2"],
+            [
+                ("uid", Value::Text("alice".into())),
+                ("email", Value::Text("alice@example.com".into())),
+            ],
+        )
+        .expect("vid2");
+    let vid3 = store
+        .insert_vertex_named(
+            ["Ix3"],
+            [("email", Value::Text("alice@example.com".into()))],
+        )
+        .expect("vid3");
+    let uid_pid = store.property_id("uid").expect("uid").raw();
+    let email_pid = store.property_id("email").expect("email").raw();
+    let alice_key = value_to_index_key_bytes(&Value::Text("alice".into()))
+        .expect("encode uid")
+        .expect("sortable uid");
+    let email_key = value_to_index_key_bytes(&Value::Text("alice@example.com".into()))
+        .expect("encode email")
+        .expect("sortable email");
+    let local_shard = store.federation_routing().expect("routing").shard_id;
+    let index = MockPropertyIndex::default();
+    index.set_equal_hits_for(
+        uid_pid,
+        alice_key,
+        vec![
+            PostingHit {
+                shard_id: local_shard,
+                vertex_id: u32::from(vid1),
+            },
+            PostingHit {
+                shard_id: local_shard,
+                vertex_id: u32::from(vid2),
+            },
+        ],
+    );
+    index.set_equal_hits_for(
+        email_pid,
+        email_key,
+        vec![
+            PostingHit {
+                shard_id: local_shard,
+                vertex_id: u32::from(vid2),
+            },
+            PostingHit {
+                shard_id: local_shard,
+                vertex_id: u32::from(vid3),
+            },
+        ],
+    );
+    let plan = plan(vec![PlanOp::IndexIntersection {
+        variable: "n".into(),
+        scans: vec![
+            IndexScanSpec {
+                property: "uid".into(),
+                value: ScanValue::Literal(Value::Text("alice".into())),
+                cmp: CmpOp::Eq,
+            },
+            IndexScanSpec {
+                property: "email".into(),
+                value: ScanValue::Literal(Value::Text("alice@example.com".into())),
+                cmp: CmpOp::Eq,
+            },
+        ],
+        property_projection: None,
+    }]);
+
+    let rows = pollster::block_on(execute_plan_query_bindings(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("index intersection");
+
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(
+        rows[0].get("n"),
+        Some(PlanBinding::Vertex(id)) if *id == vid2
+    ));
+    assert_eq!(index.equal_calls.borrow().len(), 2);
+}
+
+#[test]
+fn index_intersection_empty_when_disjoint() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let _ = store
+        .insert_vertex_named(
+            ["IxA"],
+            [
+                ("uid", Value::Text("alice".into())),
+                ("email", Value::Text("bob@example.com".into())),
+            ],
+        )
+        .expect("vertex");
+    let uid_pid = store.property_id("uid").expect("uid").raw();
+    let email_pid = store.property_id("email").expect("email").raw();
+    let alice_key = value_to_index_key_bytes(&Value::Text("alice".into()))
+        .expect("encode uid")
+        .expect("sortable uid");
+    let email_key = value_to_index_key_bytes(&Value::Text("bob@example.com".into()))
+        .expect("encode email")
+        .expect("sortable email");
+    let local_shard = store.federation_routing().expect("routing").shard_id;
+    let index = MockPropertyIndex::default();
+    index.set_equal_hits_for(
+        uid_pid,
+        alice_key,
+        vec![PostingHit {
+            shard_id: local_shard,
+            vertex_id: 1,
+        }],
+    );
+    index.set_equal_hits_for(
+        email_pid,
+        email_key,
+        vec![PostingHit {
+            shard_id: local_shard,
+            vertex_id: 2,
+        }],
+    );
+    let plan = plan(vec![PlanOp::IndexIntersection {
+        variable: "n".into(),
+        scans: vec![
+            IndexScanSpec {
+                property: "uid".into(),
+                value: ScanValue::Literal(Value::Text("alice".into())),
+                cmp: CmpOp::Eq,
+            },
+            IndexScanSpec {
+                property: "email".into(),
+                value: ScanValue::Literal(Value::Text("bob@example.com".into())),
+                cmp: CmpOp::Eq,
+            },
+        ],
+        property_projection: None,
+    }]);
+
+    let rows = pollster::block_on(execute_plan_query_bindings(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect("empty intersection");
+
+    assert!(rows.is_empty());
+}
+
+#[test]
+fn index_intersection_requires_index_client() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let plan = plan(vec![PlanOp::IndexIntersection {
+        variable: "n".into(),
+        scans: vec![
+            IndexScanSpec {
+                property: "uid".into(),
+                value: ScanValue::Literal(Value::Text("alice".into())),
+                cmp: CmpOp::Eq,
+            },
+            IndexScanSpec {
+                property: "email".into(),
+                value: ScanValue::Literal(Value::Text("alice@example.com".into())),
+                cmp: CmpOp::Eq,
+            },
+        ],
+        property_projection: None,
+    }]);
+
+    let err = pollster::block_on(execute_plan_query_bindings(
+        &store,
+        &plan,
+        &params(),
+        None,
+        GqlExecutionContext::default(),
+    ))
+    .expect_err("missing index client");
+
+    assert!(matches!(
+        err,
+        PlanQueryError::UnsupportedOp("IndexIntersection(no index client)")
+    ));
+}
