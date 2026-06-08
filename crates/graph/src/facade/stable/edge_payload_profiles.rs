@@ -71,6 +71,10 @@ impl<M: Memory> EdgePayloadProfileStore<M> {
         self.inner.remove(&label);
     }
 
+    pub fn catalog_label_ids(&self) -> Vec<EdgeLabelId> {
+        self.inner.iter().map(|entry| *entry.key()).collect()
+    }
+
     pub fn into_memory(self) -> M {
         self.inner.into_memory()
     }

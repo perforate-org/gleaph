@@ -62,6 +62,11 @@ impl GraphStore {
         EDGE_PAYLOAD_PROFILES.with_borrow(|store| store.get(label))
     }
 
+    /// Catalog edge labels with an installed payload profile (for predicate fusion fallback).
+    pub(crate) fn edge_catalog_label_ids_with_payload_profiles(&self) -> Vec<EdgeLabelId> {
+        EDGE_PAYLOAD_PROFILES.with_borrow(|store| store.catalog_label_ids())
+    }
+
     pub(crate) fn remove_edge_label_weight_profile(&self, label: EdgeLabelId) {
         EDGE_WEIGHT_PROFILES.with_borrow_mut(|store| store.remove(label));
         EDGE_PAYLOAD_PROFILES.with_borrow_mut(|store| store.remove(label));

@@ -303,6 +303,149 @@ fn union_label_expr_edge_payload_predicate_fuses_per_label() {
 }
 
 #[test]
+fn wildcard_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["WcPayloadA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let match_b = store
+        .insert_vertex_named(["WcPayloadB"], Vec::<(&str, Value)>::new())
+        .expect("match");
+    let skip_b = store
+        .insert_vertex_named(["WcPayloadB"], Vec::<(&str, Value)>::new())
+        .expect("skip");
+    let road = crate::test_labels::edge_label_id_for_name("WcPayloadRoad");
+    let alt = crate::test_labels::edge_label_id_for_name("WcPayloadAlt");
+    for label_id in [road, alt] {
+        store
+            .install_edge_label_payload_profile_at_init(
+                label_id,
+                EdgePayloadProfile {
+                    byte_width: 2,
+                    encoding: EdgePayloadEncoding::WeightRawU16,
+                },
+            )
+            .unwrap();
+    }
+    store
+        .insert_directed_edge_with_payload_bytes(a, match_b, Some(road), &5u16.to_le_bytes())
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(a, skip_b, Some(alt), &9u16.to_le_bytes())
+        .unwrap();
+
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("WcPayloadA".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "a".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: None,
+            label_expr: Some(LabelExpr::Wildcard),
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_payload_predicate: Some(EdgePayloadPredicate {
+                op: CmpOp::Eq,
+                value: ScanValue::Literal(Value::Int64(5)),
+            }),
+            edge_vector_predicate: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: true,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ]);
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("wildcard payload fusion");
+
+    assert_eq!(result.rows.len(), 1);
+}
+
+#[test]
+fn not_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["NotPayloadA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let road_target = store
+        .insert_vertex_named(["NotPayloadB"], Vec::<(&str, Value)>::new())
+        .expect("road");
+    let alt_target = store
+        .insert_vertex_named(["NotPayloadB"], Vec::<(&str, Value)>::new())
+        .expect("alt");
+    let road = crate::test_labels::edge_label_id_for_name("NotPayloadRoad");
+    let alt = crate::test_labels::edge_label_id_for_name("NotPayloadAlt");
+    for label_id in [road, alt] {
+        store
+            .install_edge_label_payload_profile_at_init(
+                label_id,
+                EdgePayloadProfile {
+                    byte_width: 2,
+                    encoding: EdgePayloadEncoding::WeightRawU16,
+                },
+            )
+            .unwrap();
+    }
+    store
+        .insert_directed_edge_with_payload_bytes(a, road_target, Some(road), &5u16.to_le_bytes())
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(a, alt_target, Some(alt), &5u16.to_le_bytes())
+        .unwrap();
+
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("NotPayloadA".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "a".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: None,
+            label_expr: Some(LabelExpr::Not(Box::new(LabelExpr::Name(
+                "NotPayloadRoad".into(),
+            )))),
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_payload_predicate: Some(EdgePayloadPredicate {
+                op: CmpOp::Eq,
+                value: ScanValue::Literal(Value::Int64(5)),
+            }),
+            edge_vector_predicate: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: true,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ]);
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("not label_expr payload fusion");
+
+    assert_eq!(result.rows.len(), 1);
+    assert!(matches!(result.rows[0].get("b"), Some(Value::Record(_))));
+}
+
+#[test]
 fn executes_planner_var_len_expand() {
     let store = GraphStore::new();
     let a = store

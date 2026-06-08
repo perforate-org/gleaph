@@ -7,6 +7,7 @@ use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 
 use super::super::bindings::EdgeBinding;
+use crate::facade::GraphStore;
 use crate::facade::catalog_edge_label_from_wire;
 use crate::gql_execution_context::GqlExecutionContext;
 
@@ -56,6 +57,18 @@ pub(crate) fn fusion_edge_label_ids_for_expr(
         ids.push(execution.resolved_edge_label_id(&name)?);
     }
     Some(ids)
+}
+
+/// Edge label ids to try for index/payload/vector fusion when `label_expr` cannot decompose
+/// to explicit names (wildcard, negation, etc.).
+pub(crate) fn catalog_edge_label_ids_for_predicate_fusion(
+    execution: &GqlExecutionContext,
+    store: &GraphStore,
+) -> Vec<EdgeLabelId> {
+    if let Some(labels) = &execution.resolved_labels {
+        return labels.edge.iter().map(|label| label.id).collect();
+    }
+    store.edge_catalog_label_ids_with_payload_profiles()
 }
 
 fn label_expr_supports_per_label_fusion(expr: &LabelExpr) -> bool {

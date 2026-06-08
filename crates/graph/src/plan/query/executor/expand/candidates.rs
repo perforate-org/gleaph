@@ -12,7 +12,9 @@ use ic_stable_lara::labeled::{
     LabeledEdgePayloadBatchScratch, LabeledPayloadValueBatchScratch, OutEdgeOrder,
 };
 
-use super::label_expr::fusion_edge_label_ids_for_expr;
+use super::label_expr::{
+    catalog_edge_label_ids_for_predicate_fusion, fusion_edge_label_ids_for_expr,
+};
 use super::predicates::{PreparedEdgePayloadPredicate, PreparedEdgeVectorThreshold};
 use super::{
     ExpandDst, edge_matches_indexed_equality, expand_accepts_remote_dst, expand_dst_binding,
@@ -440,9 +442,11 @@ pub(crate) fn expand_candidates_with_label_expr_fusion_into(
     if !has_predicate {
         return Ok(false);
     }
-    let Some(label_ids) = fusion_edge_label_ids_for_expr(execution, label_expr) else {
+    let label_ids = fusion_edge_label_ids_for_expr(execution, label_expr)
+        .unwrap_or_else(|| catalog_edge_label_ids_for_predicate_fusion(execution, store));
+    if label_ids.is_empty() {
         return Ok(false);
-    };
+    }
     for label_id in label_ids {
         expand_candidates_into(
             store,
