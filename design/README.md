@@ -10,7 +10,7 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 |--------|------------|
 | New contributor | [architecture/overview.md](architecture/overview.md) → [glossary.md](glossary.md) |
 | Query / planner work | [gql/layers.md](gql/layers.md) → [gql/plan-format.md](gql/plan-format.md) → [execution/pipeline.md](execution/pipeline.md) |
-| Federation / sharding | [federation/model.md](federation/model.md) → [federation/query-semantics.md](federation/query-semantics.md) |
+| Federation / sharding | [sharding/README.md](sharding/README.md) → [sharding/standalone-mode.md](sharding/standalone-mode.md) → [sharding/federation-target.md](sharding/federation-target.md) |
 | Security / product | [security/rbac-and-prepared.md](security/rbac-and-prepared.md) |
 
 ## Document map
@@ -19,6 +19,10 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 |------|--------|---------|
 | [glossary.md](glossary.md) | draft | Shared terminology |
 | [architecture/overview.md](architecture/overview.md) | draft | Canisters, request flow, crate boundaries |
+| [sharding/README.md](sharding/README.md) | planned | Standalone vs federation target entry |
+| [sharding/standalone-mode.md](sharding/standalone-mode.md) | planned | Default single-shard mode, defer list, module layout |
+| [sharding/federation-target.md](sharding/federation-target.md) | planned | Router-centric index slice, dispatch, merge |
+| [index/lookup-intersection.md](index/lookup-intersection.md) | planned | `lookup_intersection` on graph-index |
 | [federation/model.md](federation/model.md) | draft | Identifiers, placement, remote edges |
 | [federation/operations.md](federation/operations.md) | draft | Lifecycle: register, place, expand |
 | [federation/query-semantics.md](federation/query-semantics.md) | draft | Executor behavior and limits |

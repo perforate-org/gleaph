@@ -1,5 +1,9 @@
 # Federation query semantics
 
+## Status
+
+**Partially Implemented** — immature executor paths (`RemoteVertex` from index hits, graph-side index lookup) coexist with partial router seed routing. **Target semantics** are documented in [../sharding/federation-target.md](../sharding/federation-target.md). Standalone default: [../sharding/standalone-mode.md](../sharding/standalone-mode.md).
+
 ## Purpose
 
 Describe how **federated state appears in query execution**: bindings, expand routing, and known limitations. This complements the physical plan docs in [gql/plan-format.md](../gql/plan-format.md).
@@ -8,38 +12,63 @@ Describe how **federated state appears in query execution**: bindings, expand ro
 
 - Complete `PlanOp` reference ([execution/operators.md](../execution/operators.md)).
 - USE GRAPH remote-graph pushdown (planner feature, not shard placement).
+- Index intersection algorithm (see [index/lookup-intersection.md](../index/lookup-intersection.md)).
 
-## Binding model (executor)
+---
+
+## Target architecture (planned)
+
+See [../sharding/federation-target.md](../sharding/federation-target.md) for the full flow. Summary:
+
+1. **Router** calls graph-index (`lookup_equal` / `lookup_intersection`).
+2. Router **slices** `PostingHit` by `shard_id` and builds **per-shard seeds**.
+3. Each **graph shard** executes the plan locally with seeds; skips leading index anchor ops.
+4. Cross-shard **traverse** uses graph ↔ graph `federated_expand` when needed.
+5. **Router merges** partial results.
+
+Graph shards do **not** receive other shards' index hits for anchor resolution. Index intersection is index-local; slicing is router-local.
+
+---
+
+## Current implementation (legacy / partial)
+
+The following describes **today's code**, which diverges from the target and is scheduled for defer/refactor.
+
+### Binding model (executor)
 
 **Source:** `crates/graph/src/plan/query/executor.rs`, `PlanBinding` enum.
 
-| Binding | When used |
-|---------|-----------|
+| Binding | When used (current) |
+|---------|---------------------|
 | `Vertex(VertexId)` | Local CSR vertex on this shard |
-| `RemoteVertex(LogicalVertexId)` | Index hit or expand result on another shard / logical-only reference |
+| `RemoteVertex(LogicalVertexId)` | Index hit on another shard (legacy index bind path) |
 | `Edge` / `Path` / `Value` | Same as non-federated execution |
 
-`RemoteVertex` is introduced at runtime (e.g. `materialize_federated_index_hits`), not by `gleaph-gql-planner` output schema alone.
+`RemoteVertex` is introduced at runtime (e.g. `materialize_federated_index_hits`), not by `gleaph-gql-planner` output schema alone. **Target:** index anchor binds use seeds → local `Vertex` only; `RemoteVertex` reserved for expand/peer paths if still needed.
 
-## Index scan → multi-shard execution
+### Index scan → execution (current)
 
-1. Router `SeedProbe` finds an equality anchor in the plan.
-2. Index returns `PostingHit` list (possibly multiple shards).
-3. Router executes the **same plan blob** per shard with `seed_bindings_blob` for local ids on that shard.
-4. Foreign-shard hits become `RemoteVertex` where the executor materializes federated index rows.
+Two overlapping paths:
 
-**Constraint:** Plans without an index anchor cannot run on multi-shard graphs (`no index anchor: single-shard graph required`).
+| Path | Behavior | Target disposition |
+|------|----------|-------------------|
+| Router `SeedProbe` + `IndexScan` | Router lookup, per-shard seeds | Keep; extend for intersection |
+| Graph executor `IndexScan` / `IndexIntersection` | Graph calls index; may bind `RemoteVertex` | Defer graph index calls on read path |
 
-## Expand behavior
+**Constraint (current):** Multi-shard plans without an index anchor are rejected at router (`no index anchor: single-shard graph required`).
 
-### Federated expand path (implemented)
+### Expand behavior (current)
 
-When `Expand` source is `RemoteVertex` and `resolve_federated_traversal_vertex` indicates cross-shard routing:
+#### Federated expand path
 
-- Executor calls `federated_expand_coordinator` (`execute_expand` ~2620–2705).
-- Results merged via `expand_rows_from_federated_expand_hits`.
+When `Expand` source is `RemoteVertex` and placement indicates cross-shard routing:
 
-### Local CSR expand (limitations)
+- Executor calls `federated_expand_coordinator` (`graph/src/facade/federation_expand.rs`).
+- Results merged via expand helper paths.
+
+**Target:** peer expand remains; trigger from local traverse rather than index-bound `RemoteVertex` where possible.
+
+#### Local CSR expand (limitations)
 
 When traversal uses **local** `VertexId` but placement says authoritative copy is elsewhere:
 
@@ -52,37 +81,51 @@ When traversal uses **local** `VertexId` but placement says authoritative copy i
 
 `property projection on remote vertex binding` → `InvalidExpressionValue` (remote endpoints cannot hydrate arbitrary property maps locally).
 
-## Placement resolution
+### Placement resolution (current)
 
 `resolve_federated_traversal_vertex` / placement client (`crates/graph/src/index/placement.rs`) map logical → physical for expand direction checks.
 
 Failures surface as `FederatedIndexCall { op: "resolve_logical_at" | "federated_expand", ... }`.
 
-## Planner vs executor gap
+**Target:** placement authority stays on Router for writes; graph placement IC reads deferred or narrowed to expand-time peer routing.
+
+---
+
+## Planner vs runtime
 
 | Layer | Federation awareness |
 |-------|----------------------|
-| `gleaph-gql-planner` | `OutputBindingKind::RemoteVertex` exists; plans do not encode shard routing |
-| Router | Shard dispatch + seeds |
-| Graph executor | `RemoteVertex`, federated expand, placement checks |
+| `gleaph-gql-planner` | Shard-agnostic plans; emits `IndexScan` / `IndexIntersection` |
+| Router | Shard dispatch + seeds (partial) |
+| Graph executor | Legacy index bind + federated expand (partial) |
 
-**Implication:** Correctness depends on router dispatch + executor runtime checks, not on compile-time shard inference in the planner.
+**Target implication:** Correctness for anchors depends on **Router index slice + seeds**, not graph calling index or binding foreign hits.
+
+---
 
 ## Unsupported / partial matrix (representative)
 
-| Scenario | Status |
-|----------|--------|
-| Multi-shard plan without index anchor | **Rejected** at router |
-| `RemoteVertex` + federated expand | **Implemented** (wasm IC) |
-| Local expand on non-authoritative copy | **Unsupported** |
-| Remote vertex property projection in expand | **Unsupported** |
-| Router-driven full migration workflow | **Not implemented** |
-| `federated_expand` on native test host | **Unsupported** |
+| Scenario | Current | Target |
+|----------|---------|--------|
+| Multi-shard plan without index anchor | **Rejected** at router | Same |
+| `IndexIntersection` router seed | **Not implemented** | Router `lookup_intersection` + slice |
+| Graph executor index intersection | **Partial** (client-side intersect) | Remove; index API + router seeds |
+| `RemoteVertex` from index hits | **Partial** in executor | **Defer** |
+| `RemoteVertex` + federated expand | **Partial** (wasm IC) | Peer expand from local traverse |
+| Local expand on non-authoritative copy | **Unsupported** | TBD with placement v2 |
+| Remote vertex property projection | **Unsupported** | **Unsupported** |
+| Router merge of cross-shard rows | **Partial** (counts) | Planned |
+| `federated_expand` on native test host | **Unsupported** | **Unsupported** |
 
-Update this table when adding executor branches or router orchestration.
+Update this table when implementing [../sharding/federation-target.md](../sharding/federation-target.md).
+
+---
 
 ## Related documents
 
+- [../sharding/README.md](../sharding/README.md)
+- [../sharding/federation-target.md](../sharding/federation-target.md)
+- [../index/lookup-intersection.md](../index/lookup-intersection.md)
 - [model.md](model.md)
 - [operations.md](operations.md)
 - [execution/pipeline.md](../execution/pipeline.md)

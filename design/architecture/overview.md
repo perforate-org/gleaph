@@ -48,8 +48,9 @@ flowchart LR
 2. **Parse & classify** — `gleaph_gql::parser`, `program_modification::classify_program`.
 3. **Plan** — `gleaph_gql_planner::build_block_plan_with_schema` → `PhysicalPlan`.
 4. **Encode** — `encode_block_plans` → plan blob + write-path flag.
-5. **Route** — `dispatch_plan_blob`:
-   - If plan has an **index anchor** (`SeedProbe`), lookup postings and fan out to shards.
+5. **Route** — `dispatch_plan_blob` (see [sharding/federation-target.md](../sharding/federation-target.md) for target; [sharding/standalone-mode.md](../sharding/standalone-mode.md) for current standalone focus):
+   - **Target:** Router calls index (`lookup_equal` / `lookup_intersection`), slices `PostingHit` by shard, dispatches with seeds.
+   - **Current:** If plan has an **index anchor** (`SeedProbe` on `IndexScan` only), lookup postings and fan out to shards.
    - If **no anchor** and multiple shards → error (`no index anchor: single-shard graph required`).
    - If single shard → execute locally with optional empty seed.
 6. **Execute** — `execute_plan_on_graph` with `ExecutePlanArgs { target_shard_id, plan_blob, seed_bindings_blob, mode }` (`crates/graph-kernel/src/plan_exec.rs`).
