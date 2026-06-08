@@ -20,7 +20,7 @@ use gleaph_gql_planner::plan::{
 use gleaph_graph_kernel::entry::{
     EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile, EdgeWeightProfile, Vertex, WeightEncoding,
 };
-use ic_stable_lara::{MaintenanceBudget, VertexId, labeled::LabeledOrientation};
+use ic_stable_lara::VertexId;
 use std::collections::BTreeMap;
 use std::hint::black_box;
 
@@ -249,20 +249,6 @@ fn setup_frontier_heap_graph(store: &GraphStore) -> (VertexId, VertexId) {
 const CACHE_PREFIX_COUNT: usize = 48;
 const CACHE_HUB_OUT_DEGREE: usize = 24;
 
-/// Many prefixes converge on one hub, then repeatedly expand the same hub outgoing edges.
-fn drain_lara_maintenance(store: &GraphStore) {
-    store
-        .run_maintenance_best_effort(MaintenanceBudget {
-            max_instructions: 0,
-            reserve_instructions: 0,
-            checkpoint_every: 1,
-            max_work_items: None,
-            max_segments: None,
-            max_delete_edge_steps: None,
-        })
-        .expect("drain LARA maintenance");
-}
-
 fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, VertexId) {
     let src = store
         .insert_vertex_named(["BenchWspCacheSrc"], Vec::<(&str, Value)>::new())
@@ -308,8 +294,6 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
             )
             .unwrap_or_else(|e| panic!("src->prefix i={i}: {e:?}"));
     }
-    drain_lara_maintenance(store);
-
     for j in 0..CACHE_HUB_OUT_DEGREE {
         let spoke = store
             .insert_vertex_named(["BenchWspSpoke"], Vec::<(&str, Value)>::new())
@@ -326,13 +310,6 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
             .insert_directed_edge_with_payload_bytes(spoke, dst, Some(road), &1u16.to_le_bytes())
             .expect("spoke->dst");
     }
-
-    store.with_graph_mut(|graph| {
-        graph
-            .mark_compact_vertex_edge_span(LabeledOrientation::Forward, src, 0)
-            .expect("mark src edge-span compaction");
-    });
-    drain_lara_maintenance(store);
 
     (src, dst)
 }

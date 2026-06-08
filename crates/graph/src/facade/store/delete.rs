@@ -2,8 +2,7 @@
 
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, TaggedEdgeLabelId};
 use ic_stable_lara::{
-    BucketLabelKey as LaraLabelId, MaintenanceBudget, VertexId, labeled::OutEdgeOrder,
-    traits::CsrEdge,
+    BucketLabelKey as LaraLabelId, VertexId, labeled::OutEdgeOrder, traits::CsrEdge,
 };
 
 use super::GraphStore;
@@ -130,19 +129,6 @@ impl GraphStore {
             )?;
         }
         self.drain_deferred_maintenance()?;
-        Ok(())
-    }
-
-    fn drain_deferred_maintenance(&self) -> Result<(), GraphStoreError> {
-        let budget = MaintenanceBudget {
-            max_instructions: 0,
-            reserve_instructions: 0,
-            checkpoint_every: 1,
-            max_work_items: None,
-            max_segments: None,
-            max_delete_edge_steps: None,
-        };
-        self.run_maintenance_best_effort(budget)?;
         Ok(())
     }
 }

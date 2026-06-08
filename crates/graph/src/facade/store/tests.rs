@@ -1108,3 +1108,41 @@ fn reverse_edge_compaction_moves_alias_keys() {
         Some(Value::Int64(44))
     );
 }
+
+#[test]
+fn post_insert_maintenance_reclaims_parallel_overflow_bucket_to_dense() {
+    let store = GraphStore::new();
+    let source = store.insert_vertex().expect("source");
+    let label = crate::test_labels::edge_label_id_for_name("PostInsertOverflowReclaim");
+    install_w2_weight_profile(&store, label);
+
+    for i in 0..48u16 {
+        let target = store.insert_vertex().expect("target");
+        store
+            .insert_directed_edge_with_payload_bytes(source, target, Some(label), &i.to_le_bytes())
+            .unwrap_or_else(|e| panic!("edge i={i}: {e:?}"));
+    }
+
+    let mut scratch = LabeledEdgePayloadBatchScratch::default();
+    let mut dense = None;
+    store
+        .visit_directed_out_edge_payload_batches_for_label(
+            source,
+            label,
+            OutEdgeOrder::Descending,
+            &mut scratch,
+            |batch| dense = Some(batch.dense),
+        )
+        .expect("payload batches");
+
+    assert_eq!(
+        dense,
+        Some(true),
+        "post-insert maintenance should fold parallel overflow bucket to dense-eligible"
+    );
+    assert_eq!(
+        store.directed_out_edges(source).expect("out").len(),
+        48,
+        "topology must stay intact after reclaim"
+    );
+}

@@ -105,6 +105,7 @@ impl GraphStore {
             payload_bytes,
             handle,
         )?;
+        self.run_post_edge_insert_maintenance()?;
         Ok(handle)
     }
 

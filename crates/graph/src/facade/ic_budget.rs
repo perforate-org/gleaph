@@ -25,10 +25,9 @@ pub const GRAPH_TIMER_LARA_RESERVE_INSTRUCTIONS: u64 = 100_000_000;
 /// [`MaintenanceBudget`] suited for **timer / heartbeat** draining of the
 /// deferred LARA queue in production canisters.
 ///
-/// Synchronous [`crate::GraphStore`] mutation paths that
-/// call `drain_deferred_maintenance` keep `max_instructions: 0` so a single
-/// message still fully drains when the instruction counter is unused (native
-/// tests) or when the graph is small enough not to trap.
+/// Delete paths call [`crate::GraphStore::drain_deferred_maintenance`] with
+/// [`unlimited_lara_maintenance_budget`]. Edge inserts use
+/// [`post_edge_insert_maintenance_budget`] instead (timer cap on canisters).
 #[inline]
 pub const fn timer_lara_maintenance_budget() -> MaintenanceBudget {
     MaintenanceBudget {
@@ -39,6 +38,39 @@ pub const fn timer_lara_maintenance_budget() -> MaintenanceBudget {
         max_segments: None,
         max_delete_edge_steps: None,
     }
+}
+
+/// Drains the full deferred maintenance queue (no instruction cap).
+///
+/// Used after destructive mutations on native targets and in tests where the
+/// instruction counter is unused.
+#[inline]
+pub const fn unlimited_lara_maintenance_budget() -> MaintenanceBudget {
+    MaintenanceBudget {
+        max_instructions: 0,
+        reserve_instructions: 0,
+        checkpoint_every: 1,
+        max_work_items: None,
+        max_segments: None,
+        max_delete_edge_steps: None,
+    }
+}
+
+/// Best-effort maintenance budget after a local edge insert.
+///
+/// On canisters, uses the timer budget so bulk ingest in one update message does
+/// not trap while still reclaiming overflow on hot vertices incrementally. Native
+/// builds drain fully so tests and local benches see dense-eligible buckets.
+#[cfg(target_family = "wasm")]
+#[inline]
+pub const fn post_edge_insert_maintenance_budget() -> MaintenanceBudget {
+    timer_lara_maintenance_budget()
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[inline]
+pub const fn post_edge_insert_maintenance_budget() -> MaintenanceBudget {
+    unlimited_lara_maintenance_budget()
 }
 
 #[cfg(test)]

@@ -165,7 +165,9 @@ Vertices that fail this (e.g. converging-hub **src** with 48 edges, `stored_slot
 Options for later:
 
 - Walk payload log in lockstep with edge overflow iterator (same entry index), emitting value batches without full `Edge` materialization
-- Fold-to-slab maintenance to increase dense eligibility on hot hubs
+- Fold-to-slab maintenance to increase dense eligibility on hot hubs (production:
+  `GraphStore` edge inserts drain the LARA maintenance queue via
+  `post_edge_insert_maintenance_budget`; delete paths drain fully)
 - Property / equality index to reduce visited slots without full payload scan
 
 ## Migration plan

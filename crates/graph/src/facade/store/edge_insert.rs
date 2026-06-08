@@ -75,6 +75,7 @@ impl GraphStore {
             &[],
             canonical,
         )?;
+        self.run_post_edge_insert_maintenance()?;
         Ok(canonical)
     }
 
@@ -128,6 +129,7 @@ impl GraphStore {
             payload_bytes,
             canonical,
         )?;
+        self.run_post_edge_insert_maintenance()?;
         Ok(canonical)
     }
 
@@ -193,6 +195,7 @@ impl GraphStore {
             &[],
             canonical,
         )?;
+        self.run_post_edge_insert_maintenance()?;
         Ok(canonical)
     }
 
@@ -268,6 +271,7 @@ impl GraphStore {
             payload_bytes,
             canonical,
         )?;
+        self.run_post_edge_insert_maintenance()?;
         Ok(canonical)
     }
 
