@@ -155,6 +155,18 @@ pub(crate) fn vertex_group_element_at_index(vertices: &[VertexId], index: i64) -
 }
 
 /// Resolve a list index for an edge group (`0` / `-1` supported).
+pub(crate) fn path_group_element_at_index(
+    paths: &[super::path::PathBinding],
+    index: i64,
+) -> Option<&super::path::PathBinding> {
+    if paths.is_empty() {
+        return None;
+    }
+    let len = paths.len() as i64;
+    let idx = if index < 0 { len + index } else { index };
+    usize::try_from(idx).ok().and_then(|i| paths.get(i))
+}
+
 pub(crate) fn edge_group_element_at_index(
     edges: &[EdgeBinding],
     index: i64,

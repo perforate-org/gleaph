@@ -360,4 +360,5 @@ pub enum ShortestModeWire {
     AnyShortest,
     AllShortest,
     ShortestK(u64),
+    ShortestKGroup(u64),
 }

@@ -14,6 +14,8 @@ Align variable-length expand semantics with GQL **group variables**: outside the
 | `{min,max}` `Expand` with `emit_edge_binding` | `PlanBinding::EdgeGroup(Arc<[EdgeBinding]>)` |
 | `{min,max}` `Expand` with `near_group_var` / `far_group_var` | `PlanBinding::VertexGroup(Arc<[VertexId]>)` per hop |
 | `{min,max}` `Expand` with `emit_path_binding` | `PlanBinding::Path(PathBinding)` (lazy, materializes to `Value::Path`) |
+| `SHORTEST k GROUP` with `path_var` | `PlanBinding::PathGroup` (materializes to `Value::List` of `Value::Path`) |
+| `SHORTEST k GROUP` with `edge` emitted | `PlanBinding::EdgeGroup` (last-hop edges) |
 | `{min,max}` `Expand` with `hop_aux_binding` | `PlanBinding::Value` — `Value::List` of `Value::Bytes` per hop (inline payload) |
 | Single-hop `Expand` with `hop_aux_binding` | `PlanBinding::Value(Value::Bytes)` or `Value::Null` when payload empty |
 
@@ -31,13 +33,23 @@ Patterns like `MATCH (a)((u)-[e:L]->(v)){m,n}(c)` lower to one `PlanOp::Expand` 
 
 `MATCH p = (a)-[e:L]->{m,n}(b)` (no `SHORTEST` prefix) plans `path_var: Some(p)` on the var_len `Expand`. Binding uses the same `PathBinding` / `Value::Path` materialization as `ShortestPath`. Single-hop `MATCH p = (a)-[e]->(b)` remains unsupported.
 
+### `SHORTEST k GROUP`
+
+`MATCH SHORTEST k GROUP …` plans `ShortestPath` with `mode: ShortestKGroup(k)`. The executor emits **one row** per input row:
+
+- `path_var` → `PlanBinding::PathGroup` (materializes to `Value::List` of `Value::Path`)
+- `edge` → `PlanBinding::EdgeGroup` of last-hop edges (when emitted)
+
+`SHORTEST k` without `GROUP` still emits **one row per path** (`ShortestK(k)`).
+
 ## Expression rules
 
 | Expression | Status |
 |------------|--------|
 | `RETURN e`, `RETURN u` | OK → list of records |
 | `RETURN e__hop_aux` | OK → `Value::Bytes` (single hop) or `Value::List` of bytes (var_len) |
-| `RETURN p` | OK → `Value::Path` |
+| `RETURN p` | OK → `Value::Path` (singleton) or `Value::List` of paths (`SHORTEST k GROUP`) |
+| `CARDINALITY(p)` | OK on `PathGroup` |
 | `CARDINALITY(e)`, `CARDINALITY(u)` | OK |
 | `GLEAPH.WEIGHT(e[-1])`, `u[0]`, `v[-1]` | OK (Cypher list index; requires `cypher` feature on `gleaph-gql`) |
 | `LET x = SUM(GLEAPH.WEIGHT(e))` | OK (horizontal sum over group in one row) |

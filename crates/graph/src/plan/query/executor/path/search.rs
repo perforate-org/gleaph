@@ -64,7 +64,7 @@ pub(crate) fn shortest_paths_between(
     store_hop_edges: bool,
     load_edge_payloads: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
-    if let ShortestMode::ShortestK(k) = mode {
+    if let Some(k) = mode.shortest_k_limit() {
         return shortest_k_hop_paths_between(
             store,
             src,

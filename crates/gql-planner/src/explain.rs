@@ -508,6 +508,12 @@ fn format_op(op: &PlanOp) -> String {
                         src, arrow.0, edge, label_str, label_expr_str, bounds, arrow.1, dst, k
                     );
                 }
+                ShortestMode::ShortestKGroup(k) => {
+                    return format!(
+                        "ShortestPath({} {}[{}{}{}]{} {}{}, SHORTEST {} GROUP{cost_str})",
+                        src, arrow.0, edge, label_str, label_expr_str, bounds, arrow.1, dst, k
+                    );
+                }
             };
             format!(
                 "ShortestPath({} {}[{}{}{}]{} {}{}, {}{cost_str})",

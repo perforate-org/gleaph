@@ -95,6 +95,8 @@ pub enum PlanBinding {
     Value(Value),
     /// Shortest-path walk materialized to [`Value::Path`] only in [`binding_to_value`] / expression eval.
     Path(PathBinding),
+    /// Up to k shortest paths on one row (`SHORTEST k GROUP`).
+    PathGroup(std::sync::Arc<[PathBinding]>),
 }
 
 pub use super::row::{PlanQueryRow, PlanRow};

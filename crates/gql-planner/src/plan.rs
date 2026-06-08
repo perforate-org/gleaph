@@ -815,8 +815,25 @@ pub enum ShortestMode {
     AnyShortest,
     /// All shortest paths.
     AllShortest,
-    /// Up to k shortest paths.
+    /// Up to k shortest paths (one output row per path).
     ShortestK(u64),
+    /// Up to k shortest paths grouped into one row (`SHORTEST k GROUP`).
+    ShortestKGroup(u64),
+}
+
+impl ShortestMode {
+    /// Hop-count / weighted k-shortest limit shared by [`ShortestK`] and [`ShortestKGroup`].
+    pub fn shortest_k_limit(self) -> Option<u64> {
+        match self {
+            Self::ShortestK(k) | Self::ShortestKGroup(k) => Some(k),
+            _ => None,
+        }
+    }
+
+    /// When true, path and edge bindings are emitted as groups on a single row.
+    pub fn emits_path_group(self) -> bool {
+        matches!(self, Self::ShortestKGroup(_))
+    }
 }
 
 /// A candidate for conditional index scan.

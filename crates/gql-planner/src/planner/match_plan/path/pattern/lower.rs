@@ -29,6 +29,7 @@ pub(super) fn plan_path_pattern(
             SearchPrefix::AnyShortest { .. } => Some(ShortestMode::AnyShortest),
             SearchPrefix::AllShortest { .. } => Some(ShortestMode::AllShortest),
             SearchPrefix::ShortestK { k, .. } => Some(ShortestMode::ShortestK(*k)),
+            SearchPrefix::ShortestKGroup { k, .. } => Some(ShortestMode::ShortestKGroup(*k)),
             _ => None,
         },
         _ => None,

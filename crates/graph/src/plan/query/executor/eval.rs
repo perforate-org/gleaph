@@ -15,7 +15,10 @@ use ic_stable_lara::VertexId;
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::PlanBinding;
-use super::bindings::{EdgeBinding, edge_group_element_at_index, vertex_group_element_at_index};
+use super::bindings::{
+    EdgeBinding, edge_group_element_at_index, path_group_element_at_index,
+    vertex_group_element_at_index,
+};
 use super::context::QueryExprEvaluator;
 use super::path::{
     edge_element_id_bytes, local_shard_id, path_binding_to_value, vertex_element_id_bytes,
@@ -93,6 +96,10 @@ fn eval_list_index_value(
                     .transpose()?
                     .map_or(Ok(Value::Null), Ok)
             }
+            Some(PlanBinding::PathGroup(paths)) => match path_group_element_at_index(paths, idx) {
+                Some(pb) => Ok(path_binding_to_value(evaluator.store, pb)),
+                None => Ok(Value::Null),
+            },
             Some(binding) => {
                 let value = binding_to_value(evaluator.store, evaluator.resolved_labels, binding)?;
                 list_index_into_value(&value, idx)
@@ -558,6 +565,9 @@ impl QueryExprEvaluator<'_> {
                         Some(PlanBinding::VertexGroup(vertices)) => {
                             return Ok(Value::Int64(vertices.len() as i64));
                         }
+                        Some(PlanBinding::PathGroup(paths)) => {
+                            return Ok(Value::Int64(paths.len() as i64));
+                        }
                         Some(binding) => {
                             let value =
                                 binding_to_value(self.store, self.resolved_labels, binding)?;
@@ -645,6 +655,7 @@ impl QueryExprEvaluator<'_> {
                 | PlanBinding::EdgeGroup(_)
                 | PlanBinding::VertexGroup(_)
                 | PlanBinding::Path(_)
+                | PlanBinding::PathGroup(_)
                 | PlanBinding::RemoteVertex(_),
             ) => Ok(false),
             None => Err(PlanQueryError::MissingBinding {
@@ -686,6 +697,11 @@ impl QueryExprEvaluator<'_> {
                     &path_binding_to_value(self.store, pb),
                     property,
                 )),
+                Some(PlanBinding::PathGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
+                    expression: format!(
+                        "property access on group path variable '{name}.{property}' requires element indexing"
+                    ),
+                }),
                 Some(PlanBinding::RemoteVertex(_)) => Ok(Value::Null),
                 None => Err(PlanQueryError::MissingBinding {
                     variable: name.clone(),
@@ -721,6 +737,11 @@ impl QueryExprEvaluator<'_> {
                 Some(PlanBinding::VertexGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
                     expression: format!(
                         "ELEMENT_ID({name}) on a group node variable requires element indexing"
+                    ),
+                }),
+                Some(PlanBinding::PathGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
+                    expression: format!(
+                        "ELEMENT_ID({name}) on a group path variable requires element indexing"
                     ),
                 }),
                 Some(PlanBinding::Value(Value::Null)) => Ok(Value::Null),
@@ -877,6 +898,12 @@ pub(crate) fn binding_to_value(
         )),
         PlanBinding::Value(value) => Ok(value.clone()),
         PlanBinding::Path(pb) => Ok(path_binding_to_value(store, pb)),
+        PlanBinding::PathGroup(paths) => Ok(Value::List(
+            paths
+                .iter()
+                .map(|pb| path_binding_to_value(store, pb))
+                .collect(),
+        )),
     }
 }
 

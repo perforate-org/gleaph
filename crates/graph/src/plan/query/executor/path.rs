@@ -171,7 +171,6 @@ pub(crate) async fn execute_shortest_path(
             )?,
         };
         let ShortestPathSearchResult { states, found } = paths;
-        out.reserve(found.len());
         let edge_key = emit_edge_binding.then(|| edge.to_string());
         let path_key = emit_path_binding
             .then(|| path_var.map(|path_var| path_var.to_string()))
@@ -191,6 +190,49 @@ pub(crate) async fn execute_shortest_path(
             let path_key = path_key.as_ref().expect("path_only_rows implies path_key");
             Rc::new(BindingLayout::single(Str::from(path_key.as_str())))
         });
+        if mode.emits_path_group() {
+            if found.is_empty() {
+                continue;
+            }
+            let path_group: Arc<[PathBinding]> = found
+                .iter()
+                .map(|&state_idx| PathBinding {
+                    shard_id,
+                    states: Arc::clone(&path_states),
+                    leaf_state_idx: state_idx,
+                })
+                .collect();
+            let edge_group: Arc<[EdgeBinding]> = found
+                .iter()
+                .filter_map(|&state_idx| path_states[state_idx].edge.clone())
+                .collect();
+            let path_group_binding = PlanBinding::PathGroup(path_group);
+            let row = if path_only_rows {
+                let path_key = path_key.as_ref().expect("path_only_rows implies path_key");
+                PlanRow::with_layout_and_binding(
+                    Rc::clone(path_only_layout.as_ref().expect("path_only_layout")),
+                    path_key,
+                    path_group_binding,
+                )
+            } else {
+                let mut updates = Vec::with_capacity(2);
+                if let Some(edge_key) = edge_key.as_deref() {
+                    let edge_binding = if edge_group.is_empty() {
+                        PlanBinding::Value(Value::Null)
+                    } else {
+                        PlanBinding::EdgeGroup(edge_group)
+                    };
+                    updates.push((edge_key, edge_binding));
+                }
+                if let Some(path_key) = path_key.as_deref() {
+                    updates.push((path_key, path_group_binding));
+                }
+                row.fork(updates)
+            };
+            out.push(row);
+            continue;
+        }
+        out.reserve(found.len());
         for state_idx in found {
             let path_binding = PlanBinding::Path(PathBinding {
                 shard_id,

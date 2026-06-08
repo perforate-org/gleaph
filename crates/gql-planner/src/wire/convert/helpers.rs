@@ -319,6 +319,7 @@ pub(super) fn shortest_mode_to_wire(m: ShortestMode) -> ShortestModeWire {
         ShortestMode::AnyShortest => ShortestModeWire::AnyShortest,
         ShortestMode::AllShortest => ShortestModeWire::AllShortest,
         ShortestMode::ShortestK(k) => ShortestModeWire::ShortestK(k),
+        ShortestMode::ShortestKGroup(k) => ShortestModeWire::ShortestKGroup(k),
     }
 }
 
@@ -327,5 +328,6 @@ pub(super) fn shortest_mode_from_wire(m: ShortestModeWire) -> ShortestMode {
         ShortestModeWire::AnyShortest => ShortestMode::AnyShortest,
         ShortestModeWire::AllShortest => ShortestMode::AllShortest,
         ShortestModeWire::ShortestK(k) => ShortestMode::ShortestK(k),
+        ShortestModeWire::ShortestKGroup(k) => ShortestMode::ShortestKGroup(k),
     }
 }

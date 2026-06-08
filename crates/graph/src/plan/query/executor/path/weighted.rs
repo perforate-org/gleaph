@@ -50,7 +50,7 @@ pub(crate) fn weighted_shortest_can_use_hop_count(mode: ShortestMode, cost_expr:
     match mode {
         ShortestMode::AnyShortest => true,
         ShortestMode::AllShortest => matches!(cost.cmp(&WeightedCost::zero()), Ordering::Greater),
-        ShortestMode::ShortestK(_) => false,
+        ShortestMode::ShortestK(_) | ShortestMode::ShortestKGroup(_) => false,
     }
 }
 
@@ -351,7 +351,7 @@ pub(crate) fn weighted_shortest_paths_between(
     store_hop_edges: bool,
     emit_edge_binding: bool,
 ) -> Result<ShortestPathSearchResult, PlanQueryError> {
-    if let ShortestMode::ShortestK(k) = mode {
+    if let Some(k) = mode.shortest_k_limit() {
         return weighted_shortest_k_paths_between(
             store,
             src,

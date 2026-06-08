@@ -2527,6 +2527,20 @@ fn shortest_path_pattern_variable_is_planned() {
     assert_eq!(&*path_var, "p");
 }
 
+#[test]
+fn shortest_k_group_is_planned_as_shortest_k_group_mode() {
+    let plan = plan_query("MATCH SHORTEST 2 PATHS GROUP (a)-[e:REL]->(b) RETURN a, b");
+    let mode = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::ShortestPath { mode, .. } => Some(*mode),
+            _ => None,
+        })
+        .expect("ShortestPath op");
+    assert_eq!(mode, ShortestMode::ShortestKGroup(2));
+}
+
 fn shortest_path_emit_flags(plan: &PhysicalPlan) -> (bool, bool) {
     plan.ops
         .iter()

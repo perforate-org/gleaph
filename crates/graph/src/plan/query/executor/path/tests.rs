@@ -739,6 +739,98 @@ fn shortest_k_returns_up_to_k_paths_by_hop_count() {
 }
 
 #[test]
+fn shortest_k_group_returns_one_row_with_path_list() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["ShortestKGrpSource"], [("name", Value::Text("a".into()))])
+        .expect("insert a");
+    let b1 = store
+        .insert_vertex_named(["ShortestKGrpMid"], [("name", Value::Text("b1".into()))])
+        .expect("insert b1");
+    let b2 = store
+        .insert_vertex_named(["ShortestKGrpMid"], [("name", Value::Text("b2".into()))])
+        .expect("insert b2");
+    let c = store
+        .insert_vertex_named(["ShortestKGrpTarget"], [("name", Value::Text("c".into()))])
+        .expect("insert c");
+    store
+        .insert_directed_edge_named(a, b1, Some("ShortestKGrpRel"), Vec::<(&str, Value)>::new())
+        .expect("insert a-b1");
+    store
+        .insert_directed_edge_named(b1, c, Some("ShortestKGrpRel"), Vec::<(&str, Value)>::new())
+        .expect("insert b1-c");
+    store
+        .insert_directed_edge_named(a, b2, Some("ShortestKGrpRel"), Vec::<(&str, Value)>::new())
+        .expect("insert a-b2");
+    store
+        .insert_directed_edge_named(b2, c, Some("ShortestKGrpRel"), Vec::<(&str, Value)>::new())
+        .expect("insert b2-c");
+
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("ShortestKGrpSource".into()),
+            property_projection: None,
+        },
+        PlanOp::NodeScan {
+            variable: "c".into(),
+            label: Some("ShortestKGrpTarget".into()),
+            property_projection: None,
+        },
+        PlanOp::ShortestPath {
+            src: "a".into(),
+            dst: "c".into(),
+            edge: "e".into(),
+            path_var: Some("p".into()),
+            emit_edge_binding: true,
+            emit_path_binding: true,
+            mode: ShortestMode::ShortestKGroup(2),
+            direction: EdgeDirection::PointingRight,
+            label: Some("ShortestKGrpRel".into()),
+            label_expr: None,
+            var_len: Some(VarLenSpec {
+                min: 1,
+                max: Some(3),
+            }),
+            cost: ShortestPathCost::HopCount,
+        },
+        PlanOp::Project {
+            columns: vec![
+                project(var("p"), "p"),
+                project(
+                    Expr::new(ExprKind::Cardinality {
+                        keyword: gleaph_gql::ast::Keyword::new("CARDINALITY"),
+                        expr: Box::new(Expr::new(ExprKind::Variable("p".into()))),
+                    }),
+                    "path_count",
+                ),
+            ],
+            distinct: false,
+        },
+    ]);
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("shortest k group");
+
+    assert_eq!(result.rows.len(), 1);
+    let paths = match result.rows[0].get("p") {
+        Some(Value::List(items)) => items,
+        other => panic!("expected path list, got {other:?}"),
+    };
+    assert_eq!(paths.len(), 2);
+    for path in paths {
+        let Value::Path(elements) = path else {
+            panic!("expected path elements, got {path:?}");
+        };
+        assert_eq!(elements.len(), 5);
+        assert_path_vertex_local(&store, &elements[0], a);
+        assert_path_vertex_local(&store, &elements[4], c);
+    }
+    assert_eq!(result.rows[0].get("path_count"), Some(&Value::Int64(2)));
+}
+
+#[test]
 fn shortest_path_union_label_expr_filters_edges() {
     let store = GraphStore::new();
     let a = store

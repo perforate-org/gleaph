@@ -266,6 +266,15 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
             hasher.write_usize(Arc::as_ptr(&pb.states) as usize);
             hasher.write_usize(pb.states.len());
         }
+        PlanBinding::PathGroup(paths) => {
+            hasher.write_u8(8);
+            hasher.write_usize(paths.len());
+            for pb in paths.iter() {
+                hasher.write_u32(pb.shard_id);
+                hasher.write_usize(pb.leaf_state_idx);
+                hasher.write_usize(Arc::as_ptr(&pb.states) as usize);
+            }
+        }
         PlanBinding::RemoteVertex(logical) => {
             hasher.write_u8(5);
             hasher.write_u64(*logical);
