@@ -58,7 +58,14 @@ Blob identity is derived from `(leaf_segment, entry_idx)` via `EdgePayloadBlobId
 2. **Leaf release** — `drain_leaf_segment` on `payload_blobs` when the payload log segment is reclaimed.
 3. **Before write** — idempotent `drop_log_site` before each log append (handles slot reuse after release).
 
+## Traversal API
+
+**Implemented:** `visit_out_edge_payload_batches_for_label` reads edge rows and payload bytes together (dense: parallel bulk read; sparse: per-edge attach).
+
+**Planned:** payload-first two-phase traversal — see [payload-first-traversal.md](./payload-first-traversal.md).
+
 ## Related
 
+- [payload-first-traversal.md](./payload-first-traversal.md)
 - [lara-and-facade.md](./lara-and-facade.md)
 - `crates/ic-stable-lara/src/lara/edge_payload/`

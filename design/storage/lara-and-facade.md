@@ -82,6 +82,7 @@ Placement client calls router for resolve/commit/release (`index/placement.rs`).
 
 - [lara-dgap-contract.md](./lara-dgap-contract.md)
 - [labeled-edge-payloads.md](./labeled-edge-payloads.md)
+- [payload-first-traversal.md](./payload-first-traversal.md)
 - [federation/model.md](../federation/model.md)
 - [index/property-index.md](../index/property-index.md)
 - [execution/pipeline.md](../execution/pipeline.md)
