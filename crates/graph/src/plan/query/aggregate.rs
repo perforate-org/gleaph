@@ -15,6 +15,16 @@ use std::cmp::Ordering;
 pub(crate) trait PlanRowExprEval {
     fn eval_expr_for_row(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError>;
 
+    /// When set, folds one aggregate operand over a variable-length edge group in-row
+    /// (e.g. `SUM(GLEAPH.WEIGHT(e))` with `e` bound to [`PlanBinding::EdgeGroup`]).
+    fn try_eval_horizontal_sum_operand(
+        &self,
+        _row: &PlanRow,
+        _expr: &Expr,
+    ) -> Result<Option<Value>, PlanQueryError> {
+        Ok(None)
+    }
+
     /// Sort-key evaluation for aggregate-local `ORDER BY` (mirrors executor sort rows).
     fn eval_sort_key_for_row(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
         self.eval_expr_for_row(row, expr)
@@ -414,10 +424,12 @@ impl AggState {
                 acc,
                 seen,
             } => {
-                let v = evaluator.eval_expr_for_row(
-                    row,
-                    spec.expr.as_ref().expect("validated aggregate expr"),
-                )?;
+                let inner = spec.expr.as_ref().expect("validated aggregate expr");
+                let v = if let Some(v) = evaluator.try_eval_horizontal_sum_operand(row, inner)? {
+                    v
+                } else {
+                    evaluator.eval_expr_for_row(row, inner)?
+                };
                 if v == Value::Null {
                     return Ok(());
                 }

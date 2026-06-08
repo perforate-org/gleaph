@@ -24,6 +24,7 @@ Align variable-length expand semantics with GQL **group variables**: outside the
 | `CARDINALITY(e)` | OK |
 | `GLEAPH.WEIGHT(e[-1])`, `GLEAPH.WEIGHT(e[0])` | OK (Cypher list index; requires `cypher` feature on `gleaph-gql`) |
 | `LET x = SUM(GLEAPH.WEIGHT(e))` | OK (horizontal sum over group in one row) |
+| `RETURN SUM(GLEAPH.WEIGHT(e))` (implicit `PlanOp::Aggregate`) | OK (same horizontal fold per input row) |
 | `GLEAPH.WEIGHT(e)` | **Error** at evaluation (group, not singleton) |
 | `e.prop` | **Error** (use indexed element first) |
 | `WHERE GLEAPH.WEIGHT(e) = …` on var_len | Planner may still **fuse** to per-hop `edge_payload_predicate` (search semantics unchanged) |
@@ -34,7 +35,7 @@ Align variable-length expand semantics with GQL **group variables**: outside the
 
 - Node group variables from parenthesized quantified subpaths
 - `path_var` on var_len expand
-- `RETURN SUM(GLEAPH.WEIGHT(e))` without `LET` when planner emits `PlanOp::Aggregate` (global aggregate over rows, not horizontal group fold)
+- `hop_aux_binding` executor (per-hop opaque bytes group)
 
 ## Related
 

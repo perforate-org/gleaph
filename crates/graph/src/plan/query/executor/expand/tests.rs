@@ -1396,7 +1396,7 @@ fn gql_var_len_return_gleaph_weight_decodes_indexed_last_hop_edge() {
 }
 
 #[test]
-fn gql_var_len_return_sum_gleaph_weight_over_edge_group() {
+fn gql_var_len_return_sum_gleaph_weight_over_edge_group_via_let() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
     let a = store
@@ -1432,6 +1432,56 @@ fn gql_var_len_return_sum_gleaph_weight_over_edge_group() {
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
         .expect("var_len sum gleaph weight");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(result.rows[0].get("total"), Some(&Value::Float32(10.0)));
+    assert_eq!(result.rows[0].get("hops"), Some(&Value::Int64(2)));
+}
+
+#[test]
+fn gql_var_len_return_sum_gleaph_weight_implicit_aggregate() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    let a = store
+        .insert_vertex_named(["VarLenSumRetA"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["VarLenSumRetMid"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    let c = store
+        .insert_vertex_named(["VarLenSumRetC"], Vec::<(&str, Value)>::new())
+        .expect("c");
+    let label_id = crate::test_labels::edge_label_id_for_name("VarLenSumRetRoad");
+    store
+        .install_edge_label_payload_profile_at_init(
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        )
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
+        .unwrap();
+    store
+        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
+        .unwrap();
+
+    let plan = plan_gql(
+        "MATCH (a:VarLenSumRetA)-[e:VarLenSumRetRoad]->{2,2}(c:VarLenSumRetC) \
+         RETURN SUM(GLEAPH.WEIGHT(e)) AS total, CARDINALITY(e) AS hops",
+    );
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Aggregate { .. })),
+        "planner should emit implicit aggregate for RETURN SUM(...): {:?}",
+        plan.ops
+    );
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("var_len RETURN SUM gleaph weight");
 
     assert_eq!(result.rows.len(), 1);
     assert_eq!(result.rows[0].get("total"), Some(&Value::Float32(10.0)));

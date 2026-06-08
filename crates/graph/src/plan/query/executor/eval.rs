@@ -727,6 +727,14 @@ impl super::super::aggregate::PlanRowExprEval for QueryExprEvaluator<'_> {
         QueryExprEvaluator::eval_expr(self, row, expr)
     }
 
+    fn try_eval_horizontal_sum_operand(
+        &self,
+        row: &PlanRow,
+        expr: &Expr,
+    ) -> Result<Option<Value>, PlanQueryError> {
+        try_eval_horizontal_sum_gleaph_weight(self, row, expr)
+    }
+
     fn eval_sort_key_for_row(&self, row: &PlanRow, expr: &Expr) -> Result<Value, PlanQueryError> {
         eval_sort_expr(self, row, expr)
     }
