@@ -52,7 +52,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 | PlanOp | Status | Notes |
 |--------|--------|-------|
 | `Let` | Exec | |
-| `For` | Exec | `WITH OFFSET` not yet supported in planner/executor |
+| `For` | Exec | `WITH ORDINALITY` (1-based) and `WITH OFFSET` (0-based) |
 | `CallProcedure` / `InlineProcedureCall` | Partial | Inline `CALL { ... }` exec; named `CallProcedure` not implemented |
 | `UseGraph` | Partial | Remote graph; distinct from shard federation |
 

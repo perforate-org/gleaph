@@ -98,6 +98,7 @@ pub(super) fn plan_simple_statement(
                 variable: f.variable.clone().into(),
                 list: f.list.clone(),
                 ordinality: f.ordinality.as_ref().map(|o| o.variable.clone().into()),
+                offset_keyword: f.ordinality.as_ref().is_some_and(|o| o.offset_keyword),
             });
             Ok(())
         }

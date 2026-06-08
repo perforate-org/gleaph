@@ -250,10 +250,12 @@ impl<'a> Decoder<'a> {
                 variable,
                 list,
                 ordinality,
+                offset_keyword,
             } => PlanOp::For {
                 variable: rc_str(variable),
                 list: self.expr(*list)?,
                 ordinality: opt_rc_str(ordinality),
+                offset_keyword: *offset_keyword,
             },
             PlanOpWire::Filter { condition } => PlanOp::Filter {
                 condition: self.expr(*condition)?,

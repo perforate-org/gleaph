@@ -523,10 +523,15 @@ fn format_op(op: &PlanOp) -> String {
         PlanOp::For {
             variable,
             ordinality,
+            offset_keyword,
             ..
         } => {
             if let Some(ord) = ordinality {
-                format!("For({} WITH ORDINALITY {})", variable, ord)
+                if *offset_keyword {
+                    format!("For({} WITH OFFSET {})", variable, ord)
+                } else {
+                    format!("For({} WITH ORDINALITY {})", variable, ord)
+                }
             } else {
                 format!("For({})", variable)
             }

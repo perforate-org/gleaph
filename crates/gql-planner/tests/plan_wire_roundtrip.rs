@@ -1,4 +1,4 @@
-//! `GPL` plan bundle (version byte `1`) roundtrip for representative queries.
+//! `GPL` plan bundle roundtrip for representative queries.
 
 use gleaph_gql::parser;
 use gleaph_gql::type_check::NoSchema;
@@ -46,4 +46,32 @@ fn inline_call_scope_roundtrips() {
         panic!("expected InlineProcedureCall");
     };
     assert!(matches!(scope, InlineProcedureScope::Explicit(vars) if vars.is_empty()));
+}
+
+#[test]
+fn for_with_offset_roundtrips() {
+    let gql = "FOR x IN [1, 2] WITH OFFSET o RETURN x, o";
+    let program = parser::parse(gql).expect("parse");
+    let block = program
+        .transaction_activity
+        .expect("tx")
+        .body
+        .expect("body");
+    let plan = build_block_plan_with_schema(&block, Some(&NoStats), &NoSchema).expect("plan");
+    let Some(PlanOp::For { offset_keyword, .. }) =
+        plan.ops.iter().find(|op| matches!(op, PlanOp::For { .. }))
+    else {
+        panic!("expected For");
+    };
+    assert!(*offset_keyword, "WITH OFFSET should set offset_keyword");
+    let blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
+    let (_, decoded) = decode_plan_bundle(&blob).expect("decode");
+    let Some(PlanOp::For { offset_keyword, .. }) = decoded[0]
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::For { .. }))
+    else {
+        panic!("expected For after decode");
+    };
+    assert!(*offset_keyword);
 }

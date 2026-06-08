@@ -275,6 +275,7 @@ fn update_live_before_op(op: &PlanOp, live: &mut LiveBindings) {
             variable,
             list,
             ordinality,
+            ..
         } => {
             live.remove(variable.as_ref());
             if let Some(ordinality) = ordinality {

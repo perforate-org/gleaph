@@ -14,10 +14,19 @@ pub(crate) fn execute_for(
     variable: &str,
     list: &Expr,
     ordinality: Option<&str>,
+    offset_keyword: bool,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let mut out = Vec::new();
     for row in rows {
-        unnest_row(evaluator, &row, variable, list, ordinality, &mut out)?;
+        unnest_row(
+            evaluator,
+            &row,
+            variable,
+            list,
+            ordinality,
+            offset_keyword,
+            &mut out,
+        )?;
     }
     Ok(out)
 }
@@ -28,6 +37,7 @@ fn unnest_row(
     variable: &str,
     list: &Expr,
     ordinality: Option<&str>,
+    offset_keyword: bool,
     out: &mut Vec<PlanRow>,
 ) -> Result<(), PlanQueryError> {
     let value = evaluator.eval_expr(row, list)?;
@@ -43,10 +53,12 @@ fn unnest_row(
         let mut expanded = row.clone();
         expanded.insert(variable.to_owned(), PlanBinding::Value(element));
         if let Some(ord_var) = ordinality {
-            expanded.insert(
-                ord_var.to_owned(),
-                PlanBinding::Value(Value::Int64((i as i64) + 1)),
-            );
+            let index = if offset_keyword {
+                i as i64
+            } else {
+                (i as i64) + 1
+            };
+            expanded.insert(ord_var.to_owned(), PlanBinding::Value(Value::Int64(index)));
         }
         out.push(expanded);
     }
@@ -62,7 +74,7 @@ mod tests {
 
     use super::super::test_support::params;
 
-    fn eval_for(list: Expr, ordinality: Option<&str>) -> Vec<PlanRow> {
+    fn eval_for(list: Expr, ordinality: Option<&str>, offset_keyword: bool) -> Vec<PlanRow> {
         let store = GraphStore::new();
         let evaluator = QueryExprEvaluator {
             store: &store,
@@ -72,7 +84,15 @@ mod tests {
             resolved_labels: None,
             gleaph_weight_decoders: None,
         };
-        execute_for(&evaluator, vec![PlanRow::new()], "x", &list, ordinality).expect("execute_for")
+        execute_for(
+            &evaluator,
+            vec![PlanRow::new()],
+            "x",
+            &list,
+            ordinality,
+            offset_keyword,
+        )
+        .expect("execute_for")
     }
 
     #[test]
@@ -82,7 +102,7 @@ mod tests {
             Value::Int64(2),
             Value::Int64(3),
         ])));
-        let rows = eval_for(list, None);
+        let rows = eval_for(list, None, false);
         assert_eq!(rows.len(), 3);
     }
 
@@ -92,16 +112,28 @@ mod tests {
             Value::Int64(10),
             Value::Int64(20),
         ])));
-        let rows = eval_for(list, Some("i"));
+        let rows = eval_for(list, Some("i"), false);
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].get("i"), Some(&PlanBinding::Value(Value::Int64(1))));
         assert_eq!(rows[1].get("i"), Some(&PlanBinding::Value(Value::Int64(2))));
     }
 
     #[test]
+    fn for_with_offset_is_zero_based() {
+        let list = Expr::new(ExprKind::Literal(Value::List(vec![
+            Value::Int64(10),
+            Value::Int64(20),
+        ])));
+        let rows = eval_for(list, Some("o"), true);
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].get("o"), Some(&PlanBinding::Value(Value::Int64(0))));
+        assert_eq!(rows[1].get("o"), Some(&PlanBinding::Value(Value::Int64(1))));
+    }
+
+    #[test]
     fn for_null_list_produces_no_rows() {
         let list = Expr::new(ExprKind::Literal(Value::Null));
-        let rows = eval_for(list, None);
+        let rows = eval_for(list, None, false);
         assert!(rows.is_empty());
     }
 
@@ -117,8 +149,8 @@ mod tests {
             gleaph_weight_decoders: None,
         };
         let list = Expr::new(ExprKind::Literal(Value::Int64(1)));
-        let err =
-            execute_for(&evaluator, vec![PlanRow::new()], "x", &list, None).expect_err("non-list");
+        let err = execute_for(&evaluator, vec![PlanRow::new()], "x", &list, None, false)
+            .expect_err("non-list");
         assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
     }
 }

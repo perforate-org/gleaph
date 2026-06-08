@@ -510,12 +510,14 @@ pub(crate) fn execute_ops_from<'a>(
                     variable,
                     list,
                     ordinality,
+                    offset_keyword,
                 } => execute_for(
                     &evaluator,
                     rows,
                     variable.as_ref(),
                     list,
                     ordinality.as_deref(),
+                    *offset_keyword,
                 )?,
                 PlanOp::Filter { condition } => rows
                     .into_iter()
@@ -1414,6 +1416,18 @@ mod tests {
         assert_eq!(result.rows.len(), 2);
         assert_eq!(result.rows[0].get("i"), Some(&Value::Int64(1)));
         assert_eq!(result.rows[1].get("i"), Some(&Value::Int64(2)));
+    }
+
+    #[test]
+    fn executes_for_with_offset() {
+        let store = GraphStore::new();
+        let plan = plan_gql("FOR x IN [10, 20] WITH OFFSET o RETURN x, o");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("for offset");
+        assert_eq!(result.rows.len(), 2);
+        assert_eq!(result.rows[0].get("o"), Some(&Value::Int64(0)));
+        assert_eq!(result.rows[1].get("o"), Some(&Value::Int64(1)));
     }
 
     #[test]

@@ -429,6 +429,8 @@ pub enum PlanOp {
         variable: Str,
         list: Expr,
         ordinality: Option<Str>,
+        /// When true, `ordinality` is 0-based (`WITH OFFSET`); otherwise 1-based (`WITH ORDINALITY`).
+        offset_keyword: bool,
     },
 
     /// Standalone FILTER statement (GQL §14.2).

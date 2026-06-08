@@ -3686,6 +3686,41 @@ fn compat_range_index_scan_for_parameter_range() {
 }
 
 // ════════════════════════════════════════════════════════════════════════════════
+// FOR (§14.8)
+// ════════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_for_with_offset_sets_offset_keyword() {
+    let plan = plan_query("FOR x IN [1, 2, 3] WITH OFFSET o RETURN x, o");
+    let Some(PlanOp::For {
+        ordinality,
+        offset_keyword,
+        ..
+    }) = plan.ops.iter().find(|op| matches!(op, PlanOp::For { .. }))
+    else {
+        panic!("expected For, got: {:?}", plan.ops);
+    };
+    assert_eq!(ordinality.as_ref().map(|s| s.as_ref()), Some("o"));
+    assert!(*offset_keyword);
+    let output = explain_plan(&plan);
+    assert!(
+        output.contains("WITH OFFSET"),
+        "explain should show WITH OFFSET: {output}"
+    );
+}
+
+#[test]
+fn test_for_with_ordinality_clears_offset_keyword() {
+    let plan = plan_query("FOR x IN [1, 2, 3] WITH ORDINALITY i RETURN x, i");
+    let Some(PlanOp::For { offset_keyword, .. }) =
+        plan.ops.iter().find(|op| matches!(op, PlanOp::For { .. }))
+    else {
+        panic!("expected For");
+    };
+    assert!(!*offset_keyword);
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
 // Phase D: CALL Procedure
 // ════════════════════════════════════════════════════════════════════════════════
 

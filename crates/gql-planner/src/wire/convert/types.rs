@@ -108,6 +108,7 @@ pub enum PlanOpWire {
         variable: String,
         list: u32,
         ordinality: Option<String>,
+        offset_keyword: bool,
     },
     Filter {
         condition: u32,

@@ -229,10 +229,12 @@ impl Encoder {
                 variable,
                 list,
                 ordinality,
+                offset_keyword,
             } => PlanOpWire::For {
                 variable: variable.to_string(),
                 list: self.intern_expr(list)?,
                 ordinality: opt_str_opt(ordinality),
+                offset_keyword: *offset_keyword,
             },
             PlanOp::Filter { condition } => PlanOpWire::Filter {
                 condition: self.intern_expr(condition)?,
