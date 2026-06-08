@@ -8,7 +8,9 @@ use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorPredicate, ScanVa
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::LabeledEdgePayloadBatchScratch;
+use ic_stable_lara::labeled::{
+    LabeledEdgePayloadBatchScratch, LabeledPayloadValueBatchScratch, OutEdgeOrder,
+};
 
 use super::predicates::{PreparedEdgePayloadPredicate, PreparedEdgeVectorThreshold};
 use super::{
@@ -38,6 +40,138 @@ pub(crate) fn expand_candidates_matching_edge_payload_into(
 ) -> Result<(), PlanQueryError> {
     let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
     let order = sequence_order.into();
+    if try_expand_matching_edge_payload_payload_first(
+        store,
+        src_id,
+        direction,
+        storage_label,
+        order,
+        predicate,
+        out,
+    )? {
+        return Ok(());
+    }
+    expand_matching_edge_payload_combined_batch(
+        store,
+        src_id,
+        direction,
+        storage_label,
+        order,
+        predicate,
+        out,
+    )
+}
+
+fn try_expand_matching_edge_payload_payload_first(
+    store: &GraphStore,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    storage_label: LaraLabelId,
+    order: OutEdgeOrder,
+    predicate: &PreparedEdgePayloadPredicate,
+    out: &mut Vec<ExpandCandidate>,
+) -> Result<bool, PlanQueryError> {
+    let mut saw_dense = false;
+    let mut pending = Vec::new();
+    let mut value_scratch = LabeledPayloadValueBatchScratch::default();
+    let mut visit_values = |batch: ic_stable_lara::labeled::LabeledPayloadValueBatch<'_>| {
+        if batch.dense {
+            saw_dense = true;
+        }
+        let mut matches = Vec::new();
+        predicate.kernel.collect_matching_value_indices(
+            batch.values,
+            predicate.op,
+            &predicate.expected,
+            &mut matches,
+        );
+        let width = usize::from(batch.byte_width);
+        for idx in matches {
+            let Some(&slot) = batch.slot_indices.get(idx) else {
+                continue;
+            };
+            let payload_start = idx * width;
+            let payload_end = payload_start + width;
+            pending.push((slot, batch.values[payload_start..payload_end].to_vec()));
+        }
+    };
+
+    match direction {
+        EdgeDirection::PointingRight => store
+            .visit_out_payload_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                &mut value_scratch,
+                &mut visit_values,
+            )
+            .map_err(GraphStoreError::from)?,
+        EdgeDirection::PointingLeft => store
+            .visit_in_payload_value_batches_for_label(
+                src_id,
+                storage_label,
+                order,
+                &mut value_scratch,
+                &mut visit_values,
+            )
+            .map_err(GraphStoreError::from)?,
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    }
+
+    if !saw_dense {
+        return Ok(false);
+    }
+
+    if pending.is_empty() {
+        return Ok(true);
+    }
+
+    let payload_by_slot: BTreeMap<u32, Vec<u8>> = pending.into_iter().collect();
+    let slots: Vec<u32> = payload_by_slot.keys().copied().collect();
+    let mut error = None;
+    let mut visit_edge = |edge: Edge| {
+        if error.is_some() {
+            return;
+        }
+        let Some(payload) = payload_by_slot.get(&edge.edge_slot_index.raw()) else {
+            return;
+        };
+        let edge = edge.with_payload_bytes(payload);
+        match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| match edge_dst {
+            Some(edge_dst) => {
+                push_scanned_value_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+            }
+            None => Ok(()),
+        }) {
+            Ok(()) => {}
+            Err(err) => error = Some(err),
+        }
+    };
+
+    match direction {
+        EdgeDirection::PointingRight => store
+            .read_out_edge_slots_for_label(src_id, storage_label, &slots, order, &mut visit_edge)
+            .map_err(GraphStoreError::from)?,
+        EdgeDirection::PointingLeft => store
+            .read_in_edge_slots_for_label(src_id, storage_label, &slots, order, &mut visit_edge)
+            .map_err(GraphStoreError::from)?,
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    }
+    if let Some(err) = error {
+        return Err(err);
+    }
+    Ok(true)
+}
+
+fn expand_matching_edge_payload_combined_batch(
+    store: &GraphStore,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    storage_label: LaraLabelId,
+    order: OutEdgeOrder,
+    predicate: &PreparedEdgePayloadPredicate,
+    out: &mut Vec<ExpandCandidate>,
+) -> Result<(), PlanQueryError> {
     let mut scratch = LabeledEdgePayloadBatchScratch::default();
     let mut matches = Vec::new();
     let mut error = None;
