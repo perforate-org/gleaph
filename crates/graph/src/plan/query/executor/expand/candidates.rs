@@ -710,31 +710,41 @@ fn expand_candidates_via_equality_index(
         ));
     }
 
+    let order = OutEdgeOrder::Descending;
     let mut error = None;
     match direction {
         EdgeDirection::PointingRight => {
-            for_each_csr_expand_edge(
-                store,
-                src_id,
-                direction,
-                edge_label_id,
-                EdgeSequenceOrder::Descending,
-                |edge| {
-                    if error.is_some() {
-                        return;
-                    }
-                    if !out_slots.contains(&(edge.label_id, edge.edge_slot_index.raw())) {
-                        return;
-                    }
-                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
-                        && let Err(err) =
-                            push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
-                    {
-                        error = Some(err);
-                    }
-                },
-            )?;
+            let wire_filter =
+                edge_label_id.map(|label_id| label_id.pack(EdgeDirectedness::Directed).raw());
+            let mut slots_by_label: BTreeMap<u16, Vec<u32>> = BTreeMap::new();
+            for (label_id, slot_index) in &out_slots {
+                if wire_filter.is_some_and(|wire| wire != *label_id) {
+                    continue;
+                }
+                slots_by_label
+                    .entry(*label_id)
+                    .or_default()
+                    .push(*slot_index);
+            }
+            for (label_id, slots) in slots_by_label {
+                let storage_label = LaraLabelId::from_raw(label_id);
+                store
+                    .read_out_edge_slots_for_label(src_id, storage_label, &slots, order, |edge| {
+                        if error.is_some() {
+                            return;
+                        }
+                        if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                            && let Err(err) =
+                                push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
+                        {
+                            error = Some(err);
+                        }
+                    })
+                    .map_err(GraphStoreError::from)?;
+            }
         }
+        // Postings record forward-owner slots; reverse/undirected expand still needs a full
+        // adjacency scan plus canonical handle matching to locate incoming edges at `src_id`.
         EdgeDirection::PointingLeft => {
             for_each_csr_expand_edge(
                 store,

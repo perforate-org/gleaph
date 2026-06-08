@@ -1,6 +1,6 @@
 # Payload-first labeled edge traversal
 
-**Status:** Partially Implemented (M1–M3 predicate expand on dense buckets)
+**Status:** Partially Implemented (M1–M4 equality-index forward expand)
 
 ## Purpose
 
@@ -139,12 +139,12 @@ This is an **ordering / decode** optimization, not payload-first filtering.
 
 ### Equality index
 
-When postings yield `(label_id, slot_index)` for `src`:
+When postings yield `(label_id, slot_index)` for `src` on **forward** expand:
 
-1. Skip phase 1 unless the residual filter needs payload bytes
-2. Phase 2 directly: `read_out_edge_slots_for_label(&indexed_slots, …)`
+1. Skip phase 1 (index value already matched)
+2. Phase 2 directly: `read_out_edge_slots_for_label(&indexed_slots, …)` per label bucket
 
-Avoids full degree scan.
+Avoids full degree scan. **Reverse / undirected** expand still uses full adjacency scan plus canonical handle matching because postings store forward owner slots.
 
 ## Dense eligibility (unchanged)
 
@@ -176,7 +176,7 @@ Options for later:
 | M1 | Dense `visit_out_payload_value_batches_for_label` | **Implemented** — `values.rs` batch order + parity tests |
 | M2 | `read_out_edge_slots_for_label` (dense bulk + sparse/log) | **Implemented** — slot/order parity + phase-1/2 integration test |
 | M3 | Facade wrappers + predicate expand switched | **Implemented** — dense path uses phase 1+2; sparse falls back to combined batch |
-| M4 | Equality-index expand uses phase 2 only | `edge_equality` expand tests |
+| M4 | Equality-index expand uses phase 2 only | **Implemented** — forward (`PointingRight`); reverse/undirected keep full-scan fallback |
 | M5 | Weighted shortest: prepared decoder + optional zip refactor | `weighted_shortest_edge_cost_cache` canbench |
 | M6 | Sparse payload-first (if needed) | skewed-hub benches |
 

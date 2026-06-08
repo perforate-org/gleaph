@@ -31,7 +31,7 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | [storage/lara-dgap-contract.md](storage/lara-dgap-contract.md) | partially implemented | DGAP mapping detail and labeled gaps |
 | [storage/lara-labeled-migration-tests.md](storage/lara-labeled-migration-tests.md) | accepted | Labeled migration Phases A–E test gates |
 | [storage/labeled-edge-payloads.md](storage/labeled-edge-payloads.md) | implemented | Edge row vs payload slab layout |
-| [storage/payload-first-traversal.md](storage/payload-first-traversal.md) | partially implemented | Two-phase payload / edge read API (M1–M3) |
+| [storage/payload-first-traversal.md](storage/payload-first-traversal.md) | partially implemented | Two-phase payload / edge read API (M1–M4) |
 | [security/rbac-and-prepared.md](security/rbac-and-prepared.md) | draft | Roles and prepared queries |
 | [index/property-index.md](index/property-index.md) | draft | graph-index and router seed routing |
 | [adr/README.md](adr/README.md) | draft | How we record decisions |
