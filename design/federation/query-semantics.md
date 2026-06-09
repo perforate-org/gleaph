@@ -52,8 +52,8 @@ Two overlapping paths:
 
 | Path | Behavior | Target disposition |
 |------|----------|-------------------|
-| Router `SeedProbe` + `IndexScan` | Router lookup, per-shard seeds | Keep; extend for intersection |
-| Graph executor `IndexScan` / `IndexIntersection` | Graph calls index; may bind `RemoteVertex` | Defer graph index calls on read path |
+| Router `IndexAnchor` + seeds | Router lookup, per-shard seeds, graph skips anchor op | **Implemented** |
+| Graph executor `IndexScan` / `IndexIntersection` (unseeded) | Graph calls index; binds local hits via `FederationPort` | Transition — disable when router seeds present |
 
 **Constraint (current):** Multi-shard plans without an index anchor are rejected at router (`no index anchor: single-shard graph required`).
 
@@ -108,13 +108,13 @@ Failures surface as `FederatedIndexCall { op: "resolve_logical_at" | "federated_
 | Scenario | Current | Target |
 |----------|---------|--------|
 | Multi-shard plan without index anchor | **Rejected** at router | Same |
-| `IndexIntersection` router seed | **Not implemented** | Router `lookup_intersection` + slice |
-| Graph executor index intersection | **Partial** (client-side intersect) | Remove; index API + router seeds |
-| `RemoteVertex` from index hits | **Partial** in executor | **Defer** |
+| `IndexIntersection` router seed | **Implemented** | Router `lookup_intersection` + slice |
+| Graph executor index intersection | **Partial** (unseeded transition) | Router seeds + skip op on graph |
+| `RemoteVertex` from index hits | **Deferred** (removed from index scan bind) | Peer expand from traverse only |
 | `RemoteVertex` + federated expand | **Partial** (wasm IC) | Peer expand from local traverse |
 | Local expand on non-authoritative copy | **Unsupported** | TBD with placement v2 |
 | Remote vertex property projection | **Unsupported** | **Unsupported** |
-| Router merge of cross-shard rows | **Partial** (counts) | Planned |
+| Router merge of cross-shard rows | **Partial** (count sum via `federation/merge.rs`) | Row-batch merge planned |
 | `federated_expand` on native test host | **Unsupported** | **Unsupported** |
 
 Update this table when implementing [../sharding/federation-target.md](../sharding/federation-target.md).

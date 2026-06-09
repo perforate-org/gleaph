@@ -6,7 +6,7 @@ use gleaph_gql_planner::plan::{ConditionalScanCandidate, IndexScanSpec, ScanValu
 use gleaph_graph_kernel::index::{IndexEqualSpec, IndexIntersectionRequest, PostingRangeRequest};
 
 use crate::facade::GraphStore;
-use crate::federation::{self, FederationPort};
+use crate::federation::FederationPort;
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::query::error::PlanQueryError;
@@ -56,20 +56,18 @@ fn cmp_to_posting_range_request(
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_index_scan(
-    store: &GraphStore,
+    ctx: &ExecuteCtx<'_>,
     rows: Vec<PlanRow>,
-    parameters: &BTreeMap<String, Value>,
-    index: Option<&dyn PropertyIndexLookup>,
     variable: &str,
     property_name: &str,
     scan_value: &ScanValue,
     cmp: CmpOp,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    let Some(ix) = index else {
+    let Some(ix) = ctx.index else {
         return Err(PlanQueryError::UnsupportedOp("IndexScan(no index client)"));
     };
-    let pid = property_id_for_scan(store, property_name)?;
-    let Some(bytes) = resolve_scan_payload_bytes(scan_value, parameters)? else {
+    let pid = property_id_for_scan(ctx.store, property_name)?;
+    let Some(bytes) = resolve_scan_payload_bytes(scan_value, ctx.parameters)? else {
         return Ok(Vec::new());
     };
     let hits = if cmp == CmpOp::Eq {
@@ -78,21 +76,21 @@ pub(crate) async fn execute_index_scan(
         let req = cmp_to_posting_range_request(cmp, bytes)?;
         ix.lookup_range(pid, &req).await?
     };
-    federation::materialize_federated_index_hits(store, rows, variable, &hits).await
+    Ok(ctx
+        .federation
+        .bind_index_hits(ctx.store, &rows, variable, &hits))
 }
 
 pub(crate) async fn execute_conditional_index_scan(
-    store: &GraphStore,
+    ctx: &ExecuteCtx<'_>,
     rows: Vec<PlanRow>,
-    parameters: &BTreeMap<String, Value>,
-    index: Option<&dyn PropertyIndexLookup>,
     candidates: &[ConditionalScanCandidate],
     fallback_label: Option<&str>,
     fallback_variable: &Str,
-    execution: &GqlExecutionContext,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     for c in candidates {
-        let pv = parameters
+        let pv = ctx
+            .parameters
             .get(c.param_name.as_ref())
             .cloned()
             .unwrap_or(Value::Null);
@@ -100,28 +98,33 @@ pub(crate) async fn execute_conditional_index_scan(
             let Some(bytes) = value_to_index_key_bytes(&pv).ok().flatten() else {
                 break;
             };
-            let Some(ix) = index else {
+            let Some(ix) = ctx.index else {
                 return Err(PlanQueryError::UnsupportedOp(
                     "ConditionalIndexScan(no index client)",
                 ));
             };
-            let pid = property_id_for_scan(store, c.property.as_ref())?;
+            let pid = property_id_for_scan(ctx.store, c.property.as_ref())?;
             let hits = if c.cmp == CmpOp::Eq {
                 ix.lookup_equal(pid, bytes).await?
             } else {
                 let req = cmp_to_posting_range_request(c.cmp, bytes)?;
                 ix.lookup_range(pid, &req).await?
             };
-            return federation::materialize_federated_index_hits(
-                store,
-                rows,
+            return Ok(ctx.federation.bind_index_hits(
+                ctx.store,
+                &rows,
                 c.variable.as_ref(),
                 &hits,
-            )
-            .await;
+            ));
         }
     }
-    execute_node_scan(store, rows, fallback_variable, fallback_label, execution)
+    execute_node_scan(
+        ctx.store,
+        rows,
+        fallback_variable,
+        fallback_label,
+        &ctx.execution,
+    )
 }
 
 pub(crate) async fn execute_index_intersection(

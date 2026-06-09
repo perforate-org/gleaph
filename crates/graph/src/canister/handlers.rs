@@ -115,8 +115,13 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
         }
         None => None,
     };
+    // Router-owned index anchors: when seeds are present, graph must not call index on read path.
     #[cfg(target_family = "wasm")]
-    let index_holder = wasm_index_client_holder();
+    let index_holder = if seeds.is_some() {
+        None
+    } else {
+        wasm_index_client_holder()
+    };
     #[cfg(target_family = "wasm")]
     let ix = index_holder.as_ref().map(|c| c as &dyn PropertyIndexLookup);
     #[cfg(not(target_family = "wasm"))]

@@ -373,7 +373,6 @@ pub(crate) fn execute_ops_from<'a>(
     Box::pin(async move {
         let store = ctx.store;
         let parameters = ctx.parameters;
-        let index = ctx.index;
         let _caller = ctx.caller();
         let gwd = ctx.gleaph_weight_decoders;
         let set_operation_input = ops_contain_set_operation(ops).then(|| initial_rows.clone());
@@ -460,17 +459,8 @@ pub(crate) fn execute_ops_from<'a>(
                     cmp,
                     property_projection: _,
                 } => {
-                    execute_index_scan(
-                        store,
-                        rows,
-                        parameters,
-                        index,
-                        variable.as_ref(),
-                        property.as_ref(),
-                        value,
-                        *cmp,
-                    )
-                    .await?
+                    execute_index_scan(ctx, rows, variable.as_ref(), property.as_ref(), value, *cmp)
+                        .await?
                 }
                 PlanOp::ConditionalIndexScan {
                     candidates,
@@ -479,14 +469,11 @@ pub(crate) fn execute_ops_from<'a>(
                     property_projection: _,
                 } => {
                     execute_conditional_index_scan(
-                        store,
+                        ctx,
                         rows,
-                        parameters,
-                        index,
                         candidates,
                         fallback_label.as_deref(),
                         fallback_variable,
-                        &ctx.execution,
                     )
                     .await?
                 }

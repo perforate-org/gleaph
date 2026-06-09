@@ -21,7 +21,7 @@ use crate::execution_path::check_adhoc_execution_path;
 use crate::facade::stable::label_telemetry::RouterMutationShard;
 use crate::facade::store::RouterStore;
 use crate::federation::{
-    ShardDispatch, ShardingPolicy, routings_to_dispatches, sharding_policy_for,
+    ShardDispatch, ShardingPolicy, merge_add_row_count, routings_to_dispatches, sharding_policy_for,
 };
 use crate::graph_client::{
     ack_label_telemetry_event, execute_plan_on_graph, get_mutation_outcome,
@@ -460,7 +460,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     .await?
                     {
                         if outcome.completed {
-                            total_rows = total_rows.saturating_add(outcome.row_count);
+                            total_rows = merge_add_row_count(total_rows, outcome.row_count);
                             if let Some(key) = client_mutation_key {
                                 store.record_router_mutation_shard_completed(
                                     caller,
@@ -510,7 +510,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 )?;
             }
         }
-        total_rows = total_rows.saturating_add(result.row_count);
+        total_rows = merge_add_row_count(total_rows, result.row_count);
     }
     if let Some(key) = client_mutation_key
         && let Some(row_count) =

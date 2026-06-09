@@ -84,7 +84,7 @@ See [lookup-intersection.md](../index/lookup-intersection.md).
 3. **Router standalone dispatch** — consolidate `gql.rs` dispatch into `router/federation/standalone.rs` (**Implemented**).
 4. **Router intersection seeds** — `IndexAnchor`, `lookup_intersection`, graph skip leading `IndexIntersection` (**Implemented**).
 5. **Defer removal** — legacy federation stable/runtime and graph direct index on hot path (**Partial** — marked deferred; not deleted).
-6. **Federation target** — router index slice, peer expand, merge ([federation-target.md](federation-target.md)) (Planned).
+6. **Federation target** — router merge module, graph `FederationPort` index bind, no index client when router seeds (**Partial**). Peer expand + row-batch merge remain planned ([federation-target.md](federation-target.md)).
 
 ## Related documents
 

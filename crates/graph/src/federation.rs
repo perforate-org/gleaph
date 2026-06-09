@@ -6,7 +6,12 @@
 mod index_bind;
 mod routing;
 
-pub(crate) use index_bind::{bind_local_index_hits, materialize_federated_index_hits};
+pub(crate) use index_bind::bind_local_index_hits;
+#[expect(
+    dead_code,
+    reason = "legacy deferred path; executor uses FederationPort bind"
+)]
+pub(crate) use index_bind::materialize_federated_index_hits;
 pub(crate) use routing::federation_routing;
 
 use gleaph_graph_kernel::federation::ShardId;

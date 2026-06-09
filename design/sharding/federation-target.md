@@ -98,6 +98,8 @@ Index is authoritative for **which physical vertices match an indexed predicate*
 
 ## Merge (Router)
 
+**Partial (v1):** `router/federation/merge.rs` sums saturating row counts from independent shard-local fragments (`merge_row_counts` / `merge_add_row_count`). Used by `gql.rs` multi-shard dispatch.
+
 Planned responsibilities (detail TBD):
 
 - Sum row counts for independent shard-local fragments where semantics allow.
@@ -110,11 +112,11 @@ Current implementation often returns **row counts** from graph; merge policy mus
 
 | Target | Current (immature) | Action |
 |--------|-------------------|--------|
-| Router owns index lookup | Graph executor calls `PropertyIndexLookup` | Defer graph direct index on read path |
-| Router slices intersection | Graph executor intersects after N× `lookup_equal` | Implement `lookup_intersection`; move slice to Router |
-| Seeds per shard | `SeedProbe` only for `IndexScan` | Extend seed module for intersection |
-| Peer expand only when traversing | `RemoteVertex` from index hits in executor | Remove from index bind path |
-| Cohesive `federation/` modules | Logic in executor, facade stable, placement | Consolidate per [standalone-mode.md](standalone-mode.md) |
+| Router owns index lookup | Graph executor calls `PropertyIndexLookup` | **Partial** — router seeds disable graph index client; unseeded transition path remains |
+| Router slices intersection | Graph executor intersects after N× `lookup_equal` | **Done** — `lookup_intersection` + router `IndexAnchor` |
+| Seeds per shard | `SeedProbe` only for `IndexScan` | **Done** — `IndexAnchor` for scan + intersection |
+| Peer expand only when traversing | `RemoteVertex` from index hits in executor | **Partial** — index bind uses `FederationPort` local hits only |
+| Cohesive `federation/` modules | Logic in executor, facade stable, placement | **Partial** — graph + router `federation/` modules |
 
 ## Related documents
 

@@ -2,7 +2,7 @@ use super::super::test_support::*;
 use crate::plan::query::executor::execute_plan_query_bindings_with_initial_rows;
 use pollster;
 #[test]
-fn federated_index_scan_materializes_foreign_shard_hit_as_remote_vertex() {
+fn index_scan_skips_foreign_shard_hits_in_standalone_mode() {
     let store = GraphStore::new();
     configure_test_index(&store);
     let _ = store
@@ -29,13 +29,9 @@ fn federated_index_scan_materializes_foreign_shard_hit_as_remote_vertex() {
         Some(&index),
         GqlExecutionContext::default(),
     ))
-    .expect("execute federated index scan");
+    .expect("execute index scan");
 
-    assert_eq!(rows.len(), 1);
-    assert!(matches!(
-        rows[0].get("n"),
-        Some(PlanBinding::RemoteVertex(9001))
-    ));
+    assert!(rows.is_empty());
 }
 
 #[test]
