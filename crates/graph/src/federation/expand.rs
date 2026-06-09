@@ -90,9 +90,7 @@ pub(crate) async fn resolve_traversal_expand_source(
         (_, Ok(VertexPlacement::Active(loc))) if loc.shard_id == routing.shard_id => Ok(Some(
             TraversalExpandSource::LocalCsr(VertexId::from(loc.local_vertex_id)),
         )),
-        (_, Ok(VertexPlacement::Active(_))) => {
-            Ok(Some(TraversalExpandSource::PeerExpand(logical)))
-        }
+        (_, Ok(VertexPlacement::Active(_))) => Ok(Some(TraversalExpandSource::PeerExpand(logical))),
     }
 }
 

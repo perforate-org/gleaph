@@ -145,6 +145,7 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
     Ok(ExecutePlanResult {
         row_count: run.row_count as u64,
         label_telemetry_events: run.label_telemetry_events,
+        rows_blob: run.rows_blob,
     })
 }
 

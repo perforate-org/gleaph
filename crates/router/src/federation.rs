@@ -6,7 +6,9 @@ mod standalone;
 
 #[expect(unused_imports, reason = "re-exported for gql integration tests")]
 pub use dispatch::{SeedRouting, resolve_seed_routings_multi};
-pub use merge::{merge_add_row_count, merge_row_counts};
+pub use merge::{
+    empty_execute_plan_result, merge_add_row_count, merge_execute_plan_result, merge_row_counts,
+};
 pub use standalone::StandaloneSharding;
 
 use candid::Principal;

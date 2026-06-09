@@ -178,6 +178,7 @@ pub(crate) fn edge_group_element_at_index(
     let idx = if index < 0 { len + index } else { index };
     usize::try_from(idx).ok().and_then(|i| edges.get(i))
 }
+#[cfg(test)]
 mod tests {
     use super::super::test_support::*;
 

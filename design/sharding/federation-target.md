@@ -99,13 +99,12 @@ Index is authoritative for **which physical vertices match an indexed predicate*
 
 ## Merge (Router)
 
-**Partial (v1):** `router/federation/merge.rs` sums saturating row counts from independent shard-local fragments (`merge_row_counts` / `merge_add_row_count`). Used by `gql.rs` multi-shard dispatch.
+**Partial (v1):** `router/federation/merge.rs` sums row counts and unions independent shard-local row batches (`merge_execute_plan_result` / `IcWirePlanQueryResult` in `rows_blob`). Used by `gql.rs` multi-shard dispatch. See [ADR 0002](../adr/0002-federated-row-batch-merge.md).
 
 Planned responsibilities (detail TBD):
 
-- Sum row counts for independent shard-local fragments where semantics allow.
 - Partial aggregation pushdown for `GROUP BY` / aggregates across shards.
-- Dedup and join of row batches when full row materialization is returned to Router.
+- Dedup and join of row batches when fragments are not independent unions.
 
 Current implementation often returns **row counts** from graph; merge policy must be updated when federation v1 ships.
 

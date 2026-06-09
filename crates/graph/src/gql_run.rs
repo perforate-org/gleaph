@@ -125,6 +125,7 @@ struct TransactionBlockRun {
 pub struct WirePlanRunResult {
     pub row_count: usize,
     pub label_telemetry_events: Vec<LabelTelemetryEventWire>,
+    pub rows_blob: Option<Vec<u8>>,
 }
 
 fn trap_wire_mutation_failure(error: crate::plan::PlanMutationError) -> ! {
@@ -597,7 +598,7 @@ pub async fn run_wire_plan_last_read_row_count(
         mode,
         execution,
         seeds,
-        TransactionReadMaterialize::LastReadRowCountOnly,
+        TransactionReadMaterialize::LastReadBindingsOnly,
         mutation_id,
     )
     .await?;
@@ -608,9 +609,21 @@ pub async fn run_wire_plan_last_read_row_count(
             run.label_telemetry_events.clone(),
         );
     }
+    let rows_blob = if mode == GqlCanisterExecutionMode::CompositeQuery {
+        let materialized = PlanQueryResult::try_from_plan_rows(&store, &run.last_read_plan_rows)?;
+        let wire = crate::plan::ic_wire_from_plan_query_result(&materialized)
+            .map_err(|e| GqlRunError::Plan(e.to_string()))?;
+        Some(
+            wire.encode_blob()
+                .map_err(|e| GqlRunError::Plan(e.to_string()))?,
+        )
+    } else {
+        None
+    };
     Ok(WirePlanRunResult {
         row_count: run.last_read_row_count,
         label_telemetry_events: run.label_telemetry_events,
+        rows_blob,
     })
 }
 

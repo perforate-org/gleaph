@@ -22,8 +22,10 @@ use std::ops::Deref;
 
 pub use candid::Principal;
 pub mod graph_registry;
+pub mod plan_result_wire;
 pub mod wire;
 
+pub use plan_result_wire::{IcWirePlanQueryResult, IcWirePlanQueryRow};
 pub use wire::{
     IcWirePathElement, IcWireValue, WireError, decode_gql_params_blob, encode_gql_params_blob,
     principal_to_value, value_as_principal,

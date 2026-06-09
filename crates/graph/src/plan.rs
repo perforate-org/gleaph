@@ -5,7 +5,10 @@ mod ic_wire;
 pub mod mutation;
 pub mod query;
 
-pub use ic_wire::{IcWirePlanQueryResult, IcWirePlanQueryRow};
+pub use ic_wire::{
+    IcWirePlanQueryResult, IcWirePlanQueryRow, ic_wire_from_plan_query_result,
+    plan_query_result_from_ic_wire,
+};
 pub use mutation::{
     MutationPropertyExprEvaluation, MutationPropertyExprEvaluator, PlanMutationBindings,
     PlanMutationError, PlanMutationExecutor, execute_ops,

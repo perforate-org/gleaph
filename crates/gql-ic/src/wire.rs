@@ -109,6 +109,8 @@ pub enum WireError {
     InvalidNumericString { kind: &'static str },
     #[error("GQL params blob must decode to a Record at top level")]
     ParamsTopLevelNotRecord,
+    #[error("candid wire error: {0}")]
+    Candid(String),
 }
 
 /// Encode GQL named parameters for the graph canister: one compact-binary [`Value::Record`].

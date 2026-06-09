@@ -108,7 +108,7 @@ Failures surface as `FederatedIndexCall { op: "resolve_logical_at" | "federated_
 | `RemoteVertex` + federated expand | **Partial** (wasm IC) | Peer expand from placement on traverse source |
 | Local `Vertex` expand, authoritative on other shard | **Partial** — peer expand via `resolve_traversal_expand_source` | Same |
 | Remote vertex property projection | **Unsupported** | **Unsupported** |
-| Router merge of cross-shard rows | **Partial** (count sum via `federation/merge.rs`) | Row-batch merge planned |
+| Router merge of cross-shard rows | **Partial** (count sum + row-batch union via `rows_blob`) | Join/aggregate merge planned |
 | `federated_expand` on native test host | **Unsupported** | **Unsupported** |
 
 Update this table when implementing [../sharding/federation-target.md](../sharding/federation-target.md).

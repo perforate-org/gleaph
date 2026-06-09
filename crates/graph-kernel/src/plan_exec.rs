@@ -46,6 +46,8 @@ pub struct ExecutePlanArgs {
 pub struct ExecutePlanResult {
     pub row_count: u64,
     pub label_telemetry_events: Vec<LabelTelemetryEventWire>,
+    /// Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
+    pub rows_blob: Option<Vec<u8>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
@@ -103,6 +105,18 @@ pub struct SeedBindingsWire {
 mod tests {
     use super::*;
     use candid::{Decode, Encode};
+
+    #[test]
+    fn execute_plan_result_roundtrip_with_rows_blob() {
+        let result = ExecutePlanResult {
+            row_count: 2,
+            label_telemetry_events: Vec::new(),
+            rows_blob: Some(vec![1, 2, 3]),
+        };
+        let bytes = Encode!(&result).expect("encode");
+        let decoded: ExecutePlanResult = Decode!(&bytes, ExecutePlanResult).expect("decode");
+        assert_eq!(result, decoded);
+    }
 
     #[test]
     fn gql_execution_mode_candid_roundtrip() {

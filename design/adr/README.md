@@ -35,5 +35,6 @@ Status: proposed | accepted | deprecated | superseded by NNNN
 | ADR | Title | Status |
 |-----|-------|--------|
 | [0001](0001-labeled-segment-slide.md) | Labeled edge physical layer uses PMA leaf segment slide | accepted |
+| [0002](0002-federated-row-batch-merge.md) | Federated row-batch merge on router (`rows_blob`) | accepted |
 
 When adding an ADR, link it from the relevant design doc and update this table.

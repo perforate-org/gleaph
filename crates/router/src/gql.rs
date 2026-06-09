@@ -21,7 +21,8 @@ use crate::execution_path::check_adhoc_execution_path;
 use crate::facade::stable::label_telemetry::RouterMutationShard;
 use crate::facade::store::RouterStore;
 use crate::federation::{
-    ShardDispatch, ShardingPolicy, merge_add_row_count, routings_to_dispatches, sharding_policy_for,
+    ShardDispatch, ShardingPolicy, empty_execute_plan_result, merge_execute_plan_result,
+    routings_to_dispatches, sharding_policy_for,
 };
 use crate::graph_client::{
     ack_label_telemetry_event, execute_plan_on_graph, get_mutation_outcome,
@@ -432,7 +433,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         }
     }
 
-    let mut total_rows = 0u64;
+    let mut merged = empty_execute_plan_result();
     for dispatch in dispatches {
         let result = match execute_plan_on_graph(
             dispatch.graph_canister,
@@ -460,7 +461,16 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     .await?
                     {
                         if outcome.completed {
-                            total_rows = merge_add_row_count(total_rows, outcome.row_count);
+                            let events = outcome.label_telemetry_events.clone();
+                            merge_execute_plan_result(
+                                &mut merged,
+                                gleaph_graph_kernel::plan_exec::ExecutePlanResult {
+                                    row_count: outcome.row_count,
+                                    label_telemetry_events: events.clone(),
+                                    rows_blob: None,
+                                },
+                            )
+                            .map_err(RouterError::InvalidArgument)?;
                             if let Some(key) = client_mutation_key {
                                 store.record_router_mutation_shard_completed(
                                     caller,
@@ -468,7 +478,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                                     key,
                                     dispatch.shard_id,
                                     outcome.row_count,
-                                    outcome.label_telemetry_events,
+                                    events,
                                 )?;
                                 store.record_router_mutation_shard_telemetry_acked(
                                     caller,
@@ -484,12 +494,13 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 return Err(RouterError::InvalidArgument(err));
             }
         };
+        let telemetry_events = result.label_telemetry_events.clone();
         let telemetry_acked = apply_and_ack_label_telemetry_events(
             &store,
             dispatch.graph_canister,
             dispatch.shard_id,
             mutation_id,
-            &result.label_telemetry_events,
+            &telemetry_events,
         )
         .await?;
         if let Some(key) = client_mutation_key {
@@ -499,7 +510,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 key,
                 dispatch.shard_id,
                 result.row_count,
-                result.label_telemetry_events,
+                telemetry_events,
             )?;
             if telemetry_acked {
                 store.record_router_mutation_shard_telemetry_acked(
@@ -510,7 +521,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 )?;
             }
         }
-        total_rows = merge_add_row_count(total_rows, result.row_count);
+        merge_execute_plan_result(&mut merged, result).map_err(RouterError::InvalidArgument)?;
     }
     if let Some(key) = client_mutation_key
         && let Some(row_count) =
@@ -518,7 +529,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     {
         return Ok(row_count);
     }
-    Ok(total_rows)
+    Ok(merged.row_count)
 }
 
 fn release_routing_if_owner(
