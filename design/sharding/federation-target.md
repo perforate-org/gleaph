@@ -116,7 +116,7 @@ Current implementation often returns **row counts** from graph; merge policy mus
 | Router slices intersection | Graph executor intersects after N× `lookup_equal` | **Done** — `lookup_intersection` + router `IndexAnchor` |
 | Seeds per shard | `SeedProbe` only for `IndexScan` | **Done** — `IndexAnchor` for scan + intersection |
 | Peer expand only when traversing | `RemoteVertex` from index hits in executor | **Partial** — index bind uses `FederationPort` local hits only |
-| Cohesive `federation/` modules | Logic in executor, facade stable, placement | **Partial** — graph + router `federation/` modules |
+| Cohesive `federation/` modules | Logic in executor, facade stable, placement | **Partial** — graph `federation/{index_bind,expand,routing}` |
 
 ## Related documents
 

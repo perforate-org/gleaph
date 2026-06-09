@@ -7,7 +7,7 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorPredicate, ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, PreparedWeightDecoder};
 use gleaph_graph_kernel::federation::{
-    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor,
+    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, LogicalVertexId,
 };
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
@@ -22,9 +22,10 @@ use super::{
     expand_accepts_remote_dst, expand_dst_binding, visit_csr_expand_fast_path,
 };
 use crate::facade::GraphStore;
+use crate::federation::federated_expand_label_id_raw;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::{
-    edge_binding_for_federated_expand_hit, federated_expand_label_id_raw, hop_aux_scalar,
+    edge_binding_for_federated_expand_hit, hop_aux_scalar,
 };
 use crate::plan::query::executor::context::{ExecuteCtx, QueryExprEvaluator};
 use crate::plan::query::executor::{
@@ -124,6 +125,26 @@ fn expand_rows_from_federated_expand_hits(
     Ok(out)
 }
 
+async fn peer_expand_remote_vertex(
+    ctx: &ExecuteCtx<'_>,
+    logical: LogicalVertexId,
+    gql_direction: EdgeDirection,
+    federated_direction: FederatedExpandDirection,
+    label_id: Option<EdgeLabelId>,
+) -> Result<Vec<FederatedExpandNeighbor>, PlanQueryError> {
+    let label_id_raw = federated_expand_label_id_raw(label_id, gql_direction);
+    ctx.federation
+        .peer_expand(
+            ctx.store,
+            FederatedExpandArgs {
+                logical_vertex_id: logical,
+                direction: federated_direction,
+                label_id_raw,
+            },
+        )
+        .await
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_expand(
     ctx: &ExecuteCtx<'_>,
@@ -202,20 +223,14 @@ pub(crate) async fn execute_expand(
                 Err(PlanQueryError::UnsupportedOp(_))
             )
         {
-            let label_id_raw = federated_expand_label_id_raw(label_id, direction);
-            let hits = crate::facade::federation_expand::federated_expand_coordinator(
-                store,
-                FederatedExpandArgs {
-                    logical_vertex_id: *logical,
-                    direction: FederatedExpandDirection::Incoming,
-                    label_id_raw,
-                },
+            let hits = peer_expand_remote_vertex(
+                ctx,
+                *logical,
+                direction,
+                FederatedExpandDirection::Incoming,
+                label_id,
             )
-            .await
-            .map_err(|e| PlanQueryError::FederatedIndexCall {
-                op: "federated_expand",
-                detail: e.to_string(),
-            })?;
+            .await?;
             out.extend(expand_rows_from_federated_expand_hits(
                 store,
                 &row,
@@ -243,20 +258,14 @@ pub(crate) async fn execute_expand(
                 Err(PlanQueryError::UnsupportedOp(_))
             )
         {
-            let label_id_raw = federated_expand_label_id_raw(label_id, direction);
-            let hits = crate::facade::federation_expand::federated_expand_coordinator(
-                store,
-                FederatedExpandArgs {
-                    logical_vertex_id: *logical,
-                    direction: FederatedExpandDirection::Outgoing,
-                    label_id_raw,
-                },
+            let hits = peer_expand_remote_vertex(
+                ctx,
+                *logical,
+                direction,
+                FederatedExpandDirection::Outgoing,
+                label_id,
             )
-            .await
-            .map_err(|e| PlanQueryError::FederatedIndexCall {
-                op: "federated_expand",
-                detail: e.to_string(),
-            })?;
+            .await?;
             out.extend(expand_rows_from_federated_expand_hits(
                 store,
                 &row,
@@ -284,20 +293,14 @@ pub(crate) async fn execute_expand(
                 Err(PlanQueryError::UnsupportedOp(_))
             )
         {
-            let label_id_raw = federated_expand_label_id_raw(label_id, direction);
-            let hits = crate::facade::federation_expand::federated_expand_coordinator(
-                store,
-                FederatedExpandArgs {
-                    logical_vertex_id: *logical,
-                    direction: FederatedExpandDirection::Undirected,
-                    label_id_raw,
-                },
+            let hits = peer_expand_remote_vertex(
+                ctx,
+                *logical,
+                direction,
+                FederatedExpandDirection::Undirected,
+                label_id,
             )
-            .await
-            .map_err(|e| PlanQueryError::FederatedIndexCall {
-                op: "federated_expand",
-                detail: e.to_string(),
-            })?;
+            .await?;
             out.extend(expand_rows_from_federated_expand_hits(
                 store,
                 &row,

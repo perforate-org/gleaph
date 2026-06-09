@@ -4,7 +4,7 @@ use std::sync::Arc;
 
 use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
-use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, EdgePayload};
+use gleaph_graph_kernel::entry::{Edge, EdgePayload};
 use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
 use ic_stable_lara::VertexId;
 
@@ -178,24 +178,6 @@ pub(crate) fn edge_group_element_at_index(
     let idx = if index < 0 { len + index } else { index };
     usize::try_from(idx).ok().and_then(|i| edges.get(i))
 }
-
-pub(crate) fn federated_expand_label_id_raw(
-    label_id: Option<EdgeLabelId>,
-    direction: EdgeDirection,
-) -> Option<u16> {
-    label_id.map(|lid| {
-        let directedness = match direction {
-            EdgeDirection::Undirected => EdgeDirectedness::Undirected,
-            EdgeDirection::PointingLeft | EdgeDirection::PointingRight => {
-                EdgeDirectedness::Directed
-            }
-            _ => EdgeDirectedness::Directed,
-        };
-        lid.pack(directedness).raw()
-    })
-}
-
-#[cfg(test)]
 mod tests {
     use super::super::test_support::*;
 

@@ -63,7 +63,7 @@ Two overlapping paths:
 
 When `Expand` source is `RemoteVertex` and placement indicates cross-shard routing:
 
-- Executor calls `federated_expand_coordinator` (`graph/src/facade/federation_expand.rs`).
+- Executor calls `federated_expand_coordinator` via `graph/federation/expand.rs` (`StandaloneFederation::peer_expand`).
 - Results merged via expand helper paths.
 
 **Target:** peer expand remains; trigger from local traverse rather than index-bound `RemoteVertex` where possible.

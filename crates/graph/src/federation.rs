@@ -1,11 +1,13 @@
 //! Federation execution boundary for graph query runtime.
 //!
-//! Standalone mode binds local index hits only. Target multi-shard behavior is documented
-//! under `design/sharding/federation-target.md`.
+//! Index bind and peer expand entry points for the executor. Target multi-shard behavior is
+//! documented under `design/sharding/federation-target.md`.
 
+mod expand;
 mod index_bind;
 mod routing;
 
+pub(crate) use expand::federated_expand_label_id_raw;
 pub(crate) use index_bind::bind_local_index_hits;
 #[expect(
     dead_code,
@@ -14,13 +16,16 @@ pub(crate) use index_bind::bind_local_index_hits;
 pub(crate) use index_bind::materialize_federated_index_hits;
 pub(crate) use routing::federation_routing;
 
-use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::federation::{FederatedExpandArgs, FederatedExpandNeighbor, ShardId};
 use gleaph_graph_kernel::index::PostingHit;
 
 use crate::facade::GraphStore;
+use crate::plan::query::PlanQueryError;
 use crate::plan::query::PlanRow;
 
 /// Query-time federation policy (standalone implementation today).
+///
+/// Index binding is synchronous; cross-shard traverse uses [`StandaloneFederation::peer_expand`].
 pub trait FederationPort {
     #[expect(
         dead_code,
@@ -58,6 +63,15 @@ impl StandaloneFederation {
     #[expect(dead_code, reason = "tests and future router dispatch")]
     pub fn new(local_shard_id: ShardId) -> Self {
         Self { local_shard_id }
+    }
+
+    /// Cross-shard neighbor lookup when expand cannot use local CSR.
+    pub async fn peer_expand(
+        &self,
+        store: &GraphStore,
+        args: FederatedExpandArgs,
+    ) -> Result<Vec<FederatedExpandNeighbor>, PlanQueryError> {
+        expand::peer_expand(store, args).await
     }
 }
 

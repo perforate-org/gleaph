@@ -34,6 +34,7 @@ Federation-related behavior must not spread across executor, facade stable, and 
 ```text
 crates/graph/src/federation.rs
   index_bind.rs    PostingHit → local Vertex binding (no tombstone read filter)
+  expand.rs        peer expand coordinator boundary
   routing.rs       local shard id from store routing
 
 crates/router/src/federation.rs
@@ -84,7 +85,7 @@ See [lookup-intersection.md](../index/lookup-intersection.md).
 3. **Router standalone dispatch** — consolidate `gql.rs` dispatch into `router/federation/standalone.rs` (**Implemented**).
 4. **Router intersection seeds** — `IndexAnchor`, `lookup_intersection`, graph skip leading `IndexIntersection` (**Implemented**).
 5. **Defer removal** — legacy federation stable/runtime and graph direct index on hot path (**Partial** — marked deferred; not deleted).
-6. **Federation target** — router merge module, graph `FederationPort` index bind, no index client when router seeds (**Partial**). Peer expand + row-batch merge remain planned ([federation-target.md](federation-target.md)).
+6. **Federation target** — router merge module, graph `FederationPort` index bind, peer expand boundary (**Partial**). Row-batch merge + expand trigger refactor remain planned ([federation-target.md](federation-target.md)).
 
 ## Related documents
 
