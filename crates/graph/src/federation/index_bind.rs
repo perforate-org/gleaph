@@ -1,16 +1,10 @@
 //! Index posting hits → plan row bindings.
 
-use std::collections::HashMap;
-
-use gleaph_graph_kernel::federation::{LogicalVertexId, PhysicalPlacementKey, ShardId};
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::PostingHit;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::traits::CsrVertexTombstone;
 
 use crate::facade::GraphStore;
-use crate::federation::routing::federation_routing;
-use crate::index::placement;
-use crate::plan::PlanQueryError;
 use crate::plan::{PlanBinding, query::PlanRow};
 
 /// Bind hits on `local_shard_id` to local [`PlanBinding::Vertex`] rows.
@@ -37,64 +31,6 @@ pub(crate) fn bind_local_index_hits(
         }
     }
     out
-}
-
-/// Legacy federated bind: local vertices plus [`PlanBinding::RemoteVertex`] for foreign hits.
-///
-/// **Deferred** — target architecture routes all index reads through the router and seeds
-/// local vertex ids only. Kept for `IndexScan` until federation v1; do not extend for new
-/// anchor types.
-pub(crate) async fn materialize_federated_index_hits(
-    store: &GraphStore,
-    rows: Vec<PlanRow>,
-    variable: &str,
-    hits: &[PostingHit],
-) -> Result<Vec<PlanRow>, PlanQueryError> {
-    let routing = federation_routing(store)?;
-    let local_shard = routing.shard_id;
-    let mut logical_cache: HashMap<PhysicalPlacementKey, Option<LogicalVertexId>> = HashMap::new();
-    let mut out = Vec::new();
-    for row in rows {
-        for hit in hits {
-            let binding = if hit.shard_id == local_shard {
-                let vertex_id = VertexId::from(hit.vertex_id);
-                let Some(vertex) = store.vertex(vertex_id) else {
-                    continue;
-                };
-                if vertex.is_tombstone() {
-                    continue;
-                }
-                PlanBinding::Vertex(vertex_id)
-            } else {
-                let key = PhysicalPlacementKey::from_posting_hit(hit.shard_id, hit.vertex_id);
-                let logical = match logical_cache.get(&key) {
-                    Some(cached) => *cached,
-                    None => {
-                        let resolved = placement::resolve_logical_at(
-                            routing.router_canister,
-                            hit.shard_id,
-                            hit.vertex_id,
-                        )
-                        .await
-                        .map_err(|e| {
-                            PlanQueryError::FederatedIndexCall {
-                                op: "resolve_logical_at",
-                                detail: e.to_string(),
-                            }
-                        })?;
-                        logical_cache.insert(key, resolved);
-                        resolved
-                    }
-                };
-                let Some(logical_vertex_id) = logical else {
-                    continue;
-                };
-                PlanBinding::RemoteVertex(logical_vertex_id)
-            };
-            out.push(row.fork([(variable, binding)]));
-        }
-    }
-    Ok(out)
 }
 
 #[cfg(test)]

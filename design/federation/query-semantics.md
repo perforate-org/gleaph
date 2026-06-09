@@ -44,7 +44,7 @@ The following describes **today's code**, which diverges from the target and is 
 | `RemoteVertex(LogicalVertexId)` | Index hit on another shard (legacy index bind path) |
 | `Edge` / `Path` / `Value` | Same as non-federated execution |
 
-`RemoteVertex` is introduced at runtime (e.g. `materialize_federated_index_hits`), not by `gleaph-gql-planner` output schema alone. **Target:** index anchor binds use seeds → local `Vertex` only; `RemoteVertex` reserved for expand/peer paths if still needed.
+`RemoteVertex` is reserved for expand/peer paths when needed; index anchor binds use seeds → local `Vertex` only.
 
 ### Index scan → execution (current)
 
@@ -53,7 +53,7 @@ Two overlapping paths:
 | Path | Behavior | Target disposition |
 |------|----------|-------------------|
 | Router `IndexAnchor` + seeds | Router lookup, per-shard seeds, graph skips anchor op | **Implemented** |
-| Graph executor `IndexScan` / `IndexIntersection` (unseeded) | Graph calls index; binds local hits via `FederationPort` | Transition — disable when router seeds present |
+| Graph executor `IndexScan` / `IndexIntersection` (library) | Graph calls index via mock/native client; binds local hits via `FederationPort` | Federated wire path uses router seeds only |
 
 **Constraint (current):** Multi-shard plans without an index anchor are rejected at router (`no index anchor: single-shard graph required`).
 
@@ -103,8 +103,8 @@ Failures surface as `FederatedIndexCall { op: "resolve_logical_at" | "federated_
 |----------|---------|--------|
 | Multi-shard plan without index anchor | **Rejected** at router | Same |
 | `IndexIntersection` router seed | **Implemented** | Router `lookup_intersection` + slice |
-| Graph executor index intersection | **Partial** (unseeded transition) | Router seeds + skip op on graph |
-| `RemoteVertex` from index hits | **Deferred** (removed from index scan bind) | Peer expand from traverse only |
+| Graph executor index intersection | **Partial** (library/mock index only) | Router seeds + skip op on graph |
+| `RemoteVertex` from index hits | **Removed** | Peer expand from traverse only |
 | `RemoteVertex` + federated expand | **Partial** (wasm IC) | Peer expand from placement on traverse source |
 | Local `Vertex` expand, authoritative on other shard | **Partial** — peer expand via `resolve_traversal_expand_source` | Same |
 | Remote vertex property projection | **Unsupported** | **Unsupported** |

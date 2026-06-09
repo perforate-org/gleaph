@@ -61,8 +61,8 @@ Defer detailed implementation and **federation-only stable stores** until [feder
 |------|------------------------|--------|
 | Remote edge stable | `graph/.../remote_forward_in.rs`, `remote_vertex_refs.rs` | Defer |
 | Graph placement client | `graph/src/index/placement.rs` IC calls | Defer (keep native test stubs if needed) |
-| Graph → index scan on executor | `execute_index_scan`, `execute_index_intersection` calling index directly | Replace with router-owned lookup + seeds (target) |
-| Executor `RemoteVertex` bind from index | `scan/index.rs` `materialize_federated_index_hits` | Defer |
+| Graph → index scan on federated wire path | wasm `execute_plan_query` index client | **Removed** — router seeds + skip anchor |
+| Executor `RemoteVertex` bind from index | `materialize_federated_index_hits` | **Removed** — `FederationPort` local hits only |
 | Router multi-shard without anchor | `gql.rs` error path only partially useful | Rebuild with `lookup_intersection` seeds |
 | Peer graph ACL stable | `peer_graph_canisters.rs` | Defer |
 
@@ -84,7 +84,7 @@ See [lookup-intersection.md](../index/lookup-intersection.md).
 2. **Federation module** — `StandaloneFederation`, `FederationPort`, inject into `ExecuteCtx` (**Implemented**).
 3. **Router standalone dispatch** — consolidate `gql.rs` dispatch into `router/federation/standalone.rs` (**Implemented**).
 4. **Router intersection seeds** — `IndexAnchor`, `lookup_intersection`, graph skip leading `IndexIntersection` (**Implemented**).
-5. **Defer removal** — legacy federation stable/runtime and graph direct index on hot path (**Partial** — marked deferred; not deleted).
+5. **Defer removal** — legacy `materialize_federated_index_hits`, federated wire index client (**Implemented**). Remote stable / placement IC defer remain.
 6. **Federation target** — router merge module (count + row-batch union), graph `FederationPort` index bind, peer expand boundary, expand trigger via placement (**Partial**). Cross-shard join/aggregate merge and client row API remain planned ([federation-target.md](federation-target.md)).
 
 ## Related documents

@@ -8,7 +8,6 @@ fn index_scan_skips_foreign_shard_hits_in_standalone_mode() {
     let _ = store
         .insert_vertex_named(["ForeignIndexScanSeed"], [("age", Value::Uint8(1))])
         .expect("register age property");
-    native_test_register_physical_placement(9, 42, 9001);
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
         shard_id: 9,

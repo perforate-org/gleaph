@@ -115,9 +115,9 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
         }
         None => None,
     };
-    // Router-owned index anchors: when seeds are present, graph must not call index on read path.
+    // Router-owned index anchors: federated graph shards must not call index on read path.
     #[cfg(target_family = "wasm")]
-    let index_holder = if seeds.is_some() {
+    let index_holder = if seeds.is_some() || store.federation_routing().is_some() {
         None
     } else {
         wasm_index_client_holder()

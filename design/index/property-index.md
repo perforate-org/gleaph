@@ -2,7 +2,7 @@
 
 ## Status
 
-**Partially Implemented** — `lookup_equal` / `lookup_range` and DML posting sync exist. **`lookup_intersection`** is implemented on graph-index; router `IndexAnchor` + per-shard seeds and graph skip of leading intersection op are **Implemented**. Legacy graph direct index and `RemoteVertex` index bind paths remain deferred; see [../sharding/federation-target.md](../sharding/federation-target.md).
+**Partially Implemented** — `lookup_equal` / `lookup_range` and DML posting sync exist. **`lookup_intersection`** is implemented on graph-index; router `IndexAnchor` + per-shard seeds and graph skip of leading intersection op are **Implemented**. Graph federated wire path does not call index; library tests may still inject a mock index client.
 
 ## Purpose
 

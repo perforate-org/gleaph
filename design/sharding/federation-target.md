@@ -112,7 +112,7 @@ Current implementation often returns **row counts** from graph; merge policy mus
 
 | Target | Current (immature) | Action |
 |--------|-------------------|--------|
-| Router owns index lookup | Graph executor calls `PropertyIndexLookup` | **Partial** — router seeds disable graph index client; unseeded transition path remains |
+| Router owns index lookup | Graph executor calls `PropertyIndexLookup` | **Done** — router seeds; graph index client disabled on federated wire path |
 | Router slices intersection | Graph executor intersects after N× `lookup_equal` | **Done** — `lookup_intersection` + router `IndexAnchor` |
 | Seeds per shard | `SeedProbe` only for `IndexScan` | **Done** — `IndexAnchor` for scan + intersection |
 | Peer expand only when traversing | `RemoteVertex` from index hits in executor | **Partial** — expand uses placement on `Vertex`/`RemoteVertex` via `resolve_traversal_expand_source`; index bind local hits only |
