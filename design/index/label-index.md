@@ -42,6 +42,8 @@ delete; flush to graph-index with the same compensate-and-retry semantics as pro
 - **Seeds:** `lookup_label` → slice by `shard_id` → `seed_bindings_blob` (same as property seeds).
 - **Aggregate fast path:** `lookup_label` → `vertex_filter_packed` on
   `count_postings_by_value` for `MATCH (n:L) GROUP BY n.prop, COUNT(*)`.
+- **Label ∩ property (v1):** router intersects `lookup_label` with `lookup_equal` (or
+  `PropertyFilter` / multi-op prefix) before `count_postings_by_value`.
 
 ## Related documents
 

@@ -207,7 +207,10 @@ fn extract_from_op(
     }
 }
 
-fn resolve_scan_value(value: &ScanValue, parameters: &BTreeMap<String, Value>) -> Option<Vec<u8>> {
+pub(crate) fn resolve_scan_value(
+    value: &ScanValue,
+    parameters: &BTreeMap<String, Value>,
+) -> Option<Vec<u8>> {
     match value {
         ScanValue::Literal(v) => value_to_index_key_bytes(v).ok()?,
         ScanValue::Parameter(name) => {

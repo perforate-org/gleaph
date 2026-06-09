@@ -5,7 +5,9 @@ use std::collections::BTreeMap;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{AggregateFunc, CmpOp, Expr, ExprKind};
 use gleaph_gql::index_key_bytes_to_value;
+use gleaph_gql::types::LabelExpr;
 use gleaph_gql::value_cmp::compare_values;
+use gleaph_gql::value_to_index_key_bytes;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_gql_planner::GraphStats;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
@@ -14,7 +16,7 @@ use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 
 use crate::facade::store::RouterStore;
 use crate::planner_stats::RouterGraphStats;
-use crate::seed::IndexAnchor;
+use crate::seed::{IndexAnchor, SeedProbe, resolve_scan_value};
 
 use super::aggregate_merge::{
     FederatedAggregateMerge, FederatedMergeMode, federated_merge_mode_from_plans,
@@ -27,8 +29,9 @@ pub struct AggregateIndexFastPath {
     pub group_key_column: String,
     pub count_column: String,
     pub min_count: u64,
-    /// When set, posting counts are restricted to vertices from this index anchor.
-    pub index_anchor: Option<IndexAnchor>,
+    /// When empty, all postings in the property bucket are counted. Otherwise hits from each
+    /// anchor are intersected on `(shard_id, vertex_id)` before counting.
+    pub index_anchors: Vec<IndexAnchor>,
 }
 
 /// Detect whether `plans` match the index posting-count fast path.
@@ -56,12 +59,13 @@ pub fn try_aggregate_index_fast_path(
     let property_id = store.lookup_property_id(property).ok()?.raw();
     let ops = plans.last()?.ops.as_slice();
     let prefix = &ops[..aggregate_idx];
-    let index_anchor = match parse_fast_path_prefix(prefix, params, store) {
-        Ok(Some(anchor)) => anchor,
+    let index_anchors = match parse_fast_path_prefix(prefix, params, store, stats) {
+        Ok(Some(anchors)) => anchors,
         Ok(None) | Err(_) => return None,
     };
-    if let Some(anchor) = &index_anchor
-        && anchor.variable() != group_var
+    if index_anchors
+        .iter()
+        .any(|anchor| anchor.variable() != group_var)
     {
         return None;
     }
@@ -72,7 +76,7 @@ pub fn try_aggregate_index_fast_path(
         group_key_column: spec.group_key_columns[0].clone(),
         count_column: spec.aggregate_columns[0].name.clone(),
         min_count,
-        index_anchor,
+        index_anchors,
     })
 }
 
@@ -149,40 +153,263 @@ fn group_by_indexed_property(expr: &Expr) -> Option<&str> {
     }
 }
 
-/// `Ok(None)` — prefix is unfiltered (empty or unlabeled `NodeScan`).
-/// `Ok(Some(anchor))` — prefix is a single index anchor op.
+/// `Ok(None)` — prefix is not eligible for the fast path.
+/// `Ok(Some(anchors))` — vertex filter anchors (empty = unfiltered bucket scan).
 /// `Err` — parameter / catalog resolution failed.
 fn parse_fast_path_prefix(
     ops: &[PlanOp],
     params: &BTreeMap<String, Value>,
     store: &RouterStore,
-) -> Result<Option<Option<IndexAnchor>>, crate::state::RouterError> {
-    match ops {
-        [] => Ok(Some(None)),
-        [PlanOp::NodeScan { label: None, .. }] => Ok(Some(None)),
-        [
+    stats: &RouterGraphStats,
+) -> Result<Option<Vec<IndexAnchor>>, crate::state::RouterError> {
+    if ops.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    if ops.len() == 1 {
+        return match &ops[0] {
+            PlanOp::NodeScan { label: None, .. } => Ok(Some(Vec::new())),
             PlanOp::NodeScan {
                 label: Some(label),
                 variable,
                 ..
+            } => Ok(Some(vec![label_anchor(store, label.as_ref(), variable)?])),
+            _ => match crate::seed::index_anchor_from_prefix_ops(ops, params, store)? {
+                Some(anchor) => Ok(Some(vec![anchor])),
+                None => Ok(None),
             },
-        ] => {
-            let vertex_label_id = u32::from(
-                store
-                    .lookup_vertex_label_id(label.as_ref())
-                    .map_err(|_| {
-                        crate::state::RouterError::NotFound(format!("label {}", label.as_ref()))
-                    })?
-                    .raw(),
-            );
-            Ok(Some(Some(IndexAnchor::Label {
-                variable: variable.to_string(),
-                vertex_label_id,
+        };
+    }
+
+    let mut anchors = Vec::new();
+    let mut bound_var: Option<String> = None;
+    for op in ops {
+        match op {
+            PlanOp::NodeScan {
+                label: Some(label),
+                variable,
+                ..
+            } => {
+                record_bound_var(&mut bound_var, variable)?;
+                anchors.push(label_anchor(store, label.as_ref(), variable)?);
+            }
+            PlanOp::NodeScan { label: None, .. } => return Ok(None),
+            PlanOp::IndexScan {
+                variable,
+                property,
+                value,
+                cmp,
+                ..
+            } if *cmp == CmpOp::Eq && stats.is_vertex_property_indexed(property.as_ref()) => {
+                record_bound_var(&mut bound_var, variable)?;
+                anchors.push(equal_anchor(
+                    store,
+                    params,
+                    variable,
+                    property.as_ref(),
+                    value,
+                )?);
+            }
+            PlanOp::IndexScan { .. } | PlanOp::IndexIntersection { .. } => return Ok(None),
+            PlanOp::PropertyFilter { predicates, .. } => {
+                for predicate in predicates {
+                    if let Some(anchor) = anchor_from_property_predicate(
+                        predicate,
+                        bound_var.as_deref(),
+                        params,
+                        store,
+                        stats,
+                    )? {
+                        record_bound_var(&mut bound_var, anchor.variable())?;
+                        if anchors
+                            .iter()
+                            .all(|existing| !same_anchor_restriction(existing, &anchor))
+                        {
+                            anchors.push(anchor);
+                        }
+                    }
+                }
+            }
+            _ => return Ok(None),
+        }
+    }
+    Ok(Some(anchors))
+}
+
+fn record_bound_var(
+    bound_var: &mut Option<String>,
+    variable: &str,
+) -> Result<(), crate::state::RouterError> {
+    if let Some(existing) = bound_var {
+        if existing != variable {
+            return Err(crate::state::RouterError::InvalidArgument(
+                "fast path prefix binds multiple variables".into(),
+            ));
+        }
+    } else {
+        *bound_var = Some(variable.to_string());
+    }
+    Ok(())
+}
+
+fn label_anchor(
+    store: &RouterStore,
+    label: &str,
+    variable: impl AsRef<str>,
+) -> Result<IndexAnchor, crate::state::RouterError> {
+    let vertex_label_id = u32::from(
+        store
+            .lookup_vertex_label_id(label)
+            .map_err(|_| crate::state::RouterError::NotFound(format!("label {label}")))?
+            .raw(),
+    );
+    Ok(IndexAnchor::Label {
+        variable: variable.as_ref().to_string(),
+        vertex_label_id,
+    })
+}
+
+fn equal_anchor(
+    store: &RouterStore,
+    params: &BTreeMap<String, Value>,
+    variable: impl AsRef<str>,
+    property: &str,
+    value: &gleaph_gql_planner::plan::ScanValue,
+) -> Result<IndexAnchor, crate::state::RouterError> {
+    let payload_bytes = resolve_scan_value(value, params).ok_or_else(|| {
+        crate::state::RouterError::InvalidArgument("missing fast path parameter".into())
+    })?;
+    let property_id = store
+        .lookup_property_id(property)
+        .map_err(|_| crate::state::RouterError::NotFound(format!("property {property}")))?
+        .raw();
+    Ok(IndexAnchor::Equal(SeedProbe {
+        variable: variable.as_ref().to_string(),
+        property: property.to_string(),
+        property_id,
+        payload_bytes,
+    }))
+}
+
+fn anchor_from_property_predicate(
+    predicate: &Expr,
+    bound_var: Option<&str>,
+    params: &BTreeMap<String, Value>,
+    store: &RouterStore,
+    stats: &RouterGraphStats,
+) -> Result<Option<IndexAnchor>, crate::state::RouterError> {
+    match &predicate.kind {
+        ExprKind::IsLabeled {
+            expr,
+            label: LabelExpr::Name(label),
+            negated: false,
+        } => {
+            let Some(variable) = variable_from_expr(expr) else {
+                return Ok(None);
+            };
+            if bound_var.is_some_and(|v| v != variable) {
+                return Ok(None);
+            }
+            Ok(Some(label_anchor(store, label, variable)?))
+        }
+        ExprKind::Compare {
+            left,
+            op: CmpOp::Eq,
+            right,
+        } => {
+            let Some((variable, property)) = indexed_property_access(left, stats) else {
+                return Ok(None);
+            };
+            if bound_var.is_some_and(|v| v != variable) {
+                return Ok(None);
+            }
+            let payload_bytes = value_to_index_key_bytes(expr_literal_or_param(right, params)?)
+                .map_err(|_| {
+                    crate::state::RouterError::InvalidArgument(
+                        "fast path filter value is not indexable".into(),
+                    )
+                })?
+                .ok_or_else(|| {
+                    crate::state::RouterError::InvalidArgument(
+                        "fast path filter rejects null".into(),
+                    )
+                })?;
+            let property_id = store
+                .lookup_property_id(&property)
+                .map_err(|_| crate::state::RouterError::NotFound(format!("property {property}")))?
+                .raw();
+            Ok(Some(IndexAnchor::Equal(SeedProbe {
+                variable,
+                property,
+                property_id,
+                payload_bytes,
             })))
         }
-        [op] => crate::seed::index_anchor_from_prefix_ops(std::slice::from_ref(op), params, store)
-            .map(|anchor| anchor.map(Some)),
         _ => Ok(None),
+    }
+}
+
+fn variable_from_expr(expr: &Expr) -> Option<String> {
+    match &expr.kind {
+        ExprKind::Variable(name) => Some(name.clone()),
+        _ => None,
+    }
+}
+
+fn indexed_property_access(expr: &Expr, stats: &RouterGraphStats) -> Option<(String, String)> {
+    match &expr.kind {
+        ExprKind::PropertyAccess { expr, property } => {
+            let variable = variable_from_expr(expr)?;
+            if stats.is_vertex_property_indexed(property) {
+                Some((variable, property.clone()))
+            } else {
+                None
+            }
+        }
+        _ => None,
+    }
+}
+
+fn expr_literal_or_param<'a>(
+    expr: &'a Expr,
+    params: &'a BTreeMap<String, Value>,
+) -> Result<&'a Value, crate::state::RouterError> {
+    match &expr.kind {
+        ExprKind::Literal(value) => Ok(value),
+        ExprKind::Parameter(name) => {
+            let key = name.strip_prefix('$').unwrap_or(name.as_str());
+            params.get(key).ok_or_else(|| {
+                crate::state::RouterError::InvalidArgument("missing fast path parameter".into())
+            })
+        }
+        _ => Err(crate::state::RouterError::InvalidArgument(
+            "fast path filter expects literal or parameter".into(),
+        )),
+    }
+}
+
+fn same_anchor_restriction(left: &IndexAnchor, right: &IndexAnchor) -> bool {
+    match (left, right) {
+        (
+            IndexAnchor::Label {
+                vertex_label_id: l, ..
+            },
+            IndexAnchor::Label {
+                vertex_label_id: r, ..
+            },
+        ) => l == r,
+        (
+            IndexAnchor::Equal(SeedProbe {
+                property_id: l,
+                payload_bytes: lb,
+                ..
+            }),
+            IndexAnchor::Equal(SeedProbe {
+                property_id: r,
+                payload_bytes: rb,
+                ..
+            }),
+        ) => l == r && lb == rb,
+        _ => false,
     }
 }
 
@@ -318,7 +545,7 @@ mod tests {
         assert_eq!(fast.group_key_column, "country");
         assert_eq!(fast.count_column, "cnt");
         assert_eq!(fast.min_count, 1);
-        assert!(fast.index_anchor.is_none());
+        assert!(fast.index_anchors.is_empty());
     }
 
     #[test]
@@ -336,7 +563,10 @@ mod tests {
         let plan = PhysicalPlan::from_ops(ops);
         let fast = try_aggregate_index_fast_path(&[plan], &stats, &store, &BTreeMap::new())
             .expect("fast path");
-        assert!(matches!(fast.index_anchor, Some(IndexAnchor::Equal(_))));
+        assert!(matches!(
+            fast.index_anchors.as_slice(),
+            [IndexAnchor::Equal(_)]
+        ));
         assert_eq!(
             fast.property_id,
             store.lookup_property_id("country").unwrap().raw()
@@ -389,7 +619,89 @@ mod tests {
         ]);
         let fast = try_aggregate_index_fast_path(&[plan], &stats, &store, &BTreeMap::new())
             .expect("fast path");
-        assert!(matches!(fast.index_anchor, Some(IndexAnchor::Label { .. })));
+        assert!(matches!(
+            fast.index_anchors.as_slice(),
+            [IndexAnchor::Label { .. }]
+        ));
+    }
+
+    #[test]
+    fn detects_labeled_node_scan_and_index_scan_prefix() {
+        let store = store_with_country_and_region();
+        let admin = candid::Principal::anonymous();
+        store
+            .admin_intern_vertex_label(admin, "Person")
+            .expect("intern Person");
+        let stats = RouterGraphStats::default()
+            .with_indexed_vertex_property("country")
+            .with_indexed_vertex_property("region");
+        let mut ops = vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("n"),
+                label: Some(gleaph_gql_planner::NodeLabelRef::from("Person")),
+                property_projection: None,
+            },
+            PlanOp::IndexScan {
+                variable: Rc::from("n"),
+                property: Rc::from("region"),
+                value: ScanValue::Literal(Value::Text("US".into())),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+        ];
+        ops.extend(grouped_count_tail("country", None));
+        let plan = PhysicalPlan::from_ops(ops);
+        let fast = try_aggregate_index_fast_path(&[plan], &stats, &store, &BTreeMap::new())
+            .expect("fast path");
+        assert_eq!(fast.index_anchors.len(), 2);
+        assert!(fast.index_anchors.iter().any(|anchor| {
+            matches!(
+                anchor,
+                IndexAnchor::Label {
+                    vertex_label_id: 1,
+                    ..
+                }
+            )
+        }));
+        assert!(
+            fast.index_anchors
+                .iter()
+                .any(|anchor| matches!(anchor, IndexAnchor::Equal(_)))
+        );
+    }
+
+    #[test]
+    fn detects_index_scan_with_is_labeled_property_filter_prefix() {
+        let store = store_with_country_and_region();
+        let admin = candid::Principal::anonymous();
+        store
+            .admin_intern_vertex_label(admin, "Person")
+            .expect("intern Person");
+        let stats = RouterGraphStats::default()
+            .with_indexed_vertex_property("country")
+            .with_indexed_vertex_property("region");
+        let mut ops = vec![
+            PlanOp::IndexScan {
+                variable: Rc::from("n"),
+                property: Rc::from("region"),
+                value: ScanValue::Literal(Value::Text("US".into())),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::IsLabeled {
+                    expr: Box::new(Expr::var("n")),
+                    label: LabelExpr::Name("Person".into()),
+                    negated: false,
+                })],
+                stage: 0,
+            },
+        ];
+        ops.extend(grouped_count_tail("country", None));
+        let plan = PhysicalPlan::from_ops(ops);
+        let fast = try_aggregate_index_fast_path(&[plan], &stats, &store, &BTreeMap::new())
+            .expect("fast path");
+        assert_eq!(fast.index_anchors.len(), 2);
     }
 
     #[test]

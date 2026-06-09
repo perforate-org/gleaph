@@ -102,11 +102,11 @@ fn pack_posting_hits(hits: &[PostingHit]) -> Vec<u64> {
         .collect()
 }
 
-async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
+async fn lookup_hits_for_anchor<I: IndexLookup + ?Sized>(
     index: &I,
     anchor: &IndexAnchor,
-) -> Result<Option<Vec<u64>>, String> {
-    let hits = match anchor {
+) -> Result<Vec<PostingHit>, String> {
+    match anchor {
         IndexAnchor::Equal(SeedProbe {
             property_id,
             payload_bytes,
@@ -114,23 +114,54 @@ async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
         }) => {
             index
                 .lookup_equal(*property_id, payload_bytes.clone())
-                .await?
+                .await
         }
         IndexAnchor::Intersection { specs, .. } => {
             index
                 .lookup_intersection(IndexIntersectionRequest {
                     specs: specs.clone(),
                 })
-                .await?
+                .await
         }
         IndexAnchor::Label {
             vertex_label_id, ..
-        } => index.lookup_label(*vertex_label_id).await?,
-    };
-    if hits.is_empty() {
-        return Ok(Some(Vec::new()));
+        } => index.lookup_label(*vertex_label_id).await,
     }
-    Ok(Some(pack_posting_hits(&hits)))
+}
+
+async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
+    index: &I,
+    anchors: &[IndexAnchor],
+) -> Result<Option<Vec<u64>>, String> {
+    if anchors.is_empty() {
+        return Ok(None);
+    }
+    if anchors.len() == 1 {
+        let hits = lookup_hits_for_anchor(index, &anchors[0]).await?;
+        if hits.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+        return Ok(Some(pack_posting_hits(&hits)));
+    }
+
+    let mut sets: Vec<std::collections::HashSet<u64>> = Vec::with_capacity(anchors.len());
+    for anchor in anchors {
+        let hits = lookup_hits_for_anchor(index, anchor).await?;
+        let set = hits
+            .iter()
+            .map(|hit| (u64::from(hit.shard_id) << 32) | u64::from(hit.vertex_id))
+            .collect();
+        sets.push(set);
+    }
+    sets.sort_by_key(|set| set.len());
+    let mut intersection = sets[0].clone();
+    for set in sets.iter().skip(1) {
+        intersection = intersection.intersection(set).copied().collect();
+        if intersection.is_empty() {
+            return Ok(Some(Vec::new()));
+        }
+    }
+    Ok(Some(intersection.into_iter().collect()))
 }
 
 pub async fn gql_query(
@@ -306,13 +337,14 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     if mode == GqlExecutionMode::Query && !has_dml {
         let stats = RouterGraphStats::for_graph(logical_graph_name);
         if let Some(fast_path) = try_aggregate_index_fast_path(plans, &stats, store, pmap) {
-            let vertex_filter = match &fast_path.index_anchor {
-                None => None,
-                Some(anchor) => Some(
-                    resolve_fast_path_vertex_filter(index, anchor)
+            let vertex_filter = if fast_path.index_anchors.is_empty() {
+                None
+            } else {
+                Some(
+                    resolve_fast_path_vertex_filter(index, &fast_path.index_anchors)
                         .await
                         .map_err(RouterError::InvalidArgument)?,
-                ),
+                )
             };
             let counts = index
                 .count_postings_by_value(

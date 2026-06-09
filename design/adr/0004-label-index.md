@@ -109,9 +109,9 @@ Flow for `MATCH (n:Person) … GROUP BY n.country`:
 2. `lookup_label(person_id)` → `PostingHit` list.
 3. `count_postings_by_value(country_id, min_count, pack(hits))` → `GqlQueryResult`.
 
-**Combined label + property seed (v2):** `MATCH (n:Person) WHERE n.region = 'US' GROUP BY n.country`
-requires `vertex_filter = lookup_label(Person) ∩ lookup_equal(region, US)`. Initial implementation
-may intersect packed sets on the router; move to graph-index when hit sets are large.
+**Combined label + property (v1 router):** `MATCH (n:Person) WHERE n.region = 'US' GROUP BY n.country`
+uses `vertex_filter = lookup_label(Person) ∩ lookup_equal(region, US)` intersected on the router
+before `count_postings_by_value`. Move to graph-index when hit sets are large (v2).
 
 **Scale guard (v1):** If `lookup_label` exceeds an instruction/size budget, fall back to generic
 shard aggregate merge (same pattern as oversized seed lists).
