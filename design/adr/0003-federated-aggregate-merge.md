@@ -27,8 +27,8 @@ key and re-apply commutative aggregate functions.
 
 - Mergeable: `CountStar`, `Count`, `Sum`, `Min`, `Max` without `DISTINCT`, filter, or order-by
 - Non-mergeable aggregates (e.g. `AVG`, `COLLECT`, `DISTINCT COUNT`) fall back to union merge
-- On the **generic path**, `HAVING` applied per shard before merge may filter groups that would
-  pass globally — see planned mitigations below
+- On the **generic path**, post-merge `HAVING` runs on the router after aggregate merge; shard
+  dispatch strips the post-aggregate `Filter` so partial groups are not dropped locally
 - Sort/Limit after merge on router, client row API, and cross-shard JOIN merge remain future work
 
 ### Planned: index pushdown fast path
@@ -77,8 +77,8 @@ still be satisfied (e.g. via seeds, `lookup_intersection`, or an explicit non-fa
 | No `DISTINCT`, aggregate `FILTER`, or ordered `COLLECT` | Not posting-count semantics |
 | No `SUM` / `AVG` / `MIN` / `MAX` on other expressions | Needs vertex values, not postings |
 
-**HAVING on generic path:** Router merge post-filter remains the fallback for mergeable aggregates
-on plans that do not match the index fast path.
+**HAVING on generic path:** Router applies post-merge `HAVING` on merged aggregate rows (implemented).
+Index fast path remains planned for eligible `COUNT(*)` / `GROUP BY` shapes.
 
 ## Consequences
 

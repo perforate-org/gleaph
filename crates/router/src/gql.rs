@@ -21,7 +21,8 @@ use crate::execution_path::check_adhoc_execution_path;
 use crate::facade::stable::label_telemetry::RouterMutationShard;
 use crate::facade::store::RouterStore;
 use crate::federation::{
-    ShardDispatch, ShardingPolicy, empty_execute_plan_result, federated_merge_mode_from_plans,
+    FederatedMergeMode, ShardDispatch, ShardingPolicy, apply_federated_aggregate_having,
+    empty_execute_plan_result, federated_dispatch_plan_blob, federated_merge_mode_from_plans,
     merge_execute_plan_result, routings_to_dispatches, sharding_policy_for,
 };
 use crate::graph_client::{
@@ -231,6 +232,9 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     caller: Principal,
 ) -> Result<u64, RouterError> {
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
+    let merge_mode = federated_merge_mode_from_plans(plans);
+    let dispatch_plan_blob = federated_dispatch_plan_blob(shards.len(), plan_blob, plans, has_dml)
+        .map_err(RouterError::InvalidArgument)?;
     let mutation_reservation = if has_dml {
         let key = client_mutation_key.ok_or_else(|| {
             RouterError::InvalidArgument(
@@ -433,7 +437,6 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         }
     }
 
-    let merge_mode = federated_merge_mode_from_plans(plans);
     let mut merged = empty_execute_plan_result();
     for dispatch in dispatches {
         let result = match execute_plan_on_graph(
@@ -441,7 +444,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
                 target_shard_id: dispatch.shard_id,
                 mutation_id,
-                plan_blob: plan_blob.to_vec(),
+                plan_blob: dispatch_plan_blob.clone(),
                 params_blob: params.to_vec(),
                 mode,
                 seed_bindings_blob: dispatch.seed_bindings_blob.clone(),
@@ -524,6 +527,10 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             }
         }
         merge_execute_plan_result(&mut merged, result, merge_mode.clone())
+            .map_err(RouterError::InvalidArgument)?;
+    }
+    if let FederatedMergeMode::Aggregate(spec) = &merge_mode {
+        apply_federated_aggregate_having(&mut merged, spec, pmap)
             .map_err(RouterError::InvalidArgument)?;
     }
     if let Some(key) = client_mutation_key

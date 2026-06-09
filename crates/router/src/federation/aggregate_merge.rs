@@ -7,13 +7,14 @@
 use std::collections::BTreeMap;
 
 use gleaph_gql::Value;
-use gleaph_gql::ast::{AggregateFunc, ExprKind};
+use gleaph_gql::ast::{AggregateFunc, Expr, ExprKind};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
-use gleaph_gql_planner::plan::{AggregateSpec, PlanOp, ProjectColumn};
+use gleaph_gql_planner::plan::{AggregateSpec, PhysicalPlan, PlanOp, ProjectColumn};
+use gleaph_gql_planner::wire::encode_block_plans;
 
 /// How partial shard results should be merged on the router.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum FederatedMergeMode {
     /// Independent fragments: concatenate row batches and sum per-shard row counts.
     UnionRows,
@@ -22,10 +23,12 @@ pub enum FederatedMergeMode {
 }
 
 /// Column layout for merging partial aggregate rows across shards.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct FederatedAggregateMerge {
     pub group_key_columns: Vec<String>,
     pub aggregate_columns: Vec<AggregateMergeColumn>,
+    /// Post-aggregate `HAVING` predicate (from `PlanOp::Filter` after `Aggregate`).
+    pub having: Option<Expr>,
 }
 
 /// One aggregate metric column in the post-aggregate `Project` output.
@@ -59,8 +62,8 @@ pub fn federated_merge_mode_from_ops(ops: &[PlanOp]) -> Option<FederatedMergeMod
         if !aggregates_are_mergeable(aggregates) {
             return None;
         }
-        let project_columns = aggregate_sink_project_columns(ops, idx)?;
-        let spec = build_aggregate_merge_spec(group_by, project_columns)?;
+        let (project_columns, having) = aggregate_sink_after_aggregate(ops, idx)?;
+        let spec = build_aggregate_merge_spec(group_by, project_columns, having)?;
         return Some(FederatedMergeMode::Aggregate(spec));
     }
     None
@@ -83,14 +86,17 @@ fn aggregates_are_mergeable(aggregates: &[AggregateSpec]) -> bool {
     })
 }
 
-fn aggregate_sink_project_columns(
+fn aggregate_sink_after_aggregate(
     ops: &[PlanOp],
     aggregate_idx: usize,
-) -> Option<&[ProjectColumn]> {
+) -> Option<(&[ProjectColumn], Option<Expr>)> {
+    let mut having = None;
     for op in ops.get(aggregate_idx + 1..)? {
         match op {
-            PlanOp::Filter { .. } => continue,
-            PlanOp::Project { columns, .. } => return Some(columns.as_slice()),
+            PlanOp::Filter { condition } if having.is_none() => {
+                having = Some(condition.clone());
+            }
+            PlanOp::Project { columns, .. } => return Some((columns.as_slice(), having)),
             _ => break,
         }
     }
@@ -100,6 +106,7 @@ fn aggregate_sink_project_columns(
 fn build_aggregate_merge_spec(
     group_by: &[gleaph_gql::ast::Expr],
     project_columns: &[ProjectColumn],
+    having: Option<Expr>,
 ) -> Option<FederatedAggregateMerge> {
     let mut group_key_columns = Vec::new();
     let mut aggregate_columns = Vec::new();
@@ -119,7 +126,58 @@ fn build_aggregate_merge_spec(
     Some(FederatedAggregateMerge {
         group_key_columns,
         aggregate_columns,
+        having,
     })
+}
+
+/// Remove post-aggregate `HAVING` (`Filter` immediately after `Aggregate`) from a plan.
+pub fn strip_post_aggregate_having(plan: &mut PhysicalPlan) -> bool {
+    let mut stripped = false;
+    let mut new_ops = Vec::with_capacity(plan.ops.len());
+    let mut idx = 0;
+    while idx < plan.ops.len() {
+        if let PlanOp::Aggregate { .. } = &plan.ops[idx] {
+            new_ops.push(plan.ops[idx].clone());
+            idx += 1;
+            if let Some(PlanOp::Filter { .. }) = plan.ops.get(idx) {
+                stripped = true;
+                idx += 1;
+            }
+            continue;
+        }
+        new_ops.push(plan.ops[idx].clone());
+        idx += 1;
+    }
+    if stripped {
+        plan.ops = new_ops;
+    }
+    stripped
+}
+
+/// Re-encode plans for shard dispatch with post-aggregate `HAVING` stripped.
+///
+/// Single-shard execution keeps the original plan so `HAVING` runs locally.
+pub fn federated_dispatch_plan_blob(
+    shard_count: usize,
+    plan_blob: &[u8],
+    plans: &[PhysicalPlan],
+    requires_write_path: bool,
+) -> Result<Vec<u8>, String> {
+    if shard_count <= 1 {
+        return Ok(plan_blob.to_vec());
+    }
+    let merge_mode = federated_merge_mode_from_plans(plans);
+    let FederatedMergeMode::Aggregate(spec) = merge_mode else {
+        return Ok(plan_blob.to_vec());
+    };
+    if spec.having.is_none() {
+        return Ok(plan_blob.to_vec());
+    }
+    let mut dispatch_plans = plans.to_vec();
+    for plan in &mut dispatch_plans {
+        strip_post_aggregate_having(plan);
+    }
+    encode_block_plans(&dispatch_plans, requires_write_path).map_err(|e| e.to_string())
 }
 
 fn project_column_name(column: &ProjectColumn) -> Option<String> {
@@ -480,6 +538,7 @@ mod tests {
                     name: "cnt".into(),
                     func: AggregateFunc::CountStar,
                 }],
+                having: None,
             })
         );
     }
@@ -496,6 +555,7 @@ mod tests {
                     name: "cnt".into(),
                     func: AggregateFunc::CountStar,
                 }],
+                having: None,
             })
         );
     }
@@ -508,6 +568,7 @@ mod tests {
                 name: "cnt".into(),
                 func: AggregateFunc::CountStar,
             }],
+            having: None,
         };
         let left = rows_blob(vec![int_row(&[("cnt", 5)])]);
         let right = rows_blob(vec![int_row(&[("cnt", 3)])]);
@@ -528,6 +589,7 @@ mod tests {
                 name: "cnt".into(),
                 func: AggregateFunc::CountStar,
             }],
+            having: None,
         };
         let left = rows_blob(vec![
             text_row(&[("country", "US")], &[("cnt", 2)]),
@@ -560,6 +622,7 @@ mod tests {
                     func: AggregateFunc::Max,
                 },
             ],
+            having: None,
         };
         let left = rows_blob(vec![int_row(&[("min_v", 4), ("max_v", 9)])]);
         let right = rows_blob(vec![int_row(&[("min_v", 2), ("max_v", 11)])]);
@@ -570,6 +633,100 @@ mod tests {
             .expect("values");
         assert_eq!(decoded[0].get("min_v"), Some(&Value::Int64(2)));
         assert_eq!(decoded[0].get("max_v"), Some(&Value::Int64(11)));
+    }
+
+    #[test]
+    fn federated_merge_mode_extracts_having_filter() {
+        let having = Expr::new(ExprKind::Compare {
+            left: Box::new(Expr::var("cnt")),
+            op: gleaph_gql::ast::CmpOp::Gt,
+            right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(1)))),
+        });
+        let country = Expr::var("n");
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::Aggregate {
+                group_by: vec![country.clone()],
+                aggregates: vec![AggregateSpec {
+                    func: AggregateFunc::CountStar,
+                    expr: None,
+                    expr2: None,
+                    distinct: false,
+                    filter: None,
+                    order_by: None,
+                    alias: None,
+                }],
+            },
+            PlanOp::Filter {
+                condition: having.clone(),
+            },
+            PlanOp::Project {
+                columns: vec![
+                    ProjectColumn {
+                        expr: country,
+                        alias: Some(Str::from("country")),
+                    },
+                    project_agg(agg_count_star(), "cnt"),
+                ],
+                distinct: false,
+            },
+        ]);
+        let mode = federated_merge_mode_from_plans(&[plan]);
+        assert_eq!(
+            mode,
+            FederatedMergeMode::Aggregate(FederatedAggregateMerge {
+                group_key_columns: vec!["country".into()],
+                aggregate_columns: vec![AggregateMergeColumn {
+                    name: "cnt".into(),
+                    func: AggregateFunc::CountStar,
+                }],
+                having: Some(having),
+            })
+        );
+    }
+
+    #[test]
+    fn strip_post_aggregate_having_removes_filter_after_aggregate() {
+        let having = Expr::new(ExprKind::Compare {
+            left: Box::new(Expr::var("cnt")),
+            op: gleaph_gql::ast::CmpOp::Gt,
+            right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(1)))),
+        });
+        let mut plan = PhysicalPlan::from_ops(vec![
+            PlanOp::Aggregate {
+                group_by: vec![],
+                aggregates: vec![AggregateSpec {
+                    func: AggregateFunc::CountStar,
+                    expr: None,
+                    expr2: None,
+                    distinct: false,
+                    filter: None,
+                    order_by: None,
+                    alias: None,
+                }],
+            },
+            PlanOp::Filter { condition: having },
+            PlanOp::Project {
+                columns: vec![project_agg(agg_count_star(), "cnt")],
+                distinct: false,
+            },
+        ]);
+        assert!(strip_post_aggregate_having(&mut plan));
+        let idx_fil = plan
+            .ops
+            .iter()
+            .position(|op| matches!(op, PlanOp::Filter { .. }));
+        assert!(idx_fil.is_none());
+        let idx_agg = plan
+            .ops
+            .iter()
+            .position(|op| matches!(op, PlanOp::Aggregate { .. }))
+            .expect("aggregate");
+        let idx_proj = plan
+            .ops
+            .iter()
+            .position(|op| matches!(op, PlanOp::Project { .. }))
+            .expect("project");
+        assert_eq!(idx_proj, idx_agg + 1);
     }
 
     #[test]

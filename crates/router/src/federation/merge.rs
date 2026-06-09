@@ -151,6 +151,7 @@ mod tests {
                 name: "cnt".into(),
                 func: AggregateFunc::CountStar,
             }],
+            having: None,
         };
         let mut acc = empty_execute_plan_result();
         let count_blob = |n: i64| {
