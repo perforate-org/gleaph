@@ -1,7 +1,7 @@
 # 0004. Label membership index on graph-index
 
 Date: 2026-06-08
-Status: proposed
+Status: accepted
 
 ## Context
 

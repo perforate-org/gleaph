@@ -4,7 +4,7 @@ use super::super::stable::{
     EDGE_ALIASES, EDGE_PROPERTIES, GRAPH, REMOTE_FORWARD_IN, VERTEX_LABELS, VERTEX_LOGICAL_IDS,
     VERTEX_PROPERTIES,
 };
-use crate::index::{edge_equal, placement};
+use crate::index::{edge_equal, label_pending, placement};
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, PropertyId};
 use gleaph_graph_kernel::federation::{ReleaseLogicalVertexArgs, VertexPlacement};
 use ic_stable_lara::{
@@ -178,6 +178,8 @@ impl GraphStore {
                 len: self.vertex_count(),
             })
         })?;
+        let prev_labels = self.vertex_labels(vertex_id, vertex);
+        label_pending::record_vertex_label_set(vertex_id, &prev_labels, &[]);
         // Label sidecars live in `VERTEX_LABELS`; the CSR row is unchanged. Do not call
         // `set_vertex` here: it mirrors the forward row into reverse and would corrupt
         // reverse-only locator state for this `VertexId`.

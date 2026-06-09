@@ -106,4 +106,34 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
             .map_err(|_| ic_candid_decode_err("posting_remove"))?;
         Ok(())
     }
+
+    async fn label_posting_insert_at(
+        &self,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
+        label_id: u32,
+        vertex_id: u32,
+    ) -> Result<(), PlanQueryError> {
+        let (): () = Call::bounded_wait(self.index_principal, "label_posting_insert")
+            .with_args(&(shard_id, label_id, vertex_id))
+            .await
+            .map_err(|e| ic_wait_err("label_posting_insert", e))?
+            .candid()
+            .map_err(|_| ic_candid_decode_err("label_posting_insert"))?;
+        Ok(())
+    }
+
+    async fn label_posting_remove_at(
+        &self,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
+        label_id: u32,
+        vertex_id: u32,
+    ) -> Result<(), PlanQueryError> {
+        let (): () = Call::bounded_wait(self.index_principal, "label_posting_remove")
+            .with_args(&(shard_id, label_id, vertex_id))
+            .await
+            .map_err(|e| ic_wait_err("label_posting_remove", e))?
+            .candid()
+            .map_err(|_| ic_candid_decode_err("label_posting_remove"))?;
+        Ok(())
+    }
 }

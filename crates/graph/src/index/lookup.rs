@@ -62,6 +62,38 @@ pub trait PropertyIndexLookup {
         value: Vec<u8>,
         vertex_id: u32,
     ) -> Result<(), PlanQueryError>;
+
+    async fn label_posting_insert(
+        &self,
+        label_id: u32,
+        vertex_id: u32,
+    ) -> Result<(), PlanQueryError> {
+        self.label_posting_insert_at(self.local_shard_id(), label_id, vertex_id)
+            .await
+    }
+
+    async fn label_posting_remove(
+        &self,
+        label_id: u32,
+        vertex_id: u32,
+    ) -> Result<(), PlanQueryError> {
+        self.label_posting_remove_at(self.local_shard_id(), label_id, vertex_id)
+            .await
+    }
+
+    async fn label_posting_insert_at(
+        &self,
+        shard_id: ShardId,
+        label_id: u32,
+        vertex_id: u32,
+    ) -> Result<(), PlanQueryError>;
+
+    async fn label_posting_remove_at(
+        &self,
+        shard_id: ShardId,
+        label_id: u32,
+        vertex_id: u32,
+    ) -> Result<(), PlanQueryError>;
 }
 
 /// Used when no index canister is wired; mutations ignore postings and scans fail at runtime.
@@ -113,6 +145,24 @@ impl PropertyIndexLookup for NoPropertyIndex {
         _shard_id: ShardId,
         _property_id: u32,
         _value: Vec<u8>,
+        _vertex_id: u32,
+    ) -> Result<(), PlanQueryError> {
+        Ok(())
+    }
+
+    async fn label_posting_insert_at(
+        &self,
+        _shard_id: ShardId,
+        _label_id: u32,
+        _vertex_id: u32,
+    ) -> Result<(), PlanQueryError> {
+        Ok(())
+    }
+
+    async fn label_posting_remove_at(
+        &self,
+        _shard_id: ShardId,
+        _label_id: u32,
         _vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
         Ok(())

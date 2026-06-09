@@ -185,6 +185,24 @@ impl PropertyIndexLookup for MockPropertyIndex {
     ) -> Result<(), PlanQueryError> {
         Ok(())
     }
+
+    async fn label_posting_insert_at(
+        &self,
+        _shard_id: u32,
+        _label_id: u32,
+        _vertex_id: u32,
+    ) -> Result<(), PlanQueryError> {
+        Ok(())
+    }
+
+    async fn label_posting_remove_at(
+        &self,
+        _shard_id: u32,
+        _label_id: u32,
+        _vertex_id: u32,
+    ) -> Result<(), PlanQueryError> {
+        Ok(())
+    }
 }
 
 pub fn plan(ops: Vec<PlanOp>) -> PhysicalPlan {

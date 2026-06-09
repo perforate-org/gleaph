@@ -2,7 +2,7 @@
 
 ## Status
 
-**Planned** — see [ADR 0004](../adr/0004-label-index.md). Not implemented.
+**Implemented (v1)** — see [ADR 0004](../adr/0004-label-index.md). Label postings, graph DML sync, router `lookup_label`, and aggregate fast path for labeled `NodeScan` are in place. Seed routing from `NodeScan { label }` via `IndexAnchor::from_plans` is not yet wired.
 
 ## Purpose
 

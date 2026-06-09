@@ -160,7 +160,26 @@ fn parse_fast_path_prefix(
     match ops {
         [] => Ok(Some(None)),
         [PlanOp::NodeScan { label: None, .. }] => Ok(Some(None)),
-        [PlanOp::NodeScan { label: Some(_), .. }] => Ok(None),
+        [
+            PlanOp::NodeScan {
+                label: Some(label),
+                variable,
+                ..
+            },
+        ] => {
+            let vertex_label_id = u32::from(
+                store
+                    .lookup_vertex_label_id(label.as_ref())
+                    .map_err(|_| {
+                        crate::state::RouterError::NotFound(format!("label {}", label.as_ref()))
+                    })?
+                    .raw(),
+            );
+            Ok(Some(Some(IndexAnchor::Label {
+                variable: variable.to_string(),
+                vertex_label_id,
+            })))
+        }
         [op] => crate::seed::index_anchor_from_prefix_ops(std::slice::from_ref(op), params, store)
             .map(|anchor| anchor.map(Some)),
         _ => Ok(None),
@@ -325,8 +344,12 @@ mod tests {
     }
 
     #[test]
-    fn rejects_labeled_node_scan_prefix() {
+    fn detects_labeled_node_scan_prefix() {
         let store = store_with_country_and_region();
+        let admin = candid::Principal::anonymous();
+        store
+            .admin_intern_vertex_label(admin, "Person")
+            .expect("intern Person");
         let stats = RouterGraphStats::default().with_indexed_vertex_property("country");
         let group = Expr::new(ExprKind::PropertyAccess {
             expr: Box::new(Expr::var("n")),
@@ -364,7 +387,9 @@ mod tests {
                 distinct: false,
             },
         ]);
-        assert!(try_aggregate_index_fast_path(&[plan], &stats, &store, &BTreeMap::new()).is_none());
+        let fast = try_aggregate_index_fast_path(&[plan], &stats, &store, &BTreeMap::new())
+            .expect("fast path");
+        assert!(matches!(fast.index_anchor, Some(IndexAnchor::Label { .. })));
     }
 
     #[test]

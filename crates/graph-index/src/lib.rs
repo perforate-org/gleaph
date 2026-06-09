@@ -13,6 +13,8 @@
 
 mod facade;
 mod key;
+mod label_key;
+mod label_range;
 mod posting_range;
 pub mod state;
 
@@ -26,6 +28,7 @@ pub use gleaph_graph_kernel::index::{
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
+pub use label_key::LabelPostingKey;
 pub use state::IndexError;
 
 use candid::Principal;
@@ -57,9 +60,24 @@ fn posting_remove(shard_id: ShardId, property_id: u32, value: Vec<u8>, vertex_id
     canister::posting_remove(shard_id, property_id, value, vertex_id);
 }
 
+#[update]
+fn label_posting_insert(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32) {
+    canister::label_posting_insert(shard_id, vertex_label_id, vertex_id);
+}
+
+#[update]
+fn label_posting_remove(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32) {
+    canister::label_posting_remove(shard_id, vertex_label_id, vertex_id);
+}
+
 #[query]
 fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
     canister::lookup_equal(property_id, value)
+}
+
+#[query]
+fn lookup_label(vertex_label_id: u32) -> Vec<PostingHit> {
+    canister::lookup_label(vertex_label_id)
 }
 
 #[query]

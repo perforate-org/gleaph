@@ -3,9 +3,13 @@
 //! Mirrors [`gleaph_graph::facade::GraphStore`]: coordination methods delegate to
 //! `thread_local` [`RefCell`]s wrapping stable [`ic_stable_structures`] collections.
 
-use super::stable::{INDEX_ADMINS, INDEX_POSTINGS, INDEX_ROUTER, INDEX_SHARD_OWNERS};
+use super::stable::{
+    INDEX_ADMINS, INDEX_LABEL_POSTINGS, INDEX_POSTINGS, INDEX_ROUTER, INDEX_SHARD_OWNERS,
+};
 use crate::init::IndexInitArgs;
 use crate::key::PostingKey;
+use crate::label_key::LabelPostingKey;
+use crate::label_range::label_posting_bucket;
 use crate::posting_range::{posting_key_half_open_range, property_posting_bucket};
 use crate::state::IndexError;
 use candid::Principal;
@@ -34,6 +38,7 @@ impl IndexStore {
         });
         INDEX_SHARD_OWNERS.with_borrow_mut(|shards| shards.clear_new());
         INDEX_POSTINGS.with_borrow_mut(|postings| postings.clear());
+        INDEX_LABEL_POSTINGS.with_borrow_mut(|postings| postings.clear());
         INDEX_ROUTER.with_borrow_mut(|router| {
             router.set(args.router_canister);
         });
@@ -142,6 +147,70 @@ impl IndexStore {
             postings.remove(&key);
         });
         Ok(())
+    }
+
+    pub fn label_posting_insert(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        vertex_label_id: u32,
+        vertex_id: u32,
+    ) -> Result<(), IndexError> {
+        let key = LabelPostingKey {
+            vertex_label_id,
+            shard_id,
+            vertex_id,
+        };
+        let registered = INDEX_SHARD_OWNERS.with_borrow(|shards| shards.get(&shard_id));
+        let Some(reg) = registered else {
+            return Err(IndexError::UnknownShard);
+        };
+        if caller != reg {
+            return Err(IndexError::WrongShardOwner);
+        }
+        INDEX_LABEL_POSTINGS.with_borrow_mut(|postings| {
+            postings.insert(key);
+        });
+        Ok(())
+    }
+
+    pub fn label_posting_remove(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        vertex_label_id: u32,
+        vertex_id: u32,
+    ) -> Result<(), IndexError> {
+        let key = LabelPostingKey {
+            vertex_label_id,
+            shard_id,
+            vertex_id,
+        };
+        let registered = INDEX_SHARD_OWNERS.with_borrow(|shards| shards.get(&shard_id));
+        let Some(reg) = registered else {
+            return Err(IndexError::UnknownShard);
+        };
+        if caller != reg {
+            return Err(IndexError::WrongShardOwner);
+        }
+        INDEX_LABEL_POSTINGS.with_borrow_mut(|postings| {
+            postings.remove(&key);
+        });
+        Ok(())
+    }
+
+    pub fn lookup_label(&self, vertex_label_id: u32) -> Vec<PostingHit> {
+        let lo = LabelPostingKey::prefix_lower(vertex_label_id);
+        let hi = LabelPostingKey::prefix_upper(vertex_label_id);
+        INDEX_LABEL_POSTINGS.with_borrow(|postings| {
+            postings
+                .range(lo..=hi)
+                .map(|k| PostingHit {
+                    shard_id: k.shard_id,
+                    vertex_id: k.vertex_id,
+                })
+                .collect()
+        })
     }
 
     pub fn lookup_equal(&self, property_id: u32, value: &[u8]) -> Vec<PostingHit> {
@@ -759,5 +828,54 @@ mod tests {
                 }],
             });
         assert!(hits.is_empty());
+    }
+
+    #[test]
+    fn insert_and_lookup_label() {
+        let store = IndexStore::new();
+        let router = init_test_store(&store);
+        let shard_principal = Principal::from_slice(&[1]);
+        register_shard_owner(&store, router, 7, shard_principal);
+
+        store
+            .label_posting_insert(shard_principal, 7, 3, 100)
+            .expect("insert");
+        store
+            .label_posting_insert(shard_principal, 7, 3, 200)
+            .expect("insert");
+        store
+            .label_posting_insert(shard_principal, 7, 4, 300)
+            .expect("other label");
+
+        let hits = store.lookup_label(3);
+        assert_eq!(hits.len(), 2);
+        assert!(hits.contains(&PostingHit {
+            shard_id: 7,
+            vertex_id: 100
+        }));
+        assert!(hits.contains(&PostingHit {
+            shard_id: 7,
+            vertex_id: 200
+        }));
+        assert!(store.lookup_label(4).contains(&PostingHit {
+            shard_id: 7,
+            vertex_id: 300
+        }));
+    }
+
+    #[test]
+    fn label_posting_remove() {
+        let store = IndexStore::new();
+        let router = init_test_store(&store);
+        let shard_principal = Principal::from_slice(&[1]);
+        register_shard_owner(&store, router, 7, shard_principal);
+
+        store
+            .label_posting_insert(shard_principal, 7, 1, 10)
+            .expect("insert");
+        store
+            .label_posting_remove(shard_principal, 7, 1, 10)
+            .expect("remove");
+        assert!(store.lookup_label(1).is_empty());
     }
 }

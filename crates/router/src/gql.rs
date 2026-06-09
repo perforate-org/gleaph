@@ -56,6 +56,11 @@ trait IndexLookup {
         min_count: u64,
         vertex_filter_packed: Option<Vec<u64>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>>;
+
+    fn lookup_label(
+        &self,
+        vertex_label_id: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
 }
 
 impl IndexLookup for RouterIndexClient {
@@ -81,6 +86,13 @@ impl IndexLookup for RouterIndexClient {
         vertex_filter_packed: Option<Vec<u64>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
         Box::pin(self.count_postings_by_value(property_id, min_count, vertex_filter_packed))
+    }
+
+    fn lookup_label(
+        &self,
+        vertex_label_id: u32,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+        Box::pin(self.lookup_label(vertex_label_id))
     }
 }
 
@@ -111,6 +123,9 @@ async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
                 })
                 .await?
         }
+        IndexAnchor::Label {
+            vertex_label_id, ..
+        } => index.lookup_label(*vertex_label_id).await?,
     };
     if hits.is_empty() {
         return Ok(Some(Vec::new()));
@@ -436,6 +451,25 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                             }
                         }
                     }
+                    IndexAnchor::Label {
+                        vertex_label_id, ..
+                    } => match index
+                        .lookup_label(*vertex_label_id)
+                        .await
+                        .map_err(RouterError::InvalidArgument)
+                    {
+                        Ok(hits) => hits,
+                        Err(err) => {
+                            release_routing_if_owner(
+                                &store,
+                                caller,
+                                logical_graph_name,
+                                client_mutation_key,
+                                mutation_reservation,
+                            )?;
+                            return Err(err);
+                        }
+                    },
                 };
                 if hits.is_empty() {
                     if let Some(key) = client_mutation_key {
@@ -892,6 +926,15 @@ mod tests {
             _vertex_filter_packed: Option<Vec<u64>>,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
             Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_label(
+            &self,
+            _vertex_label_id: u32,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            self.calls.set(self.calls.get() + 1);
+            let result = self.results.borrow_mut().remove(0);
+            Box::pin(async move { result })
         }
     }
 

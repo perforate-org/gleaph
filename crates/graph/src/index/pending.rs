@@ -296,6 +296,24 @@ mod tests {
             self.remove_calls.fetch_add(1, Ordering::SeqCst);
             Ok(())
         }
+
+        async fn label_posting_insert_at(
+            &self,
+            _shard_id: u32,
+            _label_id: u32,
+            _vertex_id: u32,
+        ) -> Result<(), PlanQueryError> {
+            Ok(())
+        }
+
+        async fn label_posting_remove_at(
+            &self,
+            _shard_id: u32,
+            _label_id: u32,
+            _vertex_id: u32,
+        ) -> Result<(), PlanQueryError> {
+            Ok(())
+        }
     }
 
     #[test]

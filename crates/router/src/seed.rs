@@ -30,6 +30,11 @@ pub enum IndexAnchor {
         variable: String,
         specs: Vec<IndexEqualSpec>,
     },
+    /// Labeled `NodeScan` (`lookup_label`).
+    Label {
+        variable: String,
+        vertex_label_id: u32,
+    },
 }
 
 impl IndexAnchor {
@@ -38,6 +43,7 @@ impl IndexAnchor {
         match self {
             Self::Equal(probe) => probe.variable.as_str(),
             Self::Intersection { variable, .. } => variable.as_str(),
+            Self::Label { variable, .. } => variable.as_str(),
         }
     }
 
@@ -78,7 +84,7 @@ impl SeedProbe {
     ) -> Result<Option<Self>, RouterError> {
         Ok(match IndexAnchor::from_plans(plans, parameters, store)? {
             Some(IndexAnchor::Equal(probe)) => Some(probe),
-            Some(IndexAnchor::Intersection { .. }) | None => None,
+            Some(IndexAnchor::Intersection { .. }) | Some(IndexAnchor::Label { .. }) | None => None,
         })
     }
 }

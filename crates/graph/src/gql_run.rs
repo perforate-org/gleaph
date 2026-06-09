@@ -3,7 +3,7 @@
 use crate::facade::GraphStore;
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
-use crate::index::pending;
+use crate::index::{label_pending, pending};
 use crate::plan::{
     PlanBinding, PlanMutationExecutor, PlanQueryResult, PlanQueryRow, execute_plan_query,
     execute_plan_query_bindings, execute_plan_query_bindings_with_initial_rows,
@@ -189,6 +189,7 @@ async fn run_transaction_block(
             let mutation = store.execute_plan_mutations(&plan, execution.clone())?;
             merge_label_usage_delta(&mut label_usage_delta, mutation.label_usage_delta);
             pending::flush_pending(index).await?;
+            label_pending::flush_pending(index).await?;
         } else {
             match materialize {
                 TransactionReadMaterialize::Full => {
@@ -491,6 +492,7 @@ async fn run_wire_plans(
             }
             merge_label_usage_delta(&mut label_usage_delta, mutation.label_usage_delta);
             pending::flush_pending(index).await?;
+            label_pending::flush_pending(index).await?;
             skip_index = false;
             seed_rows.clear();
         } else {

@@ -49,6 +49,28 @@ pub(crate) fn posting_remove(shard_id: ShardId, property_id: u32, value: Vec<u8>
     }
 }
 
+pub(crate) fn label_posting_insert(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32) {
+    let caller = msg_caller();
+    if let Err(e) =
+        IndexStore::new().label_posting_insert(caller, shard_id, vertex_label_id, vertex_id)
+    {
+        trap_err(e);
+    }
+}
+
+pub(crate) fn label_posting_remove(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32) {
+    let caller = msg_caller();
+    if let Err(e) =
+        IndexStore::new().label_posting_remove(caller, shard_id, vertex_label_id, vertex_id)
+    {
+        trap_err(e);
+    }
+}
+
+pub(crate) fn lookup_label(vertex_label_id: u32) -> Vec<PostingHit> {
+    IndexStore::new().lookup_label(vertex_label_id)
+}
+
 pub(crate) fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
     IndexStore::new().lookup_equal(property_id, &value)
 }

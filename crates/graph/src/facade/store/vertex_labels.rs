@@ -7,6 +7,8 @@ use gleaph_graph_kernel::entry::{Vertex, VertexLabelId};
 use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
 use ic_stable_lara::VertexId;
 
+use crate::index::label_pending;
+
 use super::GraphStore;
 
 impl GraphStore {
@@ -63,7 +65,9 @@ impl GraphStore {
         vertex: Vertex,
         labels: impl IntoIterator<Item = VertexLabelId>,
     ) -> Result<Vertex, VertexLabelStoreError> {
+        let prev = self.vertex_labels(vertex_id, vertex);
         let next: Vec<_> = labels.into_iter().collect();
+        label_pending::record_vertex_label_set(vertex_id, &prev, &next);
         VERTEX_LABELS
             .with_borrow_mut(|store| store.set_labels(vertex_id, vertex, next.iter().copied()))
     }
@@ -74,6 +78,10 @@ impl GraphStore {
         vertex: Vertex,
         label: VertexLabelId,
     ) -> Result<Vertex, VertexLabelStoreError> {
+        let prev = self.vertex_labels(vertex_id, vertex);
+        let mut next = prev.clone();
+        next.push(label);
+        label_pending::record_vertex_label_set(vertex_id, &prev, &next);
         let out =
             VERTEX_LABELS.with_borrow_mut(|store| store.add_label(vertex_id, vertex, label))?;
         Ok(out)
@@ -85,6 +93,9 @@ impl GraphStore {
         vertex: Vertex,
         label: VertexLabelId,
     ) -> Vertex {
+        let prev = self.vertex_labels(vertex_id, vertex);
+        let next: Vec<_> = prev.iter().filter(|l| **l != label).copied().collect();
+        label_pending::record_vertex_label_set(vertex_id, &prev, &next);
         let out =
             VERTEX_LABELS.with_borrow_mut(|store| store.remove_label(vertex_id, vertex, label));
         out
