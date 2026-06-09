@@ -1,7 +1,7 @@
 //! Read-only property index client for router seed routing.
 
 use candid::Principal;
-use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit};
+use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, ValuePostingCount};
 
 #[derive(Clone, Debug)]
 pub struct RouterIndexClient {
@@ -34,6 +34,31 @@ impl RouterIndexClient {
         {
             let _ = (property_id, value);
             Err("lookup_equal unavailable in native builds".into())
+        }
+    }
+
+    pub async fn count_postings_by_value(
+        &self,
+        property_id: u32,
+        min_count: u64,
+    ) -> Result<Vec<ValuePostingCount>, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            let counts: Vec<ValuePostingCount> =
+                Call::bounded_wait(self.index_canister, "count_postings_by_value")
+                    .with_args(&(property_id, min_count))
+                    .await
+                    .map_err(|e| format!("count_postings_by_value: {e}"))?
+                    .candid()
+                    .map_err(|e| format!("count_postings_by_value decode: {e}"))?;
+            return Ok(counts);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = (property_id, min_count);
+            Err("count_postings_by_value unavailable in native builds".into())
         }
     }
 

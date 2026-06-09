@@ -33,3 +33,10 @@ pub enum PostingRangeRequest {
     Le(Vec<u8>),
     Lt(Vec<u8>),
 }
+
+/// Global posting cardinality for one encoded property value (all shards).
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct ValuePostingCount {
+    pub encoded_value: Vec<u8>,
+    pub count: u64,
+}

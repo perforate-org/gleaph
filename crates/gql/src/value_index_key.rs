@@ -57,6 +57,43 @@ pub fn value_to_index_key_bytes(value: &Value) -> Result<Option<Vec<u8>>, ValueI
     Ok(Some(out))
 }
 
+/// Decode a property-index key produced by [`value_to_index_key_bytes`] (supported leaf types only).
+pub fn index_key_bytes_to_value(bytes: &[u8]) -> Option<Value> {
+    let (&tag, rest) = bytes.split_first()?;
+    match tag {
+        INDEX_KEY_BOOL => {
+            let &byte = rest.first()?;
+            Some(Value::Bool(byte != 0))
+        }
+        INDEX_KEY_TEXT => read_escaped_index_bytes(rest).and_then(|text| {
+            String::from_utf8(text).ok().map(Value::Text)
+        }),
+        INDEX_KEY_BYTES => read_escaped_index_bytes(rest).map(Value::Bytes),
+        _ => None,
+    }
+}
+
+fn read_escaped_index_bytes(rest: &[u8]) -> Option<Vec<u8>> {
+    let mut out = Vec::new();
+    let mut i = 0;
+    while i < rest.len() {
+        if rest[i] == 0 {
+            if i + 1 < rest.len() && rest[i + 1] == 0 {
+                return Some(out);
+            }
+            if i + 1 < rest.len() && rest[i + 1] == 255 {
+                out.push(0);
+                i += 2;
+                continue;
+            }
+            return None;
+        }
+        out.push(rest[i]);
+        i += 1;
+    }
+    None
+}
+
 fn encode_value_key(value: &Value, out: &mut Vec<u8>) -> Result<(), ValueIndexKeyError> {
     match value {
         Value::Null => out.push(END_MARKER),
@@ -347,6 +384,13 @@ mod tests {
                 .unwrap()
                 .is_some()
         );
+    }
+
+    #[test]
+    fn index_key_text_roundtrips_through_decode() {
+        let value = Value::Text("hello\0world".into());
+        let key = value_to_index_key_bytes(&value).unwrap().unwrap();
+        assert_eq!(index_key_bytes_to_value(&key), Some(value));
     }
 
     #[test]

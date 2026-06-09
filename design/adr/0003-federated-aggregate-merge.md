@@ -31,7 +31,16 @@ key and re-apply commutative aggregate functions.
   dispatch strips the post-aggregate `Filter` so partial groups are not dropped locally
 - Sort/Limit after merge on router, client row API, and cross-shard JOIN merge remain future work
 
-### Planned: index pushdown fast path
+### Index pushdown fast path (partial)
+
+**Implemented (v1):** `graph-index::count_postings_by_value`, router plan detection
+(`try_aggregate_index_fast_path`), and early return in `dispatch_plan_blob_with_index` for
+eligible `COUNT(*)` `GROUP BY` one indexed vertex property without label-filtered prefix ops.
+HAVING `COUNT(*) > N` / `>= N` maps to `min_count` on the index scan.
+
+**Still planned:** label/seed-constrained GROUP BY, intersection + aggregate, richer HAVING shapes.
+
+### Original fast-path design notes
 
 Some federated aggregate queries do not need per-shard `PlanOp::Aggregate` + router merge.
 When `GROUP BY` is an **indexed vertex property**, the aggregate is **`COUNT(*)`**, and

@@ -1,11 +1,15 @@
 //! Router-side sharding policy and per-shard dispatch construction.
 
+mod aggregate_index_fast_path;
 mod aggregate_merge;
 mod dispatch;
 mod having_filter;
 mod merge;
 mod standalone;
 
+pub use aggregate_index_fast_path::{
+    AggregateIndexFastPath, gql_query_result_from_posting_counts, try_aggregate_index_fast_path,
+};
 #[expect(unused_imports, reason = "public federation API surface")]
 pub use aggregate_merge::{
     FederatedAggregateMerge, FederatedMergeMode, federated_dispatch_plan_blob,

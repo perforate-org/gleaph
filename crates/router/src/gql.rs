@@ -13,7 +13,7 @@ use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::build_block_plan_with_schema;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
-use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit};
+use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, ValuePostingCount};
 use gleaph_graph_kernel::plan_exec::{
     GqlExecutionMode, GqlQueryResult, LabelTelemetryEventWire, MutationId,
 };
@@ -25,7 +25,8 @@ use crate::facade::store::RouterStore;
 use crate::federation::{
     FederatedMergeMode, ShardDispatch, ShardingPolicy, apply_federated_aggregate_having,
     empty_execute_plan_result, federated_dispatch_plan_blob, federated_merge_mode_from_plans,
-    merge_execute_plan_result, routings_to_dispatches, sharding_policy_for,
+    gql_query_result_from_posting_counts, merge_execute_plan_result, routings_to_dispatches,
+    sharding_policy_for, try_aggregate_index_fast_path,
 };
 use crate::graph_client::{
     ack_label_telemetry_event, execute_plan_on_graph, get_mutation_outcome,
@@ -48,6 +49,12 @@ trait IndexLookup {
         &self,
         req: IndexIntersectionRequest,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
+
+    fn count_postings_by_value(
+        &self,
+        property_id: u32,
+        min_count: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>>;
 }
 
 impl IndexLookup for RouterIndexClient {
@@ -64,6 +71,14 @@ impl IndexLookup for RouterIndexClient {
         req: IndexIntersectionRequest,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
         Box::pin(self.lookup_intersection(req))
+    }
+
+    fn count_postings_by_value(
+        &self,
+        property_id: u32,
+        min_count: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
+        Box::pin(self.count_postings_by_value(property_id, min_count))
     }
 }
 
@@ -237,6 +252,17 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     caller: Principal,
 ) -> Result<GqlQueryResult, RouterError> {
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
+    if mode == GqlExecutionMode::Query && !has_dml {
+        let stats = RouterGraphStats::for_graph(logical_graph_name);
+        if let Some(fast_path) = try_aggregate_index_fast_path(plans, &stats, store) {
+            let counts = index
+                .count_postings_by_value(fast_path.property_id, fast_path.min_count)
+                .await
+                .map_err(RouterError::InvalidArgument)?;
+            return Ok(gql_query_result_from_posting_counts(&fast_path, counts)
+                .map_err(RouterError::InvalidArgument)?);
+        }
+    }
     let merge_mode = federated_merge_mode_from_plans(plans);
     let dispatch_plan_blob = federated_dispatch_plan_blob(shards.len(), plan_blob, plans, has_dml)
         .map_err(RouterError::InvalidArgument)?;
@@ -726,7 +752,7 @@ mod tests {
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
-    use gleaph_graph_kernel::index::PostingHit;
+    use gleaph_graph_kernel::index::{PostingHit, ValuePostingCount};
     use gleaph_graph_kernel::plan_exec::{
         ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelTelemetryEventWire,
         LabelUsageDelta, SeedBindingsWire,
@@ -809,6 +835,14 @@ mod tests {
             self.calls.set(self.calls.get() + 1);
             let result = self.results.borrow_mut().remove(0);
             Box::pin(async move { result })
+        }
+
+        fn count_postings_by_value(
+            &self,
+            _property_id: u32,
+            _min_count: u64,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
         }
     }
 

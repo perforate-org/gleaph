@@ -6,11 +6,14 @@
 use super::stable::{INDEX_ADMINS, INDEX_POSTINGS, INDEX_ROUTER, INDEX_SHARD_OWNERS};
 use crate::init::IndexInitArgs;
 use crate::key::PostingKey;
-use crate::posting_range::posting_key_half_open_range;
+use crate::posting_range::{posting_key_half_open_range, property_posting_bucket};
 use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
+use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest, ValuePostingCount};
+
+/// Default cap on groups returned by [`IndexStore::count_postings_by_value`].
+pub const DEFAULT_COUNT_POSTINGS_MAX_GROUPS: usize = 10_000;
 
 /// Stateless facade over index stable structures initialized in [`super::stable`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -192,6 +195,60 @@ impl IndexStore {
             .collect()
     }
 
+    /// Walk the property bucket and return `(encoded_value, global_count)` groups with `count >= min_count`.
+    pub fn count_postings_by_value(
+        &self,
+        property_id: u32,
+        min_count: u64,
+        max_groups: usize,
+    ) -> Vec<ValuePostingCount> {
+        let Some((low, high)) = property_posting_bucket(property_id) else {
+            return Vec::new();
+        };
+        let max_groups = max_groups.max(1);
+        let mut out = Vec::new();
+        let mut current_value: Option<Vec<u8>> = None;
+        let mut current_count: u64 = 0;
+
+        let flush = |value: Vec<u8>, count: u64, out: &mut Vec<ValuePostingCount>| {
+            if count >= min_count {
+                out.push(ValuePostingCount {
+                    encoded_value: value,
+                    count,
+                });
+            }
+        };
+
+        INDEX_POSTINGS.with_borrow(|postings| {
+            for key in postings.range(low..high) {
+                match current_value.as_ref() {
+                    None => {
+                        current_value = Some(key.value.clone());
+                        current_count = 1;
+                    }
+                    Some(value) if value == &key.value => {
+                        current_count = current_count.saturating_add(1);
+                    }
+                    Some(value) => {
+                        flush(value.clone(), current_count, &mut out);
+                        if out.len() >= max_groups {
+                            return;
+                        }
+                        current_value = Some(key.value.clone());
+                        current_count = 1;
+                    }
+                }
+            }
+        });
+
+        if let Some(value) = current_value
+            && out.len() < max_groups
+        {
+            flush(value, current_count, &mut out);
+        }
+        out
+    }
+
     /// Half-open `[low, high)` scan over postings for `property_id` using encoded-value [`PostingRangeRequest`].
     pub fn lookup_range(&self, property_id: u32, req: &PostingRangeRequest) -> Vec<PostingHit> {
         let Some((low, high)) = posting_key_half_open_range(property_id, req) else {
@@ -246,6 +303,41 @@ mod tests {
         store
             .admin_set_shard_owner(router, shard_id, owner)
             .expect("set shard owner");
+    }
+
+    #[test]
+    fn count_postings_by_value_groups_across_shards() {
+        let store = IndexStore::new();
+        let router = init_test_store(&store);
+        let shard_a = Principal::from_slice(&[1]);
+        let shard_b = Principal::from_slice(&[2]);
+        register_shard_owner(&store, router, 7, shard_a);
+        register_shard_owner(&store, router, 9, shard_b);
+
+        let property_id = 42;
+        let us = index_key(Value::Text("US".into()));
+        let uk = index_key(Value::Text("UK".into()));
+        for (shard, owner, vid) in [
+            (7, shard_a, 1),
+            (7, shard_a, 2),
+            (9, shard_b, 3),
+            (7, shard_a, 4),
+        ] {
+            store
+                .posting_insert(owner, shard, property_id, us.clone(), vid)
+                .expect("insert us");
+        }
+        store
+            .posting_insert(shard_a, 7, property_id, uk.clone(), 5)
+            .expect("insert uk");
+
+        let counts = store.count_postings_by_value(property_id, 2, 100);
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0].encoded_value, us);
+        assert_eq!(counts[0].count, 4);
+
+        let all = store.count_postings_by_value(property_id, 1, 100);
+        assert_eq!(all.len(), 2);
     }
 
     #[test]

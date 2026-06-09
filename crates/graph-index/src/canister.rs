@@ -5,7 +5,7 @@ use crate::init::IndexInitArgs;
 use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest};
+use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest, ValuePostingCount};
 use ic_cdk::api::msg_caller;
 
 fn trap_err(e: IndexError) {
@@ -61,4 +61,10 @@ pub(crate) fn lookup_intersection(
 
 pub(crate) fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<PostingHit> {
     IndexStore::new().lookup_range(property_id, &req)
+}
+
+pub(crate) fn count_postings_by_value(property_id: u32, min_count: u64) -> Vec<ValuePostingCount> {
+    const MAX_GROUPS: usize = 10_000;
+
+    IndexStore::new().count_postings_by_value(property_id, min_count, MAX_GROUPS)
 }

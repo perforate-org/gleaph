@@ -27,6 +27,16 @@ fn property_end_exclusive(property_id: u32) -> Option<PostingKey> {
     Some(PostingKey::prefix_lower(property_id.checked_add(1)?, &[]))
 }
 
+/// Half-open `[low, high)` range covering all postings for one `property_id`.
+pub fn property_posting_bucket(property_id: u32) -> Option<(PostingKey, PostingKey)> {
+    let low = property_min(property_id);
+    let high = property_end_exclusive(property_id)?;
+    if low >= high {
+        return None;
+    }
+    Some((low, high))
+}
+
 /// Half-open posting key range `[low, high)` covering encoded-value predicates for one `property_id`.
 pub(crate) fn posting_key_half_open_range(
     property_id: u32,

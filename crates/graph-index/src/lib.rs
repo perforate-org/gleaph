@@ -22,7 +22,7 @@ mod canister;
 
 pub use facade::IndexStore;
 pub use gleaph_graph_kernel::index::{
-    IndexEqualSpec, IndexIntersectionRequest, PostingHit, PostingRangeRequest,
+    IndexEqualSpec, IndexIntersectionRequest, PostingHit, PostingRangeRequest, ValuePostingCount,
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
@@ -70,4 +70,9 @@ fn lookup_intersection(req: IndexIntersectionRequest) -> Vec<PostingHit> {
 #[query]
 fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<PostingHit> {
     canister::lookup_range(property_id, req)
+}
+
+#[query]
+fn count_postings_by_value(property_id: u32, min_count: u64) -> Vec<ValuePostingCount> {
+    canister::count_postings_by_value(property_id, min_count)
 }

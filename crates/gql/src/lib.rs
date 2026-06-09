@@ -62,7 +62,7 @@ pub use value::{
     DenyExtensionBinaryDecode, ExtensionBinaryDecode, ExtensionSortableKey, ExtensionValue, Value,
     ValueBinaryError,
 };
-pub use value_index_key::{ValueIndexKeyError, value_to_index_key_bytes};
+pub use value_index_key::{ValueIndexKeyError, index_key_bytes_to_value, value_to_index_key_bytes};
 pub use value_join_hash::{hash_path_element_for_join, hash_value_for_join};
 
 #[cfg(feature = "ast-rkyv-no-span")]
