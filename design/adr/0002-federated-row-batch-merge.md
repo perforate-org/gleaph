@@ -20,8 +20,9 @@ when fragments are independent (union semantics).
    `rows_blob` (update path leaves it `None`).
 3. Router `federation/merge.rs` unions row batches by concatenating decoded rows and sums
    `row_count` via `merge_execute_plan_result`.
-4. Cross-shard join / aggregate merge, dedup policy, and returning merged rows from
-   `gql_query` remain future work; v1 keeps the public router API as row count only.
+4. Cross-shard aggregate merge is covered by [ADR 0003](0003-federated-aggregate-merge.md).
+   Cross-shard join merge, dedup policy, and returning merged rows from `gql_query` remain
+   future work; v1 keeps the public router API as row count only.
 
 ## Consequences
 

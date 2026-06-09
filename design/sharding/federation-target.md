@@ -99,14 +99,13 @@ Index is authoritative for **which physical vertices match an indexed predicate*
 
 ## Merge (Router)
 
-**Partial (v1):** `router/federation/merge.rs` sums row counts and unions independent shard-local row batches (`merge_execute_plan_result` / `IcWirePlanQueryResult` in `rows_blob`). Used by `gql.rs` multi-shard dispatch. See [ADR 0002](../adr/0002-federated-row-batch-merge.md).
+**Partial (v1):** `router/federation/merge.rs` unions independent shard-local row batches and sums row counts; `router/federation/aggregate_merge.rs` merges partial `PlanOp::Aggregate` results by GROUP BY key (COUNT/COUNT(*)/SUM/MIN/MAX). Used by `gql.rs` multi-shard dispatch. See [ADR 0002](../adr/0002-federated-row-batch-merge.md) and [ADR 0003](../adr/0003-federated-aggregate-merge.md).
 
 Planned responsibilities (detail TBD):
 
-- Partial aggregation pushdown for `GROUP BY` / aggregates across shards.
+- Aggregate pushdown for non-mergeable functions (`AVG`, `DISTINCT`, ordered `COLLECT`).
 - Dedup and join of row batches when fragments are not independent unions.
-
-Current implementation often returns **row counts** from graph; merge policy must be updated when federation v1 ships.
+- Returning merged `rows_blob` from `gql_query`.
 
 ## Gap vs current code
 
