@@ -14,7 +14,9 @@ use gleaph_gql_planner::build_block_plan_with_schema;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit};
-use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, LabelTelemetryEventWire, MutationId};
+use gleaph_graph_kernel::plan_exec::{
+    GqlExecutionMode, GqlQueryResult, LabelTelemetryEventWire, MutationId,
+};
 use ic_cdk::api::msg_caller;
 
 use crate::execution_path::check_adhoc_execution_path;
@@ -69,7 +71,7 @@ pub async fn gql_query(
     logical_graph_name: String,
     query: String,
     params: Vec<u8>,
-) -> Result<u64, RouterError> {
+) -> Result<GqlQueryResult, RouterError> {
     run_gql(
         &logical_graph_name,
         &query,
@@ -87,7 +89,7 @@ pub async fn gql_execute(
     query: String,
     params: Vec<u8>,
 ) -> Result<u64, RouterError> {
-    run_gql(
+    Ok(run_gql(
         &logical_graph_name,
         &query,
         &params,
@@ -96,7 +98,8 @@ pub async fn gql_execute(
         false,
         None,
     )
-    .await
+    .await?
+    .row_count)
 }
 
 pub async fn gql_execute_idempotent(
@@ -105,7 +108,7 @@ pub async fn gql_execute_idempotent(
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<u64, RouterError> {
-    run_gql(
+    Ok(run_gql(
         &logical_graph_name,
         &query,
         &params,
@@ -114,7 +117,8 @@ pub async fn gql_execute_idempotent(
         false,
         Some(&client_mutation_key),
     )
-    .await
+    .await?
+    .row_count)
 }
 
 /// Run a read-only program on the **update** path (higher cost; escape hatch only).
@@ -123,7 +127,7 @@ pub async fn force_gql_execute(
     query: String,
     params: Vec<u8>,
 ) -> Result<u64, RouterError> {
-    run_gql(
+    Ok(run_gql(
         &logical_graph_name,
         &query,
         &params,
@@ -132,7 +136,8 @@ pub async fn force_gql_execute(
         true,
         None,
     )
-    .await
+    .await?
+    .row_count)
 }
 
 async fn run_gql(
@@ -143,7 +148,7 @@ async fn run_gql(
     entrypoint: &str,
     force: bool,
     client_mutation_key: Option<&str>,
-) -> Result<u64, RouterError> {
+) -> Result<GqlQueryResult, RouterError> {
     let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let flags = classify_program(&program);
     let caller = msg_caller();
@@ -194,7 +199,7 @@ pub async fn dispatch_plan_blob(
     params: &[u8],
     mode: GqlExecutionMode,
     client_mutation_key: Option<&str>,
-) -> Result<u64, RouterError> {
+) -> Result<GqlQueryResult, RouterError> {
     let store = RouterStore::new();
     let shards = store.list_shards_for_graph(logical_graph_name)?;
     if shards.is_empty() {
@@ -230,7 +235,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     shards: Vec<ShardRegistryEntry>,
     index: &I,
     caller: Principal,
-) -> Result<u64, RouterError> {
+) -> Result<GqlQueryResult, RouterError> {
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
     let merge_mode = federated_merge_mode_from_plans(plans);
     let dispatch_plan_blob = federated_dispatch_plan_blob(shards.len(), plan_blob, plans, has_dml)
@@ -257,13 +262,13 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         if let Some(row_count) =
             store.router_mutation_completed_row_count(caller, logical_graph_name, key)
         {
-            return Ok(row_count);
+            return Ok(GqlQueryResult::row_count_only(row_count));
         }
         reconcile_router_mutation_telemetry(&store, caller, logical_graph_name, key).await?;
         if let Some(row_count) =
             store.router_mutation_completed_row_count(caller, logical_graph_name, key)
         {
-            return Ok(row_count);
+            return Ok(GqlQueryResult::row_count_only(row_count));
         }
     }
 
@@ -368,7 +373,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                             0,
                         )?;
                     }
-                    return Ok(0);
+                    return Ok(GqlQueryResult::row_count_only(0));
                 }
                 match policy.resolve_with_hits(store, logical_graph_name, &shards, anchor, &hits) {
                     Ok(routings) => routings,
@@ -537,9 +542,9 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         && let Some(row_count) =
             store.router_mutation_completed_row_count(caller, logical_graph_name, key)
     {
-        return Ok(row_count);
+        return Ok(GqlQueryResult::row_count_only(row_count));
     }
-    Ok(merged.row_count)
+    Ok(GqlQueryResult::from_merged(&merged))
 }
 
 fn release_routing_if_owner(
@@ -717,12 +722,14 @@ mod tests {
     use candid::{Decode, Principal};
     use gleaph_gql::Value;
     use gleaph_gql::ast::CmpOp;
+    use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
     use gleaph_graph_kernel::index::PostingHit;
     use gleaph_graph_kernel::plan_exec::{
-        GqlExecutionMode, LabelTelemetryEventWire, LabelUsageDelta, SeedBindingsWire,
+        ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelTelemetryEventWire,
+        LabelUsageDelta, SeedBindingsWire,
     };
 
     use crate::facade::stable::label_telemetry::LabelStats;
@@ -841,7 +848,7 @@ mod tests {
         plan: &PhysicalPlan,
         plan_blob: &[u8],
         client_key: &str,
-    ) -> Result<u64, RouterError> {
+    ) -> Result<GqlQueryResult, RouterError> {
         let shards = store
             .list_shards_for_graph("tenant.main")
             .expect("registered shards");
@@ -918,6 +925,25 @@ mod tests {
     }
 
     #[test]
+    fn gql_query_result_from_merged_carries_rows_blob() {
+        let rows_blob = IcWirePlanQueryResult {
+            rows: vec![gleaph_gql_ic::IcWirePlanQueryRow {
+                columns: vec![("n".into(), IcWireValue::Int64(7))],
+            }],
+        }
+        .encode_blob()
+        .expect("encode");
+        let merged = ExecutePlanResult {
+            row_count: 1,
+            label_telemetry_events: Vec::new(),
+            rows_blob: Some(rows_blob.clone()),
+        };
+        let out = GqlQueryResult::from_merged(&merged);
+        assert_eq!(out.row_count, 1);
+        assert_eq!(out.rows_blob, Some(rows_blob));
+    }
+
+    #[test]
     fn zero_hit_seeded_dml_records_completed_zero_rows() {
         let store = store_with_shards_and_property();
         let plan = seeded_dml_plan();
@@ -932,7 +958,8 @@ mod tests {
             "client-key-1",
         ))
         .expect("zero-hit dispatch");
-        assert_eq!(rows, 0);
+        assert_eq!(rows.row_count, 0);
+        assert!(rows.rows_blob.is_none());
         assert_eq!(fake_index.calls(), 1);
 
         let record = store
@@ -950,7 +977,7 @@ mod tests {
             "client-key-1",
         ))
         .expect("cached zero-hit retry");
-        assert_eq!(rows, 0);
+        assert_eq!(rows.row_count, 0);
         assert_eq!(fake_index.calls(), 1);
     }
 

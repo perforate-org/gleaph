@@ -21,17 +21,18 @@ when fragments are independent (union semantics).
 3. Router `federation/merge.rs` unions row batches by concatenating decoded rows and sums
    `row_count` via `merge_execute_plan_result`.
 4. Cross-shard aggregate merge is covered by [ADR 0003](0003-federated-aggregate-merge.md).
-   Cross-shard join merge, dedup policy, and returning merged rows from `gql_query` remain
-   future work; v1 keeps the public router API as row count only.
+   Cross-shard join merge and dedup policy remain future work.
+5. `gql_query` and `prepared_execute_query` return `GqlQueryResult` (`row_count` + merged
+   `rows_blob`; defined in `crates/graph-kernel/src/plan_exec.rs`).
 
 ## Consequences
 
 - Query wire execution materializes rows on graph (more CPU/memory than count-only).
-- Router holds merged `rows_blob` internally during dispatch; no client-facing row API yet.
+- Router returns merged `rows_blob` on read-path entrypoints (`gql_query`, `prepared_execute_query`).
 - `IcWirePlanQueryResult` wire types live in `gleaph-gql-ic` for shared router/graph use.
 
 ## Alternatives considered
 
 - **Count-only forever** — insufficient for RETURN projections across shards.
-- **Ship full rows in `gql_query` immediately** — larger API change; deferred.
+- **Ship full rows in `gql_query` immediately** — accepted; pre-production API.
 - **Per-shard distinct wire version** — rejected; single `ExecutePlanResult` extension is enough.

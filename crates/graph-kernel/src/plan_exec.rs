@@ -50,6 +50,30 @@ pub struct ExecutePlanResult {
     pub rows_blob: Option<Vec<u8>>,
 }
 
+/// Router read-path result: merged row count and optional materialized rows.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct GqlQueryResult {
+    pub row_count: u64,
+    /// Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`] after federated merge.
+    pub rows_blob: Option<Vec<u8>>,
+}
+
+impl GqlQueryResult {
+    pub fn from_merged(merged: &ExecutePlanResult) -> Self {
+        Self {
+            row_count: merged.row_count,
+            rows_blob: merged.rows_blob.clone(),
+        }
+    }
+
+    pub fn row_count_only(row_count: u64) -> Self {
+        Self {
+            row_count,
+            rows_blob: None,
+        }
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct LabelTelemetryEventWire {
     pub mutation_id: MutationId,

@@ -180,7 +180,7 @@ async fn gql_query(
     logical_graph_name: String,
     query: String,
     params: Vec<u8>,
-) -> Result<u64, RouterError> {
+) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
     gql::gql_query(logical_graph_name, query, params).await
 }
 
@@ -234,7 +234,7 @@ async fn prepared_execute_query(
     logical_graph_name: String,
     name: String,
     params: Vec<u8>,
-) -> Result<u64, RouterError> {
+) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
     prepared::prepared_execute_query(logical_graph_name, name, params).await
 }
 

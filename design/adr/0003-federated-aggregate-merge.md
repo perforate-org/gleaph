@@ -84,7 +84,7 @@ Index fast path remains planned for eligible `COUNT(*)` / `GROUP BY` shapes.
 
 - Federated `RETURN COUNT(*)` / `GROUP BY` queries produce correct merged `rows_blob` internally
   on the generic router-merge path
-- Public `gql_query` still returns row count only; merged aggregate values live in `rows_blob`
+- Public `gql_query` returns merged aggregate values in `rows_blob` (with `row_count`)
 - Router must inspect physical plan ops to choose merge policy (generic merge vs future index
   fast path)
 - Index fast path avoids shard-local `HAVING` bugs and reduces graph execution for eligible plans
@@ -95,4 +95,4 @@ Index fast path remains planned for eligible `COUNT(*)` / `GROUP BY` shapes.
   not implemented in v1 generic merge
 - **Router merge post-filter for `HAVING`** — generic fallback for non-fast-path plans
 - **Always union** — incorrect semantics for aggregates
-- **Ship merged rows in `gql_query` now** — larger API change; deferred with ADR 0002
+- **Ship merged rows in `gql_query` now** — implemented with ADR 0002 `GqlQueryResult`

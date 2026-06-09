@@ -105,7 +105,7 @@ Planned responsibilities (detail TBD):
 
 - Aggregate pushdown for non-mergeable functions (`AVG`, `DISTINCT`, ordered `COLLECT`).
 - Dedup and join of row batches when fragments are not independent unions.
-- Returning merged `rows_blob` from `gql_query`.
+- ~~Returning merged `rows_blob` from `gql_query`.~~ **Done** — `GqlQueryResult`.
 
 ## Gap vs current code
 

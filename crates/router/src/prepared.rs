@@ -8,7 +8,7 @@ use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_gql_planner::build_block_plan_with_schema;
 use gleaph_gql_planner::wire::encode_block_plans;
-use gleaph_graph_kernel::plan_exec::GqlExecutionMode;
+use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult};
 
 use crate::execution_path::check_prepared_execution_path;
 use crate::facade::stable::ROUTER_PREPARED_PLANS;
@@ -76,7 +76,7 @@ pub async fn prepared_execute_query(
     logical_graph_name: String,
     name: String,
     params: Vec<u8>,
-) -> Result<u64, RouterError> {
+) -> Result<GqlQueryResult, RouterError> {
     prepared_execute(
         logical_graph_name,
         name,
@@ -94,7 +94,7 @@ pub async fn prepared_execute_update(
     name: String,
     params: Vec<u8>,
 ) -> Result<u64, RouterError> {
-    prepared_execute(
+    Ok(prepared_execute(
         logical_graph_name,
         name,
         params,
@@ -103,7 +103,8 @@ pub async fn prepared_execute_update(
         false,
         None,
     )
-    .await
+    .await?
+    .row_count)
 }
 
 pub async fn prepared_execute_update_idempotent(
@@ -112,7 +113,7 @@ pub async fn prepared_execute_update_idempotent(
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<u64, RouterError> {
-    prepared_execute(
+    Ok(prepared_execute(
         logical_graph_name,
         name,
         params,
@@ -121,7 +122,8 @@ pub async fn prepared_execute_update_idempotent(
         false,
         Some(&client_mutation_key),
     )
-    .await
+    .await?
+    .row_count)
 }
 
 /// Run a read-only prepared plan on the **update** path (escape hatch only).
@@ -130,7 +132,7 @@ pub async fn force_prepared_execute_update(
     name: String,
     params: Vec<u8>,
 ) -> Result<u64, RouterError> {
-    prepared_execute(
+    Ok(prepared_execute(
         logical_graph_name,
         name,
         params,
@@ -139,7 +141,8 @@ pub async fn force_prepared_execute_update(
         true,
         None,
     )
-    .await
+    .await?
+    .row_count)
 }
 
 async fn prepared_execute(
@@ -150,7 +153,7 @@ async fn prepared_execute(
     entrypoint: &str,
     force: bool,
     client_mutation_key: Option<&str>,
-) -> Result<u64, RouterError> {
+) -> Result<GqlQueryResult, RouterError> {
     authorize_prepared_execute(&msg_caller())?;
     let key = prepared_key(&logical_graph_name, &name);
     let record = ROUTER_PREPARED_PLANS
