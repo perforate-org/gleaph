@@ -196,11 +196,15 @@ impl IndexStore {
     }
 
     /// Walk the property bucket and return `(encoded_value, global_count)` groups with `count >= min_count`.
+    ///
+    /// When `vertex_filter` is set, only postings whose `(shard_id, vertex_id)` appear in the set
+    /// are counted (packed as `(shard_id as u64) << 32 | vertex_id as u64`).
     pub fn count_postings_by_value(
         &self,
         property_id: u32,
         min_count: u64,
         max_groups: usize,
+        vertex_filter: Option<&std::collections::HashSet<u64>>,
     ) -> Vec<ValuePostingCount> {
         let Some((low, high)) = property_posting_bucket(property_id) else {
             return Vec::new();
@@ -221,6 +225,12 @@ impl IndexStore {
 
         INDEX_POSTINGS.with_borrow(|postings| {
             for key in postings.range(low..high) {
+                if let Some(filter) = vertex_filter {
+                    let packed = pack_posting_vertex(key.shard_id, key.vertex_id);
+                    if !filter.contains(&packed) {
+                        continue;
+                    }
+                }
                 match current_value.as_ref() {
                     None => {
                         current_value = Some(key.value.clone());
@@ -267,6 +277,10 @@ impl IndexStore {
                 .collect()
         })
     }
+}
+
+pub(crate) fn pack_posting_vertex(shard_id: ShardId, vertex_id: u32) -> u64 {
+    (u64::from(shard_id) << 32) | u64::from(vertex_id)
 }
 
 #[cfg(test)]
@@ -331,13 +345,41 @@ mod tests {
             .posting_insert(shard_a, 7, property_id, uk.clone(), 5)
             .expect("insert uk");
 
-        let counts = store.count_postings_by_value(property_id, 2, 100);
+        let counts = store.count_postings_by_value(property_id, 2, 100, None);
         assert_eq!(counts.len(), 1);
         assert_eq!(counts[0].encoded_value, us);
         assert_eq!(counts[0].count, 4);
 
-        let all = store.count_postings_by_value(property_id, 1, 100);
+        let all = store.count_postings_by_value(property_id, 1, 100, None);
         assert_eq!(all.len(), 2);
+    }
+
+    #[test]
+    fn count_postings_by_value_respects_vertex_filter() {
+        let store = IndexStore::new();
+        let router = init_test_store(&store);
+        let shard_a = Principal::from_slice(&[1]);
+        register_shard_owner(&store, router, 7, shard_a);
+
+        let property_id = 42;
+        let us = index_key(Value::Text("US".into()));
+        let uk = index_key(Value::Text("UK".into()));
+        store
+            .posting_insert(shard_a, 7, property_id, us.clone(), 1)
+            .expect("us");
+        store
+            .posting_insert(shard_a, 7, property_id, us.clone(), 2)
+            .expect("us");
+        store
+            .posting_insert(shard_a, 7, property_id, uk.clone(), 3)
+            .expect("uk");
+
+        let mut filter = std::collections::HashSet::new();
+        filter.insert(pack_posting_vertex(7, 1));
+        let counts = store.count_postings_by_value(property_id, 1, 100, Some(&filter));
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0].encoded_value, us);
+        assert_eq!(counts[0].count, 1);
     }
 
     #[test]

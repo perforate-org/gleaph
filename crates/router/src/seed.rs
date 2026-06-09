@@ -83,6 +83,19 @@ impl SeedProbe {
     }
 }
 
+/// Extract an index anchor from a single-op prefix (`IndexScan` or `IndexIntersection`).
+pub(crate) fn index_anchor_from_prefix_ops(
+    ops: &[PlanOp],
+    parameters: &BTreeMap<String, Value>,
+    store: &RouterStore,
+) -> Result<Option<IndexAnchor>, RouterError> {
+    match ops {
+        [] => Ok(None),
+        [op] => extract_from_op(op, parameters, store),
+        _ => Ok(None),
+    }
+}
+
 fn extract_from_ops(
     ops: &[PlanOp],
     parameters: &BTreeMap<String, Value>,

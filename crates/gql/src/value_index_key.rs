@@ -65,9 +65,8 @@ pub fn index_key_bytes_to_value(bytes: &[u8]) -> Option<Value> {
             let &byte = rest.first()?;
             Some(Value::Bool(byte != 0))
         }
-        INDEX_KEY_TEXT => read_escaped_index_bytes(rest).and_then(|text| {
-            String::from_utf8(text).ok().map(Value::Text)
-        }),
+        INDEX_KEY_TEXT => read_escaped_index_bytes(rest)
+            .and_then(|text| String::from_utf8(text).ok().map(Value::Text)),
         INDEX_KEY_BYTES => read_escaped_index_bytes(rest).map(Value::Bytes),
         _ => None,
     }

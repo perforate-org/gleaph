@@ -35,7 +35,7 @@ use crate::graph_client::{
 use crate::index_client::RouterIndexClient;
 use crate::planner_stats::RouterGraphStats;
 use crate::rbac::authorize_adhoc_gql;
-use crate::seed::IndexAnchor;
+use crate::seed::{IndexAnchor, SeedProbe};
 use crate::state::RouterError;
 
 trait IndexLookup {
@@ -54,6 +54,7 @@ trait IndexLookup {
         &self,
         property_id: u32,
         min_count: u64,
+        vertex_filter_packed: Option<Vec<u64>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>>;
 }
 
@@ -77,9 +78,44 @@ impl IndexLookup for RouterIndexClient {
         &self,
         property_id: u32,
         min_count: u64,
+        vertex_filter_packed: Option<Vec<u64>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
-        Box::pin(self.count_postings_by_value(property_id, min_count))
+        Box::pin(self.count_postings_by_value(property_id, min_count, vertex_filter_packed))
     }
+}
+
+fn pack_posting_hits(hits: &[PostingHit]) -> Vec<u64> {
+    hits.iter()
+        .map(|hit| (u64::from(hit.shard_id) << 32) | u64::from(hit.vertex_id))
+        .collect()
+}
+
+async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
+    index: &I,
+    anchor: &IndexAnchor,
+) -> Result<Option<Vec<u64>>, String> {
+    let hits = match anchor {
+        IndexAnchor::Equal(SeedProbe {
+            property_id,
+            payload_bytes,
+            ..
+        }) => {
+            index
+                .lookup_equal(*property_id, payload_bytes.clone())
+                .await?
+        }
+        IndexAnchor::Intersection { specs, .. } => {
+            index
+                .lookup_intersection(IndexIntersectionRequest {
+                    specs: specs.clone(),
+                })
+                .await?
+        }
+    };
+    if hits.is_empty() {
+        return Ok(Some(Vec::new()));
+    }
+    Ok(Some(pack_posting_hits(&hits)))
 }
 
 pub async fn gql_query(
@@ -254,9 +290,21 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
     if mode == GqlExecutionMode::Query && !has_dml {
         let stats = RouterGraphStats::for_graph(logical_graph_name);
-        if let Some(fast_path) = try_aggregate_index_fast_path(plans, &stats, store) {
+        if let Some(fast_path) = try_aggregate_index_fast_path(plans, &stats, store, pmap) {
+            let vertex_filter = match &fast_path.index_anchor {
+                None => None,
+                Some(anchor) => Some(
+                    resolve_fast_path_vertex_filter(index, anchor)
+                        .await
+                        .map_err(RouterError::InvalidArgument)?,
+                ),
+            };
             let counts = index
-                .count_postings_by_value(fast_path.property_id, fast_path.min_count)
+                .count_postings_by_value(
+                    fast_path.property_id,
+                    fast_path.min_count,
+                    vertex_filter.flatten(),
+                )
                 .await
                 .map_err(RouterError::InvalidArgument)?;
             return Ok(gql_query_result_from_posting_counts(&fast_path, counts)
@@ -841,6 +889,7 @@ mod tests {
             &self,
             _property_id: u32,
             _min_count: u64,
+            _vertex_filter_packed: Option<Vec<u64>>,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
             Box::pin(async move { Ok(Vec::new()) })
         }

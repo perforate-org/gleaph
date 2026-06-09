@@ -63,8 +63,13 @@ pub(crate) fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<Po
     IndexStore::new().lookup_range(property_id, &req)
 }
 
-pub(crate) fn count_postings_by_value(property_id: u32, min_count: u64) -> Vec<ValuePostingCount> {
+pub(crate) fn count_postings_by_value(
+    property_id: u32,
+    min_count: u64,
+    vertex_filter_packed: Option<Vec<u64>>,
+) -> Vec<ValuePostingCount> {
     const MAX_GROUPS: usize = 10_000;
 
-    IndexStore::new().count_postings_by_value(property_id, min_count, MAX_GROUPS)
+    let filter = vertex_filter_packed.map(|packed| packed.into_iter().collect());
+    IndexStore::new().count_postings_by_value(property_id, min_count, MAX_GROUPS, filter.as_ref())
 }

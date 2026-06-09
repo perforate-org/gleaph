@@ -7,13 +7,14 @@ use gleaph_gql::ast::{AggregateFunc, CmpOp, Expr, ExprKind};
 use gleaph_gql::index_key_bytes_to_value;
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_ic::IcWirePlanQueryResult;
-use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
 use gleaph_gql_planner::GraphStats;
+use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::index::ValuePostingCount;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 
 use crate::facade::store::RouterStore;
 use crate::planner_stats::RouterGraphStats;
+use crate::seed::IndexAnchor;
 
 use super::aggregate_merge::{
     FederatedAggregateMerge, FederatedMergeMode, federated_merge_mode_from_plans,
@@ -26,6 +27,8 @@ pub struct AggregateIndexFastPath {
     pub group_key_column: String,
     pub count_column: String,
     pub min_count: u64,
+    /// When set, posting counts are restricted to vertices from this index anchor.
+    pub index_anchor: Option<IndexAnchor>,
 }
 
 /// Detect whether `plans` match the index posting-count fast path.
@@ -33,6 +36,7 @@ pub fn try_aggregate_index_fast_path(
     plans: &[PhysicalPlan],
     stats: &RouterGraphStats,
     store: &RouterStore,
+    params: &BTreeMap<String, Value>,
 ) -> Option<AggregateIndexFastPath> {
     let FederatedMergeMode::Aggregate(spec) = federated_merge_mode_from_plans(plans) else {
         return None;
@@ -44,13 +48,21 @@ pub fn try_aggregate_index_fast_path(
     if group_by.len() != 1 {
         return None;
     }
+    let group_var = group_by_variable(&group_by[0])?;
     let property = group_by_indexed_property(&group_by[0])?;
     if !stats.is_vertex_property_indexed(property) {
         return None;
     }
     let property_id = store.lookup_property_id(property).ok()?.raw();
     let ops = plans.last()?.ops.as_slice();
-    if !fast_path_prefix_ok(&ops[..aggregate_idx]) {
+    let prefix = &ops[..aggregate_idx];
+    let index_anchor = match parse_fast_path_prefix(prefix, params, store) {
+        Ok(Some(anchor)) => anchor,
+        Ok(None) | Err(_) => return None,
+    };
+    if let Some(anchor) = &index_anchor
+        && anchor.variable() != group_var
+    {
         return None;
     }
     let min_count = extract_having_min_count(spec.having.as_ref(), &spec.aggregate_columns[0].name)
@@ -60,6 +72,7 @@ pub fn try_aggregate_index_fast_path(
         group_key_column: spec.group_key_columns[0].clone(),
         count_column: spec.aggregate_columns[0].name.clone(),
         min_count,
+        index_anchor,
     })
 }
 
@@ -119,6 +132,16 @@ fn find_aggregate_group_by(plans: &[PhysicalPlan]) -> Option<(usize, Vec<Expr>)>
     None
 }
 
+fn group_by_variable(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::PropertyAccess { expr, .. } => match &expr.kind {
+            ExprKind::Variable(name) => Some(name.as_str()),
+            _ => None,
+        },
+        _ => None,
+    }
+}
+
 fn group_by_indexed_property(expr: &Expr) -> Option<&str> {
     match &expr.kind {
         ExprKind::PropertyAccess { property, .. } => Some(property.as_str()),
@@ -126,11 +149,22 @@ fn group_by_indexed_property(expr: &Expr) -> Option<&str> {
     }
 }
 
-fn fast_path_prefix_ok(ops: &[PlanOp]) -> bool {
-    ops.iter().all(|op| match op {
-        PlanOp::NodeScan { label, .. } => label.is_none(),
-        _ => false,
-    })
+/// `Ok(None)` — prefix is unfiltered (empty or unlabeled `NodeScan`).
+/// `Ok(Some(anchor))` — prefix is a single index anchor op.
+/// `Err` — parameter / catalog resolution failed.
+fn parse_fast_path_prefix(
+    ops: &[PlanOp],
+    params: &BTreeMap<String, Value>,
+    store: &RouterStore,
+) -> Result<Option<Option<IndexAnchor>>, crate::state::RouterError> {
+    match ops {
+        [] => Ok(Some(None)),
+        [PlanOp::NodeScan { label: None, .. }] => Ok(Some(None)),
+        [PlanOp::NodeScan { label: Some(_), .. }] => Ok(None),
+        [op] => crate::seed::index_anchor_from_prefix_ops(std::slice::from_ref(op), params, store)
+            .map(|anchor| anchor.map(Some)),
+        _ => Ok(None),
+    }
 }
 
 fn extract_having_min_count(having: Option<&Expr>, count_column: &str) -> Option<u64> {
@@ -178,7 +212,9 @@ mod tests {
     use std::rc::Rc;
 
     use gleaph_gql::ast::{AggregateFunc, Expr, ExprKind};
-    use gleaph_gql_planner::plan::{AggregateSpec, PhysicalPlan, PlanOp, ProjectColumn, Str};
+    use gleaph_gql_planner::plan::{
+        AggregateSpec, PhysicalPlan, PlanOp, ProjectColumn, ScanValue, Str,
+    };
 
     use super::*;
     use crate::facade::store::RouterStore;
@@ -195,7 +231,7 @@ mod tests {
         })
     }
 
-    fn grouped_count_plan(property: &str, having: Option<Expr>) -> PhysicalPlan {
+    fn grouped_count_tail(property: &str, having: Option<Expr>) -> Vec<PlanOp> {
         let group = Expr::new(ExprKind::PropertyAccess {
             expr: Box::new(Expr::var("n")),
             property: property.into(),
@@ -228,10 +264,14 @@ mod tests {
             ],
             distinct: false,
         });
-        PhysicalPlan::from_ops(ops)
+        ops
     }
 
-    fn store_with_country_property() -> RouterStore {
+    fn grouped_count_plan(property: &str, having: Option<Expr>) -> PhysicalPlan {
+        PhysicalPlan::from_ops(grouped_count_tail(property, having))
+    }
+
+    fn store_with_country_and_region() -> RouterStore {
         let store = RouterStore::new();
         let admin = candid::Principal::anonymous();
         store.init_from_args(&RouterInitArgs {
@@ -242,24 +282,51 @@ mod tests {
         store.bootstrap_controllers(&[admin]);
         store
             .admin_intern_property(admin, "country")
-            .expect("intern");
+            .expect("intern country");
+        store
+            .admin_intern_property(admin, "region")
+            .expect("intern region");
         store
     }
 
     #[test]
     fn detects_grouped_count_star_on_indexed_property() {
-        let store = store_with_country_property();
+        let store = store_with_country_and_region();
         let stats = RouterGraphStats::default().with_indexed_vertex_property("country");
         let plan = grouped_count_plan("country", None);
-        let fast = try_aggregate_index_fast_path(&[plan], &stats, &store).expect("fast path");
+        let fast = try_aggregate_index_fast_path(&[plan], &stats, &store, &BTreeMap::new())
+            .expect("fast path");
         assert_eq!(fast.group_key_column, "country");
         assert_eq!(fast.count_column, "cnt");
         assert_eq!(fast.min_count, 1);
+        assert!(fast.index_anchor.is_none());
+    }
+
+    #[test]
+    fn detects_index_scan_prefix_with_seed_anchor() {
+        let store = store_with_country_and_region();
+        let stats = RouterGraphStats::default().with_indexed_vertex_property("country");
+        let mut ops = vec![PlanOp::IndexScan {
+            variable: Rc::from("n"),
+            property: Rc::from("region"),
+            value: ScanValue::Literal(Value::Text("US".into())),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        }];
+        ops.extend(grouped_count_tail("country", None));
+        let plan = PhysicalPlan::from_ops(ops);
+        let fast = try_aggregate_index_fast_path(&[plan], &stats, &store, &BTreeMap::new())
+            .expect("fast path");
+        assert!(matches!(fast.index_anchor, Some(IndexAnchor::Equal(_))));
+        assert_eq!(
+            fast.property_id,
+            store.lookup_property_id("country").unwrap().raw()
+        );
     }
 
     #[test]
     fn rejects_labeled_node_scan_prefix() {
-        let store = store_with_country_property();
+        let store = store_with_country_and_region();
         let stats = RouterGraphStats::default().with_indexed_vertex_property("country");
         let group = Expr::new(ExprKind::PropertyAccess {
             expr: Box::new(Expr::var("n")),
@@ -297,7 +364,7 @@ mod tests {
                 distinct: false,
             },
         ]);
-        assert!(try_aggregate_index_fast_path(&[plan], &stats, &store).is_none());
+        assert!(try_aggregate_index_fast_path(&[plan], &stats, &store, &BTreeMap::new()).is_none());
     }
 
     #[test]

@@ -73,6 +73,10 @@ fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<PostingHit> {
 }
 
 #[query]
-fn count_postings_by_value(property_id: u32, min_count: u64) -> Vec<ValuePostingCount> {
-    canister::count_postings_by_value(property_id, min_count)
+fn count_postings_by_value(
+    property_id: u32,
+    min_count: u64,
+    vertex_filter_packed: Option<Vec<u64>>,
+) -> Vec<ValuePostingCount> {
+    canister::count_postings_by_value(property_id, min_count, vertex_filter_packed)
 }

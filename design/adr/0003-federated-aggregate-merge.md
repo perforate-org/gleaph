@@ -35,10 +35,12 @@ key and re-apply commutative aggregate functions.
 
 **Implemented (v1):** `graph-index::count_postings_by_value`, router plan detection
 (`try_aggregate_index_fast_path`), and early return in `dispatch_plan_blob_with_index` for
-eligible `COUNT(*)` `GROUP BY` one indexed vertex property without label-filtered prefix ops.
+eligible `COUNT(*)` `GROUP BY` one indexed vertex property. Prefix may be empty, unlabeled
+`NodeScan`, or a single `IndexScan` / `IndexIntersection` anchor (posting counts restricted to
+seed hits). `MATCH (n:Label) GROUP BY` without an index anchor still uses generic shard merge.
 HAVING `COUNT(*) > N` / `>= N` maps to `min_count` on the index scan.
 
-**Still planned:** label/seed-constrained GROUP BY, intersection + aggregate, richer HAVING shapes.
+**Still planned:** label-only GROUP BY without index anchor, richer HAVING shapes, Sort/Limit.
 
 ### Original fast-path design notes
 

@@ -41,6 +41,7 @@ impl RouterIndexClient {
         &self,
         property_id: u32,
         min_count: u64,
+        vertex_filter_packed: Option<Vec<u64>>,
     ) -> Result<Vec<ValuePostingCount>, String> {
         #[cfg(target_family = "wasm")]
         {
@@ -48,7 +49,7 @@ impl RouterIndexClient {
 
             let counts: Vec<ValuePostingCount> =
                 Call::bounded_wait(self.index_canister, "count_postings_by_value")
-                    .with_args(&(property_id, min_count))
+                    .with_args(&(property_id, min_count, vertex_filter_packed))
                     .await
                     .map_err(|e| format!("count_postings_by_value: {e}"))?
                     .candid()
@@ -57,7 +58,7 @@ impl RouterIndexClient {
         }
         #[cfg(not(target_family = "wasm"))]
         {
-            let _ = (property_id, min_count);
+            let _ = (property_id, min_count, vertex_filter_packed);
             Err("count_postings_by_value unavailable in native builds".into())
         }
     }
