@@ -74,6 +74,7 @@ On DML / property updates, graph enqueues posting changes when federation routin
 
 ## Related documents
 
+- [label-index.md](label-index.md) — planned vertex label membership postings ([ADR 0004](../adr/0004-label-index.md))
 - [lookup-intersection.md](lookup-intersection.md)
 - [../sharding/standalone-mode.md](../sharding/standalone-mode.md)
 - [../sharding/federation-target.md](../sharding/federation-target.md)

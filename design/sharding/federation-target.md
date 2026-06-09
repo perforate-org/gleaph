@@ -97,6 +97,8 @@ Writes remain on graph shards; postings sync to index on DML (`graph/src/index/p
 
 Index is authoritative for **which physical vertices match an indexed predicate**; graph tombstones are not consulted on index read paths when sync invariants hold.
 
+**Planned:** vertex **label** membership postings on the same graph-index canister ([ADR 0004](../adr/0004-label-index.md), [label-index.md](../index/label-index.md)) for `NodeScan` seed routing and aggregate fast path with `MATCH (n:Label)`.
+
 ## Merge (Router)
 
 **Partial (v1):** `router/federation/merge.rs` unions independent shard-local row batches and sums row counts; `router/federation/aggregate_merge.rs` merges partial `PlanOp::Aggregate` results by GROUP BY key (COUNT/COUNT(*)/SUM/MIN/MAX). Used by `gql.rs` multi-shard dispatch. See [ADR 0002](../adr/0002-federated-row-batch-merge.md) and [ADR 0003](../adr/0003-federated-aggregate-merge.md).

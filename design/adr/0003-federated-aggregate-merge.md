@@ -40,7 +40,8 @@ eligible `COUNT(*)` `GROUP BY` one indexed vertex property. Prefix may be empty,
 seed hits). `MATCH (n:Label) GROUP BY` without an index anchor still uses generic shard merge.
 HAVING `COUNT(*) > N` / `>= N` maps to `min_count` on the index scan.
 
-**Still planned:** label-only GROUP BY without index anchor, richer HAVING shapes, Sort/Limit.
+**Still planned:** label-only `GROUP BY` via label membership index ([ADR 0004](0004-label-index.md)),
+richer HAVING shapes, Sort/Limit.
 
 ### Original fast-path design notes
 
