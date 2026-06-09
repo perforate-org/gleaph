@@ -61,21 +61,15 @@ Two overlapping paths:
 
 #### Federated expand path
 
-When `Expand` source is `RemoteVertex` and placement indicates cross-shard routing:
+Expand calls `resolve_traversal_expand_source` (`graph/federation/expand.rs`) on the source binding:
 
-- Executor calls `federated_expand_coordinator` via `graph/federation/expand.rs` (`StandaloneFederation::peer_expand`).
-- Results merged via expand helper paths.
+- **`PlanBinding::Vertex`** with authoritative placement on another shard → **peer expand** (router seeds path).
+- **`PlanBinding::RemoteVertex`** with authoritative placement on another shard → **peer expand** (legacy expand/peer path).
+- Authoritative on local shard → local CSR via returned `LocalCsr(VertexId)`.
 
-**Target:** peer expand remains; trigger from local traverse rather than index-bound `RemoteVertex` where possible.
+Peer expand invokes `federated_expand_coordinator` via `StandaloneFederation::peer_expand`.
 
 #### Local CSR expand (limitations)
-
-When traversal uses **local** `VertexId` but placement says authoritative copy is elsewhere:
-
-| Situation | Result |
-|-----------|--------|
-| Forward/reverse expand, placement on other shard | `UnsupportedOp("Expand.forward/reverse(federated placement on another shard)")` |
-| Remote vertex without federation routing | `UnsupportedOp("Expand(remote vertex requires federation routing)")` |
 
 ### Property projection
 
@@ -111,8 +105,8 @@ Failures surface as `FederatedIndexCall { op: "resolve_logical_at" | "federated_
 | `IndexIntersection` router seed | **Implemented** | Router `lookup_intersection` + slice |
 | Graph executor index intersection | **Partial** (unseeded transition) | Router seeds + skip op on graph |
 | `RemoteVertex` from index hits | **Deferred** (removed from index scan bind) | Peer expand from traverse only |
-| `RemoteVertex` + federated expand | **Partial** (wasm IC) | Peer expand from local traverse |
-| Local expand on non-authoritative copy | **Unsupported** | TBD with placement v2 |
+| `RemoteVertex` + federated expand | **Partial** (wasm IC) | Peer expand from placement on traverse source |
+| Local `Vertex` expand, authoritative on other shard | **Partial** — peer expand via `resolve_traversal_expand_source` | Same |
 | Remote vertex property projection | **Unsupported** | **Unsupported** |
 | Router merge of cross-shard rows | **Partial** (count sum via `federation/merge.rs`) | Row-batch merge planned |
 | `federated_expand` on native test host | **Unsupported** | **Unsupported** |

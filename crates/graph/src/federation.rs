@@ -7,7 +7,10 @@ mod expand;
 mod index_bind;
 mod routing;
 
-pub(crate) use expand::federated_expand_label_id_raw;
+pub(crate) use expand::{
+    TraversalExpandSource, federated_direction_for_expand, federated_expand_label_id_raw,
+    resolve_traversal_expand_source,
+};
 pub(crate) use index_bind::bind_local_index_hits;
 #[expect(
     dead_code,

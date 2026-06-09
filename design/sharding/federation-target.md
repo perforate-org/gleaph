@@ -80,10 +80,11 @@ The shard runs the physical plan against **local CSR** only. It does not call th
 
 When a plan expands from a locally seeded vertex to a neighbor whose **authoritative** storage is on another shard:
 
-1. Local executor detects cross-shard need (via placement / remote ref metadata — design TBD at re-implementation time).
-2. Source shard calls target shard's **`federated_expand`** (graph ↔ graph, `graph-kernel/federation/expand.rs`).
-3. Returned neighbors are incorporated into **local** execution state for the remainder of the plan on that shard.
-4. If multiple shards produce rows for the same logical query, Router merges.
+1. Local executor calls `resolve_traversal_expand_source` (`graph/federation/expand.rs`): placement lookup on the expand source binding (`Vertex` or `RemoteVertex`).
+2. **Peer expand** when authoritative shard ≠ local; **local CSR** when authoritative on this shard.
+3. Source shard calls target shard's **`federated_expand`** (graph ↔ graph, `graph-kernel/federation/expand.rs`).
+4. Returned neighbors are incorporated into **local** execution state for the remainder of the plan on that shard.
+5. If multiple shards produce rows for the same logical query, Router merges.
 
 This replaces the immature pattern where a **single** graph shard calls the index, binds `RemoteVertex`, and resolves placement inline during `IndexScan`.
 
@@ -115,7 +116,7 @@ Current implementation often returns **row counts** from graph; merge policy mus
 | Router owns index lookup | Graph executor calls `PropertyIndexLookup` | **Partial** — router seeds disable graph index client; unseeded transition path remains |
 | Router slices intersection | Graph executor intersects after N× `lookup_equal` | **Done** — `lookup_intersection` + router `IndexAnchor` |
 | Seeds per shard | `SeedProbe` only for `IndexScan` | **Done** — `IndexAnchor` for scan + intersection |
-| Peer expand only when traversing | `RemoteVertex` from index hits in executor | **Partial** — index bind uses `FederationPort` local hits only |
+| Peer expand only when traversing | `RemoteVertex` from index hits in executor | **Partial** — expand uses placement on `Vertex`/`RemoteVertex` via `resolve_traversal_expand_source`; index bind local hits only |
 | Cohesive `federation/` modules | Logic in executor, facade stable, placement | **Partial** — graph `federation/{index_bind,expand,routing}` |
 
 ## Related documents

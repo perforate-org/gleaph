@@ -1,7 +1,45 @@
 use super::super::test_support::*;
 use super::predicates::{PreparedEdgePayloadPredicate, PreparedEdgeVectorThreshold};
+use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
+use crate::index::placement::native_test_set_active_placement;
 use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorMetric, EdgeVectorPredicate};
+use gleaph_graph_kernel::federation::PhysicalVertexLocation;
 use pollster;
+
+#[test]
+fn resolve_traversal_expand_source_uses_peer_expand_for_foreign_authority() {
+    let store = GraphStore::new();
+    configure_test_federation(&store);
+    let vertex = store.insert_vertex().expect("vertex");
+    let logical = store.logical_vertex_id(vertex).expect("logical");
+    native_test_set_active_placement(logical, PhysicalVertexLocation::new(9, u32::from(vertex)));
+
+    let source = pollster::block_on(resolve_traversal_expand_source(
+        &store,
+        Some(&PlanBinding::Vertex(vertex)),
+        EdgeDirection::PointingRight,
+    ))
+    .expect("resolve");
+
+    assert_eq!(source, Some(TraversalExpandSource::PeerExpand(logical)));
+}
+
+#[test]
+fn resolve_traversal_expand_source_uses_local_csr_for_remote_vertex_on_home_shard() {
+    let store = GraphStore::new();
+    configure_test_federation(&store);
+    let vertex = store.insert_vertex().expect("vertex");
+    let logical = store.logical_vertex_id(vertex).expect("logical");
+
+    let source = pollster::block_on(resolve_traversal_expand_source(
+        &store,
+        Some(&PlanBinding::RemoteVertex(logical)),
+        EdgeDirection::PointingLeft,
+    ))
+    .expect("resolve");
+
+    assert_eq!(source, Some(TraversalExpandSource::LocalCsr(vertex)));
+}
 
 #[test]
 fn federated_reverse_expand_from_remote_vertex_binding() {

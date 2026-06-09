@@ -246,6 +246,17 @@ pub fn native_test_register_physical_placement(
     });
 }
 
+/// Override authoritative placement for a logical vertex (unit tests only).
+#[cfg(test)]
+pub fn native_test_set_active_placement(
+    logical_vertex_id: LogicalVertexId,
+    location: PhysicalVertexLocation,
+) {
+    NATIVE_TEST_PLACEMENTS.with_borrow_mut(|map| {
+        map.insert(logical_vertex_id, VertexPlacement::Active(location));
+    });
+}
+
 pub async fn resolve_logical_at(
     router_canister: Principal,
     shard_id: ShardId,

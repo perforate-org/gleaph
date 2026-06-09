@@ -7,7 +7,7 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorPredicate, ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, PreparedWeightDecoder};
 use gleaph_graph_kernel::federation::{
-    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, LogicalVertexId,
+    FederatedExpandArgs, FederatedExpandNeighbor, LogicalVertexId,
 };
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
@@ -22,7 +22,10 @@ use super::{
     expand_accepts_remote_dst, expand_dst_binding, visit_csr_expand_fast_path,
 };
 use crate::facade::GraphStore;
-use crate::federation::federated_expand_label_id_raw;
+use crate::federation::{
+    TraversalExpandSource, federated_direction_for_expand, federated_expand_label_id_raw,
+    resolve_traversal_expand_source,
+};
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::{
     edge_binding_for_federated_expand_hit, hop_aux_scalar,
@@ -30,8 +33,7 @@ use crate::plan::query::executor::bindings::{
 use crate::plan::query::executor::context::{ExecuteCtx, QueryExprEvaluator};
 use crate::plan::query::executor::{
     EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, federation_routing,
-    resolve_federated_traversal_vertex, row_matches_all, vertex_binding_for_traversal,
-    vertex_row_matches_dst_filters,
+    row_matches_all, vertex_row_matches_dst_filters,
 };
 use crate::plan::query::row::PlanRow;
 
@@ -129,7 +131,6 @@ async fn peer_expand_remote_vertex(
     ctx: &ExecuteCtx<'_>,
     logical: LogicalVertexId,
     gql_direction: EdgeDirection,
-    federated_direction: FederatedExpandDirection,
     label_id: Option<EdgeLabelId>,
 ) -> Result<Vec<FederatedExpandNeighbor>, PlanQueryError> {
     let label_id_raw = federated_expand_label_id_raw(label_id, gql_direction);
@@ -138,7 +139,7 @@ async fn peer_expand_remote_vertex(
             ctx.store,
             FederatedExpandArgs {
                 logical_vertex_id: logical,
-                direction: federated_direction,
+                direction: federated_direction_for_expand(gql_direction),
                 label_id_raw,
             },
         )
@@ -216,273 +217,202 @@ pub(crate) async fn execute_expand(
     let mut vector_batch_scratch = LabeledEdgePayloadBatchScratch::default();
     let mut vector_matches = Vec::new();
     for row in rows {
-        if matches!(direction, EdgeDirection::PointingLeft)
-            && let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref())
-            && matches!(
-                resolve_federated_traversal_vertex(store, *logical, Some(direction)).await,
-                Err(PlanQueryError::UnsupportedOp(_))
-            )
-        {
-            let hits = peer_expand_remote_vertex(
-                ctx,
-                *logical,
-                direction,
-                FederatedExpandDirection::Incoming,
-                label_id,
-            )
-            .await?;
-            out.extend(expand_rows_from_federated_expand_hits(
-                store,
-                &row,
-                &hits,
-                dst.as_ref(),
-                edge.as_ref(),
-                emit_edge_binding,
-                hop_aux_key,
-                dst_property_projection,
-                dst_filter,
-                label_expr,
-                execution,
-                parameters,
-                caller,
-                gleaph_weight_decoders,
-                &evaluator,
-            )?);
-            continue;
-        }
-
-        if matches!(direction, EdgeDirection::PointingRight)
-            && let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref())
-            && matches!(
-                resolve_federated_traversal_vertex(store, *logical, Some(direction)).await,
-                Err(PlanQueryError::UnsupportedOp(_))
-            )
-        {
-            let hits = peer_expand_remote_vertex(
-                ctx,
-                *logical,
-                direction,
-                FederatedExpandDirection::Outgoing,
-                label_id,
-            )
-            .await?;
-            out.extend(expand_rows_from_federated_expand_hits(
-                store,
-                &row,
-                &hits,
-                dst.as_ref(),
-                edge.as_ref(),
-                emit_edge_binding,
-                hop_aux_key,
-                dst_property_projection,
-                dst_filter,
-                label_expr,
-                execution,
-                parameters,
-                caller,
-                gleaph_weight_decoders,
-                &evaluator,
-            )?);
-            continue;
-        }
-
-        if matches!(direction, EdgeDirection::Undirected)
-            && let Some(PlanBinding::RemoteVertex(logical)) = row.get(src.as_ref())
-            && matches!(
-                resolve_federated_traversal_vertex(store, *logical, Some(direction)).await,
-                Err(PlanQueryError::UnsupportedOp(_))
-            )
-        {
-            let hits = peer_expand_remote_vertex(
-                ctx,
-                *logical,
-                direction,
-                FederatedExpandDirection::Undirected,
-                label_id,
-            )
-            .await?;
-            out.extend(expand_rows_from_federated_expand_hits(
-                store,
-                &row,
-                &hits,
-                dst.as_ref(),
-                edge.as_ref(),
-                emit_edge_binding,
-                hop_aux_key,
-                dst_property_projection,
-                dst_filter,
-                label_expr,
-                execution,
-                parameters,
-                caller,
-                gleaph_weight_decoders,
-                &evaluator,
-            )?);
-            continue;
-        }
-
-        let Some(src_id) = (match row.get(src.as_ref()) {
-            Some(PlanBinding::RemoteVertex(logical)) => {
-                resolve_federated_traversal_vertex(store, *logical, Some(direction)).await?
-            }
-            _ => vertex_binding_for_traversal(store, &row, src, Some(direction)).await?,
-        }) else {
-            continue;
-        };
-        if let Some(fast_path) = csr_expand_fast_path {
-            let mut offset_slot = 0;
-            let mut visit = |edge: Edge| {
-                if let Some(expr) = label_expr
-                    && !edge_matches_label_expr(execution, expr, &edge)
-                {
-                    return Ok(false);
-                }
-                let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
-                    return Ok(false);
-                };
-                let label_id = edge.label_id;
-                let slot_index = edge.edge_slot_index;
-                let edge_binding = edge_binding_for_scanned_expand(store, src_id, direction, edge)?;
-                if !edge_matches_stream_filter(
-                    store,
-                    edge_equality_filter
-                        .as_ref()
-                        .expect("filter exists with fast path"),
-                    direction,
-                    edge_binding.handle.owner_vertex_id,
-                    LaraLabelId::from_raw(label_id),
-                    slot_index,
-                )? {
-                    return Ok(false);
-                }
-                if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
-                    return Ok(false);
-                }
-                if let ExpandDst::Local(dst_id) = edge_dst {
-                    if dst_only_prefilter
-                        && !vertex_row_matches_dst_filters(
-                            store,
-                            parameters,
-                            dst,
-                            dst_id,
-                            dst_filter,
-                            caller,
-                            gleaph_weight_decoders,
-                        )?
-                    {
-                        return Ok(false);
-                    }
-                } else if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection) {
-                    return Ok(false);
-                }
-                let expanded = build_expanded_row(
-                    None,
+        match resolve_traversal_expand_source(store, row.get(src.as_ref()), direction).await? {
+            None => continue,
+            Some(TraversalExpandSource::PeerExpand(logical)) => {
+                let hits = peer_expand_remote_vertex(ctx, logical, direction, label_id).await?;
+                out.extend(expand_rows_from_federated_expand_hits(
                     store,
                     &row,
-                    edge_key.as_deref(),
+                    &hits,
+                    dst.as_ref(),
+                    edge.as_ref(),
+                    emit_edge_binding,
                     hop_aux_key,
-                    dst_key.as_str(),
-                    edge_dst,
-                    edge_binding,
-                    edge_property_projection,
                     dst_property_projection,
-                )?;
-                if !dst_only_prefilter && !row_matches_all(&evaluator, &expanded, dst_filter)? {
-                    return Ok(false);
-                }
-                out.push(expanded);
-                Ok(false)
-            };
-            let res =
-                visit_csr_expand_fast_path(store, src_id, fast_path, &mut offset_slot, &mut visit);
-            match res {
-                Ok(Ok(_)) => {}
-                Ok(Err(e)) => return Err(e),
-                Err(e) => return Err(e.into()),
-            }
-            continue;
-        }
-        if let Some((edge_label_id, predicate)) = prepared_vector_dst_only_predicate.as_ref() {
-            expand_vector_dst_only_rows_into(
-                store,
-                &row,
-                src_id,
-                direction,
-                *edge_label_id,
-                sequence_order,
-                dst,
-                dst_key.as_str(),
-                dst_filter,
-                dst_only_prefilter,
-                dst_property_projection,
-                parameters,
-                caller,
-                gleaph_weight_decoders,
-                &evaluator,
-                predicate,
-                &mut out,
-                &mut vector_batch_scratch,
-                &mut vector_matches,
-            )?;
-            continue;
-        }
-        candidates.clear();
-        expand_candidates_for_expand_op_into(
-            store,
-            execution,
-            src_id,
-            direction,
-            label_id,
-            label_expr,
-            sequence_order,
-            indexed_edge_equality,
-            edge_payload_predicate,
-            edge_vector_predicate,
-            parameters,
-            &mut candidates,
-        )?;
-        for (edge_dst, edge_binding) in candidates.iter().cloned() {
-            if let Some(expr) = label_expr
-                && !edge_binding_matches_label_expr(execution, expr, &edge_binding)
-            {
+                    dst_filter,
+                    label_expr,
+                    execution,
+                    parameters,
+                    caller,
+                    gleaph_weight_decoders,
+                    &evaluator,
+                )?);
                 continue;
             }
-            if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
-                continue;
-            }
-            if let ExpandDst::Local(dst_id) = edge_dst {
-                if dst_only_prefilter
-                    && !vertex_row_matches_dst_filters(
+            Some(TraversalExpandSource::LocalCsr(src_id)) => {
+                if let Some(fast_path) = csr_expand_fast_path {
+                    let mut offset_slot = 0;
+                    let mut visit = |edge: Edge| {
+                        if let Some(expr) = label_expr
+                            && !edge_matches_label_expr(execution, expr, &edge)
+                        {
+                            return Ok(false);
+                        }
+                        let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
+                            return Ok(false);
+                        };
+                        let label_id = edge.label_id;
+                        let slot_index = edge.edge_slot_index;
+                        let edge_binding =
+                            edge_binding_for_scanned_expand(store, src_id, direction, edge)?;
+                        if !edge_matches_stream_filter(
+                            store,
+                            edge_equality_filter
+                                .as_ref()
+                                .expect("filter exists with fast path"),
+                            direction,
+                            edge_binding.handle.owner_vertex_id,
+                            LaraLabelId::from_raw(label_id),
+                            slot_index,
+                        )? {
+                            return Ok(false);
+                        }
+                        if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
+                            return Ok(false);
+                        }
+                        if let ExpandDst::Local(dst_id) = edge_dst {
+                            if dst_only_prefilter
+                                && !vertex_row_matches_dst_filters(
+                                    store,
+                                    parameters,
+                                    dst,
+                                    dst_id,
+                                    dst_filter,
+                                    caller,
+                                    gleaph_weight_decoders,
+                                )?
+                            {
+                                return Ok(false);
+                            }
+                        } else if !expand_accepts_remote_dst(
+                            dst_only_prefilter,
+                            dst_property_projection,
+                        ) {
+                            return Ok(false);
+                        }
+                        let expanded = build_expanded_row(
+                            None,
+                            store,
+                            &row,
+                            edge_key.as_deref(),
+                            hop_aux_key,
+                            dst_key.as_str(),
+                            edge_dst,
+                            edge_binding,
+                            edge_property_projection,
+                            dst_property_projection,
+                        )?;
+                        if !dst_only_prefilter
+                            && !row_matches_all(&evaluator, &expanded, dst_filter)?
+                        {
+                            return Ok(false);
+                        }
+                        out.push(expanded);
+                        Ok(false)
+                    };
+                    let res = visit_csr_expand_fast_path(
                         store,
-                        parameters,
-                        dst,
-                        dst_id,
-                        dst_filter,
-                        caller,
-                        gleaph_weight_decoders,
-                    )?
-                {
+                        src_id,
+                        fast_path,
+                        &mut offset_slot,
+                        &mut visit,
+                    );
+                    match res {
+                        Ok(Ok(_)) => {}
+                        Ok(Err(e)) => return Err(e),
+                        Err(e) => return Err(e.into()),
+                    }
                     continue;
                 }
-            } else if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection) {
-                continue;
+                if let Some((edge_label_id, predicate)) =
+                    prepared_vector_dst_only_predicate.as_ref()
+                {
+                    expand_vector_dst_only_rows_into(
+                        store,
+                        &row,
+                        src_id,
+                        direction,
+                        *edge_label_id,
+                        sequence_order,
+                        dst,
+                        dst_key.as_str(),
+                        dst_filter,
+                        dst_only_prefilter,
+                        dst_property_projection,
+                        parameters,
+                        caller,
+                        gleaph_weight_decoders,
+                        &evaluator,
+                        predicate,
+                        &mut out,
+                        &mut vector_batch_scratch,
+                        &mut vector_matches,
+                    )?;
+                    continue;
+                }
+                candidates.clear();
+                expand_candidates_for_expand_op_into(
+                    store,
+                    execution,
+                    src_id,
+                    direction,
+                    label_id,
+                    label_expr,
+                    sequence_order,
+                    indexed_edge_equality,
+                    edge_payload_predicate,
+                    edge_vector_predicate,
+                    parameters,
+                    &mut candidates,
+                )?;
+                for (edge_dst, edge_binding) in candidates.iter().cloned() {
+                    if let Some(expr) = label_expr
+                        && !edge_binding_matches_label_expr(execution, expr, &edge_binding)
+                    {
+                        continue;
+                    }
+                    if !expand_dst_matches_prebound_vertex(&row, dst, edge_dst) {
+                        continue;
+                    }
+                    if let ExpandDst::Local(dst_id) = edge_dst {
+                        if dst_only_prefilter
+                            && !vertex_row_matches_dst_filters(
+                                store,
+                                parameters,
+                                dst,
+                                dst_id,
+                                dst_filter,
+                                caller,
+                                gleaph_weight_decoders,
+                            )?
+                        {
+                            continue;
+                        }
+                    } else if !expand_accepts_remote_dst(
+                        dst_only_prefilter,
+                        dst_property_projection,
+                    ) {
+                        continue;
+                    }
+                    let expanded = build_expanded_row(
+                        None,
+                        store,
+                        &row,
+                        edge_key.as_deref(),
+                        hop_aux_key,
+                        dst_key.as_str(),
+                        edge_dst,
+                        edge_binding,
+                        edge_property_projection,
+                        dst_property_projection,
+                    )?;
+                    if !dst_only_prefilter && !row_matches_all(&evaluator, &expanded, dst_filter)? {
+                        continue;
+                    }
+                    out.push(expanded);
+                }
             }
-            let expanded = build_expanded_row(
-                None,
-                store,
-                &row,
-                edge_key.as_deref(),
-                hop_aux_key,
-                dst_key.as_str(),
-                edge_dst,
-                edge_binding,
-                edge_property_projection,
-                dst_property_projection,
-            )?;
-            if !dst_only_prefilter && !row_matches_all(&evaluator, &expanded, dst_filter)? {
-                continue;
-            }
-            out.push(expanded);
         }
     }
     Ok(out)
