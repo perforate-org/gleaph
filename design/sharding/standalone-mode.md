@@ -32,16 +32,13 @@ Standalone is the **degenerate case** of the target federation model in [federat
 Federation-related behavior must not spread across executor, facade stable, and index modules. Target module boundaries:
 
 ```text
-crates/graph/src/federation/
-  mod.rs           FederationPort trait + StandaloneFederation
+crates/graph/src/federation.rs
   index_bind.rs    PostingHit → local Vertex binding (no tombstone read filter)
-  expand.rs        peer expand (stub / Unsupported in standalone)
+  routing.rs       local shard id from store routing
 
-crates/router/src/federation/
-  mod.rs           ShardingPolicy trait
+crates/router/src/federation.rs
   standalone.rs    single-shard dispatch
-  dispatch.rs      multi-shard fan-out (planned)
-  seed.rs          index anchor → per-shard seeds (planned)
+  dispatch.rs      multi-shard fan-out (planned target path)
 ```
 
 **Rule:** executor, scan, and expand code call `FederationPort` only — not `placement::resolve_logical_at`, not direct index intersection loops.
@@ -84,7 +81,7 @@ See [lookup-intersection.md](../index/lookup-intersection.md).
 
 1. **Index API** — `lookup_intersection` on graph-index; graph executor single-call path (**Implemented**).
 2. **Federation module** — `StandaloneFederation`, `FederationPort`, inject into `ExecuteCtx` (**Implemented**).
-3. **Router standalone dispatch** — consolidate `gql.rs` dispatch into `router/federation/standalone.rs` (Planned).
+3. **Router standalone dispatch** — consolidate `gql.rs` dispatch into `router/federation/standalone.rs` (**Implemented**).
 4. **Defer removal** — gate or delete immature federation stable/runtime (Planned).
 5. **Federation target** — router index slice, peer expand, merge ([federation-target.md](federation-target.md)) (Planned).
 

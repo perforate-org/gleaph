@@ -20,6 +20,9 @@ use ic_cdk::api::msg_caller;
 use crate::execution_path::check_adhoc_execution_path;
 use crate::facade::stable::label_telemetry::RouterMutationShard;
 use crate::facade::store::RouterStore;
+use crate::federation::{
+    ShardDispatch, ShardingPolicy, routings_to_dispatches, sharding_policy_for,
+};
 use crate::graph_client::{
     ack_label_telemetry_event, execute_plan_on_graph, get_mutation_outcome,
     list_pending_label_telemetry_events,
@@ -27,7 +30,7 @@ use crate::graph_client::{
 use crate::index_client::RouterIndexClient;
 use crate::planner_stats::RouterGraphStats;
 use crate::rbac::authorize_adhoc_gql;
-use crate::seed::{SeedProbe, seeds_for_local_shard};
+use crate::seed::SeedProbe;
 use crate::state::RouterError;
 
 trait IndexLookup {
@@ -295,6 +298,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 return Err(err);
             }
         };
+        let policy = sharding_policy_for(&shards);
         let routings = match seed_probe {
             Some(probe) => {
                 let hits = match index
@@ -326,7 +330,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     }
                     return Ok(0);
                 }
-                match resolve_seed_routings_multi(&store, &hits, logical_graph_name, probe) {
+                match policy.resolve_with_hits(store, logical_graph_name, &shards, probe, &hits) {
                     Ok(routings) => routings,
                     Err(err) => {
                         release_routing_if_owner(
@@ -340,8 +344,9 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     }
                 }
             }
-            None => {
-                if shards.len() != 1 {
+            None => match policy.resolve_without_anchor(&shards) {
+                Ok(routings) => routings,
+                Err(err) => {
                     release_routing_if_owner(
                         &store,
                         caller,
@@ -349,28 +354,11 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                         client_mutation_key,
                         mutation_reservation,
                     )?;
-                    return Err(RouterError::InvalidArgument(
-                        "no index anchor: single-shard graph required".into(),
-                    ));
+                    return Err(err);
                 }
-                vec![SeedRouting {
-                    shard_id: shards[0].shard_id,
-                    graph_canister: shards[0].graph_canister,
-                    hits: Vec::new(),
-                    probe: None,
-                }]
-            }
+            },
         };
-        routings
-            .into_iter()
-            .map(|routing| ShardDispatch {
-                shard_id: routing.shard_id,
-                graph_canister: routing.graph_canister,
-                seed_bindings_blob: routing.probe.as_ref().and_then(|probe| {
-                    seeds_for_local_shard(probe.variable.as_str(), &routing.hits, routing.shard_id)
-                }),
-            })
-            .collect()
+        routings_to_dispatches(routings)
     };
 
     if let (Some(key), Some(_)) = (client_mutation_key, mutation_id)
@@ -662,57 +650,6 @@ async fn replay_pending_label_telemetry(
     }
 }
 
-#[derive(Clone, Debug)]
-pub struct SeedRouting {
-    pub shard_id: ShardId,
-    pub graph_canister: Principal,
-    pub hits: Vec<PostingHit>,
-    pub probe: Option<SeedProbe>,
-}
-
-#[derive(Clone, Debug)]
-struct ShardDispatch {
-    shard_id: ShardId,
-    graph_canister: Principal,
-    seed_bindings_blob: Option<Vec<u8>>,
-}
-
-/// Phase 4: fan out one routing per distinct shard in index hits.
-pub fn resolve_seed_routings_multi(
-    store: &RouterStore,
-    hits: &[PostingHit],
-    logical_graph_name: &str,
-    probe: SeedProbe,
-) -> Result<Vec<SeedRouting>, RouterError> {
-    if hits.is_empty() {
-        return Ok(Vec::new());
-    }
-    let shards = store.list_shards_for_graph(logical_graph_name)?;
-    let mut shard_ids: Vec<ShardId> = hits.iter().map(|h| h.shard_id).collect();
-    shard_ids.sort_unstable();
-    shard_ids.dedup();
-
-    let mut out = Vec::with_capacity(shard_ids.len());
-    for shard_id in shard_ids {
-        let entry = shards
-            .iter()
-            .find(|s| s.shard_id == shard_id)
-            .ok_or(RouterError::ShardNotRegistered)?;
-        let shard_hits: Vec<PostingHit> = hits
-            .iter()
-            .filter(|h| h.shard_id == shard_id)
-            .cloned()
-            .collect();
-        out.push(SeedRouting {
-            shard_id,
-            graph_canister: entry.graph_canister,
-            hits: shard_hits,
-            probe: Some(probe.clone()),
-        });
-    }
-    Ok(out)
-}
-
 #[cfg(test)]
 mod tests {
     use std::cell::{Cell, RefCell};
@@ -734,9 +671,10 @@ mod tests {
 
     use crate::facade::stable::label_telemetry::LabelStats;
     use crate::facade::store::RouterStore;
+    use crate::federation::resolve_seed_routings_multi;
     use crate::gql::{
         IndexLookup, apply_dispatch_label_telemetry_event, dispatch_plan_blob_with_index,
-        request_fingerprint, resolve_seed_routings_multi,
+        request_fingerprint,
     };
     use crate::init::RouterInitArgs;
     use crate::seed::SeedProbe;

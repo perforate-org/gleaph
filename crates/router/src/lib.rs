@@ -3,6 +3,7 @@
 mod canister;
 mod execution_path;
 pub mod facade;
+mod federation;
 mod gql;
 mod graph_client;
 #[expect(

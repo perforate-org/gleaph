@@ -1,4 +1,8 @@
-//! Seed vertex resolution via property index + placement.
+//! Index anchor detection and per-shard seed binding for graph dispatch.
+//!
+//! The router resolves query entry points via the property index before calling graph
+//! shards. [`SeedProbe`] captures the equality `IndexScan` used as that anchor; index
+//! hits are encoded into `seed_bindings_blob` so shards can skip the leading scan op.
 
 use std::collections::BTreeMap;
 
@@ -14,15 +18,33 @@ use gleaph_graph_kernel::plan_exec::{SeedBindingEntry, SeedBindingsWire};
 use crate::facade::store::RouterStore;
 use crate::state::RouterError;
 
+/// Index lookup anchor extracted from a physical plan.
+///
+/// When present, the router calls `lookup_equal(property_id, payload_bytes)` on the
+/// index canister, groups [`PostingHit`]s by shard, and builds per-shard
+/// [`SeedBindingsWire`](gleaph_graph_kernel::plan_exec::SeedBindingsWire) via
+/// [`seeds_for_local_shard`]. Graph shards bind `variable` to local vertex ids and
+/// skip the matching leading `IndexScan`.
+///
+/// Only equality `IndexScan` ops are recognized today; `IndexIntersection` anchors are
+/// planned separately (see `design/index/lookup-intersection.md`).
 #[derive(Clone, Debug, PartialEq)]
 pub struct SeedProbe {
+    /// GQL variable to seed (e.g. `"u"` in `MATCH (u {uid: $x})`).
     pub variable: String,
+    /// Property name from the plan (router catalog lookup).
     pub property: String,
+    /// Interned property id for index canister calls.
     pub property_id: u32,
+    /// Index key bytes for `lookup_equal` (`value_to_index_key_bytes` encoding).
     pub payload_bytes: Vec<u8>,
 }
 
 impl SeedProbe {
+    /// Scan physical plans for the first equality `IndexScan` anchor.
+    ///
+    /// Returns `None` when the query has no index anchor (e.g. full scan / traverse-only).
+    /// Nested ops (`HashJoin`, `OptionalMatch`, etc.) are searched recursively.
     pub fn from_plans(
         plans: &[PhysicalPlan],
         parameters: &BTreeMap<String, Value>,
@@ -112,6 +134,9 @@ fn resolve_scan_value(value: &ScanValue, parameters: &BTreeMap<String, Value>) -
     }
 }
 
+/// Encode local vertex ids for one shard into `ExecutePlanArgs.seed_bindings_blob`.
+///
+/// Filters `hits` to `target_shard` only; returns `None` when that shard has no hits.
 pub fn seeds_for_local_shard(
     variable: &str,
     hits: &[PostingHit],

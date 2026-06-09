@@ -17,7 +17,10 @@ use crate::plan::query::PlanRow;
 
 /// Query-time federation policy (standalone implementation today).
 pub trait FederationPort {
-    #[expect(dead_code, reason = "used by federated implementations and router seeds")]
+    #[expect(
+        dead_code,
+        reason = "used by federated implementations and router seeds"
+    )]
     fn local_shard_id(&self) -> ShardId;
 
     /// Bind index hits onto plan rows for `variable`.
