@@ -37,7 +37,7 @@ use crate::plan::query::executor::{
 };
 use crate::plan::query::row::PlanRow;
 
-fn expand_rows_from_federated_expand_hits(
+pub(crate) fn expand_rows_from_federated_expand_hits(
     store: &GraphStore,
     row: &PlanRow,
     hits: &[FederatedExpandNeighbor],
@@ -127,7 +127,7 @@ fn expand_rows_from_federated_expand_hits(
     Ok(out)
 }
 
-async fn peer_expand_remote_vertex(
+pub(crate) async fn peer_expand_remote_vertex(
     ctx: &ExecuteCtx<'_>,
     logical: LogicalVertexId,
     gql_direction: EdgeDirection,

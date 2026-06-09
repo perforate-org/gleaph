@@ -14,8 +14,7 @@ use ic_stable_lara::VertexId;
 
 use crate::facade::GraphStore;
 use crate::index::placement;
-use crate::plan::PlanBinding;
-use crate::plan::PlanQueryError;
+use crate::plan::{PlanBinding, PlanQueryError};
 
 /// How to execute an expand from a bound traversal source.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -91,6 +90,25 @@ pub(crate) async fn resolve_traversal_expand_source(
             TraversalExpandSource::LocalCsr(VertexId::from(loc.local_vertex_id)),
         )),
         (_, Ok(VertexPlacement::Active(_))) => Ok(Some(TraversalExpandSource::PeerExpand(logical))),
+    }
+}
+
+/// Resolve a traversal source to a local CSR [`VertexId`] when this shard is authoritative.
+///
+/// Returns `Ok(None)` for null bindings. [`TraversalExpandSource::PeerExpand`] maps to
+/// [`PlanQueryError::UnsupportedOp`] with `peer_expand_op` (var_len / shortest-path BFS stays local).
+pub(crate) async fn resolve_traversal_expand_local_csr(
+    store: &GraphStore,
+    binding: Option<&PlanBinding>,
+    expand_direction: EdgeDirection,
+    peer_expand_op: &'static str,
+) -> Result<Option<VertexId>, PlanQueryError> {
+    match resolve_traversal_expand_source(store, binding, expand_direction).await? {
+        None => Ok(None),
+        Some(TraversalExpandSource::LocalCsr(vertex_id)) => Ok(Some(vertex_id)),
+        Some(TraversalExpandSource::PeerExpand(_)) => {
+            Err(PlanQueryError::UnsupportedOp(peer_expand_op))
+        }
     }
 }
 

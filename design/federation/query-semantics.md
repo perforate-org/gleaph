@@ -24,6 +24,9 @@ See [../sharding/federation-target.md](../sharding/federation-target.md) for the
 2. Router **slices** `PostingHit` by `shard_id` and builds **per-shard seeds**.
 3. Each **graph shard** executes the plan locally with seeds; skips leading index anchor ops.
 4. Cross-shard **traverse** uses graph ↔ graph `federated_expand` when needed.
+   One-hop `Expand` and var_len / `ShortestPath` entry use
+   `resolve_traversal_expand_source` (local CSR when this shard is authoritative;
+   peer-expand sources remain unsupported for multi-hop BFS).
 5. **Router merges** partial results.
 
 Graph shards do **not** receive other shards' index hits for anchor resolution. Index intersection is index-local; slicing is router-local.

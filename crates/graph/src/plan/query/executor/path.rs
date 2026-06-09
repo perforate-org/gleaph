@@ -21,7 +21,9 @@ use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::bindings::EdgeBinding;
 use super::expand::{ExpandCandidate, ExpandDst, edge_binding_for_scanned_expand};
-use super::{PlanBinding, vertex_binding_for_traversal};
+use crate::federation::resolve_traversal_expand_local_csr;
+
+use super::PlanBinding;
 use crate::facade::{GraphStore, GraphStoreError};
 
 mod materialize;
@@ -114,11 +116,24 @@ pub(crate) async fn execute_shortest_path(
     let store_hop_edges = emit_edge_binding || emit_path_binding;
     let mut out = Vec::new();
     for row in rows {
-        let Some(src_id) = vertex_binding_for_traversal(store, &row, src, Some(direction)).await?
+        let Some(src_id) = resolve_traversal_expand_local_csr(
+            store,
+            row.get(src.as_ref()),
+            direction,
+            "ShortestPath.src.peer",
+        )
+        .await?
         else {
             continue;
         };
-        let Some(dst_id) = vertex_binding_for_traversal(store, &row, dst, None).await? else {
+        let Some(dst_id) = resolve_traversal_expand_local_csr(
+            store,
+            row.get(dst.as_ref()),
+            direction,
+            "ShortestPath.dst.peer",
+        )
+        .await?
+        else {
             continue;
         };
         let paths = match cost {

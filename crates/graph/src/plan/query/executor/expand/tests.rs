@@ -1,4 +1,5 @@
 use super::super::test_support::*;
+use super::execute_var_len_expand;
 use super::predicates::{PreparedEdgePayloadPredicate, PreparedEdgeVectorThreshold};
 use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
 use crate::index::placement::native_test_set_active_placement;
@@ -93,6 +94,114 @@ fn federated_reverse_expand_from_remote_vertex_binding() {
     assert_eq!(
         store.logical_vertex_id(source).expect("source logical"),
         source_logical
+    );
+}
+
+#[test]
+fn federated_var_len_one_hop_from_remote_vertex_binding() {
+    let store = GraphStore::new();
+    configure_test_federation(&store);
+    let source = store.insert_vertex().expect("source");
+    let remote_logical = 88_002u64;
+    store
+        .insert_directed_edge_to_logical(source, remote_logical, None)
+        .expect("remote edge");
+
+    let mut seed = PlanRow::new();
+    seed.insert("b".to_owned(), PlanBinding::RemoteVertex(remote_logical));
+
+    let parameters = params();
+    let ctx = ExecuteCtx::new(
+        &store,
+        &parameters,
+        None,
+        GqlExecutionContext::default(),
+        None,
+    );
+    let out = pollster::block_on(execute_var_len_expand(
+        &ctx,
+        vec![seed],
+        &"b".into(),
+        &"e".into(),
+        &"a".into(),
+        EdgeDirection::PointingLeft,
+        None,
+        None,
+        &ctx.execution,
+        &VarLenSpec {
+            min: 1,
+            max: Some(1),
+        },
+        &[],
+        true,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ))
+    .expect("federated var_len one hop");
+
+    assert_eq!(out.len(), 1);
+    assert!(matches!(out[0].get("a"), Some(PlanBinding::Vertex(v)) if v == &source));
+}
+
+#[test]
+fn federated_var_len_rejects_peer_expand_source() {
+    let store = GraphStore::new();
+    configure_test_federation(&store);
+    let vertex = store.insert_vertex().expect("vertex");
+    let logical = store.logical_vertex_id(vertex).expect("logical");
+    native_test_set_active_placement(logical, PhysicalVertexLocation::new(9, u32::from(vertex)));
+
+    let mut seed = PlanRow::new();
+    seed.insert("a".to_owned(), PlanBinding::Vertex(vertex));
+
+    let parameters = params();
+    let ctx = ExecuteCtx::new(
+        &store,
+        &parameters,
+        None,
+        GqlExecutionContext::default(),
+        None,
+    );
+    let err = pollster::block_on(execute_var_len_expand(
+        &ctx,
+        vec![seed],
+        &"a".into(),
+        &"e".into(),
+        &"b".into(),
+        EdgeDirection::PointingRight,
+        None,
+        None,
+        &ctx.execution,
+        &VarLenSpec {
+            min: 2,
+            max: Some(2),
+        },
+        &[],
+        false,
+        None,
+        None,
+        None,
+        None,
+        false,
+        None,
+        None,
+        None,
+        None,
+        None,
+    ))
+    .expect_err("peer expand var_len source");
+
+    assert!(
+        matches!(err, PlanQueryError::UnsupportedOp("Expand.var_len.peer")),
+        "unexpected error: {err}"
     );
 }
 

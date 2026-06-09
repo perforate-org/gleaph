@@ -9,7 +9,7 @@ mod routing;
 
 pub(crate) use expand::{
     TraversalExpandSource, federated_direction_for_expand, federated_expand_label_id_raw,
-    resolve_traversal_expand_source,
+    resolve_traversal_expand_local_csr, resolve_traversal_expand_source,
 };
 pub(crate) use index_bind::bind_local_index_hits;
 pub(crate) use routing::federation_routing;

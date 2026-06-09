@@ -19,12 +19,13 @@ use super::super::context::ExecuteCtx;
 use super::super::path::{PathBinding, PathSearchNode, local_shard_id};
 use super::{
     ExpandDst, edge_binding_matches_label_expr, expand_candidates_for_expand_op_into,
-    expand_dst_binding, expand_dst_matches_prebound_vertex,
+    expand_dst_binding, expand_dst_matches_prebound_vertex, expand_rows_from_federated_expand_hits,
+    peer_expand_remote_vertex,
 };
+use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::{
     EdgeSequenceOrder, PlanBinding, edge_to_projected_record, row_matches_all,
-    vertex_binding_for_traversal,
 };
 use crate::plan::query::row::PlanRow;
 
@@ -82,46 +83,66 @@ pub(crate) async fn execute_var_len_expand(
     };
 
     let evaluator = ctx.expr_evaluator(None);
+    let caller = ctx.caller();
+    let gleaph_weight_decoders = ctx.gleaph_weight_decoders;
+    let hop_aux_key = hop_aux_binding.map(|name| name.as_ref());
     let mut out = Vec::new();
     for row in rows {
-        if row
-            .get(src.as_ref())
-            .is_some_and(|binding| matches!(binding, PlanBinding::RemoteVertex(_)))
-        {
-            return Err(PlanQueryError::UnsupportedOp("Expand.var_len.remote"));
+        match resolve_traversal_expand_source(ctx.store, row.get(src.as_ref()), direction).await? {
+            None => continue,
+            Some(TraversalExpandSource::PeerExpand(logical)) => {
+                if var_len.min != 1 || var_len.max != Some(1) {
+                    return Err(PlanQueryError::UnsupportedOp("Expand.var_len.peer"));
+                }
+                let hits = peer_expand_remote_vertex(ctx, logical, direction, label_id).await?;
+                out.extend(expand_rows_from_federated_expand_hits(
+                    ctx.store,
+                    &row,
+                    &hits,
+                    dst.as_ref(),
+                    edge.as_ref(),
+                    emit_edge_binding,
+                    hop_aux_key,
+                    dst_property_projection.as_deref(),
+                    dst_filter,
+                    label_expr,
+                    execution,
+                    ctx.parameters,
+                    caller,
+                    gleaph_weight_decoders,
+                    &evaluator,
+                )?);
+            }
+            Some(TraversalExpandSource::LocalCsr(src_id)) => {
+                collect_var_len_expand_rows(
+                    ctx.store,
+                    &row,
+                    src_id,
+                    edge,
+                    dst,
+                    direction,
+                    label_id,
+                    label_expr,
+                    execution,
+                    var_len,
+                    dst_filter,
+                    emit_edge_binding,
+                    hop_aux_binding,
+                    near_group_var,
+                    far_group_var,
+                    path_var,
+                    emit_path_binding,
+                    ctx.parameters,
+                    indexed_edge_equality,
+                    edge_payload_predicate,
+                    edge_vector_predicate,
+                    edge_property_projection,
+                    dst_property_projection,
+                    &evaluator,
+                    &mut out,
+                )?;
+            }
         }
-        let Some(src_id) =
-            vertex_binding_for_traversal(ctx.store, &row, src, Some(direction)).await?
-        else {
-            continue;
-        };
-        collect_var_len_expand_rows(
-            ctx.store,
-            &row,
-            src_id,
-            edge,
-            dst,
-            direction,
-            label_id,
-            label_expr,
-            execution,
-            var_len,
-            dst_filter,
-            emit_edge_binding,
-            hop_aux_binding,
-            near_group_var,
-            far_group_var,
-            path_var,
-            emit_path_binding,
-            ctx.parameters,
-            indexed_edge_equality,
-            edge_payload_predicate,
-            edge_vector_predicate,
-            edge_property_projection,
-            dst_property_projection,
-            &evaluator,
-            &mut out,
-        )?;
     }
     Ok(out)
 }

@@ -114,7 +114,7 @@ Planned responsibilities (detail TBD):
 | Router owns index lookup | Graph executor calls `PropertyIndexLookup` | **Done** — router seeds; graph index client disabled on federated wire path |
 | Router slices intersection | Graph executor intersects after N× `lookup_equal` | **Done** — `lookup_intersection` + router `IndexAnchor` |
 | Seeds per shard | `SeedProbe` only for `IndexScan` | **Done** — `IndexAnchor` for scan + intersection |
-| Peer expand only when traversing | `RemoteVertex` from index hits in executor | **Partial** — expand uses placement on `Vertex`/`RemoteVertex` via `resolve_traversal_expand_source`; index bind local hits only |
+| Peer expand only when traversing | `RemoteVertex` from index hits in executor | **Partial** — one-hop `Expand`, var_len `{1,1}`, and `ShortestPath` entry use `resolve_traversal_expand_source`; multi-hop var_len peer sources and mid-path remote hops remain future work |
 | Cohesive `federation/` modules | Logic in executor, facade stable, placement | **Partial** — graph `federation/{index_bind,expand,routing}` |
 
 ## Related documents
