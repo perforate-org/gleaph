@@ -848,7 +848,7 @@ mod tests {
         request_fingerprint,
     };
     use crate::init::RouterInitArgs;
-    use crate::seed::{IndexAnchor, SeedProbe};
+    use crate::seed::{IndexAnchor, SeedProbe, seeds_for_local_shard};
     use crate::state::RouterError;
     use crate::types::AdminRegisterShardArgs;
 
@@ -1187,6 +1187,37 @@ mod tests {
     }
 
     #[test]
+    fn resolve_seed_routings_multi_fans_out_labeled_node_scan() {
+        let store = store_with_shards();
+        let anchor = IndexAnchor::Label {
+            variable: "n".into(),
+            vertex_label_id: 1,
+        };
+        let hits = vec![
+            PostingHit {
+                shard_id: 7,
+                vertex_id: 10,
+            },
+            PostingHit {
+                shard_id: 9,
+                vertex_id: 20,
+            },
+        ];
+        let routings =
+            resolve_seed_routings_multi(&store, &hits, "tenant.main", anchor).expect("route");
+        assert_eq!(routings.len(), 2);
+        let blob7 = routings[0]
+            .anchor
+            .as_ref()
+            .and_then(|a| {
+                seeds_for_local_shard(a.variable(), &routings[0].hits, routings[0].shard_id)
+            })
+            .expect("shard 7 seeds");
+        let seeds: SeedBindingsWire = candid::Decode!(&blob7, SeedBindingsWire).expect("decode");
+        assert_eq!(seeds.entries[0].variable, "n");
+        assert_eq!(seeds.entries[0].local_vertex_ids, vec![10]);
+    }
+
     fn resolve_seed_routings_multi_rejects_unknown_shard() {
         let store = store_with_shards();
         let probe = SeedProbe {

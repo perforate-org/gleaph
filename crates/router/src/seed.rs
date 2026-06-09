@@ -1,8 +1,8 @@
 //! Index anchor detection and per-shard seed binding for graph dispatch.
 //!
-//! The router resolves query entry points via the property index before calling graph
-//! shards. [`IndexAnchor`] captures the leading index op (`IndexScan` or
-//! `IndexIntersection`); hits are encoded into `seed_bindings_blob` so shards can skip
+//! The router resolves query entry points via graph-index before calling graph shards.
+//! [`IndexAnchor`] captures the leading anchor op (`IndexScan`, `IndexIntersection`, or
+//! labeled `NodeScan`); hits are encoded into `seed_bindings_blob` so shards can skip
 //! that op.
 
 use std::collections::BTreeMap;
@@ -47,7 +47,7 @@ impl IndexAnchor {
         }
     }
 
-    /// Scan physical plans for the first index anchor (`IndexIntersection` or equality `IndexScan`).
+    /// Scan physical plans for the first index anchor (`IndexIntersection`, equality `IndexScan`, or labeled `NodeScan`).
     pub fn from_plans(
         plans: &[PhysicalPlan],
         parameters: &BTreeMap<String, Value>,
@@ -147,6 +147,22 @@ fn extract_from_op(
                 specs,
             }))
         }
+        PlanOp::NodeScan {
+            variable,
+            label: Some(label),
+            ..
+        } => {
+            let vertex_label_id = u32::from(
+                store
+                    .lookup_vertex_label_id(label.as_ref())
+                    .map_err(|_| RouterError::NotFound(format!("label {}", label.as_ref())))?
+                    .raw(),
+            );
+            Ok(Some(IndexAnchor::Label {
+                variable: variable.to_string(),
+                vertex_label_id,
+            }))
+        }
         PlanOp::IndexScan {
             variable,
             property,
@@ -236,6 +252,7 @@ mod tests {
     use candid::{Decode, Encode};
     use gleaph_gql::Value;
     use gleaph_gql::ast::CmpOp;
+    use gleaph_gql_planner::NodeLabelRef;
     use gleaph_gql_planner::PhysicalPlan;
     use gleaph_gql_planner::plan::{IndexScanSpec, PlanOp, ScanValue};
     use gleaph_graph_kernel::index::PostingHit;
@@ -336,6 +353,37 @@ mod tests {
             .expect("probe")
             .expect("parameter probe");
         assert!(!probe.payload_bytes.is_empty());
+    }
+
+    #[test]
+    fn index_anchor_from_plans_finds_labeled_node_scan() {
+        let store = RouterStore::new();
+        store.init_from_args(&RouterInitArgs {
+            issuing_principal: candid::Principal::anonymous(),
+            initial_admins: vec![],
+            controllers: vec![],
+        });
+        let admin = candid::Principal::anonymous();
+        store.bootstrap_controllers(&[admin]);
+        store
+            .admin_intern_vertex_label(admin, "Person")
+            .expect("intern Person");
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::NodeScan {
+            variable: Rc::from("n"),
+            label: Some(NodeLabelRef::from("Person")),
+            property_projection: None,
+        }]);
+        let anchor = IndexAnchor::from_plans(std::slice::from_ref(&plan), &BTreeMap::new(), &store)
+            .expect("anchor")
+            .expect("label anchor");
+        assert_eq!(anchor.variable(), "n");
+        let IndexAnchor::Label {
+            vertex_label_id, ..
+        } = anchor
+        else {
+            panic!("expected label anchor");
+        };
+        assert_eq!(vertex_label_id, 1);
     }
 
     #[test]

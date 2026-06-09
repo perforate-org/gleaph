@@ -2,7 +2,7 @@
 
 ## Status
 
-**Implemented (v1)** — see [ADR 0004](../adr/0004-label-index.md). Label postings, graph DML sync, router `lookup_label`, and aggregate fast path for labeled `NodeScan` are in place. Seed routing from `NodeScan { label }` via `IndexAnchor::from_plans` is not yet wired.
+**Implemented (v1)** — see [ADR 0004](../adr/0004-label-index.md). Label postings, graph DML sync, router `lookup_label`, aggregate fast path, and seed routing for labeled `NodeScan` are in place.
 
 ## Purpose
 
@@ -25,19 +25,19 @@ LabelPostingKey { vertex_label_id, shard_id, vertex_id }
 
 Sorted: `label_id → shard_id → vertex_id`. Multi-label vertices have one posting per label.
 
-## Read APIs (planned)
+## Read APIs
 
 | API | Role |
 |-----|------|
 | `lookup_label(label_id)` | All `PostingHit` for one vertex label |
 
-## Write path (planned)
+## Write path
 
 Graph shards enqueue label posting changes on vertex insert, label set/add/remove, and vertex
 delete; flush to graph-index with the same compensate-and-retry semantics as property postings
 (`graph/src/index/pending.rs`).
 
-## Router (planned)
+## Router
 
 - **Seeds:** `lookup_label` → slice by `shard_id` → `seed_bindings_blob` (same as property seeds).
 - **Aggregate fast path:** `lookup_label` → `vertex_filter_packed` on
