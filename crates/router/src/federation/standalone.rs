@@ -5,7 +5,7 @@ use gleaph_graph_kernel::index::PostingHit;
 
 use crate::facade::store::RouterStore;
 use crate::federation::{SeedRouting, ShardingPolicy};
-use crate::seed::SeedProbe;
+use crate::seed::IndexAnchor;
 use crate::state::RouterError;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -25,7 +25,7 @@ impl ShardingPolicy for StandaloneSharding {
         _store: &RouterStore,
         _logical_graph_name: &str,
         shards: &[ShardRegistryEntry],
-        probe: SeedProbe,
+        anchor: IndexAnchor,
         hits: &[PostingHit],
     ) -> Result<Vec<SeedRouting>, RouterError> {
         let entry = single_shard_entry(shards)?;
@@ -38,7 +38,7 @@ impl ShardingPolicy for StandaloneSharding {
             shard_id: entry.shard_id,
             graph_canister: entry.graph_canister,
             hits: shard_hits,
-            probe: Some(probe),
+            anchor: Some(anchor),
         }])
     }
 }
@@ -55,7 +55,7 @@ fn resolve_standalone_routing(shards: &[ShardRegistryEntry]) -> Result<SeedRouti
         shard_id: entry.shard_id,
         graph_canister: entry.graph_canister,
         hits: Vec::new(),
-        probe: None,
+        anchor: None,
     })
 }
 
@@ -138,19 +138,19 @@ mod tests {
         assert_eq!(routings[0].shard_id, entry.shard_id);
         assert_eq!(routings[0].graph_canister, entry.graph_canister);
         assert!(routings[0].hits.is_empty());
-        assert!(routings[0].probe.is_none());
+        assert!(routings[0].anchor.is_none());
     }
 
     #[test]
     fn with_hits_keeps_local_shard_postings_only() {
         let (store, entry) = store_with_single_shard();
         let shards = store.list_shards_for_graph("tenant.main").expect("shards");
-        let probe = SeedProbe {
+        let anchor = IndexAnchor::Equal(crate::seed::SeedProbe {
             variable: "u".into(),
             property: "uid".into(),
             property_id: 1,
             payload_bytes: vec![1, 2, 3],
-        };
+        });
         let hits = vec![
             PostingHit {
                 shard_id: entry.shard_id,
@@ -162,7 +162,7 @@ mod tests {
             },
         ];
         let routings = StandaloneSharding
-            .resolve_with_hits(&store, "tenant.main", &shards, probe, &hits)
+            .resolve_with_hits(&store, "tenant.main", &shards, anchor, &hits)
             .expect("route");
         assert_eq!(routings.len(), 1);
         assert_eq!(routings[0].hits.len(), 1);

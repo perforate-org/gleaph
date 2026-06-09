@@ -12,7 +12,7 @@ use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::PostingHit;
 
 use crate::facade::store::RouterStore;
-use crate::seed::{SeedProbe, seeds_for_local_shard};
+use crate::seed::{IndexAnchor, seeds_for_local_shard};
 use crate::state::RouterError;
 
 /// Per-shard graph execution target after routing.
@@ -35,7 +35,7 @@ pub trait ShardingPolicy {
         store: &RouterStore,
         logical_graph_name: &str,
         shards: &[ShardRegistryEntry],
-        probe: SeedProbe,
+        anchor: IndexAnchor,
         hits: &[PostingHit],
     ) -> Result<Vec<SeedRouting>, RouterError>;
 }
@@ -69,15 +69,15 @@ impl ShardingPolicy for ActiveShardingPolicy {
         store: &RouterStore,
         logical_graph_name: &str,
         shards: &[ShardRegistryEntry],
-        probe: SeedProbe,
+        anchor: IndexAnchor,
         hits: &[PostingHit],
     ) -> Result<Vec<SeedRouting>, RouterError> {
         match self {
             Self::Standalone(policy) => {
-                policy.resolve_with_hits(store, logical_graph_name, shards, probe, hits)
+                policy.resolve_with_hits(store, logical_graph_name, shards, anchor, hits)
             }
             Self::Multi(policy) => {
-                policy.resolve_with_hits(store, logical_graph_name, shards, probe, hits)
+                policy.resolve_with_hits(store, logical_graph_name, shards, anchor, hits)
             }
         }
     }
@@ -89,8 +89,8 @@ pub fn routings_to_dispatches(routings: Vec<SeedRouting>) -> Vec<ShardDispatch> 
         .map(|routing| ShardDispatch {
             shard_id: routing.shard_id,
             graph_canister: routing.graph_canister,
-            seed_bindings_blob: routing.probe.as_ref().and_then(|probe| {
-                seeds_for_local_shard(probe.variable.as_str(), &routing.hits, routing.shard_id)
+            seed_bindings_blob: routing.anchor.as_ref().and_then(|anchor| {
+                seeds_for_local_shard(anchor.variable(), &routing.hits, routing.shard_id)
             }),
         })
         .collect()

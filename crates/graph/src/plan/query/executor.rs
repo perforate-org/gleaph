@@ -128,7 +128,8 @@ pub async fn execute_plan_query_bindings(
 }
 
 /// Like [`execute_plan_query_bindings`] but starts from `initial_rows` and may skip the
-/// leading [`PlanOp::IndexScan`] (router seed routing).
+/// leading index anchor op ([`PlanOp::IndexScan`] or [`PlanOp::IndexIntersection`]) when
+/// the router supplied seed bindings.
 pub async fn execute_plan_query_bindings_with_initial_rows(
     store: &GraphStore,
     plan: &PhysicalPlan,
@@ -139,7 +140,7 @@ pub async fn execute_plan_query_bindings_with_initial_rows(
     skip_leading_index_scan: bool,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let ops = if skip_leading_index_scan {
-        skip_first_index_scan_ops(&plan.ops)
+        skip_leading_index_anchor_ops(&plan.ops)
     } else {
         plan.ops.as_slice()
     };
@@ -161,9 +162,9 @@ pub async fn execute_plan_query_bindings_with_initial_rows(
     execute_ops_from(&ctx, ops, initial_rows).await
 }
 
-fn skip_first_index_scan_ops(ops: &[PlanOp]) -> &[PlanOp] {
+fn skip_leading_index_anchor_ops(ops: &[PlanOp]) -> &[PlanOp] {
     match ops.first() {
-        Some(PlanOp::IndexScan { .. }) => &ops[1..],
+        Some(PlanOp::IndexScan { .. }) | Some(PlanOp::IndexIntersection { .. }) => &ops[1..],
         _ => ops,
     }
 }

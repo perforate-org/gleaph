@@ -13,7 +13,7 @@ use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::build_block_plan_with_schema;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
-use gleaph_graph_kernel::index::PostingHit;
+use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit};
 use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, LabelTelemetryEventWire, MutationId};
 use ic_cdk::api::msg_caller;
 
@@ -30,7 +30,7 @@ use crate::graph_client::{
 use crate::index_client::RouterIndexClient;
 use crate::planner_stats::RouterGraphStats;
 use crate::rbac::authorize_adhoc_gql;
-use crate::seed::SeedProbe;
+use crate::seed::IndexAnchor;
 use crate::state::RouterError;
 
 trait IndexLookup {
@@ -38,6 +38,11 @@ trait IndexLookup {
         &self,
         property_id: u32,
         value: Vec<u8>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
+
+    fn lookup_intersection(
+        &self,
+        req: IndexIntersectionRequest,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
 }
 
@@ -48,6 +53,13 @@ impl IndexLookup for RouterIndexClient {
         value: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
         Box::pin(self.lookup_equal(property_id, value))
+    }
+
+    fn lookup_intersection(
+        &self,
+        req: IndexIntersectionRequest,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+        Box::pin(self.lookup_intersection(req))
     }
 }
 
@@ -285,8 +297,8 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             })
             .collect()
     } else {
-        let seed_probe = match SeedProbe::from_plans(plans, pmap, store) {
-            Ok(seed_probe) => seed_probe,
+        let index_anchor = match IndexAnchor::from_plans(plans, pmap, store) {
+            Ok(index_anchor) => index_anchor,
             Err(err) => {
                 release_routing_if_owner(
                     &store,
@@ -299,23 +311,46 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             }
         };
         let policy = sharding_policy_for(&shards);
-        let routings = match seed_probe {
-            Some(probe) => {
-                let hits = match index
-                    .lookup_equal(probe.property_id, probe.payload_bytes.clone())
-                    .await
-                    .map_err(RouterError::InvalidArgument)
-                {
-                    Ok(hits) => hits,
-                    Err(err) => {
-                        release_routing_if_owner(
-                            &store,
-                            caller,
-                            logical_graph_name,
-                            client_mutation_key,
-                            mutation_reservation,
-                        )?;
-                        return Err(err);
+        let routings = match index_anchor {
+            Some(anchor) => {
+                let hits = match &anchor {
+                    IndexAnchor::Equal(probe) => match index
+                        .lookup_equal(probe.property_id, probe.payload_bytes.clone())
+                        .await
+                        .map_err(RouterError::InvalidArgument)
+                    {
+                        Ok(hits) => hits,
+                        Err(err) => {
+                            release_routing_if_owner(
+                                &store,
+                                caller,
+                                logical_graph_name,
+                                client_mutation_key,
+                                mutation_reservation,
+                            )?;
+                            return Err(err);
+                        }
+                    },
+                    IndexAnchor::Intersection { specs, .. } => {
+                        match index
+                            .lookup_intersection(IndexIntersectionRequest {
+                                specs: specs.clone(),
+                            })
+                            .await
+                            .map_err(RouterError::InvalidArgument)
+                        {
+                            Ok(hits) => hits,
+                            Err(err) => {
+                                release_routing_if_owner(
+                                    &store,
+                                    caller,
+                                    logical_graph_name,
+                                    client_mutation_key,
+                                    mutation_reservation,
+                                )?;
+                                return Err(err);
+                            }
+                        }
                     }
                 };
                 if hits.is_empty() {
@@ -330,7 +365,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     }
                     return Ok(0);
                 }
-                match policy.resolve_with_hits(store, logical_graph_name, &shards, probe, &hits) {
+                match policy.resolve_with_hits(store, logical_graph_name, &shards, anchor, &hits) {
                     Ok(routings) => routings,
                     Err(err) => {
                         release_routing_if_owner(
@@ -677,7 +712,7 @@ mod tests {
         request_fingerprint,
     };
     use crate::init::RouterInitArgs;
-    use crate::seed::SeedProbe;
+    use crate::seed::{IndexAnchor, SeedProbe};
     use crate::state::RouterError;
     use crate::types::AdminRegisterShardArgs;
 
@@ -733,6 +768,15 @@ mod tests {
             &self,
             _property_id: u32,
             _value: Vec<u8>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            self.calls.set(self.calls.get() + 1);
+            let result = self.results.borrow_mut().remove(0);
+            Box::pin(async move { result })
+        }
+
+        fn lookup_intersection(
+            &self,
+            _req: gleaph_graph_kernel::index::IndexIntersectionRequest,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
             self.calls.set(self.calls.get() + 1);
             let result = self.results.borrow_mut().remove(0);
@@ -956,14 +1000,15 @@ mod tests {
                 vertex_id: 20,
             },
         ];
-        let routings = resolve_seed_routings_multi(&store, &hits, "tenant.main", probe.clone())
-            .expect("route");
+        let routings =
+            resolve_seed_routings_multi(&store, &hits, "tenant.main", IndexAnchor::Equal(probe))
+                .expect("route");
         assert_eq!(routings.len(), 2);
         assert_eq!(routings[0].shard_id, 7);
         assert_eq!(routings[1].shard_id, 9);
         assert_eq!(routings[0].hits.len(), 1);
         assert_eq!(routings[0].hits[0].vertex_id, 10);
-        assert!(routings[0].probe.as_ref().is_some());
+        assert!(routings[0].anchor.is_some());
         assert_eq!(routings[0].graph_canister, graph_principal(1));
     }
 
@@ -980,8 +1025,9 @@ mod tests {
             shard_id: 99,
             vertex_id: 1,
         }];
-        let err = resolve_seed_routings_multi(&store, &hits, "tenant.main", probe)
-            .expect_err("unknown shard");
+        let err =
+            resolve_seed_routings_multi(&store, &hits, "tenant.main", IndexAnchor::Equal(probe))
+                .expect_err("unknown shard");
         assert!(matches!(err, RouterError::ShardNotRegistered));
     }
 

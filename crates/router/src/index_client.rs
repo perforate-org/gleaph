@@ -1,7 +1,7 @@
 //! Read-only property index client for router seed routing.
 
 use candid::Principal;
-use gleaph_graph_kernel::index::PostingHit;
+use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit};
 
 #[derive(Clone, Debug)]
 pub struct RouterIndexClient {
@@ -34,6 +34,30 @@ impl RouterIndexClient {
         {
             let _ = (property_id, value);
             Err("lookup_equal unavailable in native builds".into())
+        }
+    }
+
+    pub async fn lookup_intersection(
+        &self,
+        req: IndexIntersectionRequest,
+    ) -> Result<Vec<PostingHit>, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            let hits: Vec<PostingHit> =
+                Call::bounded_wait(self.index_canister, "lookup_intersection")
+                    .with_args(&(req,))
+                    .await
+                    .map_err(|e| format!("lookup_intersection: {e}"))?
+                    .candid()
+                    .map_err(|e| format!("lookup_intersection decode: {e}"))?;
+            return Ok(hits);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = req;
+            Err("lookup_intersection unavailable in native builds".into())
         }
     }
 }

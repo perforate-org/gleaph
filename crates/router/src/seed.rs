@@ -1,34 +1,63 @@
 //! Index anchor detection and per-shard seed binding for graph dispatch.
 //!
 //! The router resolves query entry points via the property index before calling graph
-//! shards. [`SeedProbe`] captures the equality `IndexScan` used as that anchor; index
-//! hits are encoded into `seed_bindings_blob` so shards can skip the leading scan op.
+//! shards. [`IndexAnchor`] captures the leading index op (`IndexScan` or
+//! `IndexIntersection`); hits are encoded into `seed_bindings_blob` so shards can skip
+//! that op.
 
 use std::collections::BTreeMap;
 
 use candid::Encode;
 use gleaph_gql::Value;
+use gleaph_gql::ast::CmpOp;
 use gleaph_gql::value_to_index_key_bytes;
 use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::plan::{PlanOp, ScanValue};
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::PostingHit;
+use gleaph_graph_kernel::index::{IndexEqualSpec, PostingHit};
 use gleaph_graph_kernel::plan_exec::{SeedBindingEntry, SeedBindingsWire};
 
 use crate::facade::store::RouterStore;
 use crate::state::RouterError;
 
 /// Index lookup anchor extracted from a physical plan.
-///
-/// When present, the router calls `lookup_equal(property_id, payload_bytes)` on the
-/// index canister, groups [`PostingHit`]s by shard, and builds per-shard
-/// [`SeedBindingsWire`](gleaph_graph_kernel::plan_exec::SeedBindingsWire) via
-/// [`seeds_for_local_shard`]. Graph shards bind `variable` to local vertex ids and
-/// skip the matching leading `IndexScan`.
-///
-/// Only equality `IndexScan` ops are recognized today; `IndexIntersection` anchors are
-/// planned separately (see `design/index/lookup-intersection.md`).
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum IndexAnchor {
+    /// Single equality `IndexScan` (`lookup_equal`).
+    Equal(SeedProbe),
+    /// Multiple equality arms (`lookup_intersection`).
+    Intersection {
+        variable: String,
+        specs: Vec<IndexEqualSpec>,
+    },
+}
+
+impl IndexAnchor {
+    /// Variable bound by this anchor (also used in `SeedBindingsWire`).
+    pub fn variable(&self) -> &str {
+        match self {
+            Self::Equal(probe) => probe.variable.as_str(),
+            Self::Intersection { variable, .. } => variable.as_str(),
+        }
+    }
+
+    /// Scan physical plans for the first index anchor (`IndexIntersection` or equality `IndexScan`).
+    pub fn from_plans(
+        plans: &[PhysicalPlan],
+        parameters: &BTreeMap<String, Value>,
+        store: &RouterStore,
+    ) -> Result<Option<Self>, RouterError> {
+        for plan in plans {
+            if let Some(anchor) = extract_from_ops(&plan.ops, parameters, store)? {
+                return Ok(Some(anchor));
+            }
+        }
+        Ok(None)
+    }
+}
+
+/// Equality `IndexScan` anchor (one property lookup via `lookup_equal`).
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct SeedProbe {
     /// GQL variable to seed (e.g. `"u"` in `MATCH (u {uid: $x})`).
     pub variable: String,
@@ -41,21 +70,16 @@ pub struct SeedProbe {
 }
 
 impl SeedProbe {
-    /// Scan physical plans for the first equality `IndexScan` anchor.
-    ///
-    /// Returns `None` when the query has no index anchor (e.g. full scan / traverse-only).
-    /// Nested ops (`HashJoin`, `OptionalMatch`, etc.) are searched recursively.
+    /// Returns `Some` only when the anchor is a single equality `IndexScan`.
     pub fn from_plans(
         plans: &[PhysicalPlan],
         parameters: &BTreeMap<String, Value>,
         store: &RouterStore,
     ) -> Result<Option<Self>, RouterError> {
-        for plan in plans {
-            if let Some(probe) = extract_from_ops(&plan.ops, parameters, store)? {
-                return Ok(Some(probe));
-            }
-        }
-        Ok(None)
+        Ok(match IndexAnchor::from_plans(plans, parameters, store)? {
+            Some(IndexAnchor::Equal(probe)) => Some(probe),
+            Some(IndexAnchor::Intersection { .. }) | None => None,
+        })
     }
 }
 
@@ -63,10 +87,10 @@ fn extract_from_ops(
     ops: &[PlanOp],
     parameters: &BTreeMap<String, Value>,
     store: &RouterStore,
-) -> Result<Option<SeedProbe>, RouterError> {
+) -> Result<Option<IndexAnchor>, RouterError> {
     for op in ops {
-        if let Some(probe) = extract_from_op(op, parameters, store)? {
-            return Ok(Some(probe));
+        if let Some(anchor) = extract_from_op(op, parameters, store)? {
+            return Ok(Some(anchor));
         }
     }
     Ok(None)
@@ -76,27 +100,53 @@ fn extract_from_op(
     op: &PlanOp,
     parameters: &BTreeMap<String, Value>,
     store: &RouterStore,
-) -> Result<Option<SeedProbe>, RouterError> {
+) -> Result<Option<IndexAnchor>, RouterError> {
     match op {
+        PlanOp::IndexIntersection {
+            variable, scans, ..
+        } if scans.len() >= 2 => {
+            let mut specs = Vec::with_capacity(scans.len());
+            for scan in scans {
+                if scan.cmp != CmpOp::Eq {
+                    return Ok(None);
+                }
+                let payload_bytes = resolve_scan_value(&scan.value, parameters)
+                    .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
+                let property_id = store
+                    .lookup_property_id(scan.property.as_ref())
+                    .map_err(|_| {
+                        RouterError::NotFound(format!("property {}", scan.property.as_ref()))
+                    })?
+                    .raw();
+                specs.push(IndexEqualSpec {
+                    property_id,
+                    value: payload_bytes,
+                });
+            }
+            Ok(Some(IndexAnchor::Intersection {
+                variable: variable.to_string(),
+                specs,
+            }))
+        }
         PlanOp::IndexScan {
             variable,
             property,
             value,
             cmp,
             ..
-        } if *cmp == gleaph_gql::ast::CmpOp::Eq => {
+        } if *cmp == CmpOp::Eq => {
             let payload_bytes = resolve_scan_value(value, parameters)
                 .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
             let property_id = store
                 .lookup_property_id(property.as_ref())
                 .map_err(|_| RouterError::NotFound(format!("property {}", property.as_ref())))?
                 .raw();
-            Ok(Some(SeedProbe {
+            Ok(Some(IndexAnchor::Equal(SeedProbe {
                 variable: variable.to_string(),
                 property: property.to_string(),
                 property_id,
                 payload_bytes,
-            }))
+            })))
         }
         PlanOp::HashJoin { left, right, .. } => {
             if let Some(p) = extract_from_ops(left, parameters, store)? {
@@ -168,11 +218,11 @@ mod tests {
     use gleaph_gql::Value;
     use gleaph_gql::ast::CmpOp;
     use gleaph_gql_planner::PhysicalPlan;
-    use gleaph_gql_planner::plan::{PlanOp, ScanValue};
+    use gleaph_gql_planner::plan::{IndexScanSpec, PlanOp, ScanValue};
     use gleaph_graph_kernel::index::PostingHit;
     use gleaph_graph_kernel::plan_exec::SeedBindingsWire;
 
-    use super::{SeedProbe, seeds_for_local_shard};
+    use super::{IndexAnchor, SeedProbe, seeds_for_local_shard};
     use crate::facade::store::RouterStore;
     use crate::init::RouterInitArgs;
 
@@ -199,6 +249,47 @@ mod tests {
             cmp: CmpOp::Eq,
             property_projection: None,
         }])
+    }
+
+    #[test]
+    fn index_anchor_from_plans_finds_index_intersection() {
+        let store = test_store_with_property("uid");
+        store
+            .admin_intern_property(candid::Principal::anonymous(), "email")
+            .expect("intern email");
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::IndexIntersection {
+            variable: Rc::from("n"),
+            scans: vec![
+                IndexScanSpec {
+                    property: Rc::from("uid"),
+                    value: ScanValue::Literal(Value::Text("alice".into())),
+                    cmp: CmpOp::Eq,
+                },
+                IndexScanSpec {
+                    property: Rc::from("email"),
+                    value: ScanValue::Literal(Value::Text("alice@example.com".into())),
+                    cmp: CmpOp::Eq,
+                },
+            ],
+            property_projection: None,
+        }]);
+        let anchor = IndexAnchor::from_plans(std::slice::from_ref(&plan), &BTreeMap::new(), &store)
+            .expect("anchor")
+            .expect("intersection anchor");
+        assert_eq!(anchor.variable(), "n");
+        let IndexAnchor::Intersection { specs, .. } = anchor else {
+            panic!("expected intersection anchor");
+        };
+        assert_eq!(specs.len(), 2);
+        assert_eq!(specs[0].property_id, 1);
+        assert_eq!(specs[1].property_id, 2);
+        assert!(!specs[0].value.is_empty());
+        assert!(!specs[1].value.is_empty());
+        assert!(
+            SeedProbe::from_plans(std::slice::from_ref(&plan), &BTreeMap::new(), &store)
+                .expect("probe")
+                .is_none()
+        );
     }
 
     #[test]

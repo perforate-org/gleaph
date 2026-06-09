@@ -6,7 +6,7 @@ use gleaph_graph_kernel::index::PostingHit;
 
 use crate::facade::store::RouterStore;
 use crate::federation::ShardingPolicy;
-use crate::seed::SeedProbe;
+use crate::seed::IndexAnchor;
 use crate::state::RouterError;
 
 #[derive(Clone, Debug)]
@@ -15,7 +15,7 @@ pub struct SeedRouting {
     pub graph_canister: Principal,
     pub hits: Vec<PostingHit>,
     /// Present when dispatch used an index anchor; drives [`crate::seed::seeds_for_local_shard`].
-    pub probe: Option<SeedProbe>,
+    pub anchor: Option<IndexAnchor>,
 }
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
@@ -31,7 +31,7 @@ impl ShardingPolicy for MultiShardDispatch {
                 shard_id: shards[0].shard_id,
                 graph_canister: shards[0].graph_canister,
                 hits: Vec::new(),
-                probe: None,
+                anchor: None,
             }])
         } else {
             Err(RouterError::InvalidArgument(
@@ -45,10 +45,10 @@ impl ShardingPolicy for MultiShardDispatch {
         store: &RouterStore,
         logical_graph_name: &str,
         _shards: &[ShardRegistryEntry],
-        probe: SeedProbe,
+        anchor: IndexAnchor,
         hits: &[PostingHit],
     ) -> Result<Vec<SeedRouting>, RouterError> {
-        resolve_seed_routings_multi(store, hits, logical_graph_name, probe)
+        resolve_seed_routings_multi(store, hits, logical_graph_name, anchor)
     }
 }
 
@@ -57,7 +57,7 @@ pub fn resolve_seed_routings_multi(
     store: &RouterStore,
     hits: &[PostingHit],
     logical_graph_name: &str,
-    probe: SeedProbe,
+    anchor: IndexAnchor,
 ) -> Result<Vec<SeedRouting>, RouterError> {
     if hits.is_empty() {
         return Ok(Vec::new());
@@ -82,7 +82,7 @@ pub fn resolve_seed_routings_multi(
             shard_id,
             graph_canister: entry.graph_canister,
             hits: shard_hits,
-            probe: Some(probe.clone()),
+            anchor: Some(anchor.clone()),
         });
     }
     Ok(out)

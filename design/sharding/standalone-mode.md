@@ -82,8 +82,9 @@ See [lookup-intersection.md](../index/lookup-intersection.md).
 1. **Index API** — `lookup_intersection` on graph-index; graph executor single-call path (**Implemented**).
 2. **Federation module** — `StandaloneFederation`, `FederationPort`, inject into `ExecuteCtx` (**Implemented**).
 3. **Router standalone dispatch** — consolidate `gql.rs` dispatch into `router/federation/standalone.rs` (**Implemented**).
-4. **Defer removal** — gate or delete immature federation stable/runtime (Planned).
-5. **Federation target** — router index slice, peer expand, merge ([federation-target.md](federation-target.md)) (Planned).
+4. **Router intersection seeds** — `IndexAnchor`, `lookup_intersection`, graph skip leading `IndexIntersection` (**Implemented**).
+5. **Defer removal** — legacy federation stable/runtime and graph direct index on hot path (**Partial** — marked deferred; not deleted).
+6. **Federation target** — router index slice, peer expand, merge ([federation-target.md](federation-target.md)) (Planned).
 
 ## Related documents
 

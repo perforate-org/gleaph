@@ -2,7 +2,7 @@
 
 ## Status
 
-**Partially Implemented** — graph-index `lookup_intersection` and graph executor single-call path are implemented. Router per-shard seeds and skip-op behavior remain **Planned**. Client-side intersection in the executor is removed.
+**Partially Implemented** — graph-index `lookup_intersection`, graph executor single-call path, router `IndexAnchor` + `lookup_intersection` seeds, and graph skip of leading `IndexIntersection` are implemented. Client-side intersection in the executor is removed.
 
 ## Purpose
 
@@ -90,18 +90,19 @@ Index does **not** read graph tombstone state.
 
 Query read paths do not filter tombstones when this invariant holds. See [../sharding/standalone-mode.md](../sharding/standalone-mode.md).
 
-## Router integration (planned)
+## Router integration
 
 ```text
-hits = index.lookup_intersection(req)
+anchor = IndexAnchor::from_plans(plans)  // IndexScan or IndexIntersection
+hits = lookup_equal / lookup_intersection(anchor)
 for each shard_id in participating_shards:
   local_ids = hits where hit.shard_id == shard_id
   seed_blob = encode(variable, local_ids)
   execute_plan_on_graph(shard, plan_blob, seed_blob)
-  // graph skips leading IndexIntersection op
+  // graph skips leading IndexScan / IndexIntersection op
 ```
 
-Replaces `SeedProbe` that only recognizes single `IndexScan` ([property-index.md](property-index.md)).
+**Implemented** in `router/src/seed.rs` (`IndexAnchor`), `router/index_client.rs`, and `gql.rs` dispatch.
 
 ## Graph executor (transition)
 
@@ -136,8 +137,8 @@ Remove from `execute_index_intersection`:
 1. `graph-kernel` types + `graph-index` store + canister endpoint + unit tests.
 2. Extend `PropertyIndexLookup` / `RouterIndexClient`.
 3. Graph executor: single `lookup_intersection` call; standalone bind filter.
-4. Router seed module: intersection anchor + per-shard slice + skip op on graph.
-5. Remove legacy client-side intersection.
+4. Router seed module: intersection anchor + per-shard slice + skip op on graph (**Implemented**).
+5. Remove legacy client-side intersection (**Done**); defer graph direct index calls when router seeds present (**Partial** — skip op only).
 
 ## Related documents
 

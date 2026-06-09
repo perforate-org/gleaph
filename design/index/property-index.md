@@ -2,7 +2,7 @@
 
 ## Status
 
-**Partially Implemented** — `lookup_equal` / `lookup_range` and DML posting sync exist. **`lookup_intersection`** is implemented on graph-index and wired through graph `PropertyIndexLookup`; Router per-shard seeds remain **Planned**. Executor-side client intersection and `RemoteVertex` index bind paths are legacy; see [../sharding/federation-target.md](../sharding/federation-target.md).
+**Partially Implemented** — `lookup_equal` / `lookup_range` and DML posting sync exist. **`lookup_intersection`** is implemented on graph-index; router `IndexAnchor` + per-shard seeds and graph skip of leading intersection op are **Implemented**. Legacy graph direct index and `RemoteVertex` index bind paths remain deferred; see [../sharding/federation-target.md](../sharding/federation-target.md).
 
 ## Purpose
 
@@ -20,7 +20,7 @@ Explain the **graph-index canister** and how the router uses it for query routin
 |-------|-------|------|
 | Posting key/value | `graph-index` | Property equality postings |
 | `PostingHit` | `graph-kernel` | `{ shard_id, vertex_id }` |
-| Router client | `router/index_client.rs` | `lookup_equal` (target: + `lookup_intersection`) |
+| Router client | `router/index_client.rs` | `lookup_equal`, `lookup_intersection` |
 | Seed resolution | `router/seed.rs` | Map hits → per-shard seed blobs |
 
 ## Posting model
@@ -53,7 +53,7 @@ If probe is **None**:
 - **Single shard** — execute on that shard without seeds.
 - **Multiple shards** — error: `no index anchor: single-shard graph required`.
 
-**Planned:** `IndexIntersection` anchors via `lookup_intersection` and the same per-shard slice ([../sharding/federation-target.md](../sharding/federation-target.md)).
+**Implemented:** `IndexIntersection` anchors via `IndexAnchor::from_plans` and `lookup_intersection` with the same per-shard slice as `IndexScan`.
 
 ## Target: Router owns index reads
 

@@ -1889,3 +1889,61 @@ fn index_intersection_requires_index_client() {
         PlanQueryError::UnsupportedOp("IndexIntersection(no index client)")
     ));
 }
+
+#[test]
+fn seeded_skip_leading_index_intersection_does_not_call_index() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let vid = store
+        .insert_vertex_named(
+            ["IxSeed"],
+            [
+                ("uid", Value::Text("alice".into())),
+                ("email", Value::Text("alice@example.com".into())),
+            ],
+        )
+        .expect("vertex");
+    let plan = plan(vec![
+        PlanOp::IndexIntersection {
+            variable: "n".into(),
+            scans: vec![
+                IndexScanSpec {
+                    property: "uid".into(),
+                    value: ScanValue::Literal(Value::Text("alice".into())),
+                    cmp: CmpOp::Eq,
+                },
+                IndexScanSpec {
+                    property: "email".into(),
+                    value: ScanValue::Literal(Value::Text("alice@example.com".into())),
+                    cmp: CmpOp::Eq,
+                },
+            ],
+            property_projection: None,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("n"), "n")],
+            distinct: false,
+        },
+    ]);
+    let mut seed = PlanRow::new();
+    seed.insert("n".to_owned(), PlanBinding::Vertex(vid));
+    let index = MockPropertyIndex::default();
+
+    let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+        vec![seed],
+        true,
+    ))
+    .expect("seeded intersection skip");
+
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(
+        rows[0].get("n"),
+        Some(PlanBinding::Vertex(id)) if *id == vid
+    ));
+    assert!(index.intersection_calls.borrow().is_empty());
+}

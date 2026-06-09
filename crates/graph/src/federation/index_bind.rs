@@ -41,8 +41,9 @@ pub(crate) fn bind_local_index_hits(
 
 /// Legacy federated bind: local vertices plus [`PlanBinding::RemoteVertex`] for foreign hits.
 ///
-/// Deferred target architecture routes index reads through the router and seeds local ids only.
-/// Kept for [`super::materialize_federated_index_hits`] / `IndexScan` until federation v1.
+/// **Deferred** — target architecture routes all index reads through the router and seeds
+/// local vertex ids only. Kept for `IndexScan` until federation v1; do not extend for new
+/// anchor types.
 pub(crate) async fn materialize_federated_index_hits(
     store: &GraphStore,
     rows: Vec<PlanRow>,
