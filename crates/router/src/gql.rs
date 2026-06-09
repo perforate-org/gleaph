@@ -21,8 +21,8 @@ use crate::execution_path::check_adhoc_execution_path;
 use crate::facade::stable::label_telemetry::RouterMutationShard;
 use crate::facade::store::RouterStore;
 use crate::federation::{
-    ShardDispatch, ShardingPolicy, empty_execute_plan_result, merge_execute_plan_result,
-    routings_to_dispatches, sharding_policy_for,
+    ShardDispatch, ShardingPolicy, empty_execute_plan_result, federated_merge_mode_from_plans,
+    merge_execute_plan_result, routings_to_dispatches, sharding_policy_for,
 };
 use crate::graph_client::{
     ack_label_telemetry_event, execute_plan_on_graph, get_mutation_outcome,
@@ -433,6 +433,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         }
     }
 
+    let merge_mode = federated_merge_mode_from_plans(plans);
     let mut merged = empty_execute_plan_result();
     for dispatch in dispatches {
         let result = match execute_plan_on_graph(
@@ -469,6 +470,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                                     label_telemetry_events: events.clone(),
                                     rows_blob: None,
                                 },
+                                merge_mode.clone(),
                             )
                             .map_err(RouterError::InvalidArgument)?;
                             if let Some(key) = client_mutation_key {
@@ -521,7 +523,8 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 )?;
             }
         }
-        merge_execute_plan_result(&mut merged, result).map_err(RouterError::InvalidArgument)?;
+        merge_execute_plan_result(&mut merged, result, merge_mode.clone())
+            .map_err(RouterError::InvalidArgument)?;
     }
     if let Some(key) = client_mutation_key
         && let Some(row_count) =

@@ -1,11 +1,18 @@
 //! Router-side sharding policy and per-shard dispatch construction.
 
+mod aggregate_merge;
 mod dispatch;
 mod merge;
 mod standalone;
 
+#[expect(unused_imports, reason = "public federation API surface")]
+pub use aggregate_merge::{
+    FederatedAggregateMerge, FederatedMergeMode, federated_merge_mode_from_ops,
+    federated_merge_mode_from_plans, merge_aggregate_blobs, merge_optional_aggregate_blobs,
+};
 #[expect(unused_imports, reason = "re-exported for gql integration tests")]
 pub use dispatch::{SeedRouting, resolve_seed_routings_multi};
+#[expect(unused_imports, reason = "public federation API surface")]
 pub use merge::{
     empty_execute_plan_result, merge_add_row_count, merge_execute_plan_result, merge_row_counts,
 };

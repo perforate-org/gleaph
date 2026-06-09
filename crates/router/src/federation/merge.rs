@@ -1,11 +1,13 @@
 //! Merge partial results from per-shard graph execution.
 //!
 //! Federation v1 unions independent shard-local query fragments by concatenating row batches
-//! (`rows_blob`) and summing row counts. Cross-shard joins and aggregate merge remain future
-//! work (see `design/sharding/federation-target.md`).
+//! (`rows_blob`) and summing row counts. Queries with mergeable `PlanOp::Aggregate` use
+//! group-key merge instead (see `aggregate_merge.rs`).
 
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::plan_exec::{ExecutePlanResult, LabelTelemetryEventWire};
+
+use super::aggregate_merge::{FederatedMergeMode, merge_optional_aggregate_blobs};
 
 /// Sum shard-local row counts for independent query fragments.
 pub fn merge_row_counts(shard_row_counts: impl IntoIterator<Item = u64>) -> u64 {
@@ -20,17 +22,35 @@ pub fn merge_add_row_count(total: u64, shard_rows: u64) -> u64 {
     total.saturating_add(shard_rows)
 }
 
-/// Merge one shard [`ExecutePlanResult`] into an accumulator (union row batches + sum counts).
+/// Merge one shard [`ExecutePlanResult`] into an accumulator.
 pub fn merge_execute_plan_result(
     acc: &mut ExecutePlanResult,
     shard: ExecutePlanResult,
+    mode: FederatedMergeMode,
 ) -> Result<(), String> {
-    acc.row_count = merge_add_row_count(acc.row_count, shard.row_count);
     acc.label_telemetry_events
         .extend(shard.label_telemetry_events);
-    acc.rows_blob =
-        IcWirePlanQueryResult::merge_optional_batch_blobs(acc.rows_blob.take(), shard.rows_blob)
-            .map_err(|e| e.to_string())?;
+    acc.rows_blob = match &mode {
+        FederatedMergeMode::UnionRows => {
+            acc.row_count = merge_add_row_count(acc.row_count, shard.row_count);
+            IcWirePlanQueryResult::merge_optional_batch_blobs(acc.rows_blob.take(), shard.rows_blob)
+                .map_err(|e| e.to_string())?
+        }
+        FederatedMergeMode::Aggregate(spec) => {
+            let merged =
+                merge_optional_aggregate_blobs(acc.rows_blob.take(), shard.rows_blob, spec)?;
+            acc.row_count = merged
+                .as_ref()
+                .map(|blob| {
+                    IcWirePlanQueryResult::decode_blob(blob)
+                        .map(|decoded| decoded.rows.len() as u64)
+                        .map_err(|e| e.to_string())
+                })
+                .transpose()?
+                .unwrap_or(0);
+            merged
+        }
+    };
     Ok(())
 }
 
@@ -53,6 +73,10 @@ mod tests {
     use super::{
         empty_execute_plan_result, merge_add_row_count, merge_execute_plan_result, merge_row_counts,
     };
+    use crate::federation::aggregate_merge::{
+        AggregateMergeColumn, FederatedAggregateMerge, FederatedMergeMode,
+    };
+    use gleaph_gql::ast::AggregateFunc;
 
     fn sample_rows_blob(values: &[i64]) -> Vec<u8> {
         IcWirePlanQueryResult {
@@ -90,6 +114,7 @@ mod tests {
                 label_telemetry_events: Vec::new(),
                 rows_blob: Some(sample_rows_blob(&[1])),
             },
+            FederatedMergeMode::UnionRows,
         )
         .expect("first shard");
         merge_execute_plan_result(
@@ -99,6 +124,7 @@ mod tests {
                 label_telemetry_events: Vec::new(),
                 rows_blob: Some(sample_rows_blob(&[2, 3])),
             },
+            FederatedMergeMode::UnionRows,
         )
         .expect("second shard");
         assert_eq!(acc.row_count, 3);
@@ -115,5 +141,51 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(values, vec![1, 2, 3]);
+    }
+
+    #[test]
+    fn merge_execute_plan_result_merges_aggregate_rows_and_row_count() {
+        let spec = FederatedAggregateMerge {
+            group_key_columns: vec![],
+            aggregate_columns: vec![AggregateMergeColumn {
+                name: "cnt".into(),
+                func: AggregateFunc::CountStar,
+            }],
+        };
+        let mut acc = empty_execute_plan_result();
+        let count_blob = |n: i64| {
+            IcWirePlanQueryResult {
+                rows: vec![IcWirePlanQueryRow {
+                    columns: vec![("cnt".into(), IcWireValue::Int64(n))],
+                }],
+            }
+            .encode_blob()
+            .expect("encode")
+        };
+        merge_execute_plan_result(
+            &mut acc,
+            ExecutePlanResult {
+                row_count: 1,
+                label_telemetry_events: Vec::new(),
+                rows_blob: Some(count_blob(5)),
+            },
+            FederatedMergeMode::Aggregate(spec.clone()),
+        )
+        .expect("first shard");
+        merge_execute_plan_result(
+            &mut acc,
+            ExecutePlanResult {
+                row_count: 1,
+                label_telemetry_events: Vec::new(),
+                rows_blob: Some(count_blob(3)),
+            },
+            FederatedMergeMode::Aggregate(spec),
+        )
+        .expect("second shard");
+        assert_eq!(acc.row_count, 1);
+        let merged =
+            IcWirePlanQueryResult::decode_blob(acc.rows_blob.as_ref().unwrap()).expect("decode");
+        assert_eq!(merged.rows.len(), 1);
+        assert_eq!(merged.rows[0].columns[0].1, IcWireValue::Int64(8));
     }
 }
