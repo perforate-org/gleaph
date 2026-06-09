@@ -113,8 +113,9 @@ Flow for `MATCH (n:Person) … GROUP BY n.country`:
 uses `vertex_filter = lookup_label(Person) ∩ lookup_equal(region, US)` intersected on the router
 before `count_postings_by_value`. Move to graph-index when hit sets are large (v2).
 
-**Scale guard (v1):** If `lookup_label` exceeds an instruction/size budget, fall back to generic
-shard aggregate merge (same pattern as oversized seed lists).
+**Scale guard (v1, implemented):** When any anchor lookup or packed vertex filter exceeds
+`FAST_PATH_MAX_VERTEX_FILTER_HITS` (10_000, router `federation/limits.rs`), aggregate fast path
+and seed routing fall back to generic unseeded multi-shard execution.
 
 ### Relationship to label telemetry
 

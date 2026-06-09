@@ -87,3 +87,16 @@ pub fn resolve_seed_routings_multi(
     }
     Ok(out)
 }
+
+/// Fan out to every shard without index seeds (oversized anchor hit list fallback).
+pub fn resolve_unseeded_all_shards(shards: &[ShardRegistryEntry]) -> Vec<SeedRouting> {
+    shards
+        .iter()
+        .map(|entry| SeedRouting {
+            shard_id: entry.shard_id,
+            graph_canister: entry.graph_canister,
+            hits: Vec::new(),
+            anchor: None,
+        })
+        .collect()
+}

@@ -25,7 +25,8 @@ use crate::facade::store::RouterStore;
 use crate::federation::{
     FederatedMergeMode, ShardDispatch, ShardingPolicy, apply_federated_aggregate_having,
     empty_execute_plan_result, federated_dispatch_plan_blob, federated_merge_mode_from_plans,
-    gql_query_result_from_posting_counts, merge_execute_plan_result, routings_to_dispatches,
+    gql_query_result_from_posting_counts, merge_execute_plan_result,
+    posting_hits_exceed_fast_path_budget, resolve_unseeded_all_shards, routings_to_dispatches,
     sharding_policy_for, try_aggregate_index_fast_path,
 };
 use crate::graph_client::{
@@ -102,6 +103,17 @@ fn pack_posting_hits(hits: &[PostingHit]) -> Vec<u64> {
         .collect()
 }
 
+/// Result of resolving fast-path vertex filters from index anchors.
+#[derive(Clone, Debug, PartialEq, Eq)]
+enum FastPathFilterResolution {
+    /// Count all postings in the property bucket.
+    Unfiltered,
+    /// Count postings for these packed `(shard_id, vertex_id)` pairs only.
+    Restricted(Vec<u64>),
+    /// Anchor hit sets exceed the router budget; use generic shard execution.
+    Oversized,
+}
+
 async fn lookup_hits_for_anchor<I: IndexLookup + ?Sized>(
     index: &I,
     anchor: &IndexAnchor,
@@ -132,21 +144,31 @@ async fn lookup_hits_for_anchor<I: IndexLookup + ?Sized>(
 async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
     index: &I,
     anchors: &[IndexAnchor],
-) -> Result<Option<Vec<u64>>, String> {
+) -> Result<FastPathFilterResolution, String> {
+    use crate::federation::packed_vertices_exceed_fast_path_budget;
+
     if anchors.is_empty() {
-        return Ok(None);
+        return Ok(FastPathFilterResolution::Unfiltered);
     }
     if anchors.len() == 1 {
         let hits = lookup_hits_for_anchor(index, &anchors[0]).await?;
-        if hits.is_empty() {
-            return Ok(Some(Vec::new()));
+        if posting_hits_exceed_fast_path_budget(&hits) {
+            return Ok(FastPathFilterResolution::Oversized);
         }
-        return Ok(Some(pack_posting_hits(&hits)));
+        if hits.is_empty() {
+            return Ok(FastPathFilterResolution::Restricted(Vec::new()));
+        }
+        return Ok(FastPathFilterResolution::Restricted(pack_posting_hits(
+            &hits,
+        )));
     }
 
     let mut sets: Vec<std::collections::HashSet<u64>> = Vec::with_capacity(anchors.len());
     for anchor in anchors {
         let hits = lookup_hits_for_anchor(index, anchor).await?;
+        if posting_hits_exceed_fast_path_budget(&hits) {
+            return Ok(FastPathFilterResolution::Oversized);
+        }
         let set = hits
             .iter()
             .map(|hit| (u64::from(hit.shard_id) << 32) | u64::from(hit.vertex_id))
@@ -158,10 +180,14 @@ async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
     for set in sets.iter().skip(1) {
         intersection = intersection.intersection(set).copied().collect();
         if intersection.is_empty() {
-            return Ok(Some(Vec::new()));
+            return Ok(FastPathFilterResolution::Restricted(Vec::new()));
         }
     }
-    Ok(Some(intersection.into_iter().collect()))
+    let packed: Vec<u64> = intersection.into_iter().collect();
+    if packed_vertices_exceed_fast_path_budget(&packed) {
+        return Ok(FastPathFilterResolution::Oversized);
+    }
+    Ok(FastPathFilterResolution::Restricted(packed))
 }
 
 pub async fn gql_query(
@@ -337,25 +363,29 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     if mode == GqlExecutionMode::Query && !has_dml {
         let stats = RouterGraphStats::for_graph(logical_graph_name);
         if let Some(fast_path) = try_aggregate_index_fast_path(plans, &stats, store, pmap) {
-            let vertex_filter = if fast_path.index_anchors.is_empty() {
-                None
-            } else {
-                Some(
-                    resolve_fast_path_vertex_filter(index, &fast_path.index_anchors)
-                        .await
-                        .map_err(RouterError::InvalidArgument)?,
-                )
-            };
-            let counts = index
-                .count_postings_by_value(
-                    fast_path.property_id,
-                    fast_path.min_count,
-                    vertex_filter.flatten(),
-                )
+            match resolve_fast_path_vertex_filter(index, &fast_path.index_anchors)
                 .await
-                .map_err(RouterError::InvalidArgument)?;
-            return Ok(gql_query_result_from_posting_counts(&fast_path, counts)
-                .map_err(RouterError::InvalidArgument)?);
+                .map_err(RouterError::InvalidArgument)?
+            {
+                FastPathFilterResolution::Oversized => {}
+                filter => {
+                    let vertex_filter_packed = match filter {
+                        FastPathFilterResolution::Unfiltered => None,
+                        FastPathFilterResolution::Restricted(packed) => Some(packed),
+                        FastPathFilterResolution::Oversized => unreachable!(),
+                    };
+                    let counts = index
+                        .count_postings_by_value(
+                            fast_path.property_id,
+                            fast_path.min_count,
+                            vertex_filter_packed,
+                        )
+                        .await
+                        .map_err(RouterError::InvalidArgument)?;
+                    return Ok(gql_query_result_from_posting_counts(&fast_path, counts)
+                        .map_err(RouterError::InvalidArgument)?);
+                }
+            }
         }
     }
     let merge_mode = federated_merge_mode_from_plans(plans);
@@ -515,17 +545,27 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     }
                     return Ok(GqlQueryResult::row_count_only(0));
                 }
-                match policy.resolve_with_hits(store, logical_graph_name, &shards, anchor, &hits) {
-                    Ok(routings) => routings,
-                    Err(err) => {
-                        release_routing_if_owner(
-                            &store,
-                            caller,
-                            logical_graph_name,
-                            client_mutation_key,
-                            mutation_reservation,
-                        )?;
-                        return Err(err);
+                if posting_hits_exceed_fast_path_budget(&hits) {
+                    resolve_unseeded_all_shards(&shards)
+                } else {
+                    match policy.resolve_with_hits(
+                        store,
+                        logical_graph_name,
+                        &shards,
+                        anchor,
+                        &hits,
+                    ) {
+                        Ok(routings) => routings,
+                        Err(err) => {
+                            release_routing_if_owner(
+                                &store,
+                                caller,
+                                logical_graph_name,
+                                client_mutation_key,
+                                mutation_reservation,
+                            )?;
+                            return Err(err);
+                        }
                     }
                 }
             }
@@ -1248,6 +1288,28 @@ mod tests {
         let seeds: SeedBindingsWire = candid::Decode!(&blob7, SeedBindingsWire).expect("decode");
         assert_eq!(seeds.entries[0].variable, "n");
         assert_eq!(seeds.entries[0].local_vertex_ids, vec![10]);
+    }
+
+    fn resolve_fast_path_vertex_filter_rejects_oversized_label_lookup() {
+        use super::{FastPathFilterResolution, resolve_fast_path_vertex_filter};
+        use crate::federation::FAST_PATH_MAX_VERTEX_FILTER_HITS;
+
+        let hits: Vec<PostingHit> = (0..=FAST_PATH_MAX_VERTEX_FILTER_HITS)
+            .map(|i| PostingHit {
+                shard_id: 7,
+                vertex_id: i as u32,
+            })
+            .collect();
+        let fake = FakeIndex::new(vec![Ok(hits)]);
+        let resolution = futures::executor::block_on(resolve_fast_path_vertex_filter(
+            &fake,
+            &[IndexAnchor::Label {
+                variable: "n".into(),
+                vertex_label_id: 1,
+            }],
+        ))
+        .expect("resolve");
+        assert_eq!(resolution, FastPathFilterResolution::Oversized);
     }
 
     fn resolve_seed_routings_multi_rejects_unknown_shard() {

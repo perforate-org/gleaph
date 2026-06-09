@@ -4,6 +4,7 @@ mod aggregate_index_fast_path;
 mod aggregate_merge;
 mod dispatch;
 mod having_filter;
+mod limits;
 mod merge;
 mod standalone;
 
@@ -17,8 +18,12 @@ pub use aggregate_merge::{
     merge_optional_aggregate_blobs, strip_post_aggregate_having,
 };
 #[expect(unused_imports, reason = "re-exported for gql integration tests")]
-pub use dispatch::{SeedRouting, resolve_seed_routings_multi};
+pub use dispatch::{SeedRouting, resolve_seed_routings_multi, resolve_unseeded_all_shards};
 pub use having_filter::apply_federated_aggregate_having;
+pub use limits::{
+    FAST_PATH_MAX_VERTEX_FILTER_HITS, packed_vertices_exceed_fast_path_budget,
+    posting_hits_exceed_fast_path_budget,
+};
 #[expect(unused_imports, reason = "public federation API surface")]
 pub use merge::{
     empty_execute_plan_result, merge_add_row_count, merge_execute_plan_result, merge_row_counts,

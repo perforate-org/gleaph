@@ -44,6 +44,8 @@ delete; flush to graph-index with the same compensate-and-retry semantics as pro
   `count_postings_by_value` for `MATCH (n:L) GROUP BY n.prop, COUNT(*)`.
 - **Label ∩ property (v1):** router intersects `lookup_label` with `lookup_equal` (or
   `PropertyFilter` / multi-op prefix) before `count_postings_by_value`.
+- **Scale guard:** hit lists above 10_000 vertices skip fast path / seeds and use generic shard
+  execution (`federation/limits.rs`).
 
 ## Related documents
 
