@@ -1,6 +1,6 @@
 //! Router-side GQL parse, plan, index seed routing, and graph dispatch.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, HashSet};
 use std::pin::Pin;
 
 use candid::Principal;
@@ -41,7 +41,7 @@ use crate::index_client::RouterIndexClient;
 use crate::index_lookup::IndexLookup;
 use crate::planner_stats::RouterGraphStats;
 use crate::rbac::authorize_adhoc_gql;
-use crate::seed::{IndexAnchor, SeedProbe};
+use crate::seed::{IndexAnchor, SeedAnchorSet, SeedProbe};
 use crate::state::RouterError;
 
 fn pack_posting_hits(hits: &[PostingHit]) -> Vec<u64> {
@@ -61,9 +61,42 @@ enum FastPathFilterResolution {
     Oversized,
 }
 
-async fn lookup_hits_for_anchor<I: IndexLookup + ?Sized>(
+fn intersect_posting_hits(mut hit_sets: Vec<Vec<PostingHit>>) -> Vec<PostingHit> {
+    if hit_sets.is_empty() {
+        return Vec::new();
+    }
+    if hit_sets.len() == 1 {
+        return hit_sets.pop().unwrap_or_default();
+    }
+    let mut sets: Vec<HashSet<u64>> = hit_sets
+        .iter()
+        .map(|hits| {
+            hits.iter()
+                .map(|hit| (u64::from(hit.shard_id) << 32) | u64::from(hit.vertex_id))
+                .collect()
+        })
+        .collect();
+    sets.sort_by_key(|set| set.len());
+    let mut intersection = sets[0].clone();
+    for set in sets.iter().skip(1) {
+        intersection = intersection.intersection(set).copied().collect();
+        if intersection.is_empty() {
+            return Vec::new();
+        }
+    }
+    intersection
+        .into_iter()
+        .map(|packed| PostingHit {
+            shard_id: (packed >> 32) as u32,
+            vertex_id: (packed & 0xFFFF_FFFF) as u32,
+        })
+        .collect()
+}
+
+async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
     index: &I,
     anchor: &IndexAnchor,
+    shard_ids: &[ShardId],
 ) -> Result<Vec<PostingHit>, String> {
     match anchor {
         IndexAnchor::Equal(SeedProbe {
@@ -84,7 +117,10 @@ async fn lookup_hits_for_anchor<I: IndexLookup + ?Sized>(
         }
         IndexAnchor::Label {
             vertex_label_id, ..
-        } => index.lookup_label(*vertex_label_id).await,
+        } if shard_ids.is_empty() => index.lookup_label(*vertex_label_id).await,
+        IndexAnchor::Label {
+            vertex_label_id, ..
+        } => collect_label_hits_for_shards(index, *vertex_label_id, shard_ids).await,
         IndexAnchor::LabelIntersection {
             vertex_label_ids, ..
         } => {
@@ -95,6 +131,32 @@ async fn lookup_hits_for_anchor<I: IndexLookup + ?Sized>(
                 .await
         }
     }
+}
+
+async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
+    index: &I,
+    anchors: &[IndexAnchor],
+    shard_ids: &[ShardId],
+) -> Result<Vec<PostingHit>, String> {
+    if anchors.is_empty() {
+        return Ok(Vec::new());
+    }
+    let mut hit_sets = Vec::with_capacity(anchors.len());
+    for anchor in anchors {
+        let hits = lookup_anchor_hits(index, anchor, shard_ids).await?;
+        if hits.is_empty() {
+            return Ok(Vec::new());
+        }
+        hit_sets.push(hits);
+    }
+    Ok(intersect_posting_hits(hit_sets))
+}
+
+async fn lookup_hits_for_anchor<I: IndexLookup + ?Sized>(
+    index: &I,
+    anchor: &IndexAnchor,
+) -> Result<Vec<PostingHit>, String> {
+    lookup_anchor_hits(index, anchor, &[]).await
 }
 
 async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
@@ -488,8 +550,9 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             })
             .collect()
     } else {
-        let index_anchor = match IndexAnchor::from_plans(plans, pmap, store) {
-            Ok(index_anchor) => index_anchor,
+        let stats = RouterGraphStats::for_graph(logical_graph_name);
+        let seed_anchors = match SeedAnchorSet::from_plans(plans, pmap, store, &stats) {
+            Ok(seed_anchors) => seed_anchors,
             Err(err) => {
                 release_routing_if_owner(
                     &store,
@@ -502,89 +565,24 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             }
         };
         let policy = sharding_policy_for(&shards);
-        let routings = match index_anchor {
-            Some(anchor) => {
-                let hits = match &anchor {
-                    IndexAnchor::Equal(probe) => match index
-                        .lookup_equal(probe.property_id, probe.payload_bytes.clone())
-                        .await
-                        .map_err(RouterError::InvalidArgument)
-                    {
-                        Ok(hits) => hits,
-                        Err(err) => {
-                            release_routing_if_owner(
-                                &store,
-                                caller,
-                                logical_graph_name,
-                                client_mutation_key,
-                                mutation_reservation,
-                            )?;
-                            return Err(err);
-                        }
-                    },
-                    IndexAnchor::Intersection { specs, .. } => {
-                        match index
-                            .lookup_intersection(IndexIntersectionRequest {
-                                specs: specs.clone(),
-                            })
-                            .await
-                            .map_err(RouterError::InvalidArgument)
-                        {
-                            Ok(hits) => hits,
-                            Err(err) => {
-                                release_routing_if_owner(
-                                    &store,
-                                    caller,
-                                    logical_graph_name,
-                                    client_mutation_key,
-                                    mutation_reservation,
-                                )?;
-                                return Err(err);
-                            }
-                        }
+        let routings = match seed_anchors {
+            Some(set) => {
+                let shard_ids: Vec<_> = shards.iter().map(|entry| entry.shard_id).collect();
+                let hits = match resolve_seed_hits_from_anchors(index, &set.anchors, &shard_ids)
+                    .await
+                    .map_err(RouterError::InvalidArgument)
+                {
+                    Ok(hits) => hits,
+                    Err(err) => {
+                        release_routing_if_owner(
+                            &store,
+                            caller,
+                            logical_graph_name,
+                            client_mutation_key,
+                            mutation_reservation,
+                        )?;
+                        return Err(err);
                     }
-                    IndexAnchor::Label {
-                        vertex_label_id, ..
-                    } => {
-                        let shard_ids: Vec<_> = shards.iter().map(|entry| entry.shard_id).collect();
-                        match collect_label_hits_for_shards(index, *vertex_label_id, &shard_ids)
-                            .await
-                            .map_err(RouterError::InvalidArgument)
-                        {
-                            Ok(hits) => hits,
-                            Err(err) => {
-                                release_routing_if_owner(
-                                    &store,
-                                    caller,
-                                    logical_graph_name,
-                                    client_mutation_key,
-                                    mutation_reservation,
-                                )?;
-                                return Err(err);
-                            }
-                        }
-                    }
-                    IndexAnchor::LabelIntersection {
-                        vertex_label_ids, ..
-                    } => match index
-                        .lookup_label_intersection(IndexLabelIntersectionRequest {
-                            vertex_label_ids: vertex_label_ids.clone(),
-                        })
-                        .await
-                        .map_err(RouterError::InvalidArgument)
-                    {
-                        Ok(hits) => hits,
-                        Err(err) => {
-                            release_routing_if_owner(
-                                &store,
-                                caller,
-                                logical_graph_name,
-                                client_mutation_key,
-                                mutation_reservation,
-                            )?;
-                            return Err(err);
-                        }
-                    },
                 };
                 if hits.is_empty() {
                     if let Some(key) = client_mutation_key {
@@ -598,7 +596,13 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     }
                     return Ok(GqlQueryResult::row_count_only(0));
                 }
-                match policy.resolve_with_hits(store, logical_graph_name, &shards, anchor, &hits) {
+                match policy.resolve_with_hits(
+                    store,
+                    logical_graph_name,
+                    &shards,
+                    set.routing_anchor(),
+                    &hits,
+                ) {
                     Ok(routings) => routings,
                     Err(err) => {
                         release_routing_if_owner(

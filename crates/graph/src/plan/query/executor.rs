@@ -162,13 +162,22 @@ pub async fn execute_plan_query_bindings_with_initial_rows(
     execute_ops_from(&ctx, ops, initial_rows).await
 }
 
+fn is_router_seed_skippable_op(op: &PlanOp) -> bool {
+    matches!(
+        op,
+        PlanOp::NodeScan { label: Some(_), .. }
+            | PlanOp::IndexScan { .. }
+            | PlanOp::IndexIntersection { .. }
+            | PlanOp::PropertyFilter { .. }
+    )
+}
+
 fn skip_leading_index_anchor_ops(ops: &[PlanOp]) -> &[PlanOp] {
-    match ops.first() {
-        Some(PlanOp::IndexScan { .. })
-        | Some(PlanOp::IndexIntersection { .. })
-        | Some(PlanOp::NodeScan { label: Some(_), .. }) => &ops[1..],
-        _ => ops,
-    }
+    let skip = ops
+        .iter()
+        .take_while(|op| is_router_seed_skippable_op(op))
+        .count();
+    &ops[skip..]
 }
 
 pub fn materialize_plan_rows(

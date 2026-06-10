@@ -97,6 +97,9 @@ MATCH (n:Person) WHERE n.region = 'US' GROUP BY n.country  → C1 then count
 graph-index for pre-existing data. Router orchestrates per-shard cursors via
 `admin_label_backfill_step` / `admin_list_label_backfill_status` (controller-only).
 
+**Compound read seeds:** `MATCH (n:L) WHERE n.p = v RETURN n` uses `SeedAnchorSet` to
+intersect label and property index hits before per-shard `seed_bindings_blob` dispatch.
+
 ## Router (target)
 
 | Query need | Path |
