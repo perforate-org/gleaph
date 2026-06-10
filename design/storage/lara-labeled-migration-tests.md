@@ -182,7 +182,7 @@ These must pass after every phase PR.
 | `labeled_scan_never_reads_span_meta` | `traverse.rs` | Debug guard or code review checklist; optional feature-gated poison on span_meta read during iter |
 | `labeled_scan_never_reads_free_span_store` | `traverse.rs` | Same for free span |
 | `labeled_materialized_equals_iter_for_all_phases` | property-style | Shared helper: random-ish insert sequence, compare materialized vs iter (extend existing iter tests) |
-| `labeled_payload_edge_order_matches_edge_slab_order` | `values.rs` | After compact/slide, payload offsets follow bucket edge order ([labeled-edge-payloads.md](./labeled-edge-payloads.md)) |
+| `labeled_payload_edge_order_matches_edge_slab_order` | `values.rs` | **Implemented** — after rewrite/compact, payload slots and dense offsets follow asc edge slab order |
 
 ---
 

@@ -30,14 +30,6 @@ use super::{BucketSearch, LabeledLaraGraph, LabeledOutEdgesIter, LabeledSpanIter
 
 const EDGE_PAYLOAD_BATCH_TARGET_BYTES: usize = 2048;
 
-fn bucket_dense_payload_eligible(bucket: &LabelBucket) -> bool {
-    bucket.degree() > 0
-        && bucket.payload_byte_width() > 0
-        && bucket.payload_log_head() < 0
-        && bucket.overflow_log_head() < 0
-        && bucket.stored_slots == bucket.degree()
-}
-
 fn bucket_hybrid_slab_payload_batch_eligible<E, M>(
     graph: &LabeledLaraGraph<E, M>,
     src: VertexId,
@@ -89,26 +81,6 @@ fn order_slot_indices(slots: &[u32], order: OutEdgeOrder) -> Vec<u32> {
     }
     ordered.dedup();
     ordered
-}
-
-fn ascending_contiguous_slot_runs(slots: &[u32]) -> Vec<(u32, u32)> {
-    if slots.is_empty() {
-        return Vec::new();
-    }
-    let mut runs = Vec::new();
-    let mut first = slots[0];
-    let mut count = 1u32;
-    for &slot in &slots[1..] {
-        if slot == first + count {
-            count += 1;
-        } else {
-            runs.push((first, count));
-            first = slot;
-            count = 1;
-        }
-    }
-    runs.push((first, count));
-    runs
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -1069,7 +1041,7 @@ where
         if bucket.degree() == 0 || bucket.payload_byte_width() == 0 {
             return Ok(());
         }
-        if bucket_dense_payload_eligible(&bucket) {
+        if super::super::invariants::bucket_dense_payload_batch_eligible(&bucket) {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_visit_dense_out_edge_payload_batches");
             return self.visit_dense_out_edge_payload_batches_for_bucket(
@@ -1153,7 +1125,7 @@ where
             BucketSearch::Found { bucket, .. } => bucket,
             BucketSearch::Missing { .. } => return Ok(()),
         };
-        if !bucket_dense_payload_eligible(&bucket) {
+        if !super::super::invariants::bucket_dense_payload_batch_eligible(&bucket) {
             return Ok(());
         }
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
@@ -1190,10 +1162,8 @@ where
             let mut raw_edges = vec![0u8; take as usize * E::BYTES];
             self.edges
                 .read_slots_contiguous(bucket.edge_start() + u64::from(first_slot), &mut raw_edges);
-            let payload_offset = bucket
-                .payload_offset()
-                .checked_add(u64::from(first_slot) * u64::from(bucket.payload_byte_width()))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let payload_offset =
+                super::super::invariants::payload_byte_offset_at_slot(&bucket, first_slot)?;
             let mut raw_values = vec![0u8; take as usize * width];
             self.values.read_bytes(payload_offset, &mut raw_values);
 
@@ -1277,7 +1247,7 @@ where
         }
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
         let visit_order = order_slot_indices(slots, order);
-        if bucket_dense_payload_eligible(&bucket) {
+        if super::super::invariants::bucket_dense_payload_batch_eligible(&bucket) {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_read_dense_out_edge_slots");
             let mut loaded =
@@ -1321,7 +1291,7 @@ where
         asc.sort_unstable();
         asc.dedup();
         let mut loaded = Vec::with_capacity(asc.len());
-        for (first_slot, count) in ascending_contiguous_slot_runs(&asc) {
+        for (first_slot, count) in super::super::invariants::ascending_contiguous_u32_runs(&asc) {
             if first_slot >= bucket.stored_slots {
                 continue;
             }
@@ -1474,10 +1444,8 @@ where
                 self.edges
                     .read_slots_contiguous(bucket.edge_start() + u64::from(first_slot), raw_edges);
             }
-            let payload_offset = bucket
-                .payload_offset()
-                .checked_add(u64::from(first_slot) * u64::from(bucket.payload_byte_width()))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let payload_offset =
+                super::super::invariants::payload_byte_offset_at_slot(&bucket, first_slot)?;
             {
                 let raw_values = scratch.io_payload_slice_mut(payload_bytes);
                 self.values.read_bytes(payload_offset, raw_values);

@@ -135,11 +135,7 @@ where
         &self,
         bucket: &LabelBucket,
     ) -> Option<Vec<Vec<u8>>> {
-        if !bucket.is_payload_allocated()
-            || bucket.payload_byte_width() == 0
-            || bucket.payload_log_len() > 0
-            || bucket.stored_slots != bucket.degree()
-        {
+        if !super::super::invariants::bucket_dense_slab_payload_readable(bucket) {
             return None;
         }
         let degree = bucket.degree() as usize;
@@ -223,10 +219,7 @@ where
         let slot_index = edge.edge_slot_index_raw();
         if bucket.payload_log_head() < 0 {
             let mut buf = vec![0u8; usize::from(width)];
-            let offset = bucket
-                .payload_offset()
-                .checked_add(u64::from(slot_index) * u64::from(width))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let offset = super::super::invariants::payload_byte_offset_at_slot(bucket, slot_index)?;
             self.values.read_bytes(offset, &mut buf);
             return Ok(buf);
         }
@@ -238,10 +231,7 @@ where
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         if slot_index < slab_payload_slots {
             let mut buf = vec![0u8; usize::from(width)];
-            let offset = bucket
-                .payload_offset()
-                .checked_add(u64::from(slot_index) * u64::from(width))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let offset = super::super::invariants::payload_byte_offset_at_slot(bucket, slot_index)?;
             self.values.read_bytes(offset, &mut buf);
             return Ok(buf);
         }
@@ -700,10 +690,7 @@ where
                 edge_payload_width,
             });
         }
-        let offset = bucket
-            .payload_offset()
-            .checked_add(u64::from(slot_index) * u64::from(width))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        let offset = super::super::invariants::payload_byte_offset_at_slot(bucket, slot_index)?;
         self.values
             .write_payload_slot(offset, width, edge.edge_payload_bytes())
             .map_err(LabeledOperationError::from)?;
@@ -850,6 +837,70 @@ where
             })?;
             if vertex.stored_slots.saturating_sub(total_live) < 2 {
                 self.rebalance_vertex_edge_span(src, None, 1, true)?;
+            }
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    pub(crate) fn test_assert_bucket_payloads_follow_edge_slab_order(
+        &self,
+        src: VertexId,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        use crate::labeled::access::LabelEdgeSpanAccess;
+        use crate::labeled::invariants::payload_byte_offset_at_slot;
+
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return Ok(());
+        }
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        for (bucket_index, bucket) in buckets.iter().enumerate() {
+            if !bucket.is_payload_allocated() || bucket.payload_byte_width() == 0 {
+                continue;
+            }
+            let bucket_index = u32::try_from(bucket_index)
+                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            let slot_payloads =
+                self.collect_bucket_payload_slots_asc_order(src, &vertex, bucket_index, bucket)?;
+
+            let bucket_slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+            let successor = self.bucket_successor_start(&vertex, bucket_index)?;
+            let acc = LabelEdgeSpanAccess::new(&self.buckets, bucket_slot, successor, src);
+            let mut edge_slots = Vec::new();
+            for edge in self
+                .edges
+                .asc_out_edges(&acc, VertexId::from(0))
+                .map_err(LabeledOperationError::from)?
+            {
+                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                    continue;
+                }
+                edge_slots.push(edge.edge_slot_index_raw());
+            }
+
+            let payload_slots: Vec<u32> = slot_payloads.iter().map(|(slot, _)| *slot).collect();
+            assert_eq!(
+                payload_slots,
+                edge_slots,
+                "label {:?}: payload slots must follow asc edge slab order",
+                bucket.bucket_label_key()
+            );
+
+            let width = usize::from(bucket.payload_byte_width());
+            for (slot, expected) in slot_payloads {
+                let offset = payload_byte_offset_at_slot(bucket, slot)?;
+                let mut at_offset = vec![0u8; width];
+                self.values.read_bytes(offset, &mut at_offset);
+                assert_eq!(
+                    at_offset,
+                    expected,
+                    "label {:?} slot {slot}: payload bytes must live at dense offset",
+                    bucket.bucket_label_key()
+                );
             }
         }
         Ok(())
@@ -2348,6 +2399,37 @@ mod tests {
             .unwrap();
         values.sort_unstable();
         assert_eq!(values, vec![(2, 20), (3, 30)]);
+    }
+
+    #[test]
+    fn labeled_payload_edge_order_matches_edge_slab_order() {
+        let graph = payload_test_graph();
+        let src = VertexId::from(0);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(src, road, 2u16)
+            .unwrap();
+        for (target, weight) in [(1, 10u16), (2, 20u16), (3, 30u16)] {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    road,
+                    PayloadTestEdge::with_bytes(target, &weight.to_le_bytes()),
+                )
+                .unwrap();
+        }
+        graph
+            .remove_edge_at_slot(src, road, 0)
+            .unwrap()
+            .expect("removed");
+        graph
+            .rewrite_vertex_edge_span(src, None, 1, false, true, None)
+            .unwrap();
+        graph.compact_vertex_edge_span(src, 0).unwrap();
+        graph
+            .test_assert_bucket_payloads_follow_edge_slab_order(src)
+            .expect("payload order matches edge slab after rewrite and compact");
     }
 
     #[test]

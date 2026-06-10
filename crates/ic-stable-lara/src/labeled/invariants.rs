@@ -8,11 +8,64 @@ use crate::{
     labeled::{BucketLabelKey, LabeledVertex, slot_index::checked_add_slot_index},
     lara::{
         edge::{EdgeStore, span_meta::SPAN_PHYSICAL_UNASSIGNED},
+        operation_error::LaraOperationError,
         vertex::VertexStore,
     },
     traits::{CsrEdge, CsrVertex},
 };
 use ic_stable_structures::Memory;
+
+/// Dense slab payload reads: no payload log and stored width matches live degree.
+#[inline]
+pub(crate) fn bucket_dense_slab_payload_readable(bucket: &LabelBucket) -> bool {
+    bucket.is_payload_allocated()
+        && bucket.payload_byte_width() > 0
+        && bucket.payload_log_len() == 0
+        && bucket.stored_slots == bucket.degree()
+}
+
+/// Dense payload batch traversal: no edge/payload logs and full slab residency.
+#[inline]
+pub(crate) fn bucket_dense_payload_batch_eligible(bucket: &LabelBucket) -> bool {
+    bucket.degree() > 0
+        && bucket.payload_byte_width() > 0
+        && bucket.payload_log_head() < 0
+        && bucket.overflow_log_head() < 0
+        && bucket.stored_slots == bucket.degree()
+}
+
+/// Contiguous ascending runs in a sorted slot list: `(first_slot, run_len)`.
+pub(crate) fn ascending_contiguous_u32_runs(slots: &[u32]) -> Vec<(u32, u32)> {
+    if slots.is_empty() {
+        return Vec::new();
+    }
+    let mut runs = Vec::new();
+    let mut first = slots[0];
+    let mut count = 1u32;
+    for &slot in &slots[1..] {
+        if slot == first + count {
+            count += 1;
+        } else {
+            runs.push((first, count));
+            first = slot;
+            count = 1;
+        }
+    }
+    runs.push((first, count));
+    runs
+}
+
+/// Byte offset of one fixed-width payload slot inside a bucket's dense slab span.
+#[inline]
+pub(crate) fn payload_byte_offset_at_slot(
+    bucket: &LabelBucket,
+    slot_index: u32,
+) -> Result<u64, LaraOperationError> {
+    bucket
+        .payload_offset()
+        .checked_add(u64::from(slot_index) * u64::from(bucket.payload_byte_width()))
+        .ok_or(LaraOperationError::CollectAllocationOverflow)
+}
 
 /// Resident value bytes charged to a bucket's payload slab span.
 #[inline]
@@ -284,5 +337,29 @@ pub(crate) fn assert_labeled_edge_store_pma_counts<E, M>(
                 "leaf {leaf}: PMA total mismatch (store vs labeled geometry)"
             );
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::labeled::record::LabelBucket;
+
+    #[test]
+    fn ascending_contiguous_u32_runs_groups_runs() {
+        assert!(ascending_contiguous_u32_runs(&[]).is_empty());
+        assert_eq!(
+            ascending_contiguous_u32_runs(&[0, 1, 2, 5, 7, 8]),
+            vec![(0, 3), (5, 1), (7, 2)]
+        );
+    }
+
+    #[test]
+    fn payload_byte_offset_at_slot_scales_by_width() {
+        let bucket = LabelBucket::default()
+            .with_payload_offset(128)
+            .with_payload_byte_width(4);
+        assert_eq!(payload_byte_offset_at_slot(&bucket, 0).unwrap(), 128);
+        assert_eq!(payload_byte_offset_at_slot(&bucket, 3).unwrap(), 140);
     }
 }

@@ -345,11 +345,15 @@ Exit criteria:
 
 Goal: reduce low-level waste without weakening LARA contracts.
 
+**Status: In progress (2026-06-10).**
+
+**Progress:** Edge segment-footprint migration (ADR 0001 phases A–E) is implemented in code. Payload offset math centralized in `labeled/invariants.rs`; `labeled_payload_edge_order_matches_edge_slab_order` regression added.
+
 Deliverables:
 
 - Continue moving labeled edge byte management toward segment-footprint retirement rather than per-vertex peel behavior.
 - Keep edge rows and payload bytes aligned by logical slot order during compaction.
-- Centralize dense/tiled payload offset math and batch traversal helpers.
+- Centralize dense/tiled payload offset math and batch traversal helpers. **In progress** (offset, dense eligibility, and `ascending_contiguous_u32_runs` **done**).
 - Preserve `LabeledOperationError`, tombstone skipping, and fail-fast value-log reads.
 - Add high-degree, many-label regression tests and canbench coverage.
 

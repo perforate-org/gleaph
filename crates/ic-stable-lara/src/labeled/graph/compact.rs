@@ -1136,14 +1136,14 @@ where
             .map_err(LabeledOperationError::from)?;
         let width = bucket.payload_byte_width();
         if bucket.is_payload_allocated() {
-            let from_off = bucket
-                .payload_offset()
-                .checked_add(u64::from(moved.old_slot_index) * u64::from(width))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-            let to_off = bucket
-                .payload_offset()
-                .checked_add(u64::from(moved.new_slot_index) * u64::from(width))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let from_off = super::super::invariants::payload_byte_offset_at_slot(
+                bucket,
+                moved.old_slot_index,
+            )?;
+            let to_off = super::super::invariants::payload_byte_offset_at_slot(
+                bucket,
+                moved.new_slot_index,
+            )?;
             let mut buf = vec![0u8; usize::from(width)];
             self.values.read_bytes(from_off, &mut buf);
             self.values
@@ -1827,10 +1827,8 @@ where
         bucket = self.ensure_bucket_payload_span(src, bucket_slot, bucket, old_payload_slots)?;
         let width = bucket.payload_byte_width();
         for (slot_index, bytes) in &saved {
-            let offset = bucket
-                .payload_offset()
-                .checked_add(u64::from(*slot_index) * u64::from(width))
-                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+            let offset =
+                super::super::invariants::payload_byte_offset_at_slot(&bucket, *slot_index)?;
             self.values
                 .write_payload_slot(offset, width, bytes)
                 .map_err(LabeledOperationError::from)?;
