@@ -19,6 +19,7 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 |------|--------|---------|
 | [glossary.md](glossary.md) | draft | Shared terminology |
 | [architecture/overview.md](architecture/overview.md) | draft | Canisters, request flow, crate boundaries |
+| [architecture/refactoring-roadmap.md](architecture/refactoring-roadmap.md) | planned | Phased technical-debt refactor plan, data-layer ownership, and stable-memory policy |
 | [sharding/README.md](sharding/README.md) | planned | Standalone vs federation target entry |
 | [sharding/standalone-mode.md](sharding/standalone-mode.md) | planned | Default single-shard mode, defer list, module layout |
 | [sharding/federation-target.md](sharding/federation-target.md) | planned | Router-centric index slice, dispatch, merge |
