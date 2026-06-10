@@ -10,7 +10,7 @@
 //! - **properties** — `properties` (write commit), `vertex_properties`, `edge_properties`, `catalogs`
 //! - **labels** — `labels` (write commit), `vertex_labels`
 //! - **vertex delete** — `vertex_delete` (sidecar clear and detach delete commit)
-//! - **edge profiles** — `edge_payload`, `sidecar` (weight/payload profiles)
+//! - **edge profiles** — `edge_profiles` (profile install/update commits), `edge_payload` (public update API)
 //! - **remote refs** — `remote_refs` (logical vertex handles, forward-in index, logical edge insert)
 //! - **local indexes** — `edge_alias`, equality postings in `sidecar`
 //! - **telemetry** — `telemetry`
@@ -23,6 +23,7 @@ mod edge_alias;
 mod edge_insert;
 mod edge_logical;
 mod edge_payload;
+mod edge_profiles;
 mod edge_properties;
 mod edge_scan;
 mod error;
