@@ -1,3 +1,5 @@
+//! Label telemetry domain: shard event outbox and mutation idempotency records.
+
 use super::GraphStore;
 use crate::facade::stable::{
     APPLIED_MUTATION_REQUESTS, LABEL_TELEMETRY_OUTBOX, LABEL_TELEMETRY_SEQ,
@@ -18,7 +20,7 @@ impl GraphStore {
         self.applied_mutation_request(mutation_id).map(Into::into)
     }
 
-    pub(crate) fn record_incomplete_mutation_request(
+    pub(crate) fn commit_record_incomplete_mutation_request(
         &self,
         mutation_id: MutationId,
         events: Vec<LabelTelemetryEventWire>,
@@ -33,7 +35,7 @@ impl GraphStore {
         });
     }
 
-    pub(crate) fn record_completed_mutation_request(
+    pub(crate) fn commit_record_completed_mutation_request(
         &self,
         mutation_id: MutationId,
         row_count: u64,
@@ -50,7 +52,7 @@ impl GraphStore {
         });
     }
 
-    pub(crate) fn persist_label_telemetry_event(
+    pub(crate) fn commit_persist_label_telemetry_event(
         &self,
         mutation_id: MutationId,
         label_usage_delta: LabelUsageDelta,
@@ -90,6 +92,32 @@ impl GraphStore {
     ) -> Vec<LabelTelemetryEventWire> {
         LABEL_TELEMETRY_OUTBOX.with_borrow(|outbox| outbox.list_from(from_seq, limit))
     }
+
+    /// Compatibility wrappers for existing call sites.
+    pub(crate) fn record_incomplete_mutation_request(
+        &self,
+        mutation_id: MutationId,
+        events: Vec<LabelTelemetryEventWire>,
+    ) {
+        self.commit_record_incomplete_mutation_request(mutation_id, events);
+    }
+
+    pub(crate) fn record_completed_mutation_request(
+        &self,
+        mutation_id: MutationId,
+        row_count: u64,
+        events: Vec<LabelTelemetryEventWire>,
+    ) {
+        self.commit_record_completed_mutation_request(mutation_id, row_count, events);
+    }
+
+    pub(crate) fn persist_label_telemetry_event(
+        &self,
+        mutation_id: MutationId,
+        label_usage_delta: LabelUsageDelta,
+    ) -> Result<LabelTelemetryEventWire, String> {
+        self.commit_persist_label_telemetry_event(mutation_id, label_usage_delta)
+    }
 }
 
 #[cfg(test)]
@@ -101,7 +129,7 @@ mod tests {
     fn persists_lists_and_acks_label_telemetry_events() {
         let store = GraphStore::new();
         let event = store
-            .persist_label_telemetry_event(
+            .commit_persist_label_telemetry_event(
                 7,
                 LabelUsageDelta {
                     vertex: vec![(VertexLabelId::from_raw(3), 2)],
@@ -130,7 +158,7 @@ mod tests {
     fn applied_mutation_request_roundtrips_cached_result() {
         let store = GraphStore::new();
         let event = store
-            .persist_label_telemetry_event(
+            .commit_persist_label_telemetry_event(
                 11,
                 LabelUsageDelta {
                     vertex: vec![(VertexLabelId::from_raw(4), 1)],
@@ -138,7 +166,7 @@ mod tests {
                 },
             )
             .expect("persist event");
-        store.record_completed_mutation_request(11, 5, vec![event.clone()]);
+        store.commit_record_completed_mutation_request(11, 5, vec![event.clone()]);
 
         let cached = store.applied_mutation_request(11).expect("cached request");
         assert!(cached.completed);

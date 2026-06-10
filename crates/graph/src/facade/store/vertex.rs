@@ -1,8 +1,8 @@
 //! GraphStore `vertex` implementation.
 
-use super::super::stable::{GRAPH, REMOTE_VERTEX_REFS, VERTEX_LOGICAL_IDS};
+use super::super::stable::{GRAPH, VERTEX_LOGICAL_IDS};
 use crate::index::placement;
-use gleaph_graph_kernel::entry::{Edge, EdgeTarget, RemoteRefId, Vertex};
+use gleaph_graph_kernel::entry::{Edge, EdgeTarget, Vertex};
 use gleaph_graph_kernel::federation::{
     CommitVertexPlacementArgs, LogicalVertexId, standalone_logical_vertex_id,
 };
@@ -111,24 +111,6 @@ impl GraphStore {
     pub(crate) fn path_vertex_element_id(&self, vertex_id: VertexId) -> Option<GraphPathVertexId> {
         self.logical_vertex_id(vertex_id)
             .map(GraphPathVertexId::new)
-    }
-
-    pub fn ensure_remote_ref(&self, logical_vertex_id: LogicalVertexId) -> RemoteRefId {
-        REMOTE_VERTEX_REFS.with_borrow_mut(|table| table.ensure_remote_ref(logical_vertex_id))
-    }
-
-    pub fn logical_vertex_for_remote_ref(
-        &self,
-        remote_ref: RemoteRefId,
-    ) -> Option<LogicalVertexId> {
-        REMOTE_VERTEX_REFS.with_borrow(|table| table.logical_vertex_id(remote_ref))
-    }
-
-    pub fn remote_ref_for_logical(
-        &self,
-        logical_vertex_id: LogicalVertexId,
-    ) -> Option<RemoteRefId> {
-        REMOTE_VERTEX_REFS.with_borrow(|table| table.remote_ref_for_logical(logical_vertex_id))
     }
 
     pub(crate) fn edge_sidecar_owner_from_in_row(&self, dst: VertexId, edge: &Edge) -> VertexId {

@@ -11,9 +11,9 @@
 //! - **labels** — `labels` (write commit), `vertex_labels`
 //! - **vertex delete** — `vertex_delete` (sidecar clear and detach delete commit)
 //! - **edge profiles** — `edge_payload`, `sidecar` (weight/payload profiles)
-//! - **remote refs** — `metadata`, federation expand paths
+//! - **remote refs** — `remote_refs` (logical vertex handles, forward-in index, logical edge insert)
 //! - **local indexes** — `edge_alias`, equality postings in `sidecar`
-//! - **telemetry** — `label_telemetry`
+//! - **telemetry** — `telemetry`
 //! - **maintenance** — `maintenance`
 
 mod adjacency;
@@ -28,13 +28,14 @@ mod edge_scan;
 mod error;
 mod handle;
 pub(crate) mod helpers;
-mod label_telemetry;
 mod labels;
 mod lookup;
 mod maintenance;
 mod metadata;
 mod properties;
+mod remote_refs;
 mod sidecar;
+mod telemetry;
 #[cfg(test)]
 mod tests;
 mod vertex;

@@ -260,7 +260,7 @@ Exit criteria:
 
 Goal: make multi-store invariants explicit while preserving the existing stable layout.
 
-**Progress (2026-06-10):** `graph-index` and `router` facades split into storage-domain submodules under `facade/store.rs`. Graph `GraphStore` adds `adjacency`, `properties`, `labels`, and `vertex_delete` domain commits; router adds `backfill` domain. Read APIs remain in domain-specific modules.
+**Progress (2026-06-10):** `graph-index` and `router` facades split into storage-domain submodules under `facade/store.rs`. Graph `GraphStore` adds domain commits for adjacency, properties, labels, vertex delete, remote refs, and telemetry; router adds `backfill` domain. Read APIs remain in domain-specific modules.
 
 Deliverables:
 
