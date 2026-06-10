@@ -21,6 +21,14 @@ impl EdgeAliasKey {
     pub fn label_id(self) -> u16 {
         self.label_id
     }
+
+    pub fn alias_vertex_id(self) -> VertexId {
+        VertexId::from(self.alias_vertex_id)
+    }
+
+    pub fn alias_slot_key(self) -> u32 {
+        self.alias_slot_index
+    }
 }
 
 impl Storable for EdgeAliasKey {
@@ -238,6 +246,23 @@ impl<M: Memory> EdgeAliasIndex<M> {
             self.aliases.remove(&key);
         }
         removed
+    }
+
+    pub(crate) fn for_each<F>(&self, mut f: F)
+    where
+        F: FnMut(EdgeAliasKey, EdgeAliasValue),
+    {
+        for entry in self.aliases.iter() {
+            let (key, value) = entry.into_pair();
+            f(key, value);
+        }
+    }
+
+    pub(crate) fn clear_all(&mut self) {
+        let keys: Vec<_> = self.aliases.iter().map(|entry| *entry.key()).collect();
+        for key in keys {
+            self.aliases.remove(&key);
+        }
     }
 
     pub fn find_alias_for_canonical(

@@ -35,7 +35,7 @@ Thread-local pairing: `facade/stable.rs` in each crate.
 | Derived store | Canonical source | Update path | Rebuild / backfill |
 |---------------|------------------|-------------|-------------------|
 | LARA reverse orientation | Forward edges + payloads | Co-updated on edge insert/delete | No standalone API; theoretical full-graph scan |
-| Edge aliases | Forward edges | `edge_insert` path | **Not implemented** |
+| Edge aliases | Forward/reverse adjacency in `GRAPH` | Sync: `commit_insert_edge_alias` on edge insert | **Implemented:** `check_edge_aliases` + `rebuild_edge_aliases` (`facade/derived_state/edge_alias.rs`) |
 | Edge equality postings | Edge properties | Sync: `dispatch_property_index_ops` on DML | **Implemented:** `check_edge_equality_postings` + `rebuild_edge_equality_postings` (`facade/derived_state/edge_equality.rs`) |
 | Property postings (graph-index) | Vertex/edge properties | `index/pending.rs` flush | **Not implemented** (DML sync only) |
 | Label postings (graph-index) | `VertexLabelStore` | DML + `label_pending` flush | **Implemented:** `backfill_label_postings` + router `admin_label_backfill_step` ([label-index.md](../index/label-index.md)) |
@@ -106,7 +106,7 @@ Owner: `ic-stable-lara` / graph `GRAPH` thread-local. Scan paths must not consul
 | 26 | `PROPERTY_ID_TO_NAME` | `PROPERTY_CATALOG` | `init_property_catalog` | catalog | properties | — |
 | 27 | `VERTEX_PROPERTIES` | `VERTEX_PROPERTIES` | `init_vertex_property_store` | canonical | properties | — |
 | 28 | `EDGE_PROPERTIES` | `EDGE_PROPERTIES` | `init_edge_property_store` | canonical | properties | — |
-| 29 | `EDGE_ALIASES` | `EDGE_ALIASES` | `init_edge_alias_index` | derived | adjacency | **Not implemented** |
+| 29 | `EDGE_ALIASES` | `EDGE_ALIASES` | `init_edge_alias_index` | derived | adjacency | `check_edge_aliases` / `rebuild_edge_aliases` |
 | 32 | `GRAPH_METADATA` | `METADATA` | `init_metadata` | canonical | federation metadata | — |
 | 33 | `EDGE_WEIGHT_PROFILES` | `EDGE_WEIGHT_PROFILES` | `init_edge_weight_profiles` | compatibility (legacy read fallback) | edge profiles | — |
 | 44 | `EDGE_PAYLOAD_PROFILES` | `EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | canonical | edge profiles | — |

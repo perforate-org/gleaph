@@ -20,7 +20,7 @@ use super::error::GraphStoreError;
 const EDGE_ALIAS_REVERSE_IN_TAG: u32 = 1 << 31;
 
 #[inline]
-pub(super) fn edge_alias_slot_key(slot_index: u32, reverse_in: bool) -> u32 {
+pub(crate) fn edge_alias_slot_key(slot_index: u32, reverse_in: bool) -> u32 {
     if reverse_in {
         slot_index | EDGE_ALIAS_REVERSE_IN_TAG
     } else {

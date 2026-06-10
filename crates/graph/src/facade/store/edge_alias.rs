@@ -72,7 +72,7 @@ impl GraphStore {
             .map(|()| found)
     }
 
-    pub(super) fn find_reverse_alias_for_canonical(
+    pub(crate) fn find_reverse_alias_for_canonical(
         &self,
         canonical: EdgeHandle,
         target_vertex_id: VertexId,

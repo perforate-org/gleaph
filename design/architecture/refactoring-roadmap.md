@@ -326,12 +326,12 @@ Goal: make derived state safe to optimize, rebuild, and validate.
 
 **Status: In progress (2026-06-10).**
 
-**Progress:** Edge equality postings have consistency check + full rebuild from canonical `EDGE_PROPERTIES` (`facade/derived_state/edge_equality.rs`). Label postings backfill was already implemented (`label_backfill.rs`). Sync vs backfill lag documented in [stable-memory-inventory.md](../storage/stable-memory-inventory.md).
+**Progress:** Edge equality postings and edge aliases have consistency checks + full rebuild from canonical state (`facade/derived_state/`). Label postings backfill was already implemented (`label_backfill.rs`). Sync vs backfill lag documented in [stable-memory-inventory.md](../storage/stable-memory-inventory.md).
 
 Deliverables:
 
-- Document and test rebuild or backfill paths for edge aliases, edge equality postings, property postings, label postings, and label telemetry. **In progress** (edge equality **done**; label postings **done**; edge aliases, property postings, label telemetry pending).
-- Add consistency checks between canonical graph state and derived indexes. **In progress** (edge equality **done**).
+- Document and test rebuild or backfill paths for edge aliases, edge equality postings, property postings, label postings, and label telemetry. **In progress** (edge equality, edge aliases, label postings **done**; property postings, label telemetry pending).
+- Add consistency checks between canonical graph state and derived indexes. **In progress** (edge equality, edge aliases **done**).
 - Decide which derived stores must be synchronously updated and which can tolerate backfill lag. **In progress** (inventory table updated for edge equality + label postings).
 - Keep query semantics honest when derived state may be stale or unavailable. **Not started.**
 
