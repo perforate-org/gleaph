@@ -324,18 +324,22 @@ Exit criteria:
 
 Goal: make derived state safe to optimize, rebuild, and validate.
 
+**Status: In progress (2026-06-10).**
+
+**Progress:** Edge equality postings have consistency check + full rebuild from canonical `EDGE_PROPERTIES` (`facade/derived_state/edge_equality.rs`). Label postings backfill was already implemented (`label_backfill.rs`). Sync vs backfill lag documented in [stable-memory-inventory.md](../storage/stable-memory-inventory.md).
+
 Deliverables:
 
-- Document and test rebuild or backfill paths for edge aliases, edge equality postings, property postings, label postings, and label telemetry.
-- Add consistency checks between canonical graph state and derived indexes.
-- Decide which derived stores must be synchronously updated and which can tolerate backfill lag.
-- Keep query semantics honest when derived state may be stale or unavailable.
+- Document and test rebuild or backfill paths for edge aliases, edge equality postings, property postings, label postings, and label telemetry. **In progress** (edge equality **done**; label postings **done**; edge aliases, property postings, label telemetry pending).
+- Add consistency checks between canonical graph state and derived indexes. **In progress** (edge equality **done**).
+- Decide which derived stores must be synchronously updated and which can tolerate backfill lag. **In progress** (inventory table updated for edge equality + label postings).
+- Keep query semantics honest when derived state may be stale or unavailable. **Not started.**
 
 Exit criteria:
 
-- Derived state has a named canonical source and one update path.
-- Tests cover canonical mutation plus derived-state observation.
-- Backfill state is not mistaken for canonical state.
+- Derived state has a named canonical source and one update path. **Met** for edge equality and label postings.
+- Tests cover canonical mutation plus derived-state observation. **Met** for edge equality (`derived_state::edge_equality` tests).
+- Backfill state is not mistaken for canonical state. **Partial** (label backfill cursor is maintenance class; edge equality rebuild is explicit derived repair).
 
 ### Phase 6: LARA and payload physical cleanup
 

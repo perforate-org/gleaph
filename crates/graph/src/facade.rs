@@ -1,5 +1,6 @@
 //! Public coordination layer over stable storage.
 
+pub(crate) mod derived_state;
 pub(crate) mod edge_equality_index;
 mod ic_budget;
 mod ic_gql_extensions;

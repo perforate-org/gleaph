@@ -164,6 +164,22 @@ impl<M: Memory> EdgeEqualityPostingStore<M> {
         self.postings.remove(key);
     }
 
+    pub(crate) fn for_each_posting<F>(&self, mut f: F)
+    where
+        F: FnMut(EdgeEqualityPostingKey),
+    {
+        for entry in self.postings.iter() {
+            f(entry);
+        }
+    }
+
+    pub(crate) fn clear_all(&mut self) {
+        let keys: Vec<_> = self.postings.iter().collect();
+        for key in keys {
+            self.postings.remove(&key);
+        }
+    }
+
     pub fn lookup_range(
         &self,
         property_id: PropertyId,

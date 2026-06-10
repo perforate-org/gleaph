@@ -36,7 +36,7 @@ Thread-local pairing: `facade/stable.rs` in each crate.
 |---------------|------------------|-------------|-------------------|
 | LARA reverse orientation | Forward edges + payloads | Co-updated on edge insert/delete | No standalone API; theoretical full-graph scan |
 | Edge aliases | Forward edges | `edge_insert` path | **Not implemented** |
-| Edge equality postings | Edge properties | DML sidecar | **Not implemented** |
+| Edge equality postings | Edge properties | Sync: `dispatch_property_index_ops` on DML | **Implemented:** `check_edge_equality_postings` + `rebuild_edge_equality_postings` (`facade/derived_state/edge_equality.rs`) |
 | Property postings (graph-index) | Vertex/edge properties | `index/pending.rs` flush | **Not implemented** (DML sync only) |
 | Label postings (graph-index) | `VertexLabelStore` | DML + `label_pending` flush | **Implemented:** `backfill_label_postings` + router `admin_label_backfill_step` ([label-index.md](../index/label-index.md)) |
 | Remote forward-in | Remote forward edges | Register/insert paths | Scan fallback per [federation/operations.md](../federation/operations.md) |
@@ -114,7 +114,7 @@ Owner: `ic-stable-lara` / graph `GRAPH` thread-local. Scan paths must not consul
 | 37 | `REMOTE_REF_TO_LOGICAL` | `REMOTE_VERTEX_REFS` | `init_remote_vertex_refs` | canonical | remote refs | — |
 | 38 | `LOGICAL_TO_REMOTE_REF` | `REMOTE_VERTEX_REFS` | `init_remote_vertex_refs` | canonical | remote refs | — |
 | 39 | `REMOTE_FORWARD_IN` | `REMOTE_FORWARD_IN` | `init_remote_forward_in` | derived | remote refs | Scan fallback |
-| 40 | `EDGE_EQUALITY_POSTINGS` | `EDGE_EQUALITY_POSTINGS` | `init_edge_equality_postings` | derived | local indexes | **Not implemented** |
+| 40 | `EDGE_EQUALITY_POSTINGS` | `EDGE_EQUALITY_POSTINGS` | `init_edge_equality_postings` | derived | local indexes | `check_edge_equality_postings` / `rebuild_edge_equality_postings` |
 | 41 | `PEER_GRAPH_CANISTERS` | `PEER_GRAPH_CANISTERS` | `init_peer_graph_canisters` | canonical | federation peers | — |
 | 59 | `LABEL_TELEMETRY_SEQ` | `LABEL_TELEMETRY_SEQ` | `init_label_telemetry_seq` | telemetry | label telemetry | — |
 | 60 | `LABEL_TELEMETRY_OUTBOX` | `LABEL_TELEMETRY_OUTBOX` | `init_label_telemetry_outbox` | telemetry | label telemetry | Event replay to router |

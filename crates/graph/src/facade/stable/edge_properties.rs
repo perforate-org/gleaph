@@ -197,6 +197,16 @@ impl<M: Memory> EdgePropertyStore<M> {
         out
     }
 
+    /// Visits every stored edge property in stable key order.
+    pub(crate) fn for_each_property<F>(&self, mut f: F)
+    where
+        F: FnMut(EdgePropertyKey, &Value),
+    {
+        for entry in self.properties.iter() {
+            f(*entry.key(), &entry.value().0);
+        }
+    }
+
     pub(crate) fn for_each_property_for_edge<F>(
         &self,
         owner_vertex_id: VertexId,
