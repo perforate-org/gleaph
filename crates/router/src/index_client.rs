@@ -63,6 +63,57 @@ impl RouterIndexClient {
         }
     }
 
+    pub async fn filter_hits_by_label(
+        &self,
+        vertex_label_id: u32,
+        hits: Vec<PostingHit>,
+    ) -> Result<Vec<PostingHit>, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            let filtered: Vec<PostingHit> =
+                Call::bounded_wait(self.index_canister, "filter_hits_by_label")
+                    .with_args(&(vertex_label_id, hits))
+                    .await
+                    .map_err(|e| format!("filter_hits_by_label: {e}"))?
+                    .candid()
+                    .map_err(|e| format!("filter_hits_by_label decode: {e}"))?;
+            return Ok(filtered);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = (vertex_label_id, hits);
+            Err("filter_hits_by_label unavailable in native builds".into())
+        }
+    }
+
+    pub async fn count_postings_by_value_for_label(
+        &self,
+        property_id: u32,
+        vertex_label_id: u32,
+        min_count: u64,
+    ) -> Result<Vec<ValuePostingCount>, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            let counts: Vec<ValuePostingCount> =
+                Call::bounded_wait(self.index_canister, "count_postings_by_value_for_label")
+                    .with_args(&(property_id, vertex_label_id, min_count))
+                    .await
+                    .map_err(|e| format!("count_postings_by_value_for_label: {e}"))?
+                    .candid()
+                    .map_err(|e| format!("count_postings_by_value_for_label decode: {e}"))?;
+            return Ok(counts);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = (property_id, vertex_label_id, min_count);
+            Err("count_postings_by_value_for_label unavailable in native builds".into())
+        }
+    }
+
     pub async fn lookup_label(&self, vertex_label_id: u32) -> Result<Vec<PostingHit>, String> {
         #[cfg(target_family = "wasm")]
         {

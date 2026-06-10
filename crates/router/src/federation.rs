@@ -9,7 +9,9 @@ mod merge;
 mod standalone;
 
 pub use aggregate_index_fast_path::{
-    AggregateIndexFastPath, gql_query_result_from_posting_counts, try_aggregate_index_fast_path,
+    AggregateIndexFastPath, LabelCountTelemetryFastPath, gql_query_result_from_label_live_count,
+    gql_query_result_from_posting_counts, split_label_and_property_anchors,
+    try_aggregate_index_fast_path, try_label_count_telemetry_fast_path, vertex_label_live_count,
 };
 #[expect(unused_imports, reason = "public federation API surface")]
 pub use aggregate_merge::{

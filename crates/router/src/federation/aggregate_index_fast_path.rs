@@ -11,6 +11,7 @@ use gleaph_gql::value_to_index_key_bytes;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_gql_planner::GraphStats;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
+use gleaph_graph_kernel::entry::VertexLabelId;
 use gleaph_graph_kernel::index::ValuePostingCount;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 
@@ -22,6 +23,14 @@ use super::aggregate_merge::{
     FederatedAggregateMerge, FederatedMergeMode, federated_merge_mode_from_plans,
 };
 
+/// `MATCH (n:L) RETURN count(*)` answered from router label telemetry (no graph-index call).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct LabelCountTelemetryFastPath {
+    pub vertex_label_id: u32,
+    pub count_column: String,
+    pub min_count: u64,
+}
+
 /// Eligible aggregate query answered by scanning index postings for one property bucket.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct AggregateIndexFastPath {
@@ -32,6 +41,107 @@ pub struct AggregateIndexFastPath {
     /// When empty, all postings in the property bucket are counted. Otherwise hits from each
     /// anchor are intersected on `(shard_id, vertex_id)` before counting.
     pub index_anchors: Vec<IndexAnchor>,
+}
+
+/// Split label membership from property index anchors on a grouped-count fast path.
+pub fn split_label_and_property_anchors(
+    anchors: &[IndexAnchor],
+) -> Result<(Option<u32>, Vec<IndexAnchor>), ()> {
+    let mut label_id = None;
+    let mut property_anchors = Vec::new();
+    for anchor in anchors {
+        match anchor {
+            IndexAnchor::Label {
+                vertex_label_id, ..
+            } => {
+                if label_id.is_some() {
+                    return Err(());
+                }
+                label_id = Some(*vertex_label_id);
+            }
+            other => property_anchors.push(other.clone()),
+        }
+    }
+    Ok((label_id, property_anchors))
+}
+
+/// Detect `MATCH (n:L) RETURN count(*)` without `GROUP BY` on an indexed property.
+pub fn try_label_count_telemetry_fast_path(
+    plans: &[PhysicalPlan],
+    stats: &RouterGraphStats,
+    store: &RouterStore,
+    params: &BTreeMap<String, Value>,
+) -> Option<LabelCountTelemetryFastPath> {
+    let FederatedMergeMode::Aggregate(spec) = federated_merge_mode_from_plans(plans) else {
+        return None;
+    };
+    if !spec.group_key_columns.is_empty() {
+        return None;
+    }
+    if spec.aggregate_columns.len() != 1
+        || spec.aggregate_columns[0].func != AggregateFunc::CountStar
+    {
+        return None;
+    }
+    let (aggregate_idx, group_by) = find_aggregate_group_by(plans)?;
+    if !group_by.is_empty() {
+        return None;
+    }
+    let ops = plans.last()?.ops.as_slice();
+    let prefix = &ops[..aggregate_idx];
+    let anchors = match parse_fast_path_prefix(prefix, params, store, stats) {
+        Ok(Some(anchors)) if anchors.len() == 1 => anchors,
+        _ => return None,
+    };
+    let IndexAnchor::Label {
+        vertex_label_id, ..
+    } = anchors[0]
+    else {
+        return None;
+    };
+    let min_count = extract_having_min_count(spec.having.as_ref(), &spec.aggregate_columns[0].name)
+        .unwrap_or(1);
+    Some(LabelCountTelemetryFastPath {
+        vertex_label_id,
+        count_column: spec.aggregate_columns[0].name.clone(),
+        min_count,
+    })
+}
+
+/// Build a single-row count result from router label telemetry.
+pub fn gql_query_result_from_label_live_count(
+    fast_path: &LabelCountTelemetryFastPath,
+    live_count: u64,
+) -> Result<GqlQueryResult, String> {
+    if live_count < fast_path.min_count {
+        return Ok(GqlQueryResult {
+            row_count: 0,
+            rows_blob: None,
+        });
+    }
+    let mut row = BTreeMap::new();
+    row.insert(
+        fast_path.count_column.clone(),
+        Value::Int64(
+            i64::try_from(live_count)
+                .map_err(|_| format!("label live count overflow: {live_count}"))?,
+        ),
+    );
+    let rows_blob = IcWirePlanQueryResult::try_from_value_rows(&[row])
+        .map_err(|e| e.to_string())?
+        .encode_blob()
+        .map_err(|e| e.to_string())?;
+    Ok(GqlQueryResult {
+        row_count: 1,
+        rows_blob: Some(rows_blob),
+    })
+}
+
+/// Live vertex count for a label from router telemetry.
+pub fn vertex_label_live_count(store: &RouterStore, vertex_label_id: u32) -> u64 {
+    store
+        .vertex_label_stats(VertexLabelId::from_raw(vertex_label_id as u16))
+        .live_count
 }
 
 /// Detect whether `plans` match the index posting-count fast path.
@@ -712,5 +822,64 @@ mod tests {
             right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(5)))),
         });
         assert_eq!(extract_having_min_count(Some(&having), "cnt"), Some(6));
+    }
+
+    #[test]
+    fn detects_label_only_count_star_return() {
+        let store = store_with_country_and_region();
+        let admin = candid::Principal::anonymous();
+        store
+            .admin_intern_vertex_label(admin, "Person")
+            .expect("intern Person");
+        let stats = RouterGraphStats::default();
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("n"),
+                label: Some(gleaph_gql_planner::NodeLabelRef::from("Person")),
+                property_projection: None,
+            },
+            PlanOp::Aggregate {
+                group_by: vec![],
+                aggregates: vec![AggregateSpec {
+                    func: AggregateFunc::CountStar,
+                    expr: None,
+                    expr2: None,
+                    distinct: false,
+                    filter: None,
+                    order_by: None,
+                    alias: None,
+                }],
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: agg_count_star(),
+                    alias: Some(Str::from("cnt")),
+                }],
+                distinct: false,
+            },
+        ]);
+        let fast = try_label_count_telemetry_fast_path(&[plan], &stats, &store, &BTreeMap::new())
+            .expect("label count fast path");
+        assert_eq!(fast.vertex_label_id, 1);
+        assert_eq!(fast.count_column, "cnt");
+    }
+
+    #[test]
+    fn split_label_and_property_anchors_partitions() {
+        let anchors = vec![
+            IndexAnchor::Label {
+                variable: "n".into(),
+                vertex_label_id: 2,
+            },
+            IndexAnchor::Equal(SeedProbe {
+                variable: "n".into(),
+                property: "region".into(),
+                property_id: 9,
+                payload_bytes: vec![1],
+            }),
+        ];
+        let (label, props) = split_label_and_property_anchors(&anchors).expect("split");
+        assert_eq!(label, Some(2));
+        assert_eq!(props.len(), 1);
     }
 }

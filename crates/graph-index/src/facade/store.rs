@@ -328,6 +328,90 @@ impl IndexStore {
         out
     }
 
+    /// Keep only hits whose `(shard_id, vertex_id)` has a label posting for `vertex_label_id`.
+    pub fn filter_hits_by_label(
+        &self,
+        vertex_label_id: u32,
+        hits: &[PostingHit],
+    ) -> Vec<PostingHit> {
+        INDEX_LABEL_POSTINGS.with_borrow(|labels| {
+            hits.iter()
+                .copied()
+                .filter(|hit| {
+                    labels.contains(&LabelPostingKey {
+                        vertex_label_id,
+                        shard_id: hit.shard_id,
+                        vertex_id: hit.vertex_id,
+                    })
+                })
+                .collect()
+        })
+    }
+
+    /// Walk one property bucket and count groups whose postings belong to `vertex_label_id`.
+    pub fn count_postings_by_value_for_label(
+        &self,
+        property_id: u32,
+        vertex_label_id: u32,
+        min_count: u64,
+        max_groups: usize,
+    ) -> Vec<ValuePostingCount> {
+        let Some((low, high)) = property_posting_bucket(property_id) else {
+            return Vec::new();
+        };
+        let max_groups = max_groups.max(1);
+        let mut out = Vec::new();
+        let mut current_value: Option<Vec<u8>> = None;
+        let mut current_count: u64 = 0;
+
+        let flush = |value: Vec<u8>, count: u64, out: &mut Vec<ValuePostingCount>| {
+            if count >= min_count {
+                out.push(ValuePostingCount {
+                    encoded_value: value,
+                    count,
+                });
+            }
+        };
+
+        INDEX_POSTINGS.with_borrow(|postings| {
+            INDEX_LABEL_POSTINGS.with_borrow(|labels| {
+                for key in postings.range(low..high) {
+                    if !labels.contains(&LabelPostingKey {
+                        vertex_label_id,
+                        shard_id: key.shard_id,
+                        vertex_id: key.vertex_id,
+                    }) {
+                        continue;
+                    }
+                    match current_value.as_ref() {
+                        None => {
+                            current_value = Some(key.value.clone());
+                            current_count = 1;
+                        }
+                        Some(value) if value == &key.value => {
+                            current_count = current_count.saturating_add(1);
+                        }
+                        Some(value) => {
+                            flush(value.clone(), current_count, &mut out);
+                            if out.len() >= max_groups {
+                                return;
+                            }
+                            current_value = Some(key.value.clone());
+                            current_count = 1;
+                        }
+                    }
+                }
+            });
+        });
+
+        if let Some(value) = current_value
+            && out.len() < max_groups
+        {
+            flush(value, current_count, &mut out);
+        }
+        out
+    }
+
     /// Half-open `[low, high)` scan over postings for `property_id` using encoded-value [`PostingRangeRequest`].
     pub fn lookup_range(&self, property_id: u32, req: &PostingRangeRequest) -> Vec<PostingHit> {
         let Some((low, high)) = posting_key_half_open_range(property_id, req) else {
@@ -877,5 +961,77 @@ mod tests {
             .label_posting_remove(shard_principal, 7, 1, 10)
             .expect("remove");
         assert!(store.lookup_label(1).is_empty());
+    }
+
+    #[test]
+    fn filter_hits_by_label_keeps_members_only() {
+        let store = IndexStore::new();
+        let router = init_test_store(&store);
+        let shard_principal = Principal::from_slice(&[1]);
+        register_shard_owner(&store, router, 7, shard_principal);
+
+        store
+            .label_posting_insert(shard_principal, 7, 2, 10)
+            .expect("label");
+        store
+            .label_posting_insert(shard_principal, 7, 2, 30)
+            .expect("label");
+
+        let hits = vec![
+            PostingHit {
+                shard_id: 7,
+                vertex_id: 10,
+            },
+            PostingHit {
+                shard_id: 7,
+                vertex_id: 20,
+            },
+            PostingHit {
+                shard_id: 7,
+                vertex_id: 30,
+            },
+        ];
+        let filtered = store.filter_hits_by_label(2, &hits);
+        assert_eq!(
+            filtered,
+            vec![
+                PostingHit {
+                    shard_id: 7,
+                    vertex_id: 10
+                },
+                PostingHit {
+                    shard_id: 7,
+                    vertex_id: 30
+                },
+            ]
+        );
+    }
+
+    #[test]
+    fn count_postings_by_value_for_label_sieves_by_label() {
+        let store = IndexStore::new();
+        let router = init_test_store(&store);
+        let shard_principal = Principal::from_slice(&[1]);
+        register_shard_owner(&store, router, 7, shard_principal);
+
+        let property_id = 42;
+        let us = index_key(Value::Text("US".into()));
+        let uk = index_key(Value::Text("UK".into()));
+        for vid in [1, 2, 3] {
+            store
+                .posting_insert(shard_principal, 7, property_id, us.clone(), vid)
+                .expect("us");
+            store
+                .label_posting_insert(shard_principal, 7, 5, vid)
+                .expect("person");
+        }
+        store
+            .posting_insert(shard_principal, 7, property_id, uk.clone(), 4)
+            .expect("uk unlabeled");
+
+        let counts = store.count_postings_by_value_for_label(property_id, 5, 1, 100);
+        assert_eq!(counts.len(), 1);
+        assert_eq!(counts[0].encoded_value, us);
+        assert_eq!(counts[0].count, 3);
     }
 }

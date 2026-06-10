@@ -95,3 +95,21 @@ pub(crate) fn count_postings_by_value(
     let filter = vertex_filter_packed.map(|packed| packed.into_iter().collect());
     IndexStore::new().count_postings_by_value(property_id, min_count, MAX_GROUPS, filter.as_ref())
 }
+
+pub(crate) fn filter_hits_by_label(vertex_label_id: u32, hits: Vec<PostingHit>) -> Vec<PostingHit> {
+    IndexStore::new().filter_hits_by_label(vertex_label_id, &hits)
+}
+
+pub(crate) fn count_postings_by_value_for_label(
+    property_id: u32,
+    vertex_label_id: u32,
+    min_count: u64,
+) -> Vec<ValuePostingCount> {
+    const MAX_GROUPS: usize = 10_000;
+    IndexStore::new().count_postings_by_value_for_label(
+        property_id,
+        vertex_label_id,
+        min_count,
+        MAX_GROUPS,
+    )
+}

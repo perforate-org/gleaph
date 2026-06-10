@@ -98,3 +98,17 @@ fn count_postings_by_value(
 ) -> Vec<ValuePostingCount> {
     canister::count_postings_by_value(property_id, min_count, vertex_filter_packed)
 }
+
+#[query]
+fn filter_hits_by_label(vertex_label_id: u32, hits: Vec<PostingHit>) -> Vec<PostingHit> {
+    canister::filter_hits_by_label(vertex_label_id, hits)
+}
+
+#[query]
+fn count_postings_by_value_for_label(
+    property_id: u32,
+    vertex_label_id: u32,
+    min_count: u64,
+) -> Vec<ValuePostingCount> {
+    canister::count_postings_by_value_for_label(property_id, vertex_label_id, min_count)
+}

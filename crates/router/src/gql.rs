@@ -23,11 +23,14 @@ use crate::execution_path::check_adhoc_execution_path;
 use crate::facade::stable::label_telemetry::RouterMutationShard;
 use crate::facade::store::RouterStore;
 use crate::federation::{
-    FederatedMergeMode, ShardDispatch, ShardingPolicy, apply_federated_aggregate_having,
-    empty_execute_plan_result, federated_dispatch_plan_blob, federated_merge_mode_from_plans,
+    AggregateIndexFastPath, FederatedMergeMode, ShardDispatch, ShardingPolicy,
+    apply_federated_aggregate_having, empty_execute_plan_result, federated_dispatch_plan_blob,
+    federated_merge_mode_from_plans, gql_query_result_from_label_live_count,
     gql_query_result_from_posting_counts, merge_execute_plan_result,
-    posting_hits_exceed_fast_path_budget, resolve_unseeded_all_shards, routings_to_dispatches,
-    sharding_policy_for, try_aggregate_index_fast_path,
+    packed_vertices_exceed_fast_path_budget, posting_hits_exceed_fast_path_budget,
+    resolve_unseeded_all_shards, routings_to_dispatches, sharding_policy_for,
+    split_label_and_property_anchors, try_aggregate_index_fast_path,
+    try_label_count_telemetry_fast_path, vertex_label_live_count,
 };
 use crate::graph_client::{
     ack_label_telemetry_event, execute_plan_on_graph, get_mutation_outcome,
@@ -62,6 +65,19 @@ trait IndexLookup {
         &self,
         vertex_label_id: u32,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
+
+    fn filter_hits_by_label(
+        &self,
+        vertex_label_id: u32,
+        hits: Vec<PostingHit>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
+
+    fn count_postings_by_value_for_label(
+        &self,
+        property_id: u32,
+        vertex_label_id: u32,
+        min_count: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>>;
 }
 
 impl IndexLookup for RouterIndexClient {
@@ -94,6 +110,23 @@ impl IndexLookup for RouterIndexClient {
         vertex_label_id: u32,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
         Box::pin(self.lookup_label(vertex_label_id))
+    }
+
+    fn filter_hits_by_label(
+        &self,
+        vertex_label_id: u32,
+        hits: Vec<PostingHit>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+        Box::pin(self.filter_hits_by_label(vertex_label_id, hits))
+    }
+
+    fn count_postings_by_value_for_label(
+        &self,
+        property_id: u32,
+        vertex_label_id: u32,
+        min_count: u64,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
+        Box::pin(self.count_postings_by_value_for_label(property_id, vertex_label_id, min_count))
     }
 }
 
@@ -188,6 +221,89 @@ async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
         return Ok(FastPathFilterResolution::Oversized);
     }
     Ok(FastPathFilterResolution::Restricted(packed))
+}
+
+fn unpack_posting_hits(packed: &[u64]) -> Vec<PostingHit> {
+    packed
+        .iter()
+        .map(|entry| PostingHit {
+            shard_id: (entry >> 32) as u32,
+            vertex_id: (entry & 0xFFFF_FFFF) as u32,
+        })
+        .collect()
+}
+
+async fn execute_grouped_aggregate_fast_path<I: IndexLookup + ?Sized>(
+    index: &I,
+    fast_path: &AggregateIndexFastPath,
+) -> Result<Option<Vec<ValuePostingCount>>, String> {
+    let (label_id, property_anchors) = split_label_and_property_anchors(&fast_path.index_anchors)
+        .map_err(|_| "invalid fast path anchor mix".to_string())?;
+
+    let counts = match (label_id, property_anchors.as_slice()) {
+        (None, []) => {
+            index
+                .count_postings_by_value(fast_path.property_id, fast_path.min_count, None)
+                .await?
+        }
+        (None, property_anchors) => {
+            match resolve_fast_path_vertex_filter(index, property_anchors).await? {
+                FastPathFilterResolution::Oversized => return Ok(None),
+                FastPathFilterResolution::Unfiltered => {
+                    return Err("property anchors required for fast path filter".into());
+                }
+                FastPathFilterResolution::Restricted(packed) => {
+                    let filter = if packed.is_empty() {
+                        None
+                    } else {
+                        Some(packed)
+                    };
+                    index
+                        .count_postings_by_value(fast_path.property_id, fast_path.min_count, filter)
+                        .await?
+                }
+            }
+        }
+        (Some(vertex_label_id), []) => {
+            index
+                .count_postings_by_value_for_label(
+                    fast_path.property_id,
+                    vertex_label_id,
+                    fast_path.min_count,
+                )
+                .await?
+        }
+        (Some(vertex_label_id), property_anchors) => {
+            match resolve_fast_path_vertex_filter(index, property_anchors).await? {
+                FastPathFilterResolution::Oversized => return Ok(None),
+                FastPathFilterResolution::Unfiltered => {
+                    return Err("property anchors required for label sieve".into());
+                }
+                FastPathFilterResolution::Restricted(packed) => {
+                    if packed.is_empty() {
+                        return Ok(Some(Vec::new()));
+                    }
+                    let hits = unpack_posting_hits(&packed);
+                    let filtered = index.filter_hits_by_label(vertex_label_id, hits).await?;
+                    if filtered.is_empty() {
+                        return Ok(Some(Vec::new()));
+                    }
+                    let packed = pack_posting_hits(&filtered);
+                    if packed_vertices_exceed_fast_path_budget(&packed) {
+                        return Ok(None);
+                    }
+                    index
+                        .count_postings_by_value(
+                            fast_path.property_id,
+                            fast_path.min_count,
+                            Some(packed),
+                        )
+                        .await?
+                }
+            }
+        }
+    };
+    Ok(Some(counts))
 }
 
 pub async fn gql_query(
@@ -362,29 +478,20 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
     if mode == GqlExecutionMode::Query && !has_dml {
         let stats = RouterGraphStats::for_graph(logical_graph_name);
+        if let Some(label_path) = try_label_count_telemetry_fast_path(plans, &stats, store, pmap) {
+            let live_count = vertex_label_live_count(store, label_path.vertex_label_id);
+            return Ok(
+                gql_query_result_from_label_live_count(&label_path, live_count)
+                    .map_err(RouterError::InvalidArgument)?,
+            );
+        }
         if let Some(fast_path) = try_aggregate_index_fast_path(plans, &stats, store, pmap) {
-            match resolve_fast_path_vertex_filter(index, &fast_path.index_anchors)
+            if let Some(counts) = execute_grouped_aggregate_fast_path(index, &fast_path)
                 .await
                 .map_err(RouterError::InvalidArgument)?
             {
-                FastPathFilterResolution::Oversized => {}
-                filter => {
-                    let vertex_filter_packed = match filter {
-                        FastPathFilterResolution::Unfiltered => None,
-                        FastPathFilterResolution::Restricted(packed) => Some(packed),
-                        FastPathFilterResolution::Oversized => unreachable!(),
-                    };
-                    let counts = index
-                        .count_postings_by_value(
-                            fast_path.property_id,
-                            fast_path.min_count,
-                            vertex_filter_packed,
-                        )
-                        .await
-                        .map_err(RouterError::InvalidArgument)?;
-                    return Ok(gql_query_result_from_posting_counts(&fast_path, counts)
-                        .map_err(RouterError::InvalidArgument)?);
-                }
+                return Ok(gql_query_result_from_posting_counts(&fast_path, counts)
+                    .map_err(RouterError::InvalidArgument)?);
             }
         }
     }
@@ -1007,6 +1114,23 @@ mod tests {
             self.calls.set(self.calls.get() + 1);
             let result = self.results.borrow_mut().remove(0);
             Box::pin(async move { result })
+        }
+
+        fn filter_hits_by_label(
+            &self,
+            _vertex_label_id: u32,
+            hits: Vec<PostingHit>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(hits) })
+        }
+
+        fn count_postings_by_value_for_label(
+            &self,
+            _property_id: u32,
+            _vertex_label_id: u32,
+            _min_count: u64,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
         }
     }
 
