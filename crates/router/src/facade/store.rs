@@ -19,12 +19,11 @@ mod telemetry;
 mod tests;
 
 use super::stable::{
-    ROUTER_APPLIED_LABEL_TELEMETRY, ROUTER_EDGE_LABEL_BY_ID, ROUTER_EDGE_LABEL_BY_NAME,
-    ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS, ROUTER_GRAPHS,
-    ROUTER_LOGICAL_COUNTER, ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER,
-    ROUTER_PENDING_LOGICAL, ROUTER_PLACEMENT_BY_PHYSICAL, ROUTER_PLACEMENTS, ROUTER_PROPERTY_BY_ID,
-    ROUTER_PROPERTY_BY_NAME, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_VERTEX_LABEL_BY_ID,
-    ROUTER_VERTEX_LABEL_BY_NAME, ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
+    ROUTER_APPLIED_LABEL_TELEMETRY, ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_LABEL_LIVE_BY_SHARD,
+    ROUTER_EDGE_LABEL_STATS, ROUTER_GRAPHS, ROUTER_LOGICAL_COUNTER, ROUTER_MUTATION_BY_CLIENT_KEY,
+    ROUTER_MUTATION_COUNTER, ROUTER_PENDING_LOGICAL, ROUTER_PLACEMENT_BY_PHYSICAL,
+    ROUTER_PLACEMENTS, ROUTER_PROPERTY_CATALOG, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
+    ROUTER_VERTEX_LABEL_CATALOG, ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
 };
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
@@ -62,10 +61,8 @@ impl RouterStore {
             c.set(0);
         });
         ROUTER_PENDING_LOGICAL.with_borrow_mut(|p| p.clear_new());
-        ROUTER_VERTEX_LABEL_BY_NAME.with_borrow_mut(|m| m.clear_new());
-        ROUTER_VERTEX_LABEL_BY_ID.with_borrow_mut(|m| m.clear_new());
-        ROUTER_EDGE_LABEL_BY_NAME.with_borrow_mut(|m| m.clear_new());
-        ROUTER_EDGE_LABEL_BY_ID.with_borrow_mut(|m| m.clear_new());
+        ROUTER_VERTEX_LABEL_CATALOG.with_borrow_mut(|m| m.clear_new());
+        ROUTER_EDGE_LABEL_CATALOG.with_borrow_mut(|m| m.clear_new());
         ROUTER_VERTEX_LABEL_STATS.with_borrow_mut(|m| m.clear_new());
         ROUTER_EDGE_LABEL_STATS.with_borrow_mut(|m| m.clear_new());
         ROUTER_VERTEX_LABEL_LIVE_BY_SHARD.with_borrow_mut(|m| m.clear_new());
@@ -75,8 +72,7 @@ impl RouterStore {
         });
         ROUTER_APPLIED_LABEL_TELEMETRY.with_borrow_mut(|m| m.clear());
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.clear_new());
-        ROUTER_PROPERTY_BY_NAME.with_borrow_mut(|m| m.clear_new());
-        ROUTER_PROPERTY_BY_ID.with_borrow_mut(|m| m.clear_new());
+        ROUTER_PROPERTY_CATALOG.with_borrow_mut(|m| m.clear_new());
     }
 }
 

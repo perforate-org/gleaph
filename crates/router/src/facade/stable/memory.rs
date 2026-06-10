@@ -1,6 +1,10 @@
 //! Router canister stable-memory layout — see `design/storage/stable-memory-inventory.md`.
 
 use candid::Principal;
+use gleaph_graph_kernel::bidirectional_catalog::{
+    BidirectionalCatalog, DenseEdgeLabelPolicy, DenseMaxPlusOnePolicy,
+};
+use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::{
     LogicalVertexId, ShardId, ShardRegistryEntry, VertexPlacement,
 };
@@ -44,8 +48,12 @@ pub(crate) type StableShardByGraph = BTreeMap<Principal, ShardId, Memory>;
 pub(crate) type StablePlacementMap = BTreeMap<LogicalVertexId, VertexPlacement, Memory>;
 pub(crate) type StableLogicalCounter = Cell<u64, Memory>;
 pub(crate) type StablePendingLogical = BTreeMap<Principal, LogicalVertexId, Memory>;
-pub(crate) type StableLabelNameIntern = BTreeMap<String, u16, Memory>;
-pub(crate) type StableLabelIdReverse = BTreeMap<u16, String, Memory>;
+pub(crate) type StableVertexLabelCatalog =
+    BidirectionalCatalog<VertexLabelId, Memory, Memory, DenseMaxPlusOnePolicy>;
+pub(crate) type StableEdgeLabelCatalog =
+    BidirectionalCatalog<EdgeLabelId, Memory, Memory, DenseEdgeLabelPolicy>;
+pub(crate) type StablePropertyCatalog =
+    BidirectionalCatalog<PropertyId, Memory, Memory, DenseMaxPlusOnePolicy>;
 pub(crate) type StableLabelStatsMap = BTreeMap<u16, super::label_telemetry::LabelStats, Memory>;
 pub(crate) type StableLabelShardLiveMap =
     BTreeMap<super::label_telemetry::LabelShardKey, u64, Memory>;
@@ -58,8 +66,6 @@ pub(crate) type StableMutationByClientKey = BTreeMap<
 >;
 pub(crate) type StableLabelBackfillStateMap =
     BTreeMap<ShardId, super::label_backfill::LabelBackfillShardState, Memory>;
-pub(crate) type StablePropertyNameIntern = BTreeMap<String, u32, Memory>;
-pub(crate) type StablePropertyIdReverse = BTreeMap<u32, String, Memory>;
 pub(crate) type StablePlacementByPhysicalMap =
     super::placement_by_physical::PlacementByPhysicalMap<Memory>;
 pub(crate) type StableMutationCounter = Cell<u64, Memory>;
@@ -101,20 +107,18 @@ pub(crate) fn init_pending_logical() -> StablePendingLogical {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PENDING_LOGICAL)))
 }
 
-pub(crate) fn init_vertex_label_by_name() -> StableLabelNameIntern {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VERTEX_LABEL_BY_NAME)))
+pub(crate) fn init_vertex_label_catalog() -> StableVertexLabelCatalog {
+    BidirectionalCatalog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VERTEX_LABEL_BY_NAME)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VERTEX_LABEL_BY_ID)),
+    )
 }
 
-pub(crate) fn init_vertex_label_by_id() -> StableLabelIdReverse {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VERTEX_LABEL_BY_ID)))
-}
-
-pub(crate) fn init_edge_label_by_name() -> StableLabelNameIntern {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_LABEL_BY_NAME)))
-}
-
-pub(crate) fn init_edge_label_by_id() -> StableLabelIdReverse {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_LABEL_BY_ID)))
+pub(crate) fn init_edge_label_catalog() -> StableEdgeLabelCatalog {
+    BidirectionalCatalog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_LABEL_BY_NAME)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_LABEL_BY_ID)),
+    )
 }
 
 pub(crate) fn init_vertex_label_stats() -> StableLabelStatsMap {
@@ -148,12 +152,11 @@ pub(crate) fn init_mutation_by_client_key() -> StableMutationByClientKey {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_MUTATION_BY_CLIENT_KEY)))
 }
 
-pub(crate) fn init_property_by_name() -> StablePropertyNameIntern {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BY_NAME)))
-}
-
-pub(crate) fn init_property_by_id() -> StablePropertyIdReverse {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BY_ID)))
+pub(crate) fn init_property_catalog() -> StablePropertyCatalog {
+    BidirectionalCatalog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BY_NAME)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BY_ID)),
+    )
 }
 
 pub(crate) fn init_placement_by_physical() -> StablePlacementByPhysicalMap {

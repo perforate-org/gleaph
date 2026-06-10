@@ -280,19 +280,23 @@ Exit criteria:
 
 Goal: remove duplicated name/id catalog rules.
 
+**Status: In progress (2026-06-10).**
+
+**Progress:** `gleaph-graph-kernel::bidirectional_catalog` provides shared `BidirectionalCatalog` with sparse and dense allocation policies. Graph property catalog and router vertex/edge/property resolution catalogs use the shared type (same stable memory regions). Router retains ownership of federated label and property resolution APIs.
+
 Deliverables:
 
-- Implement a reusable stable bidirectional catalog abstraction.
-- Move router label catalogs and property catalogs onto the shared implementation where the semantics match.
-- Preserve router ownership of federated label and property resolution.
-- Evaluate graph property catalog migration separately from router catalogs.
-- Convert edge weight profiles into a compatibility layer over edge payload profiles, if the compatibility surface is still required.
+- Implement a reusable stable bidirectional catalog abstraction. **Done** (`bidirectional_catalog` in `graph-kernel`).
+- Move router label catalogs and property catalogs onto the shared implementation where the semantics match. **Done** (vertex/edge dense, property dense; graph property sparse).
+- Preserve router ownership of federated label and property resolution. **Done** (router `catalogs` domain unchanged at API boundary).
+- Evaluate graph property catalog migration separately from router catalogs. **Done** (graph re-exports shared catalog with `SparseFromOnePolicy`).
+- Convert edge weight profiles into a compatibility layer over edge payload profiles, if the compatibility surface is still required. **Not started.**
 
 Exit criteria:
 
-- Reserved-id and sparse-allocation behavior is implemented once.
-- Bidirectional map consistency is enforced by one abstraction.
-- General-purpose GQL crates remain free of Gleaph-specific catalog behavior.
+- Reserved-id and sparse-allocation behavior is implemented once. **Met** for sparse (`SparseFromOnePolicy`) and dense (`DenseMaxPlusOnePolicy` / `DenseEdgeLabelPolicy`).
+- Bidirectional map consistency is enforced by one abstraction. **Met** for property and router resolution catalogs.
+- General-purpose GQL crates remain free of Gleaph-specific catalog behavior. **Met** (catalog lives in `graph-kernel`, not `gql`).
 
 ### Phase 4: Refactor property storage and indexing events
 

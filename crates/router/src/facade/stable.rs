@@ -32,17 +32,11 @@ thread_local! {
     pub(crate) static ROUTER_PENDING_LOGICAL: RefCell<memory::StablePendingLogical> =
         RefCell::new(memory::init_pending_logical());
 
-    pub(crate) static ROUTER_VERTEX_LABEL_BY_NAME: RefCell<memory::StableLabelNameIntern> =
-        RefCell::new(memory::init_vertex_label_by_name());
+    pub(crate) static ROUTER_VERTEX_LABEL_CATALOG: RefCell<memory::StableVertexLabelCatalog> =
+        RefCell::new(memory::init_vertex_label_catalog());
 
-    pub(crate) static ROUTER_VERTEX_LABEL_BY_ID: RefCell<memory::StableLabelIdReverse> =
-        RefCell::new(memory::init_vertex_label_by_id());
-
-    pub(crate) static ROUTER_EDGE_LABEL_BY_NAME: RefCell<memory::StableLabelNameIntern> =
-        RefCell::new(memory::init_edge_label_by_name());
-
-    pub(crate) static ROUTER_EDGE_LABEL_BY_ID: RefCell<memory::StableLabelIdReverse> =
-        RefCell::new(memory::init_edge_label_by_id());
+    pub(crate) static ROUTER_EDGE_LABEL_CATALOG: RefCell<memory::StableEdgeLabelCatalog> =
+        RefCell::new(memory::init_edge_label_catalog());
 
     pub(crate) static ROUTER_VERTEX_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =
         RefCell::new(memory::init_vertex_label_stats());
@@ -65,11 +59,8 @@ thread_local! {
     pub(crate) static ROUTER_MUTATION_BY_CLIENT_KEY: RefCell<memory::StableMutationByClientKey> =
         RefCell::new(memory::init_mutation_by_client_key());
 
-    pub(crate) static ROUTER_PROPERTY_BY_NAME: RefCell<memory::StablePropertyNameIntern> =
-        RefCell::new(memory::init_property_by_name());
-
-    pub(crate) static ROUTER_PROPERTY_BY_ID: RefCell<memory::StablePropertyIdReverse> =
-        RefCell::new(memory::init_property_by_id());
+    pub(crate) static ROUTER_PROPERTY_CATALOG: RefCell<memory::StablePropertyCatalog> =
+        RefCell::new(memory::init_property_catalog());
 
     /// Per logical graph: which vertex/edge properties are indexed (planner catalog).
     pub(crate) static ROUTER_INDEXED_PROPERTIES: RefCell<

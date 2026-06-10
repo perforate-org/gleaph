@@ -1,76 +1,40 @@
 //! Federated label and property resolution catalogs.
 
 use super::super::stable::{
-    ROUTER_EDGE_LABEL_BY_ID, ROUTER_EDGE_LABEL_BY_NAME, ROUTER_PROPERTY_BY_ID,
-    ROUTER_PROPERTY_BY_NAME, ROUTER_VERTEX_LABEL_BY_ID, ROUTER_VERTEX_LABEL_BY_NAME,
+    ROUTER_EDGE_LABEL_CATALOG, ROUTER_PROPERTY_CATALOG, ROUTER_VERTEX_LABEL_CATALOG,
 };
 use crate::state::RouterError;
 use crate::types::{EdgeLabelId, PropertyId, VertexLabelId};
 use candid::Principal;
 use gleaph_gql_planner::{LabelUseIntent, PhysicalPlan};
+use gleaph_graph_kernel::bidirectional_catalog::CatalogError;
 use gleaph_graph_kernel::plan_exec::{ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel};
 
-use gleaph_graph_kernel::entry::EDGE_LABEL_CATALOG_MAX;
-
 use super::{RouterStore, validate_metadata_name};
+
+fn map_catalog_err<Id: std::fmt::Display>(err: CatalogError<Id>) -> RouterError {
+    RouterError::InvalidArgument(err.to_string())
+}
 
 impl RouterStore {
     pub(super) fn commit_intern_vertex_label_name(
         name: &str,
     ) -> Result<VertexLabelId, RouterError> {
-        if let Some(id) = ROUTER_VERTEX_LABEL_BY_NAME.with_borrow(|m| m.get(&name.to_string())) {
-            return Ok(VertexLabelId::from_raw(id));
-        }
-        let next_id = ROUTER_VERTEX_LABEL_BY_ID
-            .with_borrow(|m| m.keys().max().unwrap_or(0))
-            .saturating_add(1);
-        if next_id == 0 {
-            return Err(RouterError::InvalidArgument(
-                "vertex label id 0 is reserved".into(),
-            ));
-        }
-        ROUTER_VERTEX_LABEL_BY_NAME.with_borrow_mut(|m| {
-            m.insert(name.to_string(), next_id);
-        });
-        ROUTER_VERTEX_LABEL_BY_ID.with_borrow_mut(|m| {
-            m.insert(next_id, name.to_string());
-        });
-        Ok(VertexLabelId::from_raw(next_id))
+        ROUTER_VERTEX_LABEL_CATALOG
+            .with_borrow_mut(|catalog| catalog.get_or_insert(name))
+            .map_err(map_catalog_err)
     }
 
     pub(super) fn commit_intern_edge_label_name(name: &str) -> Result<EdgeLabelId, RouterError> {
-        if let Some(id) = ROUTER_EDGE_LABEL_BY_NAME.with_borrow(|m| m.get(&name.to_string())) {
-            return Ok(EdgeLabelId::from_raw(id));
-        }
-        let next_id = ROUTER_EDGE_LABEL_BY_ID
-            .with_borrow(|m| m.keys().max().unwrap_or(0))
-            .saturating_add(1);
-        if next_id == 0 || next_id > EDGE_LABEL_CATALOG_MAX {
-            return Err(RouterError::InvalidArgument(format!(
-                "edge label id exhausted (max {EDGE_LABEL_CATALOG_MAX})"
-            )));
-        }
-        ROUTER_EDGE_LABEL_BY_NAME.with_borrow_mut(|m| {
-            m.insert(name.to_string(), next_id);
-        });
-        ROUTER_EDGE_LABEL_BY_ID.with_borrow_mut(|m| {
-            m.insert(next_id, name.to_string());
-        });
-        Ok(EdgeLabelId::from_raw(next_id))
+        ROUTER_EDGE_LABEL_CATALOG
+            .with_borrow_mut(|catalog| catalog.get_or_insert(name))
+            .map_err(map_catalog_err)
     }
 
     pub(super) fn commit_intern_property_name(name: &str) -> Result<PropertyId, RouterError> {
-        if let Some(id) = ROUTER_PROPERTY_BY_NAME.with_borrow(|m| m.get(&name.to_string())) {
-            return Ok(PropertyId::from_raw(id));
-        }
-        let next_id = ROUTER_PROPERTY_BY_ID.with_borrow(|m| m.keys().max().unwrap_or(0)) + 1;
-        ROUTER_PROPERTY_BY_NAME.with_borrow_mut(|m| {
-            m.insert(name.to_string(), next_id);
-        });
-        ROUTER_PROPERTY_BY_ID.with_borrow_mut(|m| {
-            m.insert(next_id, name.to_string());
-        });
-        Ok(PropertyId::from_raw(next_id))
+        ROUTER_PROPERTY_CATALOG
+            .with_borrow_mut(|catalog| catalog.get_or_insert(name))
+            .map_err(map_catalog_err)
     }
 
     pub fn admin_intern_vertex_label(
@@ -110,23 +74,20 @@ impl RouterStore {
     }
 
     pub fn lookup_vertex_label_id(&self, name: &str) -> Result<VertexLabelId, RouterError> {
-        ROUTER_VERTEX_LABEL_BY_NAME
-            .with_borrow(|m| m.get(&name.to_string()))
-            .map(VertexLabelId::from_raw)
+        ROUTER_VERTEX_LABEL_CATALOG
+            .with_borrow(|catalog| catalog.get_id(name))
             .ok_or_else(|| RouterError::NotFound(name.to_owned()))
     }
 
     pub fn lookup_edge_label_id(&self, name: &str) -> Result<EdgeLabelId, RouterError> {
-        ROUTER_EDGE_LABEL_BY_NAME
-            .with_borrow(|m| m.get(&name.to_string()))
-            .map(EdgeLabelId::from_raw)
+        ROUTER_EDGE_LABEL_CATALOG
+            .with_borrow(|catalog| catalog.get_id(name))
             .ok_or_else(|| RouterError::NotFound(name.to_owned()))
     }
 
     pub fn lookup_property_id(&self, name: &str) -> Result<PropertyId, RouterError> {
-        ROUTER_PROPERTY_BY_NAME
-            .with_borrow(|m| m.get(&name.to_string()))
-            .map(PropertyId::from_raw)
+        ROUTER_PROPERTY_CATALOG
+            .with_borrow(|catalog| catalog.get_id(name))
             .ok_or_else(|| RouterError::NotFound(name.to_owned()))
     }
 
@@ -134,20 +95,20 @@ impl RouterStore {
         &self,
         label_id: VertexLabelId,
     ) -> Result<String, RouterError> {
-        ROUTER_VERTEX_LABEL_BY_ID
-            .with_borrow(|m| m.get(&label_id.raw()))
+        ROUTER_VERTEX_LABEL_CATALOG
+            .with_borrow(|catalog| catalog.get_name(label_id))
             .ok_or_else(|| RouterError::NotFound(format!("vertex label id {}", label_id.raw())))
     }
 
     pub fn reverse_edge_label_name(&self, label_id: EdgeLabelId) -> Result<String, RouterError> {
-        ROUTER_EDGE_LABEL_BY_ID
-            .with_borrow(|m| m.get(&label_id.raw()))
+        ROUTER_EDGE_LABEL_CATALOG
+            .with_borrow(|catalog| catalog.get_name(label_id))
             .ok_or_else(|| RouterError::NotFound(format!("edge label id {}", label_id.raw())))
     }
 
     pub fn reverse_property_name(&self, property_id: PropertyId) -> Result<String, RouterError> {
-        ROUTER_PROPERTY_BY_ID
-            .with_borrow(|m| m.get(&property_id.raw()))
+        ROUTER_PROPERTY_CATALOG
+            .with_borrow(|catalog| catalog.get_name(property_id))
             .ok_or_else(|| RouterError::NotFound(format!("property id {}", property_id.raw())))
     }
 

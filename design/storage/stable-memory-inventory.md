@@ -140,12 +140,9 @@ Owner: `ic-stable-lara` / graph `GRAPH` thread-local. Scan paths must not consul
 | 4 | `ROUTER_PLACEMENTS` | `ROUTER_PLACEMENTS` | `init_placements` | canonical | placement | — |
 | 5 | `ROUTER_LOGICAL_COUNTER` | `ROUTER_LOGICAL_COUNTER` | `init_logical_counter` | canonical | placement | — |
 | 6 | `ROUTER_PENDING_LOGICAL` | `ROUTER_PENDING_LOGICAL` | `init_pending_logical` | maintenance | placement | — |
-| 7 | `ROUTER_VERTEX_LABEL_BY_NAME` | `ROUTER_VERTEX_LABEL_BY_NAME` | `init_vertex_label_by_name` | catalog | resolution | — |
-| 8 | `ROUTER_VERTEX_LABEL_BY_ID` | `ROUTER_VERTEX_LABEL_BY_ID` | `init_vertex_label_by_id` | catalog | resolution | — |
-| 9 | `ROUTER_EDGE_LABEL_BY_NAME` | `ROUTER_EDGE_LABEL_BY_NAME` | `init_edge_label_by_name` | catalog | resolution | — |
-| 10 | `ROUTER_EDGE_LABEL_BY_ID` | `ROUTER_EDGE_LABEL_BY_ID` | `init_edge_label_by_id` | catalog | resolution | — |
-| 11 | `ROUTER_PROPERTY_BY_NAME` | `ROUTER_PROPERTY_BY_NAME` | `init_property_by_name` | catalog | resolution | — |
-| 12 | `ROUTER_PROPERTY_BY_ID` | `ROUTER_PROPERTY_BY_ID` | `init_property_by_id` | catalog | resolution | — |
+| 7–8 | `ROUTER_VERTEX_LABEL_BY_NAME` / `ROUTER_VERTEX_LABEL_BY_ID` | `ROUTER_VERTEX_LABEL_CATALOG` | `init_vertex_label_catalog` | catalog | resolution | `BidirectionalCatalog` (dense) |
+| 9–10 | `ROUTER_EDGE_LABEL_BY_NAME` / `ROUTER_EDGE_LABEL_BY_ID` | `ROUTER_EDGE_LABEL_CATALOG` | `init_edge_label_catalog` | catalog | resolution | `BidirectionalCatalog` (dense, capped) |
+| 11–12 | `ROUTER_PROPERTY_BY_NAME` / `ROUTER_PROPERTY_BY_ID` | `ROUTER_PROPERTY_CATALOG` | `init_property_catalog` | catalog | resolution | `BidirectionalCatalog` (dense) |
 | 13 | `ROUTER_PLACEMENT_BY_PHYSICAL` | `ROUTER_PLACEMENT_BY_PHYSICAL` | `init_placement_by_physical` | derived | placement | Scan `ROUTER_PLACEMENTS` |
 | 14 | — | — | — | reserved | — | Unused; do not allocate |
 | 15 | `ROUTER_AUTH_PRINCIPAL_RECORDS` | `ROUTER_AUTH_STATE` | `init_auth_state` | canonical | auth | — |
