@@ -3,7 +3,7 @@
 use super::super::stable::{REMOTE_FORWARD_IN, REMOTE_VERTEX_REFS};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, EdgeTarget, RemoteRefId};
 use gleaph_graph_kernel::federation::LogicalVertexId;
-use ic_stable_lara::VertexId;
+use ic_stable_lara::{VertexId, labeled::EdgeSlotMove};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -97,7 +97,7 @@ impl GraphStore {
         self.commit_register_remote_forward_in(handle, remote_ref);
     }
 
-    pub(crate) fn unregister_remote_forward_in_for_out_edge(
+    pub(super) fn commit_unregister_remote_forward_in_for_out_edge(
         &self,
         source_vertex_id: VertexId,
         edge: &Edge,
@@ -113,6 +113,45 @@ impl GraphStore {
                 edge.edge_slot_index.raw(),
             );
         });
+    }
+
+    pub(super) fn commit_move_remote_forward_in_for_compaction(
+        &self,
+        owner_vertex_id: VertexId,
+        label_id: u16,
+        moved: EdgeSlotMove,
+    ) {
+        use super::super::stable::GRAPH;
+        use ic_stable_lara::{BucketLabelKey as LaraLabelId, traits::CsrEdge};
+
+        let label = LaraLabelId::from_raw(label_id);
+        let _ = GRAPH.with_borrow(|graph| {
+            graph.for_each_out_edges_for_label_unchecked(owner_vertex_id, label, |edge| {
+                if edge.edge_slot_index.raw() != moved.new_slot_index {
+                    return;
+                }
+                let Some(EdgeTarget::Remote(remote_ref)) = edge.edge_target() else {
+                    return;
+                };
+                REMOTE_FORWARD_IN.with_borrow_mut(|index| {
+                    index.move_slot(
+                        remote_ref,
+                        owner_vertex_id,
+                        label_id,
+                        moved.old_slot_index,
+                        moved.new_slot_index,
+                    );
+                });
+            })
+        });
+    }
+
+    pub(crate) fn unregister_remote_forward_in_for_out_edge(
+        &self,
+        source_vertex_id: VertexId,
+        edge: &Edge,
+    ) {
+        self.commit_unregister_remote_forward_in_for_out_edge(source_vertex_id, edge);
     }
 
     pub(super) fn unregister_remote_forward_in_for_handle(&self, handle: EdgeHandle) {

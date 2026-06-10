@@ -43,7 +43,7 @@ impl GraphStore {
         let to_clear = self.collect_incident_edge_handles_for_delete(vertex_id)?;
         self.with_graph_mut(|graph| graph.delete_vertex_deferred(vertex_id))?;
         for handle in to_clear {
-            self.clear_edge_sidecars(handle);
+            self.commit_clear_edge_sidecars(handle);
         }
         self.drain_deferred_maintenance()
     }
@@ -74,7 +74,7 @@ impl GraphStore {
     ) -> Result<Vec<EdgeHandle>, GraphStoreError> {
         let mut to_clear = Vec::new();
         let mut push_out = |edge: Edge| {
-            self.unregister_remote_forward_in_for_out_edge(vertex_id, &edge);
+            self.commit_unregister_remote_forward_in_for_out_edge(vertex_id, &edge);
             let owner = self.edge_sidecar_owner_from_out_row(vertex_id, &edge);
             to_clear.push(EdgeHandle {
                 owner_vertex_id: owner,

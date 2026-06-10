@@ -1,8 +1,7 @@
-//! GraphStore sidecar coordination: edge properties plus local indexes.
+//! Sidecar coordination: derived edge state cleared or moved across domains.
 
-use super::super::stable::{EDGE_PROPERTIES, GRAPH, REMOTE_FORWARD_IN};
 use ic_stable_lara::{
-    BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
+    DeferredBidirectionalLabeledError, VertexId,
     labeled::{EdgeSlotMove, LabeledOrientation},
     traits::CsrEdge,
 };
@@ -10,7 +9,8 @@ use ic_stable_lara::{
 use super::GraphStore;
 use super::handle::EdgeHandle;
 use super::helpers::canonical_undirected_owner;
-use gleaph_graph_kernel::entry::{Edge, EdgeTarget};
+use crate::facade::stable::GRAPH;
+use gleaph_graph_kernel::entry::Edge;
 
 impl GraphStore {
     pub(super) fn vertex_has_incident_edges(
@@ -32,65 +32,40 @@ impl GraphStore {
         }
     }
 
-    pub(super) fn clear_edge_sidecars(&self, handle: EdgeHandle) {
+    pub(super) fn commit_clear_edge_sidecars(&self, handle: EdgeHandle) {
         let handle = self.canonical_edge_handle_for_sidecar(handle);
         self.commit_clear_edge_local_indexes(handle);
-        EDGE_PROPERTIES.with_borrow_mut(|store| {
-            store.remove_all_for_edge(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index,
-            );
-        });
+        self.commit_remove_all_edge_properties(handle);
     }
 
-    pub(super) fn move_edge_sidecars_for_compaction(
+    pub(super) fn clear_edge_sidecars(&self, handle: EdgeHandle) {
+        self.commit_clear_edge_sidecars(handle);
+    }
+
+    pub(super) fn commit_move_edge_sidecars_for_compaction(
+        store: &GraphStore,
         orientation: LabeledOrientation,
         owner_vertex_id: VertexId,
         moved: EdgeSlotMove,
     ) {
-        let label_id = moved.label_id.raw();
         match orientation {
             LabeledOrientation::Forward => {
-                let moved_properties = EDGE_PROPERTIES.with_borrow_mut(|store| {
-                    store
-                        .move_all_for_edge(
-                            owner_vertex_id,
-                            label_id,
-                            moved.old_slot_index,
-                            moved.new_slot_index,
-                        )
-                        .expect("stored edge property values remain encodable")
-                });
-                Self::commit_move_edge_local_indexes_for_compaction(
+                let moved_properties =
+                    GraphStore::commit_move_edge_properties_for_compaction(owner_vertex_id, moved);
+                GraphStore::commit_move_edge_local_indexes_for_compaction(
                     orientation,
                     owner_vertex_id,
                     moved,
                     &moved_properties,
                 );
-                let label = LaraLabelId::from_raw(label_id);
-                let _ = GRAPH.with_borrow(|graph| {
-                    graph.for_each_out_edges_for_label_unchecked(owner_vertex_id, label, |edge| {
-                        if edge.edge_slot_index.raw() != moved.new_slot_index {
-                            return;
-                        }
-                        let Some(EdgeTarget::Remote(remote_ref)) = edge.edge_target() else {
-                            return;
-                        };
-                        REMOTE_FORWARD_IN.with_borrow_mut(|index| {
-                            index.move_slot(
-                                remote_ref,
-                                owner_vertex_id,
-                                label_id,
-                                moved.old_slot_index,
-                                moved.new_slot_index,
-                            );
-                        });
-                    })
-                });
+                store.commit_move_remote_forward_in_for_compaction(
+                    owner_vertex_id,
+                    moved.label_id.raw(),
+                    moved,
+                );
             }
             LabeledOrientation::Reverse => {
-                Self::commit_move_edge_local_indexes_for_compaction(
+                GraphStore::commit_move_edge_local_indexes_for_compaction(
                     orientation,
                     owner_vertex_id,
                     moved,
@@ -98,5 +73,18 @@ impl GraphStore {
                 );
             }
         }
+    }
+
+    pub(super) fn move_edge_sidecars_for_compaction(
+        orientation: LabeledOrientation,
+        owner_vertex_id: VertexId,
+        moved: EdgeSlotMove,
+    ) {
+        Self::commit_move_edge_sidecars_for_compaction(
+            &GraphStore,
+            orientation,
+            owner_vertex_id,
+            moved,
+        );
     }
 }

@@ -5,7 +5,7 @@ use super::super::stable::{EDGE_PROPERTIES, VERTEX_PROPERTIES};
 use crate::index::pending;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
-use ic_stable_lara::VertexId;
+use ic_stable_lara::{VertexId, labeled::EdgeSlotMove};
 
 use super::GraphStore;
 use super::handle::EdgeHandle;
@@ -118,6 +118,35 @@ impl GraphStore {
             );
         }
         removed
+    }
+
+    /// Remove every edge property on a canonical handle.
+    pub(super) fn commit_remove_all_edge_properties(&self, handle: EdgeHandle) {
+        let handle = self.canonical_edge_handle_for_sidecar(handle);
+        EDGE_PROPERTIES.with_borrow_mut(|store| {
+            store.remove_all_for_edge(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+            );
+        });
+    }
+
+    pub(super) fn commit_move_edge_properties_for_compaction(
+        owner_vertex_id: VertexId,
+        moved: EdgeSlotMove,
+    ) -> Vec<(PropertyId, Value)> {
+        let label_id = moved.label_id.raw();
+        EDGE_PROPERTIES.with_borrow_mut(|store| {
+            store
+                .move_all_for_edge(
+                    owner_vertex_id,
+                    label_id,
+                    moved.old_slot_index,
+                    moved.new_slot_index,
+                )
+                .expect("stored edge property values remain encodable")
+        })
     }
 
     /// Remove every vertex property and enqueue federated index maintenance when enabled.

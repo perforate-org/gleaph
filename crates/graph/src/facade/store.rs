@@ -14,6 +14,7 @@
 //! - **remote refs** — `remote_refs` (logical vertex handles, forward-in index, logical edge insert)
 //! - **local indexes** — `local_indexes` (alias and equality posting commits), `edge_alias` (lookup)
 //! - **telemetry** — `telemetry`
+//! - **sidecars** — `sidecar` (coordinates property, local-index, and remote-ref derived state)
 //! - **maintenance** — `maintenance`
 
 mod adjacency;
