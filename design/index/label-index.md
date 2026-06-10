@@ -1,7 +1,7 @@
 # Label index
 
 Last updated: 2026-06-10  
-Implementation verified as of: 2026-06-09 (label index commits through `dc727b13`)
+Implementation verified as of: 2026-06-10 (label index through router backfill orchestration)
 
 ## Status
 
@@ -93,8 +93,9 @@ MATCH (n:Person) WHERE n.region = 'US' GROUP BY n.country  → C1 then count
 
 `label_pending` + graph-index `label_posting_insert/remove` on label DML.
 
-**Backfill:** `backfill_label_postings` on graph shards (router-guarded, cursor-based) replays
-`VertexLabelStore` into graph-index for pre-existing data.
+**Backfill:** `backfill_label_postings` on graph shards replays `VertexLabelStore` into
+graph-index for pre-existing data. Router orchestrates per-shard cursors via
+`admin_label_backfill_step` / `admin_list_label_backfill_status` (controller-only).
 
 ## Router (target)
 

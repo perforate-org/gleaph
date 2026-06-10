@@ -14,6 +14,7 @@ mod index_client;
 mod index_lookup;
 mod index_sync;
 pub mod init;
+mod label_backfill;
 #[expect(
     dead_code,
     reason = "peer sync hooks are invoked by registry lifecycle paths"
@@ -279,6 +280,22 @@ fn admin_set_indexed_vertex_property(
     property: String,
 ) -> Result<(), RouterError> {
     canister::admin_set_indexed_vertex_property(logical_graph_name, property)
+}
+
+/// Advance label posting backfill for one graph shard (controller-only; call in a loop).
+#[update]
+async fn admin_label_backfill_step(
+    args: types::AdminLabelBackfillStepArgs,
+) -> Result<types::AdminLabelBackfillStepResult, RouterError> {
+    canister::admin_label_backfill_step(args).await
+}
+
+/// List router-stable backfill cursors for all shards of a logical graph.
+#[query]
+fn admin_list_label_backfill_status(
+    logical_graph_name: String,
+) -> Result<Vec<types::LabelBackfillShardStatus>, RouterError> {
+    canister::admin_list_label_backfill_status(logical_graph_name)
 }
 
 ic_cdk::export_candid!();

@@ -2,7 +2,8 @@
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
-    AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs,
+    AddGraphPeerArgs, BootstrapGraphPeersArgs, LabelPostingBackfillArgs,
+    LabelPostingBackfillResult, RemoveGraphPeerArgs,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanResult, LabelTelemetryEventWire, MutationId, MutationOutcomeWire,
@@ -114,4 +115,11 @@ pub async fn get_mutation_outcome(
     mutation_id: MutationId,
 ) -> Result<Option<MutationOutcomeWire>, String> {
     call_graph(graph, "get_mutation_outcome", mutation_id).await
+}
+
+pub async fn backfill_label_postings(
+    graph: Principal,
+    args: LabelPostingBackfillArgs,
+) -> Result<LabelPostingBackfillResult, String> {
+    call_graph(graph, "backfill_label_postings", args).await
 }

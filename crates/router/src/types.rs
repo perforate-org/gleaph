@@ -24,3 +24,30 @@ pub struct AdminRegisterShardArgs {
     pub index_canister: Principal,
     pub logical_graph_name: String,
 }
+
+/// One router-orchestrated batch of label posting backfill on a graph shard.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminLabelBackfillStepArgs {
+    pub logical_graph_name: String,
+    pub shard_id: ShardId,
+    /// Maximum local vertices to scan on the shard in this step (must be > 0).
+    pub max_vertices: u32,
+}
+
+/// Progress from one router backfill step.
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdminLabelBackfillStepResult {
+    pub shard_id: ShardId,
+    pub next_vertex_id: LocalVertexId,
+    pub vertices_processed: u32,
+    pub postings_synced: u32,
+    pub done: bool,
+}
+
+/// Router-stable cursor for label posting backfill on one shard.
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct LabelBackfillShardStatus {
+    pub shard_id: ShardId,
+    pub next_vertex_id: LocalVertexId,
+    pub done: bool,
+}

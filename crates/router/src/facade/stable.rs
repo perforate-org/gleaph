@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 
+pub(crate) mod label_backfill;
 pub(crate) mod label_telemetry;
 pub(crate) mod memory;
 pub(crate) mod placement_by_physical;
@@ -78,6 +79,9 @@ thread_local! {
     pub(crate) static ROUTER_PREPARED_PLANS: RefCell<
         std::collections::BTreeMap<String, crate::prepared::PreparedPlanRecord>,
     > = const { RefCell::new(std::collections::BTreeMap::new()) };
+
+    pub(crate) static ROUTER_LABEL_BACKFILL_STATE: RefCell<memory::StableLabelBackfillStateMap> =
+        RefCell::new(memory::init_label_backfill_state());
 
     pub(crate) static ROUTER_AUTH_STATE: RefCell<memory::StableAuthState> =
         RefCell::new(memory::init_auth_state());

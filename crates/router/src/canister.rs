@@ -5,8 +5,9 @@ use crate::facade::store::RouterStore;
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
 use crate::types::{
-    AdminRegisterShardArgs, CommitVertexPlacementArgs, EdgeLabelId, GrantRoleArgs,
-    GraphRegistryEntry, LogicalVertexId, PropertyId, ReleaseLogicalVertexArgs, ShardId,
+    AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminRegisterShardArgs,
+    CommitVertexPlacementArgs, EdgeLabelId, GrantRoleArgs, GraphRegistryEntry,
+    LabelBackfillShardStatus, LogicalVertexId, PropertyId, ReleaseLogicalVertexArgs, ShardId,
     ShardRegistryEntry, VertexLabelId, VertexPlacement,
 };
 use candid::Principal;
@@ -122,6 +123,28 @@ pub(crate) fn admin_intern_edge_label(name: String) -> Result<EdgeLabelId, Route
 
 pub(crate) fn admin_intern_property(name: String) -> Result<PropertyId, RouterError> {
     RouterStore::new().admin_intern_property(msg_caller(), &name)
+}
+
+pub(crate) async fn admin_label_backfill_step(
+    args: AdminLabelBackfillStepArgs,
+) -> Result<AdminLabelBackfillStepResult, RouterError> {
+    crate::label_backfill::admin_label_backfill_step(
+        &RouterStore::new(),
+        msg_caller(),
+        args,
+        crate::graph_client::backfill_label_postings,
+    )
+    .await
+}
+
+pub(crate) fn admin_list_label_backfill_status(
+    logical_graph_name: String,
+) -> Result<Vec<LabelBackfillShardStatus>, RouterError> {
+    crate::label_backfill::admin_list_label_backfill_status(
+        &RouterStore::new(),
+        msg_caller(),
+        &logical_graph_name,
+    )
 }
 
 pub(crate) fn admin_set_indexed_vertex_property(

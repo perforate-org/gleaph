@@ -91,7 +91,7 @@ impl RouterStore {
         });
     }
 
-    fn is_controller(&self, caller: Principal) -> bool {
+    pub(crate) fn is_controller(&self, caller: Principal) -> bool {
         ROUTER_CONTROLLERS.with_borrow(|admins| admins.contains(&caller))
     }
 
