@@ -124,6 +124,9 @@ intersect label and property index hits before per-shard `seed_bindings_blob` di
 | `:L1:L2:…` seed export | D (paginated walk + sieve) |
 | Property only | Property index (no label) |
 
+Graph shards skip leading `NodeScan` + `PropertyFilter` (`IsLabeled` sieve) when the router
+supplies `seed_bindings_blob` for label-intersection anchors (`seeded_skip_leading_label_intersection_plan_uses_seed_only`).
+
 ### Instruction bounds (retained)
 
 | Bound | Effect |

@@ -2124,3 +2124,53 @@ fn seeded_skip_leading_node_scan_and_property_filter_uses_seed_only() {
     assert!(index.equal_calls.borrow().is_empty());
     assert!(index.intersection_calls.borrow().is_empty());
 }
+
+#[test]
+fn seeded_skip_leading_label_intersection_plan_uses_seed_only() {
+    let store = GraphStore::new();
+    let vid = store
+        .insert_vertex_named(["Person", "Employee"], Vec::<(&str, Value)>::new())
+        .expect("vertex with both labels");
+    let _person_only = store
+        .insert_vertex_named(["Person"], Vec::<(&str, Value)>::new())
+        .expect("person only");
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "n".into(),
+            label: Some("Person".into()),
+            property_projection: None,
+        },
+        PlanOp::PropertyFilter {
+            predicates: vec![Expr::new(ExprKind::IsLabeled {
+                expr: Box::new(Expr::var("n")),
+                label: LabelExpr::Name("Employee".into()),
+                negated: false,
+            })],
+            stage: 0,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("n"), "n")],
+            distinct: false,
+        },
+    ]);
+    let mut seed = PlanRow::new();
+    seed.insert("n".to_owned(), PlanBinding::Vertex(vid));
+    let index = MockPropertyIndex::default();
+
+    let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+        vec![seed],
+        true,
+    ))
+    .expect("seeded label intersection skip");
+
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(
+        rows[0].get("n"),
+        Some(PlanBinding::Vertex(id)) if *id == vid
+    ));
+}
