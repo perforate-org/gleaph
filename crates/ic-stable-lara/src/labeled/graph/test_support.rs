@@ -1,6 +1,8 @@
 //! Shared fixtures for labeled graph tests.
 
-pub use super::LabeledLaraGraph;
+pub use super::iter::LabeledEdgePayloadBatchScratch;
+pub use super::error::LabeledOperationError;
+pub use super::{LabeledLaraGraph, OutEdgeOrder};
 pub use crate::labeled::{MAX_VERTEX_LABEL_BUCKETS, record::LabeledVertexFieldError};
 use crate::labeled::{bucket_label_key::BucketLabelKey, record::LabeledVertex};
 pub use crate::lara::operation_error::LaraOperationError;
@@ -318,4 +320,89 @@ pub fn build_mixed_label_hub(
         }
     }
     (graph, hub, dst)
+}
+
+/// Per-label neighbor targets materialized via checked label iteration.
+pub fn materialized_labeled_edges(
+    graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>,
+    vid: VertexId,
+) -> Vec<(BucketLabelKey, Vec<u32>)> {
+    let vertex = graph.vertices().get(vid);
+    let base = vertex.base_slot_start();
+    let mut out = Vec::new();
+    for offset in 0..vertex.degree() {
+        let slot = base.saturating_add(u64::from(offset));
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        let label = bucket.bucket_label_key();
+        let targets = graph
+            .iter_edges_for_label(vid, label)
+            .unwrap()
+            .into_iter()
+            .map(|edge| edge.target)
+            .collect();
+        out.push((label, targets));
+    }
+    out
+}
+
+/// Active edge free-span count in the LARA edge allocator.
+pub fn count_free_spans(graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>) -> usize {
+    graph.edges().free_span_store().spans().len()
+}
+
+/// Exercises common labeled scan iterators and batch readers for one hub vertex.
+pub fn exercise_labeled_hub_scan_paths(
+    graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>,
+    hub: VertexId,
+) {
+    use crate::labeled::BucketDirectedness;
+
+    let vertex = graph.vertices().get(hub);
+    let _ = graph.asc_out_edges(hub).unwrap();
+    let _ = graph.out_edges(hub).unwrap();
+    let _: Vec<_> = graph
+        .asc_out_edges_iter(hub)
+        .unwrap()
+        .collect::<Result<_, LabeledOperationError>>()
+        .unwrap();
+    let _: Vec<_> = graph
+        .desc_out_edges_iter(hub)
+        .unwrap()
+        .collect::<Result<_, LabeledOperationError>>()
+        .unwrap();
+    let _ = graph
+        .iter_out_edges_by_directedness(hub, BucketDirectedness::Directed, OutEdgeOrder::Ascending)
+        .unwrap();
+    let _ = graph
+        .iter_out_edges_undirected_only(hub, OutEdgeOrder::Descending)
+        .unwrap();
+
+    let mut payload_scratch = LabeledEdgePayloadBatchScratch::default();
+    for offset in 0..vertex.degree() {
+        let slot = vertex.base_slot_start().saturating_add(u64::from(offset));
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        let label = bucket.bucket_label_key();
+        let _ = graph.iter_edges_for_label(hub, label).unwrap();
+        graph
+            .for_each_edges_for_label_unchecked(hub, label, |_| ())
+            .unwrap();
+        graph
+            .visit_out_edge_payload_batches_for_label(
+                hub,
+                label,
+                OutEdgeOrder::Ascending,
+                &mut payload_scratch,
+                |_| (),
+            )
+            .unwrap();
+        graph
+            .visit_out_edge_payload_batches_for_label(
+                hub,
+                label,
+                OutEdgeOrder::Descending,
+                &mut payload_scratch,
+                |_| (),
+            )
+            .unwrap();
+    }
 }

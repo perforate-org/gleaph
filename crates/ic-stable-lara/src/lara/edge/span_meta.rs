@@ -158,6 +158,8 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
     ///
     /// Panics if `index >= self.len()`.
     pub fn get(&self, index: u64) -> SegmentSpanMeta {
+        #[cfg(test)]
+        super::scan_guard::record_span_meta_read();
         assert!(index < self.len());
         SegmentSpanMeta {
             physical_start: read_u64(&self.memory, Address::from(Self::entry_offset(index))),

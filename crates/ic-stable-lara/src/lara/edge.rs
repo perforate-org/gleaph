@@ -63,6 +63,8 @@ pub mod counts;
 mod edges;
 pub mod free_span;
 mod log;
+#[cfg(test)]
+pub mod scan_guard;
 pub mod span_meta;
 
 use crate::traits::CsrEdge;

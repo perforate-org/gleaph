@@ -2822,28 +2822,6 @@ mod tests {
         );
     }
 
-    fn materialized_label_targets(
-        graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>,
-        vid: VertexId,
-    ) -> Vec<(BucketLabelKey, Vec<u32>)> {
-        let vertex = graph.vertices().get(vid);
-        let base = vertex.base_slot_start();
-        let mut out = Vec::new();
-        for offset in 0..vertex.degree() {
-            let slot = base.saturating_add(u64::from(offset));
-            let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
-            let label = bucket.bucket_label_key();
-            let targets = graph
-                .iter_edges_for_label(vid, label)
-                .unwrap()
-                .into_iter()
-                .map(|edge| edge.target)
-                .collect();
-            out.push((label, targets));
-        }
-        out
-    }
-
     fn live_edge_count_in_leaf(
         graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>,
         vid: VertexId,
@@ -2858,7 +2836,7 @@ mod tests {
         let end_vid = start_vid.saturating_add(seg).min(graph.vertices().len());
         let mut total = 0u32;
         for vidx in start_vid..end_vid {
-            for (_, targets) in materialized_label_targets(graph, VertexId::from(vidx)) {
+            for (_, targets) in materialized_labeled_edges(graph, VertexId::from(vidx)) {
                 total = total.saturating_add(targets.len() as u32);
             }
         }
@@ -3003,12 +2981,12 @@ mod tests {
         graph
             .insert_edge_skip_leaf_cascade(hub, road, TestEdge { target: 2 })
             .unwrap();
-        let before_hub = materialized_label_targets(&graph, hub);
-        let before_neighbor = materialized_label_targets(&graph, neighbor);
+        let before_hub = materialized_labeled_edges(&graph, hub);
+        let before_neighbor = materialized_labeled_edges(&graph, neighbor);
         graph.rebalance_labeled_leaf_weighted_slide(hub).unwrap();
-        assert_eq!(materialized_label_targets(&graph, hub), before_hub);
+        assert_eq!(materialized_labeled_edges(&graph, hub), before_hub);
         assert_eq!(
-            materialized_label_targets(&graph, neighbor),
+            materialized_labeled_edges(&graph, neighbor),
             before_neighbor
         );
         graph
@@ -3211,7 +3189,7 @@ mod tests {
                 .free_span_starting_at(old_start)
                 .is_some_and(|span| span.len == old_len)
         );
-        assert_eq!(materialized_label_targets(&graph, vid).len(), 2);
+        assert_eq!(materialized_labeled_edges(&graph, vid).len(), 2);
     }
 
     #[test]
@@ -3256,6 +3234,7 @@ mod tests {
         graph.relocate_labeled_leaf_physical_block(vid).unwrap();
 
         let merged_len = left_len.saturating_add(old_len).saturating_add(right_len);
+        assert_eq!(count_free_spans(&graph), 1);
         assert_eq!(
             graph.edges().free_span_store().spans(),
             vec![FreeSpan {

@@ -526,6 +526,8 @@ impl<M: Memory> FreeSpanStore<M> {
 
     /// Returns the active free span that starts exactly at `start_slot`.
     pub fn free_span_starting_at(&self, start_slot: u64) -> Option<FreeSpan> {
+        #[cfg(test)]
+        super::scan_guard::record_free_span_read();
         let id = self.by_start.borrow().get(start_slot)?;
         let rec = self.read_record(id);
         if rec.flags != FLAG_ACTIVE {
@@ -539,6 +541,8 @@ impl<M: Memory> FreeSpanStore<M> {
 
     /// Returns the active free span that ends exactly at `end_slot`.
     pub fn free_span_ending_at(&self, end_slot: u64) -> Option<FreeSpan> {
+        #[cfg(test)]
+        super::scan_guard::record_free_span_read();
         self.by_start
             .borrow()
             .predecessor(end_slot)
@@ -561,6 +565,8 @@ impl<M: Memory> FreeSpanStore<M> {
 
     /// Returns all active free spans in increasing start-slot order.
     pub fn spans(&self) -> Vec<FreeSpan> {
+        #[cfg(test)]
+        super::scan_guard::record_free_span_read();
         let by_start = self.by_start.borrow();
         let mut spans = Vec::new();
         let Some((mut start, mut id)) = by_start.first() else {

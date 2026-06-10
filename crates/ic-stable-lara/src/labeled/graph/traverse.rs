@@ -2330,4 +2330,51 @@ mod tests {
             assert_eq!(unchecked, checked, "src={src:?} label={label:?}");
         }
     }
+
+    #[test]
+    fn labeled_scan_never_reads_span_meta() {
+        use crate::lara::edge::scan_guard::ScanPathGuard;
+
+        let (graph, hub, _) = build_mixed_label_hub(8, 25);
+        let _guard = ScanPathGuard::enter();
+        exercise_labeled_hub_scan_paths(&graph, hub);
+        assert_eq!(ScanPathGuard::span_meta_reads(), 0);
+    }
+
+    #[test]
+    fn labeled_scan_never_reads_free_span_store() {
+        use crate::lara::edge::scan_guard::ScanPathGuard;
+
+        let (graph, hub, _) = build_mixed_label_hub(8, 25);
+        let _guard = ScanPathGuard::enter();
+        exercise_labeled_hub_scan_paths(&graph, hub);
+        assert_eq!(ScanPathGuard::free_span_reads(), 0);
+    }
+
+    #[test]
+    fn labeled_hub_materialized_matches_all_scan_iters() {
+        let (graph, hub, _) = build_mixed_label_hub(6, 30);
+        let materialized = materialized_labeled_edges(&graph, hub);
+        exercise_labeled_hub_scan_paths(&graph, hub);
+        for (label, expected_targets) in &materialized {
+            let asc = graph
+                .iter_edges_for_label(hub, *label)
+                .unwrap()
+                .into_iter()
+                .map(|edge| edge.target)
+                .collect::<Vec<_>>();
+            assert_eq!(&asc, expected_targets, "label {label:?}");
+        }
+        let total: usize = materialized.iter().map(|(_, targets)| targets.len()).sum();
+        assert_eq!(graph.asc_out_edges(hub).unwrap().len(), total);
+        assert_eq!(
+            graph
+                .asc_out_edges_iter(hub)
+                .unwrap()
+                .collect::<Result<Vec<_>, _>>()
+                .unwrap()
+                .len(),
+            total
+        );
+    }
 }
