@@ -6,9 +6,10 @@
 //! initialized in [`super::stable`].
 //!
 //! Storage domains (Phase 2 module map):
-//! - **adjacency** — `adjacency` (edge insert commit), `edge_insert`, `edge_scan`, `edge_alias`, `edge_logical`, `delete`
+//! - **adjacency** — `adjacency` (edge insert/delete commit), `edge_insert`, `edge_scan`, `edge_alias`, `edge_logical`, `delete`
 //! - **properties** — `properties` (write commit), `vertex_properties`, `edge_properties`, `catalogs`
 //! - **labels** — `labels` (write commit), `vertex_labels`
+//! - **vertex delete** — `vertex_delete` (sidecar clear and detach delete commit)
 //! - **edge profiles** — `edge_payload`, `sidecar` (weight/payload profiles)
 //! - **remote refs** — `metadata`, federation expand paths
 //! - **local indexes** — `edge_alias`, equality postings in `sidecar`
@@ -37,6 +38,7 @@ mod sidecar;
 #[cfg(test)]
 mod tests;
 mod vertex;
+mod vertex_delete;
 mod vertex_labels;
 mod vertex_properties;
 mod vertex_row;

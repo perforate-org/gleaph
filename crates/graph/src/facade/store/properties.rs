@@ -119,4 +119,18 @@ impl GraphStore {
         }
         removed
     }
+
+    /// Remove every vertex property and enqueue federated index maintenance when enabled.
+    pub(super) fn commit_clear_vertex_properties(&self, vertex_id: VertexId) {
+        let props: Vec<PropertyId> = VERTEX_PROPERTIES.with_borrow(|store| {
+            store
+                .properties_for(vertex_id)
+                .into_iter()
+                .map(|(pid, _)| pid)
+                .collect()
+        });
+        for property_id in props {
+            let _ = self.commit_vertex_property_remove(vertex_id, property_id);
+        }
+    }
 }

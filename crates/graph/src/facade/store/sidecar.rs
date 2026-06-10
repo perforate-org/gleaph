@@ -1,11 +1,6 @@
 //! GraphStore `sidecar` implementation.
 
-use super::super::stable::{
-    EDGE_ALIASES, EDGE_PROPERTIES, GRAPH, REMOTE_FORWARD_IN, VERTEX_LOGICAL_IDS, VERTEX_PROPERTIES,
-};
-use crate::index::{edge_equal, placement};
-use gleaph_graph_kernel::entry::{Edge, EdgeTarget, PropertyId};
-use gleaph_graph_kernel::federation::{ReleaseLogicalVertexArgs, VertexPlacement};
+use super::super::stable::{EDGE_ALIASES, EDGE_PROPERTIES, GRAPH, REMOTE_FORWARD_IN};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
     labeled::{EdgeSlotMove, LabeledOrientation},
@@ -13,9 +8,10 @@ use ic_stable_lara::{
 };
 
 use super::GraphStore;
-use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{canonical_undirected_owner, edge_alias_slot_key};
+use crate::index::edge_equal;
+use gleaph_graph_kernel::entry::{Edge, EdgeTarget};
 
 impl GraphStore {
     pub(super) fn vertex_has_incident_edges(
@@ -149,69 +145,5 @@ impl GraphStore {
                 });
             }
         }
-    }
-
-    fn clear_vertex_properties_stable_only(&self, vertex_id: VertexId) {
-        let props: Vec<PropertyId> = VERTEX_PROPERTIES.with_borrow(|store| {
-            store
-                .properties_for(vertex_id)
-                .into_iter()
-                .map(|(pid, _)| pid)
-                .collect()
-        });
-        for pid in props {
-            let _ = self.remove_vertex_property(vertex_id, pid);
-        }
-    }
-
-    pub(super) fn clear_vertex_stable_payloads_before_graph_delete(
-        &self,
-        vertex_id: VertexId,
-    ) -> Result<(), GraphStoreError> {
-        self.clear_vertex_properties_stable_only(vertex_id);
-        self.release_federated_vertex_placement_if_authoritative(vertex_id)?;
-
-        let vertex = self.vertex(vertex_id).ok_or_else(|| {
-            GraphStoreError::Graph(DeferredBidirectionalLabeledError::VertexOutOfRange {
-                vid: vertex_id,
-                len: self.vertex_count(),
-            })
-        })?;
-        // Label sidecars live in `VERTEX_LABELS`; the CSR row is unchanged. Do not call
-        // `set_vertex` here: it mirrors the forward row into reverse and would corrupt
-        // reverse-only locator state for this `VertexId`.
-        self.commit_clear_vertex_labels(vertex_id, vertex)?;
-        Ok(())
-    }
-
-    fn release_federated_vertex_placement_if_authoritative(
-        &self,
-        vertex_id: VertexId,
-    ) -> Result<(), GraphStoreError> {
-        let Some(routing) = self.federation_routing() else {
-            return Ok(());
-        };
-        let Some(logical_vertex_id) = self.logical_vertex_id(vertex_id) else {
-            return Ok(());
-        };
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let placement = pollster::block_on(placement::resolve_placement(
-                routing.router_canister,
-                logical_vertex_id,
-            ))?;
-            let VertexPlacement::Active(loc) = placement;
-            if loc.shard_id != routing.shard_id
-                || loc.local_vertex_id != placement::local_vertex_id_raw(vertex_id)
-            {
-                return Ok(());
-            }
-            pollster::block_on(placement::release_logical_vertex_placement(
-                routing.router_canister,
-                ReleaseLogicalVertexArgs { logical_vertex_id },
-            ))?;
-        }
-        VERTEX_LOGICAL_IDS.with_borrow_mut(|map| map.remove(vertex_id));
-        Ok(())
     }
 }
