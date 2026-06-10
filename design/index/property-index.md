@@ -96,7 +96,11 @@ full scan path is used.
 
 On DML / property updates, graph enqueues posting changes when federation routing and an index client are configured. Without client, mutations may drop index updates (`index/pending.rs`) — deployments with property indexes must wire the index canister.
 
-**Rebuild:** Property postings (`INDEX_POSTINGS`) have DML sync only. There is no `backfill_property_postings` equivalent to label postings. See [stable-memory-inventory.md](../storage/stable-memory-inventory.md).
+**Backfill:** `backfill_property_postings` on graph shards replays indexable vertex properties from
+`VERTEX_PROPERTIES` into graph-index via `posting_insert` (router-guarded update, same cursor batching
+model as `backfill_label_postings`). Unindexable values are skipped (see `property_indexability` in
+`crates/graph/src/property/`). Router orchestration is not yet wired; operators may call the graph
+canister method directly during recovery.
 
 ## Related documents
 

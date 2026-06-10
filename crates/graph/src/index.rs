@@ -8,5 +8,6 @@ pub mod label_pending;
 pub mod lookup;
 pub mod pending;
 pub mod placement;
+pub mod property_backfill;
 pub mod router;
 mod router_call;

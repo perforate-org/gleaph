@@ -37,7 +37,7 @@ Thread-local pairing: `facade/stable.rs` in each crate.
 | LARA reverse orientation | Forward edges + payloads | Co-updated on edge insert/delete | No standalone API; theoretical full-graph scan |
 | Edge aliases | Forward/reverse adjacency in `GRAPH` | Sync: `commit_insert_edge_alias` on edge insert | **Implemented:** `check_edge_aliases` + `rebuild_edge_aliases` (`facade/derived_state/edge_alias.rs`) |
 | Edge equality postings | Edge properties | Sync: `dispatch_property_index_ops` on DML | **Implemented:** `check_edge_equality_postings` + `rebuild_edge_equality_postings` (`facade/derived_state/edge_equality.rs`) |
-| Property postings (graph-index) | Vertex/edge properties | `index/pending.rs` flush | **Not implemented** (DML sync only) |
+| Property postings (graph-index) | Vertex properties (indexable) | DML + `pending.rs` flush | **Implemented:** `backfill_property_postings` (graph shard); router orchestration pending |
 | Label postings (graph-index) | `VertexLabelStore` | DML + `label_pending` flush | **Implemented:** `backfill_label_postings` + router `admin_label_backfill_step` ([label-index.md](../index/label-index.md)) |
 | Remote forward-in | Remote forward edges | Register/insert paths | Scan fallback per [federation/operations.md](../federation/operations.md) |
 | Router placement-by-physical | `ROUTER_PLACEMENTS` | Placement commit | Rebuild from placement map scan |
@@ -124,7 +124,7 @@ Owner: `ic-stable-lara` / graph `GRAPH` thread-local. Scan paths must not consul
 
 | Symbol | Location | Role | Reopen behavior |
 |--------|----------|------|-----------------|
-| `PENDING` (property postings) | `graph/src/index/pending.rs` | Queued property index ops | Lost on upgrade; retry via DML or future backfill |
+| `PENDING` (property postings) | `graph/src/index/pending.rs` | Queued property index ops | Lost on upgrade; `backfill_property_postings` covers historical vertex properties |
 | `PENDING` (label postings) | `graph/src/index/label_pending.rs` | Queued label index ops | Lost on upgrade; `backfill_label_postings` covers historical labels |
 
 ---

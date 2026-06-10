@@ -141,4 +141,11 @@ async fn backfill_label_postings(
     canister::handlers::backfill_label_postings(args).await
 }
 
+#[update(guard = "guard_router_canister")]
+async fn backfill_property_postings(
+    args: gleaph_graph_kernel::federation::PropertyPostingBackfillArgs,
+) -> Result<gleaph_graph_kernel::federation::PropertyPostingBackfillResult, String> {
+    canister::handlers::backfill_property_postings(args).await
+}
+
 ic_cdk::export_candid!();
