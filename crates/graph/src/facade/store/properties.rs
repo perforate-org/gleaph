@@ -2,7 +2,7 @@
 
 use super::super::VertexPropertyStoreError;
 use super::super::stable::{EDGE_PROPERTIES, VERTEX_PROPERTIES};
-use crate::index::{edge_equal, pending};
+use crate::index::pending;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::VertexId;
@@ -73,7 +73,7 @@ impl GraphStore {
                 value.clone(),
             )
         })?;
-        edge_equal::record_edge_property_change(
+        self.commit_record_edge_property_equality_change(
             handle.owner_vertex_id,
             handle.label_id.raw(),
             handle.slot_index,
@@ -108,7 +108,7 @@ impl GraphStore {
             )
         });
         if let Some(ref old) = prev {
-            edge_equal::record_edge_property_change(
+            self.commit_record_edge_property_equality_change(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
                 handle.slot_index,

@@ -141,31 +141,6 @@ impl GraphStore {
         self.canonical_edge_handle(handle)
     }
 
-    pub(super) fn insert_edge_alias(
-        &self,
-        alias: EdgeHandle,
-        canonical: EdgeHandle,
-        reverse_in: bool,
-    ) {
-        if alias.owner_vertex_id == canonical.owner_vertex_id
-            && alias.label_id == canonical.label_id
-            && alias.slot_index == canonical.slot_index
-        {
-            return;
-        }
-        debug_assert_eq!(alias.label_id, canonical.label_id);
-        let alias_slot_key = edge_alias_slot_key(alias.slot_index, reverse_in);
-        EDGE_ALIASES.with_borrow_mut(|aliases| {
-            aliases.insert(
-                alias.owner_vertex_id,
-                alias.label_id.raw(),
-                alias_slot_key,
-                canonical.owner_vertex_id,
-                canonical.slot_index,
-            );
-        });
-    }
-
     pub(super) fn remove_reverse_edge_for_canonical_directed(
         &self,
         row_vertex_id: VertexId,

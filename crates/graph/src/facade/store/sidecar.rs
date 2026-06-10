@@ -1,6 +1,6 @@
-//! GraphStore `sidecar` implementation.
+//! GraphStore sidecar coordination: edge properties plus local indexes.
 
-use super::super::stable::{EDGE_ALIASES, EDGE_PROPERTIES, GRAPH, REMOTE_FORWARD_IN};
+use super::super::stable::{EDGE_PROPERTIES, GRAPH, REMOTE_FORWARD_IN};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
     labeled::{EdgeSlotMove, LabeledOrientation},
@@ -9,8 +9,7 @@ use ic_stable_lara::{
 
 use super::GraphStore;
 use super::handle::EdgeHandle;
-use super::helpers::{canonical_undirected_owner, edge_alias_slot_key};
-use crate::index::edge_equal;
+use super::helpers::canonical_undirected_owner;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget};
 
 impl GraphStore {
@@ -35,25 +34,9 @@ impl GraphStore {
 
     pub(super) fn clear_edge_sidecars(&self, handle: EdgeHandle) {
         let handle = self.canonical_edge_handle_for_sidecar(handle);
-        edge_equal::remove_all_for_edge(
-            handle.owner_vertex_id,
-            handle.label_id.raw(),
-            handle.slot_index,
-        );
+        self.commit_clear_edge_local_indexes(handle);
         EDGE_PROPERTIES.with_borrow_mut(|store| {
             store.remove_all_for_edge(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index,
-            );
-        });
-        EDGE_ALIASES.with_borrow_mut(|aliases| {
-            aliases.remove(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index,
-            );
-            aliases.remove_all_for_canonical(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
                 handle.slot_index,
@@ -79,40 +62,12 @@ impl GraphStore {
                         )
                         .expect("stored edge property values remain encodable")
                 });
-                if !moved_properties.is_empty() {
-                    for (property_id, value) in &moved_properties {
-                        edge_equal::record_edge_property_change(
-                            owner_vertex_id,
-                            label_id,
-                            moved.old_slot_index,
-                            *property_id,
-                            Some(value),
-                            None,
-                        );
-                        edge_equal::record_edge_property_change(
-                            owner_vertex_id,
-                            label_id,
-                            moved.new_slot_index,
-                            *property_id,
-                            None,
-                            Some(value),
-                        );
-                    }
-                }
-                EDGE_ALIASES.with_borrow_mut(|aliases| {
-                    aliases.move_canonical_target(
-                        owner_vertex_id,
-                        label_id,
-                        moved.old_slot_index,
-                        moved.new_slot_index,
-                    );
-                    aliases.move_alias_key(
-                        owner_vertex_id,
-                        label_id,
-                        moved.old_slot_index,
-                        moved.new_slot_index,
-                    );
-                });
+                Self::commit_move_edge_local_indexes_for_compaction(
+                    orientation,
+                    owner_vertex_id,
+                    moved,
+                    &moved_properties,
+                );
                 let label = LaraLabelId::from_raw(label_id);
                 let _ = GRAPH.with_borrow(|graph| {
                     graph.for_each_out_edges_for_label_unchecked(owner_vertex_id, label, |edge| {
@@ -135,14 +90,12 @@ impl GraphStore {
                 });
             }
             LabeledOrientation::Reverse => {
-                EDGE_ALIASES.with_borrow_mut(|aliases| {
-                    aliases.move_alias_key(
-                        owner_vertex_id,
-                        label_id,
-                        edge_alias_slot_key(moved.old_slot_index, true),
-                        edge_alias_slot_key(moved.new_slot_index, true),
-                    );
-                });
+                Self::commit_move_edge_local_indexes_for_compaction(
+                    orientation,
+                    owner_vertex_id,
+                    moved,
+                    &[],
+                );
             }
         }
     }

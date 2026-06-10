@@ -1,9 +1,7 @@
 //! Edge profile domain: init-time payload/weight profiles and inline payload updates.
 
 use super::super::stable::{EDGE_PAYLOAD_PROFILES, EDGE_WEIGHT_PROFILES};
-use gleaph_graph_kernel::entry::{
-    EdgeLabelId, EdgePayloadProfile, EdgeTarget, EdgeWeightProfile,
-};
+use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, EdgeTarget, EdgeWeightProfile};
 
 use super::GraphStore;
 use super::error::GraphStoreError;

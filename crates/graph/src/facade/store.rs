@@ -12,7 +12,7 @@
 //! - **vertex delete** — `vertex_delete` (sidecar clear and detach delete commit)
 //! - **edge profiles** — `edge_profiles` (profile install/update commits), `edge_payload` (public update API)
 //! - **remote refs** — `remote_refs` (logical vertex handles, forward-in index, logical edge insert)
-//! - **local indexes** — `edge_alias`, equality postings in `sidecar`
+//! - **local indexes** — `local_indexes` (alias and equality posting commits), `edge_alias` (lookup)
 //! - **telemetry** — `telemetry`
 //! - **maintenance** — `maintenance`
 
@@ -30,6 +30,7 @@ mod error;
 mod handle;
 pub(crate) mod helpers;
 mod labels;
+mod local_indexes;
 mod lookup;
 mod maintenance;
 mod metadata;
