@@ -133,4 +133,11 @@ async fn federated_expand(
     canister::handlers::federated_expand(args).await
 }
 
+#[update(guard = "guard_router_canister")]
+async fn backfill_label_postings(
+    args: gleaph_graph_kernel::federation::LabelPostingBackfillArgs,
+) -> Result<gleaph_graph_kernel::federation::LabelPostingBackfillResult, String> {
+    canister::handlers::backfill_label_postings(args).await
+}
+
 ic_cdk::export_candid!();

@@ -59,6 +59,7 @@ pub fn split_label_and_property_anchors(
                 }
                 label_id = Some(*vertex_label_id);
             }
+            IndexAnchor::LabelIntersection { .. } => return Err(()),
             other => property_anchors.push(other.clone()),
         }
     }

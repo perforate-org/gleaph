@@ -2,10 +2,10 @@
 
 use gleaph_graph_kernel::index::PostingHit;
 
-/// Maximum `(shard_id, vertex_id)` pairs shipped as a fast-path vertex filter or seed hit list.
+/// Maximum `(shard_id, vertex_id)` pairs shipped as a C1 aggregate vertex filter.
 ///
-/// Aligns with graph-index `count_postings_by_value` group caps; oversized sets fall back to
-/// generic shard execution.
+/// Seed routing no longer falls back to unseeded shard execution when this budget is exceeded;
+/// large seed lists are preferred over all-shard local scans per ADR 0004.
 pub const FAST_PATH_MAX_VERTEX_FILTER_HITS: usize = 10_000;
 
 #[inline]

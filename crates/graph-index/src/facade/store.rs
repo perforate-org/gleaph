@@ -264,6 +264,42 @@ impl IndexStore {
             .collect()
     }
 
+    /// Intersect label membership across at least two `vertex_label_id` buckets.
+    pub fn lookup_label_intersection(&self, vertex_label_ids: &[u32]) -> Vec<PostingHit> {
+        if vertex_label_ids.len() < 2 {
+            return Vec::new();
+        }
+        let mut sets: Vec<std::collections::HashSet<u64>> =
+            Vec::with_capacity(vertex_label_ids.len());
+        for &label_id in vertex_label_ids {
+            let lo = LabelPostingKey::prefix_lower(label_id);
+            let hi = LabelPostingKey::prefix_upper(label_id);
+            let mut set = std::collections::HashSet::new();
+            INDEX_LABEL_POSTINGS.with_borrow(|postings| {
+                for key in postings.range(lo..=hi) {
+                    let packed = pack_posting_vertex(key.shard_id, key.vertex_id);
+                    set.insert(packed);
+                }
+            });
+            sets.push(set);
+        }
+        sets.sort_by_key(|set| set.len());
+        let mut intersection = sets[0].clone();
+        for set in sets.iter().skip(1) {
+            intersection = intersection.intersection(set).copied().collect();
+            if intersection.is_empty() {
+                return Vec::new();
+            }
+        }
+        intersection
+            .into_iter()
+            .map(|packed| PostingHit {
+                shard_id: (packed >> 32) as u32,
+                vertex_id: (packed & 0xFFFF_FFFF) as u32,
+            })
+            .collect()
+    }
+
     /// Walk the property bucket and return `(encoded_value, global_count)` groups with `count >= min_count`.
     ///
     /// When `vertex_filter` is set, only postings whose `(shard_id, vertex_id)` appear in the set
@@ -1005,6 +1041,34 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn lookup_label_intersection_returns_common_vertices() {
+        let store = IndexStore::new();
+        let router = init_test_store(&store);
+        let shard_principal = Principal::from_slice(&[1]);
+        register_shard_owner(&store, router, 7, shard_principal);
+
+        for vid in [10u32, 20, 30] {
+            store
+                .label_posting_insert(shard_principal, 7, 1, vid)
+                .expect("L1");
+            store
+                .label_posting_insert(shard_principal, 7, 2, vid)
+                .expect("L2");
+        }
+        store
+            .label_posting_insert(shard_principal, 7, 1, 40)
+            .expect("L1 only");
+
+        let hits = store.lookup_label_intersection(&[1, 2]);
+        assert_eq!(hits.len(), 3);
+        assert!(hits.contains(&PostingHit {
+            shard_id: 7,
+            vertex_id: 10
+        }));
+        assert!(!hits.iter().any(|hit| hit.vertex_id == 40));
     }
 
     #[test]

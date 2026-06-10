@@ -24,7 +24,8 @@ mod canister;
 
 pub use facade::IndexStore;
 pub use gleaph_graph_kernel::index::{
-    IndexEqualSpec, IndexIntersectionRequest, PostingHit, PostingRangeRequest, ValuePostingCount,
+    IndexEqualSpec, IndexIntersectionRequest, IndexLabelIntersectionRequest, PostingHit,
+    PostingRangeRequest, ValuePostingCount,
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
@@ -83,6 +84,11 @@ fn lookup_label(vertex_label_id: u32) -> Vec<PostingHit> {
 #[query]
 fn lookup_intersection(req: IndexIntersectionRequest) -> Vec<PostingHit> {
     canister::lookup_intersection(req)
+}
+
+#[query]
+fn lookup_label_intersection(req: IndexLabelIntersectionRequest) -> Vec<PostingHit> {
+    canister::lookup_label_intersection(req)
 }
 
 #[query]

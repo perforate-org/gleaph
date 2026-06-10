@@ -25,6 +25,12 @@ pub struct IndexIntersectionRequest {
     pub specs: Vec<IndexEqualSpec>,
 }
 
+/// Intersect label membership postings for multiple labels (at least two label ids).
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct IndexLabelIntersectionRequest {
+    pub vertex_label_ids: Vec<u32>,
+}
+
 /// Compare encoded property values using the same lexicographic order as index posting keys.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub enum PostingRangeRequest {

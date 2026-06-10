@@ -81,6 +81,12 @@ pub(crate) fn lookup_intersection(
     IndexStore::new().lookup_intersection(&req)
 }
 
+pub(crate) fn lookup_label_intersection(
+    req: gleaph_graph_kernel::index::IndexLabelIntersectionRequest,
+) -> Vec<PostingHit> {
+    IndexStore::new().lookup_label_intersection(&req.vertex_label_ids)
+}
+
 pub(crate) fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<PostingHit> {
     IndexStore::new().lookup_range(property_id, &req)
 }

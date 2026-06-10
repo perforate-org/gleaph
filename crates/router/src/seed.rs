@@ -9,7 +9,8 @@ use std::collections::BTreeMap;
 
 use candid::Encode;
 use gleaph_gql::Value;
-use gleaph_gql::ast::CmpOp;
+use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
+use gleaph_gql::types::LabelExpr;
 use gleaph_gql::value_to_index_key_bytes;
 use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::plan::{PlanOp, ScanValue};
@@ -35,6 +36,11 @@ pub enum IndexAnchor {
         variable: String,
         vertex_label_id: u32,
     },
+    /// Multi-label `NodeScan` + `IsLabeled` filters (`lookup_label_intersection`).
+    LabelIntersection {
+        variable: String,
+        vertex_label_ids: Vec<u32>,
+    },
 }
 
 impl IndexAnchor {
@@ -44,6 +50,7 @@ impl IndexAnchor {
             Self::Equal(probe) => probe.variable.as_str(),
             Self::Intersection { variable, .. } => variable.as_str(),
             Self::Label { variable, .. } => variable.as_str(),
+            Self::LabelIntersection { variable, .. } => variable.as_str(),
         }
     }
 
@@ -54,6 +61,13 @@ impl IndexAnchor {
         store: &RouterStore,
     ) -> Result<Option<Self>, RouterError> {
         for plan in plans {
+            if matches!(plan.ops.first(), Some(PlanOp::NodeScan { .. })) {
+                if let Some(anchor) =
+                    extract_label_anchor_from_prefix(&plan.ops, parameters, store)?
+                {
+                    return Ok(Some(anchor));
+                }
+            }
             if let Some(anchor) = extract_from_ops(&plan.ops, parameters, store)? {
                 return Ok(Some(anchor));
             }
@@ -84,7 +98,10 @@ impl SeedProbe {
     ) -> Result<Option<Self>, RouterError> {
         Ok(match IndexAnchor::from_plans(plans, parameters, store)? {
             Some(IndexAnchor::Equal(probe)) => Some(probe),
-            Some(IndexAnchor::Intersection { .. }) | Some(IndexAnchor::Label { .. }) | None => None,
+            Some(IndexAnchor::Intersection { .. })
+            | Some(IndexAnchor::Label { .. })
+            | Some(IndexAnchor::LabelIntersection { .. })
+            | None => None,
         })
     }
 }
@@ -100,6 +117,74 @@ pub(crate) fn index_anchor_from_prefix_ops(
         [op] => extract_from_op(op, parameters, store),
         _ => Ok(None),
     }
+}
+
+fn resolve_vertex_label_id(store: &RouterStore, label: &str) -> Result<u32, RouterError> {
+    Ok(u32::from(
+        store
+            .lookup_vertex_label_id(label)
+            .map_err(|_| RouterError::NotFound(format!("label {label}")))?
+            .raw(),
+    ))
+}
+
+fn variable_from_expr(expr: &Expr) -> Option<&str> {
+    match &expr.kind {
+        ExprKind::Variable(name) => Some(name.as_str()),
+        _ => None,
+    }
+}
+
+/// Collect label constraints from `NodeScan` and leading `PropertyFilter` `IsLabeled` predicates.
+pub(crate) fn extract_label_anchor_from_prefix(
+    ops: &[PlanOp],
+    _parameters: &BTreeMap<String, Value>,
+    store: &RouterStore,
+) -> Result<Option<IndexAnchor>, RouterError> {
+    let Some(PlanOp::NodeScan {
+        variable, label, ..
+    }) = ops.first()
+    else {
+        return Ok(None);
+    };
+    let var = variable.as_ref();
+    let mut label_ids = Vec::new();
+    if let Some(label) = label {
+        label_ids.push(resolve_vertex_label_id(store, label.as_ref())?);
+    }
+    for op in ops.iter().skip(1) {
+        match op {
+            PlanOp::PropertyFilter { predicates, .. } => {
+                for predicate in predicates {
+                    if let ExprKind::IsLabeled {
+                        expr,
+                        label: LabelExpr::Name(name),
+                        negated: false,
+                    } = &predicate.kind
+                        && variable_from_expr(expr) == Some(var)
+                    {
+                        label_ids.push(resolve_vertex_label_id(store, name)?);
+                    }
+                }
+            }
+            _ => break,
+        }
+    }
+    if label_ids.is_empty() {
+        return Ok(None);
+    }
+    label_ids.sort_unstable();
+    label_ids.dedup();
+    if label_ids.len() >= 2 {
+        return Ok(Some(IndexAnchor::LabelIntersection {
+            variable: var.to_string(),
+            vertex_label_ids: label_ids,
+        }));
+    }
+    Ok(Some(IndexAnchor::Label {
+        variable: var.to_string(),
+        vertex_label_id: label_ids[0],
+    }))
 }
 
 fn extract_from_ops(
@@ -151,18 +236,10 @@ fn extract_from_op(
             variable,
             label: Some(label),
             ..
-        } => {
-            let vertex_label_id = u32::from(
-                store
-                    .lookup_vertex_label_id(label.as_ref())
-                    .map_err(|_| RouterError::NotFound(format!("label {}", label.as_ref())))?
-                    .raw(),
-            );
-            Ok(Some(IndexAnchor::Label {
-                variable: variable.to_string(),
-                vertex_label_id,
-            }))
-        }
+        } => Ok(Some(IndexAnchor::Label {
+            variable: variable.to_string(),
+            vertex_label_id: resolve_vertex_label_id(store, label.as_ref())?,
+        })),
         PlanOp::IndexScan {
             variable,
             property,
@@ -254,7 +331,8 @@ mod tests {
 
     use candid::{Decode, Encode};
     use gleaph_gql::Value;
-    use gleaph_gql::ast::CmpOp;
+    use gleaph_gql::ast::{CmpOp, ExprKind};
+    use gleaph_gql::types::LabelExpr;
     use gleaph_gql_planner::NodeLabelRef;
     use gleaph_gql_planner::PhysicalPlan;
     use gleaph_gql_planner::plan::{IndexScanSpec, PlanOp, ScanValue};
@@ -356,6 +434,49 @@ mod tests {
             .expect("probe")
             .expect("parameter probe");
         assert!(!probe.payload_bytes.is_empty());
+    }
+
+    #[test]
+    fn index_anchor_from_plans_finds_multi_label_intersection() {
+        let store = RouterStore::new();
+        store.init_from_args(&RouterInitArgs {
+            issuing_principal: candid::Principal::anonymous(),
+            initial_admins: vec![],
+            controllers: vec![],
+        });
+        let admin = candid::Principal::anonymous();
+        store.bootstrap_controllers(&[admin]);
+        store
+            .admin_intern_vertex_label(admin, "Person")
+            .expect("intern Person");
+        store
+            .admin_intern_vertex_label(admin, "Employee")
+            .expect("intern Employee");
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("n"),
+                label: Some(NodeLabelRef::from("Person")),
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![gleaph_gql::ast::Expr::new(ExprKind::IsLabeled {
+                    expr: Box::new(gleaph_gql::ast::Expr::var("n")),
+                    label: LabelExpr::Name("Employee".into()),
+                    negated: false,
+                })],
+                stage: 0,
+            },
+        ]);
+        let anchor = IndexAnchor::from_plans(std::slice::from_ref(&plan), &BTreeMap::new(), &store)
+            .expect("anchor")
+            .expect("label intersection");
+        let IndexAnchor::LabelIntersection {
+            vertex_label_ids, ..
+        } = anchor
+        else {
+            panic!("expected label intersection anchor");
+        };
+        assert_eq!(vertex_label_ids, vec![1, 2]);
     }
 
     #[test]

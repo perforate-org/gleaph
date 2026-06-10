@@ -244,3 +244,13 @@ pub async fn federated_expand(
         .await
         .map_err(|e| e.to_string())
 }
+
+pub async fn backfill_label_postings(
+    args: gleaph_graph_kernel::federation::LabelPostingBackfillArgs,
+) -> Result<gleaph_graph_kernel::federation::LabelPostingBackfillResult, String> {
+    let store = GraphStore::new();
+    let Some(index) = wasm_index_client_holder() else {
+        return Err("federation not configured".into());
+    };
+    crate::index::label_backfill::backfill_label_postings(&store, &index, args).await
+}

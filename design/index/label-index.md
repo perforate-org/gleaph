@@ -5,10 +5,10 @@ Implementation verified as of: 2026-06-09 (label index commits through `dc727b13
 
 ## Status
 
-**Partially Implemented** — Postings, DML sync, and `lookup_label` (path **A**) exist. Router v1
-also uses `lookup_label` for aggregate fast path and a 10k scale guard; **target design narrows A
-and removes that guard** (see [ADR 0004](../adr/0004-label-index.md)). Paths **B**, **C** are
-**Planned**.
+**Partially Implemented** — Postings, DML sync, `lookup_label` (path **A**), `lookup_label_intersection`
+(path **D**), label posting backfill, and router paths **B** / **C1** / **C2** are implemented.
+Seed routing no longer falls back to unseeded all-shard execution on large hit lists (see
+[ADR 0004](../adr/0004-label-index.md)).
 
 ## Purpose
 
@@ -48,7 +48,7 @@ acceptable when vertex ids are required; unseeded graph scans are worse.
 
 **Not for:** `COUNT(*)` without vertices; `GROUP BY` indexed property (use C).
 
-### B — Label telemetry — Planned (router)
+### B — Label telemetry — Implemented (router)
 
 | Source | When |
 |--------|------|
@@ -56,7 +56,7 @@ acceptable when vertex ids are required; unseeded graph scans are worse.
 
 Updated from graph `LabelUsageDelta` on DML. No graph-index call.
 
-### C — Property path + label sieve — Planned
+### C — Property path + label sieve — Implemented
 
 **C1 — Small property hit set**
 
@@ -79,13 +79,17 @@ MATCH (n:Person) GROUP BY n.country     → C2
 MATCH (n:Person) WHERE n.region = 'US' GROUP BY n.country  → C1 then count
 ```
 
-### D — Multi-label vertex list — Planned
+### D — Multi-label vertex list — Implemented
 
-`lookup_label_intersection` when the plan needs explicit ids for `:L1:L2:…`.
+`lookup_label_intersection` when the plan needs explicit ids for `:L1:L2:…` (router
+`IndexAnchor::LabelIntersection` from `NodeScan` + `IsLabeled` filters).
 
 ## Write path — Implemented
 
 `label_pending` + graph-index `label_posting_insert/remove` on label DML.
+
+**Backfill:** `backfill_label_postings` on graph shards (router-guarded, cursor-based) replays
+`VertexLabelStore` into graph-index for pre-existing data.
 
 ## Router (target)
 

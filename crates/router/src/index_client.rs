@@ -1,7 +1,9 @@
 //! Read-only property index client for router seed routing.
 
 use candid::Principal;
-use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, ValuePostingCount};
+use gleaph_graph_kernel::index::{
+    IndexIntersectionRequest, IndexLabelIntersectionRequest, PostingHit, ValuePostingCount,
+};
 
 #[derive(Clone, Debug)]
 pub struct RouterIndexClient {
@@ -111,6 +113,30 @@ impl RouterIndexClient {
         {
             let _ = (property_id, vertex_label_id, min_count);
             Err("count_postings_by_value_for_label unavailable in native builds".into())
+        }
+    }
+
+    pub async fn lookup_label_intersection(
+        &self,
+        req: IndexLabelIntersectionRequest,
+    ) -> Result<Vec<PostingHit>, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            let hits: Vec<PostingHit> =
+                Call::bounded_wait(self.index_canister, "lookup_label_intersection")
+                    .with_args(&(req,))
+                    .await
+                    .map_err(|e| format!("lookup_label_intersection: {e}"))?
+                    .candid()
+                    .map_err(|e| format!("lookup_label_intersection decode: {e}"))?;
+            return Ok(hits);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = req;
+            Err("lookup_label_intersection unavailable in native builds".into())
         }
     }
 
