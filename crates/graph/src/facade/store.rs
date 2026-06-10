@@ -8,7 +8,7 @@
 //! Storage domains (Phase 2 module map):
 //! - **adjacency** — `adjacency` (edge insert commit), `edge_insert`, `edge_scan`, `edge_alias`, `edge_logical`, `delete`
 //! - **properties** — `properties` (write commit), `vertex_properties`, `edge_properties`, `catalogs`
-//! - **labels** — `vertex_labels`
+//! - **labels** — `labels` (write commit), `vertex_labels`
 //! - **edge profiles** — `edge_payload`, `sidecar` (weight/payload profiles)
 //! - **remote refs** — `metadata`, federation expand paths
 //! - **local indexes** — `edge_alias`, equality postings in `sidecar`
@@ -28,6 +28,7 @@ mod error;
 mod handle;
 pub(crate) mod helpers;
 mod label_telemetry;
+mod labels;
 mod lookup;
 mod maintenance;
 mod metadata;
