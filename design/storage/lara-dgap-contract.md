@@ -72,10 +72,10 @@ LARA ports DGAP's split and adds **LARA structures** (not IC-specific; see [lara
 └─────────────────────────────────────────────────────────────────┘
 ```
 
-### Responsibility matrix
+### Boundary matrix
 
-| Concern | DGAP | Core LARA | Labeled (target) | Labeled (today) |
-|---------|------|-----------|------------------|-----------------|
+| Storage behavior | DGAP | Core LARA | Labeled (target) | Labeled (today) |
+|------------------|------|-----------|------------------|-----------------|
 | Scan adjacency | `index`, `degree`, `offset` | `base_slot_start`, `degree`, `log_head` | + `LabelBucket` rows | Implemented |
 | Insert slack in window | CSR successor boundary | Same (`row_layout`) | Per-label slack inside vertex span | Implemented |
 | Overflow | Per-leaf log | Per-leaf log | Per-leaf log (shared) | Implemented |

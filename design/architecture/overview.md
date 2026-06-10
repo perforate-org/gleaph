@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Describe how Gleaph runs on the Internet Computer: which canisters exist, how a GQL request flows, and where responsibilities sit between crates.
+Describe how Gleaph runs on the Internet Computer: which canisters exist, how a GQL request flows, and which crate owns each state boundary, API surface, and execution step.
 
 ## Non-goals
 
@@ -20,11 +20,11 @@ flowchart TB
     G0 <-->|federated_expand / peer ACL| G1
 ```
 
-| Canister | Crate | Responsibilities |
-|----------|-------|------------------|
-| Router | `crates/router` | RBAC, parse+plan ad-hoc GQL, prepared registry, shard registry, **vertex placement authority**, multi-shard `dispatch_plan_blob` |
-| Graph | `crates/graph` | Stable graph state, `execute_plan_*`, federated expand, local indexes |
-| Graph index | `crates/graph-index` | Global property equality index with `PostingHit { shard_id, vertex_id }` |
+| Canister | Crate | State / API / execution boundary |
+|----------|-------|--------------------------------|
+| Router | `crates/router` | RBAC decisions, ad-hoc GQL parse+plan entry, prepared registry, shard registry, **vertex placement authority**, multi-shard `dispatch_plan_blob` |
+| Graph | `crates/graph` | Stable graph state, `execute_plan_*` entrypoints, federated expand, local indexes |
+| Graph index | `crates/graph-index` | Global property equality postings and lookup APIs returning `PostingHit { shard_id, vertex_id }` |
 
 Graph shards **do not** expose arbitrary GQL to end users; they accept `ExecutePlanArgs` from the router (or sibling graph shards for federation helpers).
 

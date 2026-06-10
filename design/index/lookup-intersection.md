@@ -25,10 +25,10 @@ MATCH (n:User WHERE n.uid = 'alice' AND n.email = 'alice@example.com') RETURN n
 
 emit `PlanOp::IndexIntersection` with two indexed equalities. Intersecting posting lists belongs to the **index data plane**, not graph CSR traversal.
 
-## Ownership
+## Execution and Data Boundaries
 
-| Step | Owner |
-|------|--------|
+| Step | Boundary |
+|------|----------|
 | Detect intersection in plan | `gleaph-gql-planner` (unchanged) |
 | Resolve property names → ids, params → encoded bytes | **Router** (target) or graph during standalone transition |
 | Posting lookup + intersect | **graph-index** |
@@ -108,7 +108,7 @@ for each shard_id in participating_shards:
 
 **Target:** graph does not call index for intersection on the federation hot path.
 
-**Standalone transition:** until Router owns lookup, graph may call `lookup_intersection` via `PropertyIndexLookup` once, then bind only hits where `shard_id == local` — no client-side set intersection, no `resolve_logical_at` on index hits.
+**Standalone transition:** until Router performs lookup, graph may call `lookup_intersection` via `PropertyIndexLookup` once, then bind only hits where `shard_id == local` — no client-side set intersection, no `resolve_logical_at` on index hits.
 
 Remove from `execute_index_intersection`:
 

@@ -27,8 +27,8 @@ flowchart TD
     PVL --> LV["LocalVertexId / VertexId<br/>dense CSR on one graph shard"]
 ```
 
-| Type | Owner | Notes |
-|------|-------|-------|
+| Type | Allocated / stored by | Notes |
+|------|-----------------------|-------|
 | `LogicalVertexId` | Router | Global key for federation-aware APIs |
 | `ShardId` | Router registry | Maps to `graph_canister` + `index_canister` |
 | `LocalVertexId` | Graph shard | Same bits as LARA `VertexId` on that shard |

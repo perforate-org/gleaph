@@ -43,10 +43,10 @@ sequenceDiagram
     R-->>U: result
 ```
 
-## Ownership
+## State and Execution Boundaries
 
-| Layer | Owns | Must not own |
-|-------|------|--------------|
+| Domain | Owns / exposes | Must not own |
+|--------|---------------|--------------|
 | **graph-index** | Posting storage, `lookup_equal`, `lookup_intersection`, range scans | Plan execution, binding, traverse, logical placement |
 | **Router** | Index queries, per-shard seed construction, dispatch, result merge | CSR storage, local traverse |
 | **Graph shard** | Local `execute_plan_*`, edge/vertex stable stores, **peer** `federated_expand` | Global index lookup on query hot path, placement authority |
@@ -105,7 +105,7 @@ Index is authoritative for **which physical vertices match an indexed predicate*
 
 **Partial (v1):** `router/federation/merge.rs` unions independent shard-local row batches and sums row counts; `router/federation/aggregate_merge.rs` merges partial `PlanOp::Aggregate` results by GROUP BY key (COUNT/COUNT(*)/SUM/MIN/MAX). Used by `gql.rs` multi-shard dispatch. See [ADR 0002](../adr/0002-federated-row-batch-merge.md) and [ADR 0003](../adr/0003-federated-aggregate-merge.md).
 
-Planned responsibilities (detail TBD):
+Planned merge capabilities (detail TBD):
 
 - Aggregate pushdown for non-mergeable functions (`AVG`, `DISTINCT`, ordered `COLLECT`).
 - Dedup and join of row batches when fragments are not independent unions.

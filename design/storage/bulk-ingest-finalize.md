@@ -281,8 +281,8 @@ baseline when persisting results after `c16a247f`; it measures real ingest cost.
 
 ## Source of truth (current code)
 
-| Concern | Location |
-|---------|----------|
+| Source-of-truth item | Location |
+|----------------------|----------|
 | Post-insert drain | `crates/graph/src/facade/store/maintenance.rs` |
 | Insert hook | `crates/graph/src/facade/store/edge_insert.rs`, `edge_logical.rs` |
 | Budgets | `crates/graph/src/facade/ic_budget.rs` |

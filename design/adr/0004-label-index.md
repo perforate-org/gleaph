@@ -176,8 +176,8 @@ not as a silent switch to “no seeds / no fast path.”
 
 ### Relationship to label telemetry
 
-| Concern | Label postings | Label telemetry |
-|---------|----------------|-----------------|
+| Query / state need | Label postings | Label telemetry |
+|--------------------|----------------|-----------------|
 | Per-vertex membership | Yes | No |
 | Per-shard live count | Derivable (expensive) | Yes (O(1) read) |
 | Seed / RETURN vertex list | Yes (export) | No |

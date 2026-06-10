@@ -2,7 +2,7 @@
 
 ## Purpose
 
-Fix the **boundary between portable GQL crates and Gleaph-specific execution**, so IC and storage concerns do not leak into ISO-oriented code.
+Fix the **boundary between portable GQL crates and Gleaph-specific execution**, so IC state, storage APIs, and canister calls do not leak into ISO-oriented code.
 
 ## Non-goals
 
@@ -20,9 +20,9 @@ flowchart TB
     RT --> IC["gleaph-gql-ic<br/>params blob"]
 ```
 
-## Crate responsibilities
+## Crate boundaries
 
-| Crate | Responsibility | Must not contain |
+| Crate | Owns / exposes | Must not contain |
 |-------|----------------|------------------|
 | `gleaph-gql` | Parser, validator, `program_modification`, standard types | IC principals, shard ids, canister calls |
 | `gleaph-gql-planner` | `build_*_plan`, `PhysicalPlan`, optimizations | GraphStore, federation, stable memory |

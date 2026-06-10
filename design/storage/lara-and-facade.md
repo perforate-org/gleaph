@@ -25,7 +25,7 @@ flowchart TB
     Facade --> Lara
 ```
 
-## LARA responsibilities
+## LARA storage boundary
 
 **Crate:** `ic-stable-lara`
 
@@ -39,7 +39,7 @@ LARA does not know `LogicalVertexId`, router placement, or GQL.
 
 **Design contract:** [lara.md](./lara.md) (accepted) · [lara-dgap-contract.md](./lara-dgap-contract.md) (DGAP mapping detail).
 
-## Graph facade responsibilities
+## Graph facade state boundary
 
 **Crate:** `gleaph-graph` — `facade/store.rs`, `facade/stable/*`
 
