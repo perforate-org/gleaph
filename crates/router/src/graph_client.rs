@@ -2,8 +2,7 @@
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
-    AddGraphPeerArgs, BootstrapGraphPeersArgs, LabelPostingBackfillArgs,
-    LabelPostingBackfillResult, PropertyPostingBackfillArgs, PropertyPostingBackfillResult,
+    AddGraphPeerArgs, BootstrapGraphPeersArgs, PostingBackfillArgs, PostingBackfillResult,
     RemoveGraphPeerArgs,
 };
 use gleaph_graph_kernel::plan_exec::{
@@ -120,14 +119,14 @@ pub async fn get_mutation_outcome(
 
 pub async fn backfill_label_postings(
     graph: Principal,
-    args: LabelPostingBackfillArgs,
-) -> Result<LabelPostingBackfillResult, String> {
+    args: PostingBackfillArgs,
+) -> Result<PostingBackfillResult, String> {
     call_graph(graph, "backfill_label_postings", args).await
 }
 
 pub async fn backfill_property_postings(
     graph: Principal,
-    args: PropertyPostingBackfillArgs,
-) -> Result<PropertyPostingBackfillResult, String> {
+    args: PostingBackfillArgs,
+) -> Result<PostingBackfillResult, String> {
     call_graph(graph, "backfill_property_postings", args).await
 }

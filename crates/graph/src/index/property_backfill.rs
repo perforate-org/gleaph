@@ -3,14 +3,14 @@
 use crate::facade::GraphStore;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::property::sortable_index_key;
-use gleaph_graph_kernel::federation::{PropertyPostingBackfillArgs, PropertyPostingBackfillResult};
+use gleaph_graph_kernel::federation::{PostingBackfillArgs, PostingBackfillResult};
 use ic_stable_lara::VertexId;
 
 pub async fn backfill_property_postings(
     store: &GraphStore,
     index: &dyn PropertyIndexLookup,
-    args: PropertyPostingBackfillArgs,
-) -> Result<PropertyPostingBackfillResult, String> {
+    args: PostingBackfillArgs,
+) -> Result<PostingBackfillResult, String> {
     if !store.federation_configured() {
         return Err("federation not configured".into());
     }
@@ -45,7 +45,7 @@ pub async fn backfill_property_postings(
         }
     }
 
-    Ok(PropertyPostingBackfillResult {
+    Ok(PostingBackfillResult {
         next_vertex_id: cursor,
         vertices_processed,
         postings_synced,
@@ -177,7 +177,7 @@ mod tests {
         let result = pollster::block_on(backfill_property_postings(
             &store,
             &index,
-            PropertyPostingBackfillArgs {
+            PostingBackfillArgs {
                 start_vertex_id: 0,
                 max_vertices: 10,
             },
@@ -211,7 +211,7 @@ mod tests {
         let result = pollster::block_on(backfill_property_postings(
             &store,
             &index,
-            PropertyPostingBackfillArgs {
+            PostingBackfillArgs {
                 start_vertex_id: 0,
                 max_vertices: 10,
             },

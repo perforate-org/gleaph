@@ -102,8 +102,14 @@ model as `backfill_label_postings`). Unindexable values are skipped (see `proper
 `crates/graph/src/property/`). Router orchestrates per-shard cursors via
 `admin_property_backfill_step` / `admin_list_property_backfill_status` (controller-only).
 
+## Derived-state lag
+
+See [derived-state-query-semantics.md](derived-state-query-semantics.md) for query behavior when
+pending flush, backfill, or index unavailability leaves postings behind canonical properties.
+
 ## Related documents
 
+- [derived-state-query-semantics.md](derived-state-query-semantics.md)
 - [label-index.md](label-index.md) — vertex label membership; tiered reads with property index ([ADR 0004](../adr/0004-label-index.md))
 - [lookup-intersection.md](lookup-intersection.md)
 - [../sharding/standalone-mode.md](../sharding/standalone-mode.md)

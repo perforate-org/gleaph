@@ -136,15 +136,15 @@ async fn federated_expand(
 
 #[update(guard = "guard_router_canister")]
 async fn backfill_label_postings(
-    args: gleaph_graph_kernel::federation::LabelPostingBackfillArgs,
-) -> Result<gleaph_graph_kernel::federation::LabelPostingBackfillResult, String> {
+    args: gleaph_graph_kernel::federation::PostingBackfillArgs,
+) -> Result<gleaph_graph_kernel::federation::PostingBackfillResult, String> {
     canister::handlers::backfill_label_postings(args).await
 }
 
 #[update(guard = "guard_router_canister")]
 async fn backfill_property_postings(
-    args: gleaph_graph_kernel::federation::PropertyPostingBackfillArgs,
-) -> Result<gleaph_graph_kernel::federation::PropertyPostingBackfillResult, String> {
+    args: gleaph_graph_kernel::federation::PostingBackfillArgs,
+) -> Result<gleaph_graph_kernel::federation::PostingBackfillResult, String> {
     canister::handlers::backfill_property_postings(args).await
 }
 

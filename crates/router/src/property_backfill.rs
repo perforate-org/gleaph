@@ -3,7 +3,7 @@
 use std::future::Future;
 
 use candid::Principal;
-use gleaph_graph_kernel::federation::{PropertyPostingBackfillArgs, PropertyPostingBackfillResult};
+use gleaph_graph_kernel::federation::{PostingBackfillArgs, PostingBackfillResult};
 
 use crate::facade::store::RouterStore;
 use crate::state::RouterError;
@@ -16,8 +16,8 @@ pub(crate) async fn admin_property_backfill_step<F, Fut>(
     call_backfill: F,
 ) -> Result<AdminPropertyBackfillStepResult, RouterError>
 where
-    F: FnOnce(Principal, PropertyPostingBackfillArgs) -> Fut,
-    Fut: Future<Output = Result<PropertyPostingBackfillResult, String>>,
+    F: FnOnce(Principal, PostingBackfillArgs) -> Fut,
+    Fut: Future<Output = Result<PostingBackfillResult, String>>,
 {
     store
         .admin_property_backfill_step(caller, args, call_backfill)

@@ -246,8 +246,8 @@ pub async fn federated_expand(
 }
 
 pub async fn backfill_label_postings(
-    args: gleaph_graph_kernel::federation::LabelPostingBackfillArgs,
-) -> Result<gleaph_graph_kernel::federation::LabelPostingBackfillResult, String> {
+    args: gleaph_graph_kernel::federation::PostingBackfillArgs,
+) -> Result<gleaph_graph_kernel::federation::PostingBackfillResult, String> {
     let store = GraphStore::new();
     let Some(index) = wasm_index_client_holder() else {
         return Err("federation not configured".into());
@@ -256,8 +256,8 @@ pub async fn backfill_label_postings(
 }
 
 pub async fn backfill_property_postings(
-    args: gleaph_graph_kernel::federation::PropertyPostingBackfillArgs,
-) -> Result<gleaph_graph_kernel::federation::PropertyPostingBackfillResult, String> {
+    args: gleaph_graph_kernel::federation::PostingBackfillArgs,
+) -> Result<gleaph_graph_kernel::federation::PostingBackfillResult, String> {
     let store = GraphStore::new();
     let Some(index) = wasm_index_client_holder() else {
         return Err("federation not configured".into());

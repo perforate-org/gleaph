@@ -192,8 +192,15 @@ grouped in key order). Default: **property `range` + label `contains`**.
 Property-only `lookup_intersection` uses multiple property `range`s plus in-memory set
 intersection — a different pattern, documented in [lookup-intersection.md](lookup-intersection.md).
 
+## Derived-state lag
+
+Posting export and compound seeds follow label **postings**; count-only paths follow router
+**telemetry**. Lag scenarios and operator expectations:
+[derived-state-query-semantics.md](derived-state-query-semantics.md).
+
 ## Related documents
 
+- [derived-state-query-semantics.md](derived-state-query-semantics.md)
 - [ADR 0004](../adr/0004-label-index.md)
 - [property-index.md](property-index.md)
 - [../adr/0003-federated-aggregate-merge.md](../adr/0003-federated-aggregate-merge.md)

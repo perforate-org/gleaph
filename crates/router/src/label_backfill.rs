@@ -3,7 +3,7 @@
 use std::future::Future;
 
 use candid::Principal;
-use gleaph_graph_kernel::federation::{LabelPostingBackfillArgs, LabelPostingBackfillResult};
+use gleaph_graph_kernel::federation::{PostingBackfillArgs, PostingBackfillResult};
 
 use crate::facade::store::RouterStore;
 use crate::state::RouterError;
@@ -16,8 +16,8 @@ pub(crate) async fn admin_label_backfill_step<F, Fut>(
     call_backfill: F,
 ) -> Result<AdminLabelBackfillStepResult, RouterError>
 where
-    F: FnOnce(Principal, LabelPostingBackfillArgs) -> Fut,
-    Fut: Future<Output = Result<LabelPostingBackfillResult, String>>,
+    F: FnOnce(Principal, PostingBackfillArgs) -> Fut,
+    Fut: Future<Output = Result<PostingBackfillResult, String>>,
 {
     store
         .admin_label_backfill_step(caller, args, call_backfill)

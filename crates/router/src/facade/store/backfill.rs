@@ -4,8 +4,7 @@ use std::future::Future;
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
-    BackfillShardState, LabelPostingBackfillArgs, LabelPostingBackfillResult,
-    PropertyPostingBackfillArgs, PropertyPostingBackfillResult, ShardRegistryEntry,
+    BackfillShardState, PostingBackfillArgs, PostingBackfillResult, ShardRegistryEntry,
 };
 
 use super::super::stable::ROUTER_LABEL_BACKFILL_STATE;
@@ -25,8 +24,8 @@ impl RouterStore {
         call_backfill: F,
     ) -> Result<AdminLabelBackfillStepResult, RouterError>
     where
-        F: FnOnce(Principal, LabelPostingBackfillArgs) -> Fut,
-        Fut: Future<Output = Result<LabelPostingBackfillResult, String>>,
+        F: FnOnce(Principal, PostingBackfillArgs) -> Fut,
+        Fut: Future<Output = Result<PostingBackfillResult, String>>,
     {
         if !self.is_controller(caller) {
             return Err(RouterError::NotAuthorized);
@@ -51,7 +50,7 @@ impl RouterStore {
 
         let result = call_backfill(
             shard.graph_canister,
-            LabelPostingBackfillArgs {
+            PostingBackfillArgs {
                 start_vertex_id: cursor.next_vertex_id,
                 max_vertices: args.max_vertices,
             },
@@ -111,8 +110,8 @@ impl RouterStore {
         call_backfill: F,
     ) -> Result<AdminPropertyBackfillStepResult, RouterError>
     where
-        F: FnOnce(Principal, PropertyPostingBackfillArgs) -> Fut,
-        Fut: Future<Output = Result<PropertyPostingBackfillResult, String>>,
+        F: FnOnce(Principal, PostingBackfillArgs) -> Fut,
+        Fut: Future<Output = Result<PostingBackfillResult, String>>,
     {
         if !self.is_controller(caller) {
             return Err(RouterError::NotAuthorized);
@@ -137,7 +136,7 @@ impl RouterStore {
 
         let result = call_backfill(
             shard.graph_canister,
-            PropertyPostingBackfillArgs {
+            PostingBackfillArgs {
                 start_vertex_id: cursor.next_vertex_id,
                 max_vertices: args.max_vertices,
             },
@@ -263,7 +262,7 @@ mod tests {
                 max_vertices: 32,
             },
             |_graph, args| async move {
-                Ok(LabelPostingBackfillResult {
+                Ok(PostingBackfillResult {
                     next_vertex_id: args.start_vertex_id.saturating_add(args.max_vertices),
                     vertices_processed: args.max_vertices,
                     postings_synced: 5,
@@ -390,7 +389,7 @@ mod tests {
                 max_vertices: 32,
             },
             |_graph, args| async move {
-                Ok(PropertyPostingBackfillResult {
+                Ok(PostingBackfillResult {
                     next_vertex_id: args.start_vertex_id.saturating_add(args.max_vertices),
                     vertices_processed: args.max_vertices,
                     postings_synced: 5,

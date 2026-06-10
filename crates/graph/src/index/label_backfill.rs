@@ -2,14 +2,14 @@
 
 use crate::facade::GraphStore;
 use crate::index::lookup::PropertyIndexLookup;
-use gleaph_graph_kernel::federation::{LabelPostingBackfillArgs, LabelPostingBackfillResult};
+use gleaph_graph_kernel::federation::{PostingBackfillArgs, PostingBackfillResult};
 use ic_stable_lara::VertexId;
 
 pub async fn backfill_label_postings(
     store: &GraphStore,
     index: &dyn PropertyIndexLookup,
-    args: LabelPostingBackfillArgs,
-) -> Result<LabelPostingBackfillResult, String> {
+    args: PostingBackfillArgs,
+) -> Result<PostingBackfillResult, String> {
     if !store.federation_configured() {
         return Err("federation not configured".into());
     }
@@ -42,7 +42,7 @@ pub async fn backfill_label_postings(
         }
     }
 
-    Ok(LabelPostingBackfillResult {
+    Ok(PostingBackfillResult {
         next_vertex_id: cursor,
         vertices_processed,
         postings_synced,

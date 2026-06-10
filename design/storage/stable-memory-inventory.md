@@ -30,6 +30,8 @@ Thread-local pairing: `facade/stable.rs` in each crate.
 
 **Sync co-update:** Some derived stores are updated in the same mutation as their canonical source (no async lag). They still have a separate physical region and are classified `derived`.
 
+**Query semantics when derived state lags:** [derived-state-query-semantics.md](../index/derived-state-query-semantics.md).
+
 ## Derived-state rebuild summary
 
 | Derived store | Canonical source | Update path | Rebuild / backfill |

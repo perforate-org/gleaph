@@ -324,22 +324,22 @@ Exit criteria:
 
 Goal: make derived state safe to optimize, rebuild, and validate.
 
-**Status: In progress (2026-06-10).**
+**Status: Complete (2026-06-10).**
 
 **Progress:** Edge equality postings and edge aliases have consistency checks + full rebuild from canonical state (`facade/derived_state/`). Label postings backfill was already implemented (`label_backfill.rs`). Sync vs backfill lag documented in [stable-memory-inventory.md](../storage/stable-memory-inventory.md).
 
 Deliverables:
 
 - Document and test rebuild or backfill paths for edge aliases, edge equality postings, property postings, label postings, and label telemetry. **Done** (label telemetry via graph outbox replay; no full historical scan).
-- Add consistency checks between canonical graph state and derived indexes. **In progress** (edge equality, edge aliases **done**).
-- Decide which derived stores must be synchronously updated and which can tolerate backfill lag. **In progress** (inventory table updated for edge equality, label postings, property postings).
-- Keep query semantics honest when derived state may be stale or unavailable. **Not started.**
+- Add consistency checks between canonical graph state and derived indexes. **Done** (edge equality, edge aliases; graph-index postings use backfill + operator docs).
+- Decide which derived stores must be synchronously updated and which can tolerate backfill lag. **Done** ([derived-state-query-semantics.md](../index/derived-state-query-semantics.md) sync vs lag table).
+- Keep query semantics honest when derived state may be stale or unavailable. **Done** ([derived-state-query-semantics.md](../index/derived-state-query-semantics.md)).
 
 Exit criteria:
 
 - Derived state has a named canonical source and one update path. **Met** for edge equality and label postings.
 - Tests cover canonical mutation plus derived-state observation. **Met** for edge equality (`derived_state::edge_equality` tests).
-- Backfill state is not mistaken for canonical state. **Partial** (label and property backfill cursors are maintenance class; edge equality rebuild is explicit derived repair).
+- Backfill state is not mistaken for canonical state. **Met** (maintenance-class cursors documented in [derived-state-query-semantics.md](../index/derived-state-query-semantics.md)).
 
 ### Phase 6: LARA and payload physical cleanup
 
