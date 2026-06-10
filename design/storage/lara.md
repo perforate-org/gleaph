@@ -151,7 +151,7 @@ Changing substrate (e.g. host-side persistent mmap) should preserve the four con
 | Scan (`LabelBucket`, `LabelEdgeSpan`) | Aligned with DGAP vertex + per-label windows |
 | Overflow logs | Aligned (shared per-leaf log) |
 | Segment physical (rope) for **edge bytes** | **Implemented** — PMA leaf block per [ADR 0001](../adr/0001-labeled-segment-slide.md); per-vertex sub-ranges inside pinned leaf |
-| Free-span usage for labeled edge bytes | **Implemented** — segment footprint on relocate; per-vertex peel is interim fallback only |
+| Free-span usage for labeled edge bytes | **Implemented** — segment footprint on leaf relocate; per-vertex peel only for unpinned legacy spans |
 
 Payload slab ([labeled-edge-payloads.md](./labeled-edge-payloads.md)) follows the same logical compaction order as edge bytes; physical alignment with leaf rope is part of the labeled migration.
 

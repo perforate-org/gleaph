@@ -131,6 +131,7 @@ These must pass after every phase PR.
 |----------------------|--------|------------|
 | `labeled_segment_relocate_releases_single_footprint` | `compact.rs` | Count `release_span` calls (test hook or wrapper): == 1 per leaf relocate; `old_len == leaf segment_edges_total` |
 | `labeled_segment_relocate_does_not_call_vertex_span_release` | `compact.rs` | `release_vertex_edge_span_footprint` not invoked on relocate path |
+| `labeled_rewrite_within_pinned_leaf_does_not_release_vertex_footprint` | `compact.rs` | **Implemented** — rewrite/compact/slide inside pinned leaf keeps slack in-block |
 | `labeled_relocate_commit_order` | `compact.rs` | After relocate, all bucket `edge_start` valid before free span contains old range (use store peek, not scan) |
 | `labeled_segment_relocate_reuses_free_span` | `compact.rs` | Mirror `lara_local_relocation_reuses_prior_free_span` for labeled leaf |
 | `labeled_segment_slide_coalesces_adjacent_free` | `compact.rs` | **Implemented** — leaf relocate releases footprint; adjacent free spans coalesce |

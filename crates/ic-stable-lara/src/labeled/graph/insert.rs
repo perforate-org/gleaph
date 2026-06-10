@@ -623,8 +623,12 @@ mod tests {
 
     #[test]
     fn labeled_no_vertex_edge_span_rewrite_on_routine_insert() {
-        use super::super::compact::REWRITE_VERTEX_EDGE_SPAN_CALLS;
+        use super::super::compact::{
+            REWRITE_VERTEX_EDGE_SPAN_CALLS, reset_rewrite_vertex_edge_span_test_metrics,
+        };
         use std::sync::atomic::Ordering;
+
+        reset_rewrite_vertex_edge_span_test_metrics();
         let graph = test_graph();
         let vid = VertexId::from(0);
         let road = BucketLabelKey::from_raw(2);

@@ -711,7 +711,7 @@ where
             && !self.vertex_edge_span_relocates_within_pinned_leaf(
                 src, old_base, old_alloc, new_base, new_alloc,
             )
-            && self.labeled_edge_footprint_in_current_leaf_pin(src, old_base, old_alloc)
+            && !self.labeled_edge_footprint_in_current_leaf_pin(src, old_base, old_alloc)
         {
             self.release_vertex_edge_span_footprint(old_base, old_alloc, &buckets)?;
         }
@@ -1036,6 +1036,7 @@ where
             && !self.vertex_edge_span_relocates_within_pinned_leaf(
                 src, old_base, old_alloc, new_base, new_alloc,
             )
+            && !self.labeled_edge_footprint_in_current_leaf_pin(src, old_base, old_alloc)
         {
             self.release_vertex_edge_span_footprint(old_base, old_alloc, buckets)?;
         }
@@ -1488,7 +1489,7 @@ where
             && !self.vertex_edge_span_relocates_within_pinned_leaf(
                 src, old_base, old_alloc, new_base, new_alloc,
             )
-            && self.labeled_edge_footprint_in_current_leaf_pin(src, old_base, old_alloc)
+            && !self.labeled_edge_footprint_in_current_leaf_pin(src, old_base, old_alloc)
         {
             self.release_vertex_edge_span_footprint(old_base, old_alloc, &buckets)?;
         }
@@ -3029,6 +3030,8 @@ mod tests {
     #[test]
     fn labeled_leaf_rebalance_does_not_release_span() {
         use std::sync::atomic::Ordering;
+
+        reset_labeled_leaf_release_test_metrics();
         let leaf_releases_before = LABELED_LEAF_PHYSICAL_RELEASE_CALLS.load(Ordering::SeqCst);
         let vertex_releases_before = LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS.load(Ordering::SeqCst);
         let graph = test_graph();
@@ -3065,6 +3068,8 @@ mod tests {
     fn labeled_segment_relocate_releases_single_footprint() {
         use super::super::leaf_pin::labeled_leaf_physical_block_len;
         use std::sync::atomic::Ordering;
+
+        reset_labeled_leaf_release_test_metrics();
         let graph = test_graph();
         let vid = VertexId::from(0);
         let road = BucketLabelKey::from_raw(2);
@@ -3112,6 +3117,53 @@ mod tests {
         );
         let counts = graph.leaf_segment_counts_for_vid(vid);
         assert!(counts.total as u64 > old_len);
+    }
+
+    #[test]
+    fn labeled_rewrite_within_pinned_leaf_does_not_release_vertex_footprint() {
+        use std::sync::atomic::Ordering;
+
+        reset_labeled_leaf_release_test_metrics();
+        let graph = test_graph();
+        let src = VertexId::from(0);
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge_skip_leaf_cascade(
+                src,
+                BucketLabelKey::from_raw(99),
+                TestEdge { target: 999 },
+            )
+            .unwrap();
+        for target in [1u32, 2, 3] {
+            graph
+                .insert_edge_skip_leaf_cascade(src, road, TestEdge { target })
+                .unwrap();
+        }
+        assert!(graph.labeled_leaf_physical_range(src).is_some());
+        graph
+            .remove_edge_at_slot(src, road, 0)
+            .unwrap()
+            .expect("removed");
+        let vertex_releases_before = LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS.load(Ordering::SeqCst);
+        graph
+            .rewrite_vertex_edge_span(src, None, 1, false, true, None)
+            .unwrap();
+        graph.compact_vertex_edge_span(src, 0).unwrap();
+        assert_eq!(
+            LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS
+                .load(Ordering::SeqCst)
+                .saturating_sub(vertex_releases_before),
+            0,
+            "pinned-leaf rewrite keeps interior slack inside the leaf block"
+        );
+        graph.rebalance_labeled_leaf_weighted_slide(src).unwrap();
+        assert_eq!(
+            LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS
+                .load(Ordering::SeqCst)
+                .saturating_sub(vertex_releases_before),
+            0,
+            "pinned-leaf slide must not peel per-vertex footprints"
+        );
     }
 
     #[test]
