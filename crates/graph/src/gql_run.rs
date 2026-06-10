@@ -468,7 +468,7 @@ async fn run_wire_plans(
         (Vec::new(), false)
     };
 
-    for (i, plan) in plans.iter().enumerate() {
+    for plan in plans {
         if plan.has_dml() {
             let mutation = match store.execute_plan_mutations(plan, execution.clone()) {
                 Ok(mutation) => mutation,
@@ -499,7 +499,8 @@ async fn run_wire_plans(
             skip_index = false;
             seed_rows.clear();
         } else {
-            let use_seeds = skip_index && !seed_rows.is_empty() && i == 0;
+            // Seeds apply to the first read plan that still has rows; `mem::take` consumes them once.
+            let use_seeds = skip_index && !seed_rows.is_empty();
             let initial = if use_seeds {
                 std::mem::take(&mut seed_rows)
             } else {

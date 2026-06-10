@@ -61,7 +61,7 @@ Defer detailed implementation and **federation-only stable stores** until [feder
 |------|------------------------|--------|
 | Remote edge stable | `graph/.../remote_forward_in.rs`, `remote_vertex_refs.rs` | Defer |
 | Graph placement client | `graph/src/index/placement.rs` IC calls | Defer (keep native test stubs if needed) |
-| Graph → index scan on federated wire path | wasm `execute_plan_query` index client | **Removed** — router seeds + skip anchor |
+| Graph → index scan on federated wire path | wasm `execute_plan_query` index client | **Removed** — router seeds + skip anchor (`execute_plan_query_federated_rejects_index_scan_without_seeds`) |
 | Executor `RemoteVertex` bind from index | `materialize_federated_index_hits` | **Removed** — `FederationPort` local hits only |
 | Router multi-shard without anchor | `gql.rs` error path only partially useful | Rebuild with `lookup_intersection` seeds |
 | Peer graph ACL stable | `peer_graph_canisters.rs` | Defer |

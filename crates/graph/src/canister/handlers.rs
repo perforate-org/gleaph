@@ -270,9 +270,10 @@ mod tests {
     use super::*;
     use candid::{Encode, Principal};
     use gleaph_gql::Value;
-    use gleaph_gql::ast::{Expr, ExprKind};
+    use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
     use gleaph_gql::types::LabelExpr;
     use gleaph_gql_ic::encode_gql_params_blob;
+    use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn};
     use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_graph_kernel::federation::ShardId;
@@ -364,6 +365,96 @@ mod tests {
             crate::plan::plan_query_result_from_ic_wire(wire).expect("materialize rows");
         assert_eq!(materialized.rows.len(), 1);
         assert!(materialized.rows[0].contains_key("n"));
+    }
+
+    #[test]
+    fn execute_plan_query_seed_bindings_skip_equality_index_scan() {
+        attach_test_federation(TEST_SHARD_ID);
+        let store = GraphStore::new();
+        let vid = store
+            .insert_vertex_named(["HandlerIxSeedEq"], [("age", Value::Uint8(5))])
+            .expect("vertex");
+        let local_vid = u32::try_from(u64::from(vid)).expect("local vertex id");
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::IndexScan {
+                variable: "n".into(),
+                property: "age".into(),
+                value: ScanValue::Literal(Value::Int64(5)),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::new(ExprKind::Variable("n".into())),
+                    alias: Some("n".into()),
+                }],
+                distinct: false,
+            },
+        ]);
+        let plan_blob = encode_block_plans(&[plan], false).expect("encode plan");
+        let seeds = SeedBindingsWire {
+            entries: vec![SeedBindingEntry {
+                variable: "n".into(),
+                local_vertex_ids: vec![local_vid],
+            }],
+        };
+        let seed_blob = Encode!(&seeds).expect("encode seeds");
+        let params_blob = encode_gql_params_blob(vec![]).expect("encode params");
+        let args = ExecutePlanArgs {
+            target_shard_id: TEST_SHARD_ID,
+            mutation_id: None,
+            plan_blob,
+            params_blob,
+            mode: GqlExecutionMode::Query,
+            seed_bindings_blob: Some(seed_blob),
+            resolved_labels: None,
+        };
+
+        let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
+
+        assert_eq!(result.row_count, 1);
+    }
+
+    #[test]
+    fn execute_plan_query_federated_rejects_index_scan_without_seeds() {
+        attach_test_federation(TEST_SHARD_ID);
+        let store = GraphStore::new();
+        let _ = store
+            .insert_vertex_named(["HandlerNoSeedIx"], [("age", Value::Uint8(5))])
+            .expect("vertex");
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::IndexScan {
+                variable: "n".into(),
+                property: "age".into(),
+                value: ScanValue::Literal(Value::Int64(5)),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::new(ExprKind::Variable("n".into())),
+                    alias: Some("n".into()),
+                }],
+                distinct: false,
+            },
+        ]);
+        let plan_blob = encode_block_plans(&[plan], false).expect("encode plan");
+        let params_blob = encode_gql_params_blob(vec![]).expect("encode params");
+        let args = ExecutePlanArgs {
+            target_shard_id: TEST_SHARD_ID,
+            mutation_id: None,
+            plan_blob,
+            params_blob,
+            mode: GqlExecutionMode::Query,
+            seed_bindings_blob: None,
+            resolved_labels: None,
+        };
+
+        let err = pollster::block_on(execute_plan_query(args)).expect_err("missing seeds");
+        assert!(
+            err.contains("IndexScan(no index client)"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
