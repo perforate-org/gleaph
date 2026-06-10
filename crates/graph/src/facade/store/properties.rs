@@ -2,8 +2,7 @@
 
 use super::super::VertexPropertyStoreError;
 use super::super::stable::{EDGE_PROPERTIES, VERTEX_PROPERTIES};
-use crate::index::pending;
-use crate::property::PropertyValueChange;
+use crate::property::{PropertyValueChange, dispatch_property_index_ops};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::{VertexId, labeled::EdgeSlotMove};
@@ -25,7 +24,7 @@ impl GraphStore {
         let out = VERTEX_PROPERTIES
             .with_borrow_mut(|properties| properties.set(vertex_id, property_id, value.clone()))?;
         if record_index_pending {
-            pending::record_vertex_property_change(PropertyValueChange::vertex(
+            dispatch_property_index_ops(PropertyValueChange::vertex(
                 vertex_id,
                 property_id,
                 prev.as_ref(),
@@ -44,7 +43,7 @@ impl GraphStore {
         let removed = VERTEX_PROPERTIES
             .with_borrow_mut(|properties| properties.remove(vertex_id, property_id));
         if let Some(ref old) = removed {
-            pending::record_vertex_property_change(PropertyValueChange::vertex(
+            dispatch_property_index_ops(PropertyValueChange::vertex(
                 vertex_id,
                 property_id,
                 Some(old),
@@ -79,7 +78,7 @@ impl GraphStore {
                 value.clone(),
             )
         })?;
-        self.commit_record_edge_property_equality_change(PropertyValueChange::edge(
+        dispatch_property_index_ops(PropertyValueChange::edge(
             handle.owner_vertex_id,
             handle.label_id.raw(),
             handle.slot_index,
@@ -114,7 +113,7 @@ impl GraphStore {
             )
         });
         if let Some(ref old) = prev {
-            self.commit_record_edge_property_equality_change(PropertyValueChange::edge(
+            dispatch_property_index_ops(PropertyValueChange::edge(
                 handle.owner_vertex_id,
                 handle.label_id.raw(),
                 handle.slot_index,

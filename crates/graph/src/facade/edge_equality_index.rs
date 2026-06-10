@@ -6,10 +6,8 @@
 
 use super::stable::edge_equality_postings::EdgeEqualityPostingKey;
 use super::stable::{EDGE_EQUALITY_POSTINGS, EDGE_PROPERTIES};
-use crate::property::{
-    PropertyIndexOp, PropertyValueChange, index_ops_for_value_change, sortable_index_key,
-};
-use gleaph_graph_kernel::entry::{PropertyEntity, PropertyId};
+use crate::property::{PropertyIndexOp, PropertyValueChange, sortable_index_key};
+use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::VertexId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -19,38 +17,33 @@ pub(crate) struct EdgeEqualityPosting {
     pub slot_index: u32,
 }
 
-pub(crate) fn record_edge_property_change(change: PropertyValueChange<'_>) {
-    let PropertyEntity::Edge {
-        owner_vertex_id,
-        label_id,
-        slot_index,
-    } = change.entity
-    else {
-        return;
-    };
-    for op in index_ops_for_value_change(change.property_id, change.prev, change.new) {
-        match op {
-            PropertyIndexOp::Insert {
-                property_id,
-                payload_bytes,
-            } => insert_posting(
-                owner_vertex_id,
-                label_id,
-                slot_index,
-                property_id,
-                payload_bytes,
-            ),
-            PropertyIndexOp::Remove {
-                property_id,
-                payload_bytes,
-            } => remove_posting(
-                owner_vertex_id,
-                label_id,
-                slot_index,
-                property_id,
-                payload_bytes,
-            ),
-        }
+pub(crate) fn apply_edge_index_op(
+    owner_vertex_id: VertexId,
+    label_id: u16,
+    slot_index: u32,
+    op: PropertyIndexOp,
+) {
+    match op {
+        PropertyIndexOp::Insert {
+            property_id,
+            payload_bytes,
+        } => insert_posting(
+            owner_vertex_id,
+            label_id,
+            slot_index,
+            property_id,
+            payload_bytes,
+        ),
+        PropertyIndexOp::Remove {
+            property_id,
+            payload_bytes,
+        } => remove_posting(
+            owner_vertex_id,
+            label_id,
+            slot_index,
+            property_id,
+            payload_bytes,
+        ),
     }
 }
 
@@ -155,7 +148,7 @@ mod tests {
         let slot = 3;
         let pid = PropertyId::from_raw(7);
 
-        record_edge_property_change(PropertyValueChange::edge(
+        crate::property::dispatch_property_index_ops(PropertyValueChange::edge(
             owner,
             0,
             slot,
@@ -166,7 +159,7 @@ mod tests {
         let hits = lookup_equal(pid, &sortable_index_key(&Value::Int64(5)).unwrap()).unwrap();
         assert_eq!(hits.len(), 1);
 
-        record_edge_property_change(PropertyValueChange::edge(
+        crate::property::dispatch_property_index_ops(PropertyValueChange::edge(
             owner,
             0,
             slot,
@@ -182,7 +175,7 @@ mod tests {
             1
         );
 
-        record_edge_property_change(PropertyValueChange::edge(
+        crate::property::dispatch_property_index_ops(PropertyValueChange::edge(
             owner,
             0,
             slot,

@@ -139,8 +139,10 @@ impl<M: Memory> VertexPropertyStore<M> {
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, VertexPropertyStoreError> {
-        validate_property_id(property_id)?;
-        value.to_binary_bytes()?;
+        crate::property::ensure_property_id(property_id)
+            .map_err(VertexPropertyStoreError::ReservedPropertyId)?;
+        crate::property::ensure_persistable(&value)
+            .map_err(VertexPropertyStoreError::InvalidValue)?;
         Ok(self
             .properties
             .insert(
@@ -199,14 +201,6 @@ impl<M: Memory> VertexPropertyStore<M> {
 
     pub fn into_memory(self) -> M {
         self.properties.into_memory()
-    }
-}
-
-fn validate_property_id(property_id: PropertyId) -> Result<(), VertexPropertyStoreError> {
-    if property_id.raw() == 0 {
-        Err(VertexPropertyStoreError::ReservedPropertyId(property_id))
-    } else {
-        Ok(())
     }
 }
 

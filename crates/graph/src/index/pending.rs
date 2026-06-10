@@ -6,7 +6,7 @@
 //! that snapshot of the property value, from [`gleaph_gql::value_to_index_key_bytes`]. The federated
 //! index uses these bytes (with `property_id`) for equality and range lookups.
 //!
-//! [`record_vertex_property_change`] queues postings only when
+//! [`crate::property::dispatch_property_index_ops`] queues postings only when
 //! [`gleaph_gql::value_to_index_key_bytes`] returns `Ok(Some(key))`. For `Ok(None)` or `Err`, no
 //! insert/remove is queued for that snapshot:
 //!
@@ -36,8 +36,8 @@
 use crate::facade::GraphStore;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
-use crate::property::{PropertyIndexOp, PropertyValueChange, index_ops_for_value_change};
-use gleaph_graph_kernel::entry::PropertyEntity;
+use crate::property::PropertyIndexOp;
+use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 
 #[derive(Clone, Debug)]
@@ -71,32 +71,27 @@ fn push(op: PendingPostingOp) {
     PENDING.with(|p| p.borrow_mut().push(op));
 }
 
-pub(crate) fn record_vertex_property_change(change: PropertyValueChange<'_>) {
-    let PropertyEntity::Vertex(vertex_id) = change.entity else {
-        return;
-    };
+pub(crate) fn push_vertex_index_op(vertex_id: VertexId, op: PropertyIndexOp) {
     let vid = u32::try_from(u64::from(vertex_id)).unwrap_or(0);
-    for op in index_ops_for_value_change(change.property_id, change.prev, change.new) {
-        let pending = match op {
-            PropertyIndexOp::Insert {
-                property_id,
-                payload_bytes,
-            } => PendingPostingOp::Insert {
-                property_id: property_id.raw(),
-                payload_bytes,
-                vertex_id: vid,
-            },
-            PropertyIndexOp::Remove {
-                property_id,
-                payload_bytes,
-            } => PendingPostingOp::Remove {
-                property_id: property_id.raw(),
-                payload_bytes,
-                vertex_id: vid,
-            },
-        };
-        push(pending);
-    }
+    let pending = match op {
+        PropertyIndexOp::Insert {
+            property_id,
+            payload_bytes,
+        } => PendingPostingOp::Insert {
+            property_id: property_id.raw(),
+            payload_bytes,
+            vertex_id: vid,
+        },
+        PropertyIndexOp::Remove {
+            property_id,
+            payload_bytes,
+        } => PendingPostingOp::Remove {
+            property_id: property_id.raw(),
+            payload_bytes,
+            vertex_id: vid,
+        },
+    };
+    push(pending);
 }
 
 async fn compensate_index_ops(

@@ -135,4 +135,12 @@ mod tests {
         let ops = index_ops_for_value_change(PropertyId::from_raw(1), None, Some(&Value::Null));
         assert!(ops.is_empty());
     }
+
+    #[test]
+    fn persistable_unindexable_value_produces_no_index_ops() {
+        let nan = Value::Float64(f64::NAN);
+        crate::property::ensure_persistable(&nan).expect("stored in primary map");
+        let ops = index_ops_for_value_change(PropertyId::from_raw(1), None, Some(&nan));
+        assert!(ops.is_empty());
+    }
 }

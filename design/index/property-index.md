@@ -74,6 +74,24 @@ Graph maintains **shard-local** structures distinct from the property index cani
 - Edge equality postings (`facade/stable/edge_equality_postings.rs`)
 - Used for `EdgeIndexScan`, expand equality fast paths
 
+## Indexability vs primary storage
+
+Primary vertex and edge property maps persist [`gleaph_gql::Value`] with [`Value::to_binary_bytes`].
+Index postings use a separate **sortable index key** from [`gleaph_gql::value_to_index_key_bytes`].
+
+Graph centralizes both paths in `crates/graph/src/property/`:
+
+| Function | Role |
+|----------|------|
+| `ensure_persistable` | Primary-store write validation |
+| `property_indexability` / `sortable_index_key` | Whether a value gets equality/range postings |
+| `dispatch_property_index_ops` | Routes derived ops to federated vertex index or local edge equality |
+
+**Index-only miss:** A value can be stored but omitted from indexes when `property_indexability`
+is `NotIndexable` (non-finite floats, unsupported composite shapes, extensions without a sortable
+key) or `Absent` (null). Equality and range scans will not find those vertices or edges until a
+full scan path is used.
+
 ## Index maintenance
 
 On DML / property updates, graph enqueues posting changes when federation routing and an index client are configured. Without client, mutations may drop index updates (`index/pending.rs`) — deployments with property indexes must wire the index canister.

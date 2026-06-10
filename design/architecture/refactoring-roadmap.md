@@ -302,23 +302,23 @@ Exit criteria:
 
 Goal: make properties flexible without duplicating value encoding rules.
 
-**Status: In progress (2026-06-10).**
+**Status: Complete (2026-06-10).**
 
-**Progress:** `PropertyEntity` in `graph-kernel` names vertex and edge property hosts. Graph `property` module centralizes `sortable_index_key` and `index_ops_for_value_change`; federated `pending` and local `edge_equality_index` share the same index-op derivation.
+**Progress:** `PropertyEntity` in `graph-kernel` names vertex and edge property hosts. Graph `property` module owns persisted validation (`ensure_persistable`), explicit `PropertyIndexability`, shared `index_ops_for_value_change`, and `dispatch_property_index_ops` for federated vertex and local edge equality backends.
 
 Deliverables:
 
 - Introduce an internal property entity identity model for vertex and edge properties. **Done** (`PropertyEntity` in `graph-kernel`).
-- Centralize persisted value encoding and sortable index-key encoding. **In progress** (`sortable_index_key`; persisted `Value::to_binary_bytes` encoding unchanged).
-- Make indexability explicit instead of implicit in scattered call sites. **In progress** (index ops gated through `sortable_index_key`).
-- Replace ad hoc pending posting calls with typed property change events. **In progress** (`PropertyValueChange` + `PropertyIndexOp`; dispatch still per index backend).
+- Centralize persisted value encoding and sortable index-key encoding. **Done** (`ensure_persistable` / `ensure_property_id` in vertex and edge stores; `sortable_index_key`).
+- Make indexability explicit instead of implicit in scattered call sites. **Done** (`PropertyIndexability`).
+- Replace ad hoc pending posting calls with typed property change events. **Done** (`PropertyValueChange` → `dispatch_property_index_ops`).
 - Keep physical vertex and edge property stores separate until a stable-layout ADR justifies migration. **Done** (no store merge).
 
 Exit criteria:
 
-- Property writes produce primary storage changes and index-maintenance events through one path.
-- Index-only misses for unindexable values are documented and tested.
-- Vertex and edge property APIs share validation semantics without sharing the wrong physical key layout.
+- Property writes produce primary storage changes and index-maintenance events through one path. **Met** (`properties.rs` commits + `dispatch_property_index_ops`).
+- Index-only misses for unindexable values are documented and tested. **Met** (`property-index.md`, `property::change` / `index_key` tests).
+- Vertex and edge property APIs share validation semantics without sharing the wrong physical key layout. **Met** (shared `ensure_*` helpers; separate stable keys unchanged).
 
 ### Phase 5: Rebuildable derived-state boundaries
 

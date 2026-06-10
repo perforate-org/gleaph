@@ -2,7 +2,7 @@
 
 use super::super::stable::EDGE_ALIASES;
 use crate::index::edge_equal;
-use crate::property::PropertyValueChange;
+use crate::property::{PropertyValueChange, dispatch_property_index_ops};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::{
@@ -75,13 +75,6 @@ impl GraphStore {
         );
     }
 
-    pub(super) fn commit_record_edge_property_equality_change(
-        &self,
-        change: PropertyValueChange<'_>,
-    ) {
-        edge_equal::record_edge_property_change(change);
-    }
-
     pub(super) fn commit_move_edge_local_indexes_for_compaction(
         orientation: LabeledOrientation,
         owner_vertex_id: VertexId,
@@ -92,7 +85,7 @@ impl GraphStore {
         match orientation {
             LabeledOrientation::Forward => {
                 for (property_id, value) in moved_properties {
-                    edge_equal::record_edge_property_change(PropertyValueChange::edge(
+                    dispatch_property_index_ops(PropertyValueChange::edge(
                         owner_vertex_id,
                         label_id,
                         moved.old_slot_index,
@@ -100,7 +93,7 @@ impl GraphStore {
                         Some(value),
                         None,
                     ));
-                    edge_equal::record_edge_property_change(PropertyValueChange::edge(
+                    dispatch_property_index_ops(PropertyValueChange::edge(
                         owner_vertex_id,
                         label_id,
                         moved.new_slot_index,
