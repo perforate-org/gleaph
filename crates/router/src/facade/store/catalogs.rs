@@ -10,44 +10,56 @@ use candid::Principal;
 use gleaph_gql_planner::{LabelUseIntent, PhysicalPlan};
 use gleaph_graph_kernel::plan_exec::{ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel};
 
-use super::{
-    RouterStore, intern_edge_label_name, intern_vertex_label_name, validate_metadata_name,
-};
+use gleaph_graph_kernel::entry::EDGE_LABEL_CATALOG_MAX;
+
+use super::{RouterStore, validate_metadata_name};
 
 impl RouterStore {
-    pub fn admin_intern_vertex_label(
-        &self,
-        caller: Principal,
+    pub(super) fn commit_intern_vertex_label_name(
         name: &str,
     ) -> Result<VertexLabelId, RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
+        if let Some(id) = ROUTER_VERTEX_LABEL_BY_NAME.with_borrow(|m| m.get(&name.to_string())) {
+            return Ok(VertexLabelId::from_raw(id));
         }
-        validate_metadata_name(name)?;
-        intern_vertex_label_name(name)
+        let next_id = ROUTER_VERTEX_LABEL_BY_ID
+            .with_borrow(|m| m.keys().max().unwrap_or(0))
+            .saturating_add(1);
+        if next_id == 0 {
+            return Err(RouterError::InvalidArgument(
+                "vertex label id 0 is reserved".into(),
+            ));
+        }
+        ROUTER_VERTEX_LABEL_BY_NAME.with_borrow_mut(|m| {
+            m.insert(name.to_string(), next_id);
+        });
+        ROUTER_VERTEX_LABEL_BY_ID.with_borrow_mut(|m| {
+            m.insert(next_id, name.to_string());
+        });
+        Ok(VertexLabelId::from_raw(next_id))
     }
 
-    pub fn admin_intern_edge_label(
-        &self,
-        caller: Principal,
-        name: &str,
-    ) -> Result<EdgeLabelId, RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
+    pub(super) fn commit_intern_edge_label_name(name: &str) -> Result<EdgeLabelId, RouterError> {
+        if let Some(id) = ROUTER_EDGE_LABEL_BY_NAME.with_borrow(|m| m.get(&name.to_string())) {
+            return Ok(EdgeLabelId::from_raw(id));
         }
-        validate_metadata_name(name)?;
-        intern_edge_label_name(name)
+        let next_id = ROUTER_EDGE_LABEL_BY_ID
+            .with_borrow(|m| m.keys().max().unwrap_or(0))
+            .saturating_add(1);
+        if next_id == 0 || next_id > EDGE_LABEL_CATALOG_MAX {
+            return Err(RouterError::InvalidArgument(format!(
+                "edge label id exhausted (max {EDGE_LABEL_CATALOG_MAX})"
+            )));
+        }
+        ROUTER_EDGE_LABEL_BY_NAME.with_borrow_mut(|m| {
+            m.insert(name.to_string(), next_id);
+        });
+        ROUTER_EDGE_LABEL_BY_ID.with_borrow_mut(|m| {
+            m.insert(next_id, name.to_string());
+        });
+        Ok(EdgeLabelId::from_raw(next_id))
     }
 
-    pub fn admin_intern_property(
-        &self,
-        caller: Principal,
-        name: &str,
-    ) -> Result<PropertyId, RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
-        validate_metadata_name(name)?;
+    pub(super) fn commit_intern_property_name(name: &str) -> Result<PropertyId, RouterError> {
         if let Some(id) = ROUTER_PROPERTY_BY_NAME.with_borrow(|m| m.get(&name.to_string())) {
             return Ok(PropertyId::from_raw(id));
         }
@@ -59,6 +71,42 @@ impl RouterStore {
             m.insert(next_id, name.to_string());
         });
         Ok(PropertyId::from_raw(next_id))
+    }
+
+    pub fn admin_intern_vertex_label(
+        &self,
+        caller: Principal,
+        name: &str,
+    ) -> Result<VertexLabelId, RouterError> {
+        if !self.is_controller(caller) {
+            return Err(RouterError::NotAuthorized);
+        }
+        validate_metadata_name(name)?;
+        Self::commit_intern_vertex_label_name(name)
+    }
+
+    pub fn admin_intern_edge_label(
+        &self,
+        caller: Principal,
+        name: &str,
+    ) -> Result<EdgeLabelId, RouterError> {
+        if !self.is_controller(caller) {
+            return Err(RouterError::NotAuthorized);
+        }
+        validate_metadata_name(name)?;
+        Self::commit_intern_edge_label_name(name)
+    }
+
+    pub fn admin_intern_property(
+        &self,
+        caller: Principal,
+        name: &str,
+    ) -> Result<PropertyId, RouterError> {
+        if !self.is_controller(caller) {
+            return Err(RouterError::NotAuthorized);
+        }
+        validate_metadata_name(name)?;
+        Self::commit_intern_property_name(name)
     }
 
     pub fn lookup_vertex_label_id(&self, name: &str) -> Result<VertexLabelId, RouterError> {
@@ -114,7 +162,9 @@ impl RouterStore {
                 validate_metadata_name(&name)?;
                 let id = match intent {
                     LabelUseIntent::ReadExisting => self.lookup_vertex_label_id(&name)?,
-                    LabelUseIntent::CreateIfMissing => intern_vertex_label_name(&name)?,
+                    LabelUseIntent::CreateIfMissing => {
+                        Self::commit_intern_vertex_label_name(&name)?
+                    }
                 };
                 if !out.vertex.iter().any(|entry| entry.name == name.as_ref()) {
                     out.vertex.push(ResolvedVertexLabel {
@@ -127,7 +177,7 @@ impl RouterStore {
                 validate_metadata_name(&name)?;
                 let id = match intent {
                     LabelUseIntent::ReadExisting => self.lookup_edge_label_id(&name)?,
-                    LabelUseIntent::CreateIfMissing => intern_edge_label_name(&name)?,
+                    LabelUseIntent::CreateIfMissing => Self::commit_intern_edge_label_name(&name)?,
                 };
                 if !out.edge.iter().any(|entry| entry.name == name.as_ref()) {
                     out.edge.push(ResolvedEdgeLabel {

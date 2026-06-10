@@ -5,7 +5,7 @@ use super::super::stable::{
     ROUTER_APPLIED_LABEL_TELEMETRY, ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS,
     ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
 };
-use super::{RouterStore, apply_label_delta};
+use super::RouterStore;
 use crate::types::{EdgeLabelId, ShardId, VertexLabelId};
 use gleaph_graph_kernel::plan_exec::{LabelTelemetryEventWire, LabelUsageDelta};
 
@@ -34,9 +34,52 @@ impl RouterStore {
             .unwrap_or(0)
     }
 
+    pub(super) fn commit_apply_label_delta(
+        label_id: u16,
+        shard_id: ShardId,
+        delta: i64,
+        stats_map: &'static std::thread::LocalKey<
+            std::cell::RefCell<super::super::stable::memory::StableLabelStatsMap>,
+        >,
+        live_by_shard: &'static std::thread::LocalKey<
+            std::cell::RefCell<super::super::stable::memory::StableLabelShardLiveMap>,
+        >,
+    ) {
+        if delta == 0 {
+            return;
+        }
+        let magnitude = delta.unsigned_abs();
+        stats_map.with_borrow_mut(|stats| {
+            let mut entry = stats.get(&label_id).unwrap_or_default();
+            if delta > 0 {
+                entry.live_count = entry.live_count.saturating_add(magnitude);
+                entry.total_adds = entry.total_adds.saturating_add(magnitude);
+            } else {
+                entry.live_count = entry.live_count.saturating_sub(magnitude);
+                entry.total_removes = entry.total_removes.saturating_add(magnitude);
+            }
+            stats.insert(label_id, entry);
+        });
+
+        let key = LabelShardKey::new(shard_id, label_id);
+        live_by_shard.with_borrow_mut(|live| {
+            let current = live.get(&key).unwrap_or(0);
+            let next = if delta > 0 {
+                current.saturating_add(magnitude)
+            } else {
+                current.saturating_sub(magnitude)
+            };
+            if next == 0 {
+                live.remove(&key);
+            } else {
+                live.insert(key, next);
+            }
+        });
+    }
+
     pub fn apply_label_usage_delta(&self, shard_id: ShardId, delta: &LabelUsageDelta) {
         for (label_id, value) in &delta.vertex {
-            apply_label_delta(
+            Self::commit_apply_label_delta(
                 label_id.raw(),
                 shard_id,
                 *value,
@@ -45,7 +88,7 @@ impl RouterStore {
             );
         }
         for (label_id, value) in &delta.edge {
-            apply_label_delta(
+            Self::commit_apply_label_delta(
                 label_id.raw(),
                 shard_id,
                 *value,

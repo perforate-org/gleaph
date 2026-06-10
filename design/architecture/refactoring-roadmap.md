@@ -260,7 +260,7 @@ Exit criteria:
 
 Goal: make multi-store invariants explicit while preserving the existing stable layout.
 
-**Progress (2026-06-10):** `graph-index` and `router` facades split into storage-domain submodules under `facade/store.rs`. Graph `GraphStore` domain commits cover adjacency, properties, labels, vertex delete, remote refs, telemetry, edge profiles, and local indexes; `sidecar` coordinates multi-domain edge derived state. Router adds `backfill` domain. Graph Phase 2 domain split is complete; `gql_run` and `federation_expand` now route writes and forward-in reads through domain APIs.
+**Progress (2026-06-10):** `graph-index` and `router` facades split into storage-domain submodules under `facade/store.rs`. Graph `GraphStore` domain commits cover adjacency, properties, labels, vertex delete, remote refs, telemetry, edge profiles, and local indexes; `sidecar` coordinates multi-domain edge derived state; `gql_run` and `federation_expand` route through domain APIs. Router `catalogs` and `telemetry` add `commit_intern_*` and `commit_apply_label_delta` domain commits. Graph Phase 2 domain split is complete.
 
 Deliverables:
 

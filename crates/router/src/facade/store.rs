@@ -18,7 +18,6 @@ mod telemetry;
 #[cfg(test)]
 mod tests;
 
-use super::stable::label_telemetry::LabelShardKey;
 use super::stable::{
     ROUTER_APPLIED_LABEL_TELEMETRY, ROUTER_CONTROLLERS, ROUTER_EDGE_LABEL_BY_ID,
     ROUTER_EDGE_LABEL_BY_NAME, ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS,
@@ -29,9 +28,7 @@ use super::stable::{
 };
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
-use crate::types::{EdgeLabelId, ShardId, VertexLabelId};
 use candid::Principal;
-use gleaph_graph_kernel::entry::EDGE_LABEL_CATALOG_MAX;
 use gleaph_graph_kernel::plan_exec::MutationId;
 
 /// Maximum UTF-8 byte length for graph and catalog metadata names.
@@ -98,91 +95,6 @@ impl RouterStore {
     pub(crate) fn is_controller(&self, caller: Principal) -> bool {
         ROUTER_CONTROLLERS.with_borrow(|admins| admins.contains(&caller))
     }
-}
-
-pub(super) fn intern_vertex_label_name(name: &str) -> Result<VertexLabelId, RouterError> {
-    if let Some(id) = ROUTER_VERTEX_LABEL_BY_NAME.with_borrow(|m| m.get(&name.to_string())) {
-        return Ok(VertexLabelId::from_raw(id));
-    }
-    let next_id = ROUTER_VERTEX_LABEL_BY_ID
-        .with_borrow(|m| m.keys().max().unwrap_or(0))
-        .saturating_add(1);
-    if next_id == 0 {
-        return Err(RouterError::InvalidArgument(
-            "vertex label id 0 is reserved".into(),
-        ));
-    }
-    ROUTER_VERTEX_LABEL_BY_NAME.with_borrow_mut(|m| {
-        m.insert(name.to_string(), next_id);
-    });
-    ROUTER_VERTEX_LABEL_BY_ID.with_borrow_mut(|m| {
-        m.insert(next_id, name.to_string());
-    });
-    Ok(VertexLabelId::from_raw(next_id))
-}
-
-pub(super) fn intern_edge_label_name(name: &str) -> Result<EdgeLabelId, RouterError> {
-    if let Some(id) = ROUTER_EDGE_LABEL_BY_NAME.with_borrow(|m| m.get(&name.to_string())) {
-        return Ok(EdgeLabelId::from_raw(id));
-    }
-    let next_id = ROUTER_EDGE_LABEL_BY_ID
-        .with_borrow(|m| m.keys().max().unwrap_or(0))
-        .saturating_add(1);
-    if next_id == 0 || next_id > EDGE_LABEL_CATALOG_MAX {
-        return Err(RouterError::InvalidArgument(format!(
-            "edge label id exhausted (max {EDGE_LABEL_CATALOG_MAX})"
-        )));
-    }
-    ROUTER_EDGE_LABEL_BY_NAME.with_borrow_mut(|m| {
-        m.insert(name.to_string(), next_id);
-    });
-    ROUTER_EDGE_LABEL_BY_ID.with_borrow_mut(|m| {
-        m.insert(next_id, name.to_string());
-    });
-    Ok(EdgeLabelId::from_raw(next_id))
-}
-
-pub(super) fn apply_label_delta(
-    label_id: u16,
-    shard_id: ShardId,
-    delta: i64,
-    stats_map: &'static std::thread::LocalKey<
-        std::cell::RefCell<super::stable::memory::StableLabelStatsMap>,
-    >,
-    live_by_shard: &'static std::thread::LocalKey<
-        std::cell::RefCell<super::stable::memory::StableLabelShardLiveMap>,
-    >,
-) {
-    if delta == 0 {
-        return;
-    }
-    let magnitude = delta.unsigned_abs();
-    stats_map.with_borrow_mut(|stats| {
-        let mut entry = stats.get(&label_id).unwrap_or_default();
-        if delta > 0 {
-            entry.live_count = entry.live_count.saturating_add(magnitude);
-            entry.total_adds = entry.total_adds.saturating_add(magnitude);
-        } else {
-            entry.live_count = entry.live_count.saturating_sub(magnitude);
-            entry.total_removes = entry.total_removes.saturating_add(magnitude);
-        }
-        stats.insert(label_id, entry);
-    });
-
-    let key = LabelShardKey::new(shard_id, label_id);
-    live_by_shard.with_borrow_mut(|live| {
-        let current = live.get(&key).unwrap_or(0);
-        let next = if delta > 0 {
-            current.saturating_add(magnitude)
-        } else {
-            current.saturating_sub(magnitude)
-        };
-        if next == 0 {
-            live.remove(&key);
-        } else {
-            live.insert(key, next);
-        }
-    });
 }
 
 pub(super) fn validate_metadata_name(name: &str) -> Result<(), RouterError> {
