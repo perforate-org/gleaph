@@ -2,6 +2,7 @@
 
 use super::super::stable::EDGE_ALIASES;
 use crate::index::edge_equal;
+use crate::property::PropertyValueChange;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::{
@@ -76,21 +77,9 @@ impl GraphStore {
 
     pub(super) fn commit_record_edge_property_equality_change(
         &self,
-        owner_vertex_id: VertexId,
-        label_id: u16,
-        slot_index: u32,
-        property_id: PropertyId,
-        old_value: Option<&Value>,
-        new_value: Option<&Value>,
+        change: PropertyValueChange<'_>,
     ) {
-        edge_equal::record_edge_property_change(
-            owner_vertex_id,
-            label_id,
-            slot_index,
-            property_id,
-            old_value,
-            new_value,
-        );
+        edge_equal::record_edge_property_change(change);
     }
 
     pub(super) fn commit_move_edge_local_indexes_for_compaction(
@@ -103,22 +92,22 @@ impl GraphStore {
         match orientation {
             LabeledOrientation::Forward => {
                 for (property_id, value) in moved_properties {
-                    edge_equal::record_edge_property_change(
+                    edge_equal::record_edge_property_change(PropertyValueChange::edge(
                         owner_vertex_id,
                         label_id,
                         moved.old_slot_index,
                         *property_id,
                         Some(value),
                         None,
-                    );
-                    edge_equal::record_edge_property_change(
+                    ));
+                    edge_equal::record_edge_property_change(PropertyValueChange::edge(
                         owner_vertex_id,
                         label_id,
                         moved.new_slot_index,
                         *property_id,
                         None,
                         Some(value),
-                    );
+                    ));
                 }
                 EDGE_ALIASES.with_borrow_mut(|aliases| {
                     aliases.move_canonical_target(

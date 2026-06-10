@@ -2,6 +2,7 @@ pub mod edge;
 pub mod edge_payload;
 pub mod label;
 pub mod property;
+pub mod property_entity;
 pub mod remote_ref;
 pub mod vertex;
 pub mod vertex_ref;
@@ -18,6 +19,7 @@ pub use label::{
     TaggedEdgeLabelId, VertexLabelId,
 };
 pub use property::PropertyId;
+pub use property_entity::PropertyEntity;
 pub use remote_ref::{EdgeTarget, RemoteRefId};
 pub use vertex::Vertex;
 pub use vertex_ref::VertexRef;

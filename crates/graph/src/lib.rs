@@ -20,6 +20,7 @@ pub mod gql_run;
 )]
 mod index;
 mod plan_wire_guard;
+mod property;
 #[cfg(any(test, feature = "canbench"))]
 mod test_labels;
 

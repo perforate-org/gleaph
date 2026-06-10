@@ -6,9 +6,10 @@
 
 use super::stable::edge_equality_postings::EdgeEqualityPostingKey;
 use super::stable::{EDGE_EQUALITY_POSTINGS, EDGE_PROPERTIES};
-use gleaph_gql::Value;
-use gleaph_gql::value_to_index_key_bytes;
-use gleaph_graph_kernel::entry::PropertyId;
+use crate::property::{
+    PropertyIndexOp, PropertyValueChange, index_ops_for_value_change, sortable_index_key,
+};
+use gleaph_graph_kernel::entry::{PropertyEntity, PropertyId};
 use ic_stable_lara::VertexId;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -18,50 +19,38 @@ pub(crate) struct EdgeEqualityPosting {
     pub slot_index: u32,
 }
 
-fn encode_value(value: &Value) -> Option<Vec<u8>> {
-    value_to_index_key_bytes(value).ok().flatten()
-}
-
-pub(crate) fn record_edge_property_change(
-    owner_vertex_id: VertexId,
-    label_id: u16,
-    slot_index: u32,
-    property_id: PropertyId,
-    prev: Option<&Value>,
-    new: Option<&Value>,
-) {
-    match (prev, new) {
-        (None, Some(n)) => {
-            if let Some(bytes) = encode_value(n) {
-                insert_posting(owner_vertex_id, label_id, slot_index, property_id, bytes);
-            }
+pub(crate) fn record_edge_property_change(change: PropertyValueChange<'_>) {
+    let PropertyEntity::Edge {
+        owner_vertex_id,
+        label_id,
+        slot_index,
+    } = change.entity
+    else {
+        return;
+    };
+    for op in index_ops_for_value_change(change.property_id, change.prev, change.new) {
+        match op {
+            PropertyIndexOp::Insert {
+                property_id,
+                payload_bytes,
+            } => insert_posting(
+                owner_vertex_id,
+                label_id,
+                slot_index,
+                property_id,
+                payload_bytes,
+            ),
+            PropertyIndexOp::Remove {
+                property_id,
+                payload_bytes,
+            } => remove_posting(
+                owner_vertex_id,
+                label_id,
+                slot_index,
+                property_id,
+                payload_bytes,
+            ),
         }
-        (Some(p), Some(n)) if p != n => {
-            if let Some(old_bytes) = encode_value(p) {
-                remove_posting(
-                    owner_vertex_id,
-                    label_id,
-                    slot_index,
-                    property_id,
-                    old_bytes,
-                );
-            }
-            if let Some(new_bytes) = encode_value(n) {
-                insert_posting(
-                    owner_vertex_id,
-                    label_id,
-                    slot_index,
-                    property_id,
-                    new_bytes,
-                );
-            }
-        }
-        (Some(p), None) => {
-            if let Some(bytes) = encode_value(p) {
-                remove_posting(owner_vertex_id, label_id, slot_index, property_id, bytes);
-            }
-        }
-        _ => {}
     }
 }
 
@@ -73,7 +62,7 @@ pub(crate) fn remove_all_for_edge(owner_vertex_id: VertexId, label_id: u16, slot
             label_id,
             slot_index,
             |pid, value| {
-                if let Some(bytes) = encode_value(&value) {
+                if let Some(bytes) = sortable_index_key(&value) {
                     keys.push(EdgeEqualityPostingKey::new(
                         pid,
                         &bytes,
@@ -166,27 +155,41 @@ mod tests {
         let slot = 3;
         let pid = PropertyId::from_raw(7);
 
-        record_edge_property_change(owner, 0, slot, pid, None, Some(&Value::Int64(5)));
-        let hits = lookup_equal(pid, &encode_value(&Value::Int64(5)).unwrap()).unwrap();
+        record_edge_property_change(PropertyValueChange::edge(
+            owner,
+            0,
+            slot,
+            pid,
+            None,
+            Some(&Value::Int64(5)),
+        ));
+        let hits = lookup_equal(pid, &sortable_index_key(&Value::Int64(5)).unwrap()).unwrap();
         assert_eq!(hits.len(), 1);
 
-        record_edge_property_change(
+        record_edge_property_change(PropertyValueChange::edge(
             owner,
             0,
             slot,
             pid,
             Some(&Value::Int64(5)),
             Some(&Value::Int64(9)),
-        );
-        assert!(lookup_equal(pid, &encode_value(&Value::Int64(5)).unwrap()).is_none());
+        ));
+        assert!(lookup_equal(pid, &sortable_index_key(&Value::Int64(5)).unwrap()).is_none());
         assert_eq!(
-            lookup_equal(pid, &encode_value(&Value::Int64(9)).unwrap())
+            lookup_equal(pid, &sortable_index_key(&Value::Int64(9)).unwrap())
                 .unwrap()
                 .len(),
             1
         );
 
-        record_edge_property_change(owner, 0, slot, pid, Some(&Value::Int64(9)), None);
-        assert!(lookup_equal(pid, &encode_value(&Value::Int64(9)).unwrap()).is_none());
+        record_edge_property_change(PropertyValueChange::edge(
+            owner,
+            0,
+            slot,
+            pid,
+            Some(&Value::Int64(9)),
+            None,
+        ));
+        assert!(lookup_equal(pid, &sortable_index_key(&Value::Int64(9)).unwrap()).is_none());
     }
 }

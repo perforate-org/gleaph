@@ -36,10 +36,8 @@
 use crate::facade::GraphStore;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
-use gleaph_gql::Value;
-use gleaph_gql::value_to_index_key_bytes;
-use gleaph_graph_kernel::entry::PropertyId;
-use ic_stable_lara::VertexId;
+use crate::property::{PropertyIndexOp, PropertyValueChange, index_ops_for_value_change};
+use gleaph_graph_kernel::entry::PropertyEntity;
 use std::cell::RefCell;
 
 #[derive(Clone, Debug)]
@@ -73,56 +71,31 @@ fn push(op: PendingPostingOp) {
     PENDING.with(|p| p.borrow_mut().push(op));
 }
 
-/// Maps [`gleaph_gql::value_to_index_key_bytes`] to the posting key: `Some` only on `Ok(Some(_))`.
-fn encode_value(value: &Value) -> Option<Vec<u8>> {
-    value_to_index_key_bytes(value).ok().flatten()
-}
-
-pub(crate) fn record_vertex_property_change(
-    vertex_id: VertexId,
-    property_id: PropertyId,
-    prev: Option<&Value>,
-    new: Option<&Value>,
-) {
+pub(crate) fn record_vertex_property_change(change: PropertyValueChange<'_>) {
+    let PropertyEntity::Vertex(vertex_id) = change.entity else {
+        return;
+    };
     let vid = u32::try_from(u64::from(vertex_id)).unwrap_or(0);
-    let pid = property_id.raw();
-
-    match (prev, new) {
-        (None, Some(n)) => {
-            if let Some(bytes) = encode_value(n) {
-                push(PendingPostingOp::Insert {
-                    property_id: pid,
-                    payload_bytes: bytes,
-                    vertex_id: vid,
-                });
-            }
-        }
-        (Some(p), Some(n)) if p != n => {
-            if let Some(old_bytes) = encode_value(p) {
-                push(PendingPostingOp::Remove {
-                    property_id: pid,
-                    payload_bytes: old_bytes,
-                    vertex_id: vid,
-                });
-            }
-            if let Some(new_bytes) = encode_value(n) {
-                push(PendingPostingOp::Insert {
-                    property_id: pid,
-                    payload_bytes: new_bytes,
-                    vertex_id: vid,
-                });
-            }
-        }
-        (Some(p), None) => {
-            if let Some(bytes) = encode_value(p) {
-                push(PendingPostingOp::Remove {
-                    property_id: pid,
-                    payload_bytes: bytes,
-                    vertex_id: vid,
-                });
-            }
-        }
-        _ => {}
+    for op in index_ops_for_value_change(change.property_id, change.prev, change.new) {
+        let pending = match op {
+            PropertyIndexOp::Insert {
+                property_id,
+                payload_bytes,
+            } => PendingPostingOp::Insert {
+                property_id: property_id.raw(),
+                payload_bytes,
+                vertex_id: vid,
+            },
+            PropertyIndexOp::Remove {
+                property_id,
+                payload_bytes,
+            } => PendingPostingOp::Remove {
+                property_id: property_id.raw(),
+                payload_bytes,
+                vertex_id: vid,
+            },
+        };
+        push(pending);
     }
 }
 
