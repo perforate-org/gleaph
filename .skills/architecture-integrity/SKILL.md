@@ -2,7 +2,7 @@
 
 ## Purpose
 
-This skill reviews repository structure, module boundaries, and architectural consistency.
+This skill reviews repository structure, module boundaries, encapsulation, separation of concerns, invariants, consistency, and fitness for purpose.
 
 Its primary goal is not code quality, performance, or style. Its goal is to preserve conceptual integrity over time.
 
@@ -10,13 +10,27 @@ Use this skill whenever:
 
 - A new module is introduced
 - A new dependency is added
-- A responsibility is moved between modules
+- Data ownership, invariants, API surfaces, or execution flow move between modules
 - A significant refactor is proposed
 - An architectural decision is under discussion
 
 ---
 
 ## Core Principles
+
+### Required Evaluation Axes
+
+Every review must explicitly weigh the change against these axes:
+
+- **Encapsulation:** internal state and storage details remain behind the module API that owns them.
+- **Separation of concerns:** parsing, planning, routing, execution, storage, indexing, and persistence concerns do not bleed into each other.
+- **Invariants:** the module that owns an invariant enforces it at write boundaries and exposes read APIs that rely on that invariant honestly.
+- **Consistency:** duplicated facts, schemas, metadata, or derived indexes stay synchronized through one source of truth and one update path.
+- **Fitness for purpose:** the chosen abstraction is no broader, narrower, or more general than the concrete problem requires.
+
+A change that weakens one of these axes should be rejected unless the trade-off is explicit and justified by a stronger domain need.
+
+---
 
 ### Conceptual Integrity
 
@@ -79,18 +93,19 @@ Questions:
 
 ---
 
-### Explicit Ownership
+### Encapsulation and Boundary Ownership
 
-Every responsibility must have a clear owner.
-Avoid shared ownership whenever possible.
+Every mutable state, invariant, API surface, and execution flow must have a clear boundary.
+Avoid shared mutation or shared authority whenever possible.
 
 Questions:
 
-- Which module owns this concern?
-- Which module is responsible for correctness?
-- Which module should be modified when requirements change?
+- Which module owns the state?
+- Which module enforces the invariant?
+- Which interface exposes the capability?
+- Which module should change when the domain rule changes?
 
-If the answer is "multiple modules", ownership is unclear.
+If the answer is "multiple modules", the boundary is unclear.
 
 ---
 
@@ -116,7 +131,7 @@ Module boundaries exist to prevent conceptual leakage.
 Questions:
 
 - Is a module accessing another module's internal state?
-- Is a module performing responsibilities that belong elsewhere?
+- Is a module enforcing invariants that belong to another boundary?
 - Is a concept crossing boundaries without abstraction?
 
 Boundary violations accumulate architectural debt rapidly.
@@ -154,6 +169,7 @@ Determine:
 
 - Which module owns the change
 - Which concepts are affected
+- Which invariants and interfaces are affected
 
 ### Step 2: Search for Existing Concepts
 
@@ -172,7 +188,7 @@ Determine:
 
 - Whether new dependencies are introduced
 - Whether dependency direction remains valid
-- Whether responsibilities remain isolated
+- Whether concerns remain separated by clear interfaces
 
 ### Step 4: Verify SSOT
 
@@ -189,6 +205,16 @@ Ask:
 - Will future changes require modifying multiple locations?
 - Does this simplify or complicate the architecture?
 
+### Step 6: Verify Required Axes
+
+Determine whether the change preserves or improves:
+
+- Encapsulation of internal state and storage details
+- Separation of parsing, planning, routing, execution, storage, indexing, and persistence concerns
+- Enforcement of affected invariants at the owning boundary
+- Consistency between source-of-truth data and derived state
+- Fitness of the abstraction for the actual problem
+
 ---
 
 ## Output Format
@@ -201,7 +227,7 @@ Short description of the change.
 
 ### Ownership Analysis
 
-Which module owns the responsibility.
+Which module owns the state, invariant, API surface, or execution flow.
 
 ### Boundary Analysis
 
@@ -210,6 +236,10 @@ Potential boundary violations.
 ### SSOT Analysis
 
 Potential duplication of knowledge or ownership.
+
+### Required Axes Analysis
+
+How the change affects encapsulation, separation of concerns, invariants, consistency, and fitness for purpose.
 
 ### Architectural Risks
 

@@ -19,15 +19,17 @@ Consult `.skills/INDEX.md` before major changes.
 
 ## Repository Integrity
 
-Preserve conceptual integrity, clear ownership, and module boundaries.
+Preserve encapsulation, separation of concerns, invariants, consistency, and fitness for purpose.
 
-Before introducing a new module, abstraction, data structure, dependency, or responsibility split, check whether an existing concept already owns the responsibility.
+Prefer concrete boundary language such as data ownership, invariant enforcement, API surface, dependency direction, execution flow, and source of truth. Avoid vague umbrella terms when a more testable boundary can be named.
+
+Before introducing a new module, abstraction, data structure, dependency, or boundary split, check whether an existing concept already owns the data, invariant, API surface, or execution flow.
 
 Prefer a single source of truth over duplicated knowledge.
 
-Do not place the same domain rule, schema, metadata definition, storage invariant, or architectural responsibility in multiple locations.
+Do not place the same domain rule, schema, metadata definition, storage invariant, or boundary contract in multiple locations.
 
-Use the `architecture-integrity` skill for structural changes, responsibility changes, new dependencies, new modules, or large refactors.
+Use the `architecture-integrity` skill for structural changes, boundary changes, new dependencies, new modules, or large refactors.
 
 Use the `gleaph-architecture` skill for changes that affect Gleaph-specific boundaries, including Router, Graph, Property Index, Vector Index, Edge Value, Property Store, GQL extensions, or ICP integration.
 

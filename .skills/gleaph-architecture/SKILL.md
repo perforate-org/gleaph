@@ -24,11 +24,19 @@ This skill assumes the current architecture is correct unless explicitly superse
 
 ## Core Principle
 
-Gleaph is composed of distinct ownership domains.
+Gleaph is composed of distinct data and execution domains.
 
-Responsibilities should not leak across boundaries.
+State, invariants, and execution concerns should not leak across boundaries.
 
-A new feature should usually extend an existing owner rather than creating a new owner.
+A new feature should usually extend the existing domain that owns the relevant state, invariant, API surface, or execution flow.
+
+Every Gleaph-specific architecture review must preserve:
+
+- **Encapsulation:** Router, Graph, indexes, storage, and GQL crates expose capabilities through intentional APIs, not internal state shortcuts.
+- **Separation of concerns:** portable GQL crates stay language-oriented; Router coordinates; Graph executes and stores; indexes answer index reads.
+- **Invariants:** placement, postings, edge identity, labels, payloads, tombstones, and stable layout rules are enforced by the domain that owns the corresponding state.
+- **Consistency:** derived state such as postings, telemetry, reverse adjacency, and cached plans has one update path from the canonical source.
+- **Fitness for purpose:** Gleaph-specific extensions solve a concrete product or storage need without polluting general-purpose crates.
 
 ---
 
@@ -152,11 +160,13 @@ Gleaph-specific behavior belongs in integration layers.
 
 For every change:
 
-1. Which owner is responsible?
-2. Does ownership become ambiguous?
+1. Which domain owns the state, invariant, API surface, or execution flow?
+2. Does the boundary become ambiguous?
 3. Does the change introduce duplicate concepts?
 4. Does it violate an existing boundary?
-5. Can an existing owner absorb the change?
+5. Can an existing domain absorb the change without weakening encapsulation or separation of concerns?
+6. Does the change preserve invariant enforcement and consistency between canonical and derived state?
+7. Is the abstraction fit for the concrete Gleaph need, without becoming a generic bucket for unrelated behavior?
 
 Prefer extending existing concepts over introducing new ones.
 
@@ -166,8 +176,9 @@ Prefer extending existing concepts over introducing new ones.
 
 Report:
 
-- Affected ownership domains
+- Affected data and execution domains
 - Boundary violations
+- Encapsulation, separation-of-concerns, invariant, consistency, and fitness-for-purpose impacts
 - New concepts introduced
 - Architectural risks
 - Recommendation

@@ -2,27 +2,27 @@
 
 ## architecture-integrity
 
-Review ownership, SSOT, DRY, and module boundaries.
+Review encapsulation, separation of concerns, invariants, consistency, fitness for purpose, SSOT, DRY, and module boundaries.
 
 ## gleaph-architecture
 
-Review Gleaph-specific architectural constraints.
+Review Gleaph-specific boundaries with emphasis on encapsulation, invariant ownership, derived-state consistency, and crate fitness for purpose.
 
 ## design-sync
 
-Keep design documents synchronized with implementation.
+Keep design documents synchronized with implementation and explicit about boundaries, invariants, consistency mechanisms, and abstraction fit.
 
 ## adr-review
 
-Evaluate major architectural changes.
+Evaluate major architectural changes against encapsulation, separation of concerns, invariants, consistency, and fitness for purpose.
 
 ## test-contract
 
-Review behavioral contracts and test coverage.
+Review behavioral contracts, invariants, consistency mechanisms, boundaries, and test coverage.
 
 ## benchmark
 
-Review benchmark impact and performance regressions.
+Review benchmark impact, performance regressions, invariant-preserving measurement, and benchmark fitness for purpose.
 
 ## rust-workflow
 

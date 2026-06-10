@@ -9,7 +9,7 @@ Design documents are active architectural contracts. They are not historical not
 Use this skill whenever a change may affect:
 
 - Architecture
-- Module responsibilities
+- Module boundaries and ownership of state, invariants, API surfaces, or execution flow
 - Storage layout
 - Query semantics
 - GQL extensions
@@ -27,6 +27,8 @@ A code change and its design contract must not diverge.
 If implementation behavior changes, update the relevant design document in the same patch.
 
 If the design document is intentionally ahead of implementation, mark that section clearly as planned, partial, or not yet implemented.
+
+Design documents must make architectural boundaries testable: name the canonical source of truth, the owner of each invariant, the API surface that preserves encapsulation, the separation between concerns, and why the chosen abstraction fits the stated problem.
 
 ## Document Status
 
@@ -70,6 +72,10 @@ Look for:
 - Old module names
 - Removed assumptions
 - Incorrect ownership
+- Unclear encapsulation or boundary language
+- Invariants described without an enforcing module or write path
+- Derived state described without a consistency mechanism
+- Abstractions that no longer fit the implemented behavior
 - Stale benchmark expectations
 - Future plans written as current behavior
 

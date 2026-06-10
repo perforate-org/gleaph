@@ -37,3 +37,10 @@ Significant benchmark regressions should be investigated.
 Fix the regression unless it is caused by a necessary semantic, safety, or architectural change.
 
 Benchmarks should be kept as lightweight as possible while preserving useful signal.
+
+Benchmark design must remain fit for purpose:
+
+- Measure the path whose performance contract matters, not a convenient proxy unless the proxy is documented.
+- Preserve correctness invariants while benchmarking; do not disable maintenance, indexing, tombstone handling, or consistency updates unless the benchmark explicitly measures that variant.
+- Keep setup cost, mutation cost, query cost, and derived-state maintenance separate when they answer different questions.
+- Record when a benchmark reflects planned behavior rather than implemented behavior.

@@ -12,9 +12,9 @@ Use this skill before:
 - Query execution changes
 - Index architecture changes
 - Public API changes
-- Architectural responsibility changes
+- Architectural boundary changes
 - New subsystems
-- New ownership domains
+- New data or execution domains
 - Major refactors
 
 ---
@@ -31,6 +31,8 @@ Do not start from a preferred solution.
 
 Start from a demonstrated problem.
 
+Every ADR review must explicitly evaluate encapsulation, separation of concerns, invariants, consistency, and fitness for purpose. A proposed design should not be accepted only because it works; it must fit the existing boundaries and preserve the invariants that make the system understandable.
+
 ---
 
 ## Architecture Preservation Bias
@@ -40,7 +42,7 @@ Existing architectural concepts should be preserved whenever possible.
 Before introducing:
 
 - A new subsystem
-- A new ownership domain
+- A new data or execution domain
 - A new storage layer
 - A new index type
 - A new protocol
@@ -48,7 +50,7 @@ Before introducing:
 - A new persistence mechanism
 - A new execution layer
 
-demonstrate why an existing concept cannot reasonably absorb the responsibility.
+demonstrate why an existing concept cannot reasonably own the required state, invariant, API surface, or execution flow.
 
 Prefer extending an existing concept over creating a new one.
 
@@ -65,7 +67,7 @@ Prefer:
 - Extending Property Index over creating another indexing mechanism
 - Extending Vector Index over creating another vector subsystem
 
-unless the existing owner would become conceptually incorrect.
+unless the existing domain would become conceptually incorrect.
 
 ---
 
@@ -92,7 +94,7 @@ Determine whether the problem can be solved by:
 
 - Existing abstractions
 - Existing modules
-- Existing ownership boundaries
+- Existing data, invariant, API, and execution boundaries
 - Existing extension points
 
 If the problem can be solved without introducing new concepts, prefer that approach.
@@ -116,7 +118,7 @@ For each alternative, explain:
 - Benefits
 - Drawbacks
 - Complexity impact
-- Ownership impact
+- Boundary impact
 
 ---
 
@@ -143,7 +145,12 @@ Complexity must be treated as an explicit cost.
 Determine whether the proposal:
 
 - Simplifies the architecture
-- Clarifies ownership
+- Clarifies boundaries
+- Improves encapsulation
+- Improves separation of concerns
+- Strengthens invariant enforcement
+- Preserves consistency between canonical and derived state
+- Fits the concrete problem without over-generalizing
 - Strengthens SSOT
 - Reduces duplication
 - Improves maintainability
@@ -152,9 +159,13 @@ Determine whether the proposal:
 Or instead:
 
 - Introduces new concepts
-- Creates additional ownership domains
+- Creates additional data or execution domains
 - Increases coupling
 - Weakens boundaries
+- Exposes internal state across APIs
+- Spreads one invariant across multiple modules
+- Creates additional consistency surfaces
+- Uses an abstraction broader than the demonstrated need
 - Increases migration burden
 - Makes future reasoning harder
 
@@ -205,8 +216,13 @@ Which design documents must be updated?
 Reject if:
 
 - Existing architecture already solves the problem
-- Existing concepts can absorb the responsibility
-- Ownership becomes less clear
+- Existing concepts can absorb the required state, invariant, API surface, or execution flow
+- Boundaries become less clear
+- Encapsulation is weakened without a strong justification
+- Concerns become mixed across parsing, planning, routing, execution, storage, indexing, or persistence
+- Invariant enforcement moves away from the state owner
+- Consistency depends on duplicated update logic
+- The abstraction is not fit for the demonstrated problem
 - SSOT is weakened
 - Duplication increases
 - Coupling increases
@@ -231,6 +247,10 @@ Reject if:
 APPROVE / APPROVE WITH CHANGES / REJECT
 
 ### Rationale
+
+### Required Axes Impact
+
+Encapsulation, separation of concerns, invariants, consistency, and fitness for purpose.
 
 ### Required Design Updates
 
