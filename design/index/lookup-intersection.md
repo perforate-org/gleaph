@@ -138,7 +138,7 @@ Remove from `execute_index_intersection`:
 2. Extend `PropertyIndexLookup` / `RouterIndexClient`.
 3. Graph executor: single `lookup_intersection` call; standalone bind filter.
 4. Router seed module: intersection anchor + per-shard slice + skip op on graph (**Implemented**).
-5. Remove legacy client-side intersection (**Done**); defer graph direct index calls when router seeds present (**Partial** — skip op only).
+5. Remove legacy client-side intersection (**Done**); defer graph direct index calls when router seeds present (**In progress** — `skip_leading_index_anchor_ops` skips leading `IndexScan`, `IndexIntersection`, labeled `NodeScan`, and `PropertyFilter`; executor tests in `executor/scan/tests.rs`).
 
 ## Related documents
 

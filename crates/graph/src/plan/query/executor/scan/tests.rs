@@ -2032,3 +2032,95 @@ fn seeded_skip_leading_labeled_node_scan_uses_seed_only() {
         Some(PlanBinding::Vertex(id)) if *id == vid1
     ));
 }
+
+#[test]
+fn seeded_skip_leading_index_scan_uses_seed_only() {
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let vid = store
+        .insert_vertex_named(["IxSeedEq"], [("age", Value::Uint8(5))])
+        .expect("vertex");
+    let plan = plan(vec![
+        PlanOp::IndexScan {
+            variable: "n".into(),
+            property: "age".into(),
+            value: ScanValue::Literal(Value::Int64(5)),
+            cmp: CmpOp::Eq,
+            property_projection: None,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("n"), "n")],
+            distinct: false,
+        },
+    ]);
+    let mut seed = PlanRow::new();
+    seed.insert("n".to_owned(), PlanBinding::Vertex(vid));
+    let index = MockPropertyIndex::default();
+
+    let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+        vec![seed],
+        true,
+    ))
+    .expect("seeded equality skip");
+
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(
+        rows[0].get("n"),
+        Some(PlanBinding::Vertex(id)) if *id == vid
+    ));
+    assert!(index.equal_calls.borrow().is_empty());
+}
+
+#[test]
+fn seeded_skip_leading_node_scan_and_property_filter_uses_seed_only() {
+    let store = GraphStore::new();
+    let vid = store
+        .insert_vertex_named(["Person"], [("region", Value::Text("US".into()))])
+        .expect("vertex");
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "n".into(),
+            label: Some("Person".into()),
+            property_projection: None,
+        },
+        PlanOp::PropertyFilter {
+            predicates: vec![Expr::new(ExprKind::Compare {
+                left: Box::new(prop("n", "region")),
+                op: CmpOp::Eq,
+                right: Box::new(Expr::new(ExprKind::Literal(Value::Text("US".into())))),
+            })],
+            stage: 0,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("n"), "n")],
+            distinct: false,
+        },
+    ]);
+    let mut seed = PlanRow::new();
+    seed.insert("n".to_owned(), PlanBinding::Vertex(vid));
+    let index = MockPropertyIndex::default();
+
+    let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+        vec![seed],
+        true,
+    ))
+    .expect("seeded node scan + property filter skip");
+
+    assert_eq!(rows.len(), 1);
+    assert!(matches!(
+        rows[0].get("n"),
+        Some(PlanBinding::Vertex(id)) if *id == vid
+    ));
+    assert!(index.equal_calls.borrow().is_empty());
+    assert!(index.intersection_calls.borrow().is_empty());
+}
