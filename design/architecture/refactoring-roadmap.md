@@ -280,9 +280,9 @@ Exit criteria:
 
 Goal: remove duplicated name/id catalog rules.
 
-**Status: In progress (2026-06-10).**
+**Status: Complete (2026-06-10).**
 
-**Progress:** `gleaph-graph-kernel::bidirectional_catalog` provides shared `BidirectionalCatalog` with sparse and dense allocation policies. Graph property catalog and router vertex/edge/property resolution catalogs use the shared type (same stable memory regions). Router retains ownership of federated label and property resolution APIs.
+**Progress:** `gleaph-graph-kernel::bidirectional_catalog` provides shared `BidirectionalCatalog` with sparse and dense allocation policies. Graph property catalog and router vertex/edge/property resolution catalogs use the shared type (same stable memory regions). Router retains ownership of federated label and property resolution APIs. Edge weight profiles are a compatibility view over canonical payload profiles (`to_weight_profile` on read; new installs write payload only).
 
 Deliverables:
 
@@ -290,7 +290,7 @@ Deliverables:
 - Move router label catalogs and property catalogs onto the shared implementation where the semantics match. **Done** (vertex/edge dense, property dense; graph property sparse).
 - Preserve router ownership of federated label and property resolution. **Done** (router `catalogs` domain unchanged at API boundary).
 - Evaluate graph property catalog migration separately from router catalogs. **Done** (graph re-exports shared catalog with `SparseFromOnePolicy`).
-- Convert edge weight profiles into a compatibility layer over edge payload profiles, if the compatibility surface is still required. **Not started.**
+- Convert edge weight profiles into a compatibility layer over edge payload profiles, if the compatibility surface is still required. **Done** (`EdgePayloadProfile::to_weight_profile`; weight install writes payload only; `EDGE_WEIGHT_PROFILES` read fallback for legacy stable data).
 
 Exit criteria:
 

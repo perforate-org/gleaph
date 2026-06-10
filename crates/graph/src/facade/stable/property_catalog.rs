@@ -1,7 +1,7 @@
 //! Graph shard property-name catalog (shared bidirectional implementation).
 
-pub use gleaph_graph_kernel::bidirectional_catalog::{BidirectionalCatalog, SparseFromOnePolicy};
 use gleaph_graph_kernel::bidirectional_catalog::CatalogError;
+pub use gleaph_graph_kernel::bidirectional_catalog::{BidirectionalCatalog, SparseFromOnePolicy};
 
 pub type PropertyCatalogError = CatalogError<PropertyId>;
 use gleaph_graph_kernel::entry::PropertyId;

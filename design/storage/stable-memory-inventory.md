@@ -108,7 +108,7 @@ Owner: `ic-stable-lara` / graph `GRAPH` thread-local. Scan paths must not consul
 | 28 | `EDGE_PROPERTIES` | `EDGE_PROPERTIES` | `init_edge_property_store` | canonical | properties | — |
 | 29 | `EDGE_ALIASES` | `EDGE_ALIASES` | `init_edge_alias_index` | derived | adjacency | **Not implemented** |
 | 32 | `GRAPH_METADATA` | `METADATA` | `init_metadata` | canonical | federation metadata | — |
-| 33 | `EDGE_WEIGHT_PROFILES` | `EDGE_WEIGHT_PROFILES` | `init_edge_weight_profiles` | compatibility | edge profiles | — |
+| 33 | `EDGE_WEIGHT_PROFILES` | `EDGE_WEIGHT_PROFILES` | `init_edge_weight_profiles` | compatibility (legacy read fallback) | edge profiles | — |
 | 44 | `EDGE_PAYLOAD_PROFILES` | `EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | canonical | edge profiles | — |
 | 36 | `VERTEX_LOGICAL_IDS` | `VERTEX_LOGICAL_IDS` | `init_vertex_logical_ids` | canonical | federation | — |
 | 37 | `REMOTE_REF_TO_LOGICAL` | `REMOTE_VERTEX_REFS` | `init_remote_vertex_refs` | canonical | remote refs | — |

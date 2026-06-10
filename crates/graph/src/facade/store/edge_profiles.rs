@@ -10,15 +10,14 @@ use super::helpers::{catalog_edge_label_from_wire, validate_edge_payload_bytes_f
 use ic_stable_lara::traits::CsrEdge;
 
 impl GraphStore {
-    /// Installs weight + derived payload profiles for a catalog label at graph init time only.
+    /// Installs a legacy weight profile by storing the canonical payload profile only.
     pub(super) fn commit_install_edge_label_weight_profile_at_init(
         &self,
         label: EdgeLabelId,
         profile: EdgeWeightProfile,
     ) -> Result<(), GraphStoreError> {
         Self::ensure_edge_label_payload_profile_uninstalled(label)?;
-        let payload_profile = EdgePayloadProfile::from(profile.clone());
-        EDGE_WEIGHT_PROFILES.with_borrow_mut(|store| store.insert(label, profile))?;
+        let payload_profile = EdgePayloadProfile::from(profile);
         EDGE_PAYLOAD_PROFILES.with_borrow_mut(|store| store.insert(label, payload_profile))?;
         Ok(())
     }
@@ -44,7 +43,9 @@ impl GraphStore {
     }
 
     pub fn edge_label_weight_profile(&self, label: EdgeLabelId) -> Option<EdgeWeightProfile> {
-        EDGE_WEIGHT_PROFILES.with_borrow(|store| store.get(label))
+        self.edge_label_payload_profile(label)
+            .and_then(|profile| profile.to_weight_profile())
+            .or_else(|| EDGE_WEIGHT_PROFILES.with_borrow(|store| store.get(label)))
     }
 
     pub fn edge_label_payload_profile(&self, label: EdgeLabelId) -> Option<EdgePayloadProfile> {

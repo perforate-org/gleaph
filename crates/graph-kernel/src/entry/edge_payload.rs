@@ -178,6 +178,25 @@ impl From<EdgeWeightProfile> for EdgePayloadProfile {
 }
 
 impl EdgePayloadProfile {
+    /// Returns a legacy [`EdgeWeightProfile`] when this payload profile uses a weight encoding.
+    pub fn to_weight_profile(&self) -> Option<EdgeWeightProfile> {
+        if self.byte_width != 2 {
+            return None;
+        }
+        let encoding = match self.encoding {
+            EdgePayloadEncoding::WeightRawU16 => WeightEncoding::RawU16,
+            EdgePayloadEncoding::WeightLinearU16 { min, max } => {
+                WeightEncoding::Linear { min, max }
+            }
+            EdgePayloadEncoding::WeightLogU16 { min, max } => WeightEncoding::Log { min, max },
+            EdgePayloadEncoding::WeightBinary16 => WeightEncoding::Binary16,
+            _ => return None,
+        };
+        let profile = EdgeWeightProfile { encoding };
+        profile.validate().ok()?;
+        Some(profile)
+    }
+
     pub const fn no_payload() -> Self {
         Self {
             byte_width: 0,
@@ -601,12 +620,22 @@ mod tests {
         let weight = EdgeWeightProfile {
             encoding: WeightEncoding::Linear { min: 0.0, max: 1.0 },
         };
-        let profile = EdgePayloadProfile::from(weight);
+        let profile = EdgePayloadProfile::from(weight.clone());
         assert_eq!(profile.byte_width, 2);
         assert!(matches!(
             profile.encoding,
             EdgePayloadEncoding::WeightLinearU16 { .. }
         ));
         profile.validate().expect("converted profile valid");
+        assert_eq!(profile.to_weight_profile(), Some(weight));
+    }
+
+    #[test]
+    fn non_weight_payload_profile_has_no_weight_view() {
+        let profile = EdgePayloadProfile {
+            byte_width: 4,
+            encoding: EdgePayloadEncoding::RawI32,
+        };
+        assert_eq!(profile.to_weight_profile(), None);
     }
 }

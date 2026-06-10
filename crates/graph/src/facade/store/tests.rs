@@ -25,6 +25,37 @@ fn install_w2_weight_profile(store: &GraphStore, label_id: EdgeLabelId) {
 }
 
 #[test]
+fn install_edge_label_weight_profile_stores_payload_and_derives_weight_view() {
+    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+
+    let store = GraphStore::new();
+    let label_id = crate::test_labels::edge_label_id_for_name("WeightCompatView");
+    let weight = EdgeWeightProfile {
+        encoding: WeightEncoding::Linear {
+            min: 0.0,
+            max: 10.0,
+        },
+    };
+    let expected_payload = EdgePayloadProfile::from(weight.clone());
+    store
+        .install_edge_label_weight_profile_at_init(label_id, weight.clone())
+        .expect("weight install");
+
+    assert_eq!(store.edge_label_weight_profile(label_id), Some(weight));
+    assert_eq!(
+        store.edge_label_payload_profile(label_id),
+        Some(expected_payload)
+    );
+    assert!(matches!(
+        store
+            .edge_label_payload_profile(label_id)
+            .expect("payload")
+            .encoding,
+        EdgePayloadEncoding::WeightLinearU16 { .. }
+    ));
+}
+
+#[test]
 fn install_edge_label_payload_profile_rejected_on_second_install() {
     use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
 

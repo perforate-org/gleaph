@@ -228,8 +228,7 @@ mod tests {
     use crate::entry::PropertyId;
     use ic_stable_structures::VectorMemory;
 
-    type TestCatalog<Policy> =
-        BidirectionalCatalog<PropertyId, VectorMemory, VectorMemory, Policy>;
+    type TestCatalog<Policy> = BidirectionalCatalog<PropertyId, VectorMemory, VectorMemory, Policy>;
 
     fn catalog<Policy: CatalogAllocationPolicy<PropertyId>>() -> TestCatalog<Policy> {
         BidirectionalCatalog::init(VectorMemory::default(), VectorMemory::default())
