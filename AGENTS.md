@@ -43,6 +43,22 @@ Use the `design-sync` skill for changes that may invalidate, refine, or require 
 
 Use the `adr-review` skill for major architectural decisions, especially storage layout, persistence format, query semantics, canister boundaries, indexing strategy, migration strategy, or public API changes.
 
+## Date Accuracy in Documents
+
+When creating, editing, or reviewing documents that include dates, relative time,
+timelines, release dates, deadlines, schedules, milestones, or words such as
+`today`, `recent`, `latest`, `current`, `now`, `as of`, `last`, or `next`, use the
+`document-date-accuracy` skill.
+
+Do not rely on model memory for the current date. Get the anchor date from the OS
+with:
+
+    date +"%Y-%m-%d %H:%M:%S %Z %z"
+
+Convert relative dates to exact calendar dates where possible. Verify unstable
+current-state claims before writing them as fact, and mark uncertain or planned
+dates explicitly.
+
 ## Test-First Contract
 
 Tests are first-class architectural boundaries.

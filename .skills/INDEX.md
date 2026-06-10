@@ -27,3 +27,8 @@ Review benchmark impact and performance regressions.
 ## rust-workflow
 
 Expected validation workflow before completion.
+
+## document-date-accuracy
+
+Ensure document dates, relative dates, timelines, release dates, deadlines, and
+latest/current claims are anchored to the OS date and verified when unstable.
