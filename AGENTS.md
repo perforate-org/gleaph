@@ -52,10 +52,10 @@ timelines, release dates, deadlines, schedules, milestones, or words such as
 `today`, `recent`, `latest`, `current`, `now`, `as of`, `last`, or `next`, use the
 `document-date-accuracy` skill.
 
-Do not rely on model memory for the current date. Get the anchor date from the OS
-with:
+Do not rely on model memory for the current date. Use UTC for document time
+notation. Get the anchor timestamp from the OS with:
 
-    date +"%Y-%m-%d %H:%M:%S %Z %z"
+    date -u +"%Y-%m-%d %H:%M:%S UTC %z"
 
 Convert relative dates to exact calendar dates where possible. Verify unstable
 current-state claims before writing them as fact, and mark uncertain or planned
