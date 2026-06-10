@@ -14,7 +14,7 @@ pub(crate) use label_export::{
 };
 
 pub use aggregate_index_fast_path::{
-    AggregateIndexFastPath, LabelCountTelemetryFastPath, gql_query_result_from_label_live_count,
+    AggregateIndexFastPath, gql_query_result_from_label_live_count,
     gql_query_result_from_posting_counts, split_label_and_property_anchors,
     try_aggregate_index_fast_path, try_label_count_telemetry_fast_path, vertex_label_live_count,
 };
@@ -24,13 +24,9 @@ pub use aggregate_merge::{
     federated_merge_mode_from_ops, federated_merge_mode_from_plans, merge_aggregate_blobs,
     merge_optional_aggregate_blobs, strip_post_aggregate_having,
 };
-#[expect(unused_imports, reason = "re-exported for gql integration tests")]
-pub use dispatch::{SeedRouting, resolve_seed_routings_multi, resolve_unseeded_all_shards};
+pub use dispatch::{SeedRouting, resolve_seed_routings_multi};
 pub use having_filter::apply_federated_aggregate_having;
-pub use limits::{
-    FAST_PATH_MAX_VERTEX_FILTER_HITS, packed_vertices_exceed_fast_path_budget,
-    posting_hits_exceed_fast_path_budget,
-};
+pub use limits::{packed_vertices_exceed_fast_path_budget, posting_hits_exceed_fast_path_budget};
 #[expect(unused_imports, reason = "public federation API surface")]
 pub use merge::{
     empty_execute_plan_result, merge_add_row_count, merge_execute_plan_result, merge_row_counts,

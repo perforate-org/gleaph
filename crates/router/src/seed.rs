@@ -33,12 +33,12 @@ pub enum IndexAnchor {
         variable: String,
         specs: Vec<IndexEqualSpec>,
     },
-    /// Labeled `NodeScan` (`lookup_label`).
+    /// Labeled `NodeScan` (paginated `lookup_label_page` per shard).
     Label {
         variable: String,
         vertex_label_id: u32,
     },
-    /// Multi-label `NodeScan` + `IsLabeled` filters (`lookup_label_intersection`).
+    /// Multi-label `NodeScan` + `IsLabeled` filters (paginated walk + label sieve).
     LabelIntersection {
         variable: String,
         vertex_label_ids: Vec<u32>,
@@ -161,58 +161,6 @@ fn variable_from_expr(expr: &Expr) -> Option<&str> {
         ExprKind::Variable(name) => Some(name.as_str()),
         _ => None,
     }
-}
-
-/// Collect label constraints from `NodeScan` and leading `PropertyFilter` `IsLabeled` predicates.
-pub(crate) fn extract_label_anchor_from_prefix(
-    ops: &[PlanOp],
-    _parameters: &BTreeMap<String, Value>,
-    store: &RouterStore,
-) -> Result<Option<IndexAnchor>, RouterError> {
-    let Some(PlanOp::NodeScan {
-        variable, label, ..
-    }) = ops.first()
-    else {
-        return Ok(None);
-    };
-    let var = variable.as_ref();
-    let mut label_ids = Vec::new();
-    if let Some(label) = label {
-        label_ids.push(resolve_vertex_label_id(store, label.as_ref())?);
-    }
-    for op in ops.iter().skip(1) {
-        match op {
-            PlanOp::PropertyFilter { predicates, .. } => {
-                for predicate in predicates {
-                    if let ExprKind::IsLabeled {
-                        expr,
-                        label: LabelExpr::Name(name),
-                        negated: false,
-                    } = &predicate.kind
-                        && variable_from_expr(expr) == Some(var)
-                    {
-                        label_ids.push(resolve_vertex_label_id(store, name)?);
-                    }
-                }
-            }
-            _ => break,
-        }
-    }
-    if label_ids.is_empty() {
-        return Ok(None);
-    }
-    label_ids.sort_unstable();
-    label_ids.dedup();
-    if label_ids.len() >= 2 {
-        return Ok(Some(IndexAnchor::LabelIntersection {
-            variable: var.to_string(),
-            vertex_label_ids: label_ids,
-        }));
-    }
-    Ok(Some(IndexAnchor::Label {
-        variable: var.to_string(),
-        vertex_label_id: label_ids[0],
-    }))
 }
 
 /// Leading plan ops that establish index/label membership for one variable.

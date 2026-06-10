@@ -129,13 +129,6 @@ mod tests {
             Box::pin(async { Ok(Vec::new()) })
         }
 
-        fn lookup_label(
-            &self,
-            _vertex_label_id: u32,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-            Box::pin(async { Ok(Vec::new()) })
-        }
-
         fn lookup_label_intersection(
             &self,
             _req: IndexLabelIntersectionRequest,

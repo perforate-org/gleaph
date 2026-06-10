@@ -1,13 +1,13 @@
 # Label index
 
 Last updated: 2026-06-10  
-Implementation verified as of: 2026-06-10 (label index through router backfill orchestration)
+Implementation verified as of: 2026-06-10 (label index through router backfill orchestration and paginated multi-label seeds)
 
 ## Status
 
-**Partially Implemented** — Postings, DML sync, `lookup_label` (path **A**), `lookup_label_intersection`
-(path **D**), label posting backfill, and router paths **B** / **C1** / **C2** are implemented.
-Seed routing no longer falls back to unseeded all-shard execution on large hit lists (see
+**Implemented** — Postings, DML sync, read paths **A** / **B** / **C1** / **C2** / **D**, label
+posting backfill orchestration, compound read seeds, and paginated seed export. Seed routing no
+longer falls back to unseeded all-shard execution on large hit lists (see
 [ADR 0004](../adr/0004-label-index.md)).
 
 ## Purpose
@@ -19,7 +19,7 @@ Most labeled queries should **not** bulk-export membership. Use:
 
 - **Property index + label sieve** when properties participate.
 - **Label telemetry** when only counts are needed.
-- **`lookup_label`** only when a **vertex list** is required.
+- **Paginated `lookup_label_page`** when a **vertex list** is required.
 
 ## Non-goals
 
@@ -41,14 +41,14 @@ Separate `BTreeSet` from property postings.
 
 | API | When |
 |-----|------|
-| `lookup_label(label_id)` | Full label bucket (legacy / small labels) |
+| `lookup_label(label_id)` | Full label bucket (graph-index direct API; router uses paginated export) |
 | `lookup_label_for_shard(label_id, shard_id)` | One shard's postings |
 | `lookup_label_page(req)` | Paginated shard-local export (`after` + `limit`) |
 
 Router seed routing uses **`lookup_label_page` per registered shard** (10k hits/page) instead of
 one bulk `lookup_label`.
 
-**Target policy:** No fallback to unseeded all-shard execution based on hit count. Large lists are
+**Policy:** No fallback to unseeded all-shard execution based on hit count. Large lists are
 acceptable when vertex ids are required; unseeded graph scans are worse.
 
 **Not for:** `COUNT(*)` without vertices; `GROUP BY` indexed property (use C).
@@ -103,25 +103,24 @@ graph-index for pre-existing data. Router orchestrates per-shard cursors via
 **Compound read seeds:** `MATCH (n:L) WHERE n.p = v RETURN n` uses `SeedAnchorSet` to
 intersect label and property index hits before per-shard `seed_bindings_blob` dispatch.
 
-## Router (target)
+## Router
 
 | Query need | Path |
 |------------|------|
-| Seed / return vertices for `:L` | A |
+| Seed / return vertices for `:L` | A (paginated) |
 | `COUNT(*)` for `:L` only | B |
 | `:L` + indexed property filter / `GROUP BY` | C1 / C2 |
+| `:L1:L2:…` seed export | D (paginated walk + sieve) |
 | Property only | Property index (no label) |
 
-### v1 code (to migrate)
+### Instruction bounds (retained)
 
-| Behavior | Target |
-|----------|--------|
-| Aggregate fast path via `lookup_label` + packed filter | C2 or C1 |
-| Scale guard → unseeded multi-shard fan-out | **Remove** |
-| Scale guard on aggregate packed filter | Replace with C2; no silent unseeded fallback |
+| Bound | Effect |
+|-------|--------|
+| C1 aggregate packed `vertex_filter` > 10k hits | Aggregate fast path returns `None` → generic federated execution |
+| `lookup_label_page` page size | Shard-scoped pagination for seed export |
 
-Keep instruction/output bounds on canister APIs where the platform requires them; do not treat
-10k hits as “give up on seeds.”
+These are platform/instruction limits — not a downgrade to unseeded shard scans.
 
 ## Query → path cheat sheet
 
@@ -132,6 +131,7 @@ Keep instruction/output bounds on canister APIs where the platform requires them
 | `MATCH (n:L) RETURN count(*)` | B |
 | `MATCH (n:L) GROUP BY n.p` | C2 |
 | `MATCH (n:L) WHERE n.q = v …` | C1 (+ property) |
+| `MATCH (n:L1:L2) RETURN n` | D |
 
 ## Access patterns (`BTreeSet`)
 
@@ -148,7 +148,7 @@ Use when exporting hits or aggregating along a sorted dimension.
 | `lookup_label(L)` | label | `prefix_lower(L) ..= prefix_upper(L)` |
 | `lookup_equal(p, v)` | property | `(p, v, …)` prefix range |
 | `count_postings_by_value(p)` | property | half-open `property_posting_bucket(p)` → `[low, high)` |
-| `count_postings_by_value_for_label(p, L)` (planned) | property | same bucket `range` as above |
+| `count_postings_by_value_for_label(p, L)` | property | same bucket `range` as above |
 
 Bounds helpers: `LabelPostingKey::prefix_lower/upper`, `PostingKey::prefix_lower/upper`,
 `property_posting_bucket` ([`posting_range.rs`](../../crates/graph-index/src/posting_range.rs),
@@ -166,10 +166,10 @@ label_set.contains(key)   // O(log n) per check
 
 | Path | Walk (`range`) | Sieve |
 |------|----------------|-------|
-| A export | label `range` | — |
+| A export | label `range` / paginated pages | — |
 | C1 `filter_hits_by_label` | — (input hits from property `range`) | label `contains` per hit |
 | C2 `count_postings_by_value_for_label` | property bucket `range` | label `contains` per posting |
-| v1 interim packed filter | property bucket `range` | `HashSet` from prior label export (migrate to C2) |
+| D multi-label seeds | smallest-label `range` per page | label `contains` per hit for other labels |
 
 ### Why not `range` for both sides?
 

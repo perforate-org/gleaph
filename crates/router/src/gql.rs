@@ -1,7 +1,6 @@
 //! Router-side GQL parse, plan, index seed routing, and graph dispatch.
 
 use std::collections::{BTreeMap, HashSet};
-use std::pin::Pin;
 
 use candid::Principal;
 use gleaph_gql::parser;
@@ -12,9 +11,7 @@ use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::build_block_plan_with_schema;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
-use gleaph_graph_kernel::index::{
-    IndexIntersectionRequest, IndexLabelIntersectionRequest, PostingHit, ValuePostingCount,
-};
+use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, ValuePostingCount};
 use gleaph_graph_kernel::plan_exec::{
     GqlExecutionMode, GqlQueryResult, LabelTelemetryEventWire, MutationId,
 };
@@ -118,13 +115,20 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
         }
         IndexAnchor::Label {
             vertex_label_id, ..
-        } if shard_ids.is_empty() => index.lookup_label(*vertex_label_id).await,
-        IndexAnchor::Label {
-            vertex_label_id, ..
-        } => collect_label_hits_for_shards(index, *vertex_label_id, shard_ids).await,
+        } => {
+            if shard_ids.is_empty() {
+                return Err("label export requires registered shards".into());
+            }
+            collect_label_hits_for_shards(index, *vertex_label_id, shard_ids).await
+        }
         IndexAnchor::LabelIntersection {
             vertex_label_ids, ..
-        } => collect_label_intersection_hits_for_shards(index, vertex_label_ids, shard_ids).await,
+        } => {
+            if shard_ids.is_empty() {
+                return Err("label intersection export requires registered shards".into());
+            }
+            collect_label_intersection_hits_for_shards(index, vertex_label_ids, shard_ids).await
+        }
     }
 }
 
@@ -1042,15 +1046,6 @@ mod tests {
             _vertex_filter_packed: Option<Vec<u64>>,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
             Box::pin(async move { Ok(Vec::new()) })
-        }
-
-        fn lookup_label(
-            &self,
-            _vertex_label_id: u32,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-            self.calls.set(self.calls.get() + 1);
-            let result = self.results.borrow_mut().remove(0);
-            Box::pin(async move { result })
         }
 
         fn lookup_label_intersection(

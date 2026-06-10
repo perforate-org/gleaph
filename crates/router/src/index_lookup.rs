@@ -29,11 +29,6 @@ pub(crate) trait IndexLookup {
         vertex_filter_packed: Option<Vec<u64>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>>;
 
-    fn lookup_label(
-        &self,
-        vertex_label_id: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
-
     fn lookup_label_page(
         &self,
         req: LabelLookupPageRequest,
@@ -81,13 +76,6 @@ impl IndexLookup for RouterIndexClient {
         vertex_filter_packed: Option<Vec<u64>>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
         Box::pin(self.count_postings_by_value(property_id, min_count, vertex_filter_packed))
-    }
-
-    fn lookup_label(
-        &self,
-        vertex_label_id: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-        Box::pin(self.lookup_label(vertex_label_id))
     }
 
     fn lookup_label_page(

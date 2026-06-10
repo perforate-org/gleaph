@@ -190,26 +190,6 @@ impl RouterIndexClient {
         }
     }
 
-    pub async fn lookup_label(&self, vertex_label_id: u32) -> Result<Vec<PostingHit>, String> {
-        #[cfg(target_family = "wasm")]
-        {
-            use ic_cdk::call::Call;
-
-            let hits: Vec<PostingHit> = Call::bounded_wait(self.index_canister, "lookup_label")
-                .with_args(&(vertex_label_id,))
-                .await
-                .map_err(|e| format!("lookup_label: {e}"))?
-                .candid()
-                .map_err(|e| format!("lookup_label decode: {e}"))?;
-            return Ok(hits);
-        }
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let _ = vertex_label_id;
-            Err("lookup_label unavailable in native builds".into())
-        }
-    }
-
     pub async fn lookup_intersection(
         &self,
         req: IndexIntersectionRequest,

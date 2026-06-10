@@ -11,6 +11,7 @@ Last revised: 2026-06-10
 | 2026-06-09 | Accepted; initial label postings model and graph-index APIs (`e6bafe3d`). |
 | 2026-06-09 | Implementation: DML sync, router seeds, interim aggregate fast path via `lookup_label`, scale guard (`9f5c661c`–`dc727b13`). |
 | 2026-06-10 | Read paths A/B/C/D: telemetry for count-only; property `range` + label `contains` sieve; narrow vertex export; deprecate unseeded fallback on hit size. |
+| 2026-06-10 | Completed: router backfill orchestration; compound read seeds; paginated multi-label intersection; removed unseeded seed fallback. |
 
 ## Context
 
@@ -31,20 +32,13 @@ do not need it.
 | Shape | Needs vertex ids? | Right mechanism |
 |-------|-------------------|-----------------|
 | `MATCH (n) WHERE n.uid = $x` | Yes (few) | Property `lookup_equal` |
-| `MATCH (n:L) RETURN n` / traverse seeds | Yes (listed) | `lookup_label` → per-shard seeds |
-| `MATCH (n:L) RETURN count(*)` | **No** | **Label telemetry** (sum per shard) |
-| `MATCH (n:L) GROUP BY n.p` | No (group counts) | Property bucket walk + **label sieve** |
-| `MATCH (n:L) WHERE n.q = v GROUP BY n.p` | No | Selective property hits + **label sieve** |
+| `MATCH (n:L) RETURN n` / traverse seeds | Yes (listed) | **A** paginated `lookup_label_page` → per-shard seeds |
+| `MATCH (n:L) RETURN count(*)` | **No** | **B** label telemetry (sum per shard) |
+| `MATCH (n:L) GROUP BY n.p` | No (group counts) | **C2** property bucket walk + label sieve |
+| `MATCH (n:L) WHERE n.q = v GROUP BY n.p` | No | **C1** selective property hits + label sieve |
 
 **Property-only and label-only queries are both common.** Property index handles property entry;
 label postings are **not** a second full-graph export path for every labeled query.
-
-### v1 code vs target design
-
-Implemented v1 uses `lookup_label` for aggregate fast path (packed `vertex_filter`) and applies a
-**10_000 hit scale guard** that falls back to **unseeded multi-shard graph execution**. That
-guard optimizes for router payload size but often chooses a **heavier** outcome: every graph
-shard scans locally without seeds. The target design below supersedes that tradeoff.
 
 `PLAN_WIRE_VERSION` remains **1**.
 
@@ -64,9 +58,9 @@ vertices appear in multiple buckets.
 
 Writes: graph DML → `label_posting_insert/remove` with compensate-and-retry (**Implemented**).
 
-### Read paths (target)
+### Read paths
 
-#### A — Vertex list export (`lookup_label`)
+#### A — Vertex list export
 
 **When:** The execution plan needs an explicit list of `(shard_id, vertex_id)` for a label — e.g.
 seed routing for `NodeScan { label: Some(L) }`, `RETURN n` / traverse entry without a selective
@@ -74,7 +68,7 @@ property anchor.
 
 **APIs (Implemented):**
 
-- `lookup_label(label_id) -> Vec<PostingHit>` — full bucket
+- `lookup_label(label_id) -> Vec<PostingHit>` — full bucket (small labels / tests)
 - `lookup_label_for_shard(label_id, shard_id) -> Vec<PostingHit>`
 - `lookup_label_page(req) -> LabelLookupPageResult` — paginated shard-local export
 
@@ -84,9 +78,9 @@ Router seeds call **`lookup_label_page` per shard** (not bulk `lookup_label`).
 `seed_bindings_blob` is preferred over fan-out to all shards **without seeds**. Instruction/response
 limits are handled by shard-scoped pagination, not silent downgrade to unseeded execution.
 
-**Not for:** `COUNT(*)` without returning vertices; `GROUP BY` on an indexed property (use C or B).
+**Not for:** `COUNT(*)` without returning vertices; `GROUP BY` on an indexed property (use C).
 
-#### B — Label telemetry (counts without vertex list)
+#### B — Label telemetry (counts without vertex list) — Implemented
 
 **When:** Only **cardinality** or **per-shard totals** for a label are required — no vertex ids.
 
@@ -104,7 +98,7 @@ Router (or planner fast path) sums live counts across shards for `Person`; **no*
 **Invariant:** Telemetry must stay consistent with label postings on DML (same events). Drift
 checks are out of scope for v1.
 
-#### C — Property path + label sieve (membership checks)
+#### C — Property path + label sieve (membership checks) — Implemented
 
 **When:** A **property index path** already narrows or organizes work; label restricts which
 vertices count.
@@ -117,7 +111,7 @@ filter_hits_by_label(L, hits)  → contains checks only
 → seeds or packed filter for count_postings_by_value
 ```
 
-**Planned API:** `filter_hits_by_label(label_id, hits) -> Vec<PostingHit>`
+**API (Implemented):** `filter_hits_by_label(label_id, hits) -> Vec<PostingHit>`
 
 **C2 — GROUP BY on indexed property, label-only `MATCH`:**
 
@@ -127,7 +121,7 @@ count_postings_by_value_for_label(property_id, label_id, min_count)
   return (encoded_value, count) only
 ```
 
-**Planned API:** `count_postings_by_value_for_label(...)`
+**API (Implemented):** `count_postings_by_value_for_label(...)`
 
 Property provides the **axis** (equality hits or `GROUP BY` bucket). Label is a **sieve**
 (`contains`), never a prior full export of all `L` vertices for these shapes.
@@ -136,45 +130,48 @@ Property provides the **axis** (equality hits or `GROUP BY` bucket). Label is a 
 export); `contains(LabelPostingKey { L, shard, vertex })` for per-vertex sieve. See
 [../index/label-index.md](../index/label-index.md#access-patterns-btreeset).
 
-#### D — Multi-label
+#### D — Multi-label — Implemented
 
-**Implemented:** `lookup_label_intersection(label_ids)` on graph-index for direct intersection.
+`lookup_label_intersection(label_ids)` on graph-index for direct intersection (small sets).
 Router seed routing uses paginated walk + per-hit label sieve
 (`collect_label_intersection_hits_for_shards`) instead of bulk export when building seeds.
 
-### Aggregate fast path (router)
+### Aggregate fast path (router) — Implemented
 
 | Prefix | Mechanism |
 |--------|-----------|
 | Unlabeled | `count_postings_by_value` (no label) |
 | Property anchor only | Existing property path |
-| Label + selective property | **C1** (not `lookup_label`) |
-| Label + `GROUP BY` property | **C2** (not `lookup_label`) |
+| Label + selective property | **C1** |
+| Label + `GROUP BY` property | **C2** |
 | Label + `COUNT(*)` only, no `GROUP BY` property | **B** telemetry |
 
-**Deprecated target:** `lookup_label` → packed `vertex_filter` on `count_postings_by_value` for
-large labels (v1 interim only).
+**C1 packed-filter budget:** When property+label intersection exceeds 10_000 hits, the aggregate
+fast path returns `None` and falls back to generic federated execution — not unseeded shard scans.
+This is an instruction/output bound, not a seed-routing downgrade.
 
-### Seed routing
+### Seed routing — Implemented
 
 | Case | Mechanism |
 |------|-----------|
-| `IndexScan` / `IndexIntersection` | Existing property seeds |
-| `NodeScan { label: L }` | **A** `lookup_label` → per-shard seeds |
-| Oversized property anchor (future) | Do not fall back to unseeded all-shard scan if seeds are required; see A |
+| `IndexScan` / `IndexIntersection` | Property seeds |
+| `NodeScan { label: L }` | **A** paginated `lookup_label_page` → per-shard seeds |
+| `NodeScan` + `IsLabeled` (multi-label) | **D** paginated intersection + sieve |
+| Label + selective property (`MATCH (n:L) WHERE n.p = v`) | **C1** intersected seeds via `SeedAnchorSet` |
+| Large hit lists | Paginate; **no** unseeded all-shard fallback |
 
-### Scale guard (revision)
+### Scale guard — Migrated
 
-**Remove** the policy that falls back to **unseeded multi-shard execution** when label (or
-property) hit lists exceed 10_000 (**current code:** `federation/limits.rs` — **to migrate**).
+**Removed** the policy that fell back to **unseeded multi-shard execution** when label (or
+property) hit lists exceed 10_000.
 
 Rationale: unseeded shard scans dominate cost; large seed lists are the lesser evil when vertex
 ids are required.
 
-**Retain** optional instruction-bounded caps on:
+**Retained** optional instruction-bounded caps on:
 
-- `count_postings_by_value` **output group count** (already on graph-index), and
-- single canister query response size (platform limits),
+- `count_postings_by_value` **output group count** (graph-index), and
+- C1 aggregate packed `vertex_filter` size (10_000 hits → generic federated path),
 
 not as a silent switch to “no seeds / no fast path.”
 
@@ -196,13 +193,13 @@ Both update on DML. Postings are not the default read API for count-only labeled
 - `GROUP BY` + label uses property machinery + sieve (C), aligning with “property partitions, label
   filters.”
 - Count-only labeled queries avoid graph-index hit storms via telemetry (B).
-- v1 scale guard and aggregate `lookup_label` paths should be removed or narrowed in a follow-up
-  implementation patch.
+- Router backfill orchestration (`admin_label_backfill_step`) replays historical label postings
+  per shard with stable cursors.
 
 ## Alternatives considered
 
-- **Tier-1-as-default** (v1): `lookup_label` for every labeled aggregate/seed — rejected; wrong
-  for counts and `GROUP BY`; scale guard made it worse.
+- **Tier-1-as-default** (v1 interim): `lookup_label` for every labeled aggregate/seed — rejected;
+  wrong for counts and `GROUP BY`; scale guard made it worse.
 - **Unified posting key** — rejected (see prior revision).
 - **Unseeded fallback for large labels** — rejected; heavier than large seed lists.
 - **Label telemetry for `GROUP BY`** — rejected; telemetry has no per-value dimension.
@@ -210,12 +207,14 @@ Both update on DML. Postings are not the default read API for count-only labeled
 ## Implementation order
 
 1. ~~Label postings + DML + `lookup_label`~~ (**done**)
-2. **B** — Router/planner fast path for `MATCH (n:L) RETURN count(*)` via telemetry
-3. **C1** — `filter_hits_by_label` + aggregate/seed wiring for label + property
-4. **C2** — `count_postings_by_value_for_label` for label + `GROUP BY` property
-5. **Migrate** — drop unseeded fallback scale guard; stop aggregate fast path via bulk `lookup_label`
-6. **A** — Keep/document `lookup_label` for seed + vertex-list queries only; pagination if needed
-7. Backfill; optional write-side cardinality policy
+2. ~~**B** — Router/planner fast path for `MATCH (n:L) RETURN count(*)` via telemetry~~ (**done**)
+3. ~~**C1** — `filter_hits_by_label` + aggregate/seed wiring for label + property~~ (**done**)
+4. ~~**C2** — `count_postings_by_value_for_label` for label + `GROUP BY` property~~ (**done**)
+5. ~~**Migrate** — drop unseeded fallback scale guard; stop aggregate fast path via bulk `lookup_label`~~ (**done**)
+6. ~~**A** — paginated `lookup_label_page` for seed + vertex-list queries~~ (**done**)
+7. ~~**D** — paginated multi-label intersection for seeds~~ (**done**)
+8. ~~Backfill orchestration on router~~ (**done**)
+9. Optional write-side cardinality policy (future)
 
 ## Related documents
 
