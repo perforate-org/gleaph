@@ -31,6 +31,33 @@ pub struct IndexLabelIntersectionRequest {
     pub vertex_label_ids: Vec<u32>,
 }
 
+/// Resume cursor for [`LabelLookupPageRequest`] (last posting from the prior page).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
+)]
+pub struct LabelPostingCursor {
+    pub shard_id: ShardId,
+    pub vertex_id: u32,
+}
+
+/// Paginated label membership export scoped to one shard.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LabelLookupPageRequest {
+    pub vertex_label_id: u32,
+    pub shard_id: ShardId,
+    pub after: Option<LabelPostingCursor>,
+    pub limit: u32,
+}
+
+/// One page of label postings for a shard-local export.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LabelLookupPageResult {
+    pub hits: Vec<PostingHit>,
+    /// Last hit in this page; pass as `after` on the next request when `done` is false.
+    pub next: Option<LabelPostingCursor>,
+    pub done: bool,
+}
+
 /// Compare encoded property values using the same lexicographic order as index posting keys.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub enum PostingRangeRequest {

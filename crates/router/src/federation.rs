@@ -4,9 +4,12 @@ mod aggregate_index_fast_path;
 mod aggregate_merge;
 mod dispatch;
 mod having_filter;
+mod label_export;
 mod limits;
 mod merge;
 mod standalone;
+
+pub(crate) use label_export::collect_label_hits_for_shards;
 
 pub use aggregate_index_fast_path::{
     AggregateIndexFastPath, LabelCountTelemetryFastPath, gql_query_result_from_label_live_count,

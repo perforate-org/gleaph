@@ -72,13 +72,17 @@ Writes: graph DML → `label_posting_insert/remove` with compensate-and-retry (*
 seed routing for `NodeScan { label: Some(L) }`, `RETURN n` / traverse entry without a selective
 property anchor.
 
-**API:** `lookup_label(label_id) -> Vec<PostingHit>` (**Implemented**)
+**APIs (Implemented):**
+
+- `lookup_label(label_id) -> Vec<PostingHit>` — full bucket
+- `lookup_label_for_shard(label_id, shard_id) -> Vec<PostingHit>`
+- `lookup_label_page(req) -> LabelLookupPageResult` — paginated shard-local export
+
+Router seeds call **`lookup_label_page` per shard** (not bulk `lookup_label`).
 
 **No unseeded-shard fallback on list size.** Shipping a large hit list to build
-`seed_bindings_blob` is preferred over fan-out to all shards **without seeds**, which implies
-local label or full scans on every shard. Instruction/response limits on the index canister may
-still bound a single call; if exceeded, the remedy is **pagination or shard-scoped APIs**, not
-silent downgrade to unseeded execution.
+`seed_bindings_blob` is preferred over fan-out to all shards **without seeds**. Instruction/response
+limits are handled by shard-scoped pagination, not silent downgrade to unseeded execution.
 
 **Not for:** `COUNT(*)` without returning vertices; `GROUP BY` on an indexed property (use C or B).
 

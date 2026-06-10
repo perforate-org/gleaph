@@ -11,6 +11,7 @@ mod graph_client;
     reason = "index client is carried by router state and deployment wiring"
 )]
 mod index_client;
+mod index_lookup;
 mod index_sync;
 pub mod init;
 #[expect(

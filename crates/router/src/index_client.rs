@@ -2,7 +2,8 @@
 
 use candid::Principal;
 use gleaph_graph_kernel::index::{
-    IndexIntersectionRequest, IndexLabelIntersectionRequest, PostingHit, ValuePostingCount,
+    IndexIntersectionRequest, IndexLabelIntersectionRequest, LabelLookupPageRequest,
+    LabelLookupPageResult, PostingHit, ValuePostingCount,
 };
 
 #[derive(Clone, Debug)]
@@ -113,6 +114,55 @@ impl RouterIndexClient {
         {
             let _ = (property_id, vertex_label_id, min_count);
             Err("count_postings_by_value_for_label unavailable in native builds".into())
+        }
+    }
+
+    pub async fn lookup_label_page(
+        &self,
+        req: LabelLookupPageRequest,
+    ) -> Result<LabelLookupPageResult, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            let page: LabelLookupPageResult =
+                Call::bounded_wait(self.index_canister, "lookup_label_page")
+                    .with_args(&(req,))
+                    .await
+                    .map_err(|e| format!("lookup_label_page: {e}"))?
+                    .candid()
+                    .map_err(|e| format!("lookup_label_page decode: {e}"))?;
+            return Ok(page);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = req;
+            Err("lookup_label_page unavailable in native builds".into())
+        }
+    }
+
+    pub async fn lookup_label_for_shard(
+        &self,
+        vertex_label_id: u32,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
+    ) -> Result<Vec<PostingHit>, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            let hits: Vec<PostingHit> =
+                Call::bounded_wait(self.index_canister, "lookup_label_for_shard")
+                    .with_args(&(vertex_label_id, shard_id))
+                    .await
+                    .map_err(|e| format!("lookup_label_for_shard: {e}"))?
+                    .candid()
+                    .map_err(|e| format!("lookup_label_for_shard decode: {e}"))?;
+            return Ok(hits);
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = (vertex_label_id, shard_id);
+            Err("lookup_label_for_shard unavailable in native builds".into())
         }
     }
 

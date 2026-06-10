@@ -71,6 +71,19 @@ pub(crate) fn lookup_label(vertex_label_id: u32) -> Vec<PostingHit> {
     IndexStore::new().lookup_label(vertex_label_id)
 }
 
+pub(crate) fn lookup_label_for_shard(
+    vertex_label_id: u32,
+    shard_id: gleaph_graph_kernel::federation::ShardId,
+) -> Vec<PostingHit> {
+    IndexStore::new().lookup_label_for_shard(vertex_label_id, shard_id)
+}
+
+pub(crate) fn lookup_label_page(
+    req: gleaph_graph_kernel::index::LabelLookupPageRequest,
+) -> gleaph_graph_kernel::index::LabelLookupPageResult {
+    IndexStore::new().lookup_label_page(&req)
+}
+
 pub(crate) fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
     IndexStore::new().lookup_equal(property_id, &value)
 }

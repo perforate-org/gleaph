@@ -1,7 +1,6 @@
 //! Router-side GQL parse, plan, index seed routing, and graph dispatch.
 
 use std::collections::BTreeMap;
-use std::future::Future;
 use std::pin::Pin;
 
 use candid::Principal;
@@ -26,122 +25,24 @@ use crate::facade::stable::label_telemetry::RouterMutationShard;
 use crate::facade::store::RouterStore;
 use crate::federation::{
     AggregateIndexFastPath, FederatedMergeMode, ShardDispatch, ShardingPolicy,
-    apply_federated_aggregate_having, empty_execute_plan_result, federated_dispatch_plan_blob,
-    federated_merge_mode_from_plans, gql_query_result_from_label_live_count,
-    gql_query_result_from_posting_counts, merge_execute_plan_result,
-    packed_vertices_exceed_fast_path_budget, posting_hits_exceed_fast_path_budget,
-    routings_to_dispatches, sharding_policy_for, split_label_and_property_anchors,
-    try_aggregate_index_fast_path, try_label_count_telemetry_fast_path, vertex_label_live_count,
+    apply_federated_aggregate_having, collect_label_hits_for_shards, empty_execute_plan_result,
+    federated_dispatch_plan_blob, federated_merge_mode_from_plans,
+    gql_query_result_from_label_live_count, gql_query_result_from_posting_counts,
+    merge_execute_plan_result, packed_vertices_exceed_fast_path_budget,
+    posting_hits_exceed_fast_path_budget, routings_to_dispatches, sharding_policy_for,
+    split_label_and_property_anchors, try_aggregate_index_fast_path,
+    try_label_count_telemetry_fast_path, vertex_label_live_count,
 };
 use crate::graph_client::{
     ack_label_telemetry_event, execute_plan_on_graph, get_mutation_outcome,
     list_pending_label_telemetry_events,
 };
 use crate::index_client::RouterIndexClient;
+use crate::index_lookup::IndexLookup;
 use crate::planner_stats::RouterGraphStats;
 use crate::rbac::authorize_adhoc_gql;
 use crate::seed::{IndexAnchor, SeedProbe};
 use crate::state::RouterError;
-
-trait IndexLookup {
-    fn lookup_equal(
-        &self,
-        property_id: u32,
-        value: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
-
-    fn lookup_intersection(
-        &self,
-        req: IndexIntersectionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
-
-    fn count_postings_by_value(
-        &self,
-        property_id: u32,
-        min_count: u64,
-        vertex_filter_packed: Option<Vec<u64>>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>>;
-
-    fn lookup_label(
-        &self,
-        vertex_label_id: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
-
-    fn lookup_label_intersection(
-        &self,
-        req: IndexLabelIntersectionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
-
-    fn filter_hits_by_label(
-        &self,
-        vertex_label_id: u32,
-        hits: Vec<PostingHit>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
-
-    fn count_postings_by_value_for_label(
-        &self,
-        property_id: u32,
-        vertex_label_id: u32,
-        min_count: u64,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>>;
-}
-
-impl IndexLookup for RouterIndexClient {
-    fn lookup_equal(
-        &self,
-        property_id: u32,
-        value: Vec<u8>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-        Box::pin(self.lookup_equal(property_id, value))
-    }
-
-    fn lookup_intersection(
-        &self,
-        req: IndexIntersectionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-        Box::pin(self.lookup_intersection(req))
-    }
-
-    fn count_postings_by_value(
-        &self,
-        property_id: u32,
-        min_count: u64,
-        vertex_filter_packed: Option<Vec<u64>>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
-        Box::pin(self.count_postings_by_value(property_id, min_count, vertex_filter_packed))
-    }
-
-    fn lookup_label(
-        &self,
-        vertex_label_id: u32,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-        Box::pin(self.lookup_label(vertex_label_id))
-    }
-
-    fn lookup_label_intersection(
-        &self,
-        req: IndexLabelIntersectionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-        Box::pin(self.lookup_label_intersection(req))
-    }
-
-    fn filter_hits_by_label(
-        &self,
-        vertex_label_id: u32,
-        hits: Vec<PostingHit>,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-        Box::pin(self.filter_hits_by_label(vertex_label_id, hits))
-    }
-
-    fn count_postings_by_value_for_label(
-        &self,
-        property_id: u32,
-        vertex_label_id: u32,
-        min_count: u64,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
-        Box::pin(self.count_postings_by_value_for_label(property_id, vertex_label_id, min_count))
-    }
-}
 
 fn pack_posting_hits(hits: &[PostingHit]) -> Vec<u64> {
     hits.iter()
@@ -644,23 +545,25 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     }
                     IndexAnchor::Label {
                         vertex_label_id, ..
-                    } => match index
-                        .lookup_label(*vertex_label_id)
-                        .await
-                        .map_err(RouterError::InvalidArgument)
-                    {
-                        Ok(hits) => hits,
-                        Err(err) => {
-                            release_routing_if_owner(
-                                &store,
-                                caller,
-                                logical_graph_name,
-                                client_mutation_key,
-                                mutation_reservation,
-                            )?;
-                            return Err(err);
+                    } => {
+                        let shard_ids: Vec<_> = shards.iter().map(|entry| entry.shard_id).collect();
+                        match collect_label_hits_for_shards(index, *vertex_label_id, &shard_ids)
+                            .await
+                            .map_err(RouterError::InvalidArgument)
+                        {
+                            Ok(hits) => hits,
+                            Err(err) => {
+                                release_routing_if_owner(
+                                    &store,
+                                    caller,
+                                    logical_graph_name,
+                                    client_mutation_key,
+                                    mutation_reservation,
+                                )?;
+                                return Err(err);
+                            }
                         }
-                    },
+                    }
                     IndexAnchor::LabelIntersection {
                         vertex_label_ids, ..
                     } => match index
@@ -1039,6 +942,7 @@ mod tests {
     use std::pin::Pin;
     use std::rc::Rc;
 
+    use crate::index_lookup::IndexLookup;
     use candid::{Decode, Principal};
     use gleaph_gql::Value;
     use gleaph_gql::ast::CmpOp;
@@ -1047,7 +951,7 @@ mod tests {
     use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
     use gleaph_graph_kernel::index::{
-        IndexLabelIntersectionRequest, PostingHit, ValuePostingCount,
+        IndexLabelIntersectionRequest, LabelLookupPageResult, PostingHit, ValuePostingCount,
     };
     use gleaph_graph_kernel::plan_exec::{
         ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelTelemetryEventWire,
@@ -1058,8 +962,7 @@ mod tests {
     use crate::facade::store::RouterStore;
     use crate::federation::resolve_seed_routings_multi;
     use crate::gql::{
-        IndexLookup, apply_dispatch_label_telemetry_event, dispatch_plan_blob_with_index,
-        request_fingerprint,
+        apply_dispatch_label_telemetry_event, dispatch_plan_blob_with_index, request_fingerprint,
     };
     use crate::init::RouterInitArgs;
     use crate::seed::{IndexAnchor, SeedProbe, seeds_for_local_shard};
@@ -1158,6 +1061,19 @@ mod tests {
             self.calls.set(self.calls.get() + 1);
             let result = self.results.borrow_mut().remove(0);
             Box::pin(async move { result })
+        }
+
+        fn lookup_label_page(
+            &self,
+            _req: gleaph_graph_kernel::index::LabelLookupPageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<LabelLookupPageResult, String>> + '_>> {
+            Box::pin(async move {
+                Ok(LabelLookupPageResult {
+                    hits: Vec::new(),
+                    next: None,
+                    done: true,
+                })
+            })
         }
 
         fn filter_hits_by_label(

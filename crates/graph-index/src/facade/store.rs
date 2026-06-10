@@ -9,15 +9,21 @@ use super::stable::{
 use crate::init::IndexInitArgs;
 use crate::key::PostingKey;
 use crate::label_key::LabelPostingKey;
-use crate::label_range::label_posting_bucket;
+use crate::label_range::{label_posting_bucket, label_shard_posting_bucket};
 use crate::posting_range::{posting_key_half_open_range, property_posting_bucket};
 use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest, ValuePostingCount};
+use gleaph_graph_kernel::index::{
+    LabelLookupPageRequest, LabelLookupPageResult, LabelPostingCursor, PostingHit,
+    PostingRangeRequest, ValuePostingCount,
+};
 
 /// Default cap on groups returned by [`IndexStore::count_postings_by_value`].
 pub const DEFAULT_COUNT_POSTINGS_MAX_GROUPS: usize = 10_000;
+
+/// Default page size for [`IndexStore::lookup_label_page`].
+pub const DEFAULT_LABEL_LOOKUP_PAGE_LIMIT: usize = 10_000;
 
 /// Stateless facade over index stable structures initialized in [`super::stable`].
 #[derive(Clone, Copy, Debug, Default)]
@@ -211,6 +217,85 @@ impl IndexStore {
                 })
                 .collect()
         })
+    }
+
+    /// All label postings for one `(vertex_label_id, shard_id)` prefix.
+    pub fn lookup_label_for_shard(
+        &self,
+        vertex_label_id: u32,
+        shard_id: ShardId,
+    ) -> Vec<PostingHit> {
+        let Some((low, high)) = label_shard_posting_bucket(vertex_label_id, shard_id) else {
+            return Vec::new();
+        };
+        INDEX_LABEL_POSTINGS.with_borrow(|postings| {
+            postings
+                .range(low..high)
+                .map(|k| PostingHit {
+                    shard_id: k.shard_id,
+                    vertex_id: k.vertex_id,
+                })
+                .collect()
+        })
+    }
+
+    /// Paginated label export for one shard-local prefix.
+    pub fn lookup_label_page(&self, req: &LabelLookupPageRequest) -> LabelLookupPageResult {
+        let limit = usize::try_from(req.limit)
+            .unwrap_or(DEFAULT_LABEL_LOOKUP_PAGE_LIMIT)
+            .clamp(1, DEFAULT_LABEL_LOOKUP_PAGE_LIMIT);
+        let Some((mut low, high)) = label_shard_posting_bucket(req.vertex_label_id, req.shard_id)
+        else {
+            return LabelLookupPageResult {
+                hits: Vec::new(),
+                next: None,
+                done: true,
+            };
+        };
+        if let Some(after) = req.after {
+            let cursor_key = LabelPostingKey {
+                vertex_label_id: req.vertex_label_id,
+                shard_id: after.shard_id,
+                vertex_id: after.vertex_id,
+            };
+            low = match cursor_key.successor() {
+                Some(next) if next < high => next,
+                _ => {
+                    return LabelLookupPageResult {
+                        hits: Vec::new(),
+                        next: None,
+                        done: true,
+                    };
+                }
+            };
+        }
+        if low >= high {
+            return LabelLookupPageResult {
+                hits: Vec::new(),
+                next: None,
+                done: true,
+            };
+        }
+
+        let mut hits = Vec::with_capacity(limit.min(256));
+        INDEX_LABEL_POSTINGS.with_borrow(|postings| {
+            for key in postings.range(low..high).take(limit + 1) {
+                hits.push(PostingHit {
+                    shard_id: key.shard_id,
+                    vertex_id: key.vertex_id,
+                });
+            }
+        });
+
+        let done = hits.len() <= limit;
+        if hits.len() > limit {
+            hits.truncate(limit);
+        }
+        let next = hits.last().map(|hit| LabelPostingCursor {
+            shard_id: hit.shard_id,
+            vertex_id: hit.vertex_id,
+        });
+        LabelLookupPageResult { hits, next, done }
     }
 
     pub fn lookup_equal(&self, property_id: u32, value: &[u8]) -> Vec<PostingHit> {
@@ -1041,6 +1126,71 @@ mod tests {
                 },
             ]
         );
+    }
+
+    #[test]
+    fn lookup_label_for_shard_returns_only_local_shard() {
+        let store = IndexStore::new();
+        let router = init_test_store(&store);
+        let shard_a = Principal::from_slice(&[1]);
+        let shard_b = Principal::from_slice(&[2]);
+        register_shard_owner(&store, router, 7, shard_a);
+        register_shard_owner(&store, router, 9, shard_b);
+
+        store
+            .label_posting_insert(shard_a, 7, 3, 10)
+            .expect("shard 7");
+        store
+            .label_posting_insert(shard_b, 9, 3, 20)
+            .expect("shard 9");
+
+        let hits = store.lookup_label_for_shard(3, 7);
+        assert_eq!(
+            hits,
+            vec![PostingHit {
+                shard_id: 7,
+                vertex_id: 10
+            }]
+        );
+    }
+
+    #[test]
+    fn lookup_label_page_paginates_within_shard() {
+        let store = IndexStore::new();
+        let router = init_test_store(&store);
+        let shard_a = Principal::from_slice(&[1]);
+        register_shard_owner(&store, router, 7, shard_a);
+
+        for vid in [1u32, 2, 3] {
+            store
+                .label_posting_insert(shard_a, 7, 4, vid)
+                .expect("insert");
+        }
+
+        let page1 = store.lookup_label_page(&LabelLookupPageRequest {
+            vertex_label_id: 4,
+            shard_id: 7,
+            after: None,
+            limit: 2,
+        });
+        assert_eq!(page1.hits.len(), 2);
+        assert!(!page1.done);
+        assert_eq!(
+            page1.next,
+            Some(LabelPostingCursor {
+                shard_id: 7,
+                vertex_id: 2
+            })
+        );
+
+        let page2 = store.lookup_label_page(&LabelLookupPageRequest {
+            vertex_label_id: 4,
+            shard_id: 7,
+            after: page1.next,
+            limit: 2,
+        });
+        assert_eq!(page2.hits.len(), 1);
+        assert!(page2.done);
     }
 
     #[test]

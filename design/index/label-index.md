@@ -37,11 +37,16 @@ Separate `BTreeSet` from property postings.
 
 ## Read paths
 
-### A — Vertex list export (`lookup_label`) — Implemented
+### A — Vertex list export — Implemented
 
 | API | When |
 |-----|------|
-| `lookup_label(label_id)` | Seeds, `RETURN n`, any plan that needs explicit `(shard_id, vertex_id)` |
+| `lookup_label(label_id)` | Full label bucket (legacy / small labels) |
+| `lookup_label_for_shard(label_id, shard_id)` | One shard's postings |
+| `lookup_label_page(req)` | Paginated shard-local export (`after` + `limit`) |
+
+Router seed routing uses **`lookup_label_page` per registered shard** (10k hits/page) instead of
+one bulk `lookup_label`.
 
 **Target policy:** No fallback to unseeded all-shard execution based on hit count. Large lists are
 acceptable when vertex ids are required; unseeded graph scans are worse.

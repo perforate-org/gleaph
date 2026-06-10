@@ -24,7 +24,8 @@ mod canister;
 
 pub use facade::IndexStore;
 pub use gleaph_graph_kernel::index::{
-    IndexEqualSpec, IndexIntersectionRequest, IndexLabelIntersectionRequest, PostingHit,
+    IndexEqualSpec, IndexIntersectionRequest, IndexLabelIntersectionRequest,
+    LabelLookupPageRequest, LabelLookupPageResult, LabelPostingCursor, PostingHit,
     PostingRangeRequest, ValuePostingCount,
 };
 pub use init::IndexInitArgs;
@@ -79,6 +80,16 @@ fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
 #[query]
 fn lookup_label(vertex_label_id: u32) -> Vec<PostingHit> {
     canister::lookup_label(vertex_label_id)
+}
+
+#[query]
+fn lookup_label_for_shard(vertex_label_id: u32, shard_id: ShardId) -> Vec<PostingHit> {
+    canister::lookup_label_for_shard(vertex_label_id, shard_id)
+}
+
+#[query]
+fn lookup_label_page(req: LabelLookupPageRequest) -> LabelLookupPageResult {
+    canister::lookup_label_page(req)
 }
 
 #[query]

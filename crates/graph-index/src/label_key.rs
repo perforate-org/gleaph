@@ -86,11 +86,46 @@ impl LabelPostingKey {
             vertex_id: u32::MAX,
         }
     }
+
+    /// Smallest key strictly greater than `self`, within the same label bucket order.
+    pub fn successor(self) -> Option<Self> {
+        if self.vertex_id < u32::MAX {
+            return Some(Self {
+                vertex_id: self.vertex_id + 1,
+                ..self
+            });
+        }
+        if self.shard_id < u32::MAX {
+            return Some(Self {
+                shard_id: self.shard_id + 1,
+                vertex_id: 0,
+                vertex_label_id: self.vertex_label_id,
+            });
+        }
+        None
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn label_posting_key_successor() {
+        let k = LabelPostingKey {
+            vertex_label_id: 1,
+            shard_id: 7,
+            vertex_id: 42,
+        };
+        assert_eq!(
+            k.successor(),
+            Some(LabelPostingKey {
+                vertex_label_id: 1,
+                shard_id: 7,
+                vertex_id: 43,
+            })
+        );
+    }
 
     #[test]
     fn label_posting_key_roundtrip() {
