@@ -4,14 +4,12 @@ use std::future::Future;
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
-    LabelPostingBackfillArgs, LabelPostingBackfillResult, PropertyPostingBackfillArgs,
-    PropertyPostingBackfillResult, ShardRegistryEntry,
+    BackfillShardState, LabelPostingBackfillArgs, LabelPostingBackfillResult,
+    PropertyPostingBackfillArgs, PropertyPostingBackfillResult, ShardRegistryEntry,
 };
 
 use super::super::stable::ROUTER_LABEL_BACKFILL_STATE;
 use super::super::stable::ROUTER_PROPERTY_BACKFILL_STATE;
-use super::super::stable::label_backfill::LabelBackfillShardState;
-use super::super::stable::property_backfill::PropertyBackfillShardState;
 use super::RouterStore;
 use crate::state::RouterError;
 use crate::types::{
@@ -51,11 +49,16 @@ impl RouterStore {
             });
         }
 
-        let backfill_args = build_backfill_args(&cursor, args.max_vertices);
-        let result = call_backfill(shard.graph_canister, backfill_args)
-            .await
-            .map_err(RouterError::Internal)?;
-        advance_backfill_cursor(&mut cursor, &result);
+        let result = call_backfill(
+            shard.graph_canister,
+            LabelPostingBackfillArgs {
+                start_vertex_id: cursor.next_vertex_id,
+                max_vertices: args.max_vertices,
+            },
+        )
+        .await
+        .map_err(RouterError::Internal)?;
+        cursor.apply_batch_progress(result.next_vertex_id, result.done);
         self.store_label_backfill_state(args.shard_id, cursor);
 
         Ok(AdminLabelBackfillStepResult {
@@ -91,15 +94,11 @@ impl RouterStore {
         Ok(out)
     }
 
-    fn load_label_backfill_state(&self, shard_id: u32) -> LabelBackfillShardState {
-        ROUTER_LABEL_BACKFILL_STATE.with_borrow(|state| {
-            state
-                .get(&shard_id)
-                .unwrap_or(LabelBackfillShardState::default())
-        })
+    fn load_label_backfill_state(&self, shard_id: u32) -> BackfillShardState {
+        ROUTER_LABEL_BACKFILL_STATE.with_borrow(|state| state.get(&shard_id).unwrap_or_default())
     }
 
-    fn store_label_backfill_state(&self, shard_id: u32, cursor: LabelBackfillShardState) {
+    fn store_label_backfill_state(&self, shard_id: u32, cursor: BackfillShardState) {
         ROUTER_LABEL_BACKFILL_STATE.with_borrow_mut(|map| {
             map.insert(shard_id, cursor);
         });
@@ -136,11 +135,16 @@ impl RouterStore {
             });
         }
 
-        let backfill_args = build_property_backfill_args(&cursor, args.max_vertices);
-        let result = call_backfill(shard.graph_canister, backfill_args)
-            .await
-            .map_err(RouterError::Internal)?;
-        advance_property_backfill_cursor(&mut cursor, &result);
+        let result = call_backfill(
+            shard.graph_canister,
+            PropertyPostingBackfillArgs {
+                start_vertex_id: cursor.next_vertex_id,
+                max_vertices: args.max_vertices,
+            },
+        )
+        .await
+        .map_err(RouterError::Internal)?;
+        cursor.apply_batch_progress(result.next_vertex_id, result.done);
         self.store_property_backfill_state(args.shard_id, cursor);
 
         Ok(AdminPropertyBackfillStepResult {
@@ -176,15 +180,11 @@ impl RouterStore {
         Ok(out)
     }
 
-    fn load_property_backfill_state(&self, shard_id: u32) -> PropertyBackfillShardState {
-        ROUTER_PROPERTY_BACKFILL_STATE.with_borrow(|state| {
-            state
-                .get(&shard_id)
-                .unwrap_or(PropertyBackfillShardState::default())
-        })
+    fn load_property_backfill_state(&self, shard_id: u32) -> BackfillShardState {
+        ROUTER_PROPERTY_BACKFILL_STATE.with_borrow(|state| state.get(&shard_id).unwrap_or_default())
     }
 
-    fn store_property_backfill_state(&self, shard_id: u32, cursor: PropertyBackfillShardState) {
+    fn store_property_backfill_state(&self, shard_id: u32, cursor: BackfillShardState) {
         ROUTER_PROPERTY_BACKFILL_STATE.with_borrow_mut(|map| {
             map.insert(shard_id, cursor);
         });
@@ -206,42 +206,6 @@ impl RouterStore {
     }
 }
 
-fn build_backfill_args(
-    cursor: &LabelBackfillShardState,
-    max_vertices: u32,
-) -> LabelPostingBackfillArgs {
-    LabelPostingBackfillArgs {
-        start_vertex_id: cursor.next_vertex_id,
-        max_vertices,
-    }
-}
-
-fn advance_backfill_cursor(
-    cursor: &mut LabelBackfillShardState,
-    result: &LabelPostingBackfillResult,
-) {
-    cursor.next_vertex_id = result.next_vertex_id;
-    cursor.done = result.done;
-}
-
-fn build_property_backfill_args(
-    cursor: &PropertyBackfillShardState,
-    max_vertices: u32,
-) -> PropertyPostingBackfillArgs {
-    PropertyPostingBackfillArgs {
-        start_vertex_id: cursor.next_vertex_id,
-        max_vertices,
-    }
-}
-
-fn advance_property_backfill_cursor(
-    cursor: &mut PropertyBackfillShardState,
-    result: &PropertyPostingBackfillResult,
-) {
-    cursor.next_vertex_id = result.next_vertex_id;
-    cursor.done = result.done;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -261,29 +225,12 @@ mod tests {
     }
 
     #[test]
-    fn advance_backfill_cursor_updates_progress() {
-        let mut cursor = LabelBackfillShardState::default();
-        advance_backfill_cursor(
-            &mut cursor,
-            &LabelPostingBackfillResult {
-                next_vertex_id: 42,
-                vertices_processed: 10,
-                postings_synced: 15,
-                done: false,
-            },
-        );
+    fn apply_batch_progress_updates_cursor() {
+        let mut cursor = BackfillShardState::default();
+        cursor.apply_batch_progress(42, false);
         assert_eq!(cursor.next_vertex_id, 42);
         assert!(!cursor.done);
-
-        advance_backfill_cursor(
-            &mut cursor,
-            &LabelPostingBackfillResult {
-                next_vertex_id: 100,
-                vertices_processed: 58,
-                postings_synced: 0,
-                done: true,
-            },
-        );
+        cursor.apply_batch_progress(100, true);
         assert_eq!(cursor.next_vertex_id, 100);
         assert!(cursor.done);
     }
@@ -392,7 +339,7 @@ mod tests {
         ROUTER_LABEL_BACKFILL_STATE.with_borrow_mut(|map| {
             map.insert(
                 7,
-                LabelBackfillShardState {
+                BackfillShardState {
                     next_vertex_id: 99,
                     done: true,
                 },
@@ -413,34 +360,6 @@ mod tests {
         assert!(result.done);
         assert_eq!(result.next_vertex_id, 99);
         assert_eq!(result.vertices_processed, 0);
-    }
-
-    #[test]
-    fn advance_property_backfill_cursor_updates_progress() {
-        let mut cursor = PropertyBackfillShardState::default();
-        advance_property_backfill_cursor(
-            &mut cursor,
-            &PropertyPostingBackfillResult {
-                next_vertex_id: 42,
-                vertices_processed: 10,
-                postings_synced: 15,
-                done: false,
-            },
-        );
-        assert_eq!(cursor.next_vertex_id, 42);
-        assert!(!cursor.done);
-
-        advance_property_backfill_cursor(
-            &mut cursor,
-            &PropertyPostingBackfillResult {
-                next_vertex_id: 100,
-                vertices_processed: 58,
-                postings_synced: 0,
-                done: true,
-            },
-        );
-        assert_eq!(cursor.next_vertex_id, 100);
-        assert!(cursor.done);
     }
 
     #[test]

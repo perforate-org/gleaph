@@ -2,11 +2,9 @@
 
 use std::cell::RefCell;
 
-pub(crate) mod label_backfill;
 pub(crate) mod label_telemetry;
 pub(crate) mod memory;
 pub(crate) mod placement_by_physical;
-pub(crate) mod property_backfill;
 
 thread_local! {
     pub(crate) static ROUTER_CONTROLLERS: RefCell<memory::StableControllerSet> =

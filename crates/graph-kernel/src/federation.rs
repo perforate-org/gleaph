@@ -1,9 +1,11 @@
 //! Distributed graph federation identifiers and placement types.
 
+mod backfill_shard_state;
 mod expand;
 mod peer_sync;
 mod router_error;
 
+pub use backfill_shard_state::BackfillShardState;
 pub use expand::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor,
     MAX_FEDERATED_EXPAND_PAYLOAD_BYTE_WIDTH,

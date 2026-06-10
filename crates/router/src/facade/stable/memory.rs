@@ -6,7 +6,7 @@ use gleaph_graph_kernel::bidirectional_catalog::{
 };
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::{
-    LogicalVertexId, ShardId, ShardRegistryEntry, VertexPlacement,
+    BackfillShardState, LogicalVertexId, ShardId, ShardRegistryEntry, VertexPlacement,
 };
 
 use gleaph_auth::AuthState;
@@ -65,10 +65,8 @@ pub(crate) type StableMutationByClientKey = BTreeMap<
     super::label_telemetry::RouterMutationRecord,
     Memory,
 >;
-pub(crate) type StableLabelBackfillStateMap =
-    BTreeMap<ShardId, super::label_backfill::LabelBackfillShardState, Memory>;
-pub(crate) type StablePropertyBackfillStateMap =
-    BTreeMap<ShardId, super::property_backfill::PropertyBackfillShardState, Memory>;
+pub(crate) type StableLabelBackfillStateMap = BTreeMap<ShardId, BackfillShardState, Memory>;
+pub(crate) type StablePropertyBackfillStateMap = BTreeMap<ShardId, BackfillShardState, Memory>;
 pub(crate) type StablePlacementByPhysicalMap =
     super::placement_by_physical::PlacementByPhysicalMap<Memory>;
 pub(crate) type StableMutationCounter = Cell<u64, Memory>;
