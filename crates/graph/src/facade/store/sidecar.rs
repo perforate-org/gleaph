@@ -1,8 +1,7 @@
 //! GraphStore `sidecar` implementation.
 
 use super::super::stable::{
-    EDGE_ALIASES, EDGE_PROPERTIES, GRAPH, REMOTE_FORWARD_IN, VERTEX_LOGICAL_IDS,
-    VERTEX_PROPERTIES,
+    EDGE_ALIASES, EDGE_PROPERTIES, GRAPH, REMOTE_FORWARD_IN, VERTEX_LOGICAL_IDS, VERTEX_PROPERTIES,
 };
 use crate::index::{edge_equal, placement};
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, PropertyId};

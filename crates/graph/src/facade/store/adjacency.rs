@@ -1,8 +1,8 @@
 //! Adjacency storage domain: canonical edge writes plus derived alias, journal, and maintenance.
 
-use gleaph_graph_kernel::entry::EdgeLabelId;
+use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeTarget, TaggedEdgeLabelId};
 use gleaph_graph_kernel::federation::LogicalVertexId;
-use ic_stable_lara::VertexId;
+use ic_stable_lara::{VertexId, traits::CsrEdge};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
@@ -77,6 +77,75 @@ impl GraphStore {
             handle,
         )?;
         self.run_post_edge_insert_maintenance()
+    }
+
+    /// Remove a canonical edge, its alias row if present, derived sidecars, and maintenance queue.
+    pub(super) fn commit_delete_edge_by_handle(
+        &self,
+        handle: EdgeHandle,
+    ) -> Result<(), GraphStoreError> {
+        let canonical = self.canonical_edge_handle_for_sidecar(handle);
+        self.ensure_vertex_id(canonical.owner_vertex_id)
+            .map_err(GraphStoreError::from)?;
+        let is_undirected = TaggedEdgeLabelId::from_raw(canonical.label_id.raw()).is_undirected();
+        let alias = self.alias_for_canonical_edge(canonical);
+        self.clear_edge_sidecars(handle);
+        self.unregister_remote_forward_in_for_handle(canonical);
+        let edge = self.with_graph_mut(|graph| {
+            graph.remove_forward_edge_at_slot(
+                canonical.owner_vertex_id,
+                canonical.label_id,
+                canonical.slot_index,
+            )
+        })?;
+        let edge = edge.ok_or(GraphStoreError::EdgeNotFound {
+            owner_vertex_id: canonical.owner_vertex_id,
+            label_id: canonical.label_id,
+            slot_index: canonical.slot_index,
+        })?;
+        let Some(EdgeTarget::Local(neighbor)) = edge.edge_target() else {
+            self.drain_deferred_maintenance()?;
+            return Ok(());
+        };
+        if is_undirected {
+            if let Some((alias_vertex_id, alias_slot_index, _)) = alias {
+                self.with_graph_mut(|graph| {
+                    graph.remove_forward_edge_at_slot(
+                        alias_vertex_id,
+                        canonical.label_id,
+                        alias_slot_index,
+                    )
+                })?;
+            } else {
+                self.with_graph_mut(|graph| {
+                    graph.remove_directed_deferred(
+                        neighbor,
+                        canonical.owner_vertex_id,
+                        edge.with_neighbor_vid(canonical.owner_vertex_id),
+                    )
+                })?;
+            }
+        } else if let Some((alias_vertex_id, alias_slot_index, reverse_in)) = alias {
+            debug_assert!(
+                reverse_in,
+                "directed aliases should point at reverse-IN rows"
+            );
+            self.with_graph_mut(|graph| {
+                graph.remove_reverse_edge_at_slot(
+                    alias_vertex_id,
+                    canonical.label_id,
+                    alias_slot_index,
+                )
+            })?;
+        } else {
+            self.remove_reverse_edge_for_canonical_directed(
+                neighbor,
+                canonical.owner_vertex_id,
+                canonical.label_id,
+                canonical.slot_index,
+            )?;
+        }
+        self.drain_deferred_maintenance()
     }
 
     fn journal_and_maintain_edge_insert(
