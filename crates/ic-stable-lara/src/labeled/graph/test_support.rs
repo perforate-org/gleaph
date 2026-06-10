@@ -271,3 +271,51 @@ pub fn payload_test_graph_with_capacity(
     )
     .unwrap()
 }
+
+/// Dense multi-label hub fixture shared by span-release and hub regressions.
+pub fn build_mixed_label_hub(
+    labels: u16,
+    edges_per_label: u32,
+) -> (
+    LabeledLaraGraph<TestEdge, crate::VectorMemory>,
+    VertexId,
+    VertexId,
+) {
+    let graph = LabeledLaraGraph::new(
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        mem(),
+        1 << 20,
+        BucketLabelKey::from_raw(1),
+    )
+    .unwrap();
+    let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
+    let dst = graph.push_vertex(LabeledVertex::default()).unwrap();
+    for label_idx in 0..labels {
+        let label = BucketLabelKey::from_raw(10_000 + label_idx);
+        for edge_i in 0..edges_per_label {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    hub,
+                    label,
+                    TestEdge {
+                        target: u32::from(dst),
+                    },
+                )
+                .unwrap_or_else(|e| panic!("label_idx={label_idx} edge_i={edge_i}: {e:?}"));
+        }
+    }
+    (graph, hub, dst)
+}

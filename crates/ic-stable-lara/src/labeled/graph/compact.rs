@@ -2451,42 +2451,7 @@ mod tests {
 
     #[test]
     fn mixed_label_hub_20_labels_500_edges_each() {
-        let graph = LabeledLaraGraph::new(
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            1 << 20,
-            BucketLabelKey::from_raw(1),
-        )
-        .unwrap();
-        let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
-        let dst = graph.push_vertex(LabeledVertex::default()).unwrap();
-        for label_idx in 0..20u16 {
-            let label = BucketLabelKey::from_raw(10_000 + label_idx);
-            for edge_i in 0..500u32 {
-                graph
-                    .insert_edge_skip_leaf_cascade(
-                        hub,
-                        label,
-                        TestEdge {
-                            target: u32::from(dst),
-                        },
-                    )
-                    .unwrap_or_else(|e| panic!("label_idx={label_idx} edge_i={edge_i}: {e:?}"));
-            }
-        }
+        build_mixed_label_hub(20, 500);
     }
 
     #[test]
@@ -2509,45 +2474,6 @@ mod tests {
         assert_eq!(total, 100);
         assert!(intervals.contains(&(110, 40)));
         assert!(intervals.contains(&(170, 30)));
-    }
-
-    fn build_mixed_label_hub(labels: u16, edges_per_label: u32) {
-        let graph = LabeledLaraGraph::new(
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            mem(),
-            1 << 20,
-            BucketLabelKey::from_raw(1),
-        )
-        .unwrap();
-        let hub = graph.push_vertex(LabeledVertex::default()).unwrap();
-        let dst = graph.push_vertex(LabeledVertex::default()).unwrap();
-        for label_idx in 0..labels {
-            let label = BucketLabelKey::from_raw(10_000 + label_idx);
-            for edge_i in 0..edges_per_label {
-                graph
-                    .insert_edge_skip_leaf_cascade(
-                        hub,
-                        label,
-                        TestEdge {
-                            target: u32::from(dst),
-                        },
-                    )
-                    .unwrap_or_else(|e| panic!("label_idx={label_idx} edge_i={edge_i}: {e:?}"));
-            }
-        }
     }
 
     /// Phase E gate: same workload as the span-release regression completes quickly.
@@ -3286,6 +3212,59 @@ mod tests {
                 .is_some_and(|span| span.len == old_len)
         );
         assert_eq!(materialized_label_targets(&graph, vid).len(), 2);
+    }
+
+    #[test]
+    fn labeled_segment_slide_coalesces_adjacent_free() {
+        use super::super::leaf_pin::labeled_leaf_physical_block_len;
+        use crate::lara::edge::free_span::FreeSpan;
+
+        let graph = test_graph();
+        let vid = VertexId::from(0);
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                BucketLabelKey::from_raw(99),
+                TestEdge { target: 999 },
+            )
+            .unwrap();
+        let block_len = labeled_leaf_physical_block_len(graph.edges().header().segment_size);
+        for target in 0..block_len {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    vid,
+                    road,
+                    TestEdge {
+                        target: target as u32,
+                    },
+                )
+                .unwrap();
+        }
+        let (old_start, old_len) = graph.labeled_leaf_physical_range(vid).unwrap();
+        let left_len = 6u64;
+        let right_len = 5u64;
+        assert!(
+            old_start >= left_len,
+            "leaf pin must leave room for a left-adjacent free span"
+        );
+        let left_start = old_start.saturating_sub(left_len);
+        let right_start = old_start.saturating_add(old_len);
+        graph.edges().release_span(left_start, left_len).unwrap();
+        graph.edges().release_span(right_start, right_len).unwrap();
+
+        graph.relocate_labeled_leaf_physical_block(vid).unwrap();
+
+        let merged_len = left_len.saturating_add(old_len).saturating_add(right_len);
+        assert_eq!(
+            graph.edges().free_span_store().spans(),
+            vec![FreeSpan {
+                start_slot: left_start,
+                len: merged_len,
+            }]
+        );
+        let (new_start, _) = graph.labeled_leaf_physical_range(vid).unwrap();
+        assert_ne!(new_start, old_start);
     }
 
     #[test]

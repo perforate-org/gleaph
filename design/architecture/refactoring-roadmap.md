@@ -347,7 +347,7 @@ Goal: reduce low-level waste without weakening LARA contracts.
 
 **Status: In progress (2026-06-10).**
 
-**Progress:** Edge segment-footprint migration (ADR 0001 phases A–E) is implemented in code. Payload offset math centralized in `labeled/invariants.rs`; `labeled_payload_edge_order_matches_edge_slab_order` regression added.
+**Progress:** Edge segment-footprint migration (ADR 0001 phases A–E) is implemented in code. Payload offset math centralized in `labeled/invariants.rs`; `labeled_payload_edge_order_matches_edge_slab_order` regression added. Phase D `labeled_segment_slide_coalesces_adjacent_free` and shared `build_mixed_label_hub` harness landed.
 
 Deliverables:
 

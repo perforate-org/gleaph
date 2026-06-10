@@ -133,7 +133,7 @@ These must pass after every phase PR.
 | `labeled_segment_relocate_does_not_call_vertex_span_release` | `compact.rs` | `release_vertex_edge_span_footprint` not invoked on relocate path |
 | `labeled_relocate_commit_order` | `compact.rs` | After relocate, all bucket `edge_start` valid before free span contains old range (use store peek, not scan) |
 | `labeled_segment_relocate_reuses_free_span` | `compact.rs` | Mirror `lara_local_relocation_reuses_prior_free_span` for labeled leaf |
-| `labeled_segment_slide_coalesces_adjacent_free` | `lara.rs` pattern | Two labeled leaves + free gap; slide merges free spans (may share impl with core) |
+| `labeled_segment_slide_coalesces_adjacent_free` | `compact.rs` | **Implemented** — leaf relocate releases footprint; adjacent free spans coalesce |
 
 ### Gate
 
@@ -196,7 +196,7 @@ Add to `crates/ic-stable-lara/src/test_support.rs` (or `labeled/test_support.rs`
 | `materialized_labeled_edges(graph, vid) -> BTreeMap<Label, Vec<Target>>` | Scan stability |
 | `leaf_segment_counts_for_vid` (expose in tests) | Phase B |
 | `count_free_spans(graph) -> usize` | Phases C, D |
-| `build_mixed_label_hub(labels, edges_per_label) -> (graph, hub, dst)` | DRY for hub tests |
+| `build_mixed_label_hub(labels, edges_per_label) -> (graph, hub, dst)` | **Implemented** in `labeled/graph/test_support.rs` |
 
 ---
 
