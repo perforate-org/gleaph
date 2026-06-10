@@ -1,7 +1,7 @@
 //! Shared fixtures for labeled graph tests.
 
-pub use super::iter::LabeledEdgePayloadBatchScratch;
 pub use super::error::LabeledOperationError;
+pub use super::iter::LabeledEdgePayloadBatchScratch;
 pub use super::{LabeledLaraGraph, OutEdgeOrder};
 pub use crate::labeled::{MAX_VERTEX_LABEL_BUCKETS, record::LabeledVertexFieldError};
 use crate::labeled::{bucket_label_key::BucketLabelKey, record::LabeledVertex};

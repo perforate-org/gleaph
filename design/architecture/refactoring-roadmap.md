@@ -347,7 +347,7 @@ Goal: reduce low-level waste without weakening LARA contracts.
 
 **Status: In progress (2026-06-10).**
 
-**Progress:** Edge segment-footprint migration (ADR 0001 phases A–E) is implemented in code. Payload offset math centralized in `labeled/invariants.rs`; `labeled_payload_edge_order_matches_edge_slab_order` regression added. Phase D `labeled_segment_slide_coalesces_adjacent_free` and shared `build_mixed_label_hub` harness landed. Scan-path guards (`labeled_scan_never_reads_*`) and hub materialized-vs-iter regression added.
+**Progress:** Edge segment-footprint migration (ADR 0001 phases A–E) is implemented in code. Payload offset math centralized in `labeled/invariants.rs`; `labeled_payload_edge_order_matches_edge_slab_order` regression added. Phase D `labeled_segment_slide_coalesces_adjacent_free` and shared `build_mixed_label_hub` harness landed. Scan-path guards (`labeled_scan_never_reads_*`) and hub materialized-vs-iter regression added. Canbench baselines `bench_labeled_mixed_label_hub_{insert,scan,asc_iter}_33x50` persisted.
 
 Deliverables:
 
@@ -355,7 +355,7 @@ Deliverables:
 - Keep edge rows and payload bytes aligned by logical slot order during compaction.
 - Centralize dense/tiled payload offset math and batch traversal helpers. **Done** (offset, dense eligibility, `ascending_contiguous_u32_runs`).
 - Preserve `LabeledOperationError`, tombstone skipping, and fail-fast value-log reads.
-- Add high-degree, many-label regression tests and canbench coverage.
+- Add high-degree, many-label regression tests and canbench coverage. **Done** for 33×50 hub (`bench_labeled_mixed_label_hub_*` in `labeled/bench.rs`).
 
 Exit criteria:
 

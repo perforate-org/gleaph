@@ -11,7 +11,7 @@ use crate::{
     VertexId,
     lara::maintenance::MaintenanceBudget,
     test_support::{labeled_lara_memories, vector_memory},
-    traits::{CsrEdge, CsrEdgeTombstone},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use canbench_rs::{bench, bench_fn};
 use std::hint::black_box;
@@ -99,6 +99,26 @@ const CONVERGING_HUB_PREFIX_EDGES: u32 = 48;
 const CONVERGING_HUB_OUT_EDGES: u32 = 24;
 const CONVERGING_HUB_EXPAND_CALLS: u32 = 51;
 
+/// Mirrors `build_mixed_label_hub` in `graph/test_support.rs` for canbench fixtures.
+fn seed_mixed_label_hub(
+    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    labels: u16,
+    edges_per_label: u32,
+) -> VertexId {
+    let hub = graph.push_vertex(LabeledVertex::default()).expect("hub");
+    let dst = graph.push_vertex(LabeledVertex::default()).expect("dst");
+    for label_idx in 0..labels {
+        let label = BucketLabelKey::from_raw(10_000 + label_idx);
+        for edge_i in 0..edges_per_label {
+            graph
+                .insert_edge_skip_leaf_cascade(hub, label, BenchEdge(edge_i))
+                .expect("insert");
+        }
+    }
+    black_box(dst);
+    hub
+}
+
 fn seed_single_label_parallel_edges(
     graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
     edge_count: u32,
@@ -111,6 +131,62 @@ fn seed_single_label_parallel_edges(
             .expect("insert");
     }
     label
+}
+
+/// Phase 6 hub regression: 33 labels × 50 edges (span-release cliff shape).
+const MIXED_LABEL_HUB_LABELS: u16 = 33;
+const MIXED_LABEL_HUB_EDGES_PER_LABEL: u32 = 50;
+
+#[bench(raw)]
+fn bench_labeled_mixed_label_hub_insert_33x50() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = bench_graph(1 << 20);
+        black_box(seed_mixed_label_hub(
+            &graph,
+            MIXED_LABEL_HUB_LABELS,
+            MIXED_LABEL_HUB_EDGES_PER_LABEL,
+        ));
+    })
+}
+
+#[bench(raw)]
+fn bench_labeled_mixed_label_hub_scan_33x50() -> canbench_rs::BenchResult {
+    let graph = bench_graph(1 << 20);
+    let hub = seed_mixed_label_hub(
+        &graph,
+        MIXED_LABEL_HUB_LABELS,
+        MIXED_LABEL_HUB_EDGES_PER_LABEL,
+    );
+    let vertex = graph.vertices().get(hub);
+    bench_fn(|| {
+        let mut count = 0usize;
+        for offset in 0..vertex.degree() {
+            let slot = vertex.base_slot_start().saturating_add(u64::from(offset));
+            let bucket = graph
+                .buckets()
+                .read_label_bucket_slot(slot)
+                .expect("bucket");
+            let label = bucket.bucket_label_key();
+            graph
+                .for_each_edges_for_label(hub, label, |_| count += 1)
+                .expect("for_each");
+        }
+        black_box(count);
+    })
+}
+
+#[bench(raw)]
+fn bench_labeled_mixed_label_hub_asc_iter_33x50() -> canbench_rs::BenchResult {
+    let graph = bench_graph(1 << 20);
+    let hub = seed_mixed_label_hub(
+        &graph,
+        MIXED_LABEL_HUB_LABELS,
+        MIXED_LABEL_HUB_EDGES_PER_LABEL,
+    );
+    bench_fn(|| {
+        let edges = graph.asc_out_edges(hub).expect("asc");
+        black_box(edges.len());
+    })
 }
 
 #[bench(raw)]

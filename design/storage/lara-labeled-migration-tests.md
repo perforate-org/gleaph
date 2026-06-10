@@ -39,7 +39,7 @@ These must pass after every phase PR.
 | `unchecked_label_iteration_matches_checked_for_valid_vertices` | `traverse.rs` | Unchecked fast path |
 | `labeled_vertex_wire_bytes_golden` | `labeled/record.rs` | On-disk row layout (update only if layout version bumps) |
 
-**Secondary (bench):** `crates/graph/src/bench/mod.rs` — `expand_mixed_label_hub_*`, `expand_skewed_noise_50k_*`. Record in `canbench_results.yml` when behavior or budgets change intentionally.
+**Secondary (bench):** `crates/graph/src/bench/mod.rs` — `expand_mixed_label_hub_*`, `expand_skewed_noise_50k_*`; `crates/ic-stable-lara/src/labeled/bench.rs` — `bench_labeled_mixed_label_hub_insert_33x50`, `bench_labeled_mixed_label_hub_scan_33x50`, `bench_labeled_mixed_label_hub_asc_iter_33x50`. Record in `canbench_results.yml` when behavior or budgets change intentionally.
 
 ---
 
