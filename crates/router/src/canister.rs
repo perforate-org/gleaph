@@ -5,7 +5,8 @@ use crate::facade::store::RouterStore;
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
 use crate::types::{
-    AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminPropertyBackfillStepArgs,
+    AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminLabelTelemetryReplayStepArgs,
+    AdminLabelTelemetryReplayStepResult, AdminPropertyBackfillStepArgs,
     AdminPropertyBackfillStepResult, AdminRegisterShardArgs, CommitVertexPlacementArgs,
     EdgeLabelId, GrantRoleArgs, GraphRegistryEntry, LabelBackfillShardStatus, LogicalVertexId,
     PropertyBackfillShardStatus, PropertyId, ReleaseLogicalVertexArgs, ShardId, ShardRegistryEntry,
@@ -168,6 +169,19 @@ pub(crate) fn admin_list_property_backfill_status(
         msg_caller(),
         &logical_graph_name,
     )
+}
+
+pub(crate) async fn admin_label_telemetry_replay_step(
+    args: AdminLabelTelemetryReplayStepArgs,
+) -> Result<AdminLabelTelemetryReplayStepResult, RouterError> {
+    crate::label_telemetry_replay::admin_label_telemetry_replay_step(
+        &RouterStore::new(),
+        msg_caller(),
+        args,
+        crate::graph_client::list_pending_label_telemetry_events,
+        crate::graph_client::ack_label_telemetry_event,
+    )
+    .await
 }
 
 pub(crate) fn admin_set_indexed_vertex_property(

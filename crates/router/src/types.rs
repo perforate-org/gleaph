@@ -78,3 +78,21 @@ pub struct PropertyBackfillShardStatus {
     pub next_vertex_id: LocalVertexId,
     pub done: bool,
 }
+
+/// One router-orchestrated batch draining a graph shard label telemetry outbox.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminLabelTelemetryReplayStepArgs {
+    pub logical_graph_name: String,
+    pub shard_id: ShardId,
+    /// Maximum pending events to drain from the shard outbox in this step (must be > 0).
+    pub max_events: u32,
+}
+
+/// Progress from one router label telemetry replay step.
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdminLabelTelemetryReplayStepResult {
+    pub shard_id: ShardId,
+    pub events_drained: u32,
+    pub events_applied: u32,
+    pub done: bool,
+}

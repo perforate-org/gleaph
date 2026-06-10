@@ -41,7 +41,7 @@ Thread-local pairing: `facade/stable.rs` in each crate.
 | Label postings (graph-index) | `VertexLabelStore` | DML + `label_pending` flush | **Implemented:** `backfill_label_postings` + router `admin_label_backfill_step` ([label-index.md](../index/label-index.md)) |
 | Remote forward-in | Remote forward edges | Register/insert paths | Scan fallback per [federation/operations.md](../federation/operations.md) |
 | Router placement-by-physical | `ROUTER_PLACEMENTS` | Placement commit | Rebuild from placement map scan |
-| Router label telemetry | Graph `LabelUsageDelta` | Event apply + `ROUTER_APPLIED_LABEL_TELEMETRY` dedup | Partial — event replay; no full historical scan |
+| Router label telemetry | Graph `LabelUsageDelta` | Event apply + `ROUTER_APPLIED_LABEL_TELEMETRY` dedup | **Implemented:** graph outbox replay via `admin_label_telemetry_replay_step`; no full historical scan |
 | Router indexed-property catalog | Property catalog + planner stats | Planner registration | **Ephemeral** — rebuilt after upgrade |
 
 ---

@@ -330,7 +330,7 @@ Goal: make derived state safe to optimize, rebuild, and validate.
 
 Deliverables:
 
-- Document and test rebuild or backfill paths for edge aliases, edge equality postings, property postings, label postings, and label telemetry. **In progress** (edge equality, edge aliases, label postings, property postings **done**; label telemetry pending).
+- Document and test rebuild or backfill paths for edge aliases, edge equality postings, property postings, label postings, and label telemetry. **Done** (label telemetry via graph outbox replay; no full historical scan).
 - Add consistency checks between canonical graph state and derived indexes. **In progress** (edge equality, edge aliases **done**).
 - Decide which derived stores must be synchronously updated and which can tolerate backfill lag. **In progress** (inventory table updated for edge equality, label postings, property postings).
 - Keep query semantics honest when derived state may be stale or unavailable. **Not started.**

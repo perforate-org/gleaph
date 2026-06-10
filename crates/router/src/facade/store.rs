@@ -5,6 +5,7 @@
 //! - [`placement`] — logical vertex placement and reverse physical lookup
 //! - [`catalogs`] — federated label and property name resolution
 //! - [`telemetry`] — label usage aggregates from graph shard events
+//! - [`telemetry_replay`] — drain graph label telemetry outbox into router aggregates
 //! - [`idempotency`] — mutation ids and client mutation keys
 //! - [`backfill`] — label and property posting backfill cursors and shard orchestration
 
@@ -14,6 +15,7 @@ mod idempotency;
 mod placement;
 mod registry;
 mod telemetry;
+mod telemetry_replay;
 
 #[cfg(test)]
 mod tests;

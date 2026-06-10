@@ -15,6 +15,7 @@ mod index_lookup;
 mod index_sync;
 pub mod init;
 mod label_backfill;
+mod label_telemetry_replay;
 #[expect(
     dead_code,
     reason = "peer sync hooks are invoked by registry lifecycle paths"
@@ -313,6 +314,14 @@ fn admin_list_property_backfill_status(
     logical_graph_name: String,
 ) -> Result<Vec<types::PropertyBackfillShardStatus>, RouterError> {
     canister::admin_list_property_backfill_status(logical_graph_name)
+}
+
+/// Drain pending label telemetry events from one graph shard (controller-only; call in a loop).
+#[update]
+async fn admin_label_telemetry_replay_step(
+    args: types::AdminLabelTelemetryReplayStepArgs,
+) -> Result<types::AdminLabelTelemetryReplayStepResult, RouterError> {
+    canister::admin_label_telemetry_replay_step(args).await
 }
 
 ic_cdk::export_candid!();
