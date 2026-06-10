@@ -1,7 +1,7 @@
 # Gleaph Refactoring Roadmap
 
 Last updated: 2026-06-10 UTC  
-Status: In progress (Phase 0 complete)  
+Status: In progress (Phase 0 complete; Phase 2 started)  
 Anchor timestamp: 2026-06-10 13:39:55 UTC +0000
 
 ## Purpose
@@ -33,6 +33,27 @@ Because backward compatibility is not a requirement, a refactor does not need to
 - Clearly mark any planned behavior that is not implemented yet.
 
 ## Refactoring Principles
+
+### Module layout
+
+When splitting a module into submodules, use `parent.rs` plus `parent/child.rs`. Do not introduce `parent/mod.rs` as the parent module file.
+
+Example (preferred):
+
+```text
+facade/store.rs
+facade/store/registry.rs
+facade/store/placement.rs
+```
+
+Avoid:
+
+```text
+facade/store/mod.rs
+facade/store/registry.rs
+```
+
+The graph `GraphStore` layout (`crates/graph/src/facade/store.rs` with `facade/store/*.rs` domain files) is the reference pattern for Phase 2 facade splits.
 
 ### Source of truth before shape
 
@@ -238,6 +259,8 @@ Exit criteria:
 ### Phase 2: Introduce storage-domain APIs
 
 Goal: make multi-store invariants explicit while preserving the existing stable layout.
+
+**Progress (2026-06-10):** `graph-index` and `router` facades split into storage-domain submodules under `facade/store.rs` (not `facade/store/mod.rs`). Graph `GraphStore` modules documented by domain in `facade/store.rs`; domain method extraction pending.
 
 Deliverables:
 

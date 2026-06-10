@@ -4,6 +4,16 @@
 //! touch multiple stable structures in a consistent order. It intentionally
 //! carries no fields; all state lives in the canister-local stable structures
 //! initialized in [`super::stable`].
+//!
+//! Storage domains (Phase 2 module map):
+//! - **adjacency** — `edge_insert`, `edge_scan`, `edge_alias`, `edge_logical`, `delete`
+//! - **properties** — `vertex_properties`, `edge_properties`, `catalogs`
+//! - **labels** — `vertex_labels`
+//! - **edge profiles** — `edge_payload`, `sidecar` (weight/payload profiles)
+//! - **remote refs** — `metadata`, federation expand paths
+//! - **local indexes** — `edge_alias`, equality postings in `sidecar`
+//! - **telemetry** — `label_telemetry`
+//! - **maintenance** — `maintenance`
 
 mod catalogs;
 mod delete;
