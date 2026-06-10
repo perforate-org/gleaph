@@ -5,10 +5,11 @@ use crate::facade::store::RouterStore;
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
 use crate::types::{
-    AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminRegisterShardArgs,
-    CommitVertexPlacementArgs, EdgeLabelId, GrantRoleArgs, GraphRegistryEntry,
-    LabelBackfillShardStatus, LogicalVertexId, PropertyId, ReleaseLogicalVertexArgs, ShardId,
-    ShardRegistryEntry, VertexLabelId, VertexPlacement,
+    AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminPropertyBackfillStepArgs,
+    AdminPropertyBackfillStepResult, AdminRegisterShardArgs, CommitVertexPlacementArgs,
+    EdgeLabelId, GrantRoleArgs, GraphRegistryEntry, LabelBackfillShardStatus, LogicalVertexId,
+    PropertyBackfillShardStatus, PropertyId, ReleaseLogicalVertexArgs, ShardId, ShardRegistryEntry,
+    VertexLabelId, VertexPlacement,
 };
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
@@ -141,6 +142,28 @@ pub(crate) fn admin_list_label_backfill_status(
     logical_graph_name: String,
 ) -> Result<Vec<LabelBackfillShardStatus>, RouterError> {
     crate::label_backfill::admin_list_label_backfill_status(
+        &RouterStore::new(),
+        msg_caller(),
+        &logical_graph_name,
+    )
+}
+
+pub(crate) async fn admin_property_backfill_step(
+    args: AdminPropertyBackfillStepArgs,
+) -> Result<AdminPropertyBackfillStepResult, RouterError> {
+    crate::property_backfill::admin_property_backfill_step(
+        &RouterStore::new(),
+        msg_caller(),
+        args,
+        crate::graph_client::backfill_property_postings,
+    )
+    .await
+}
+
+pub(crate) fn admin_list_property_backfill_status(
+    logical_graph_name: String,
+) -> Result<Vec<PropertyBackfillShardStatus>, RouterError> {
+    crate::property_backfill::admin_list_property_backfill_status(
         &RouterStore::new(),
         msg_caller(),
         &logical_graph_name,

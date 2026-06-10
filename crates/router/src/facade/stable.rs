@@ -6,6 +6,7 @@ pub(crate) mod label_backfill;
 pub(crate) mod label_telemetry;
 pub(crate) mod memory;
 pub(crate) mod placement_by_physical;
+pub(crate) mod property_backfill;
 
 thread_local! {
     pub(crate) static ROUTER_CONTROLLERS: RefCell<memory::StableControllerSet> =
@@ -73,6 +74,9 @@ thread_local! {
 
     pub(crate) static ROUTER_LABEL_BACKFILL_STATE: RefCell<memory::StableLabelBackfillStateMap> =
         RefCell::new(memory::init_label_backfill_state());
+
+    pub(crate) static ROUTER_PROPERTY_BACKFILL_STATE: RefCell<memory::StablePropertyBackfillStateMap> =
+        RefCell::new(memory::init_property_backfill_state());
 
     pub(crate) static ROUTER_AUTH_STATE: RefCell<memory::StableAuthState> =
         RefCell::new(memory::init_auth_state());

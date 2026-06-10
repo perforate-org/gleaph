@@ -37,7 +37,7 @@ Thread-local pairing: `facade/stable.rs` in each crate.
 | LARA reverse orientation | Forward edges + payloads | Co-updated on edge insert/delete | No standalone API; theoretical full-graph scan |
 | Edge aliases | Forward/reverse adjacency in `GRAPH` | Sync: `commit_insert_edge_alias` on edge insert | **Implemented:** `check_edge_aliases` + `rebuild_edge_aliases` (`facade/derived_state/edge_alias.rs`) |
 | Edge equality postings | Edge properties | Sync: `dispatch_property_index_ops` on DML | **Implemented:** `check_edge_equality_postings` + `rebuild_edge_equality_postings` (`facade/derived_state/edge_equality.rs`) |
-| Property postings (graph-index) | Vertex properties (indexable) | DML + `pending.rs` flush | **Implemented:** `backfill_property_postings` (graph shard); router orchestration pending |
+| Property postings (graph-index) | Vertex properties (indexable) | DML + `pending.rs` flush | **Implemented:** `backfill_property_postings` + router `admin_property_backfill_step` |
 | Label postings (graph-index) | `VertexLabelStore` | DML + `label_pending` flush | **Implemented:** `backfill_label_postings` + router `admin_label_backfill_step` ([label-index.md](../index/label-index.md)) |
 | Remote forward-in | Remote forward edges | Register/insert paths | Scan fallback per [federation/operations.md](../federation/operations.md) |
 | Router placement-by-physical | `ROUTER_PLACEMENTS` | Placement commit | Rebuild from placement map scan |
@@ -154,6 +154,7 @@ Owner: `ic-stable-lara` / graph `GRAPH` thread-local. Scan paths must not consul
 | 21 | `ROUTER_APPLIED_LABEL_TELEMETRY` | `ROUTER_APPLIED_LABEL_TELEMETRY` | `init_applied_label_telemetry` | telemetry | label telemetry | Dedup set for replay |
 | 22 | `ROUTER_MUTATION_BY_CLIENT_KEY` | `ROUTER_MUTATION_BY_CLIENT_KEY` | `init_mutation_by_client_key` | canonical | idempotency | — |
 | 23 | `ROUTER_LABEL_BACKFILL_STATE` | `ROUTER_LABEL_BACKFILL_STATE` | `init_label_backfill_state` | maintenance | label backfill | Cursor for `admin_label_backfill_step` |
+| 24 | `ROUTER_PROPERTY_BACKFILL_STATE` | `ROUTER_PROPERTY_BACKFILL_STATE` | `init_property_backfill_state` | maintenance | property backfill | Cursor for `admin_property_backfill_step` |
 
 ### Router ephemeral
 

@@ -332,14 +332,14 @@ Deliverables:
 
 - Document and test rebuild or backfill paths for edge aliases, edge equality postings, property postings, label postings, and label telemetry. **In progress** (edge equality, edge aliases, label postings, property postings **done**; label telemetry pending).
 - Add consistency checks between canonical graph state and derived indexes. **In progress** (edge equality, edge aliases **done**).
-- Decide which derived stores must be synchronously updated and which can tolerate backfill lag. **In progress** (inventory table updated for edge equality + label postings).
+- Decide which derived stores must be synchronously updated and which can tolerate backfill lag. **In progress** (inventory table updated for edge equality, label postings, property postings).
 - Keep query semantics honest when derived state may be stale or unavailable. **Not started.**
 
 Exit criteria:
 
 - Derived state has a named canonical source and one update path. **Met** for edge equality and label postings.
 - Tests cover canonical mutation plus derived-state observation. **Met** for edge equality (`derived_state::edge_equality` tests).
-- Backfill state is not mistaken for canonical state. **Partial** (label backfill cursor is maintenance class; edge equality rebuild is explicit derived repair).
+- Backfill state is not mistaken for canonical state. **Partial** (label and property backfill cursors are maintenance class; edge equality rebuild is explicit derived repair).
 
 ### Phase 6: LARA and payload physical cleanup
 

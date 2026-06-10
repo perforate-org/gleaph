@@ -3,7 +3,8 @@
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
     AddGraphPeerArgs, BootstrapGraphPeersArgs, LabelPostingBackfillArgs,
-    LabelPostingBackfillResult, RemoveGraphPeerArgs,
+    LabelPostingBackfillResult, PropertyPostingBackfillArgs, PropertyPostingBackfillResult,
+    RemoveGraphPeerArgs,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanResult, LabelTelemetryEventWire, MutationId, MutationOutcomeWire,
@@ -122,4 +123,11 @@ pub async fn backfill_label_postings(
     args: LabelPostingBackfillArgs,
 ) -> Result<LabelPostingBackfillResult, String> {
     call_graph(graph, "backfill_label_postings", args).await
+}
+
+pub async fn backfill_property_postings(
+    graph: Principal,
+    args: PropertyPostingBackfillArgs,
+) -> Result<PropertyPostingBackfillResult, String> {
+    call_graph(graph, "backfill_property_postings", args).await
 }

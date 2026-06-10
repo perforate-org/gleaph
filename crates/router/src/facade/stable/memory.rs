@@ -40,6 +40,7 @@ const ROUTER_MUTATION_COUNTER: MemoryId = MemoryId::new(20);
 const ROUTER_APPLIED_LABEL_TELEMETRY: MemoryId = MemoryId::new(21);
 const ROUTER_MUTATION_BY_CLIENT_KEY: MemoryId = MemoryId::new(22);
 const ROUTER_LABEL_BACKFILL_STATE: MemoryId = MemoryId::new(23);
+const ROUTER_PROPERTY_BACKFILL_STATE: MemoryId = MemoryId::new(24);
 
 pub(crate) type StableControllerSet = BTreeSet<Principal, Memory>;
 pub(crate) type StableGraphRegistry = BTreeMap<String, GraphRegistryEntry, Memory>;
@@ -66,6 +67,8 @@ pub(crate) type StableMutationByClientKey = BTreeMap<
 >;
 pub(crate) type StableLabelBackfillStateMap =
     BTreeMap<ShardId, super::label_backfill::LabelBackfillShardState, Memory>;
+pub(crate) type StablePropertyBackfillStateMap =
+    BTreeMap<ShardId, super::property_backfill::PropertyBackfillShardState, Memory>;
 pub(crate) type StablePlacementByPhysicalMap =
     super::placement_by_physical::PlacementByPhysicalMap<Memory>;
 pub(crate) type StableMutationCounter = Cell<u64, Memory>;
@@ -171,4 +174,8 @@ pub(crate) fn init_auth_state() -> StableAuthState {
 
 pub(crate) fn init_label_backfill_state() -> StableLabelBackfillStateMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_LABEL_BACKFILL_STATE)))
+}
+
+pub(crate) fn init_property_backfill_state() -> StablePropertyBackfillStateMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BACKFILL_STATE)))
 }

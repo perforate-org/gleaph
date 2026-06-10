@@ -22,6 +22,7 @@ mod label_backfill;
 mod peer_sync;
 mod planner_stats;
 mod prepared;
+mod property_backfill;
 mod rbac;
 mod seed;
 pub mod state;
@@ -296,6 +297,22 @@ fn admin_list_label_backfill_status(
     logical_graph_name: String,
 ) -> Result<Vec<types::LabelBackfillShardStatus>, RouterError> {
     canister::admin_list_label_backfill_status(logical_graph_name)
+}
+
+/// Advance property posting backfill for one graph shard (controller-only; call in a loop).
+#[update]
+async fn admin_property_backfill_step(
+    args: types::AdminPropertyBackfillStepArgs,
+) -> Result<types::AdminPropertyBackfillStepResult, RouterError> {
+    canister::admin_property_backfill_step(args).await
+}
+
+/// List router-stable property backfill cursors for all shards of a logical graph.
+#[query]
+fn admin_list_property_backfill_status(
+    logical_graph_name: String,
+) -> Result<Vec<types::PropertyBackfillShardStatus>, RouterError> {
+    canister::admin_list_property_backfill_status(logical_graph_name)
 }
 
 ic_cdk::export_candid!();

@@ -6,7 +6,7 @@
 //! - [`catalogs`] — federated label and property name resolution
 //! - [`telemetry`] — label usage aggregates from graph shard events
 //! - [`idempotency`] — mutation ids and client mutation keys
-//! - [`backfill`] — label posting backfill cursors and shard orchestration
+//! - [`backfill`] — label and property posting backfill cursors and shard orchestration
 
 mod backfill;
 mod catalogs;
