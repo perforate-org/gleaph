@@ -2,7 +2,6 @@
 
 use super::super::VertexPropertyStoreError;
 use super::super::stable::EDGE_PROPERTIES;
-use crate::index::edge_equal;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
 
@@ -28,33 +27,7 @@ impl GraphStore {
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, VertexPropertyStoreError> {
-        let handle = self.canonical_edge_handle_for_sidecar(handle);
-        let prev = EDGE_PROPERTIES.with_borrow(|properties| {
-            properties.get(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index,
-                property_id,
-            )
-        });
-        let old = EDGE_PROPERTIES.with_borrow_mut(|properties| {
-            properties.set(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index,
-                property_id,
-                value.clone(),
-            )
-        })?;
-        edge_equal::record_edge_property_change(
-            handle.owner_vertex_id,
-            handle.label_id.raw(),
-            handle.slot_index,
-            property_id,
-            prev.as_ref(),
-            Some(&value),
-        );
-        Ok(old)
+        self.commit_edge_property_write(handle, property_id, value)
     }
 
     pub fn remove_edge_property(
@@ -62,34 +35,7 @@ impl GraphStore {
         handle: EdgeHandle,
         property_id: PropertyId,
     ) -> Option<Value> {
-        let handle = self.canonical_edge_handle_for_sidecar(handle);
-        let prev = EDGE_PROPERTIES.with_borrow(|properties| {
-            properties.get(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index,
-                property_id,
-            )
-        });
-        let removed = EDGE_PROPERTIES.with_borrow_mut(|properties| {
-            properties.remove(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index,
-                property_id,
-            )
-        });
-        if let Some(ref old) = prev {
-            edge_equal::record_edge_property_change(
-                handle.owner_vertex_id,
-                handle.label_id.raw(),
-                handle.slot_index,
-                property_id,
-                Some(old),
-                None,
-            );
-        }
-        removed
+        self.commit_edge_property_remove(handle, property_id)
     }
 
     pub fn edge_properties(&self, handle: EdgeHandle) -> Vec<(PropertyId, Value)> {

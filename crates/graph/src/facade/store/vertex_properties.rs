@@ -2,7 +2,6 @@
 
 use super::super::VertexPropertyStoreError;
 use super::super::stable::VERTEX_PROPERTIES;
-use crate::index::pending;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::VertexId;
@@ -20,7 +19,7 @@ impl GraphStore {
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, VertexPropertyStoreError> {
-        self.set_vertex_property_inner(vertex_id, property_id, value, true)
+        self.commit_vertex_property_write(vertex_id, property_id, value, true)
     }
 
     pub(crate) fn set_vertex_property_without_index_pending(
@@ -29,29 +28,7 @@ impl GraphStore {
         property_id: PropertyId,
         value: Value,
     ) -> Result<Option<Value>, VertexPropertyStoreError> {
-        self.set_vertex_property_inner(vertex_id, property_id, value, false)
-    }
-
-    fn set_vertex_property_inner(
-        &self,
-        vertex_id: VertexId,
-        property_id: PropertyId,
-        value: Value,
-        record_index_pending: bool,
-    ) -> Result<Option<Value>, VertexPropertyStoreError> {
-        let prev =
-            VERTEX_PROPERTIES.with_borrow(|properties| properties.get(vertex_id, property_id));
-        let out = VERTEX_PROPERTIES
-            .with_borrow_mut(|properties| properties.set(vertex_id, property_id, value.clone()))?;
-        if record_index_pending {
-            pending::record_vertex_property_change(
-                vertex_id,
-                property_id,
-                prev.as_ref(),
-                Some(&value),
-            );
-        }
-        Ok(out)
+        self.commit_vertex_property_write(vertex_id, property_id, value, false)
     }
 
     pub fn remove_vertex_property(
@@ -59,12 +36,7 @@ impl GraphStore {
         vertex_id: VertexId,
         property_id: PropertyId,
     ) -> Option<Value> {
-        let removed = VERTEX_PROPERTIES
-            .with_borrow_mut(|properties| properties.remove(vertex_id, property_id));
-        if let Some(ref old) = removed {
-            pending::record_vertex_property_change(vertex_id, property_id, Some(old), None);
-        }
-        removed
+        self.commit_vertex_property_remove(vertex_id, property_id)
     }
 
     pub fn vertex_properties(&self, vertex_id: VertexId) -> Vec<(PropertyId, Value)> {

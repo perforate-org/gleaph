@@ -260,7 +260,7 @@ Exit criteria:
 
 Goal: make multi-store invariants explicit while preserving the existing stable layout.
 
-**Progress (2026-06-10):** `graph-index` and `router` facades split into storage-domain submodules under `facade/store.rs` (not `facade/store/mod.rs`). Graph `GraphStore` modules documented by domain in `facade/store.rs`; domain method extraction pending.
+**Progress (2026-06-10):** `graph-index` and `router` facades split into storage-domain submodules under `facade/store.rs`. Graph `GraphStore` adds `adjacency` and `properties` domain commit methods for edge insert and property writes; read APIs remain in domain-specific modules.
 
 Deliverables:
 

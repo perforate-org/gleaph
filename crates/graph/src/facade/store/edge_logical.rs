@@ -6,7 +6,6 @@ use gleaph_graph_kernel::federation::LogicalVertexId;
 use ic_stable_lara::VertexId;
 
 use super::GraphStore;
-use super::edge_insert::journal_edge_insert_to_logical;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{
@@ -95,8 +94,7 @@ impl GraphStore {
                 slot_index: u32::MAX,
             })?;
         self.register_remote_forward_in(handle, remote_ref);
-        journal_edge_insert_to_logical(
-            self,
+        self.commit_logical_edge_insert(
             source_vertex_id,
             target_logical_vertex_id,
             true,
@@ -105,7 +103,6 @@ impl GraphStore {
             payload_bytes,
             handle,
         )?;
-        self.run_post_edge_insert_maintenance()?;
         Ok(handle)
     }
 

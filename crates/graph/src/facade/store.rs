@@ -6,8 +6,8 @@
 //! initialized in [`super::stable`].
 //!
 //! Storage domains (Phase 2 module map):
-//! - **adjacency** — `edge_insert`, `edge_scan`, `edge_alias`, `edge_logical`, `delete`
-//! - **properties** — `vertex_properties`, `edge_properties`, `catalogs`
+//! - **adjacency** — `adjacency` (edge insert commit), `edge_insert`, `edge_scan`, `edge_alias`, `edge_logical`, `delete`
+//! - **properties** — `properties` (write commit), `vertex_properties`, `edge_properties`, `catalogs`
 //! - **labels** — `vertex_labels`
 //! - **edge profiles** — `edge_payload`, `sidecar` (weight/payload profiles)
 //! - **remote refs** — `metadata`, federation expand paths
@@ -15,6 +15,7 @@
 //! - **telemetry** — `label_telemetry`
 //! - **maintenance** — `maintenance`
 
+mod adjacency;
 mod catalogs;
 mod delete;
 mod edge_alias;
@@ -30,6 +31,7 @@ mod label_telemetry;
 mod lookup;
 mod maintenance;
 mod metadata;
+mod properties;
 mod sidecar;
 #[cfg(test)]
 mod tests;

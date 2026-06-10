@@ -1,0 +1,122 @@
+//! Property storage domain: primary stores plus derived index-maintenance events.
+
+use super::super::VertexPropertyStoreError;
+use super::super::stable::{EDGE_PROPERTIES, VERTEX_PROPERTIES};
+use crate::index::{edge_equal, pending};
+use gleaph_gql::Value;
+use gleaph_graph_kernel::entry::PropertyId;
+use ic_stable_lara::VertexId;
+
+use super::GraphStore;
+use super::handle::EdgeHandle;
+
+impl GraphStore {
+    /// Write a vertex property and enqueue federated index maintenance when enabled.
+    pub(super) fn commit_vertex_property_write(
+        &self,
+        vertex_id: VertexId,
+        property_id: PropertyId,
+        value: Value,
+        record_index_pending: bool,
+    ) -> Result<Option<Value>, VertexPropertyStoreError> {
+        let prev =
+            VERTEX_PROPERTIES.with_borrow(|properties| properties.get(vertex_id, property_id));
+        let out = VERTEX_PROPERTIES
+            .with_borrow_mut(|properties| properties.set(vertex_id, property_id, value.clone()))?;
+        if record_index_pending {
+            pending::record_vertex_property_change(
+                vertex_id,
+                property_id,
+                prev.as_ref(),
+                Some(&value),
+            );
+        }
+        Ok(out)
+    }
+
+    /// Remove a vertex property and enqueue federated index maintenance when enabled.
+    pub(super) fn commit_vertex_property_remove(
+        &self,
+        vertex_id: VertexId,
+        property_id: PropertyId,
+    ) -> Option<Value> {
+        let removed = VERTEX_PROPERTIES
+            .with_borrow_mut(|properties| properties.remove(vertex_id, property_id));
+        if let Some(ref old) = removed {
+            pending::record_vertex_property_change(vertex_id, property_id, Some(old), None);
+        }
+        removed
+    }
+
+    /// Write an edge property on a canonical handle and update local equality postings.
+    pub(super) fn commit_edge_property_write(
+        &self,
+        handle: EdgeHandle,
+        property_id: PropertyId,
+        value: Value,
+    ) -> Result<Option<Value>, VertexPropertyStoreError> {
+        let handle = self.canonical_edge_handle_for_sidecar(handle);
+        let prev = EDGE_PROPERTIES.with_borrow(|properties| {
+            properties.get(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+                property_id,
+            )
+        });
+        let old = EDGE_PROPERTIES.with_borrow_mut(|properties| {
+            properties.set(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+                property_id,
+                value.clone(),
+            )
+        })?;
+        edge_equal::record_edge_property_change(
+            handle.owner_vertex_id,
+            handle.label_id.raw(),
+            handle.slot_index,
+            property_id,
+            prev.as_ref(),
+            Some(&value),
+        );
+        Ok(old)
+    }
+
+    /// Remove an edge property on a canonical handle and update local equality postings.
+    pub(super) fn commit_edge_property_remove(
+        &self,
+        handle: EdgeHandle,
+        property_id: PropertyId,
+    ) -> Option<Value> {
+        let handle = self.canonical_edge_handle_for_sidecar(handle);
+        let prev = EDGE_PROPERTIES.with_borrow(|properties| {
+            properties.get(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+                property_id,
+            )
+        });
+        let removed = EDGE_PROPERTIES.with_borrow_mut(|properties| {
+            properties.remove(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+                property_id,
+            )
+        });
+        if let Some(ref old) = prev {
+            edge_equal::record_edge_property_change(
+                handle.owner_vertex_id,
+                handle.label_id.raw(),
+                handle.slot_index,
+                property_id,
+                Some(old),
+                None,
+            );
+        }
+        removed
+    }
+}

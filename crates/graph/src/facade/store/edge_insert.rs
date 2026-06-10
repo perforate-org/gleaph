@@ -4,6 +4,7 @@ use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, EdgeSlotIndex, VertexRef};
 use ic_stable_lara::{VertexId, traits::CsrEdge};
 
 use super::GraphStore;
+use super::adjacency::{EdgeInsertSpec, journal_edge_insert};
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
 use super::helpers::{
@@ -36,47 +37,12 @@ impl GraphStore {
         target_vertex_id: VertexId,
         catalog_label: Option<EdgeLabelId>,
     ) -> Result<EdgeHandle, GraphStoreError> {
-        self.ensure_vertex_id(source_vertex_id)?;
-        self.ensure_vertex_id(target_vertex_id)?;
-        Self::validate_catalog_edge_label(catalog_label)?;
-        validate_edge_payload_bytes_for_label(self, catalog_label, &[])?;
-
-        let label = lara_label(edge_storage_label(catalog_label, false));
-        let forward = build_edge_to(target_vertex_id);
-        let reverse = Edge {
-            target: VertexRef::local(source_vertex_id),
-            edge_slot_index: EdgeSlotIndex::from_raw(0),
-            label_id: 0,
-            payload: gleaph_graph_kernel::entry::EdgePayload::EMPTY,
-        };
-        self.with_graph_mut(|graph| {
-            graph.insert_directed_edge(source_vertex_id, target_vertex_id, label, forward, reverse)
-        })?;
-        let canonical = self
-            .find_first_forward_handle_descending(source_vertex_id, label, |edge| {
-                edge_matches_local_neighbor(edge, target_vertex_id, &[])
-            })?
-            .ok_or(GraphStoreError::EdgeNotFound {
-                owner_vertex_id: source_vertex_id,
-                label_id: label,
-                slot_index: u32::MAX,
-            })?;
-        if let Some(alias) =
-            self.find_reverse_alias_for_canonical(canonical, target_vertex_id, source_vertex_id)?
-        {
-            self.insert_edge_alias(alias, canonical, true);
-        }
-        journal_edge_insert(
-            self,
+        self.insert_directed_edge_with_payload_bytes(
             source_vertex_id,
             target_vertex_id,
             catalog_label,
-            false,
             &[],
-            canonical,
-        )?;
-        self.run_post_edge_insert_maintenance()?;
-        Ok(canonical)
+        )
     }
 
     pub(crate) fn insert_directed_edge_with_payload_bytes(
@@ -93,8 +59,21 @@ impl GraphStore {
 
         let label = lara_label(edge_storage_label(catalog_label, false));
         let payload_width = Self::edge_payload_width_u16(payload_bytes)?;
-        let forward = build_edge_to_with_payload_bytes(target_vertex_id, payload_bytes);
-        let reverse = build_edge_to_with_payload_bytes(source_vertex_id, payload_bytes);
+        let forward = if payload_bytes.is_empty() {
+            build_edge_to(target_vertex_id)
+        } else {
+            build_edge_to_with_payload_bytes(target_vertex_id, payload_bytes)
+        };
+        let reverse = if payload_bytes.is_empty() {
+            Edge {
+                target: VertexRef::local(source_vertex_id),
+                edge_slot_index: EdgeSlotIndex::from_raw(0),
+                label_id: 0,
+                payload: gleaph_graph_kernel::entry::EdgePayload::EMPTY,
+            }
+        } else {
+            build_edge_to_with_payload_bytes(source_vertex_id, payload_bytes)
+        };
         self.with_graph_mut(|graph| {
             if payload_width != 0 {
                 graph.ensure_directed_edge_payload_width(
@@ -115,21 +94,14 @@ impl GraphStore {
                 label_id: label,
                 slot_index: u32::MAX,
             })?;
-        if let Some(alias) =
-            self.find_reverse_alias_for_canonical(canonical, target_vertex_id, source_vertex_id)?
-        {
-            self.insert_edge_alias(alias, canonical, true);
-        }
-        journal_edge_insert(
-            self,
+        self.commit_directed_edge_insert(EdgeInsertSpec {
             source_vertex_id,
             target_vertex_id,
             catalog_label,
-            false,
+            undirected: false,
             payload_bytes,
             canonical,
-        )?;
-        self.run_post_edge_insert_maintenance()?;
+        })?;
         Ok(canonical)
     }
 
@@ -139,64 +111,7 @@ impl GraphStore {
         endpoint_b: VertexId,
         catalog_label: Option<EdgeLabelId>,
     ) -> Result<EdgeHandle, GraphStoreError> {
-        self.ensure_vertex_id(endpoint_a)?;
-        self.ensure_vertex_id(endpoint_b)?;
-        Self::validate_catalog_edge_label(catalog_label)?;
-        validate_edge_payload_bytes_for_label(self, catalog_label, &[])?;
-
-        let label = lara_label(edge_storage_label(catalog_label, true));
-        let edge_ab = build_edge_to(endpoint_b);
-        let edge_ba = build_edge_to(endpoint_a);
-        self.with_graph_mut(|graph| {
-            graph.insert_undirected_deferred(endpoint_a, endpoint_b, label, edge_ab, edge_ba)
-        })?;
-        let owner_vertex_id = canonical_undirected_owner(endpoint_a, endpoint_b);
-        let target = if owner_vertex_id == endpoint_a {
-            endpoint_b
-        } else {
-            endpoint_a
-        };
-        let canonical = self
-            .find_first_forward_handle_descending(owner_vertex_id, label, |edge| {
-                edge_matches_local_neighbor(edge, target, &[])
-            })?
-            .ok_or(GraphStoreError::EdgeNotFound {
-                owner_vertex_id,
-                label_id: label,
-                slot_index: u32::MAX,
-            })?;
-        let alias_vertex_id = if owner_vertex_id == endpoint_a {
-            endpoint_b
-        } else {
-            endpoint_a
-        };
-        if let Some(alias) =
-            self.find_first_forward_handle_descending(alias_vertex_id, label, |edge| {
-                edge.neighbor_vid() == owner_vertex_id
-            })?
-        {
-            self.insert_edge_alias(alias, canonical, false);
-            journal_edge_insert(
-                self,
-                alias_vertex_id,
-                owner_vertex_id,
-                catalog_label,
-                true,
-                &[],
-                alias,
-            )?;
-        }
-        journal_edge_insert(
-            self,
-            owner_vertex_id,
-            target,
-            catalog_label,
-            true,
-            &[],
-            canonical,
-        )?;
-        self.run_post_edge_insert_maintenance()?;
-        Ok(canonical)
+        self.insert_undirected_edge_with_payload_bytes(endpoint_a, endpoint_b, catalog_label, &[])
     }
 
     pub(crate) fn insert_undirected_edge_with_payload_bytes(
@@ -246,32 +161,33 @@ impl GraphStore {
         } else {
             endpoint_a
         };
-        if let Some(alias) =
-            self.find_first_forward_handle_descending(alias_vertex_id, label, |edge| {
-                edge_matches_local_neighbor(edge, owner_vertex_id, payload_bytes)
+        let alias = self
+            .find_first_forward_handle_descending(alias_vertex_id, label, |edge| {
+                if payload_bytes.is_empty() {
+                    edge.neighbor_vid() == owner_vertex_id
+                } else {
+                    edge_matches_local_neighbor(edge, owner_vertex_id, payload_bytes)
+                }
             })?
-        {
-            self.insert_edge_alias(alias, canonical, false);
-            journal_edge_insert(
-                self,
-                alias_vertex_id,
-                owner_vertex_id,
+            .map(|alias_handle| EdgeInsertSpec {
+                source_vertex_id: alias_vertex_id,
+                target_vertex_id: owner_vertex_id,
                 catalog_label,
-                true,
+                undirected: true,
                 payload_bytes,
-                alias,
-            )?;
-        }
-        journal_edge_insert(
-            self,
-            owner_vertex_id,
-            target,
-            catalog_label,
-            true,
-            payload_bytes,
-            canonical,
+                canonical: alias_handle,
+            });
+        self.commit_undirected_edge_insert(
+            EdgeInsertSpec {
+                source_vertex_id: owner_vertex_id,
+                target_vertex_id: target,
+                catalog_label,
+                undirected: true,
+                payload_bytes,
+                canonical,
+            },
+            alias,
         )?;
-        self.run_post_edge_insert_maintenance()?;
         Ok(canonical)
     }
 
@@ -293,29 +209,4 @@ impl GraphStore {
             canonical,
         )
     }
-}
-
-pub(super) fn journal_edge_insert(
-    _store: &GraphStore,
-    _source_vertex_id: VertexId,
-    _target_vertex_id: VertexId,
-    _catalog_label: Option<EdgeLabelId>,
-    _undirected: bool,
-    _payload_bytes: &[u8],
-    _canonical: EdgeHandle,
-) -> Result<(), GraphStoreError> {
-    Ok(())
-}
-
-pub(super) fn journal_edge_insert_to_logical(
-    _store: &GraphStore,
-    _source_vertex_id: VertexId,
-    _target_logical_vertex_id: gleaph_graph_kernel::federation::LogicalVertexId,
-    _target_is_remote: bool,
-    _catalog_label: Option<EdgeLabelId>,
-    _undirected: bool,
-    _payload_bytes: &[u8],
-    _source_handle: EdgeHandle,
-) -> Result<(), GraphStoreError> {
-    Ok(())
 }
