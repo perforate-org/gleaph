@@ -264,3 +264,132 @@ pub async fn backfill_property_postings(
     };
     crate::index::property_backfill::backfill_property_postings(&store, &index, args).await
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use candid::{Encode, Principal};
+    use gleaph_gql::Value;
+    use gleaph_gql::ast::{Expr, ExprKind};
+    use gleaph_gql::types::LabelExpr;
+    use gleaph_gql_ic::encode_gql_params_blob;
+    use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn};
+    use gleaph_gql_planner::wire::encode_block_plans;
+    use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::plan_exec::{SeedBindingEntry, SeedBindingsWire};
+    use pollster;
+
+    const TEST_SHARD_ID: ShardId = 7;
+
+    fn attach_test_federation(shard_id: ShardId) {
+        let mut metadata = GraphMetadata::default();
+        metadata.set_federation_routing(Some(FederationRouting {
+            router_canister: Principal::management_canister(),
+            index_canister: Principal::management_canister(),
+            shard_id,
+        }));
+        GraphStore::new()
+            .set_metadata(metadata)
+            .expect("attach federation routing");
+    }
+
+    fn label_intersection_plan_with_seeds(
+        store: &GraphStore,
+        person_label: &str,
+        employee_label: &str,
+    ) -> (Vec<u8>, Vec<u8>, u32) {
+        let vid = store
+            .insert_vertex_named([person_label, employee_label], Vec::<(&str, Value)>::new())
+            .expect("vertex with both labels");
+        let _person_only = store
+            .insert_vertex_named([person_label], Vec::<(&str, Value)>::new())
+            .expect("person only");
+        let local_vid = u32::try_from(u64::from(vid)).expect("local vertex id");
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some(person_label.into()),
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::IsLabeled {
+                    expr: Box::new(Expr::new(ExprKind::Variable("n".into()))),
+                    label: LabelExpr::Name(employee_label.into()),
+                    negated: false,
+                })],
+                stage: 0,
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::new(ExprKind::Variable("n".into())),
+                    alias: Some("n".into()),
+                }],
+                distinct: false,
+            },
+        ]);
+        let plan_blob = encode_block_plans(&[plan], false).expect("encode plan");
+        let seeds = SeedBindingsWire {
+            entries: vec![SeedBindingEntry {
+                variable: "n".into(),
+                local_vertex_ids: vec![local_vid],
+            }],
+        };
+        let seed_blob = Encode!(&seeds).expect("encode seeds");
+        (plan_blob, seed_blob, local_vid)
+    }
+
+    #[test]
+    fn execute_plan_query_seed_bindings_skip_label_intersection() {
+        attach_test_federation(TEST_SHARD_ID);
+        let store = GraphStore::new();
+        let (plan_blob, seed_blob, _local_vid) =
+            label_intersection_plan_with_seeds(&store, "HandlerSeedPerson", "HandlerSeedEmployee");
+        let params_blob = encode_gql_params_blob(vec![]).expect("encode params");
+        let args = ExecutePlanArgs {
+            target_shard_id: TEST_SHARD_ID,
+            mutation_id: None,
+            plan_blob,
+            params_blob,
+            mode: GqlExecutionMode::Query,
+            seed_bindings_blob: Some(seed_blob),
+            resolved_labels: None,
+        };
+
+        let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
+
+        assert_eq!(result.row_count, 1);
+        let rows_blob = result.rows_blob.expect("query rows_blob");
+        let wire = gleaph_gql_ic::IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode");
+        let materialized =
+            crate::plan::plan_query_result_from_ic_wire(wire).expect("materialize rows");
+        assert_eq!(materialized.rows.len(), 1);
+        assert!(materialized.rows[0].contains_key("n"));
+    }
+
+    #[test]
+    fn execute_plan_query_rejects_shard_mismatch() {
+        attach_test_federation(TEST_SHARD_ID);
+        let store = GraphStore::new();
+        let (plan_blob, seed_blob, _) = label_intersection_plan_with_seeds(
+            &store,
+            "HandlerShardPerson",
+            "HandlerShardEmployee",
+        );
+        let params_blob = encode_gql_params_blob(vec![]).expect("encode params");
+        let args = ExecutePlanArgs {
+            target_shard_id: TEST_SHARD_ID + 1,
+            mutation_id: None,
+            plan_blob,
+            params_blob,
+            mode: GqlExecutionMode::Query,
+            seed_bindings_blob: Some(seed_blob),
+            resolved_labels: None,
+        };
+
+        let err = pollster::block_on(execute_plan_query(args)).expect_err("shard mismatch");
+        assert!(
+            err.contains("target_shard_id") && err.contains("does not match"),
+            "unexpected error: {err}"
+        );
+    }
+}

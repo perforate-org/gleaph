@@ -370,7 +370,7 @@ Goal: keep distributed query planning and index routing in the owning layer.
 
 **Status: In progress (2026-06-10).**
 
-**Progress:** Router seed routing and graph `skip_leading_index_anchor_ops` cover equality `IndexScan`, `IndexIntersection`, labeled `NodeScan`, and leading `PropertyFilter` (including `IsLabeled` label-intersection plans) when `seed_bindings_blob` is present. Executor regressions cover intersection, equality scan, property filter, and multi-label sieve skips. `gql_run` wire tests exercise `SeedBindingsWire` through `run_wire_plan_last_read_row_count` without an index client.
+**Progress:** Router seed routing and graph `skip_leading_index_anchor_ops` cover equality `IndexScan`, `IndexIntersection`, labeled `NodeScan`, and leading `PropertyFilter` (including `IsLabeled` label-intersection plans) when `seed_bindings_blob` is present. Executor regressions cover intersection, equality scan, property filter, and multi-label sieve skips. `gql_run` wire tests and `canister/handlers` `ExecutePlanArgs` tests exercise candid `seed_bindings_blob` through federated graph dispatch without an index client.
 
 Deliverables:
 
