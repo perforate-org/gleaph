@@ -1,12 +1,14 @@
 # Property index
 
+Last updated: 2026-06-10
+
 ## Status
 
 **Partially Implemented** — `lookup_equal` / `lookup_range` and DML posting sync exist. **`lookup_intersection`** is implemented on graph-index; router `IndexAnchor` + per-shard seeds and graph skip of leading intersection op are **Implemented**. Graph federated wire path does not call index; library tests may still inject a mock index client.
 
 ## Purpose
 
-Explain the **graph-index canister** and how the router uses it for query routing (standalone today; per-shard slice in the federation target).
+Explain the **graph-index canister** and how the router uses it for query routing (standalone as of 2026-06-10; per-shard slice in the federation target).
 
 ## Non-goals
 
@@ -36,8 +38,12 @@ Global postings keyed by `(property_id, encoded_value, shard_id, vertex_id)`. A 
 | `lookup_equal` | Implemented | Equality postings for one `(property_id, value)` |
 | `lookup_range` | Implemented | Range over encoded values for one property |
 | `lookup_intersection` | Implemented | Intersect multiple equality arms ([lookup-intersection.md](lookup-intersection.md)) |
+| `count_postings_by_value` | Implemented | Walk one property bucket; return `(encoded_value, count)` groups ([ADR 0003](../adr/0003-federated-aggregate-merge.md)) |
 
 All read APIs run entirely inside graph-index (no graph canister calls).
+
+**Planned:** `count_postings_by_value_for_label` — same bucket walk with label membership sieve
+per posting ([label-index.md](label-index.md) Tier 3).
 
 ## Router seed routing (current)
 
@@ -74,7 +80,7 @@ On DML / property updates, graph enqueues posting changes when federation routin
 
 ## Related documents
 
-- [label-index.md](label-index.md) — planned vertex label membership postings ([ADR 0004](../adr/0004-label-index.md))
+- [label-index.md](label-index.md) — vertex label membership; tiered reads with property index ([ADR 0004](../adr/0004-label-index.md))
 - [lookup-intersection.md](lookup-intersection.md)
 - [../sharding/standalone-mode.md](../sharding/standalone-mode.md)
 - [../sharding/federation-target.md](../sharding/federation-target.md)

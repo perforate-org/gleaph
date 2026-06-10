@@ -23,6 +23,7 @@ Use numbered files: `NNNN-short-title.md`
 
 Date: YYYY-MM-DD
 Status: proposed | accepted | deprecated | superseded by NNNN
+Last revised: YYYY-MM-DD
 
 ## Context
 ## Decision
@@ -37,6 +38,6 @@ Status: proposed | accepted | deprecated | superseded by NNNN
 | [0001](0001-labeled-segment-slide.md) | Labeled edge physical layer uses PMA leaf segment slide | accepted |
 | [0002](0002-federated-row-batch-merge.md) | Federated row-batch merge on router (`rows_blob`) | accepted |
 | [0003](0003-federated-aggregate-merge.md) | Federated aggregate merge and index fast path | accepted |
-| [0004](0004-label-index.md) | Label membership index on graph-index | proposed |
+| [0004](0004-label-index.md) | Label index: sieve + telemetry; vertex export only when needed | accepted |
 
 When adding an ADR, link it from the relevant design doc and update this table.

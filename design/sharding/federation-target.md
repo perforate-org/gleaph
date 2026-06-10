@@ -1,5 +1,7 @@
 # Federation target architecture
 
+Last updated: 2026-06-10
+
 ## Status
 
 **Planned** — target design for multi-shard production. Current code contains partial, immature paths (executor-driven index lookup, `RemoteVertex` from index hits, scattered placement calls). Those are **not** this architecture; they are candidates for defer/removal per [standalone-mode.md](standalone-mode.md).
@@ -63,7 +65,7 @@ sequenceDiagram
 1. Router calls **`lookup_intersection`** once (see [lookup-intersection.md](../index/lookup-intersection.md)).
 2. Index intersects on physical key `(shard_id, vertex_id)` internally — **no graph canister calls**.
 3. Router slices the returned hits by `shard_id` and builds per-shard seeds.
-4. Graph shards skip the leading `IndexIntersection` op (same class of optimization as skipping leading `IndexScan` today).
+4. Graph shards skip the leading `IndexIntersection` op (same class of optimization as skipping leading `IndexScan` as of 2026-06-10).
 
 Graph shards **do not need foreign-shard hits** for intersection: the Router never sends them alien local vertex ids; only their own seed list.
 
@@ -97,7 +99,7 @@ Writes remain on graph shards; postings sync to index on DML (`graph/src/index/p
 
 Index is authoritative for **which physical vertices match an indexed predicate**; graph tombstones are not consulted on index read paths when sync invariants hold.
 
-**Planned:** vertex **label** membership postings on the same graph-index canister ([ADR 0004](../adr/0004-label-index.md), [label-index.md](../index/label-index.md)) for `NodeScan` seed routing and aggregate fast path with `MATCH (n:Label)`.
+**Partial:** vertex **label** membership postings on graph-index ([ADR 0004](../adr/0004-label-index.md), [label-index.md](../index/label-index.md)). `lookup_label` for seeds is implemented. Target: label sieve on property paths, label telemetry for count-only queries; narrow vertex-list export without unseeded-shard fallback on hit size. Interim v1 aggregate/scale-guard behavior to migrate.
 
 ## Merge (Router)
 

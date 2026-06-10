@@ -1,7 +1,8 @@
 # 0003. Federated aggregate merge on router
 
-Date: 2026-06-08
-Status: accepted
+Date: 2026-06-09  
+Status: accepted  
+Last revised: 2026-06-10
 
 ## Context
 
@@ -33,15 +34,17 @@ key and re-apply commutative aggregate functions.
 
 ### Index pushdown fast path (partial)
 
-**Implemented (v1):** `graph-index::count_postings_by_value`, router plan detection
-(`try_aggregate_index_fast_path`), and early return in `dispatch_plan_blob_with_index` for
-eligible `COUNT(*)` `GROUP BY` one indexed vertex property. Prefix may be empty, unlabeled
-`NodeScan`, or a single `IndexScan` / `IndexIntersection` anchor (posting counts restricted to
-seed hits). `MATCH (n:Label) GROUP BY` without an index anchor still uses generic shard merge.
-HAVING `COUNT(*) > N` / `>= N` maps to `min_count` on the index scan.
+**Implemented (interim v1):** `count_postings_by_value`, `try_aggregate_index_fast_path`, early
+return in `dispatch_plan_blob_with_index` for eligible `COUNT(*)` `GROUP BY` one indexed vertex
+property. Includes interim labeled paths via bulk `lookup_label` + packed filter and a 10k hit
+scale guard — **to be replaced** per [ADR 0004](0004-label-index.md) (property bucket + label
+sieve; label telemetry for count-only; no unseeded fallback on large seed lists).
 
-**Still planned:** label-only `GROUP BY` via label membership index ([ADR 0004](0004-label-index.md)),
-richer HAVING shapes, Sort/Limit.
+**Target (label + aggregate, [ADR 0004](0004-label-index.md)):** `filter_hits_by_label` when a
+selective property anchor exists; `count_postings_by_value_for_label` for `MATCH (n:L) GROUP BY
+n.p`; label telemetry for `MATCH (n:L) RETURN count(*)` without `GROUP BY` on an indexed
+property. HAVING maps to `min_count` on index scans where applicable. Richer HAVING, Sort/Limit
+remain future work.
 
 ### Original fast-path design notes
 
@@ -75,9 +78,10 @@ Keys are sorted by `encoded_value`, so the index can walk contiguous runs and em
 **Planned API (graph-index):** e.g. `count_postings_by_value(property_id, min_count)` returning
 only groups with `count >= min_count` (instruction-bounded; do not return full hit lists).
 
-**Planned routing (Router / planner):** detect the fast-path plan shape and call the index API
-instead of dispatching aggregate execution to graph shards. Label / traversal constraints must
-still be satisfied (e.g. via seeds, `lookup_intersection`, or an explicit non-fast-path fallback).
+**Routing (Router / planner):** detect the fast-path plan shape and call the index API instead of
+dispatching aggregate execution to graph shards. Label constraints: property sieve or label
+telemetry for counts ([ADR 0004](0004-label-index.md)); bulk `lookup_label` only when vertex ids
+are required (seeds), not for `GROUP BY` or count-only aggregates.
 
 **Fast-path eligibility (initial):**
 
