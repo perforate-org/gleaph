@@ -36,6 +36,53 @@ pub async fn collect_label_hits_for_shards<I: IndexLookup + ?Sized>(
     Ok(all)
 }
 
+/// Collect multi-label intersection hits by paging one label bucket per shard and sieving
+/// the rest with [`IndexLookup::filter_hits_by_label`] (ADR 0004 path D).
+pub async fn collect_label_intersection_hits_for_shards<I: IndexLookup + ?Sized>(
+    index: &I,
+    vertex_label_ids: &[u32],
+    shard_ids: &[ShardId],
+) -> Result<Vec<PostingHit>, String> {
+    if vertex_label_ids.len() < 2 {
+        return Err("label intersection requires at least two labels".into());
+    }
+    let mut labels: Vec<u32> = vertex_label_ids.to_vec();
+    labels.sort_unstable();
+    labels.dedup();
+    if labels.len() < 2 {
+        return Err("label intersection requires at least two distinct labels".into());
+    }
+    let walk_label = labels[0];
+    let sieve_labels = &labels[1..];
+    let mut all = Vec::new();
+    for &shard_id in shard_ids {
+        let mut after = None;
+        loop {
+            let page = index
+                .lookup_label_page(LabelLookupPageRequest {
+                    vertex_label_id: walk_label,
+                    shard_id,
+                    after,
+                    limit: LABEL_SEED_EXPORT_PAGE_LIMIT,
+                })
+                .await?;
+            let mut hits = page.hits;
+            for &label_id in sieve_labels {
+                if hits.is_empty() {
+                    break;
+                }
+                hits = index.filter_hits_by_label(label_id, hits).await?;
+            }
+            all.extend(hits);
+            if page.done {
+                break;
+            }
+            after = page.next;
+        }
+    }
+    Ok(all)
+}
+
 #[cfg(test)]
 mod tests {
     use std::cell::RefCell;
@@ -53,6 +100,8 @@ mod tests {
 
     struct PageIndex {
         pages: Rc<RefCell<Vec<LabelLookupPageResult>>>,
+        sieve_label: u32,
+        sieve_members: Rc<RefCell<Vec<u32>>>,
     }
 
     impl IndexLookup for PageIndex {
@@ -96,10 +145,21 @@ mod tests {
 
         fn filter_hits_by_label(
             &self,
-            _vertex_label_id: u32,
+            vertex_label_id: u32,
             hits: Vec<PostingHit>,
         ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-            Box::pin(async move { Ok(hits) })
+            let sieve_label = self.sieve_label;
+            let members = self.sieve_members.clone();
+            Box::pin(async move {
+                if vertex_label_id != sieve_label {
+                    return Ok(hits);
+                }
+                let keep = members.borrow();
+                Ok(hits
+                    .into_iter()
+                    .filter(|hit| keep.contains(&hit.vertex_id))
+                    .collect())
+            })
         }
 
         fn count_postings_by_value_for_label(
@@ -123,6 +183,8 @@ mod tests {
     #[test]
     fn collect_label_hits_pages_each_shard() {
         let index = PageIndex {
+            sieve_label: 2,
+            sieve_members: Rc::new(RefCell::new(vec![1, 2])),
             pages: Rc::new(RefCell::new(vec![
                 LabelLookupPageResult {
                     hits: vec![PostingHit {
@@ -159,5 +221,59 @@ mod tests {
         let hits = futures::executor::block_on(collect_label_hits_for_shards(&index, 1, &[7, 9]))
             .expect("collect");
         assert_eq!(hits.len(), 3);
+    }
+
+    #[test]
+    fn collect_label_intersection_pages_and_sieves_other_labels() {
+        let index = PageIndex {
+            sieve_label: 2,
+            sieve_members: Rc::new(RefCell::new(vec![1, 3])),
+            pages: Rc::new(RefCell::new(vec![
+                LabelLookupPageResult {
+                    hits: vec![
+                        PostingHit {
+                            shard_id: 7,
+                            vertex_id: 1,
+                        },
+                        PostingHit {
+                            shard_id: 7,
+                            vertex_id: 2,
+                        },
+                    ],
+                    next: Some(LabelPostingCursor {
+                        shard_id: 7,
+                        vertex_id: 2,
+                    }),
+                    done: false,
+                },
+                LabelLookupPageResult {
+                    hits: vec![PostingHit {
+                        shard_id: 7,
+                        vertex_id: 3,
+                    }],
+                    next: None,
+                    done: true,
+                },
+            ])),
+        };
+        let hits = futures::executor::block_on(collect_label_intersection_hits_for_shards(
+            &index,
+            &[1, 2],
+            &[7],
+        ))
+        .expect("collect intersection");
+        assert_eq!(
+            hits,
+            vec![
+                PostingHit {
+                    shard_id: 7,
+                    vertex_id: 1,
+                },
+                PostingHit {
+                    shard_id: 7,
+                    vertex_id: 3,
+                },
+            ]
+        );
     }
 }

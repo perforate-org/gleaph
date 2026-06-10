@@ -25,7 +25,8 @@ use crate::facade::stable::label_telemetry::RouterMutationShard;
 use crate::facade::store::RouterStore;
 use crate::federation::{
     AggregateIndexFastPath, FederatedMergeMode, ShardDispatch, ShardingPolicy,
-    apply_federated_aggregate_having, collect_label_hits_for_shards, empty_execute_plan_result,
+    apply_federated_aggregate_having, collect_label_hits_for_shards,
+    collect_label_intersection_hits_for_shards, empty_execute_plan_result,
     federated_dispatch_plan_blob, federated_merge_mode_from_plans,
     gql_query_result_from_label_live_count, gql_query_result_from_posting_counts,
     merge_execute_plan_result, packed_vertices_exceed_fast_path_budget,
@@ -123,13 +124,7 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
         } => collect_label_hits_for_shards(index, *vertex_label_id, shard_ids).await,
         IndexAnchor::LabelIntersection {
             vertex_label_ids, ..
-        } => {
-            index
-                .lookup_label_intersection(IndexLabelIntersectionRequest {
-                    vertex_label_ids: vertex_label_ids.clone(),
-                })
-                .await
-        }
+        } => collect_label_intersection_hits_for_shards(index, vertex_label_ids, shard_ids).await,
     }
 }
 

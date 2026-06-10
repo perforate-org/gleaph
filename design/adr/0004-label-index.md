@@ -138,9 +138,9 @@ export); `contains(LabelPostingKey { L, shard, vertex })` for per-vertex sieve. 
 
 #### D — Multi-label
 
-**Planned:** `lookup_label_intersection(label_ids)` when a **vertex list** is required and the
-intersection is the entry set; otherwise prefer C1 chains or future canister-side multi-label
-sieve APIs.
+**Implemented:** `lookup_label_intersection(label_ids)` on graph-index for direct intersection.
+Router seed routing uses paginated walk + per-hit label sieve
+(`collect_label_intersection_hits_for_shards`) instead of bulk export when building seeds.
 
 ### Aggregate fast path (router)
 

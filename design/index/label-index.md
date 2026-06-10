@@ -86,8 +86,11 @@ MATCH (n:Person) WHERE n.region = 'US' GROUP BY n.country  → C1 then count
 
 ### D — Multi-label vertex list — Implemented
 
-`lookup_label_intersection` when the plan needs explicit ids for `:L1:L2:…` (router
-`IndexAnchor::LabelIntersection` from `NodeScan` + `IsLabeled` filters).
+`lookup_label_intersection` on graph-index for small intersections; router seed routing
+pages the walk label per shard (`lookup_label_page`) and sieves other labels with
+`filter_hits_by_label` (`collect_label_intersection_hits_for_shards`). Used when the plan
+needs explicit ids for `:L1:L2:…` (`IndexAnchor::LabelIntersection` from `NodeScan` +
+`IsLabeled` filters).
 
 ## Write path — Implemented
 
