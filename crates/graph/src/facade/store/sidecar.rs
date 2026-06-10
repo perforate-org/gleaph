@@ -88,3 +88,30 @@ impl GraphStore {
         );
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::PropertyId;
+
+    #[test]
+    fn commit_clear_edge_sidecars_removes_properties_and_local_indexes() {
+        let store = GraphStore::new();
+        let a = store.insert_vertex().expect("a");
+        let b = store.insert_vertex().expect("b");
+        let handle = store.insert_directed_edge(a, b, None).expect("edge");
+        let property = store
+            .get_or_insert_property_id("weight")
+            .expect("property id");
+        store
+            .set_edge_property(handle, property, Value::Int64(7))
+            .expect("set property");
+        assert_eq!(store.edge_property(handle, property), Some(Value::Int64(7)));
+
+        store.commit_clear_edge_sidecars(handle);
+
+        assert_eq!(store.edge_property(handle, property), None);
+        assert!(store.edge_properties(handle).is_empty());
+    }
+}

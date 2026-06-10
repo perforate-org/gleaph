@@ -1,5 +1,6 @@
 //! Remote reference domain: logical vertex handles and forward-in edge index.
 
+use super::super::stable::remote_forward_in::RemoteForwardInKey;
 use super::super::stable::{REMOTE_FORWARD_IN, REMOTE_VERTEX_REFS};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, EdgeTarget, RemoteRefId};
 use gleaph_graph_kernel::federation::LogicalVertexId;
@@ -30,6 +31,25 @@ impl GraphStore {
         logical_vertex_id: LogicalVertexId,
     ) -> Option<RemoteRefId> {
         REMOTE_VERTEX_REFS.with_borrow(|table| table.remote_ref_for_logical(logical_vertex_id))
+    }
+
+    pub(crate) fn remote_forward_in_index_populated(&self) -> bool {
+        REMOTE_FORWARD_IN.with_borrow(|index| !index.is_empty())
+    }
+
+    pub(crate) fn remote_forward_in_keys_for_ref(
+        &self,
+        remote_ref: RemoteRefId,
+    ) -> Vec<RemoteForwardInKey> {
+        REMOTE_FORWARD_IN.with_borrow(|index| {
+            let mut keys = Vec::new();
+            index.for_each_for_remote_ref(remote_ref, |key| keys.push(key));
+            keys
+        })
+    }
+
+    pub(crate) fn has_remote_forward_in_postings(&self, remote_ref: RemoteRefId) -> bool {
+        REMOTE_FORWARD_IN.with_borrow(|index| index.has_postings_for(remote_ref))
     }
 
     /// Insert a forward edge to a remote logical vertex and register derived forward-in state.
@@ -154,7 +174,7 @@ impl GraphStore {
         self.commit_unregister_remote_forward_in_for_out_edge(source_vertex_id, edge);
     }
 
-    pub(super) fn unregister_remote_forward_in_for_handle(&self, handle: EdgeHandle) {
+    pub(super) fn commit_unregister_remote_forward_in_for_handle(&self, handle: EdgeHandle) {
         let label = handle.label_id;
         let mut edges = self
             .directed_out_edges(handle.owner_vertex_id)
@@ -167,8 +187,12 @@ impl GraphStore {
             if edge.label_id != label.raw() || edge.edge_slot_index.raw() != handle.slot_index {
                 continue;
             }
-            self.unregister_remote_forward_in_for_out_edge(handle.owner_vertex_id, &edge);
+            self.commit_unregister_remote_forward_in_for_out_edge(handle.owner_vertex_id, &edge);
             return;
         }
+    }
+
+    pub(super) fn unregister_remote_forward_in_for_handle(&self, handle: EdgeHandle) {
+        self.commit_unregister_remote_forward_in_for_handle(handle);
     }
 }

@@ -90,7 +90,7 @@ impl GraphStore {
         let is_undirected = TaggedEdgeLabelId::from_raw(canonical.label_id.raw()).is_undirected();
         let alias = self.alias_for_canonical_edge(canonical);
         self.commit_clear_edge_sidecars(handle);
-        self.unregister_remote_forward_in_for_handle(canonical);
+        self.commit_unregister_remote_forward_in_for_handle(canonical);
         let edge = self.with_graph_mut(|graph| {
             graph.remove_forward_edge_at_slot(
                 canonical.owner_vertex_id,

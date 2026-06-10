@@ -1,6 +1,5 @@
 //! Federated expand: shard-local collection and cross-shard coordination.
 
-use super::stable::REMOTE_FORWARD_IN;
 use super::store::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
 use crate::facade::catalog_edge_label_from_wire;
 use crate::index::placement;
@@ -144,11 +143,7 @@ fn collect_forward_to_remote_incoming_from_index(
     label_id_raw: Option<u16>,
     out: &mut Vec<FederatedExpandNeighbor>,
 ) -> Result<(), GraphStoreError> {
-    let keys = REMOTE_FORWARD_IN.with_borrow(|index| {
-        let mut keys = Vec::new();
-        index.for_each_for_remote_ref(remote_ref, |key| keys.push(key));
-        keys
-    });
+    let keys = store.remote_forward_in_keys_for_ref(remote_ref);
     for key in keys {
         push_forward_to_remote_hit(
             store,
@@ -225,7 +220,7 @@ fn collect_forward_to_remote_incoming(
     label_id_raw: Option<u16>,
     out: &mut Vec<FederatedExpandNeighbor>,
 ) -> Result<(), GraphStoreError> {
-    let index_populated = REMOTE_FORWARD_IN.with_borrow(|index| !index.is_empty());
+    let index_populated = store.remote_forward_in_index_populated();
     if index_populated {
         collect_forward_to_remote_incoming_from_index(
             store,
@@ -1119,7 +1114,7 @@ mod tests {
             .insert_directed_edge_to_logical(source, remote_logical, None)
             .expect("remote edge");
 
-        assert!(REMOTE_FORWARD_IN.with_borrow(|index| index.has_postings_for(remote_ref)));
+        assert!(store.has_remote_forward_in_postings(remote_ref));
 
         let hits = pollster::block_on(collect_federated_expand(
             &store,
@@ -1156,11 +1151,11 @@ mod tests {
         let handle = store
             .insert_directed_edge_to_logical(source, remote_logical, None)
             .expect("remote edge");
-        assert!(REMOTE_FORWARD_IN.with_borrow(|index| index.has_postings_for(remote_ref)));
+        assert!(store.has_remote_forward_in_postings(remote_ref));
 
         store.delete_edge_by_handle(handle).expect("delete");
 
-        assert!(!REMOTE_FORWARD_IN.with_borrow(|index| index.has_postings_for(remote_ref)));
+        assert!(!store.has_remote_forward_in_postings(remote_ref));
     }
 
     #[test]

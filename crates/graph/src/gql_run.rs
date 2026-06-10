@@ -480,12 +480,15 @@ async fn run_wire_plans(
                 && has_delta
             {
                 let event = store
-                    .persist_label_telemetry_event(mutation_id, mutation.label_usage_delta.clone())
+                    .commit_persist_label_telemetry_event(
+                        mutation_id,
+                        mutation.label_usage_delta.clone(),
+                    )
                     .map_err(GqlRunError::Plan)?;
                 label_telemetry_events.push(event);
             }
             if let Some(mutation_id) = mutation_id {
-                store.record_incomplete_mutation_request(
+                store.commit_record_incomplete_mutation_request(
                     mutation_id,
                     label_telemetry_events.clone(),
                 );
@@ -605,7 +608,7 @@ pub async fn run_wire_plan_last_read_row_count(
     )
     .await?;
     if let Some(mutation_id) = mutation_id {
-        store.record_completed_mutation_request(
+        store.commit_record_completed_mutation_request(
             mutation_id,
             run.last_read_row_count as u64,
             run.label_telemetry_events.clone(),
