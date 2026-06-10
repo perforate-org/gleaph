@@ -829,6 +829,76 @@ mod tests {
     }
 
     #[test]
+    fn wire_plan_seed_bindings_skip_label_intersection_prefix() {
+        use gleaph_gql::ast::{Expr, ExprKind};
+        use gleaph_gql::types::LabelExpr;
+        use gleaph_gql_planner::plan::ProjectColumn;
+        use gleaph_graph_kernel::plan_exec::SeedBindingEntry;
+
+        let store = GraphStore::new();
+        let vid = store
+            .insert_vertex_named(
+                ["WireSeedPerson", "WireSeedEmployee"],
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("vertex with both labels");
+        let _person_only = store
+            .insert_vertex_named(["WireSeedPerson"], Vec::<(&str, Value)>::new())
+            .expect("person only");
+        let local_vid = u32::try_from(u64::from(vid)).expect("local vertex id");
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: Some("WireSeedPerson".into()),
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::IsLabeled {
+                    expr: Box::new(Expr::new(ExprKind::Variable("n".into()))),
+                    label: LabelExpr::Name("WireSeedEmployee".into()),
+                    negated: false,
+                })],
+                stage: 0,
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::new(ExprKind::Variable("n".into())),
+                    alias: Some("n".into()),
+                }],
+                distinct: false,
+            },
+        ]);
+        let blob = encode_block_plans(&[plan], false).expect("encode plan");
+        let seeds = SeedBindingsWire {
+            entries: vec![SeedBindingEntry {
+                variable: "n".into(),
+                local_vertex_ids: vec![local_vid],
+            }],
+        };
+        let params = BTreeMap::new();
+
+        let run = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::CompositeQuery,
+            None,
+            GqlExecutionContext::default(),
+            Some(seeds),
+            None,
+        ))
+        .expect("wire seeded label intersection");
+
+        assert_eq!(run.row_count, 1);
+        let rows_blob = run.rows_blob.expect("composite query rows");
+        let wire = gleaph_gql_ic::IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode");
+        let materialized =
+            crate::plan::plan_query_result_from_ic_wire(wire).expect("materialize rows");
+        assert_eq!(materialized.rows.len(), 1);
+        assert!(materialized.rows[0].contains_key("n"));
+    }
+
+    #[test]
     fn wire_update_rejects_dml_without_mutation_id() {
         let store = GraphStore::new();
         let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
