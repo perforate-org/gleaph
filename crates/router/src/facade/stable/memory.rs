@@ -1,4 +1,4 @@
-//! Stable-memory layout for the router canister.
+//! Router canister stable-memory layout — see `design/storage/stable-memory-inventory.md`.
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::{

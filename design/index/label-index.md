@@ -96,6 +96,8 @@ needs explicit ids for `:L1:L2:…` (`IndexAnchor::LabelIntersection` from `Node
 
 `label_pending` + graph-index `label_posting_insert/remove` on label DML.
 
+**Rebuild inventory:** [stable-memory-inventory.md](../storage/stable-memory-inventory.md) (`INDEX_LABEL_POSTINGS`, `ROUTER_LABEL_BACKFILL_STATE`).
+
 **Backfill:** `backfill_label_postings` on graph shards replays `VertexLabelStore` into
 graph-index for pre-existing data. Router orchestrates per-shard cursors via
 `admin_label_backfill_step` / `admin_list_label_backfill_status` (controller-only).

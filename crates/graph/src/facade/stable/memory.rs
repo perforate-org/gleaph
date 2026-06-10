@@ -1,3 +1,5 @@
+//! Graph canister stable-memory layout — see `design/storage/stable-memory-inventory.md`.
+
 use super::edge_alias::EdgeAliasIndex;
 use super::edge_payload_profiles::EdgePayloadProfileStore;
 use super::edge_properties::EdgePropertyStore;

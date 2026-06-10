@@ -78,6 +78,8 @@ Graph maintains **shard-local** structures distinct from the property index cani
 
 On DML / property updates, graph enqueues posting changes when federation routing and an index client are configured. Without client, mutations may drop index updates (`index/pending.rs`) — deployments with property indexes must wire the index canister.
 
+**Rebuild:** Property postings (`INDEX_POSTINGS`) have DML sync only. There is no `backfill_property_postings` equivalent to label postings. See [stable-memory-inventory.md](../storage/stable-memory-inventory.md).
+
 ## Related documents
 
 - [label-index.md](label-index.md) — vertex label membership; tiered reads with property index ([ADR 0004](../adr/0004-label-index.md))

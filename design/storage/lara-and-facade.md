@@ -9,7 +9,7 @@ Clarify what **ic-stable-lara** provides vs what **gleaph-graph** stable structu
 ## Non-goals
 
 - PMA / tombstone algorithm proofs (see `crates/ic-stable-lara/README.md`).
-- Full stable memory layout bytes.
+- Per-byte stable memory layout (see [stable-memory-inventory.md](./stable-memory-inventory.md) for region inventory).
 - DGAP / PMA contract detail (see [lara-dgap-contract.md](./lara-dgap-contract.md)).
 
 ## Layering

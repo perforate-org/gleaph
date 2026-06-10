@@ -1,8 +1,8 @@
 # Gleaph Refactoring Roadmap
 
 Last updated: 2026-06-10 UTC  
-Status: Planned  
-Anchor timestamp: 2026-06-10 13:32:49 UTC +0000
+Status: In progress (Phase 0 complete)  
+Anchor timestamp: 2026-06-10 13:39:55 UTC +0000
 
 ## Purpose
 
@@ -203,6 +203,8 @@ Deliverables:
 - Document the rebuild path for each derived store.
 - Mark design docs that are planned, partially implemented, or implemented.
 - Identify stale sections that describe target behavior as shipped behavior.
+
+Output artifact: [`design/storage/stable-memory-inventory.md`](../storage/stable-memory-inventory.md)
 
 Primary files:
 
@@ -405,6 +407,7 @@ This order intentionally defers memory-layout consolidation until the owning API
 
 ## Related Documents
 
+- [Stable-memory inventory](../storage/stable-memory-inventory.md)
 - [System overview](overview.md)
 - [LARA and graph facade](../storage/lara-and-facade.md)
 - [LARA](../storage/lara.md)
