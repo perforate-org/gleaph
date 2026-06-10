@@ -12,7 +12,7 @@ use gleaph_graph_kernel::index::{
 };
 
 impl IndexStore {
-    pub fn label_posting_insert(
+    pub(super) fn commit_label_posting_insert(
         &self,
         caller: Principal,
         shard_id: ShardId,
@@ -31,7 +31,7 @@ impl IndexStore {
         Ok(())
     }
 
-    pub fn label_posting_remove(
+    pub(super) fn commit_label_posting_remove(
         &self,
         caller: Principal,
         shard_id: ShardId,
@@ -48,6 +48,26 @@ impl IndexStore {
             postings.remove(&key);
         });
         Ok(())
+    }
+
+    pub fn label_posting_insert(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        vertex_label_id: u32,
+        vertex_id: u32,
+    ) -> Result<(), IndexError> {
+        self.commit_label_posting_insert(caller, shard_id, vertex_label_id, vertex_id)
+    }
+
+    pub fn label_posting_remove(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        vertex_label_id: u32,
+        vertex_id: u32,
+    ) -> Result<(), IndexError> {
+        self.commit_label_posting_remove(caller, shard_id, vertex_label_id, vertex_id)
     }
 
     pub fn lookup_label(&self, vertex_label_id: u32) -> Vec<PostingHit> {

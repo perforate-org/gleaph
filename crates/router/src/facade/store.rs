@@ -19,9 +19,9 @@ mod telemetry;
 mod tests;
 
 use super::stable::{
-    ROUTER_APPLIED_LABEL_TELEMETRY, ROUTER_CONTROLLERS, ROUTER_EDGE_LABEL_BY_ID,
-    ROUTER_EDGE_LABEL_BY_NAME, ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS,
-    ROUTER_GRAPHS, ROUTER_LOGICAL_COUNTER, ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER,
+    ROUTER_APPLIED_LABEL_TELEMETRY, ROUTER_EDGE_LABEL_BY_ID, ROUTER_EDGE_LABEL_BY_NAME,
+    ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS, ROUTER_GRAPHS,
+    ROUTER_LOGICAL_COUNTER, ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER,
     ROUTER_PENDING_LOGICAL, ROUTER_PLACEMENT_BY_PHYSICAL, ROUTER_PLACEMENTS, ROUTER_PROPERTY_BY_ID,
     ROUTER_PROPERTY_BY_NAME, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_VERTEX_LABEL_BY_ID,
     ROUTER_VERTEX_LABEL_BY_NAME, ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
@@ -52,12 +52,7 @@ impl RouterStore {
     }
 
     pub fn init_from_args(&self, args: &RouterInitArgs) {
-        ROUTER_CONTROLLERS.with_borrow_mut(|admins| {
-            admins.clear();
-            for p in &args.controllers {
-                admins.insert(*p);
-            }
-        });
+        self.commit_init_controllers(&args.controllers);
         ROUTER_GRAPHS.with_borrow_mut(|g| g.clear_new());
         ROUTER_SHARDS.with_borrow_mut(|s| s.clear_new());
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| m.clear_new());
@@ -82,18 +77,6 @@ impl RouterStore {
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.clear_new());
         ROUTER_PROPERTY_BY_NAME.with_borrow_mut(|m| m.clear_new());
         ROUTER_PROPERTY_BY_ID.with_borrow_mut(|m| m.clear_new());
-    }
-
-    pub fn bootstrap_controllers(&self, principals: &[Principal]) {
-        ROUTER_CONTROLLERS.with_borrow_mut(|admins| {
-            for p in principals {
-                admins.insert(*p);
-            }
-        });
-    }
-
-    pub(crate) fn is_controller(&self, caller: Principal) -> bool {
-        ROUTER_CONTROLLERS.with_borrow(|admins| admins.contains(&caller))
     }
 }
 

@@ -13,7 +13,7 @@ use gleaph_graph_kernel::index::{
 };
 
 impl IndexStore {
-    pub fn posting_insert(
+    pub(super) fn commit_posting_insert(
         &self,
         caller: Principal,
         shard_id: ShardId,
@@ -34,7 +34,7 @@ impl IndexStore {
         Ok(())
     }
 
-    pub fn posting_remove(
+    pub(super) fn commit_posting_remove(
         &self,
         caller: Principal,
         shard_id: ShardId,
@@ -53,6 +53,28 @@ impl IndexStore {
             postings.remove(&key);
         });
         Ok(())
+    }
+
+    pub fn posting_insert(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        property_id: u32,
+        value: Vec<u8>,
+        vertex_id: u32,
+    ) -> Result<(), IndexError> {
+        self.commit_posting_insert(caller, shard_id, property_id, value, vertex_id)
+    }
+
+    pub fn posting_remove(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        property_id: u32,
+        value: Vec<u8>,
+        vertex_id: u32,
+    ) -> Result<(), IndexError> {
+        self.commit_posting_remove(caller, shard_id, property_id, value, vertex_id)
     }
 
     pub fn lookup_equal(&self, property_id: u32, value: &[u8]) -> Vec<PostingHit> {

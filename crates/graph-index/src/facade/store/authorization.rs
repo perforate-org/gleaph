@@ -35,13 +35,11 @@ impl IndexStore {
         });
     }
 
-    pub fn admin_set_shard_owner(
+    pub(super) fn commit_register_shard_owner(
         &self,
-        caller: Principal,
         shard_id: ShardId,
         owner_principal: Principal,
     ) -> Result<(), IndexError> {
-        self.assert_router_caller(caller)?;
         if owner_principal == Principal::anonymous() {
             return Err(IndexError::InvalidPrincipalInRegistry);
         }
@@ -58,15 +56,29 @@ impl IndexStore {
         Ok(())
     }
 
+    pub(super) fn commit_clear_shard_owner(&self, shard_id: ShardId) {
+        INDEX_SHARD_OWNERS.with_borrow_mut(|shards| {
+            shards.remove(&shard_id);
+        });
+    }
+
+    pub fn admin_set_shard_owner(
+        &self,
+        caller: Principal,
+        shard_id: ShardId,
+        owner_principal: Principal,
+    ) -> Result<(), IndexError> {
+        self.assert_router_caller(caller)?;
+        self.commit_register_shard_owner(shard_id, owner_principal)
+    }
+
     pub fn admin_clear_shard_owner(
         &self,
         caller: Principal,
         shard_id: ShardId,
     ) -> Result<(), IndexError> {
         self.assert_router_caller(caller)?;
-        INDEX_SHARD_OWNERS.with_borrow_mut(|shards| {
-            shards.remove(&shard_id);
-        });
+        self.commit_clear_shard_owner(shard_id);
         Ok(())
     }
 

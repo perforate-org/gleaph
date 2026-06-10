@@ -1,7 +1,7 @@
-//! Graph and shard registry.
+//! Graph and shard registry plus router controller principals.
 
 use super::super::stable::{
-    ROUTER_GRAPHS, ROUTER_PENDING_LOGICAL, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
+    ROUTER_CONTROLLERS, ROUTER_GRAPHS, ROUTER_PENDING_LOGICAL, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
 };
 use crate::index_sync;
 use crate::state::RouterError;
@@ -12,6 +12,27 @@ use gleaph_graph_kernel::federation::ShardRegistryEntry;
 use super::{RouterStore, ic_time_ns, validate_metadata_name};
 
 impl RouterStore {
+    pub(super) fn commit_init_controllers(&self, controllers: &[Principal]) {
+        ROUTER_CONTROLLERS.with_borrow_mut(|admins| {
+            admins.clear();
+            for p in controllers {
+                admins.insert(*p);
+            }
+        });
+    }
+
+    pub fn bootstrap_controllers(&self, principals: &[Principal]) {
+        ROUTER_CONTROLLERS.with_borrow_mut(|admins| {
+            for p in principals {
+                admins.insert(*p);
+            }
+        });
+    }
+
+    pub(crate) fn is_controller(&self, caller: Principal) -> bool {
+        ROUTER_CONTROLLERS.with_borrow(|admins| admins.contains(&caller))
+    }
+
     pub fn resolve_graph(
         &self,
         graph_name: &str,
