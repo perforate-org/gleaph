@@ -20,8 +20,8 @@ pub fn new_pocket_ic() -> PocketIc {
 }
 
 pub const GRAPH_NAME: &str = "gleaph.pocket_ic";
-pub const SOURCE_SHARD: ShardId = 7;
-pub const DEST_SHARD: ShardId = 9;
+pub const SOURCE_SHARD: ShardId = ShardId::new(0);
+pub const DEST_SHARD: ShardId = ShardId::new(1);
 
 pub struct FederationEnv {
     pub pic: PocketIc,

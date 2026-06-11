@@ -5,6 +5,7 @@ mod expand;
 mod peer_sync;
 mod posting_backfill;
 mod router_error;
+mod shard_id;
 
 pub use backfill_shard_state::BackfillShardState;
 pub use expand::{
@@ -14,6 +15,7 @@ pub use expand::{
 pub use peer_sync::{AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs};
 pub use posting_backfill::{PostingBackfillArgs, PostingBackfillResult};
 pub use router_error::RouterError;
+pub use shard_id::ShardId;
 
 use candid::{CandidType, Decode, Encode, Principal};
 use ic_stable_lara::VertexId;
@@ -23,9 +25,6 @@ use std::borrow::Cow;
 
 /// Stable logical vertex identity (globally unique across graph shards).
 pub type LogicalVertexId = u64;
-
-/// Graph shard partition id.
-pub type ShardId = u32;
 
 /// Dense vertex index within a single graph shard (`VertexId` in LARA).
 pub type LocalVertexId = u32;
@@ -84,7 +83,7 @@ impl PhysicalPlacementKey {
         let mut local = [0; 4];
         shard.copy_from_slice(&bytes[0..4]);
         local.copy_from_slice(&bytes[4..8]);
-        Self::new(u32::from_le_bytes(shard), u32::from_le_bytes(local))
+        Self::new(ShardId::from_le_bytes(shard), u32::from_le_bytes(local))
     }
 }
 
@@ -187,21 +186,24 @@ mod tests {
 
     #[test]
     fn physical_placement_key_le_bytes_roundtrip() {
-        let key = PhysicalPlacementKey::new(7, 42);
+        let key = PhysicalPlacementKey::new(ShardId::new(0), 42);
         assert_eq!(key, PhysicalPlacementKey::from_le_bytes(key.to_le_bytes()));
-        assert_eq!(key, PhysicalPlacementKey::from_posting_hit(7, 42));
+        assert_eq!(
+            key,
+            PhysicalPlacementKey::from_posting_hit(ShardId::new(0), 42)
+        );
     }
 
     #[test]
     fn physical_placement_key_storable_roundtrip() {
-        let key = PhysicalPlacementKey::new(3, 99);
+        let key = PhysicalPlacementKey::new(ShardId::new(1), 99);
         let bytes = key.to_bytes();
         assert_eq!(key, PhysicalPlacementKey::from_bytes(bytes));
     }
 
     #[test]
     fn vertex_placement_storable_and_candid_roundtrip() {
-        let placement = VertexPlacement::Active(PhysicalVertexLocation::new(1, 10));
+        let placement = VertexPlacement::Active(PhysicalVertexLocation::new(ShardId::new(1), 10));
         let storable = placement.to_bytes();
         assert_eq!(placement, VertexPlacement::from_bytes(storable));
         let encoded = Encode!(&placement).expect("encode");
@@ -212,7 +214,7 @@ mod tests {
     #[test]
     fn shard_registry_entry_storable_roundtrip() {
         let entry = ShardRegistryEntry {
-            shard_id: 5,
+            shard_id: ShardId::new(1),
             graph_canister: Principal::anonymous(),
             index_canister: Principal::management_canister(),
             logical_graph_name: "g.main".into(),

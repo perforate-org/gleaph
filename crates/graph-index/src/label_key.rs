@@ -62,7 +62,7 @@ impl LabelPostingKey {
             return None;
         }
         let label_id = u32::from_le_bytes(bytes.get(1..5)?.try_into().ok()?);
-        let shard_id = u32::from_le_bytes(bytes.get(5..9)?.try_into().ok()?);
+        let shard_id = ShardId::from_le_bytes(bytes.get(5..9)?.try_into().ok()?);
         let vertex_id = u32::from_le_bytes(bytes.get(9..13)?.try_into().ok()?);
         Some(Self {
             vertex_label_id: label_id,
@@ -74,7 +74,7 @@ impl LabelPostingKey {
     pub fn prefix_lower(vertex_label_id: u32) -> Self {
         Self {
             vertex_label_id,
-            shard_id: 0,
+            shard_id: ShardId::new(0),
             vertex_id: 0,
         }
     }
@@ -82,7 +82,7 @@ impl LabelPostingKey {
     pub fn prefix_upper(vertex_label_id: u32) -> Self {
         Self {
             vertex_label_id,
-            shard_id: u32::MAX,
+            shard_id: ShardId::new(u32::MAX),
             vertex_id: u32::MAX,
         }
     }
@@ -95,9 +95,9 @@ impl LabelPostingKey {
                 ..self
             });
         }
-        if self.shard_id < u32::MAX {
+        if self.shard_id.raw() < u32::MAX {
             return Some(Self {
-                shard_id: self.shard_id + 1,
+                shard_id: ShardId::new(self.shard_id.raw() + 1),
                 vertex_id: 0,
                 vertex_label_id: self.vertex_label_id,
             });
@@ -114,14 +114,14 @@ mod tests {
     fn label_posting_key_successor() {
         let k = LabelPostingKey {
             vertex_label_id: 1,
-            shard_id: 7,
+            shard_id: ShardId::new(0),
             vertex_id: 42,
         };
         assert_eq!(
             k.successor(),
             Some(LabelPostingKey {
                 vertex_label_id: 1,
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 vertex_id: 43,
             })
         );
@@ -131,7 +131,7 @@ mod tests {
     fn label_posting_key_roundtrip() {
         let k = LabelPostingKey {
             vertex_label_id: 7,
-            shard_id: 99,
+            shard_id: ShardId::new(99),
             vertex_id: 42,
         };
         let bytes = k.encode();

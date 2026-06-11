@@ -62,12 +62,12 @@ mod tests {
 
     #[test]
     fn label_shard_bucket_bounds() {
-        let (low, high) = label_shard_posting_bucket(5, 7).expect("shard bucket");
+        let (low, high) = label_shard_posting_bucket(5, ShardId::new(0)).expect("shard bucket");
         assert_eq!(
             low,
             LabelPostingKey {
                 vertex_label_id: 5,
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 vertex_id: 0,
             }
         );
@@ -75,7 +75,7 @@ mod tests {
             high,
             LabelPostingKey {
                 vertex_label_id: 5,
-                shard_id: 8,
+                shard_id: ShardId::new(1),
                 vertex_id: 0,
             }
         );

@@ -627,6 +627,7 @@ mod tests {
     use gleaph_gql_planner::NodeLabelRef;
     use gleaph_gql_planner::PhysicalPlan;
     use gleaph_gql_planner::plan::{IndexScanSpec, PlanOp, ScanValue};
+    use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::PostingHit;
     use gleaph_graph_kernel::plan_exec::SeedBindingsWire;
 
@@ -867,19 +868,19 @@ mod tests {
     fn seeds_for_local_shard_encodes_matching_vertices_only() {
         let hits = vec![
             PostingHit {
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 vertex_id: 10,
             },
             PostingHit {
-                shard_id: 9,
+                shard_id: ShardId::new(1),
                 vertex_id: 20,
             },
             PostingHit {
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 vertex_id: 11,
             },
         ];
-        let blob = seeds_for_local_shard("u", &hits, 7).expect("seed blob");
+        let blob = seeds_for_local_shard("u", &hits, ShardId::new(0)).expect("seed blob");
         let wire: SeedBindingsWire = Decode!(&blob, SeedBindingsWire).expect("decode");
         assert_eq!(wire.entries.len(), 1);
         assert_eq!(wire.entries[0].variable, "u");
@@ -888,6 +889,6 @@ mod tests {
         let roundtrip: SeedBindingsWire =
             Decode!(&Encode!(&wire).expect("re-encode"), SeedBindingsWire).expect("roundtrip");
         assert_eq!(wire, roundtrip);
-        assert!(seeds_for_local_shard("u", &hits, 99).is_none());
+        assert!(seeds_for_local_shard("u", &hits, ShardId::new(99)).is_none());
     }
 }

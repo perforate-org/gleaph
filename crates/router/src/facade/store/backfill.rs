@@ -4,7 +4,7 @@ use std::future::Future;
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
-    BackfillShardState, PostingBackfillArgs, PostingBackfillResult, ShardRegistryEntry,
+    BackfillShardState, PostingBackfillArgs, PostingBackfillResult, ShardId, ShardRegistryEntry,
 };
 
 use super::super::stable::ROUTER_LABEL_BACKFILL_STATE;
@@ -93,11 +93,11 @@ impl RouterStore {
         Ok(out)
     }
 
-    fn load_label_backfill_state(&self, shard_id: u32) -> BackfillShardState {
+    fn load_label_backfill_state(&self, shard_id: ShardId) -> BackfillShardState {
         ROUTER_LABEL_BACKFILL_STATE.with_borrow(|state| state.get(&shard_id).unwrap_or_default())
     }
 
-    fn store_label_backfill_state(&self, shard_id: u32, cursor: BackfillShardState) {
+    fn store_label_backfill_state(&self, shard_id: ShardId, cursor: BackfillShardState) {
         ROUTER_LABEL_BACKFILL_STATE.with_borrow_mut(|map| {
             map.insert(shard_id, cursor);
         });
@@ -179,11 +179,11 @@ impl RouterStore {
         Ok(out)
     }
 
-    fn load_property_backfill_state(&self, shard_id: u32) -> BackfillShardState {
+    fn load_property_backfill_state(&self, shard_id: ShardId) -> BackfillShardState {
         ROUTER_PROPERTY_BACKFILL_STATE.with_borrow(|state| state.get(&shard_id).unwrap_or_default())
     }
 
-    fn store_property_backfill_state(&self, shard_id: u32, cursor: BackfillShardState) {
+    fn store_property_backfill_state(&self, shard_id: ShardId, cursor: BackfillShardState) {
         ROUTER_PROPERTY_BACKFILL_STATE.with_borrow_mut(|map| {
             map.insert(shard_id, cursor);
         });
@@ -192,7 +192,7 @@ impl RouterStore {
     fn resolve_shard_for_backfill(
         &self,
         logical_graph_name: &str,
-        shard_id: u32,
+        shard_id: ShardId,
     ) -> Result<ShardRegistryEntry, RouterError> {
         let entry = self.resolve_shard(shard_id)?;
         if entry.logical_graph_name != logical_graph_name {
@@ -246,7 +246,7 @@ mod tests {
         futures::executor::block_on(store.admin_register_shard(
             admin,
             AdminRegisterShardArgs {
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 graph_canister: graph,
                 index_canister: index,
                 logical_graph_name: "tenant.main".into(),
@@ -258,7 +258,7 @@ mod tests {
             admin,
             AdminLabelBackfillStepArgs {
                 logical_graph_name: "tenant.main".into(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 max_vertices: 32,
             },
             |_graph, args| async move {
@@ -272,7 +272,7 @@ mod tests {
         ))
         .expect("step");
 
-        assert_eq!(result.shard_id, 7);
+        assert_eq!(result.shard_id, ShardId::new(0));
         assert_eq!(result.vertices_processed, 32);
         assert_eq!(result.postings_synced, 5);
         assert!(!result.done);
@@ -295,7 +295,7 @@ mod tests {
         futures::executor::block_on(store.admin_register_shard(
             admin,
             AdminRegisterShardArgs {
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 graph_canister: graph_principal(1),
                 index_canister: graph_principal(2),
                 logical_graph_name: "tenant.main".into(),
@@ -307,7 +307,7 @@ mod tests {
             admin,
             AdminLabelBackfillStepArgs {
                 logical_graph_name: "other.graph".into(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 max_vertices: 1,
             },
             |_graph, _args| async { unreachable!() },
@@ -327,7 +327,7 @@ mod tests {
         futures::executor::block_on(store.admin_register_shard(
             admin,
             AdminRegisterShardArgs {
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 graph_canister: graph_principal(1),
                 index_canister: graph_principal(2),
                 logical_graph_name: "tenant.main".into(),
@@ -337,7 +337,7 @@ mod tests {
 
         ROUTER_LABEL_BACKFILL_STATE.with_borrow_mut(|map| {
             map.insert(
-                7,
+                ShardId::new(0),
                 BackfillShardState {
                     next_vertex_id: 99,
                     done: true,
@@ -349,7 +349,7 @@ mod tests {
             admin,
             AdminLabelBackfillStepArgs {
                 logical_graph_name: "tenant.main".into(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 max_vertices: 16,
             },
             |_graph, _args| async { unreachable!() },
@@ -373,7 +373,7 @@ mod tests {
         futures::executor::block_on(store.admin_register_shard(
             admin,
             AdminRegisterShardArgs {
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 graph_canister: graph,
                 index_canister: index,
                 logical_graph_name: "tenant.main".into(),
@@ -385,7 +385,7 @@ mod tests {
             admin,
             AdminPropertyBackfillStepArgs {
                 logical_graph_name: "tenant.main".into(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 max_vertices: 32,
             },
             |_graph, args| async move {
@@ -399,7 +399,7 @@ mod tests {
         ))
         .expect("step");
 
-        assert_eq!(result.shard_id, 7);
+        assert_eq!(result.shard_id, ShardId::new(0));
         assert_eq!(result.vertices_processed, 32);
         assert_eq!(result.postings_synced, 5);
         assert!(!result.done);

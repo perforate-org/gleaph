@@ -181,29 +181,29 @@ mod tests {
             pages: Rc::new(RefCell::new(vec![
                 LabelLookupPageResult {
                     hits: vec![PostingHit {
-                        shard_id: 7,
+                        shard_id: ShardId::new(0),
                         vertex_id: 1,
                     }],
                     next: Some(LabelPostingCursor {
-                        shard_id: 7,
+                        shard_id: ShardId::new(0),
                         vertex_id: 1,
                     }),
                     done: false,
                 },
                 LabelLookupPageResult {
                     hits: vec![PostingHit {
-                        shard_id: 7,
+                        shard_id: ShardId::new(0),
                         vertex_id: 2,
                     }],
                     next: Some(LabelPostingCursor {
-                        shard_id: 7,
+                        shard_id: ShardId::new(0),
                         vertex_id: 2,
                     }),
                     done: true,
                 },
                 LabelLookupPageResult {
                     hits: vec![PostingHit {
-                        shard_id: 9,
+                        shard_id: ShardId::new(1),
                         vertex_id: 3,
                     }],
                     next: None,
@@ -211,8 +211,12 @@ mod tests {
                 },
             ])),
         };
-        let hits = futures::executor::block_on(collect_label_hits_for_shards(&index, 1, &[7, 9]))
-            .expect("collect");
+        let hits = futures::executor::block_on(collect_label_hits_for_shards(
+            &index,
+            1,
+            &[ShardId::new(0), ShardId::new(1)],
+        ))
+        .expect("collect");
         assert_eq!(hits.len(), 3);
     }
 
@@ -225,23 +229,23 @@ mod tests {
                 LabelLookupPageResult {
                     hits: vec![
                         PostingHit {
-                            shard_id: 7,
+                            shard_id: ShardId::new(0),
                             vertex_id: 1,
                         },
                         PostingHit {
-                            shard_id: 7,
+                            shard_id: ShardId::new(0),
                             vertex_id: 2,
                         },
                     ],
                     next: Some(LabelPostingCursor {
-                        shard_id: 7,
+                        shard_id: ShardId::new(0),
                         vertex_id: 2,
                     }),
                     done: false,
                 },
                 LabelLookupPageResult {
                     hits: vec![PostingHit {
-                        shard_id: 7,
+                        shard_id: ShardId::new(0),
                         vertex_id: 3,
                     }],
                     next: None,
@@ -252,18 +256,18 @@ mod tests {
         let hits = futures::executor::block_on(collect_label_intersection_hits_for_shards(
             &index,
             &[1, 2],
-            &[7],
+            &[ShardId::new(0)],
         ))
         .expect("collect intersection");
         assert_eq!(
             hits,
             vec![
                 PostingHit {
-                    shard_id: 7,
+                    shard_id: ShardId::new(0),
                     vertex_id: 1,
                 },
                 PostingHit {
-                    shard_id: 7,
+                    shard_id: ShardId::new(0),
                     vertex_id: 3,
                 },
             ]

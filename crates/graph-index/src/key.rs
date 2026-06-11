@@ -77,7 +77,8 @@ impl PostingKey {
         let val_end = val_start.checked_add(usize_len)?;
         let value = bytes.get(val_start..val_end)?.to_vec();
         let shard_off = val_end;
-        let shard_id = u32::from_le_bytes(bytes.get(shard_off..shard_off + 4)?.try_into().ok()?);
+        let shard_id =
+            ShardId::from_le_bytes(bytes.get(shard_off..shard_off + 4)?.try_into().ok()?);
         let vid_off = shard_off + 4;
         let vertex_id = u32::from_le_bytes(bytes.get(vid_off..vid_off + 4)?.try_into().ok()?);
         Some(Self {
@@ -93,7 +94,7 @@ impl PostingKey {
         Self {
             property_id,
             value: value.to_vec(),
-            shard_id: 0,
+            shard_id: ShardId::new(0),
             vertex_id: 0,
         }
     }
@@ -103,7 +104,7 @@ impl PostingKey {
         Self {
             property_id,
             value: value.to_vec(),
-            shard_id: u32::MAX,
+            shard_id: ShardId::new(u32::MAX),
             vertex_id: u32::MAX,
         }
     }
@@ -118,7 +119,7 @@ mod tests {
         let k = PostingKey {
             property_id: 7,
             value: vec![1, 2, 3],
-            shard_id: 99,
+            shard_id: ShardId::new(1),
             vertex_id: 42,
         };
         let bytes = k.encode();

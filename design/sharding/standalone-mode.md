@@ -18,7 +18,7 @@ Define the **default execution mode** while multi-shard production rollout is pr
 
 | Concept | Standalone behavior |
 |---------|---------------------|
-| `ShardId` | Fixed local id (typically `0`) on all postings and dispatch |
+| `ShardId` | `ShardId(0)` — sole shard under strategy A (`0..n-1`); see [ADR 0006](../adr/0006-pre-federation-foundation.md) |
 | `LogicalVertexId` | `standalone_logical_vertex_id(local)` — local dense id equals logical id |
 | `PlanBinding` | `Vertex(VertexId)` only on the query hot path |
 | Index lookup | Router or graph calls index canister; hits filtered to `shard_id == local` |

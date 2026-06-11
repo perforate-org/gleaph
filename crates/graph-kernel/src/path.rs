@@ -89,7 +89,7 @@ impl GraphPathEdgeId {
         let mut edge_slot_index = [0; 4];
         edge_slot_index.copy_from_slice(&bytes[12..16]);
         Self {
-            shard_id: u32::from_le_bytes(shard_id),
+            shard_id: ShardId::from_le_bytes(shard_id),
             owner_vertex_id: VertexId::from(u32::from_le_bytes(owner_vertex_id)),
             edge_slot_index: EdgeSlotIndex::from_le_bytes(edge_slot_index),
         }
@@ -143,7 +143,11 @@ mod tests {
 
     #[test]
     fn edge_path_id_roundtrips() {
-        let id = GraphPathEdgeId::new(42, VertexId::from(7), EdgeSlotIndex::from_raw(9));
+        let id = GraphPathEdgeId::new(
+            ShardId::new(0),
+            VertexId::from(7),
+            EdgeSlotIndex::from_raw(9),
+        );
         assert_eq!(GraphPathEdgeId::from_bytes(id.to_bytes()), id);
         assert_eq!(GraphPathEdgeId::try_from_slice(&id.to_bytes()), Ok(id));
     }

@@ -1,5 +1,6 @@
 //! Instruction/size guards for federated index fast paths and seed routing.
 
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::PostingHit;
 
 /// Maximum `(shard_id, vertex_id)` pairs shipped as a C1 aggregate vertex filter.
@@ -27,7 +28,7 @@ mod tests {
     fn budget_allows_at_limit() {
         let hits = vec![
             PostingHit {
-                shard_id: 1,
+                shard_id: ShardId::new(1),
                 vertex_id: 0,
             };
             FAST_PATH_MAX_VERTEX_FILTER_HITS
@@ -39,7 +40,7 @@ mod tests {
     fn budget_rejects_over_limit() {
         let hits = vec![
             PostingHit {
-                shard_id: 1,
+                shard_id: ShardId::new(1),
                 vertex_id: 0,
             };
             FAST_PATH_MAX_VERTEX_FILTER_HITS + 1

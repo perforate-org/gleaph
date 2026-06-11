@@ -53,7 +53,7 @@ impl StandaloneFederation {
             local_shard_id: store
                 .federation_routing()
                 .map(|routing| routing.shard_id)
-                .unwrap_or(0),
+                .unwrap_or(ShardId::new(0)),
         }
     }
 

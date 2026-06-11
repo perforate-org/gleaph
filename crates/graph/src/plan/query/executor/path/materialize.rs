@@ -3,6 +3,7 @@ use std::cell::RefCell;
 use gleaph_gql::Value;
 use gleaph_gql::types::PathElement;
 use gleaph_graph_kernel::entry::EdgeSlotIndex;
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::VertexId;
 
@@ -81,7 +82,10 @@ fn fill_path_elements_leaf_to_root(
 }
 
 pub(crate) fn local_shard_id(store: &GraphStore) -> gleaph_graph_kernel::federation::ShardId {
-    store.federation_routing().map(|r| r.shard_id).unwrap_or(0)
+    store
+        .federation_routing()
+        .map(|r| r.shard_id)
+        .unwrap_or(ShardId::new(0))
 }
 
 pub(crate) fn vertex_element_id_bytes(

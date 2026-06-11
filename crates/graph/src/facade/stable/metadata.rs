@@ -176,7 +176,7 @@ mod tests {
         metadata.set_logical_graph_name(Some("gleaph-test".into()));
         metadata.set_federation_routing(Some(FederationRouting {
             router_canister: Principal::management_canister(),
-            shard_id: 7,
+            shard_id: ShardId::new(0),
             index_canister: Principal::anonymous(),
         }));
         metadata.validate_for_store().expect("valid metadata");

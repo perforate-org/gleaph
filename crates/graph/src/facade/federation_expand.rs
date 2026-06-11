@@ -4,6 +4,7 @@ use super::store::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected
 use crate::facade::catalog_edge_label_from_wire;
 use crate::index::placement;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, RemoteRefId};
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::federation::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, LocalVertexId,
     LogicalVertexId, PhysicalVertexLocation, ShardId, VertexPlacement,
@@ -805,7 +806,7 @@ mod tests {
             .set_federation_routing(Some(FederationRouting {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
             }))
             .expect("routing");
 
@@ -880,7 +881,7 @@ mod tests {
             )
             .expect("profile");
         let hit = FederatedExpandNeighbor {
-            shard_id: 1,
+            shard_id: ShardId::new(1),
             neighbor_logical_vertex_id: 2,
             neighbor_local_vertex_id: 3,
             anchor_local_vertex_id: 4,
@@ -910,7 +911,7 @@ mod tests {
         let requested = crate::test_labels::edge_label_id_for_name("FedRequestedLabel");
         let returned = crate::test_labels::edge_label_id_for_name("FedReturnedLabel");
         let hit = FederatedExpandNeighbor {
-            shard_id: 1,
+            shard_id: ShardId::new(1),
             neighbor_logical_vertex_id: 2,
             neighbor_local_vertex_id: 3,
             anchor_local_vertex_id: 4,
@@ -938,7 +939,7 @@ mod tests {
     fn remote_hits_reject_oversize_payload_bytes_before_merge() {
         let store = GraphStore::new();
         let hit = FederatedExpandNeighbor {
-            shard_id: 1,
+            shard_id: ShardId::new(1),
             neighbor_logical_vertex_id: 2,
             neighbor_local_vertex_id: 3,
             anchor_local_vertex_id: 4,
@@ -975,7 +976,7 @@ mod tests {
             .set_federation_routing(Some(FederationRouting {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
             }))
             .expect("routing");
 
@@ -1025,7 +1026,7 @@ mod tests {
             .set_federation_routing(Some(FederationRouting {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
             }))
             .expect("routing");
 
@@ -1068,7 +1069,7 @@ mod tests {
             .set_federation_routing(Some(FederationRouting {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
             }))
             .expect("routing");
 
@@ -1103,7 +1104,7 @@ mod tests {
             .set_federation_routing(Some(FederationRouting {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
             }))
             .expect("routing");
 
@@ -1141,7 +1142,7 @@ mod tests {
             .set_federation_routing(Some(FederationRouting {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
             }))
             .expect("routing");
 
@@ -1166,7 +1167,7 @@ mod tests {
             .set_federation_routing(Some(FederationRouting {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
             }))
             .expect("routing");
 
@@ -1200,7 +1201,7 @@ mod tests {
             .set_federation_routing(Some(FederationRouting {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
             }))
             .expect("routing");
 

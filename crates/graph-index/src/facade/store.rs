@@ -31,5 +31,5 @@ impl IndexStore {
 }
 
 pub(crate) fn pack_posting_vertex(shard_id: ShardId, vertex_id: u32) -> u64 {
-    (u64::from(shard_id) << 32) | u64::from(vertex_id)
+    (u64::from(shard_id.raw()) << 32) | u64::from(vertex_id)
 }

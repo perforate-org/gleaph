@@ -10,7 +10,7 @@ fn index_scan_skips_foreign_shard_hits_in_standalone_mode() {
         .expect("register age property");
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
-        shard_id: 9,
+        shard_id: ShardId::new(1),
         vertex_id: 42,
     });
     let plan = plan(vec![PlanOp::IndexScan {
@@ -43,7 +43,7 @@ fn executes_equality_index_scan_with_sortable_key() {
     let pid = store.property_id("age").expect("age property").raw();
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
-        shard_id: 7,
+        shard_id: ShardId::new(0),
         vertex_id: u32::try_from(u64::from(vid)).unwrap(),
     });
     let plan = plan(vec![PlanOp::IndexScan {
@@ -85,7 +85,7 @@ fn equality_index_scan_unifies_decimal_and_integer_key_with_final_filter() {
     let pid = store.property_id("price").expect("price property").raw();
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
-        shard_id: 7,
+        shard_id: ShardId::new(0),
         vertex_id: u32::try_from(u64::from(vid)).unwrap(),
     });
     let plan = plan(vec![
@@ -138,7 +138,7 @@ fn equality_index_scan_unifies_float_and_decimal_key_with_final_filter() {
     let pid = store.property_id("score").expect("score property").raw();
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
-        shard_id: 7,
+        shard_id: ShardId::new(0),
         vertex_id: u32::try_from(u64::from(vid)).unwrap(),
     });
     let plan = plan(vec![
@@ -190,7 +190,7 @@ fn equality_index_scan_final_filter_drops_inexact_float_decimal_candidate() {
         .expect("insert vertex");
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
-        shard_id: 7,
+        shard_id: ShardId::new(0),
         vertex_id: u32::try_from(u64::from(vid)).unwrap(),
     });
     let plan = plan(vec![
@@ -235,7 +235,7 @@ fn equality_index_scan_matches_list_valued_posting() {
     let pid = store.property_id("tags").expect("tags property").raw();
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
-        shard_id: 7,
+        shard_id: ShardId::new(0),
         vertex_id: u32::try_from(u64::from(vid)).unwrap(),
     });
     let plan = plan(vec![
@@ -296,7 +296,7 @@ fn equality_index_scan_matches_record_valued_posting_independent_of_field_order(
         .raw();
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
-        shard_id: 7,
+        shard_id: ShardId::new(0),
         vertex_id: u32::try_from(u64::from(vid)).unwrap(),
     });
     let plan = plan(vec![
@@ -350,7 +350,7 @@ fn equality_index_scan_final_filter_drops_inexact_nested_numeric_candidate() {
         .expect("insert vertex");
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
-        shard_id: 7,
+        shard_id: ShardId::new(0),
         vertex_id: u32::try_from(u64::from(vid)).unwrap(),
     });
     let plan = plan(vec![
@@ -397,11 +397,11 @@ fn executes_range_index_scan_with_lookup_range() {
     let index = MockPropertyIndex::default();
     index.range_hits.borrow_mut().extend([
         PostingHit {
-            shard_id: 7,
+            shard_id: ShardId::new(0),
             vertex_id: u32::try_from(u64::from(low)).unwrap(),
         },
         PostingHit {
-            shard_id: 7,
+            shard_id: ShardId::new(0),
             vertex_id: u32::try_from(u64::from(high)).unwrap(),
         },
     ]);
@@ -454,11 +454,11 @@ fn executes_list_range_index_scan_with_lookup_range() {
     let index = MockPropertyIndex::default();
     index.range_hits.borrow_mut().extend([
         PostingHit {
-            shard_id: 7,
+            shard_id: ShardId::new(0),
             vertex_id: u32::try_from(u64::from(hit)).unwrap(),
         },
         PostingHit {
-            shard_id: 7,
+            shard_id: ShardId::new(0),
             vertex_id: u32::try_from(u64::from(miss)).unwrap(),
         },
     ]);
@@ -524,7 +524,7 @@ fn executes_record_range_index_scan_with_lookup_range() {
         .raw();
     let index = MockPropertyIndex::default();
     index.range_hits.borrow_mut().push(PostingHit {
-        shard_id: 7,
+        shard_id: ShardId::new(0),
         vertex_id: u32::try_from(u64::from(hit)).unwrap(),
     });
     let bound = Value::Record(vec![
@@ -581,7 +581,7 @@ fn executes_orderable_extension_equality_index_scan() {
     let pid = store.property_id("principal").expect("property").raw();
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
-        shard_id: 7,
+        shard_id: ShardId::new(0),
         vertex_id: u32::try_from(u64::from(vid)).unwrap(),
     });
     let plan = plan(vec![PlanOp::IndexScan {
@@ -629,7 +629,7 @@ fn executes_orderable_extension_range_index_scan() {
     let pid = store.property_id("principal").expect("property").raw();
     let index = MockPropertyIndex::default();
     index.range_hits.borrow_mut().push(PostingHit {
-        shard_id: 7,
+        shard_id: ShardId::new(0),
         vertex_id: u32::try_from(u64::from(vid)).unwrap(),
     });
     let plan = plan(vec![PlanOp::IndexScan {

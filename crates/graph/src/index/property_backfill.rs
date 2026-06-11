@@ -154,7 +154,7 @@ mod tests {
             .set_federation_routing(Some(FederationRouting {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
             }))
             .expect("routing");
         store

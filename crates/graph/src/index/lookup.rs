@@ -102,7 +102,7 @@ pub struct NoPropertyIndex;
 #[async_trait(?Send)]
 impl PropertyIndexLookup for NoPropertyIndex {
     fn local_shard_id(&self) -> ShardId {
-        0
+        ShardId::new(0)
     }
 
     async fn lookup_equal(

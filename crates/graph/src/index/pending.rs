@@ -37,6 +37,7 @@ use crate::facade::GraphStore;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use crate::property::PropertyIndexOp;
+use gleaph_graph_kernel::federation::ShardId;
 use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 
@@ -292,7 +293,7 @@ mod tests {
             .set_federation_routing(Some(FederationRouting {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
-                shard_id: 0,
+                shard_id: ShardId::new(0),
             }))
             .expect("set routing");
 

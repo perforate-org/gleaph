@@ -69,7 +69,7 @@ impl RouterStore {
     fn resolve_shard_for_replay(
         &self,
         logical_graph_name: &str,
-        shard_id: u32,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
     ) -> Result<gleaph_graph_kernel::federation::ShardRegistryEntry, RouterError> {
         let entry = self.resolve_shard(shard_id)?;
         if entry.logical_graph_name != logical_graph_name {
@@ -88,6 +88,7 @@ mod tests {
     use crate::init::RouterInitArgs;
     use crate::types::AdminRegisterShardArgs;
     use gleaph_graph_kernel::entry::VertexLabelId;
+    use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::plan_exec::LabelUsageDelta;
 
     fn test_init_args() -> RouterInitArgs {
@@ -113,7 +114,7 @@ mod tests {
         futures::executor::block_on(store.admin_register_shard(
             admin,
             AdminRegisterShardArgs {
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 graph_canister: graph_principal(1),
                 index_canister: graph_principal(2),
                 logical_graph_name: "tenant.main".into(),
@@ -146,7 +147,7 @@ mod tests {
             admin,
             AdminLabelTelemetryReplayStepArgs {
                 logical_graph_name: "tenant.main".into(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 max_events: 10,
             },
             move |_graph, _from, _limit| {
@@ -163,18 +164,21 @@ mod tests {
         ))
         .expect("replay step");
 
-        assert_eq!(result.shard_id, 7);
+        assert_eq!(result.shard_id, ShardId::new(0));
         assert_eq!(result.events_drained, 2);
         assert_eq!(result.events_applied, 2);
         assert!(result.done);
         assert_eq!(*acked.lock().expect("lock"), vec![10, 11]);
-        assert_eq!(store.vertex_label_shard_live_count(7, label), 3);
+        assert_eq!(
+            store.vertex_label_shard_live_count(ShardId::new(0), label),
+            3
+        );
 
         let replay = futures::executor::block_on(store.admin_label_telemetry_replay_step(
             admin,
             AdminLabelTelemetryReplayStepArgs {
                 logical_graph_name: "tenant.main".into(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 max_events: 10,
             },
             |_graph, _from, _limit| async { Ok(Vec::new()) },
@@ -196,7 +200,7 @@ mod tests {
         futures::executor::block_on(store.admin_register_shard(
             admin,
             AdminRegisterShardArgs {
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 graph_canister: graph_principal(1),
                 index_canister: graph_principal(2),
                 logical_graph_name: "tenant.main".into(),
@@ -212,13 +216,13 @@ mod tests {
                 edge: vec![],
             },
         };
-        assert!(store.apply_label_telemetry_event(7, &event));
+        assert!(store.apply_label_telemetry_event(ShardId::new(0), &event));
 
         let result = futures::executor::block_on(store.admin_label_telemetry_replay_step(
             admin,
             AdminLabelTelemetryReplayStepArgs {
                 logical_graph_name: "tenant.main".into(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 max_events: 1,
             },
             move |_graph, _from, _limit| {
@@ -231,6 +235,9 @@ mod tests {
 
         assert_eq!(result.events_drained, 1);
         assert_eq!(result.events_applied, 0);
-        assert_eq!(store.vertex_label_shard_live_count(7, label), 4);
+        assert_eq!(
+            store.vertex_label_shard_live_count(ShardId::new(0), label),
+            4
+        );
     }
 }

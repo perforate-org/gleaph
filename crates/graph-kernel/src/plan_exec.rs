@@ -161,7 +161,7 @@ mod tests {
         };
         let seed_blob = Encode!(&seed).expect("seed encode");
         let args = ExecutePlanArgs {
-            target_shard_id: 7,
+            target_shard_id: ShardId::new(0),
             mutation_id: Some(1),
             plan_blob: vec![1, 2, 3],
             params_blob: vec![4],

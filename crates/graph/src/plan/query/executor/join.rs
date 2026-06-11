@@ -261,7 +261,7 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
         }
         PlanBinding::Path(pb) => {
             hasher.write_u8(4);
-            hasher.write_u32(pb.shard_id);
+            hasher.write_u32(pb.shard_id.raw());
             hasher.write_usize(pb.leaf_state_idx);
             hasher.write_usize(Arc::as_ptr(&pb.states) as usize);
             hasher.write_usize(pb.states.len());
@@ -270,7 +270,7 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
             hasher.write_u8(8);
             hasher.write_usize(paths.len());
             for pb in paths.iter() {
-                hasher.write_u32(pb.shard_id);
+                hasher.write_u32(pb.shard_id.raw());
                 hasher.write_usize(pb.leaf_state_idx);
                 hasher.write_usize(Arc::as_ptr(&pb.states) as usize);
             }

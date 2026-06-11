@@ -97,12 +97,13 @@ impl FederatedExpandNeighbor {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::federation::ShardId;
     use candid::{Decode, Encode};
 
     #[test]
     fn federated_expand_neighbor_payload_roundtrip() {
         let neighbor = FederatedExpandNeighbor {
-            shard_id: 1,
+            shard_id: ShardId::new(1),
             neighbor_logical_vertex_id: 2,
             neighbor_local_vertex_id: 3,
             anchor_local_vertex_id: 4,
@@ -112,7 +113,7 @@ mod tests {
         };
         let payload = neighbor.payload();
         let restored = FederatedExpandNeighbor {
-            shard_id: 1,
+            shard_id: ShardId::new(1),
             neighbor_logical_vertex_id: 2,
             neighbor_local_vertex_id: 3,
             anchor_local_vertex_id: 4,
@@ -140,7 +141,7 @@ mod tests {
     fn payload_bytes_reject_over_max_width() {
         let oversized = vec![0u8; usize::from(MAX_FEDERATED_EXPAND_PAYLOAD_BYTE_WIDTH) + 1];
         let neighbor = FederatedExpandNeighbor {
-            shard_id: 0,
+            shard_id: ShardId::new(0),
             neighbor_logical_vertex_id: 0,
             neighbor_local_vertex_id: 0,
             anchor_local_vertex_id: 0,
@@ -157,7 +158,7 @@ mod tests {
     #[test]
     fn federated_expand_neighbor_candid_roundtrip_validates() {
         let neighbor = FederatedExpandNeighbor {
-            shard_id: 1,
+            shard_id: ShardId::new(1),
             neighbor_logical_vertex_id: 2,
             neighbor_local_vertex_id: 3,
             anchor_local_vertex_id: 4,

@@ -299,14 +299,14 @@ mod tests {
     #[test]
     fn list_shards_for_graph_uses_native_registry() {
         native_test_register_shard(ShardRegistryEntry {
-            shard_id: 7,
+            shard_id: ShardId::new(0),
             graph_canister: Principal::management_canister(),
             index_canister: Principal::management_canister(),
             logical_graph_name: "tenant.main".into(),
             registered_at_ns: 0,
         });
         native_test_register_shard(ShardRegistryEntry {
-            shard_id: 9,
+            shard_id: ShardId::new(1),
             graph_canister: Principal::management_canister(),
             index_canister: Principal::management_canister(),
             logical_graph_name: "tenant.main".into(),
@@ -328,7 +328,7 @@ mod tests {
             .set_federation_routing(Some(FederationRouting {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
-                shard_id: 7,
+                shard_id: ShardId::new(0),
             }))
             .expect("routing");
 

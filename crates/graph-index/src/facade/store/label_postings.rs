@@ -193,7 +193,7 @@ impl IndexStore {
         intersection
             .into_iter()
             .map(|packed| PostingHit {
-                shard_id: (packed >> 32) as u32,
+                shard_id: ShardId::new((packed >> 32) as u32),
                 vertex_id: (packed & 0xFFFF_FFFF) as u32,
             })
             .collect()

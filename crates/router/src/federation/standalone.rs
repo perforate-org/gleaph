@@ -7,6 +7,7 @@ use crate::facade::store::RouterStore;
 use crate::federation::{SeedRouting, ShardingPolicy};
 use crate::seed::IndexAnchor;
 use crate::state::RouterError;
+use gleaph_graph_kernel::federation::ShardId;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StandaloneSharding;
@@ -82,7 +83,7 @@ mod tests {
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
         let entry = AdminRegisterShardArgs {
-            shard_id: 7,
+            shard_id: ShardId::new(0),
             graph_canister: graph_principal(1),
             index_canister: graph_principal(2),
             logical_graph_name: "tenant.main".into(),
@@ -106,7 +107,7 @@ mod tests {
         });
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
-        for (shard_id, graph_byte) in [(7u32, 1u8), (9, 4)] {
+        for (shard_id, graph_byte) in [(ShardId::new(0), 1u8), (ShardId::new(1), 4)] {
             futures::executor::block_on(store.admin_register_shard(
                 admin,
                 AdminRegisterShardArgs {
@@ -157,7 +158,7 @@ mod tests {
                 vertex_id: 10,
             },
             PostingHit {
-                shard_id: 99,
+                shard_id: ShardId::new(99),
                 vertex_id: 20,
             },
         ];

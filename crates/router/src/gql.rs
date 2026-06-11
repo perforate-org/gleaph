@@ -85,7 +85,7 @@ fn intersect_posting_hits(mut hit_sets: Vec<Vec<PostingHit>>) -> Vec<PostingHit>
     intersection
         .into_iter()
         .map(|packed| PostingHit {
-            shard_id: (packed >> 32) as u32,
+            shard_id: ShardId::new((packed >> 32) as u32),
             vertex_id: (packed & 0xFFFF_FFFF) as u32,
         })
         .collect()
@@ -211,7 +211,7 @@ fn unpack_posting_hits(packed: &[u64]) -> Vec<PostingHit> {
     packed
         .iter()
         .map(|entry| PostingHit {
-            shard_id: (entry >> 32) as u32,
+            shard_id: ShardId::new((entry >> 32) as u32),
             vertex_id: (entry & 0xFFFF_FFFF) as u32,
         })
         .collect()
@@ -991,7 +991,7 @@ mod tests {
         });
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
-        for (shard_id, graph_byte) in [(7u32, 1u8), (9, 4)] {
+        for (shard_id, graph_byte) in [(ShardId::new(0), 1u8), (ShardId::new(1), 4)] {
             futures::executor::block_on(store.admin_register_shard(
                 admin,
                 AdminRegisterShardArgs {
@@ -1244,16 +1244,16 @@ mod tests {
         LabelIntersectionFakeIndex::new(
             vec![
                 (
-                    7,
+                    ShardId::new(0),
                     1,
                     LabelLookupPageResult {
                         hits: vec![
                             PostingHit {
-                                shard_id: 7,
+                                shard_id: ShardId::new(0),
                                 vertex_id: 10,
                             },
                             PostingHit {
-                                shard_id: 7,
+                                shard_id: ShardId::new(0),
                                 vertex_id: 11,
                             },
                         ],
@@ -1262,11 +1262,11 @@ mod tests {
                     },
                 ),
                 (
-                    9,
+                    ShardId::new(1),
                     1,
                     LabelLookupPageResult {
                         hits: vec![PostingHit {
-                            shard_id: 9,
+                            shard_id: ShardId::new(1),
                             vertex_id: 20,
                         }],
                         next: None,
@@ -1417,16 +1417,16 @@ mod tests {
     fn compound_seed_fake_index() -> CompoundSeedFakeIndex {
         CompoundSeedFakeIndex::new(
             vec![(
-                7,
+                ShardId::new(0),
                 1,
                 LabelLookupPageResult {
                     hits: vec![
                         PostingHit {
-                            shard_id: 7,
+                            shard_id: ShardId::new(0),
                             vertex_id: 10,
                         },
                         PostingHit {
-                            shard_id: 7,
+                            shard_id: ShardId::new(0),
                             vertex_id: 11,
                         },
                     ],
@@ -1436,11 +1436,11 @@ mod tests {
             )],
             vec![
                 PostingHit {
-                    shard_id: 7,
+                    shard_id: ShardId::new(0),
                     vertex_id: 10,
                 },
                 PostingHit {
-                    shard_id: 9,
+                    shard_id: ShardId::new(1),
                     vertex_id: 20,
                 },
             ],
@@ -1622,7 +1622,7 @@ mod tests {
         let plan = seeded_dml_plan();
         let plan_blob = seeded_dml_bundle(&plan);
         let fake_index = FakeIndex::new(vec![Ok(vec![PostingHit {
-            shard_id: 7,
+            shard_id: ShardId::new(0),
             vertex_id: 42,
         }])]);
 
@@ -1644,7 +1644,7 @@ mod tests {
         assert!(!record.routing_in_progress);
         assert!(record.completed_row_count.is_none());
         assert_eq!(record.shards.len(), 1);
-        assert_eq!(record.shards[0].shard_id, 7);
+        assert_eq!(record.shards[0].shard_id, ShardId::new(0));
         assert_eq!(record.shards[0].graph_canister, graph_principal(1));
         assert!(!record.shards[0].completed);
 
@@ -1675,11 +1675,11 @@ mod tests {
         };
         let hits = vec![
             PostingHit {
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 vertex_id: 10,
             },
             PostingHit {
-                shard_id: 9,
+                shard_id: ShardId::new(1),
                 vertex_id: 20,
             },
         ];
@@ -1687,8 +1687,8 @@ mod tests {
             resolve_seed_routings_multi(&store, &hits, "tenant.main", IndexAnchor::Equal(probe))
                 .expect("route");
         assert_eq!(routings.len(), 2);
-        assert_eq!(routings[0].shard_id, 7);
-        assert_eq!(routings[1].shard_id, 9);
+        assert_eq!(routings[0].shard_id, ShardId::new(0));
+        assert_eq!(routings[1].shard_id, ShardId::new(1));
         assert_eq!(routings[0].hits.len(), 1);
         assert_eq!(routings[0].hits[0].vertex_id, 10);
         assert!(routings[0].anchor.is_some());
@@ -1704,11 +1704,11 @@ mod tests {
         };
         let hits = vec![
             PostingHit {
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 vertex_id: 10,
             },
             PostingHit {
-                shard_id: 9,
+                shard_id: ShardId::new(1),
                 vertex_id: 20,
             },
         ];
@@ -1736,7 +1736,7 @@ mod tests {
             payload_bytes: vec![],
         };
         let hits = vec![PostingHit {
-            shard_id: 99,
+            shard_id: ShardId::new(99),
             vertex_id: 1,
         }];
         let err =
@@ -1765,13 +1765,13 @@ mod tests {
         let hits = futures::executor::block_on(super::resolve_seed_hits_from_anchors(
             &fake,
             &set.anchors,
-            &[7, 9],
+            &[ShardId::new(0), ShardId::new(1)],
         ))
         .expect("intersect label and property hits");
         assert_eq!(
             hits,
             vec![PostingHit {
-                shard_id: 7,
+                shard_id: ShardId::new(0),
                 vertex_id: 10,
             }]
         );
@@ -1842,18 +1842,18 @@ mod tests {
         let hits = futures::executor::block_on(collect_label_intersection_hits_for_shards(
             &fake,
             &[1, 2],
-            &[7, 9],
+            &[ShardId::new(0), ShardId::new(1)],
         ))
         .expect("collect intersection hits");
         assert_eq!(
             hits,
             vec![
                 PostingHit {
-                    shard_id: 7,
+                    shard_id: ShardId::new(0),
                     vertex_id: 10,
                 },
                 PostingHit {
-                    shard_id: 9,
+                    shard_id: ShardId::new(1),
                     vertex_id: 20,
                 },
             ]
@@ -1976,7 +1976,7 @@ mod tests {
         let err = futures::executor::block_on(apply_dispatch_label_telemetry_event(
             &store,
             graph_principal(1),
-            7,
+            ShardId::new(0),
             Some(42),
             &event,
         ))

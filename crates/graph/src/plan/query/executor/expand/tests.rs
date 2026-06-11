@@ -5,6 +5,7 @@ use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
 use crate::index::placement::native_test_set_active_placement;
 use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorMetric, EdgeVectorPredicate};
 use gleaph_graph_kernel::federation::PhysicalVertexLocation;
+use gleaph_graph_kernel::federation::ShardId;
 use pollster;
 
 #[test]
@@ -2945,7 +2946,7 @@ fn gleaph_weight_rejects_edge_payload_width_mismatch() {
 #[test]
 fn federated_neighbor_hit_preserves_remote_payload_bytes() {
     let hit = FederatedExpandNeighbor {
-        shard_id: 99,
+        shard_id: ShardId::new(99),
         neighbor_logical_vertex_id: 1,
         neighbor_local_vertex_id: 2,
         anchor_local_vertex_id: 3,

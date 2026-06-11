@@ -12,6 +12,7 @@ use candid::Principal;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::federation::PhysicalVertexLocation;
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
     LabelTelemetryEventWire, LabelUsageDelta, ResolvedLabelTable,
 };
@@ -42,7 +43,7 @@ fn register_shard_and_allocate_commit_placement() {
     futures::executor::block_on(store.admin_register_shard(
         admin,
         AdminRegisterShardArgs {
-            shard_id: 7,
+            shard_id: ShardId::new(0),
             graph_canister: graph,
             index_canister: index,
             logical_graph_name: "tenant.main".into(),
@@ -63,12 +64,17 @@ fn register_shard_and_allocate_commit_placement() {
         )
         .expect("commit");
 
-    assert_eq!(store.resolve_logical_at(7, 42).expect("reverse"), logical);
+    assert_eq!(
+        store
+            .resolve_logical_at(ShardId::new(0), 42)
+            .expect("reverse"),
+        logical
+    );
 
     let placement = store.resolve_placement(logical).expect("resolve");
     assert_eq!(
         placement,
-        VertexPlacement::Active(PhysicalVertexLocation::new(7, 42))
+        VertexPlacement::Active(PhysicalVertexLocation::new(ShardId::new(0), 42))
     );
 }
 
@@ -84,14 +90,18 @@ fn list_shards_for_graph_returns_matching_registrations() {
     let graph_c = graph_principal(5);
     let index = graph_principal(2);
 
-    for (shard_id, graph) in [(7, graph_a), (9, graph_c), (11, graph_b)] {
+    for (shard_id, graph) in [
+        (ShardId::new(0), graph_a),
+        (ShardId::new(1), graph_c),
+        (ShardId::new(2), graph_b),
+    ] {
         futures::executor::block_on(store.admin_register_shard(
             admin,
             AdminRegisterShardArgs {
                 shard_id,
                 graph_canister: graph,
                 index_canister: index,
-                logical_graph_name: if shard_id != 11 {
+                logical_graph_name: if shard_id != ShardId::new(2) {
                     "tenant.main".into()
                 } else {
                     "other.graph".into()
@@ -103,8 +113,8 @@ fn list_shards_for_graph_returns_matching_registrations() {
 
     let listed = store.list_shards_for_graph("tenant.main").expect("list");
     assert_eq!(listed.len(), 2);
-    assert!(listed.iter().any(|e| e.shard_id == 7));
-    assert!(listed.iter().any(|e| e.shard_id == 9));
+    assert!(listed.iter().any(|e| e.shard_id == ShardId::new(0)));
+    assert!(listed.iter().any(|e| e.shard_id == ShardId::new(1)));
 }
 
 #[test]
@@ -118,7 +128,7 @@ fn unregister_shard_removes_registry_and_leaves_siblings() {
     let graph_b = graph_principal(4);
     let index = graph_principal(2);
 
-    for (shard_id, graph) in [(7, graph_a), (9, graph_b)] {
+    for (shard_id, graph) in [(ShardId::new(0), graph_a), (ShardId::new(1), graph_b)] {
         futures::executor::block_on(store.admin_register_shard(
             admin,
             AdminRegisterShardArgs {
@@ -131,14 +141,15 @@ fn unregister_shard_removes_registry_and_leaves_siblings() {
         .expect("register");
     }
 
-    futures::executor::block_on(store.admin_unregister_shard(admin, 7)).expect("unregister");
+    futures::executor::block_on(store.admin_unregister_shard(admin, ShardId::new(0)))
+        .expect("unregister");
 
     let listed = store.list_shards_for_graph("tenant.main").expect("list");
     assert_eq!(listed.len(), 1);
-    assert_eq!(listed[0].shard_id, 9);
+    assert_eq!(listed[0].shard_id, ShardId::new(1));
     assert_eq!(listed[0].graph_canister, graph_b);
-    assert!(store.resolve_shard(7).is_err());
-    assert!(store.resolve_shard(9).is_ok());
+    assert!(store.resolve_shard(ShardId::new(0)).is_err());
+    assert!(store.resolve_shard(ShardId::new(1)).is_ok());
 }
 
 #[test]
@@ -154,7 +165,7 @@ fn release_logical_vertex_placement_clears_registry() {
     futures::executor::block_on(store.admin_register_shard(
         admin,
         AdminRegisterShardArgs {
-            shard_id: 7,
+            shard_id: ShardId::new(0),
             graph_canister: graph,
             index_canister: index,
             logical_graph_name: "tenant.main".into(),
@@ -183,7 +194,7 @@ fn release_logical_vertex_placement_clears_registry() {
         .expect("release");
 
     assert!(store.resolve_placement(logical).is_err());
-    assert!(store.resolve_logical_at(7, 42).is_err());
+    assert!(store.resolve_logical_at(ShardId::new(0), 42).is_err());
 }
 
 #[test]
@@ -312,7 +323,7 @@ fn label_usage_delta_updates_namespace_separated_stats() {
         .expect("edge label");
 
     store.apply_label_usage_delta(
-        7,
+        ShardId::new(0),
         &LabelUsageDelta {
             vertex: vec![(vertex_label, 2)],
             edge: vec![(edge_label, 3)],
@@ -335,11 +346,17 @@ fn label_usage_delta_updates_namespace_separated_stats() {
             total_removes: 0
         }
     );
-    assert_eq!(store.vertex_label_shard_live_count(7, vertex_label), 2);
-    assert_eq!(store.edge_label_shard_live_count(7, edge_label), 3);
+    assert_eq!(
+        store.vertex_label_shard_live_count(ShardId::new(0), vertex_label),
+        2
+    );
+    assert_eq!(
+        store.edge_label_shard_live_count(ShardId::new(0), edge_label),
+        3
+    );
 
     store.apply_label_usage_delta(
-        7,
+        ShardId::new(0),
         &LabelUsageDelta {
             vertex: vec![(vertex_label, -1)],
             edge: vec![(edge_label, -2)],
@@ -362,8 +379,14 @@ fn label_usage_delta_updates_namespace_separated_stats() {
             total_removes: 2
         }
     );
-    assert_eq!(store.vertex_label_shard_live_count(7, vertex_label), 1);
-    assert_eq!(store.edge_label_shard_live_count(7, edge_label), 1);
+    assert_eq!(
+        store.vertex_label_shard_live_count(ShardId::new(0), vertex_label),
+        1
+    );
+    assert_eq!(
+        store.edge_label_shard_live_count(ShardId::new(0), edge_label),
+        1
+    );
 }
 
 #[test]
@@ -377,21 +400,21 @@ fn label_usage_delta_tracks_per_shard_live_counts() {
         .expect("vertex label");
 
     store.apply_label_usage_delta(
-        7,
+        ShardId::new(0),
         &LabelUsageDelta {
             vertex: vec![(label, 2)],
             edge: vec![],
         },
     );
     store.apply_label_usage_delta(
-        9,
+        ShardId::new(1),
         &LabelUsageDelta {
             vertex: vec![(label, 1)],
             edge: vec![],
         },
     );
     store.apply_label_usage_delta(
-        7,
+        ShardId::new(0),
         &LabelUsageDelta {
             vertex: vec![(label, -1)],
             edge: vec![],
@@ -406,8 +429,14 @@ fn label_usage_delta_tracks_per_shard_live_counts() {
             total_removes: 1
         }
     );
-    assert_eq!(store.vertex_label_shard_live_count(7, label), 1);
-    assert_eq!(store.vertex_label_shard_live_count(9, label), 1);
+    assert_eq!(
+        store.vertex_label_shard_live_count(ShardId::new(0), label),
+        1
+    );
+    assert_eq!(
+        store.vertex_label_shard_live_count(ShardId::new(1), label),
+        1
+    );
 }
 
 #[test]
@@ -428,8 +457,8 @@ fn label_telemetry_event_applies_once_by_shard_event_seq() {
         },
     };
 
-    assert!(store.apply_label_telemetry_event(7, &event));
-    assert!(!store.apply_label_telemetry_event(7, &event));
+    assert!(store.apply_label_telemetry_event(ShardId::new(0), &event));
+    assert!(!store.apply_label_telemetry_event(ShardId::new(0), &event));
     assert_eq!(
         store.vertex_label_stats(label),
         LabelStats {
@@ -439,7 +468,7 @@ fn label_telemetry_event_applies_once_by_shard_event_seq() {
         }
     );
 
-    assert!(store.apply_label_telemetry_event(9, &event));
+    assert!(store.apply_label_telemetry_event(ShardId::new(1), &event));
     assert_eq!(
         store.vertex_label_stats(label),
         LabelStats {
@@ -485,7 +514,11 @@ fn client_mutation_key_reuses_router_mutation_id() {
             "tenant.main",
             "client-key-1",
             ResolvedLabelTable::default(),
-            vec![RouterMutationShard::new(7, graph_principal(1), None)],
+            vec![RouterMutationShard::new(
+                ShardId::new(0),
+                graph_principal(1),
+                None,
+            )],
         )
         .expect("record empty envelope");
     assert_eq!(
@@ -618,7 +651,11 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
             "tenant.main",
             "client-key-1",
             ResolvedLabelTable::default(),
-            vec![RouterMutationShard::new(7, graph_principal(1), None)],
+            vec![RouterMutationShard::new(
+                ShardId::new(0),
+                graph_principal(1),
+                None,
+            )],
         )
         .expect("record envelope");
     let retry = store
@@ -672,8 +709,8 @@ fn router_mutation_journal_tracks_shard_completion() {
             "client-key-1",
             ResolvedLabelTable::default(),
             vec![
-                RouterMutationShard::new(7, graph_principal(1), Some(vec![1])),
-                RouterMutationShard::new(9, graph_principal(2), None),
+                RouterMutationShard::new(ShardId::new(0), graph_principal(1), Some(vec![1])),
+                RouterMutationShard::new(ShardId::new(1), graph_principal(2), None),
             ],
         )
         .expect("record shards");
@@ -691,14 +728,19 @@ fn router_mutation_journal_tracks_shard_completion() {
             caller,
             "tenant.main",
             "client-key-1",
-            7,
+            ShardId::new(0),
             2,
             Vec::new(),
         )
-        .expect("complete shard 7");
+        .expect("complete shard 0");
     store
-        .record_router_mutation_shard_telemetry_acked(caller, "tenant.main", "client-key-1", 7)
-        .expect("ack shard 7");
+        .record_router_mutation_shard_telemetry_acked(
+            caller,
+            "tenant.main",
+            "client-key-1",
+            ShardId::new(0),
+        )
+        .expect("ack shard 0");
     assert_eq!(
         store.router_mutation_completed_row_count(caller, "tenant.main", "client-key-1"),
         None
@@ -709,14 +751,19 @@ fn router_mutation_journal_tracks_shard_completion() {
             caller,
             "tenant.main",
             "client-key-1",
-            9,
+            ShardId::new(1),
             3,
             Vec::new(),
         )
-        .expect("complete shard 9");
+        .expect("complete shard 1");
     store
-        .record_router_mutation_shard_telemetry_acked(caller, "tenant.main", "client-key-1", 9)
-        .expect("ack shard 9");
+        .record_router_mutation_shard_telemetry_acked(
+            caller,
+            "tenant.main",
+            "client-key-1",
+            ShardId::new(1),
+        )
+        .expect("ack shard 1");
     assert_eq!(
         store.router_mutation_completed_row_count(caller, "tenant.main", "client-key-1"),
         Some(5)

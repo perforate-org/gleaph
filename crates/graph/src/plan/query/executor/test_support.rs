@@ -428,7 +428,7 @@ pub fn configure_test_index(store: &GraphStore) {
         .set_federation_routing(Some(FederationRouting {
             router_canister: Principal::management_canister(),
             index_canister: Principal::management_canister(),
-            shard_id: 7,
+            shard_id: ShardId::new(0),
         }))
         .expect("set index routing");
 }
@@ -439,7 +439,7 @@ pub fn configure_test_federation(store: &GraphStore) {
         .set_logical_graph_name(Some("tenant.main".into()))
         .expect("graph name");
     placement::native_test_register_shard(gleaph_graph_kernel::federation::ShardRegistryEntry {
-        shard_id: 7,
+        shard_id: ShardId::new(0),
         graph_canister: Principal::management_canister(),
         index_canister: Principal::management_canister(),
         logical_graph_name: "tenant.main".into(),
