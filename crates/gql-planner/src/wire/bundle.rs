@@ -5,8 +5,9 @@
 //! - byte `3`: format version
 //! - bytes `[4..6]`: flags (`requires_write_path` in bit 0)
 //! - bytes `[6..10]`: statement count (`u32`)
-//! - bytes `[10..12]`: reserved (must be zero; aligns first rkyv payload to 4 bytes)
-//! - per statement: `u32` payload length + rkyv [`PhysicalPlanWire`]
+//! - bytes `[10..12]`: reserved (must be zero; first length prefix starts at offset 12)
+//! - per statement: optional zero padding, then `u32` payload length + rkyv [`PhysicalPlanWire`]
+//!   (length prefix at offset ≡ 4 mod 8 so the rkyv payload starts 8-byte aligned)
 
 use gleaph_gql::ast::StatementBlock;
 
@@ -23,6 +24,38 @@ pub const PLAN_WIRE_MAGIC: [u8; 3] = *b"GPL";
 pub const PLAN_WIRE_VERSION: u8 = 1;
 
 const HEADER_LEN: usize = 12;
+/// Rkyv archived [`super::convert::PhysicalPlanWire`] payloads require 8-byte alignment.
+const STATEMENT_PAYLOAD_ALIGN: usize = 8;
+/// Length prefix sits 4 bytes before the aligned payload.
+const STATEMENT_LEN_PREFIX_MOD: usize = 4;
+
+fn pad_for_next_statement_len(out: &mut Vec<u8>) {
+    let rem = out.len() % STATEMENT_PAYLOAD_ALIGN;
+    let pad = if rem <= STATEMENT_LEN_PREFIX_MOD {
+        STATEMENT_LEN_PREFIX_MOD - rem
+    } else {
+        STATEMENT_PAYLOAD_ALIGN - rem + STATEMENT_LEN_PREFIX_MOD
+    };
+    if pad > 0 {
+        out.extend(std::iter::repeat_n(0u8, pad));
+    }
+}
+
+fn advance_to_next_statement_len(bytes: &[u8], offset: &mut usize) -> Result<(), PlanBundleError> {
+    while *offset % STATEMENT_PAYLOAD_ALIGN != STATEMENT_LEN_PREFIX_MOD {
+        if *offset >= bytes.len() {
+            return Err(PlanBundleError::Truncated);
+        }
+        if bytes[*offset] != 0 {
+            return Err(PlanBundleError::Wire(format!(
+                "unexpected non-zero statement alignment padding at offset {}",
+                *offset
+            )));
+        }
+        *offset += 1;
+    }
+    Ok(())
+}
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlanBundleError {
@@ -54,8 +87,11 @@ pub fn encode_statement_plans(
     let flags: u16 = u16::from(requires_write_path);
     out.extend_from_slice(&flags.to_le_bytes());
     out.extend_from_slice(&(plans.len() as u32).to_le_bytes());
-    out.extend_from_slice(&[0u8; 2]); // alignment padding (must be zero)
-    for plan in plans {
+    out.extend_from_slice(&[0u8; 2]); // reserved (must be zero)
+    for (i, plan) in plans.iter().enumerate() {
+        if i > 0 {
+            pad_for_next_statement_len(&mut out);
+        }
         let wire = physical_plan_to_wire(plan).map_err(PlanBundleError::Wire)?;
         let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&wire)
             .map_err(|e| PlanBundleError::Wire(e.to_string()))?
@@ -86,7 +122,10 @@ pub fn decode_plan_bundle(bytes: &[u8]) -> Result<(bool, Vec<PhysicalPlan>), Pla
     }
     let mut offset = HEADER_LEN;
     let mut plans = Vec::with_capacity(stmt_count);
-    for _ in 0..stmt_count {
+    for i in 0..stmt_count {
+        if i > 0 {
+            advance_to_next_statement_len(bytes, &mut offset)?;
+        }
         if offset + 4 > bytes.len() {
             return Err(PlanBundleError::Truncated);
         }
@@ -184,5 +223,43 @@ mod tests {
             decode_plan_bundle(&blob[..HEADER_LEN - 1]),
             Err(PlanBundleError::Truncated)
         ));
+    }
+
+    #[test]
+    fn multi_statement_bundle_round_trips() {
+        use gleaph_gql::Value;
+        use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
+
+        use crate::plan::{ProjectColumn, ScanValue};
+
+        let index_plan = PhysicalPlan::from_ops(vec![
+            PlanOp::IndexScan {
+                variable: "n".into(),
+                property: "age".into(),
+                value: ScanValue::Literal(Value::Int64(5)),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::new(ExprKind::Variable("n".into())),
+                    alias: Some("n".into()),
+                }],
+                distinct: false,
+            },
+        ]);
+        let tail_plan = PhysicalPlan::from_ops(vec![PlanOp::Project {
+            columns: vec![ProjectColumn {
+                expr: Expr::new(ExprKind::Literal(Value::Int64(1))),
+                alias: Some("x".into()),
+            }],
+            distinct: false,
+        }]);
+        let blob = encode_statement_plans(&[index_plan.clone(), tail_plan.clone()], false)
+            .expect("encode");
+        let (_, decoded) = decode_plan_bundle(&blob).expect("decode multi-statement bundle");
+        assert_eq!(decoded.len(), 2);
+        assert_eq!(decoded[0].ops.len(), index_plan.ops.len());
+        assert_eq!(decoded[1].ops.len(), tail_plan.ops.len());
     }
 }

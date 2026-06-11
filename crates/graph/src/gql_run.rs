@@ -900,6 +900,64 @@ mod tests {
     }
 
     #[test]
+    fn wire_plan_seed_bindings_apply_to_first_read_in_multi_plan_bundle() {
+        use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
+        use gleaph_gql_planner::plan::{ProjectColumn, ScanValue};
+        use gleaph_graph_kernel::plan_exec::SeedBindingEntry;
+
+        let store = GraphStore::new();
+        let vid = store
+            .insert_vertex_named(["WireMultiIxSeed"], [("age", Value::Uint8(5))])
+            .expect("vertex");
+        let local_vid = u32::try_from(u64::from(vid)).expect("local vertex id");
+        let index_plan = PhysicalPlan::from_ops(vec![
+            PlanOp::IndexScan {
+                variable: "n".into(),
+                property: "age".into(),
+                value: ScanValue::Literal(Value::Int64(5)),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::new(ExprKind::Variable("n".into())),
+                    alias: Some("n".into()),
+                }],
+                distinct: false,
+            },
+        ]);
+        let tail_plan = PhysicalPlan::from_ops(vec![PlanOp::Project {
+            columns: vec![ProjectColumn {
+                expr: Expr::new(ExprKind::Literal(Value::Int64(1))),
+                alias: Some("x".into()),
+            }],
+            distinct: false,
+        }]);
+        let blob = encode_block_plans(&[index_plan, tail_plan], false).expect("encode bundle");
+        let seeds = SeedBindingsWire {
+            entries: vec![SeedBindingEntry {
+                variable: "n".into(),
+                local_vertex_ids: vec![local_vid],
+            }],
+        };
+        let params = BTreeMap::new();
+
+        let run = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::CompositeQuery,
+            None,
+            GqlExecutionContext::default(),
+            Some(seeds),
+            None,
+        ))
+        .expect("multi-plan wire bundle");
+
+        assert_eq!(run.row_count, 1);
+    }
+
+    #[test]
     fn wire_update_rejects_dml_without_mutation_id() {
         let store = GraphStore::new();
         let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
