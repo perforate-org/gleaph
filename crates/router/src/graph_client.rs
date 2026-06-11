@@ -27,6 +27,36 @@ async fn call_graph<T: candid::CandidType, R: candid::CandidType + serde::de::De
     Ok(result.0)
 }
 
+/// Graph canister methods that return `Result<R, text>` on the wire (not a bare `R` tuple).
+#[cfg(target_family = "wasm")]
+async fn call_graph_result<
+    T: candid::CandidType,
+    R: candid::CandidType + serde::de::DeserializeOwned,
+>(
+    graph: Principal,
+    method: &str,
+    args: T,
+) -> Result<R, String> {
+    use ic_cdk::call::Call;
+
+    let reply: Result<R, String> = Call::bounded_wait(graph, method)
+        .with_arg(&args)
+        .await
+        .map_err(|e| format!("graph {method} call failed: {e}"))?
+        .candid()
+        .map_err(|e| format!("graph {method} decode failed: {e}"))?;
+    reply
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn call_graph_result<T: candid::CandidType, R: candid::CandidType>(
+    _graph: Principal,
+    method: &str,
+    _args: T,
+) -> Result<R, String> {
+    Err(format!("graph {method} unavailable in native builds"))
+}
+
 #[cfg(target_family = "wasm")]
 async fn call_graph_args<
     T: candid::utils::ArgumentEncoder,
@@ -66,7 +96,7 @@ async fn call_graph_args<T, R: candid::CandidType>(
 }
 
 pub async fn bootstrap_graph_peers(graph: Principal, peers: Vec<Principal>) -> Result<(), String> {
-    call_graph(
+    call_graph_result(
         graph,
         "bootstrap_graph_peers",
         BootstrapGraphPeersArgs { peers },
@@ -75,11 +105,11 @@ pub async fn bootstrap_graph_peers(graph: Principal, peers: Vec<Principal>) -> R
 }
 
 pub async fn add_graph_peer(graph: Principal, peer: Principal) -> Result<(), String> {
-    call_graph(graph, "add_graph_peer", AddGraphPeerArgs { peer }).await
+    call_graph_result(graph, "add_graph_peer", AddGraphPeerArgs { peer }).await
 }
 
 pub async fn remove_graph_peer(graph: Principal, peer: Principal) -> Result<(), String> {
-    call_graph(graph, "remove_graph_peer", RemoveGraphPeerArgs { peer }).await
+    call_graph_result(graph, "remove_graph_peer", RemoveGraphPeerArgs { peer }).await
 }
 
 pub async fn execute_plan_on_graph(
@@ -90,7 +120,7 @@ pub async fn execute_plan_on_graph(
         gleaph_graph_kernel::plan_exec::GqlExecutionMode::Query => "execute_plan_query",
         gleaph_graph_kernel::plan_exec::GqlExecutionMode::Update => "execute_plan_update",
     };
-    call_graph(graph, method, args).await
+    call_graph_result(graph, method, args).await
 }
 
 pub async fn ack_label_telemetry_event(graph: Principal, seq: ShardEventSeq) -> Result<(), String> {
@@ -121,12 +151,12 @@ pub async fn backfill_label_postings(
     graph: Principal,
     args: PostingBackfillArgs,
 ) -> Result<PostingBackfillResult, String> {
-    call_graph(graph, "backfill_label_postings", args).await
+    call_graph_result(graph, "backfill_label_postings", args).await
 }
 
 pub async fn backfill_property_postings(
     graph: Principal,
     args: PostingBackfillArgs,
 ) -> Result<PostingBackfillResult, String> {
-    call_graph(graph, "backfill_property_postings", args).await
+    call_graph_result(graph, "backfill_property_postings", args).await
 }

@@ -110,7 +110,7 @@ for each shard_id in participating_shards:
 
 **Standalone / native dev:** graph may still call `lookup_intersection` via `PropertyIndexLookup` when an index client is wired and federation routing is absent. Hits are filtered to `shard_id == local` — no client-side set intersection on the hot path.
 
-**Transition cleanup (remaining):** remove N× `lookup_equal` fallback loops inside `execute_index_intersection` once all production dispatch uses router seeds.
+**Transition cleanup:** graph `execute_index_intersection` calls `lookup_intersection` once (no client-side N× `lookup_equal` loop). Federated wire dispatch supplies router seeds so shards skip the op.
 
 ## Clients
 

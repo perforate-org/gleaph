@@ -207,6 +207,116 @@ pub fn install_federation() -> FederationEnv {
     env
 }
 
+/// Router + index + one federated graph shard (standalone dispatch policy).
+pub fn install_single_shard_federation() -> FederationEnv {
+    let pic = new_pocket_ic();
+    let admin = Principal::from_slice(&[0xAB; 29]);
+
+    let router = create_funded_canister(&pic);
+    pic.install_canister(
+        router,
+        wasm_bytes("ROUTER_WASM"),
+        Encode!(&RouterInitArgs {
+            issuing_principal: admin,
+            initial_admins: vec![],
+            controllers: vec![admin],
+        })
+        .expect("encode router init"),
+        None,
+    );
+
+    let index = create_funded_canister(&pic);
+    pic.install_canister(
+        index,
+        wasm_bytes("INDEX_WASM"),
+        Encode!(&IndexInitArgs {
+            controllers: vec![admin],
+            router_canister: router,
+        })
+        .expect("encode index init"),
+        None,
+    );
+
+    let graph_source = create_funded_canister(&pic);
+    register_graph_single_shard(&pic, admin, router, index, graph_source, SOURCE_SHARD);
+
+    pic.install_canister(
+        graph_source,
+        wasm_bytes("GRAPH_WASM"),
+        Encode!(&GraphInitArgs {
+            logical_graph_name: Some(GRAPH_NAME.into()),
+            router_canister: None,
+            shard_id: None,
+        })
+        .expect("encode graph init"),
+        None,
+    );
+
+    let env = FederationEnv {
+        pic,
+        admin,
+        router,
+        index,
+        graph_source,
+        graph_dest: Principal::anonymous(),
+    };
+
+    let _: () = update_as_router(
+        &env,
+        graph_source,
+        "e2e_attach_federation",
+        E2eAttachFederationArgs {
+            logical_graph_name: Some(GRAPH_NAME.into()),
+            router_canister: router,
+            index_canister: index,
+            shard_id: SOURCE_SHARD,
+        },
+    );
+
+    env
+}
+
+pub fn register_graph_single_shard(
+    pic: &PocketIc,
+    admin: Principal,
+    router: Principal,
+    index: Principal,
+    graph: Principal,
+    shard_id: ShardId,
+) {
+    let entry = GraphRegistryEntry {
+        graph_name: GRAPH_NAME.into(),
+        canister_id: graph,
+        owner: admin,
+        admins: Default::default(),
+        status: GraphStatus::Active,
+        version: 1,
+        updated_at_ns: 0,
+        provisioning_state: ProvisioningState::None,
+    };
+    pic.update_call(
+        router,
+        admin,
+        "admin_register_graph",
+        Encode!(&entry).expect("encode graph registry"),
+    )
+    .expect("admin_register_graph");
+
+    let args = AdminRegisterShardArgs {
+        shard_id,
+        graph_canister: graph,
+        index_canister: index,
+        logical_graph_name: GRAPH_NAME.into(),
+    };
+    pic.update_call(
+        router,
+        admin,
+        "admin_register_shard",
+        Encode!(&args).expect("encode register shard"),
+    )
+    .expect("admin_register_shard");
+}
+
 pub fn register_graph_and_shards(
     pic: &PocketIc,
     admin: Principal,
@@ -340,4 +450,33 @@ pub fn e2e_insert_edge(
 
 pub fn resolve_placement(env: &FederationEnv, logical: LogicalVertexId) -> VertexPlacement {
     query_as_router(env, env.router, "resolve_placement", logical)
+}
+
+/// Router composite `gql_query` (parse → plan → shard dispatch) as the bootstrap admin principal.
+pub fn gql_query_as_admin(
+    env: &FederationEnv,
+    query: &str,
+) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "gql_query",
+            Encode!(
+                &GRAPH_NAME.to_string(),
+                &query.to_string(),
+                &Vec::<u8>::new()
+            )
+            .expect("encode gql_query"),
+        )
+        .unwrap_or_else(|e| panic!("gql_query on router: {e:?}"));
+    match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
+        Ok(Ok(result)) => result,
+        Ok(Err(err)) => panic!("gql_query rejected: {err:?}"),
+        Err(err) => panic!("decode gql_query: {err}"),
+    }
 }

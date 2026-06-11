@@ -18,6 +18,11 @@ name = "graph_seed_dispatch"
 path = "tests/graph_seed_dispatch.rs"
 harness = true
 
+[[test]]
+name = "router_gql_query"
+path = "tests/router_gql_query.rs"
+harness = true
+
 [dependencies]
 candid.workspace = true
 gleaph-gql = { workspace = true }
