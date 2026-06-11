@@ -4,7 +4,6 @@ use super::store::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected
 use crate::facade::catalog_edge_label_from_wire;
 use crate::index::placement;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, RemoteRefId};
-use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::federation::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, LocalVertexId,
     LogicalVertexId, PhysicalVertexLocation, ShardId, VertexPlacement,
