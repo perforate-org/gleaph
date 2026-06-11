@@ -1,14 +1,17 @@
 # Property index
 
-Last updated: 2026-06-10
+Last updated: 2026-06-11  
+Anchor timestamp: 2026-06-11 16:02:17 UTC +0000
 
 ## Status
 
 **Partially Implemented** — `lookup_equal` / `lookup_range` and DML posting sync exist. **`lookup_intersection`** is implemented on graph-index; router `IndexAnchor` + per-shard seeds and graph skip of leading intersection op are **Implemented**. Graph federated wire path does not call index; library tests may still inject a mock index client.
 
+Property **name → `property_id`** assignment is **router SSOT** ([ADR 0006](../adr/0006-pre-federation-foundation.md) §2). Graph shards no longer maintain `PROPERTY_CATALOG` stable; DML and plan execution use router-resolved `PropertyId` on the wire (`ResolvedPropertyTable`).
+
 ## Purpose
 
-Explain the **graph-index canister** and how the router uses it for query routing (standalone as of 2026-06-10; per-shard slice in the federation target).
+Explain the **graph-index canister** and how the router uses it for query routing (standalone: sole shard `ShardId(0)`; per-shard slice in the federation target).
 
 ## Non-goals
 
@@ -25,9 +28,25 @@ Explain the **graph-index canister** and how the router uses it for query routin
 | Router client | `router/index_client.rs` | `lookup_equal`, `lookup_intersection` |
 | Seed resolution | `router/seed.rs` | Map hits → per-shard seed blobs |
 
+## Catalog ownership
+
+| Layer | Owns |
+|-------|------|
+| **Router** | Property names ↔ `PropertyId` (`ROUTER_PROPERTY_CATALOG`); planner / DML resolve names before dispatch |
+| **Graph shard** | `(property_id, Value)` on vertices and edges only — no property name stable |
+| **Graph-index** | Postings keyed by router-issued `property_id` |
+
+Standalone and test graphs without router resolution use hash-based test property ids (`crates/graph/src/test_labels.rs`) or explicit `ResolvedPropertyTable` on the plan wire.
+
 ## Posting model
 
-Global postings keyed by `(property_id, encoded_value, shard_id, vertex_id)`. A single index canister holds postings for all graph shards; `shard_id` tags the owning graph shard.
+Global postings keyed by `(property_id, encoded_value, shard_id, local_vertex_id)`.
+
+- `property_id` — numeric id from the **router** catalog (same id graph uses when writing values).
+- `shard_id` — owning graph shard (`ShardId(0)` in standalone).
+- `local_vertex_id` — dense CSR id on that shard (`PostingHit.vertex_id` in `graph-kernel`).
+
+A single index canister holds postings for all graph shards; `shard_id` tags the owning graph shard without embedding Principals in posting keys.
 
 **Invariant:** Postings reflect **live** property values. DML on graph shards enqueues `posting_insert` / `posting_remove` (`graph/src/index/pending.rs`). Vertex/property delete removes postings; index read APIs do not consult graph tombstones. See [../sharding/standalone-mode.md](../sharding/standalone-mode.md).
 
@@ -109,6 +128,7 @@ pending flush, backfill, or index unavailability leaves postings behind canonica
 
 ## Related documents
 
+- [../adr/0006-pre-federation-foundation.md](../adr/0006-pre-federation-foundation.md) — router property catalog SSOT
 - [derived-state-query-semantics.md](derived-state-query-semantics.md)
 - [label-index.md](label-index.md) — vertex label membership; tiered reads with property index ([ADR 0004](../adr/0004-label-index.md))
 - [lookup-intersection.md](lookup-intersection.md)
