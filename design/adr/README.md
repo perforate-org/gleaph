@@ -39,5 +39,7 @@ Last revised: YYYY-MM-DD
 | [0002](0002-federated-row-batch-merge.md) | Federated row-batch merge on router (`rows_blob`) | accepted |
 | [0003](0003-federated-aggregate-merge.md) | Federated aggregate merge and index fast path | accepted |
 | [0004](0004-label-index.md) | Label index: sieve + telemetry; vertex export only when needed | accepted |
+| [0005](0005-vertex-identity.md) | Vertex/edge identity: global physical keys and encoded wire ids | accepted |
+| [0006](0006-pre-federation-foundation.md) | Pre-federation foundation: ShardId, catalogs, MemoryId, placement | accepted |
 
 When adding an ADR, link it from the relevant design doc and update this table.
