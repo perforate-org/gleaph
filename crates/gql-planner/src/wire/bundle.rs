@@ -8,8 +8,12 @@
 //! - bytes `[10..12]`: reserved (must be zero; first length prefix starts at offset 12)
 //! - per statement: optional zero padding, then `u32` payload length + rkyv [`PhysicalPlanWire`]
 //!   (length prefix at offset ≡ 4 mod 8 so the rkyv payload starts 8-byte aligned)
+//!
+//! On wasm32, decode copies the bundle into an owned buffer before walking statement payloads.
+//! Each rkyv payload is deserialized through [`gleaph_gql::rkyv_from_wire_bytes`].
 
 use gleaph_gql::ast::StatementBlock;
+use gleaph_gql::rkyv_from_wire_bytes;
 
 use crate::PlanBuildOptions;
 use crate::plan::PhysicalPlan;
@@ -69,7 +73,7 @@ pub enum PlanBundleError {
     Wire(String),
 }
 
-/// Encode a statement block's plans into a single blob for [`ExecutePlanArgs::plan_blob`].
+/// Encode a statement block's plans into a single GPL wire blob.
 pub fn encode_block_plans(
     plans: &[PhysicalPlan],
     requires_write_path: bool,
@@ -103,6 +107,19 @@ pub fn encode_statement_plans(
 }
 
 pub fn decode_plan_bundle(bytes: &[u8]) -> Result<(bool, Vec<PhysicalPlan>), PlanBundleError> {
+    #[cfg(target_family = "wasm")]
+    {
+        // Caller slices may be short-lived or unaligned on wasm32.
+        let bytes = bytes.to_vec();
+        decode_plan_bundle_owned(&bytes)
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        decode_plan_bundle_owned(bytes)
+    }
+}
+
+fn decode_plan_bundle_owned(bytes: &[u8]) -> Result<(bool, Vec<PhysicalPlan>), PlanBundleError> {
     if bytes.len() < HEADER_LEN {
         return Err(PlanBundleError::Truncated);
     }
@@ -141,8 +158,8 @@ pub fn decode_plan_bundle(bytes: &[u8]) -> Result<(bool, Vec<PhysicalPlan>), Pla
         }
         let slice = &bytes[offset..offset + len];
         offset += len;
-        let wire = rkyv::from_bytes::<super::convert::PhysicalPlanWire, rkyv::rancor::Error>(slice)
-            .map_err(|e| PlanBundleError::Wire(e.to_string()))?;
+        let wire: super::convert::PhysicalPlanWire =
+            rkyv_from_wire_bytes(slice).map_err(PlanBundleError::Wire)?;
         plans.push(physical_plan_from_wire(&wire).map_err(PlanBundleError::Wire)?);
     }
     Ok((requires_write_path, plans))
@@ -261,5 +278,15 @@ mod tests {
         assert_eq!(decoded.len(), 2);
         assert_eq!(decoded[0].ops.len(), index_plan.ops.len());
         assert_eq!(decoded[1].ops.len(), tail_plan.ops.len());
+    }
+
+    #[test]
+    fn decode_plan_bundle_accepts_unaligned_subslice() {
+        let blob = encode_statement_plans(&[minimal_read_plan()], false).expect("encode");
+        let mut prefixed = vec![0u8];
+        prefixed.extend_from_slice(&blob);
+        let (_, plans) =
+            decode_plan_bundle(&prefixed[1..]).expect("decode from unaligned subslice");
+        assert_eq!(plans.len(), 1);
     }
 }

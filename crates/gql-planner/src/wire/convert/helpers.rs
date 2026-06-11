@@ -201,7 +201,7 @@ pub(super) fn rkyv_encode_value(value: &Value) -> Result<Vec<u8>, String> {
 }
 
 pub(super) fn rkyv_decode_value(bytes: &[u8]) -> Result<Value, String> {
-    rkyv::from_bytes::<Value, rancor::Error>(bytes).map_err(|e| e.to_string())
+    gleaph_gql::rkyv_from_wire_bytes(bytes)
 }
 
 pub(super) fn encode_indexed_edge_equality(

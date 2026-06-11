@@ -16,13 +16,13 @@
 //! - `f256` -- Enables `Value::Float256` using the `f256` crate.
 //! - `ast-rkyv-no-span` -- Derives `rkyv::Archive` / `Serialize` / `Deserialize` for AST types and related
 //!   values; source [`Span`](token::Span) fields are omitted from the archived form (`rkyv::with::Skip`).
-//!   The workspace pins `rkyv` without the `bytecheck` default feature (validated `from_bytes` is unavailable;
-//!   use `to_bytes` / `deserialize` / `from_bytes_unchecked` as in unit tests).
+//!   Use [`rkyv_from_aligned_bytes`] when the buffer is already root-aligned (e.g. fresh
+//!   `rkyv::to_bytes` output or bytes copied into [`AlignedVec`](rkyv::util::AlignedVec) at a
+//!   storage boundary). Use [`rkyv_from_wire_bytes`] for wire-format subslices and any buffer
+//!   whose alignment is not guaranteed (copies on wasm32 when needed; native fast path when
+//!   aligned).
 //!   rkyv-deserialized [`Value::Extension`](value::Value::Extension) wire bytes need a registered
 //!   [`ExtensionBinaryDecode`](value::ExtensionBinaryDecode) — see [`try_install_global_rkyv_extension_binary_decode`].
-//!
-//! Internet Computer `Principal` as [`Value::Extension`](value::Value::Extension) is provided by a
-//! platform-specific extension crate (adds a `candid` dependency only there; **tag 34** short blob).
 
 #![cfg_attr(feature = "f128", feature(f128))]
 #![cfg_attr(feature = "ast-rkyv-no-span", feature(trivial_bounds))]
@@ -67,6 +67,6 @@ pub use value_join_hash::{hash_path_element_for_join, hash_value_for_join};
 
 #[cfg(feature = "ast-rkyv-no-span")]
 pub use rkyv_support::{
-    GlobalRkyvExtensionDecodeAlreadyInstalled, RkyvExtensionDecodeScopeGuard,
-    try_install_global_rkyv_extension_binary_decode,
+    GlobalRkyvExtensionDecodeAlreadyInstalled, RKYV_WIRE_ALIGN, RkyvExtensionDecodeScopeGuard,
+    rkyv_from_aligned_bytes, rkyv_from_wire_bytes, try_install_global_rkyv_extension_binary_decode,
 };

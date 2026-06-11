@@ -1,14 +1,20 @@
 //! rkyv helpers for [`crate::Value::Extension`] (wire bytes) and related `with` types.
 //!
 //! Deserializing [`Value::Extension`] through rkyv requires a registered
-//! [`crate::ExtensionBinaryDecode`] implementation (e.g. IC `Principal` via a platform extension crate):
+//! [`crate::ExtensionBinaryDecode`] implementation (typically supplied by a platform extension crate):
 //! call [`try_install_global_rkyv_extension_binary_decode`] at process startup, or
 //! [`RkyvExtensionDecodeScopeGuard`] for thread-local overrides in tests.
 
 use std::cell::Cell;
 use std::sync::OnceLock;
 
-use rkyv::rancor::{Fallible, Source};
+use rkyv::bytecheck::CheckBytes;
+use rkyv::de::Pool;
+use rkyv::rancor::{Fallible, Source, Strategy};
+use rkyv::util::AlignedVec;
+use rkyv::validation::Validator;
+use rkyv::validation::archive::ArchiveValidator;
+use rkyv::validation::shared::SharedValidator;
 use rkyv::vec::{ArchivedVec, VecResolver};
 use rkyv::with::{ArchiveWith, DeserializeWith, SerializeWith};
 use rkyv::{Archive, Deserialize, Place, Serialize};
@@ -198,3 +204,129 @@ impl std::fmt::Display for ExtensionDeserializeWrongVariant {
 }
 
 impl std::error::Error for ExtensionDeserializeWrongVariant {}
+
+/// Alignment required for [`rkyv::from_bytes`] on archived GQL wire types.
+pub const RKYV_WIRE_ALIGN: usize = 16;
+
+fn rkyv_wire_error(context: &'static str, err: rkyv::rancor::Error) -> String {
+    let detail = err.to_string();
+    if detail.is_empty()
+        || detail.contains("failed without error information")
+        || detail.contains("enable debug assertions")
+    {
+        format!("{context}: rkyv deserialize failed (enable `rkyv/alloc` for details)")
+    } else {
+        format!("{context}: {detail}")
+    }
+}
+
+/// Returns whether `bytes` satisfies rkyv root alignment for `T::Archived` at [`rkyv::api::root_position`].
+fn wire_root_is_aligned<T: Archive>(bytes: &[u8]) -> bool
+where
+    T::Archived: rkyv::Portable,
+{
+    use core::mem::{align_of, size_of};
+
+    let pos = rkyv::api::root_position::<T::Archived>(bytes.len());
+    let root_size = size_of::<T::Archived>();
+    if pos.saturating_add(root_size) > bytes.len() {
+        return false;
+    }
+    let align = align_of::<T::Archived>();
+    if align <= 1 {
+        return true;
+    }
+    let addr = bytes.as_ptr().cast::<u8>() as usize + pos;
+    addr & (align - 1) == 0
+}
+
+/// Deserialize an archived GQL value when the caller guarantees root alignment.
+///
+/// # Alignment contract
+///
+/// `bytes` must satisfy rkyv checked [`rkyv::from_bytes`] requirements: the archived root for
+/// `T::Archived` at [`rkyv::api::root_position`] must be aligned for
+/// `align_of::<T::Archived>()`. Typical satisfied cases:
+///
+/// - Output of [`rkyv::to_bytes`] stored in `Vec` / [`AlignedVec`]
+/// - A sub-slice of a buffer you already copied into aligned storage at the storage boundary
+///
+/// This function never copies. For unaligned subslices or buffers of unknown provenance, use
+/// [`rkyv_from_wire_bytes`] instead.
+pub fn rkyv_from_aligned_bytes<T>(bytes: &[u8]) -> Result<T, String>
+where
+    T: Archive,
+    T::Archived: rkyv::Portable,
+    for<'a> T::Archived:
+        CheckBytes<Strategy<Validator<ArchiveValidator<'a>, SharedValidator>, rkyv::rancor::Error>>,
+    T::Archived: Deserialize<T, Strategy<Pool, rkyv::rancor::Error>>,
+{
+    if bytes.is_empty() {
+        return Err("rkyv wire bytes are empty".into());
+    }
+    rkyv::from_bytes::<T, rkyv::rancor::Error>(bytes)
+        .map_err(|e| rkyv_wire_error(std::any::type_name::<T>(), e))
+}
+
+/// Deserialize an archived GQL wire value from possibly unaligned bytes.
+///
+/// On native targets, delegates to [`rkyv_from_aligned_bytes`] when the buffer is already
+/// root-aligned (typical for `rkyv::to_bytes` output in `Vec`). On wasm32 and on misaligned
+/// slices, copies into an [`AlignedVec`] first.
+pub fn rkyv_from_wire_bytes<T>(bytes: &[u8]) -> Result<T, String>
+where
+    T: Archive,
+    T::Archived: rkyv::Portable,
+    for<'a> T::Archived:
+        CheckBytes<Strategy<Validator<ArchiveValidator<'a>, SharedValidator>, rkyv::rancor::Error>>,
+    T::Archived: Deserialize<T, Strategy<Pool, rkyv::rancor::Error>>,
+{
+    if bytes.is_empty() {
+        return Err("rkyv wire bytes are empty".into());
+    }
+    #[cfg(not(target_family = "wasm"))]
+    if wire_root_is_aligned::<T>(bytes) {
+        return rkyv_from_aligned_bytes(bytes);
+    }
+    let mut aligned = AlignedVec::<RKYV_WIRE_ALIGN>::with_capacity(bytes.len());
+    aligned.extend_from_slice(bytes);
+    rkyv_from_aligned_bytes(aligned.as_ref())
+}
+
+#[cfg(test)]
+mod wire_deserialize_tests {
+    use super::*;
+    use crate::ast::Expr;
+
+    #[test]
+    fn rkyv_from_aligned_bytes_accepts_to_bytes_vec() {
+        let expr = Expr::var("n");
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&expr)
+            .expect("encode")
+            .into_vec();
+        let decoded = rkyv_from_aligned_bytes::<Expr>(&bytes).expect("decode aligned expr wire");
+        assert_eq!(decoded, expr);
+    }
+
+    #[test]
+    fn rkyv_from_wire_bytes_accepts_to_bytes_vec() {
+        let expr = Expr::var("n");
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&expr)
+            .expect("encode")
+            .into_vec();
+        let decoded = rkyv_from_wire_bytes::<Expr>(&bytes).expect("decode aligned expr wire");
+        assert_eq!(decoded, expr);
+    }
+
+    #[test]
+    fn rkyv_from_wire_bytes_accepts_unaligned_subslice() {
+        let expr = Expr::var("n");
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&expr)
+            .expect("encode")
+            .into_vec();
+        let mut buf = vec![0u8];
+        buf.extend_from_slice(&bytes);
+        let decoded = rkyv_from_wire_bytes::<Expr>(&buf[1..]).expect("decode unaligned expr wire");
+        assert_eq!(decoded, expr);
+    }
+}

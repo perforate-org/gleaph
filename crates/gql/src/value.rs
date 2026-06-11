@@ -5,7 +5,7 @@
 //!
 //! Extension binary encoding: **tag 33** (`u8` kind + `u32`-length payload), **tag 34**
 //! (`u8` length + ≤255 bytes, no kind) when [`ExtensionValue::short_blob`] is set
-//! (e.g. Internet Computer `Principal` via a platform extension crate).
+//! (via platform-specific extension crates).
 //!
 //! Fixed-size binary wire payloads (no backward compatibility):
 //! - tag 7: `Int256` = `ethnum::I256` little-endian bytes (32 bytes)

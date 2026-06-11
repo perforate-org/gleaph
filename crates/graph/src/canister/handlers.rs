@@ -57,6 +57,8 @@ pub async fn init(args: GraphInitArgs) {
     if let Err(err) = GraphStore::new().set_metadata(metadata) {
         ic_cdk::trap(err.to_string());
     }
+    // Before any router `GPL` plan decode (rkyv expr pools may contain `Value::Extension`).
+    crate::facade::init_ic_gql_extensions();
 }
 
 pub(crate) fn decode_gql_param_map(params: Vec<u8>) -> Result<BTreeMap<String, Value>, String> {

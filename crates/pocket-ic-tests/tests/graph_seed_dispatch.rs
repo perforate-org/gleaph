@@ -93,16 +93,6 @@ fn graph_execute_plan_query_rejects_index_scan_without_seeds() {
     let plan = index_scan_project_plan();
     let plan_blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode plan");
     decode_plan_bundle(&plan_blob).expect("host decode before ic call");
-    // Wasm graph can decode `GPL` plans only after router `seed_bindings_blob` Candid decode
-    // in the same call. Use a noop effective seed so the plan decodes, then IndexScan runs
-    // without a shard index client.
-    let noop_seed_blob = Encode!(&SeedBindingsWire {
-        entries: vec![SeedBindingEntry {
-            variable: "n".into(),
-            local_vertex_ids: vec![999],
-        }],
-    })
-    .expect("encode noop seeds");
     let err = execute_plan_query_as_router_reject(
         &env,
         env.graph_source,
@@ -112,7 +102,7 @@ fn graph_execute_plan_query_rejects_index_scan_without_seeds() {
             plan_blob,
             params_blob: vec![],
             mode: GqlExecutionMode::Query,
-            seed_bindings_blob: Some(noop_seed_blob),
+            seed_bindings_blob: None,
             resolved_labels: None,
         },
     );

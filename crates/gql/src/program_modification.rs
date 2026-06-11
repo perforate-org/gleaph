@@ -1,6 +1,6 @@
 //! Classify a parsed GQL program for data-modifying and catalog-modifying content.
 //!
-//! Used by canister authorization: [`Role::Read`] rejects programs where
+//! Used by host authorization policies: [`Role::Read`] rejects programs where
 //! [`ProgramModificationFlags::requires_write_path`] is true.
 
 use crate::ast::{
