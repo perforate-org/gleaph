@@ -127,7 +127,8 @@ intersect label and property index hits before per-shard `seed_bindings_blob` di
 Graph shards skip leading `NodeScan` + `PropertyFilter` (`IsLabeled` sieve) when the router
 supplies `seed_bindings_blob` for label-intersection anchors (`seeded_skip_leading_label_intersection_plan_uses_seed_only`;
 wire path: `wire_plan_seed_bindings_skip_label_intersection_prefix` in `gql_run.rs`;
-canister handler: `execute_plan_query_seed_bindings_skip_label_intersection` in `handlers.rs`).
+canister handler: `execute_plan_query_seed_bindings_skip_label_intersection` in `handlers.rs`;
+router fan-out: `label_intersection_seed_routing_fans_out_with_bindings` in `router/src/gql.rs`).
 
 ### Instruction bounds (retained)
 

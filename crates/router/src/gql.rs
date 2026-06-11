@@ -963,7 +963,13 @@ mod tests {
 
     use crate::facade::stable::label_telemetry::LabelStats;
     use crate::facade::store::RouterStore;
-    use crate::federation::resolve_seed_routings_multi;
+    use crate::federation::{
+        collect_label_intersection_hits_for_shards, resolve_seed_routings_multi,
+        routings_to_dispatches,
+    };
+    use crate::planner_stats::RouterGraphStats;
+    use crate::seed::SeedAnchorSet;
+    use gleaph_graph_kernel::federation::ShardId;
     use crate::gql::{
         apply_dispatch_label_telemetry_event, dispatch_plan_blob_with_index, request_fingerprint,
     };
@@ -1086,6 +1092,190 @@ mod tests {
         ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
             Box::pin(async move { Ok(Vec::new()) })
         }
+    }
+
+    #[derive(Clone)]
+    struct LabelIntersectionFakeIndex {
+        pages: Rc<RefCell<Vec<(ShardId, u32, LabelLookupPageResult)>>>,
+        sieve_keep: Rc<RefCell<Vec<u32>>>,
+        page_calls: Rc<Cell<u32>>,
+        sieve_calls: Rc<Cell<u32>>,
+    }
+
+    impl LabelIntersectionFakeIndex {
+        fn new(pages: Vec<(ShardId, u32, LabelLookupPageResult)>, sieve_keep: Vec<u32>) -> Self {
+            Self {
+                pages: Rc::new(RefCell::new(pages)),
+                sieve_keep: Rc::new(RefCell::new(sieve_keep)),
+                page_calls: Rc::new(Cell::new(0)),
+                sieve_calls: Rc::new(Cell::new(0)),
+            }
+        }
+
+        fn page_calls(&self) -> u32 {
+            self.page_calls.get()
+        }
+
+        fn sieve_calls(&self) -> u32 {
+            self.sieve_calls.get()
+        }
+    }
+
+    impl IndexLookup for LabelIntersectionFakeIndex {
+        fn lookup_equal(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_intersection(
+            &self,
+            _req: gleaph_graph_kernel::index::IndexIntersectionRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn count_postings_by_value(
+            &self,
+            _property_id: u32,
+            _min_count: u64,
+            _vertex_filter_packed: Option<Vec<u64>>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_label_intersection(
+            &self,
+            _req: IndexLabelIntersectionRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_label_page(
+            &self,
+            req: gleaph_graph_kernel::index::LabelLookupPageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<LabelLookupPageResult, String>> + '_>> {
+            self.page_calls.set(self.page_calls.get() + 1);
+            let mut pages = self.pages.borrow_mut();
+            if let Some(pos) = pages.iter().position(|(shard_id, label_id, _)| {
+                *shard_id == req.shard_id && *label_id == req.vertex_label_id && req.after.is_none()
+            }) {
+                let (_, _, page) = pages.remove(pos);
+                return Box::pin(async move { Ok(page) });
+            }
+            Box::pin(async move {
+                Ok(LabelLookupPageResult {
+                    hits: Vec::new(),
+                    next: None,
+                    done: true,
+                })
+            })
+        }
+
+        fn filter_hits_by_label(
+            &self,
+            _vertex_label_id: u32,
+            hits: Vec<PostingHit>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            self.sieve_calls.set(self.sieve_calls.get() + 1);
+            let keep = self.sieve_keep.borrow().clone();
+            Box::pin(async move {
+                Ok(hits
+                    .into_iter()
+                    .filter(|hit| keep.contains(&hit.vertex_id))
+                    .collect())
+            })
+        }
+
+        fn count_postings_by_value_for_label(
+            &self,
+            _property_id: u32,
+            _vertex_label_id: u32,
+            _min_count: u64,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+    }
+
+    fn store_with_person_employee_labels() -> RouterStore {
+        let store = store_with_shards();
+        let admin = Principal::anonymous();
+        store
+            .admin_intern_vertex_label(admin, "Person")
+            .expect("intern Person");
+        store
+            .admin_intern_vertex_label(admin, "Employee")
+            .expect("intern Employee");
+        store
+    }
+
+    fn label_intersection_read_plan() -> PhysicalPlan {
+        use gleaph_gql::ast::{Expr, ExprKind};
+        use gleaph_gql::types::LabelExpr;
+        use gleaph_gql_planner::plan::ProjectColumn;
+
+        PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("n"),
+                label: Some(NodeLabelRef::from("Person")),
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::IsLabeled {
+                    expr: Box::new(Expr::var("n")),
+                    label: LabelExpr::Name("Employee".into()),
+                    negated: false,
+                })],
+                stage: 0,
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::var("n"),
+                    alias: Some(Rc::from("n")),
+                }],
+                distinct: false,
+            },
+        ])
+    }
+
+    fn label_intersection_fake_index() -> LabelIntersectionFakeIndex {
+        LabelIntersectionFakeIndex::new(
+            vec![
+                (
+                    7,
+                    1,
+                    LabelLookupPageResult {
+                        hits: vec![
+                            PostingHit {
+                                shard_id: 7,
+                                vertex_id: 10,
+                            },
+                            PostingHit {
+                                shard_id: 7,
+                                vertex_id: 11,
+                            },
+                        ],
+                        next: None,
+                        done: true,
+                    },
+                ),
+                (
+                    9,
+                    1,
+                    LabelLookupPageResult {
+                        hits: vec![PostingHit {
+                            shard_id: 9,
+                            vertex_id: 20,
+                        }],
+                        next: None,
+                        done: true,
+                    },
+                ),
+            ],
+            vec![10, 20],
+        )
     }
 
     fn seeded_dml_plan() -> PhysicalPlan {
@@ -1384,6 +1574,99 @@ mod tests {
             resolve_seed_routings_multi(&store, &hits, "tenant.main", IndexAnchor::Equal(probe))
                 .expect_err("unknown shard");
         assert!(matches!(err, RouterError::ShardNotRegistered));
+    }
+
+    #[test]
+    fn label_intersection_seed_routing_fans_out_with_bindings() {
+        let store = store_with_person_employee_labels();
+        let plan = label_intersection_read_plan();
+        let stats = RouterGraphStats::for_graph("tenant.main");
+        let set = SeedAnchorSet::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            &stats,
+        )
+        .expect("anchors")
+        .expect("label intersection anchors");
+        assert!(matches!(
+            set.routing_anchor(),
+            IndexAnchor::LabelIntersection { .. }
+        ));
+
+        let fake = label_intersection_fake_index();
+        let hits = futures::executor::block_on(collect_label_intersection_hits_for_shards(
+            &fake,
+            &[1, 2],
+            &[7, 9],
+        ))
+        .expect("collect intersection hits");
+        assert_eq!(
+            hits,
+            vec![
+                PostingHit {
+                    shard_id: 7,
+                    vertex_id: 10,
+                },
+                PostingHit {
+                    shard_id: 9,
+                    vertex_id: 20,
+                },
+            ]
+        );
+
+        let routings =
+            resolve_seed_routings_multi(&store, &hits, "tenant.main", set.routing_anchor())
+                .expect("route");
+        let dispatches = routings_to_dispatches(routings);
+        assert_eq!(dispatches.len(), 2);
+
+        let seed_blob_7 = dispatches[0]
+            .seed_bindings_blob
+            .as_ref()
+            .expect("shard 7 seeds");
+        let seeds_7: SeedBindingsWire =
+            Decode!(seed_blob_7, SeedBindingsWire).expect("decode shard 7 seeds");
+        assert_eq!(seeds_7.entries[0].variable, "n");
+        assert_eq!(seeds_7.entries[0].local_vertex_ids, vec![10]);
+
+        let seed_blob_9 = dispatches[1]
+            .seed_bindings_blob
+            .as_ref()
+            .expect("shard 9 seeds");
+        let seeds_9: SeedBindingsWire =
+            Decode!(seed_blob_9, SeedBindingsWire).expect("decode shard 9 seeds");
+        assert_eq!(seeds_9.entries[0].local_vertex_ids, vec![20]);
+    }
+
+    #[test]
+    fn label_intersection_read_dispatch_collects_label_export() {
+        let store = store_with_person_employee_labels();
+        let plan = label_intersection_read_plan();
+        let plan_blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
+        let fake = label_intersection_fake_index();
+        let shards = store
+            .list_shards_for_graph("tenant.main")
+            .expect("registered shards");
+
+        let err = futures::executor::block_on(dispatch_plan_blob_with_index(
+            "tenant.main",
+            &plan_blob,
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &[],
+            GqlExecutionMode::Query,
+            None,
+            &store,
+            shards,
+            &fake,
+            Principal::anonymous(),
+        ))
+        .expect_err("native graph dispatch should fail after index seeding");
+
+        assert!(matches!(err, RouterError::InvalidArgument(_)));
+        assert_eq!(fake.page_calls(), 2);
+        assert_eq!(fake.sieve_calls(), 2);
     }
 
     #[test]
