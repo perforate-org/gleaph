@@ -1,8 +1,11 @@
 # Federation query semantics
 
+Last updated: 2026-06-11  
+Anchor timestamp: 2026-06-11 23:23:04 UTC +0000
+
 ## Status
 
-**Partially Implemented** — immature executor paths (`RemoteVertex` from index hits, graph-side index lookup) coexist with partial router seed routing. **Target semantics** are documented in [../sharding/federation-target.md](../sharding/federation-target.md). Standalone default: [../sharding/standalone-mode.md](../sharding/standalone-mode.md).
+**Partially Implemented** — router seed routing and graph skip of leading index anchors are **Implemented** on the federated wire path. Cross-shard expand, peer ACL, and `RemoteVertex` expand are **not implemented**. Standalone default: [../sharding/standalone-mode.md](../sharding/standalone-mode.md). Target: [../sharding/federation-target.md](../sharding/federation-target.md).
 
 ## Purpose
 
@@ -24,18 +27,13 @@ See [../sharding/federation-target.md](../sharding/federation-target.md) for the
 2. Router **slices** `PostingHit` by `shard_id` and builds **per-shard seeds**.
 3. Each **graph shard** executes the plan locally with seeds; skips leading index anchor ops.
 4. Cross-shard **traverse** is **not implemented** (`UnsupportedOp`); target uses graph ↔ graph expand when added.
-   One-hop `Expand` and var_len / `ShortestPath` entry use
-   `resolve_traversal_expand_source` (local CSR when this shard is authoritative;
-   peer-expand sources remain unsupported for multi-hop BFS).
 5. **Router merges** partial results.
 
 Graph shards do **not** receive other shards' index hits for anchor resolution. Index intersection is index-local; slicing is router-local.
 
 ---
 
-## Current implementation (legacy / partial)
-
-The following describes **today's code**, which diverges from the target and is scheduled for defer/refactor.
+## Current implementation
 
 ### Binding model (executor)
 
@@ -43,36 +41,33 @@ The following describes **today's code**, which diverges from the target and is 
 
 | Binding | When used (current) |
 |---------|---------------------|
-| `Vertex(VertexId)` | Local CSR vertex on this shard |
-| `RemoteVertex(GlobalVertexId)` | Reserved wire binding; expand when placement authority is on another shard (not implemented) |
+| `Vertex(VertexId)` | Local CSR vertex on this shard (router seeds, local scans) |
+| `RemoteVertex(GlobalVertexId)` | Wire variant only; expand when foreign placement authority is **not implemented** |
 | `Edge` / `Path` / `Value` | Same as non-federated execution |
 
-`RemoteVertex` is reserved for expand/peer paths when needed; index anchor binds use seeds → local `Vertex` only.
+Index anchor binds use seeds → local `Vertex` only. `FederationPort::bind_index_hits` filters to the local shard.
 
 ### Index scan → execution (current)
 
-Two overlapping paths:
-
-| Path | Behavior | Target disposition |
-|------|----------|-------------------|
+| Path | Behavior | Status |
+|------|----------|--------|
 | Router `IndexAnchor` + seeds | Router lookup, per-shard seeds, graph skips anchor op | **Implemented** |
-| Graph executor `IndexScan` / `IndexIntersection` (library) | Graph calls index via mock/native client; binds local hits via `FederationPort` | Federated wire path uses router seeds only |
+| Graph executor `IndexScan` / `IndexIntersection` (library) | Graph calls index via mock/native client when wired | Standalone dev only; **not** federated wasm wire path |
+| Federated wasm without seeds | `plan_wire_guard` rejects `IndexScan` / `IndexIntersection` | **Implemented** |
 
-**Constraint (current):** Multi-shard plans without an index anchor are rejected at router (`no index anchor: single-shard graph required`).
+**Constraint:** Multi-shard plans without an index anchor are rejected at router (`no index anchor: single-shard graph required`).
 
 ### Expand behavior (current)
 
-#### Federated expand path
+Expand calls `resolve_traversal_expand_source` (`graph/federation/expand.rs`):
 
-Expand calls `resolve_traversal_expand_source` (`graph/federation/expand.rs`) on the source binding:
+| Source binding | Placement | Result |
+|----------------|-------------|--------|
+| `Vertex` / `RemoteVertex` | Authoritative on **this** shard | `LocalCsr(VertexId)` |
+| `Vertex` | Authoritative on **another** shard | `UnsupportedOp` (cross-shard expand) |
+| `RemoteVertex` | Placement lookup fails (foreign home) | `UnsupportedOp` (cross-shard expand) |
 
-- **`PlanBinding::Vertex`** with authoritative placement on another shard → **peer expand** (router seeds path).
-- **`PlanBinding::RemoteVertex`** with authoritative placement on another shard → **peer expand** (legacy expand/peer path).
-- Authoritative on local shard → local CSR via returned `LocalCsr(VertexId)`.
-
-Peer expand is **not implemented**. `StandaloneFederation::peer_expand` returns `UnsupportedOp`.
-
-#### Local CSR expand (limitations)
+`StandaloneFederation::peer_expand` returns `UnsupportedOp`. `EdgeTarget::Remote` endpoints return `UnsupportedOp` during local CSR expand.
 
 ### Property projection
 
@@ -80,11 +75,11 @@ Peer expand is **not implemented**. `StandaloneFederation::peer_expand` returns 
 
 ### Placement resolution (current)
 
-`resolve_federated_traversal_vertex` / placement client (`crates/graph/src/index/placement.rs`) map logical → physical for expand direction checks.
+`placement::resolve_placement` maps `GlobalVertexId` → `VertexPlacement` for expand source checks (native test stubs + wasm IC).
 
-Failures surface as `FederatedIndexCall { op: "resolve_logical_at" | "federated_expand", ... }`.
+Failures surface as `PlanQueryError::UnsupportedOp` for cross-shard expand, or placement errors when routing is misconfigured.
 
-**Target:** placement authority stays on Router for writes; graph placement IC reads deferred or narrowed to expand-time peer routing.
+**Target:** placement authority stays on router for writes; graph placement IC reads narrowed to expand-time routing when peer expand returns.
 
 ---
 
@@ -93,10 +88,10 @@ Failures surface as `FederatedIndexCall { op: "resolve_logical_at" | "federated_
 | Layer | Federation awareness |
 |-------|----------------------|
 | `gleaph-gql-planner` | Shard-agnostic plans; emits `IndexScan` / `IndexIntersection` |
-| Router | Shard dispatch + seeds (partial) |
-| Graph executor | Legacy index bind + federated expand (partial) |
+| Router | Shard dispatch + seeds (**Implemented** for equality and intersection anchors) |
+| Graph executor | Local CSR + seed skip; no index client on federated wasm wire path |
 
-**Target implication:** Correctness for anchors depends on **Router index slice + seeds**, not graph calling index or binding foreign hits.
+**Implication:** Anchor correctness depends on **router index slice + seeds**, not graph calling index on the federated wire path.
 
 ---
 
@@ -106,13 +101,12 @@ Failures surface as `FederatedIndexCall { op: "resolve_logical_at" | "federated_
 |----------|---------|--------|
 | Multi-shard plan without index anchor | **Rejected** at router | Same |
 | `IndexIntersection` router seed | **Implemented** | Router `lookup_intersection` + slice |
-| Graph executor index intersection | **Partial** (library/mock index only) | Router seeds + skip op on graph |
+| Graph executor index intersection (library) | Mock/native client only | Router seeds + skip op on graph |
 | `RemoteVertex` from index hits | **Removed** | Peer expand from traverse only |
-| `RemoteVertex` + federated expand | **Partial** (wasm IC) | Peer expand from placement on traverse source |
-| Local `Vertex` expand, authoritative on other shard | **Partial** — peer expand via `resolve_traversal_expand_source` | Same |
+| Cross-shard expand (any binding) | **Unsupported** | Peer expand from placement |
 | Remote vertex property projection | **Unsupported** | **Unsupported** |
 | Router merge of cross-shard rows | **Partial** (count sum + row-batch union via `rows_blob`) | Join/aggregate merge planned |
-| `federated_expand` on native test host | **Unsupported** | **Unsupported** |
+| `federated_expand` canister API | **Removed** | Restore with follow-up ADR |
 
 Update this table when implementing [../sharding/federation-target.md](../sharding/federation-target.md).
 

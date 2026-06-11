@@ -43,7 +43,7 @@ crates/router/src/federation.rs
   dispatch.rs      multi-shard fan-out (planned target path)
 ```
 
-**Rule:** executor, scan, and expand code call `FederationPort` only — not `placement::resolve_logical_at`, not direct index intersection loops.
+**Rule:** executor, scan, and expand code call `FederationPort` only — not direct `placement::resolve_placement` from query hot paths, not direct index intersection loops.
 
 ## What stays (hooks)
 
@@ -86,7 +86,7 @@ See [lookup-intersection.md](../index/lookup-intersection.md).
 3. **Router standalone dispatch** — consolidate `gql.rs` dispatch into `router/federation/standalone.rs` (**Implemented**).
 4. **Router intersection seeds** — `IndexAnchor`, `lookup_intersection`, graph skip leading `IndexIntersection` (**Implemented**).
 5. **Defer removal** — legacy `materialize_federated_index_hits`, federated wire index client (**Implemented**). Remote stable / placement IC defer remain.
-6. **Federation target** — router merge module (count + row-batch union + aggregate merge), graph `FederationPort` index bind, peer expand boundary, expand trigger via placement for one-hop / var_len `{1,1}` / shortest-path entry (**Partial**). Multi-hop federated var_len BFS and client row API remain planned ([federation-target.md](federation-target.md)).
+6. **Federation target** — router merge module (count + row-batch union + aggregate merge), graph `FederationPort` index bind (**Implemented** on wire path). Peer expand, `federated_expand`, and expand trigger via placement for one-hop / var_len `{1,1}` / shortest-path entry are **not implemented** (deferred). Multi-hop federated var_len BFS and client row API remain planned ([federation-target.md](federation-target.md)).
 
 ## Related documents
 

@@ -1,10 +1,11 @@
 # Federation target architecture
 
-Last updated: 2026-06-10
+Last updated: 2026-06-11  
+Anchor timestamp: 2026-06-11 23:23:04 UTC +0000
 
 ## Status
 
-**Planned** — target design for multi-shard production. Current code contains partial, immature paths (executor-driven index lookup, `RemoteVertex` from index hits, scattered placement calls). Those are **not** this architecture; they are candidates for defer/removal per [standalone-mode.md](standalone-mode.md).
+**Planned** — target design for multi-shard production. Router index seeds and graph skip of leading anchors are **implemented** on the wire path. Cross-shard `federated_expand`, remote-vertex stable, and peer ACL were **removed**; traverse returns `UnsupportedOp` until a follow-up ADR restores them per [standalone-mode.md](standalone-mode.md).
 
 ## Purpose
 
@@ -36,7 +37,7 @@ sequenceDiagram
         R->>G1: ExecutePlanArgs + seeds
     end
     Note over G0,G1: Local plan execute; skip seeded scan ops
-    G0->>G1: federated_expand (only if traverse needs foreign vertex)
+    G0->>G1: federated_expand (planned; not implemented)
     G0-->>R: partial result
     G1-->>R: partial result
     R->>R: merge / aggregate
@@ -49,7 +50,7 @@ sequenceDiagram
 |--------|---------------|--------------|
 | **graph-index** | Posting storage, `lookup_equal`, `lookup_intersection`, range scans | Plan execution, binding, traverse, logical placement |
 | **Router** | Index queries, per-shard seed construction, dispatch, result merge | CSR storage, local traverse |
-| **Graph shard** | Local `execute_plan_*`, edge/vertex stable stores, **peer** `federated_expand` | Global index lookup on query hot path, placement authority |
+| **Graph shard** | Local `execute_plan_*`, edge/vertex stable stores | Global index lookup on query hot path, placement authority, peer `federated_expand` (planned) |
 
 ## Index anchor and seeds
 
@@ -78,17 +79,17 @@ Each shard receives:
 
 The shard runs the physical plan against **local CSR** only. It does not call the index canister for anchor scans in the target model (Router already resolved anchors).
 
-## Cross-shard traverse (“reach out”)
+## Cross-shard traverse (“reach out”) — not implemented
 
-When a plan expands from a locally seeded vertex to a neighbor whose **authoritative** storage is on another shard:
+**Current:** `resolve_traversal_expand_source` returns `UnsupportedOp` when placement authority is on another shard. `federated_expand` canister endpoints and remote-vertex stable were removed.
+
+**Target** (when a follow-up ADR lands):
 
 1. Local executor calls `resolve_traversal_expand_source` (`graph/federation/expand.rs`): placement lookup on the expand source binding (`Vertex` or `RemoteVertex`).
 2. **Peer expand** when authoritative shard ≠ local; **local CSR** when authoritative on this shard.
 3. Source shard calls target shard's **`federated_expand`** (graph ↔ graph, `graph-kernel/federation/expand.rs`).
 4. Returned neighbors are incorporated into **local** execution state for the remainder of the plan on that shard.
 5. If multiple shards produce rows for the same logical query, Router merges.
-
-This replaces the immature pattern where a **single** graph shard calls the index, binds `RemoteVertex`, and resolves placement inline during `IndexScan`.
 
 ## Index maintenance
 

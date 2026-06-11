@@ -1,7 +1,7 @@
 # Derived-state query semantics
 
-Last updated: 2026-06-10  
-Anchor timestamp: 2026-06-10 23:06:27 UTC +0000
+Last updated: 2026-06-11  
+Anchor timestamp: 2026-06-11 23:23:04 UTC +0000
 
 ## Status
 
@@ -36,8 +36,7 @@ not paper over sync gaps with graph-side tombstone filtering at the index layer.
 | Property postings (graph-index) | DML enqueue + `pending` flush | Pending queue before flush; flush retry; historical **backfill** in progress | **Under-posted:** equality/range/seed miss live vertices. **Over-posted:** extra hits until remove syncs. No silent drop at read time |
 | Label postings (graph-index) | DML enqueue + `label_pending` flush | Same as property postings | **Under-posted:** label sieve / export / intersection miss. **Over-posted:** extra hits until remove syncs |
 | Router label telemetry | Graph outbox event apply | Unacked outbox events; router down before replay | **Count-only** paths (`COUNT(*)`, stats) under/over-count. Vertex-list paths use label **postings**, not telemetry |
-| Remote forward-in | Register / insert paths | Partial peer registration | Federated expand may fall back to scan per [operations.md](../federation/operations.md) |
-| Router placement-by-physical | Placement commit | Rebuild from placement map only on repair | `resolve_logical_at` wrong or missing until rebuilt |
+| Router placements (`ROUTER_PLACEMENTS`) | Placement commit on graph DML | Rebuild from placement map only on repair | `resolve_placement(GlobalVertexId)` wrong or missing until rebuilt |
 
 ## Scenarios
 

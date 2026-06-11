@@ -23,3 +23,4 @@ cargo test -p gleaph-pocket-ic-tests -- --nocapture
 | `graph_seed_dispatch::graph_execute_plan_query_skips_index_scan_with_seed_bindings` | Federated graph `execute_plan_query` + `seed_bindings_blob` |
 | `graph_seed_dispatch::graph_execute_plan_query_rejects_index_scan_without_seeds` | Federated graph rejects bare `IndexScan` without router seeds |
 | `router_gql_query::router_gql_query_node_scan_on_single_shard` | Router `gql_query` composite dispatch on a single registered shard |
+| `router_gql_query::standalone_e2e_insert_commits_placement_and_global_id` | Standalone `e2e_insert_vertex` → `GlobalVertexId` + router `resolve_placement` |

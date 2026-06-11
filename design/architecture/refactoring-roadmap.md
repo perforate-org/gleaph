@@ -1,8 +1,8 @@
 # Gleaph Refactoring Roadmap
 
-Last updated: 2026-06-10 UTC  
-Status: In progress (Phase 0 complete; Phase 2 started)  
-Anchor timestamp: 2026-06-10 13:39:55 UTC +0000
+Last updated: 2026-06-11 UTC  
+Status: In progress (Phases 0–3 complete; pre-federation foundation ADR 0006 steps 1–5 complete)  
+Anchor timestamp: 2026-06-11 23:23:04 UTC +0000
 
 ## Purpose
 
@@ -215,6 +215,8 @@ Before changing memory layout, add a stable-memory layout ADR that records:
 
 ### Phase 0: Inventory and contract freeze
 
+**Status: Complete (2026-06-11).**
+
 Goal: make the existing system legible before changing it.
 
 Deliverables:
@@ -262,18 +264,18 @@ Goal: make multi-store invariants explicit while preserving the existing stable 
 
 **Status: Complete (2026-06-10).**
 
-**Progress:** All three facades (`graph`, `router`, `graph-index`) use `facade/store.rs` + `facade/store/*.rs` domain modules (not `store/mod.rs`). Graph `GraphStore` domain commits cover adjacency, properties, labels, vertex delete, remote refs, telemetry, edge profiles, local indexes, and sidecar coordination; mutation and federation call sites route through `commit_*` APIs. Router domains cover registry (including controllers), placement, catalogs (`commit_intern_*`), idempotency, telemetry (`commit_apply_label_delta`), and backfill. Graph-index domains cover authorization (`commit_register_shard_owner`), property postings (`commit_posting_*`), and label postings (`commit_label_posting_*`).
+**Progress:** All three facades (`graph`, `router`, `graph-index`) use `facade/store.rs` + `facade/store/*.rs` domain modules (not `store/mod.rs`). Graph `GraphStore` domain commits cover adjacency, properties, labels, vertex delete, telemetry, edge profiles, local indexes, and sidecar coordination; mutation and federation call sites route through `commit_*` APIs. Router domains cover registry (including controllers), placement, catalogs (`commit_intern_*`), idempotency, telemetry (`commit_apply_label_delta`), and backfill. Graph-index domains cover authorization (`commit_register_shard_owner`), property postings (`commit_posting_*`), and label postings (`commit_label_posting_*`).
 
 Deliverables:
 
-- Split graph facade behavior into storage domains: adjacency, properties, labels, edge profiles, remote refs, local indexes, telemetry, and maintenance. **Done.**
+- Split graph facade behavior into storage domains: adjacency, properties, labels, edge profiles, local indexes, telemetry, and maintenance. **Done.**
 - Split router facade behavior into registry, placement, resolution catalogs, idempotency, telemetry, and backfill domains. **Done.**
 - Split graph-index behavior into property postings, label postings, shard ownership, and router authorization domains. **Done.**
 - Move repeated write sequences behind methods owned by the invariant owner. **Done** for graph/router/graph-index mutation paths; query planners still read derived indexes directly where read-only.
 
 Exit criteria:
 
-- Call sites no longer coordinate canonical data and derived state manually. **Met** for graph edge/vertex mutations, label telemetry, and federation forward-in maintenance; router label telemetry and catalog intern paths.
+- Call sites no longer coordinate canonical data and derived state manually. **Met** for graph edge/vertex mutations and label telemetry; router label telemetry and catalog intern paths.
 - Tests can target domain APIs rather than scattered thread-local stores. **Met** for graph `facade::store` and `sidecar` domain tests; graph-index and router tests exercise `IndexStore` / `RouterStore` domain methods.
 
 ### Phase 3: Unify catalog abstractions
