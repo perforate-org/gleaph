@@ -537,12 +537,9 @@ impl QueryExprEvaluator<'_> {
                 filter,
                 ..
             } => {
-                if *distinct || filter.is_some() {
-                    return Err(PlanQueryError::UnsupportedExpression {
-                        expression: "aggregate".to_owned(),
-                    });
-                }
-                if *func == AggregateFunc::Sum
+                if !*distinct
+                    && filter.is_none()
+                    && *func == AggregateFunc::Sum
                     && let Some(inner) = inner
                     && let Some(value) = try_eval_horizontal_sum_gleaph_weight(self, row, inner)?
                 {
