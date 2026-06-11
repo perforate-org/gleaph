@@ -14,7 +14,18 @@ mod path_test_helpers {
     use gleaph_gql::types::PathElement;
     use gleaph_gql_planner::plan::PhysicalPlan;
     use gleaph_graph_kernel::entry::EdgeLabelId;
+    use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalEdgeId, GlobalVertexId};
     use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
+
+    pub const PATH_ID_KEY: ElementIdEncodingKey = ElementIdEncodingKey::standalone();
+
+    pub fn decoded_vertex_global(element: &PathElement) -> GlobalVertexId {
+        vertex_path_id(element).decode_global(&PATH_ID_KEY)
+    }
+
+    pub fn decoded_edge_global(element: &PathElement) -> GlobalEdgeId {
+        edge_path_id(element).decode_global(&PATH_ID_KEY)
+    }
 
     pub fn path_column<'a>(result: &'a PlanQueryResult, column: &str) -> &'a [PathElement] {
         match result.rows.first().and_then(|row| row.get(column)) {
@@ -34,10 +45,10 @@ mod path_test_helpers {
 
     pub fn assert_path_vertex_local(store: &GraphStore, element: &PathElement, local: VertexId) {
         assert_eq!(
-            vertex_path_id(element).logical_vertex_id,
+            vertex_path_id(element).decode_global(&PATH_ID_KEY),
             store
-                .logical_vertex_id(local)
-                .expect("logical vertex id for local vertex")
+                .global_vertex_id(local)
+                .expect("global vertex id for local vertex")
         );
     }
 
@@ -395,15 +406,16 @@ fn element_id_returns_graph_kernel_bytes_for_vertices_and_edges() {
     let vertex_id =
         GraphPathVertexId::try_from_slice(bytes_column(&result, "aid")).expect("vertex element id");
     assert_eq!(
-        vertex_id.logical_vertex_id,
-        store.logical_vertex_id(a).expect("logical id for a")
+        vertex_id.decode_global(&PATH_ID_KEY),
+        store.global_vertex_id(a).expect("global id for a")
     );
     let edge_id =
         GraphPathEdgeId::try_from_slice(bytes_column(&result, "eid")).expect("edge element id");
-    assert_eq!(edge_id.shard_id, ShardId::new(0));
-    assert_eq!(edge_id.owner_vertex_id, edge.owner_vertex_id);
+    let edge_global = edge_id.decode_global(&PATH_ID_KEY);
+    assert_eq!(edge_global.shard_id, ShardId::new(0));
+    assert_eq!(edge_global.owner_vertex_id, u32::from(edge.owner_vertex_id));
     assert_eq!(
-        edge_id.edge_slot_index,
+        edge_global.edge_slot_index,
         EdgeSlotIndex::from_raw(edge.slot_index)
     );
 }
@@ -489,21 +501,17 @@ fn shortest_path_binds_opaque_path_ids() {
     let elements = path_column(&result, "p");
     assert_eq!(elements.len(), 5);
     assert_path_vertex_local(&store, &elements[0], a);
+    let ab_global = decoded_edge_global(&elements[1]);
+    assert_eq!(ab_global.owner_vertex_id, u32::from(ab.owner_vertex_id));
     assert_eq!(
-        edge_path_id(&elements[1]).owner_vertex_id,
-        ab.owner_vertex_id
-    );
-    assert_eq!(
-        edge_path_id(&elements[1]).edge_slot_index,
+        ab_global.edge_slot_index,
         EdgeSlotIndex::from_raw(ab.slot_index)
     );
     assert_path_vertex_local(&store, &elements[2], b);
+    let bc_global = decoded_edge_global(&elements[3]);
+    assert_eq!(bc_global.owner_vertex_id, u32::from(bc.owner_vertex_id));
     assert_eq!(
-        edge_path_id(&elements[3]).owner_vertex_id,
-        bc.owner_vertex_id
-    );
-    assert_eq!(
-        edge_path_id(&elements[3]).edge_slot_index,
+        bc_global.edge_slot_index,
         EdgeSlotIndex::from_raw(bc.slot_index)
     );
     assert_path_vertex_local(&store, &elements[4], c);
@@ -620,19 +628,19 @@ fn all_shortest_path_returns_all_equal_depth_paths() {
         .expect("execute all shortest paths");
 
     assert_eq!(result.rows.len(), 2);
-    let middle_vertices: BTreeSet<gleaph_graph_kernel::federation::LogicalVertexId> = result
+    let middle_vertices: BTreeSet<gleaph_graph_kernel::federation::GlobalVertexId> = result
         .rows
         .iter()
         .map(|row| match row.get("p") {
-            Some(Value::Path(elements)) => vertex_path_id(&elements[2]).logical_vertex_id,
+            Some(Value::Path(elements)) => decoded_vertex_global(&elements[2]),
             other => panic!("expected path, got {other:?}"),
         })
         .collect();
     assert_eq!(
         middle_vertices,
         BTreeSet::from([
-            store.logical_vertex_id(b1).expect("b1 logical id"),
-            store.logical_vertex_id(b2).expect("b2 logical id"),
+            store.global_vertex_id(b1).expect("b1 global id"),
+            store.global_vertex_id(b2).expect("b2 global id"),
         ])
     );
 }
@@ -1046,19 +1054,19 @@ fn weighted_shortest_all_returns_all_equal_cost_paths() {
         .expect("weighted all-shortest with equal zero costs");
 
     assert_eq!(result.rows.len(), 2);
-    let middle_vertices: BTreeSet<gleaph_graph_kernel::federation::LogicalVertexId> = result
+    let middle_vertices: BTreeSet<gleaph_graph_kernel::federation::GlobalVertexId> = result
         .rows
         .iter()
         .map(|row| match row.get("p") {
-            Some(Value::Path(elements)) => vertex_path_id(&elements[2]).logical_vertex_id,
+            Some(Value::Path(elements)) => decoded_vertex_global(&elements[2]),
             other => panic!("expected path, got {other:?}"),
         })
         .collect();
     assert_eq!(
         middle_vertices,
         BTreeSet::from([
-            store.logical_vertex_id(b1).expect("b1 logical id"),
-            store.logical_vertex_id(b2).expect("b2 logical id"),
+            store.global_vertex_id(b1).expect("b1 global id"),
+            store.global_vertex_id(b2).expect("b2 global id"),
         ])
     );
 }

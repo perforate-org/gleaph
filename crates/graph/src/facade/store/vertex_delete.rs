@@ -1,7 +1,7 @@
 //! Vertex delete domain: clear derived sidecars and commit graph row removal.
 
 use gleaph_graph_kernel::entry::Edge;
-use gleaph_graph_kernel::federation::{ReleaseLogicalVertexArgs, VertexPlacement};
+use gleaph_graph_kernel::federation::{ReleaseVertexPlacementArgs, VertexPlacement};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
     labeled::OutEdgeOrder, traits::CsrEdge,
@@ -10,7 +10,6 @@ use ic_stable_lara::{
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
-use crate::facade::stable::VERTEX_LOGICAL_IDS;
 use crate::index::placement;
 
 impl GraphStore {
@@ -110,14 +109,14 @@ impl GraphStore {
         let Some(routing) = self.federation_routing() else {
             return Ok(());
         };
-        let Some(logical_vertex_id) = self.logical_vertex_id(vertex_id) else {
+        let Some(global_vertex_id) = self.global_vertex_id(vertex_id) else {
             return Ok(());
         };
         #[cfg(not(target_family = "wasm"))]
         {
             let placement = pollster::block_on(placement::resolve_placement(
                 routing.router_canister,
-                logical_vertex_id,
+                global_vertex_id,
             ))?;
             let VertexPlacement::Active(loc) = placement;
             if loc.shard_id != routing.shard_id
@@ -125,12 +124,17 @@ impl GraphStore {
             {
                 return Ok(());
             }
-            pollster::block_on(placement::release_logical_vertex_placement(
+            pollster::block_on(placement::release_vertex_placement(
                 routing.router_canister,
-                ReleaseLogicalVertexArgs { logical_vertex_id },
+                ReleaseVertexPlacementArgs {
+                    local_vertex_id: placement::local_vertex_id_raw(vertex_id),
+                },
             ))?;
         }
-        VERTEX_LOGICAL_IDS.with_borrow_mut(|map| map.remove(vertex_id));
+        #[cfg(target_family = "wasm")]
+        {
+            let _ = (routing, global_vertex_id);
+        }
         Ok(())
     }
 }

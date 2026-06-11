@@ -7,7 +7,7 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorPredicate, ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, PreparedWeightDecoder};
 use gleaph_graph_kernel::federation::{
-    FederatedExpandArgs, FederatedExpandNeighbor, LogicalVertexId,
+    FederatedExpandArgs, FederatedExpandNeighbor, GlobalVertexId,
 };
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
@@ -72,7 +72,7 @@ pub(crate) fn expand_rows_from_federated_expand_hits(
                     expression: "property projection on remote vertex binding".into(),
                 });
             }
-            PlanBinding::RemoteVertex(hit.neighbor_logical_vertex_id)
+            PlanBinding::RemoteVertex(hit.neighbor_vertex_id)
         };
 
         if let PlanBinding::Vertex(dst_id) = &dst_binding
@@ -130,7 +130,7 @@ pub(crate) fn expand_rows_from_federated_expand_hits(
 
 pub(crate) async fn peer_expand_remote_vertex(
     ctx: &ExecuteCtx<'_>,
-    logical: LogicalVertexId,
+    logical: GlobalVertexId,
     gql_direction: EdgeDirection,
     label_id: Option<EdgeLabelId>,
 ) -> Result<Vec<FederatedExpandNeighbor>, PlanQueryError> {
@@ -139,7 +139,7 @@ pub(crate) async fn peer_expand_remote_vertex(
         .peer_expand(
             ctx.store,
             FederatedExpandArgs {
-                logical_vertex_id: logical,
+                vertex_id: logical,
                 direction: federated_direction_for_expand(gql_direction),
                 label_id_raw,
             },

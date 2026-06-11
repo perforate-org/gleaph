@@ -4,34 +4,45 @@
 //! the graph-kernel interpretation of those bytes for Gleaph runtimes.
 
 use crate::entry::EdgeSlotIndex;
-use crate::federation::{LogicalVertexId, ShardId};
+use crate::federation::{
+    decode_global_edge_id, decode_global_vertex_id, encode_global_edge_id,
+    encode_global_vertex_id, ElementIdEncodingKey, EncodedEdgeId, EncodedVertexId, GlobalEdgeId,
+    GlobalVertexId, ShardId, ENCODED_EDGE_ID_BYTES, ENCODED_VERTEX_ID_BYTES,
+};
 use ic_stable_lara::VertexId;
 use std::fmt;
 
-pub const VERTEX_PATH_ID_BYTES: usize = 8;
-pub const EDGE_PATH_ID_BYTES: usize = 16;
+pub const VERTEX_PATH_ID_BYTES: usize = ENCODED_VERTEX_ID_BYTES;
+pub const EDGE_PATH_ID_BYTES: usize = ENCODED_EDGE_ID_BYTES;
 
-/// Globally stable vertex identity exposed in paths and `ELEMENT_ID` for vertices.
+/// Encoded global vertex identity exposed in paths and `ELEMENT_ID` for vertices.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GraphPathVertexId {
-    pub logical_vertex_id: LogicalVertexId,
+    pub encoded: EncodedVertexId,
 }
 
 impl GraphPathVertexId {
     #[inline]
-    pub const fn new(logical_vertex_id: LogicalVertexId) -> Self {
-        Self { logical_vertex_id }
+    pub const fn from_encoded(encoded: EncodedVertexId) -> Self {
+        Self { encoded }
+    }
+
+    #[inline]
+    pub fn from_global(key: &ElementIdEncodingKey, id: GlobalVertexId) -> Self {
+        Self {
+            encoded: encode_global_vertex_id(key, id),
+        }
     }
 
     #[inline]
     pub fn to_bytes(self) -> [u8; VERTEX_PATH_ID_BYTES] {
-        self.logical_vertex_id.to_le_bytes()
+        self.encoded.0
     }
 
     #[inline]
     pub fn from_bytes(bytes: [u8; VERTEX_PATH_ID_BYTES]) -> Self {
         Self {
-            logical_vertex_id: u64::from_le_bytes(bytes),
+            encoded: EncodedVertexId(bytes),
         }
     }
 
@@ -45,53 +56,57 @@ impl GraphPathVertexId {
                 })?;
         Ok(Self::from_bytes(bytes))
     }
+
+    #[inline]
+    pub fn decode_global(self, key: &ElementIdEncodingKey) -> GlobalVertexId {
+        decode_global_vertex_id(key, self.encoded)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct GraphPathEdgeId {
-    pub shard_id: ShardId,
-    pub owner_vertex_id: VertexId,
-    /// Physical slot index wrapper for the bound edge at query time.
-    ///
-    /// This is an engine-local handle component, not a stable logical edge id across compaction.
-    pub edge_slot_index: EdgeSlotIndex,
+    pub encoded: EncodedEdgeId,
 }
 
 impl GraphPathEdgeId {
     #[inline]
-    pub const fn new(
-        shard_id: ShardId,
-        owner_vertex_id: VertexId,
-        edge_slot_index: EdgeSlotIndex,
-    ) -> Self {
+    pub const fn from_encoded(encoded: EncodedEdgeId) -> Self {
+        Self { encoded }
+    }
+
+    #[inline]
+    pub fn from_global(key: &ElementIdEncodingKey, id: GlobalEdgeId) -> Self {
         Self {
-            shard_id,
-            owner_vertex_id,
-            edge_slot_index,
+            encoded: encode_global_edge_id(key, id),
         }
     }
 
     #[inline]
+    pub fn new(
+        key: &ElementIdEncodingKey,
+        shard_id: ShardId,
+        owner_vertex_id: VertexId,
+        edge_slot_index: EdgeSlotIndex,
+    ) -> Self {
+        Self::from_global(
+            key,
+            GlobalEdgeId::new(
+                shard_id,
+                u32::from_le_bytes(owner_vertex_id.to_le_bytes()),
+                edge_slot_index,
+            ),
+        )
+    }
+
+    #[inline]
     pub fn to_bytes(self) -> [u8; EDGE_PATH_ID_BYTES] {
-        let mut out = [0; EDGE_PATH_ID_BYTES];
-        out[0..4].copy_from_slice(&self.shard_id.to_le_bytes());
-        out[8..12].copy_from_slice(&self.owner_vertex_id.to_le_bytes());
-        out[12..16].copy_from_slice(&self.edge_slot_index.to_le_bytes());
-        out
+        self.encoded.0
     }
 
     #[inline]
     pub fn from_bytes(bytes: [u8; EDGE_PATH_ID_BYTES]) -> Self {
-        let mut shard_id = [0; 4];
-        shard_id.copy_from_slice(&bytes[0..4]);
-        let mut owner_vertex_id = [0; 4];
-        owner_vertex_id.copy_from_slice(&bytes[8..12]);
-        let mut edge_slot_index = [0; 4];
-        edge_slot_index.copy_from_slice(&bytes[12..16]);
         Self {
-            shard_id: ShardId::from_le_bytes(shard_id),
-            owner_vertex_id: VertexId::from(u32::from_le_bytes(owner_vertex_id)),
-            edge_slot_index: EdgeSlotIndex::from_le_bytes(edge_slot_index),
+            encoded: EncodedEdgeId(bytes),
         }
     }
 
@@ -104,6 +119,11 @@ impl GraphPathEdgeId {
                     actual: bytes.len(),
                 })?;
         Ok(Self::from_bytes(bytes))
+    }
+
+    #[inline]
+    pub fn decode_global(self, key: &ElementIdEncodingKey) -> GlobalEdgeId {
+        decode_global_edge_id(key, self.encoded)
     }
 }
 
@@ -136,14 +156,17 @@ mod tests {
 
     #[test]
     fn vertex_path_id_roundtrips() {
-        let id = GraphPathVertexId::new(42);
+        let key = ElementIdEncodingKey::standalone();
+        let id = GraphPathVertexId::from_global(&key, GlobalVertexId::new(ShardId::new(0), 42));
         assert_eq!(GraphPathVertexId::from_bytes(id.to_bytes()), id);
         assert_eq!(GraphPathVertexId::try_from_slice(&id.to_bytes()), Ok(id));
     }
 
     #[test]
     fn edge_path_id_roundtrips() {
+        let key = ElementIdEncodingKey::standalone();
         let id = GraphPathEdgeId::new(
+            &key,
             ShardId::new(0),
             VertexId::from(7),
             EdgeSlotIndex::from_raw(9),

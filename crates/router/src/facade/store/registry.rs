@@ -228,9 +228,6 @@ impl RouterStore {
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| {
             m.remove(&entry.graph_canister);
         });
-        ROUTER_PENDING_LOGICAL.with_borrow_mut(|p| {
-            p.remove(&entry.graph_canister);
-        });
         Ok(())
     }
 }

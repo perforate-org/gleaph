@@ -7,7 +7,7 @@ use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
 use gleaph_graph_kernel::federation::{
-    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, LogicalVertexId,
+    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, GlobalVertexId,
     VertexPlacement,
 };
 use ic_stable_lara::VertexId;
@@ -20,7 +20,7 @@ use crate::plan::{PlanBinding, PlanQueryError};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TraversalExpandSource {
     LocalCsr(VertexId),
-    PeerExpand(LogicalVertexId),
+    PeerExpand(GlobalVertexId),
 }
 
 /// Map GQL expand direction to federated expand API direction.
@@ -60,7 +60,7 @@ pub(crate) async fn resolve_traversal_expand_source(
     };
 
     let logical = match binding {
-        PlanBinding::Vertex(vertex_id) => store.logical_vertex_id(*vertex_id),
+        PlanBinding::Vertex(vertex_id) => store.global_vertex_id(*vertex_id),
         PlanBinding::RemoteVertex(logical) => Some(*logical),
         _ => {
             return Err(PlanQueryError::MissingBinding {

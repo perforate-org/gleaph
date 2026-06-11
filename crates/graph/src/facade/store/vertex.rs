@@ -1,10 +1,10 @@
 //! GraphStore `vertex` implementation.
 
-use super::super::stable::{GRAPH, VERTEX_LOGICAL_IDS};
+use super::super::stable::GRAPH;
 use crate::index::placement;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, Vertex};
 use gleaph_graph_kernel::federation::{
-    CommitVertexPlacementArgs, LogicalVertexId, standalone_logical_vertex_id,
+    CommitVertexPlacementArgs, ElementIdEncodingKey, GlobalVertexId, ShardId,
 };
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexCount, VertexId, traits::CsrEdge};
@@ -30,49 +30,36 @@ impl GraphStore {
     }
 
     pub async fn insert_vertex_row(&self, vertex: Vertex) -> Result<VertexId, GraphStoreError> {
-        let pending_logical = match self.federation_routing() {
-            Some(routing) => {
-                Some(placement::allocate_logical_vertex_id(routing.router_canister).await?)
-            }
-            None => None,
-        };
-
         let vertex_id = self
             .with_graph_mut(|graph| graph.push_vertex_row(vertex.into()))
             .map_err(GraphStoreError::from)?;
 
-        let logical_vertex_id = match pending_logical {
-            Some(logical_vertex_id) => {
-                let routing = self
-                    .federation_routing()
-                    .expect("federation routing required after allocate");
-                placement::commit_vertex_placement(
-                    routing.router_canister,
-                    CommitVertexPlacementArgs {
-                        logical_vertex_id,
-                        local_vertex_id: placement::local_vertex_id_raw(vertex_id),
-                    },
-                )
-                .await?;
-                logical_vertex_id
-            }
-            None => standalone_logical_vertex_id(vertex_id),
-        };
+        if let Some(routing) = self.federation_routing() {
+            placement::commit_vertex_placement(
+                routing.router_canister,
+                CommitVertexPlacementArgs {
+                    local_vertex_id: placement::local_vertex_id_raw(vertex_id),
+                },
+            )
+            .await?;
+        }
 
-        VERTEX_LOGICAL_IDS.with_borrow_mut(|map| {
-            map.insert(vertex_id, logical_vertex_id);
-        });
         Ok(vertex_id)
     }
 
-    pub fn logical_vertex_id(&self, vertex_id: VertexId) -> Option<LogicalVertexId> {
-        VERTEX_LOGICAL_IDS
-            .with_borrow(|map| map.get(vertex_id))
-            .or_else(|| {
-                self.federation_routing()
-                    .is_none()
-                    .then(|| standalone_logical_vertex_id(vertex_id))
-            })
+    pub fn global_vertex_id(&self, vertex_id: VertexId) -> Option<GlobalVertexId> {
+        let local = placement::local_vertex_id_raw(vertex_id);
+        let shard_id = self
+            .federation_routing()
+            .map(|r| r.shard_id)
+            .unwrap_or(ShardId::new(0));
+        Some(GlobalVertexId::new(shard_id, local))
+    }
+
+    /// Deprecated alias for migration in call sites.
+    #[inline]
+    pub fn logical_vertex_id(&self, vertex_id: VertexId) -> Option<GlobalVertexId> {
+        self.global_vertex_id(vertex_id)
     }
 
     pub(crate) fn assert_local_vertex_writable(
@@ -85,12 +72,12 @@ impl GraphStore {
         let Some(routing) = self.federation_routing() else {
             return Ok(());
         };
-        let Some(logical_vertex_id) = self.logical_vertex_id(vertex_id) else {
+        let Some(global_vertex_id) = self.global_vertex_id(vertex_id) else {
             return Ok(());
         };
         #[cfg(target_family = "wasm")]
         let placement = {
-            let _ = logical_vertex_id;
+            let _ = global_vertex_id;
             let local = placement::local_vertex_id_raw(vertex_id);
             gleaph_graph_kernel::federation::VertexPlacement::Active(
                 gleaph_graph_kernel::federation::PhysicalVertexLocation::new(
@@ -102,15 +89,15 @@ impl GraphStore {
         #[cfg(not(target_family = "wasm"))]
         let placement = pollster::block_on(placement::resolve_placement(
             routing.router_canister,
-            logical_vertex_id,
+            global_vertex_id,
         ))?;
         let _ = placement;
         Ok(())
     }
 
     pub(crate) fn path_vertex_element_id(&self, vertex_id: VertexId) -> Option<GraphPathVertexId> {
-        self.logical_vertex_id(vertex_id)
-            .map(GraphPathVertexId::new)
+        self.global_vertex_id(vertex_id)
+            .map(|id| GraphPathVertexId::from_global(&ElementIdEncodingKey::standalone(), id))
     }
 
     pub(crate) fn edge_sidecar_owner_from_in_row(&self, dst: VertexId, edge: &Edge) -> VertexId {
@@ -132,13 +119,11 @@ impl GraphStore {
         self.with_graph_mut(|graph| graph.push_vertex_row(vertex.into()))
     }
 
+    #[cfg(test)]
     pub(crate) fn register_logical_vertex_mapping(
         &self,
-        vertex_id: VertexId,
-        logical_vertex_id: LogicalVertexId,
+        _vertex_id: VertexId,
+        _global_vertex_id: GlobalVertexId,
     ) {
-        VERTEX_LOGICAL_IDS.with_borrow_mut(|map| {
-            map.insert(vertex_id, logical_vertex_id);
-        });
     }
 }

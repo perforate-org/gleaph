@@ -1,17 +1,25 @@
 //! Distributed graph federation identifiers and placement types.
 
 mod backfill_shard_state;
+mod encoded;
 mod expand;
+mod global_edge_id;
 mod peer_sync;
 mod posting_backfill;
 mod router_error;
 mod shard_id;
 
 pub use backfill_shard_state::BackfillShardState;
+pub use encoded::{
+    ENCODED_EDGE_ID_BYTES, ENCODED_VERTEX_ID_BYTES, ElementIdEncodingKey, EncodedEdgeId,
+    EncodedVertexId, decode_global_edge_id, decode_global_vertex_id, encode_global_edge_id,
+    encode_global_vertex_id,
+};
 pub use expand::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor,
     MAX_FEDERATED_EXPAND_PAYLOAD_BYTE_WIDTH,
 };
+pub use global_edge_id::GlobalEdgeId;
 pub use peer_sync::{AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs};
 pub use posting_backfill::{PostingBackfillArgs, PostingBackfillResult};
 pub use router_error::RouterError;
@@ -23,39 +31,34 @@ use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
-/// Stable logical vertex identity (globally unique across graph shards).
-pub type LogicalVertexId = u64;
-
 /// Dense vertex index within a single graph shard (`VertexId` in LARA).
 pub type LocalVertexId = u32;
 
 /// Router `commit_vertex_placement` argument (graph shard → router).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct CommitVertexPlacementArgs {
-    pub logical_vertex_id: LogicalVertexId,
     pub local_vertex_id: LocalVertexId,
 }
 
 /// Authoritative graph shard drops router placement after deleting the vertex locally.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct ReleaseLogicalVertexArgs {
-    pub logical_vertex_id: LogicalVertexId,
+pub struct ReleaseVertexPlacementArgs {
+    pub local_vertex_id: LocalVertexId,
 }
 
-/// Standalone-shard identity mapping: local dense id equals logical id on one process.
-#[inline]
-pub fn standalone_logical_vertex_id(local: VertexId) -> LogicalVertexId {
-    u64::from(u32::from_le_bytes(local.to_le_bytes()))
-}
-
-/// Stable key for reverse placement lookup (`shard_id`, `local_vertex_id`).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct PhysicalPlacementKey {
+/// Canonical global vertex key (`shard_id`, `local_vertex_id`).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+)]
+pub struct GlobalVertexId {
     pub shard_id: ShardId,
     pub local_vertex_id: LocalVertexId,
 }
 
-impl PhysicalPlacementKey {
+/// Deprecated alias retained for mechanical migration in router stable maps.
+pub type PhysicalPlacementKey = GlobalVertexId;
+
+impl GlobalVertexId {
     #[inline]
     pub const fn new(shard_id: ShardId, local_vertex_id: LocalVertexId) -> Self {
         Self {
@@ -87,7 +90,7 @@ impl PhysicalPlacementKey {
     }
 }
 
-impl Storable for PhysicalPlacementKey {
+impl Storable for GlobalVertexId {
     const BOUND: Bound = Bound::Bounded {
         max_size: 8,
         is_fixed_size: true,
@@ -185,20 +188,17 @@ mod tests {
     use ic_stable_structures::Storable;
 
     #[test]
-    fn physical_placement_key_le_bytes_roundtrip() {
-        let key = PhysicalPlacementKey::new(ShardId::new(0), 42);
-        assert_eq!(key, PhysicalPlacementKey::from_le_bytes(key.to_le_bytes()));
-        assert_eq!(
-            key,
-            PhysicalPlacementKey::from_posting_hit(ShardId::new(0), 42)
-        );
+    fn global_vertex_id_le_bytes_roundtrip() {
+        let key = GlobalVertexId::new(ShardId::new(0), 42);
+        assert_eq!(key, GlobalVertexId::from_le_bytes(key.to_le_bytes()));
+        assert_eq!(key, GlobalVertexId::from_posting_hit(ShardId::new(0), 42));
     }
 
     #[test]
-    fn physical_placement_key_storable_roundtrip() {
-        let key = PhysicalPlacementKey::new(ShardId::new(1), 99);
+    fn global_vertex_id_storable_roundtrip() {
+        let key = GlobalVertexId::new(ShardId::new(1), 99);
         let bytes = key.to_bytes();
-        assert_eq!(key, PhysicalPlacementKey::from_bytes(bytes));
+        assert_eq!(key, GlobalVertexId::from_bytes(bytes));
     }
 
     #[test]
@@ -227,20 +227,13 @@ mod tests {
     #[test]
     fn placement_args_candid_roundtrip() {
         let commit = CommitVertexPlacementArgs {
-            logical_vertex_id: 1,
             local_vertex_id: 42,
         };
-        let release = ReleaseLogicalVertexArgs {
-            logical_vertex_id: 1,
+        let release = ReleaseVertexPlacementArgs {
+            local_vertex_id: 42,
         };
         for value in [Encode!(&commit).unwrap(), Encode!(&release).unwrap()] {
             assert!(!value.is_empty());
         }
-    }
-
-    #[test]
-    fn standalone_logical_vertex_id_maps_local_bytes() {
-        let local = VertexId::from(42u32);
-        assert_eq!(standalone_logical_vertex_id(local), 42);
     }
 }

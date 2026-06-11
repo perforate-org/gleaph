@@ -229,12 +229,12 @@ pub async fn e2e_insert_vertex() -> Result<super::types::E2eInsertVertexResult, 
         .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
         .await
         .map_err(|e| e.to_string())?;
-    let logical_vertex_id = store
-        .logical_vertex_id(vertex_id)
-        .ok_or_else(|| "logical id missing after insert".to_string())?;
+    let global_vertex_id = store
+        .global_vertex_id(vertex_id)
+        .ok_or_else(|| "global id missing after insert".to_string())?;
     Ok(super::types::E2eInsertVertexResult {
         local_vertex_id: placement::local_vertex_id_raw(vertex_id),
-        logical_vertex_id,
+        global_vertex_id,
     })
 }
 

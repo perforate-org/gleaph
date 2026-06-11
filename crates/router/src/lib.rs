@@ -77,17 +77,17 @@ fn list_shards_for_graph(
 
 #[query]
 fn resolve_placement(
-    logical_vertex_id: types::LogicalVertexId,
+    vertex_id: types::GlobalVertexId,
 ) -> Result<types::VertexPlacement, RouterError> {
-    canister::resolve_placement(logical_vertex_id)
+    canister::resolve_placement(vertex_id)
 }
 
 #[query]
-fn resolve_logical_at(
+fn resolve_global_at(
     shard_id: types::ShardId,
     local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
-) -> Result<types::LogicalVertexId, RouterError> {
-    canister::resolve_logical_at(shard_id, local_vertex_id)
+) -> Result<types::GlobalVertexId, RouterError> {
+    canister::resolve_global_at(shard_id, local_vertex_id)
 }
 
 #[query]
@@ -162,20 +162,13 @@ fn admin_intern_property(name: String) -> Result<types::PropertyId, RouterError>
 }
 
 #[update]
-fn allocate_logical_vertex_id() -> Result<types::LogicalVertexId, RouterError> {
-    canister::allocate_logical_vertex_id()
-}
-
-#[update]
 fn commit_vertex_placement(args: types::CommitVertexPlacementArgs) -> Result<(), RouterError> {
     canister::commit_vertex_placement(args)
 }
 
 #[update]
-fn release_logical_vertex_placement(
-    args: types::ReleaseLogicalVertexArgs,
-) -> Result<(), RouterError> {
-    canister::release_logical_vertex_placement(args)
+fn release_vertex_placement(args: types::ReleaseVertexPlacementArgs) -> Result<(), RouterError> {
+    canister::release_vertex_placement(args)
 }
 
 /// Read-only GQL: composite query (calls index + graph query endpoints).

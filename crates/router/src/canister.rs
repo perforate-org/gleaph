@@ -8,9 +8,9 @@ use crate::types::{
     AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminLabelTelemetryReplayStepArgs,
     AdminLabelTelemetryReplayStepResult, AdminPropertyBackfillStepArgs,
     AdminPropertyBackfillStepResult, AdminRegisterShardArgs, CommitVertexPlacementArgs,
-    EdgeLabelId, GrantRoleArgs, GraphRegistryEntry, LabelBackfillShardStatus, LogicalVertexId,
-    PropertyBackfillShardStatus, PropertyId, ReleaseLogicalVertexArgs, ShardId, ShardRegistryEntry,
-    VertexLabelId, VertexPlacement,
+    EdgeLabelId, GlobalVertexId, GrantRoleArgs, GraphRegistryEntry, LabelBackfillShardStatus,
+    PropertyBackfillShardStatus, PropertyId, ReleaseVertexPlacementArgs, ShardId,
+    ShardRegistryEntry, VertexLabelId, VertexPlacement,
 };
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
@@ -54,17 +54,15 @@ pub(crate) fn list_shards_for_graph(
     RouterStore::new().list_shards_for_graph(&logical_graph_name)
 }
 
-pub(crate) fn resolve_placement(
-    logical_vertex_id: LogicalVertexId,
-) -> Result<VertexPlacement, RouterError> {
-    RouterStore::new().resolve_placement(logical_vertex_id)
+pub(crate) fn resolve_placement(vertex_id: GlobalVertexId) -> Result<VertexPlacement, RouterError> {
+    RouterStore::new().resolve_placement(vertex_id)
 }
 
-pub(crate) fn resolve_logical_at(
+pub(crate) fn resolve_global_at(
     shard_id: ShardId,
     local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
-) -> Result<LogicalVertexId, RouterError> {
-    RouterStore::new().resolve_logical_at(shard_id, local_vertex_id)
+) -> Result<GlobalVertexId, RouterError> {
+    RouterStore::new().resolve_global_at(shard_id, local_vertex_id)
 }
 
 pub(crate) fn lookup_vertex_label_id(name: String) -> Result<VertexLabelId, RouterError> {
@@ -199,16 +197,12 @@ pub(crate) fn admin_set_indexed_vertex_property(
     Ok(())
 }
 
-pub(crate) fn allocate_logical_vertex_id() -> Result<LogicalVertexId, RouterError> {
-    RouterStore::new().allocate_logical_vertex_id(msg_caller())
-}
-
 pub(crate) fn commit_vertex_placement(args: CommitVertexPlacementArgs) -> Result<(), RouterError> {
     RouterStore::new().commit_vertex_placement(msg_caller(), args)
 }
 
-pub(crate) fn release_logical_vertex_placement(
-    args: ReleaseLogicalVertexArgs,
+pub(crate) fn release_vertex_placement(
+    args: ReleaseVertexPlacementArgs,
 ) -> Result<(), RouterError> {
-    RouterStore::new().release_logical_vertex_placement(msg_caller(), args)
+    RouterStore::new().release_vertex_placement(msg_caller(), args)
 }

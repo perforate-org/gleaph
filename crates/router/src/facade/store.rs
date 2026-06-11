@@ -22,8 +22,7 @@ mod tests;
 
 use super::stable::{
     ROUTER_APPLIED_LABEL_TELEMETRY, ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_LABEL_LIVE_BY_SHARD,
-    ROUTER_EDGE_LABEL_STATS, ROUTER_GRAPHS, ROUTER_LOGICAL_COUNTER, ROUTER_MUTATION_BY_CLIENT_KEY,
-    ROUTER_MUTATION_COUNTER, ROUTER_PENDING_LOGICAL, ROUTER_PLACEMENT_BY_PHYSICAL,
+    ROUTER_EDGE_LABEL_STATS, ROUTER_GRAPHS, ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER,
     ROUTER_PLACEMENTS, ROUTER_PROPERTY_CATALOG, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
     ROUTER_VERTEX_LABEL_CATALOG, ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
 };
@@ -58,11 +57,6 @@ impl RouterStore {
         ROUTER_SHARDS.with_borrow_mut(|s| s.clear_new());
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| m.clear_new());
         ROUTER_PLACEMENTS.with_borrow_mut(|p| p.clear_new());
-        ROUTER_PLACEMENT_BY_PHYSICAL.with_borrow_mut(|p| p.clear_new());
-        ROUTER_LOGICAL_COUNTER.with_borrow_mut(|c| {
-            c.set(0);
-        });
-        ROUTER_PENDING_LOGICAL.with_borrow_mut(|p| p.clear_new());
         ROUTER_VERTEX_LABEL_CATALOG.with_borrow_mut(|m| m.clear_new());
         ROUTER_EDGE_LABEL_CATALOG.with_borrow_mut(|m| m.clear_new());
         ROUTER_VERTEX_LABEL_STATS.with_borrow_mut(|m| m.clear_new());

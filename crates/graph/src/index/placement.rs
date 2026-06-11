@@ -2,12 +2,11 @@
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
-    CommitVertexPlacementArgs, LocalVertexId, LogicalVertexId, PhysicalPlacementKey,
-    PhysicalVertexLocation, ReleaseLogicalVertexArgs, RouterError, ShardId, ShardRegistryEntry,
-    VertexPlacement,
+    CommitVertexPlacementArgs, GlobalVertexId, LocalVertexId, PhysicalVertexLocation,
+    ReleaseVertexPlacementArgs, RouterError, ShardId, ShardRegistryEntry, VertexPlacement,
 };
 use ic_stable_lara::VertexId;
-use std::cell::{Cell, RefCell};
+use std::cell::RefCell;
 use std::fmt;
 
 #[derive(Clone, Debug)]
@@ -28,41 +27,11 @@ impl fmt::Display for VertexPlacementError {
 impl std::error::Error for VertexPlacementError {}
 
 thread_local! {
-    static NATIVE_TEST_LOGICAL_COUNTER: Cell<u64> = const { Cell::new(0) };
-    static NATIVE_TEST_PENDING_LOGICAL: Cell<Option<LogicalVertexId>> = const { Cell::new(None) };
-    static NATIVE_TEST_PLACEMENT_BY_PHYSICAL: RefCell<
-        std::collections::HashMap<PhysicalPlacementKey, LogicalVertexId>,
-    > = RefCell::new(std::collections::HashMap::new());
     static NATIVE_TEST_PLACEMENTS: RefCell<
-        std::collections::HashMap<LogicalVertexId, VertexPlacement>,
+        std::collections::HashMap<GlobalVertexId, VertexPlacement>,
     > = RefCell::new(std::collections::HashMap::new());
     static NATIVE_TEST_SHARDS: RefCell<Vec<ShardRegistryEntry>> =
         const { RefCell::new(Vec::new()) };
-}
-
-pub async fn allocate_logical_vertex_id(
-    router_canister: Principal,
-) -> Result<LogicalVertexId, VertexPlacementError> {
-    #[cfg(target_family = "wasm")]
-    {
-        let logical: Result<LogicalVertexId, RouterError> =
-            super::router_call::call_router0(router_canister, "allocate_logical_vertex_id")
-                .await
-                .map_err(VertexPlacementError::Call)?;
-        return logical.map_err(VertexPlacementError::Rejected);
-    }
-
-    #[cfg(not(target_family = "wasm"))]
-    {
-        let _ = router_canister;
-        let logical = NATIVE_TEST_LOGICAL_COUNTER.with(|c| {
-            let next = c.get().saturating_add(1);
-            c.set(next);
-            next
-        });
-        NATIVE_TEST_PENDING_LOGICAL.with(|p| p.set(Some(logical)));
-        Ok(logical)
-    }
 }
 
 pub async fn commit_vertex_placement(
@@ -81,22 +50,11 @@ pub async fn commit_vertex_placement(
     #[cfg(not(target_family = "wasm"))]
     {
         let _ = router_canister;
-        let pending = NATIVE_TEST_PENDING_LOGICAL.with(|p| p.take()).ok_or(
-            VertexPlacementError::Rejected(RouterError::UnallocatedLogicalVertex),
-        )?;
-        if pending != args.logical_vertex_id {
-            return Err(VertexPlacementError::Rejected(
-                RouterError::UnallocatedLogicalVertex,
-            ));
-        }
         if let Some(routing) = crate::facade::GraphStore::new().federation_routing() {
-            let physical = PhysicalPlacementKey::new(routing.shard_id, args.local_vertex_id);
-            NATIVE_TEST_PLACEMENT_BY_PHYSICAL.with_borrow_mut(|map| {
-                map.insert(physical, args.logical_vertex_id);
-            });
+            let vertex_id = GlobalVertexId::new(routing.shard_id, args.local_vertex_id);
             NATIVE_TEST_PLACEMENTS.with_borrow_mut(|map| {
                 map.insert(
-                    args.logical_vertex_id,
+                    vertex_id,
                     VertexPlacement::Active(PhysicalVertexLocation::new(
                         routing.shard_id,
                         args.local_vertex_id,
@@ -152,17 +110,14 @@ pub fn native_test_register_shard(entry: ShardRegistryEntry) {
 
 pub async fn resolve_placement(
     router_canister: Principal,
-    logical_vertex_id: LogicalVertexId,
+    vertex_id: GlobalVertexId,
 ) -> Result<VertexPlacement, VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        let placement: Result<VertexPlacement, RouterError> = super::router_call::call_router1(
-            router_canister,
-            "resolve_placement",
-            logical_vertex_id,
-        )
-        .await
-        .map_err(VertexPlacementError::Call)?;
+        let placement: Result<VertexPlacement, RouterError> =
+            super::router_call::call_router1(router_canister, "resolve_placement", vertex_id)
+                .await
+                .map_err(VertexPlacementError::Call)?;
         return placement.map_err(VertexPlacementError::Rejected);
     }
 
@@ -170,37 +125,34 @@ pub async fn resolve_placement(
     {
         let _ = router_canister;
         NATIVE_TEST_PLACEMENTS
-            .with_borrow(|map| map.get(&logical_vertex_id).copied())
+            .with_borrow(|map| map.get(&vertex_id).copied())
             .ok_or(VertexPlacementError::Rejected(RouterError::VertexNotFound))
     }
 }
 
-pub async fn release_logical_vertex_placement(
+pub async fn release_vertex_placement(
     router_canister: Principal,
-    args: ReleaseLogicalVertexArgs,
+    args: ReleaseVertexPlacementArgs,
 ) -> Result<(), VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        let result: Result<(), RouterError> = super::router_call::call_router1(
-            router_canister,
-            "release_logical_vertex_placement",
-            args,
-        )
-        .await
-        .map_err(VertexPlacementError::Call)?;
+        let result: Result<(), RouterError> =
+            super::router_call::call_router1(router_canister, "release_vertex_placement", args)
+                .await
+                .map_err(VertexPlacementError::Call)?;
         return result.map_err(VertexPlacementError::Rejected);
     }
 
     #[cfg(not(target_family = "wasm"))]
     {
         let _ = router_canister;
-        native_release_logical_vertex_placement(args)
+        native_release_vertex_placement(args)
     }
 }
 
 #[cfg(not(target_family = "wasm"))]
-fn native_release_logical_vertex_placement(
-    args: ReleaseLogicalVertexArgs,
+fn native_release_vertex_placement(
+    args: ReleaseVertexPlacementArgs,
 ) -> Result<(), VertexPlacementError> {
     let routing = crate::facade::GraphStore::new()
         .federation_routing()
@@ -208,8 +160,9 @@ fn native_release_logical_vertex_placement(
             RouterError::ShardNotRegistered,
         ))?;
 
+    let vertex_id = GlobalVertexId::new(routing.shard_id, args.local_vertex_id);
     let placement = NATIVE_TEST_PLACEMENTS
-        .with_borrow(|map| map.get(&args.logical_vertex_id).copied())
+        .with_borrow(|map| map.get(&vertex_id).copied())
         .ok_or(VertexPlacementError::Rejected(RouterError::VertexNotFound))?;
 
     let VertexPlacement::Active(loc) = placement;
@@ -217,12 +170,8 @@ fn native_release_logical_vertex_placement(
         return Err(VertexPlacementError::Rejected(RouterError::Forbidden));
     }
 
-    let physical = PhysicalPlacementKey::new(loc.shard_id, loc.local_vertex_id);
-    NATIVE_TEST_PLACEMENT_BY_PHYSICAL.with_borrow_mut(|map| {
-        map.remove(&physical);
-    });
     NATIVE_TEST_PLACEMENTS.with_borrow_mut(|map| {
-        map.remove(&args.logical_vertex_id);
+        map.remove(&vertex_id);
     });
     Ok(())
 }
@@ -231,49 +180,34 @@ pub fn local_vertex_id_raw(vertex_id: VertexId) -> LocalVertexId {
     u32::from_le_bytes(vertex_id.to_le_bytes())
 }
 
-/// Test-only registry for federated index materialization without a router canister.
-#[cfg(test)]
-pub fn native_test_register_physical_placement(
-    shard_id: ShardId,
-    local_vertex_id: LocalVertexId,
-    logical_vertex_id: LogicalVertexId,
-) {
-    NATIVE_TEST_PLACEMENT_BY_PHYSICAL.with_borrow_mut(|map| {
-        map.insert(
-            PhysicalPlacementKey::new(shard_id, local_vertex_id),
-            logical_vertex_id,
-        );
-    });
-}
-
-/// Override authoritative placement for a logical vertex (unit tests only).
+/// Override authoritative placement for a global vertex (unit tests only).
 #[cfg(test)]
 pub fn native_test_set_active_placement(
-    logical_vertex_id: LogicalVertexId,
+    vertex_id: GlobalVertexId,
     location: PhysicalVertexLocation,
 ) {
     NATIVE_TEST_PLACEMENTS.with_borrow_mut(|map| {
-        map.insert(logical_vertex_id, VertexPlacement::Active(location));
+        map.insert(vertex_id, VertexPlacement::Active(location));
     });
 }
 
-pub async fn resolve_logical_at(
+pub async fn resolve_global_at(
     router_canister: Principal,
     shard_id: ShardId,
     local_vertex_id: LocalVertexId,
-) -> Result<Option<LogicalVertexId>, VertexPlacementError> {
+) -> Result<Option<GlobalVertexId>, VertexPlacementError> {
     #[cfg(target_family = "wasm")]
     {
-        let logical: Result<LogicalVertexId, RouterError> = super::router_call::call_router2(
+        let vertex_id: Result<GlobalVertexId, RouterError> = super::router_call::call_router2(
             router_canister,
-            "resolve_logical_at",
+            "resolve_global_at",
             shard_id,
             local_vertex_id,
         )
         .await
         .map_err(VertexPlacementError::Call)?;
 
-        return match logical {
+        return match vertex_id {
             Ok(id) => Ok(Some(id)),
             Err(RouterError::VertexNotFound) => Ok(None),
             Err(err) => Err(VertexPlacementError::Rejected(err)),
@@ -283,11 +217,9 @@ pub async fn resolve_logical_at(
     #[cfg(not(target_family = "wasm"))]
     {
         let _ = router_canister;
-        Ok(NATIVE_TEST_PLACEMENT_BY_PHYSICAL.with(|map| {
-            map.borrow()
-                .get(&PhysicalPlacementKey::new(shard_id, local_vertex_id))
-                .copied()
-        }))
+        let vertex_id = GlobalVertexId::new(shard_id, local_vertex_id);
+        Ok(NATIVE_TEST_PLACEMENTS
+            .with_borrow(|map| map.contains_key(&vertex_id).then_some(vertex_id)))
     }
 }
 
@@ -333,14 +265,13 @@ mod tests {
             .expect("routing");
 
         let vid = store.insert_vertex().expect("insert");
-        let logical = store.logical_vertex_id(vid).expect("logical");
+        let global = store.global_vertex_id(vid).expect("global");
 
         store.delete_vertex(vid).expect("delete");
 
         assert!(matches!(
-            pollster::block_on(resolve_placement(Principal::management_canister(), logical)),
+            pollster::block_on(resolve_placement(Principal::management_canister(), global)),
             Err(VertexPlacementError::Rejected(RouterError::VertexNotFound))
         ));
-        assert!(store.logical_vertex_id(vid).is_none());
     }
 }

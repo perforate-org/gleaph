@@ -9,7 +9,7 @@ use gleaph_graph_kernel::federation::ShardId;
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct E2eInsertVertexResult {
     pub local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
-    pub logical_vertex_id: gleaph_graph_kernel::federation::LogicalVertexId,
+    pub global_vertex_id: gleaph_graph_kernel::federation::GlobalVertexId,
 }
 
 /// Federation wiring for PocketIC tests (avoids router inter-canister calls during graph init).

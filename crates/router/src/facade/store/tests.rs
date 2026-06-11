@@ -5,8 +5,8 @@ use super::*;
 use crate::init::RouterInitArgs;
 use crate::types::VertexPlacement;
 use crate::types::{
-    AdminRegisterShardArgs, CommitVertexPlacementArgs, GraphRegistryEntry, GraphStatus,
-    ProvisioningState, ReleaseLogicalVertexArgs,
+    AdminRegisterShardArgs, CommitVertexPlacementArgs, GlobalVertexId, GraphRegistryEntry,
+    GraphStatus, ProvisioningState, ReleaseVertexPlacementArgs,
 };
 use candid::Principal;
 use gleaph_gql::types::EdgeDirection;
@@ -31,7 +31,7 @@ fn test_init_args() -> RouterInitArgs {
 }
 
 #[test]
-fn register_shard_and_allocate_commit_placement() {
+fn register_shard_and_commit_placement() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
@@ -51,27 +51,24 @@ fn register_shard_and_allocate_commit_placement() {
     ))
     .expect("register");
 
-    let logical = store.allocate_logical_vertex_id(graph).expect("allocate");
-    assert_eq!(logical, 1);
-
     store
         .commit_vertex_placement(
             graph,
             CommitVertexPlacementArgs {
-                logical_vertex_id: logical,
                 local_vertex_id: 42,
             },
         )
         .expect("commit");
 
+    let vertex_id = GlobalVertexId::new(ShardId::new(0), 42);
     assert_eq!(
         store
-            .resolve_logical_at(ShardId::new(0), 42)
+            .resolve_global_at(ShardId::new(0), 42)
             .expect("reverse"),
-        logical
+        vertex_id
     );
 
-    let placement = store.resolve_placement(logical).expect("resolve");
+    let placement = store.resolve_placement(vertex_id).expect("resolve");
     assert_eq!(
         placement,
         VertexPlacement::Active(PhysicalVertexLocation::new(ShardId::new(0), 42))
@@ -153,7 +150,7 @@ fn unregister_shard_removes_registry_and_leaves_siblings() {
 }
 
 #[test]
-fn release_logical_vertex_placement_clears_registry() {
+fn release_vertex_placement_clears_registry() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
@@ -173,28 +170,27 @@ fn release_logical_vertex_placement_clears_registry() {
     ))
     .expect("register");
 
-    let logical = store.allocate_logical_vertex_id(graph).expect("allocate");
     store
         .commit_vertex_placement(
             graph,
             CommitVertexPlacementArgs {
-                logical_vertex_id: logical,
                 local_vertex_id: 42,
             },
         )
         .expect("commit");
 
     store
-        .release_logical_vertex_placement(
+        .release_vertex_placement(
             graph,
-            ReleaseLogicalVertexArgs {
-                logical_vertex_id: logical,
+            ReleaseVertexPlacementArgs {
+                local_vertex_id: 42,
             },
         )
         .expect("release");
 
-    assert!(store.resolve_placement(logical).is_err());
-    assert!(store.resolve_logical_at(ShardId::new(0), 42).is_err());
+    let vertex_id = GlobalVertexId::new(ShardId::new(0), 42);
+    assert!(store.resolve_placement(vertex_id).is_err());
+    assert!(store.resolve_global_at(ShardId::new(0), 42).is_err());
 }
 
 #[test]

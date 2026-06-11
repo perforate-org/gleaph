@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use gleaph_gql::Value;
 use gleaph_gql::types::PathElement;
 use gleaph_graph_kernel::entry::EdgeSlotIndex;
-use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalEdgeId, ShardId};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::VertexId;
 
@@ -20,6 +20,8 @@ thread_local! {
 /// lookup + `RefCell` borrow win nothing on tiny paths and showed up as instruction regressions in
 /// `plan_query_materialize_value_rows` benches.
 const PATH_MATERIALIZE_SCRATCH_MIN_ELEMENTS: usize = 16;
+
+const ELEMENT_ID_KEY: ElementIdEncodingKey = ElementIdEncodingKey::standalone();
 
 pub(crate) fn path_binding_to_value(store: &GraphStore, pb: &PathBinding) -> Value {
     materialize_path_from_search_states(store, pb.shard_id, pb.states.as_ref(), pb.leaf_state_idx)
@@ -96,7 +98,7 @@ pub(crate) fn vertex_element_id_bytes(
         store
             .path_vertex_element_id(vertex_id)
             .ok_or_else(|| PlanQueryError::MissingBinding {
-                variable: format!("logical vertex id for {vertex_id:?}"),
+                variable: format!("global vertex id for {vertex_id:?}"),
             })?;
     Ok(path_id.to_bytes().to_vec())
 }
@@ -106,23 +108,18 @@ pub(crate) fn edge_element_id_bytes(
     owner_vertex_id: VertexId,
     edge_slot_index: gleaph_graph_kernel::entry::EdgeSlotIndex,
 ) -> Vec<u8> {
-    GraphPathEdgeId::new(shard_id, owner_vertex_id, edge_slot_index)
+    GraphPathEdgeId::new(&ELEMENT_ID_KEY, shard_id, owner_vertex_id, edge_slot_index)
         .to_bytes()
         .to_vec()
 }
 
 fn vertex_path_element(store: &GraphStore, vertex_id: VertexId) -> PathElement {
-    let path_id = if store.federation_configured() {
-        store.path_vertex_element_id(vertex_id).unwrap_or_else(|| {
-            GraphPathVertexId::new(
-                gleaph_graph_kernel::federation::standalone_logical_vertex_id(vertex_id),
-            )
-        })
-    } else {
-        GraphPathVertexId::new(
-            gleaph_graph_kernel::federation::standalone_logical_vertex_id(vertex_id),
-        )
-    };
+    let path_id = store.path_vertex_element_id(vertex_id).unwrap_or_else(|| {
+        store
+            .global_vertex_id(vertex_id)
+            .map(|id| GraphPathVertexId::from_global(&ELEMENT_ID_KEY, id))
+            .expect("global vertex id")
+    });
     PathElement::Vertex(path_id.to_bytes().into())
 }
 
@@ -132,6 +129,7 @@ fn edge_path_element(
 ) -> PathElement {
     PathElement::Edge(
         GraphPathEdgeId::new(
+            &ELEMENT_ID_KEY,
             shard_id,
             handle.owner_vertex_id,
             EdgeSlotIndex::from_raw(handle.slot_index),

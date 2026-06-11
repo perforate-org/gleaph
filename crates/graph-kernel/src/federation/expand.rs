@@ -2,8 +2,9 @@
 
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
+use std::fmt;
 
-use super::{LocalVertexId, LogicalVertexId, ShardId};
+use super::{GlobalVertexId, LocalVertexId, ShardId};
 use crate::entry::EdgePayload;
 
 /// Maximum edge-payload bytes carried by one federated expand hit.
@@ -21,10 +22,10 @@ pub enum FederatedExpandDirection {
     Undirected,
 }
 
-/// Neighbor enumeration for one logical vertex on one graph shard.
+/// Neighbor enumeration for one global vertex on one graph shard.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct FederatedExpandArgs {
-    pub logical_vertex_id: LogicalVertexId,
+    pub vertex_id: GlobalVertexId,
     pub direction: FederatedExpandDirection,
     /// When set, only edges with this LARA `Edge.label_id` are returned.
     pub label_id_raw: Option<u16>,
@@ -37,7 +38,7 @@ pub enum FederatedExpandPayloadError {
 }
 
 impl std::fmt::Display for FederatedExpandPayloadError {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> std::fmt::Result {
         match self {
             Self::PayloadBytesTooLong { len, max } => {
                 write!(
@@ -55,7 +56,7 @@ impl std::error::Error for FederatedExpandPayloadError {}
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct FederatedExpandNeighbor {
     pub shard_id: ShardId,
-    pub neighbor_logical_vertex_id: LogicalVertexId,
+    pub neighbor_vertex_id: GlobalVertexId,
     pub neighbor_local_vertex_id: LocalVertexId,
     /// Local id of the probe vertex when authoritative on this shard; else `0`.
     pub anchor_local_vertex_id: LocalVertexId,
@@ -104,7 +105,7 @@ mod tests {
     fn federated_expand_neighbor_payload_roundtrip() {
         let neighbor = FederatedExpandNeighbor {
             shard_id: ShardId::new(1),
-            neighbor_logical_vertex_id: 2,
+            neighbor_vertex_id: GlobalVertexId::new(ShardId::new(1), 2),
             neighbor_local_vertex_id: 3,
             anchor_local_vertex_id: 4,
             label_id_raw: 5,
@@ -114,7 +115,7 @@ mod tests {
         let payload = neighbor.payload();
         let restored = FederatedExpandNeighbor {
             shard_id: ShardId::new(1),
-            neighbor_logical_vertex_id: 2,
+            neighbor_vertex_id: GlobalVertexId::new(ShardId::new(1), 2),
             neighbor_local_vertex_id: 3,
             anchor_local_vertex_id: 4,
             label_id_raw: 5,
@@ -128,7 +129,7 @@ mod tests {
     #[test]
     fn federated_expand_args_candid_roundtrip() {
         let args = FederatedExpandArgs {
-            logical_vertex_id: 99,
+            vertex_id: GlobalVertexId::new(ShardId::new(0), 99),
             direction: FederatedExpandDirection::Undirected,
             label_id_raw: Some(7),
         };
@@ -142,7 +143,7 @@ mod tests {
         let oversized = vec![0u8; usize::from(MAX_FEDERATED_EXPAND_PAYLOAD_BYTE_WIDTH) + 1];
         let neighbor = FederatedExpandNeighbor {
             shard_id: ShardId::new(0),
-            neighbor_logical_vertex_id: 0,
+            neighbor_vertex_id: GlobalVertexId::new(ShardId::new(0), 0),
             neighbor_local_vertex_id: 0,
             anchor_local_vertex_id: 0,
             label_id_raw: 0,
@@ -159,7 +160,7 @@ mod tests {
     fn federated_expand_neighbor_candid_roundtrip_validates() {
         let neighbor = FederatedExpandNeighbor {
             shard_id: ShardId::new(1),
-            neighbor_logical_vertex_id: 2,
+            neighbor_vertex_id: GlobalVertexId::new(ShardId::new(1), 2),
             neighbor_local_vertex_id: 3,
             anchor_local_vertex_id: 4,
             label_id_raw: 5,

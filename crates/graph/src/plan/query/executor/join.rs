@@ -275,9 +275,9 @@ fn hash_plan_binding_for_join(binding: &PlanBinding, hasher: &mut RapidHasher<'_
                 hasher.write_usize(Arc::as_ptr(&pb.states) as usize);
             }
         }
-        PlanBinding::RemoteVertex(logical) => {
+        PlanBinding::RemoteVertex(global) => {
             hasher.write_u8(5);
-            hasher.write_u64(*logical);
+            hasher.write(&global.to_le_bytes());
         }
     }
 }

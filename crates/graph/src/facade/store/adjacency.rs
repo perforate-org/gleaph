@@ -1,7 +1,7 @@
 //! Adjacency storage domain: canonical edge writes plus derived alias, journal, and maintenance.
 
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeTarget, TaggedEdgeLabelId};
-use gleaph_graph_kernel::federation::LogicalVertexId;
+use gleaph_graph_kernel::federation::GlobalVertexId;
 use ic_stable_lara::{VertexId, traits::CsrEdge};
 
 use super::GraphStore;
@@ -59,7 +59,7 @@ impl GraphStore {
     pub(super) fn commit_logical_edge_insert(
         &self,
         source_vertex_id: VertexId,
-        target_logical_vertex_id: LogicalVertexId,
+        target_vertex_id: GlobalVertexId,
         target_is_remote: bool,
         catalog_label: Option<EdgeLabelId>,
         undirected: bool,
@@ -69,7 +69,7 @@ impl GraphStore {
         journal_edge_insert_to_logical(
             self,
             source_vertex_id,
-            target_logical_vertex_id,
+            target_vertex_id,
             target_is_remote,
             catalog_label,
             undirected,
@@ -180,7 +180,7 @@ pub(super) fn journal_edge_insert(
 pub(super) fn journal_edge_insert_to_logical(
     _store: &GraphStore,
     _source_vertex_id: VertexId,
-    _target_logical_vertex_id: LogicalVertexId,
+    _target_vertex_id: GlobalVertexId,
     _target_is_remote: bool,
     _catalog_label: Option<EdgeLabelId>,
     _undirected: bool,

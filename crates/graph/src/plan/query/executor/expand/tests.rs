@@ -4,8 +4,9 @@ use super::predicates::{PreparedEdgePayloadPredicate, PreparedEdgeVectorThreshol
 use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
 use crate::index::placement::native_test_set_active_placement;
 use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorMetric, EdgeVectorPredicate};
-use gleaph_graph_kernel::federation::PhysicalVertexLocation;
-use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::federation::{
+    ElementIdEncodingKey, GlobalVertexId, PhysicalVertexLocation, ShardId,
+};
 use pollster;
 
 #[test]
@@ -13,7 +14,7 @@ fn resolve_traversal_expand_source_uses_peer_expand_for_foreign_authority() {
     let store = GraphStore::new();
     configure_test_federation(&store);
     let vertex = store.insert_vertex().expect("vertex");
-    let logical = store.logical_vertex_id(vertex).expect("logical");
+    let logical = store.global_vertex_id(vertex).expect("logical");
     native_test_set_active_placement(
         logical,
         PhysicalVertexLocation::new(ShardId::new(1), u32::from(vertex)),
@@ -34,7 +35,7 @@ fn resolve_traversal_expand_source_uses_local_csr_for_remote_vertex_on_home_shar
     let store = GraphStore::new();
     configure_test_federation(&store);
     let vertex = store.insert_vertex().expect("vertex");
-    let logical = store.logical_vertex_id(vertex).expect("logical");
+    let logical = store.global_vertex_id(vertex).expect("logical");
 
     let source = pollster::block_on(resolve_traversal_expand_source(
         &store,
@@ -51,8 +52,8 @@ fn federated_reverse_expand_from_remote_vertex_binding() {
     let store = GraphStore::new();
     configure_test_federation(&store);
     let source = store.insert_vertex().expect("source");
-    let source_logical = store.logical_vertex_id(source).expect("logical");
-    let remote_logical = 88_001u64;
+    let source_logical = store.global_vertex_id(source).expect("logical");
+    let remote_logical = GlobalVertexId::new(ShardId::new(1), 88_001);
     store
         .insert_directed_edge_to_logical(source, remote_logical, None)
         .expect("remote edge");
@@ -96,7 +97,7 @@ fn federated_reverse_expand_from_remote_vertex_binding() {
         Some(PlanBinding::Vertex(v)) if *v == source
     ));
     assert_eq!(
-        store.logical_vertex_id(source).expect("source logical"),
+        store.global_vertex_id(source).expect("source logical"),
         source_logical
     );
 }
@@ -106,7 +107,7 @@ fn federated_var_len_one_hop_from_remote_vertex_binding() {
     let store = GraphStore::new();
     configure_test_federation(&store);
     let source = store.insert_vertex().expect("source");
-    let remote_logical = 88_002u64;
+    let remote_logical = GlobalVertexId::new(ShardId::new(1), 88_002);
     store
         .insert_directed_edge_to_logical(source, remote_logical, None)
         .expect("remote edge");
@@ -160,7 +161,7 @@ fn federated_var_len_rejects_peer_expand_source() {
     let store = GraphStore::new();
     configure_test_federation(&store);
     let vertex = store.insert_vertex().expect("vertex");
-    let logical = store.logical_vertex_id(vertex).expect("logical");
+    let logical = store.global_vertex_id(vertex).expect("logical");
     native_test_set_active_placement(
         logical,
         PhysicalVertexLocation::new(ShardId::new(1), u32::from(vertex)),
@@ -1105,8 +1106,8 @@ fn expand_reused_dst_only_keeps_self_loop_edges() {
     assert_eq!(
         GraphPathVertexId::try_from_slice(id_bytes.as_ref())
             .expect("decode vertex id")
-            .logical_vertex_id,
-        store.logical_vertex_id(anchor).expect("anchor logical id"),
+            .decode_global(&ElementIdEncodingKey::standalone()),
+        store.global_vertex_id(anchor).expect("anchor global id"),
     );
 }
 
@@ -1187,8 +1188,8 @@ fn expand_reused_dst_relabeled_endpoints_keep_self_loop() {
     assert_eq!(
         GraphPathVertexId::try_from_slice(id_bytes.as_ref())
             .expect("decode vertex id")
-            .logical_vertex_id,
-        store.logical_vertex_id(anchor).expect("anchor logical id"),
+            .decode_global(&ElementIdEncodingKey::standalone()),
+        store.global_vertex_id(anchor).expect("anchor global id"),
     );
 }
 
@@ -2954,7 +2955,7 @@ fn gleaph_weight_rejects_edge_payload_width_mismatch() {
 fn federated_neighbor_hit_preserves_remote_payload_bytes() {
     let hit = FederatedExpandNeighbor {
         shard_id: ShardId::new(99),
-        neighbor_logical_vertex_id: 1,
+        neighbor_vertex_id: GlobalVertexId::new(ShardId::new(0), 1),
         neighbor_local_vertex_id: 2,
         anchor_local_vertex_id: 3,
         label_id_raw: 0,

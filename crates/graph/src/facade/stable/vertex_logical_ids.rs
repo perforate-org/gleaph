@@ -1,4 +1,4 @@
-use gleaph_graph_kernel::federation::{LocalVertexId, LogicalVertexId};
+use gleaph_graph_kernel::federation::{GlobalVertexId, LocalVertexId};
 use ic_stable_lara::VertexId;
 use ic_stable_structures::{Memory, StableBTreeMap};
 
@@ -7,7 +7,7 @@ fn local_vertex_id(vertex_id: VertexId) -> LocalVertexId {
 }
 
 pub struct VertexLogicalIdMap<M: Memory> {
-    map: StableBTreeMap<LocalVertexId, LogicalVertexId, M>,
+    map: StableBTreeMap<LocalVertexId, GlobalVertexId, M>,
 }
 
 impl<M: Memory> VertexLogicalIdMap<M> {
@@ -17,22 +17,22 @@ impl<M: Memory> VertexLogicalIdMap<M> {
         }
     }
 
-    pub fn get(&self, vertex_id: VertexId) -> Option<LogicalVertexId> {
+    pub fn get(&self, vertex_id: VertexId) -> Option<GlobalVertexId> {
         self.map.get(&local_vertex_id(vertex_id))
     }
 
-    pub fn insert(&mut self, vertex_id: VertexId, logical_vertex_id: LogicalVertexId) {
+    pub fn insert(&mut self, vertex_id: VertexId, global_vertex_id: GlobalVertexId) {
         self.map
-            .insert(local_vertex_id(vertex_id), logical_vertex_id);
+            .insert(local_vertex_id(vertex_id), global_vertex_id);
     }
 
     pub fn remove(&mut self, vertex_id: VertexId) {
         self.map.remove(&local_vertex_id(vertex_id));
     }
 
-    pub fn find_vertex_id(&self, logical_vertex_id: LogicalVertexId) -> Option<VertexId> {
-        self.map.iter().find_map(|entry| {
-            (entry.value() == logical_vertex_id).then_some(VertexId::from(*entry.key()))
-        })
+    pub fn find_vertex_id(&self, vertex_id: GlobalVertexId) -> Option<VertexId> {
+        self.map
+            .iter()
+            .find_map(|entry| (entry.value() == vertex_id).then_some(VertexId::from(*entry.key())))
     }
 }

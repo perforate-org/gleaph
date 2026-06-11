@@ -37,7 +37,8 @@ pub(crate) use super::{
 pub use crate::facade::EdgeHandle;
 pub use crate::facade::GraphStore;
 pub use crate::gql_execution_context::GqlExecutionContext;
-pub use crate::index::placement::native_test_register_physical_placement;
+pub use crate::index::placement::native_test_set_active_placement;
+pub use gleaph_graph_kernel::federation::GlobalVertexId;
 pub use gleaph_gql::ast::{
     AggregateFunc, BinaryOp, CmpOp, Expr, ExprKind, NullOrder, ObjectName, OrderByClause,
     SortDirection, SortItem, Statement, WhenClause,

@@ -36,7 +36,7 @@ use gleaph_gql_planner::OutputSchema;
 use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, Str};
 use gleaph_graph_kernel::entry::PreparedWeightDecoder;
-use gleaph_graph_kernel::federation::LogicalVertexId;
+use gleaph_graph_kernel::federation::GlobalVertexId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::OutEdgeOrder;
 use std::collections::BTreeMap;
@@ -87,7 +87,7 @@ impl PlanQueryResult {
 pub enum PlanBinding {
     Vertex(VertexId),
     /// Neighbor bound via a shard-local remote ref (logical id only on this shard).
-    RemoteVertex(LogicalVertexId),
+    RemoteVertex(GlobalVertexId),
     Edge(EdgeBinding),
     /// Edges along a variable-length expand (`{min,max}` quantifier), in hop order.
     EdgeGroup(std::sync::Arc<[EdgeBinding]>),
@@ -500,7 +500,7 @@ pub(crate) async fn vertex_binding_for_traversal(
 /// Maps a logical vertex to a local [`VertexId`] when this shard is authoritative.
 pub(crate) async fn resolve_federated_traversal_vertex(
     store: &GraphStore,
-    logical_vertex_id: LogicalVertexId,
+    vertex_id: GlobalVertexId,
     expand_direction: Option<EdgeDirection>,
 ) -> Result<Option<VertexId>, PlanQueryError> {
     let Some(routing) = store.federation_routing() else {
@@ -508,7 +508,7 @@ pub(crate) async fn resolve_federated_traversal_vertex(
             "Expand(remote vertex requires federation routing)",
         ));
     };
-    let placement = placement::resolve_placement(routing.router_canister, logical_vertex_id)
+    let placement = placement::resolve_placement(routing.router_canister, vertex_id)
         .await
         .map_err(|_| PlanQueryError::UnsupportedOp("Expand(remote placement lookup)"))?;
     match placement {

@@ -1,42 +1,39 @@
 use gleaph_graph_kernel::entry::RemoteRefId;
-use gleaph_graph_kernel::federation::LogicalVertexId;
+use gleaph_graph_kernel::federation::GlobalVertexId;
 use ic_stable_structures::{Memory, StableBTreeMap};
 use std::cell::Cell;
 
 pub struct RemoteVertexRefTable<M: Memory> {
-    ref_to_logical: StableBTreeMap<RemoteRefId, LogicalVertexId, M>,
-    logical_to_ref: StableBTreeMap<LogicalVertexId, RemoteRefId, M>,
+    ref_to_vertex: StableBTreeMap<RemoteRefId, GlobalVertexId, M>,
+    vertex_to_ref: StableBTreeMap<GlobalVertexId, RemoteRefId, M>,
     next_ref_id: Cell<u32>,
 }
 
 impl<M: Memory> RemoteVertexRefTable<M> {
-    pub fn init(ref_to_logical_memory: M, logical_to_ref_memory: M) -> Self {
+    pub fn init(ref_to_vertex_memory: M, vertex_to_ref_memory: M) -> Self {
         Self {
-            ref_to_logical: StableBTreeMap::init(ref_to_logical_memory),
-            logical_to_ref: StableBTreeMap::init(logical_to_ref_memory),
+            ref_to_vertex: StableBTreeMap::init(ref_to_vertex_memory),
+            vertex_to_ref: StableBTreeMap::init(vertex_to_ref_memory),
             next_ref_id: Cell::new(1),
         }
     }
 
-    pub fn ensure_remote_ref(&mut self, logical_vertex_id: LogicalVertexId) -> RemoteRefId {
-        if let Some(existing) = self.logical_to_ref.get(&logical_vertex_id) {
+    pub fn ensure_remote_ref(&mut self, vertex_id: GlobalVertexId) -> RemoteRefId {
+        if let Some(existing) = self.vertex_to_ref.get(&vertex_id) {
             return existing;
         }
         let ref_id = RemoteRefId::from_raw(self.allocate_ref_id());
-        self.ref_to_logical.insert(ref_id, logical_vertex_id);
-        self.logical_to_ref.insert(logical_vertex_id, ref_id);
+        self.ref_to_vertex.insert(ref_id, vertex_id);
+        self.vertex_to_ref.insert(vertex_id, ref_id);
         ref_id
     }
 
-    pub fn logical_vertex_id(&self, remote_ref: RemoteRefId) -> Option<LogicalVertexId> {
-        self.ref_to_logical.get(&remote_ref)
+    pub fn global_vertex_id(&self, remote_ref: RemoteRefId) -> Option<GlobalVertexId> {
+        self.ref_to_vertex.get(&remote_ref)
     }
 
-    pub fn remote_ref_for_logical(
-        &self,
-        logical_vertex_id: LogicalVertexId,
-    ) -> Option<RemoteRefId> {
-        self.logical_to_ref.get(&logical_vertex_id)
+    pub fn remote_ref_for_vertex(&self, vertex_id: GlobalVertexId) -> Option<RemoteRefId> {
+        self.vertex_to_ref.get(&vertex_id)
     }
 
     fn allocate_ref_id(&self) -> u32 {

@@ -7,6 +7,7 @@ use gleaph_gql::ast::{AggregateFunc, CmpOp, Expr, ExprKind, ObjectName, TruthVal
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::{ProjectColumn, Str};
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, Vertex};
+use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
@@ -714,8 +715,8 @@ impl QueryExprEvaluator<'_> {
                 Some(PlanBinding::Vertex(vertex_id)) => Ok(Value::Bytes(vertex_element_id_bytes(
                     self.store, *vertex_id,
                 )?)),
-                Some(PlanBinding::RemoteVertex(logical_vertex_id)) => Ok(Value::Bytes(
-                    GraphPathVertexId::new(*logical_vertex_id)
+                Some(PlanBinding::RemoteVertex(vertex_id)) => Ok(Value::Bytes(
+                    GraphPathVertexId::from_global(&ElementIdEncodingKey::standalone(), *vertex_id)
                         .to_bytes()
                         .to_vec(),
                 )),
@@ -872,8 +873,15 @@ pub(crate) fn binding_to_value(
 ) -> Result<Value, PlanQueryError> {
     match binding {
         PlanBinding::Vertex(vertex_id) => vertex_to_value(store, resolved_labels, *vertex_id),
-        PlanBinding::RemoteVertex(logical_vertex_id) => Ok(Value::Record(vec![
-            ("id".to_owned(), Value::Uint64(*logical_vertex_id)),
+        PlanBinding::RemoteVertex(vertex_id) => Ok(Value::Record(vec![
+            (
+                "id".to_owned(),
+                Value::Bytes(
+                    GraphPathVertexId::from_global(&ElementIdEncodingKey::standalone(), *vertex_id)
+                        .to_bytes()
+                        .to_vec(),
+                ),
+            ),
             ("remote".to_owned(), Value::Bool(true)),
         ])),
         PlanBinding::Edge(edge) => edge_to_value(store, resolved_labels, edge.clone()),

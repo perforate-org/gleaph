@@ -6,7 +6,7 @@ use gleaph_gql::types::EdgeDirection;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget};
-use gleaph_graph_kernel::federation::LogicalVertexId;
+use gleaph_graph_kernel::federation::GlobalVertexId;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::traits::CsrEdge;
@@ -200,7 +200,7 @@ where
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ExpandDst {
     Local(VertexId),
-    Remote(LogicalVertexId),
+    Remote(GlobalVertexId),
 }
 
 impl ExpandDst {
@@ -212,7 +212,7 @@ impl ExpandDst {
             Some(EdgeTarget::Local(vertex_id)) => Ok(Some(Self::Local(vertex_id))),
             Some(EdgeTarget::Remote(remote_ref)) => {
                 let logical = store
-                    .logical_vertex_for_remote_ref(remote_ref)
+                    .global_vertex_for_remote_ref(remote_ref)
                     .ok_or_else(|| PlanQueryError::MissingBinding {
                         variable: format!("remote ref {}", remote_ref.raw()),
                     })?;
@@ -237,13 +237,13 @@ pub(crate) fn expand_dst_binding(
         ExpandDst::Local(vertex_id) => {
             vertex_binding_for_projection(store, execution, vertex_id, dst_property_projection)
         }
-        ExpandDst::Remote(logical_vertex_id) => {
+        ExpandDst::Remote(vertex_id) => {
             if dst_property_projection.is_some_and(|props| !props.is_empty()) {
                 return Err(PlanQueryError::InvalidExpressionValue {
                     expression: "property projection on remote vertex binding".into(),
                 });
             }
-            Ok(PlanBinding::RemoteVertex(logical_vertex_id))
+            Ok(PlanBinding::RemoteVertex(vertex_id))
         }
     }
 }

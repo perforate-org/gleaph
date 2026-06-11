@@ -6,7 +6,7 @@ use gleaph_graph_kernel::bidirectional_catalog::{
 };
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::{
-    BackfillShardState, LogicalVertexId, ShardId, ShardRegistryEntry, VertexPlacement,
+    BackfillShardState, GlobalVertexId, ShardId, ShardRegistryEntry, VertexPlacement,
 };
 
 use gleaph_auth::AuthState;
@@ -46,9 +46,9 @@ pub(crate) type StableControllerSet = BTreeSet<Principal, Memory>;
 pub(crate) type StableGraphRegistry = BTreeMap<String, GraphRegistryEntry, Memory>;
 pub(crate) type StableShardRegistry = BTreeMap<ShardId, ShardRegistryEntry, Memory>;
 pub(crate) type StableShardByGraph = BTreeMap<Principal, ShardId, Memory>;
-pub(crate) type StablePlacementMap = BTreeMap<LogicalVertexId, VertexPlacement, Memory>;
+pub(crate) type StablePlacementMap = BTreeMap<GlobalVertexId, VertexPlacement, Memory>;
 pub(crate) type StableLogicalCounter = Cell<u64, Memory>;
-pub(crate) type StablePendingLogical = BTreeMap<Principal, LogicalVertexId, Memory>;
+pub(crate) type StablePendingLogical = BTreeMap<Principal, GlobalVertexId, Memory>;
 pub(crate) type StableVertexLabelCatalog =
     BidirectionalCatalog<VertexLabelId, Memory, Memory, DenseMaxPlusOnePolicy>;
 pub(crate) type StableEdgeLabelCatalog =

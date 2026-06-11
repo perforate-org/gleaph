@@ -6,6 +6,7 @@ use gleaph_graph_kernel::entry::{
     EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, EdgeWeightProfile, VertexRef,
     WeightEncoding,
 };
+use gleaph_graph_kernel::federation::ShardId;
 use ic_stable_lara::{
     MaintenanceBudget, OutEdgeOrder, VertexId,
     labeled::{BucketLabelKey as LaraLabelId, LabeledEdgePayloadBatchScratch, LabeledOrientation},
@@ -960,18 +961,19 @@ fn inserts_vertices_and_edges_through_facade() {
 fn insert_directed_edge_to_logical_stores_remote_ref() {
     let store = GraphStore::new();
     let source = store.insert_vertex().expect("source");
-    let target_logical = 42_u64;
+    let target_vertex_id =
+        gleaph_graph_kernel::federation::GlobalVertexId::new(ShardId::new(0), 42);
 
     let handle = store
-        .insert_directed_edge_to_logical(source, target_logical, None)
+        .insert_directed_edge_to_logical(source, target_vertex_id, None)
         .expect("remote edge");
 
-    let remote_ref = store.ensure_remote_ref(target_logical);
+    let remote_ref = store.ensure_remote_ref(target_vertex_id);
     assert_eq!(
-        store.logical_vertex_for_remote_ref(remote_ref),
-        Some(target_logical)
+        store.global_vertex_for_remote_ref(remote_ref),
+        Some(target_vertex_id)
     );
-    assert_eq!(store.ensure_remote_ref(target_logical), remote_ref);
+    assert_eq!(store.ensure_remote_ref(target_vertex_id), remote_ref);
 
     let out_edges = store.directed_out_edges(source).expect("out edges");
     assert_eq!(out_edges.len(), 1);

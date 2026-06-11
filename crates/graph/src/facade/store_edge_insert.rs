@@ -1,29 +1,23 @@
 //! Canonical edge insert paths (directed / undirected, local / logical, valued / unvalued).
 
 use gleaph_graph_kernel::entry::EdgeLabelId;
-use gleaph_graph_kernel::federation::{LogicalVertexId, VertexPlacement};
+use gleaph_graph_kernel::federation::{GlobalVertexId, VertexPlacement};
 use ic_stable_lara::VertexId;
 
 use crate::index::placement;
 
 use super::store::{EdgeHandle, GraphStore, GraphStoreError};
 
-fn resolve_local_endpoint(
-    store: &GraphStore,
-    logical_vertex_id: LogicalVertexId,
-) -> Option<VertexId> {
+fn resolve_local_endpoint(store: &GraphStore, vertex_id: GlobalVertexId) -> Option<VertexId> {
     let routing = store.federation_routing()?;
-    #[cfg(target_family = "wasm")]
-    {
-        let local = crate::facade::stable::VERTEX_LOGICAL_IDS
-            .with_borrow(|m| m.find_vertex_id(logical_vertex_id))?;
-        return Some(local);
+    if vertex_id.shard_id != routing.shard_id {
+        return None;
     }
     #[cfg(not(target_family = "wasm"))]
     {
         let placement = pollster::block_on(placement::resolve_placement(
             routing.router_canister,
-            logical_vertex_id,
+            vertex_id,
         ))
         .ok()?;
         let VertexPlacement::Active(loc) = placement;
@@ -32,13 +26,17 @@ fn resolve_local_endpoint(
         }
         Some(VertexId::from(loc.local_vertex_id))
     }
+    #[cfg(target_family = "wasm")]
+    {
+        Some(VertexId::from(vertex_id.local_vertex_id))
+    }
 }
 
 /// Target endpoint for an edge insert.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum InsertEdgeTarget {
     Local(VertexId),
-    Logical(LogicalVertexId),
+    Remote(GlobalVertexId),
 }
 
 /// Edge topology for insert.
@@ -87,20 +85,19 @@ impl GraphStore {
                     spec.catalog_label,
                     value,
                 ),
-            (InsertEdgeTarget::Logical(logical), InsertEdgeTopology::Directed, false) => {
-                self.insert_directed_edge_to_logical(source_vertex_id, logical, spec.catalog_label)
-            }
-            (InsertEdgeTarget::Logical(logical), InsertEdgeTopology::Directed, true) => self
+            (InsertEdgeTarget::Remote(vertex_id), InsertEdgeTopology::Directed, false) => self
+                .insert_directed_edge_to_logical(source_vertex_id, vertex_id, spec.catalog_label),
+            (InsertEdgeTarget::Remote(vertex_id), InsertEdgeTopology::Directed, true) => self
                 .insert_directed_edge_to_logical_with_payload_bytes(
                     source_vertex_id,
-                    logical,
+                    vertex_id,
                     spec.catalog_label,
                     value,
                 ),
-            (InsertEdgeTarget::Logical(logical), InsertEdgeTopology::Undirected, _) => self
+            (InsertEdgeTarget::Remote(vertex_id), InsertEdgeTopology::Undirected, _) => self
                 .insert_undirected_edge_to_logical_with_payload_bytes(
                     source_vertex_id,
-                    logical,
+                    vertex_id,
                     spec.catalog_label,
                     value,
                 ),
