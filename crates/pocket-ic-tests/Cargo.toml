@@ -13,8 +13,15 @@ name = "router_placement"
 path = "tests/router_placement.rs"
 harness = true
 
+[[test]]
+name = "graph_seed_dispatch"
+path = "tests/graph_seed_dispatch.rs"
+harness = true
+
 [dependencies]
 candid.workspace = true
+gleaph-gql = { workspace = true }
+gleaph-gql-planner = { path = "../gql-planner", features = ["plan-wire"] }
 gleaph-gql-ic.workspace = true
 gleaph-graph-kernel.workspace = true
 gleaph-router = { path = "../router" }

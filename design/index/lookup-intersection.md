@@ -104,17 +104,13 @@ for each shard_id in participating_shards:
 
 **Implemented** in `router/src/seed.rs` (`IndexAnchor`), `router/index_client.rs`, and `gql.rs` dispatch.
 
-## Graph executor (transition)
+## Graph executor
 
-**Target:** graph does not call index for intersection on the federation hot path.
+**Federated wire path (implemented):** graph shards called via `execute_plan_query` do not hold an index client when `seed_bindings_blob` is set or federation routing is configured (`handlers.rs`). Leading `IndexScan` / `IndexIntersection` / labeled `NodeScan` / `PropertyFilter` anchors are skipped when seeds are present (`skip_leading_index_anchor_ops`). Without seeds, federated shards return `IndexScan(no index client)` / `IndexIntersection(no index client)`.
 
-**Standalone transition:** until Router performs lookup, graph may call `lookup_intersection` via `PropertyIndexLookup` once, then bind only hits where `shard_id == local` — no client-side set intersection, no `resolve_logical_at` on index hits.
+**Standalone / native dev:** graph may still call `lookup_intersection` via `PropertyIndexLookup` when an index client is wired and federation routing is absent. Hits are filtered to `shard_id == local` — no client-side set intersection on the hot path.
 
-Remove from `execute_index_intersection`:
-
-- N× `lookup_equal` loop
-- Client-side `IntSet` intersection
-- `placement::resolve_logical_at` for foreign hits
+**Transition cleanup (remaining):** remove N× `lookup_equal` fallback loops inside `execute_index_intersection` once all production dispatch uses router seeds.
 
 ## Clients
 

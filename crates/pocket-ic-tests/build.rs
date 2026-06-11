@@ -138,30 +138,24 @@ fn build_wasm(manifest_dir: &Path) {
     let target_dir = root.join("target");
     let wasm_target = "wasm32-unknown-unknown";
 
-    let mut build_args = vec![
+    let build_args = vec![
         "build",
         "--release",
         "-p",
         "gleaph-router",
         "-p",
         "gleaph-graph-index",
+        "-p",
+        "gleaph-graph",
         "--target",
         wasm_target,
         "--features",
-        "gleaph-router/pocket-ic-e2e",
+        "gleaph-router/pocket-ic-e2e,gleaph-graph/pocket-ic-e2e",
     ];
-    if std::env::var("POCKET_IC_BUILD_GRAPH").is_ok() {
-        build_args.extend([
-            "-p",
-            "gleaph-graph",
-            "--features",
-            "gleaph-graph/pocket-ic-e2e",
-        ]);
-        println!(
-            "cargo:rerun-if-changed={}",
-            manifest_dir.join("../graph/src").display()
-        );
-    }
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("../graph/src").display()
+    );
     let status = Command::new("cargo")
         .current_dir(&root)
         .env("CARGO_TARGET_DIR", &target_dir)
@@ -179,12 +173,10 @@ fn build_wasm(manifest_dir: &Path) {
         "INDEX_WASM",
         wasm_dir.join("gleaph_graph_index.wasm").into_std_path_buf(),
     );
-    if std::env::var("POCKET_IC_BUILD_GRAPH").is_ok() {
-        set_wasm_env(
-            "GRAPH_WASM",
-            wasm_dir.join("gleaph_graph.wasm").into_std_path_buf(),
-        );
-    }
+    set_wasm_env(
+        "GRAPH_WASM",
+        wasm_dir.join("gleaph_graph.wasm").into_std_path_buf(),
+    );
 }
 
 fn set_wasm_env(var: &str, path: PathBuf) {

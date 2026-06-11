@@ -20,3 +20,4 @@ cargo test -p gleaph-pocket-ic-tests -- --nocapture
 | Test                                                                    | Coverage                                                |
 | ----------------------------------------------------------------------- | ------------------------------------------------------- |
 | `router_placement::router_registers_shards_and_commits_active_placement` | `admin_register_shard`, index owner map, active placement |
+| `graph_seed_dispatch::graph_execute_plan_query_skips_index_scan_with_seed_bindings` | Federated graph `execute_plan_query` + `seed_bindings_blob` |
