@@ -112,7 +112,8 @@ Already-applied events are acked without changing aggregates. There is no full h
 rebuild from vertex label scans — replay depends on the graph outbox retaining pending events.
 
 **Compound read seeds:** `MATCH (n:L) WHERE n.p = v RETURN n` uses `SeedAnchorSet` to
-intersect label and property index hits before per-shard `seed_bindings_blob` dispatch.
+intersect label and property index hits before per-shard `seed_bindings_blob` dispatch
+(`compound_label_and_property_seed_routing_intersects_hits` in `router/src/gql.rs`).
 
 ## Router
 

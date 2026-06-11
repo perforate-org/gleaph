@@ -967,16 +967,16 @@ mod tests {
         collect_label_intersection_hits_for_shards, resolve_seed_routings_multi,
         routings_to_dispatches,
     };
-    use crate::planner_stats::RouterGraphStats;
-    use crate::seed::SeedAnchorSet;
-    use gleaph_graph_kernel::federation::ShardId;
     use crate::gql::{
         apply_dispatch_label_telemetry_event, dispatch_plan_blob_with_index, request_fingerprint,
     };
     use crate::init::RouterInitArgs;
+    use crate::planner_stats::RouterGraphStats;
+    use crate::seed::SeedAnchorSet;
     use crate::seed::{IndexAnchor, SeedProbe, seeds_for_local_shard};
     use crate::state::RouterError;
     use crate::types::AdminRegisterShardArgs;
+    use gleaph_graph_kernel::federation::ShardId;
 
     fn graph_principal(byte: u8) -> Principal {
         Principal::self_authenticating([byte; 32])
@@ -1278,6 +1278,175 @@ mod tests {
         )
     }
 
+    #[derive(Clone)]
+    struct CompoundSeedFakeIndex {
+        label_pages: Rc<RefCell<Vec<(ShardId, u32, LabelLookupPageResult)>>>,
+        equal_hits: Vec<PostingHit>,
+        page_calls: Rc<Cell<u32>>,
+        equal_calls: Rc<Cell<u32>>,
+    }
+
+    impl CompoundSeedFakeIndex {
+        fn new(
+            label_pages: Vec<(ShardId, u32, LabelLookupPageResult)>,
+            equal_hits: Vec<PostingHit>,
+        ) -> Self {
+            Self {
+                label_pages: Rc::new(RefCell::new(label_pages)),
+                equal_hits,
+                page_calls: Rc::new(Cell::new(0)),
+                equal_calls: Rc::new(Cell::new(0)),
+            }
+        }
+
+        fn page_calls(&self) -> u32 {
+            self.page_calls.get()
+        }
+
+        fn equal_calls(&self) -> u32 {
+            self.equal_calls.get()
+        }
+    }
+
+    impl IndexLookup for CompoundSeedFakeIndex {
+        fn lookup_equal(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            self.equal_calls.set(self.equal_calls.get() + 1);
+            let hits = self.equal_hits.clone();
+            Box::pin(async move { Ok(hits) })
+        }
+
+        fn lookup_intersection(
+            &self,
+            _req: gleaph_graph_kernel::index::IndexIntersectionRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn count_postings_by_value(
+            &self,
+            _property_id: u32,
+            _min_count: u64,
+            _vertex_filter_packed: Option<Vec<u64>>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_label_intersection(
+            &self,
+            _req: IndexLabelIntersectionRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+
+        fn lookup_label_page(
+            &self,
+            req: gleaph_graph_kernel::index::LabelLookupPageRequest,
+        ) -> Pin<Box<dyn Future<Output = Result<LabelLookupPageResult, String>> + '_>> {
+            self.page_calls.set(self.page_calls.get() + 1);
+            let mut pages = self.label_pages.borrow_mut();
+            if let Some(pos) = pages.iter().position(|(shard_id, label_id, _)| {
+                *shard_id == req.shard_id && *label_id == req.vertex_label_id && req.after.is_none()
+            }) {
+                let (_, _, page) = pages.remove(pos);
+                return Box::pin(async move { Ok(page) });
+            }
+            Box::pin(async move {
+                Ok(LabelLookupPageResult {
+                    hits: Vec::new(),
+                    next: None,
+                    done: true,
+                })
+            })
+        }
+
+        fn filter_hits_by_label(
+            &self,
+            _vertex_label_id: u32,
+            hits: Vec<PostingHit>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(hits) })
+        }
+
+        fn count_postings_by_value_for_label(
+            &self,
+            _property_id: u32,
+            _vertex_label_id: u32,
+            _min_count: u64,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<ValuePostingCount>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
+        }
+    }
+
+    fn store_with_person_and_region_property() -> RouterStore {
+        let store = store_with_shards();
+        let admin = Principal::anonymous();
+        store
+            .admin_intern_vertex_label(admin, "Person")
+            .expect("intern Person");
+        store
+            .admin_intern_property(admin, "region")
+            .expect("intern region");
+        store
+    }
+
+    fn compound_label_property_read_plan() -> PhysicalPlan {
+        PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: Rc::from("n"),
+                label: Some(NodeLabelRef::from("Person")),
+                property_projection: None,
+            },
+            PlanOp::IndexScan {
+                variable: Rc::from("n"),
+                property: Rc::from("region"),
+                value: ScanValue::Literal(Value::Text("US".into())),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ])
+    }
+
+    fn compound_seed_fake_index() -> CompoundSeedFakeIndex {
+        CompoundSeedFakeIndex::new(
+            vec![(
+                7,
+                1,
+                LabelLookupPageResult {
+                    hits: vec![
+                        PostingHit {
+                            shard_id: 7,
+                            vertex_id: 10,
+                        },
+                        PostingHit {
+                            shard_id: 7,
+                            vertex_id: 11,
+                        },
+                    ],
+                    next: None,
+                    done: true,
+                },
+            )],
+            vec![
+                PostingHit {
+                    shard_id: 7,
+                    vertex_id: 10,
+                },
+                PostingHit {
+                    shard_id: 9,
+                    vertex_id: 20,
+                },
+            ],
+        )
+    }
+
     fn seeded_dml_plan() -> PhysicalPlan {
         PhysicalPlan::from_ops(vec![
             PlanOp::IndexScan {
@@ -1574,6 +1743,81 @@ mod tests {
             resolve_seed_routings_multi(&store, &hits, "tenant.main", IndexAnchor::Equal(probe))
                 .expect_err("unknown shard");
         assert!(matches!(err, RouterError::ShardNotRegistered));
+    }
+
+    #[test]
+    fn compound_label_and_property_seed_routing_intersects_hits() {
+        let store = store_with_person_and_region_property();
+        let plan = compound_label_property_read_plan();
+        let stats =
+            RouterGraphStats::for_graph("tenant.main").with_indexed_vertex_property("region");
+        let set = SeedAnchorSet::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            &stats,
+        )
+        .expect("anchors")
+        .expect("compound anchors");
+        assert_eq!(set.anchors.len(), 2);
+
+        let fake = compound_seed_fake_index();
+        let hits = futures::executor::block_on(super::resolve_seed_hits_from_anchors(
+            &fake,
+            &set.anchors,
+            &[7, 9],
+        ))
+        .expect("intersect label and property hits");
+        assert_eq!(
+            hits,
+            vec![PostingHit {
+                shard_id: 7,
+                vertex_id: 10,
+            }]
+        );
+
+        let routings =
+            resolve_seed_routings_multi(&store, &hits, "tenant.main", set.routing_anchor())
+                .expect("route");
+        let dispatches = routings_to_dispatches(routings);
+        assert_eq!(dispatches.len(), 1);
+        let seed_blob = dispatches[0]
+            .seed_bindings_blob
+            .as_ref()
+            .expect("compound seeds");
+        let seeds: SeedBindingsWire = Decode!(seed_blob, SeedBindingsWire).expect("decode seeds");
+        assert_eq!(seeds.entries[0].variable, "n");
+        assert_eq!(seeds.entries[0].local_vertex_ids, vec![10]);
+    }
+
+    #[test]
+    fn compound_label_property_read_dispatch_intersects_index_and_label_export() {
+        let store = store_with_person_and_region_property();
+        let plan = compound_label_property_read_plan();
+        let plan_blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
+        let fake = compound_seed_fake_index();
+        let shards = store
+            .list_shards_for_graph("tenant.main")
+            .expect("registered shards");
+
+        let err = futures::executor::block_on(dispatch_plan_blob_with_index(
+            "tenant.main",
+            &plan_blob,
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &[],
+            GqlExecutionMode::Query,
+            None,
+            &store,
+            shards,
+            &fake,
+            Principal::anonymous(),
+        ))
+        .expect_err("native graph dispatch should fail after compound seeding");
+
+        assert!(matches!(err, RouterError::InvalidArgument(_)));
+        assert_eq!(fake.equal_calls(), 1);
+        assert!(fake.page_calls() >= 1);
     }
 
     #[test]
