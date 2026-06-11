@@ -477,24 +477,6 @@ fn undirected_canonical_owner_carries_payload_bytes() {
 }
 
 #[test]
-fn peer_graph_canister_bootstrap_and_remove() {
-    let store = GraphStore::new();
-    let self_canister = Principal::self_authenticating([1u8; 32]);
-    let peer_a = Principal::self_authenticating([2u8; 32]);
-    let peer_b = Principal::self_authenticating([3u8; 32]);
-
-    store.bootstrap_peer_graph_canisters(&[self_canister, peer_a, peer_b], self_canister);
-    assert!(store.is_peer_graph_canister(&peer_a));
-    assert!(store.is_peer_graph_canister(&peer_b));
-    assert!(!store.is_peer_graph_canister(&self_canister));
-
-    store.add_peer_graph_canister(peer_a, self_canister);
-    assert!(store.remove_peer_graph_canister(&peer_a));
-    assert!(!store.is_peer_graph_canister(&peer_a));
-    assert!(store.is_peer_graph_canister(&peer_b));
-}
-
-#[test]
 fn inline_edge_payloads_round_trip_on_parallel_out_edges() {
     let store = GraphStore::new();
     let s = store.insert_vertex().expect("s");
@@ -955,33 +937,6 @@ fn inserts_vertices_and_edges_through_facade() {
             && edge.edge_slot_index.raw() == undirected.slot_index
             && store.edge_is_undirected(target, edge).unwrap()
     }));
-}
-
-#[test]
-fn insert_directed_edge_to_logical_stores_remote_ref() {
-    let store = GraphStore::new();
-    let source = store.insert_vertex().expect("source");
-    let target_vertex_id =
-        gleaph_graph_kernel::federation::GlobalVertexId::new(ShardId::new(0), 42);
-
-    let handle = store
-        .insert_directed_edge_to_logical(source, target_vertex_id, None)
-        .expect("remote edge");
-
-    let remote_ref = store.ensure_remote_ref(target_vertex_id);
-    assert_eq!(
-        store.global_vertex_for_remote_ref(remote_ref),
-        Some(target_vertex_id)
-    );
-    assert_eq!(store.ensure_remote_ref(target_vertex_id), remote_ref);
-
-    let out_edges = store.directed_out_edges(source).expect("out edges");
-    assert_eq!(out_edges.len(), 1);
-    assert_eq!(
-        out_edges[0].edge_target(),
-        Some(EdgeTarget::Remote(remote_ref))
-    );
-    assert_eq!(handle.owner_vertex_id, source);
 }
 
 #[test]

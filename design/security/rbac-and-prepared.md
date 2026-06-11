@@ -43,7 +43,7 @@ Write detection must agree between static classification and planner DML detecti
 Graph canisters **do not** serve arbitrary GQL to end users. They execute:
 
 - `ExecutePlanArgs` from router (trusted)
-- `federated_expand` from router or peer graph shards (ACL)
+- Cross-shard graph endpoints (`federated_expand`, peer ACL) are **removed** until a follow-up ADR (router `peer_sync` is a no-op).
 - Migration APIs (controlled)
 
 This shrinks the attack surface: compromise of a user principal does not bypass router policy without also forging router calls.

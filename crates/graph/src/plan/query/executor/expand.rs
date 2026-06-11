@@ -210,14 +210,9 @@ impl ExpandDst {
     ) -> Result<Option<Self>, PlanQueryError> {
         match edge.edge_target() {
             Some(EdgeTarget::Local(vertex_id)) => Ok(Some(Self::Local(vertex_id))),
-            Some(EdgeTarget::Remote(remote_ref)) => {
-                let logical = store
-                    .global_vertex_for_remote_ref(remote_ref)
-                    .ok_or_else(|| PlanQueryError::MissingBinding {
-                        variable: format!("remote ref {}", remote_ref.raw()),
-                    })?;
-                Ok(Some(Self::Remote(logical)))
-            }
+            Some(EdgeTarget::Remote(_remote_vertex_id)) => Err(PlanQueryError::UnsupportedOp(
+                "expand across remote CSR edge endpoints",
+            )),
             None => Ok(None),
         }
     }
@@ -503,9 +498,6 @@ mod tests;
 mod execute;
 mod label_expr;
 mod var_len;
-pub(crate) use execute::{
-    execute_expand, expand_dst_matches_prebound_vertex, expand_rows_from_federated_expand_hits,
-    peer_expand_remote_vertex,
-};
+pub(crate) use execute::{execute_expand, expand_dst_matches_prebound_vertex};
 pub(crate) use label_expr::{edge_binding_matches_label_expr, edge_matches_label_expr};
 pub(crate) use var_len::{collect_var_len_expand_rows, execute_var_len_expand};

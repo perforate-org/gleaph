@@ -6,9 +6,6 @@ use gleaph_gql::ast::Expr;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorPredicate, ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, PreparedWeightDecoder};
-use gleaph_graph_kernel::federation::{
-    FederatedExpandArgs, FederatedExpandNeighbor, GlobalVertexId,
-};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::LabeledEdgePayloadBatchScratch;
@@ -22,130 +19,14 @@ use super::{
     expand_accepts_remote_dst, expand_dst_binding, visit_csr_expand_fast_path,
 };
 use crate::facade::GraphStore;
-use crate::federation::{
-    TraversalExpandSource, federated_direction_for_expand, federated_expand_label_id_raw,
-    resolve_traversal_expand_source,
-};
+use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
 use crate::plan::query::error::PlanQueryError;
-use crate::plan::query::executor::bindings::{
-    edge_binding_for_federated_expand_hit, hop_aux_scalar,
-};
 use crate::plan::query::executor::context::{ExecuteCtx, QueryExprEvaluator};
 use crate::plan::query::executor::{
-    EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, federation_routing,
-    row_matches_all, vertex_row_matches_dst_filters,
+    EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, row_matches_all,
+    vertex_row_matches_dst_filters,
 };
 use crate::plan::query::row::PlanRow;
-
-pub(crate) fn expand_rows_from_federated_expand_hits(
-    store: &GraphStore,
-    row: &PlanRow,
-    hits: &[FederatedExpandNeighbor],
-    dst: &str,
-    edge: &str,
-    emit_edge_binding: bool,
-    hop_aux_key: Option<&str>,
-    dst_property_projection: Option<&[Str]>,
-    dst_filter: &[Expr],
-    label_expr: Option<&LabelExpr>,
-    execution: &crate::gql_execution_context::GqlExecutionContext,
-    parameters: &BTreeMap<String, Value>,
-    caller: Option<Principal>,
-    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
-    evaluator: &QueryExprEvaluator<'_>,
-) -> Result<Vec<PlanRow>, PlanQueryError> {
-    let routing = federation_routing(store)?;
-    let dst_only_prefilter = dst_filter_is_dst_vertex_only(dst_filter, dst);
-    let edge_key = emit_edge_binding.then(|| edge.to_string());
-    let mut out = Vec::with_capacity(hits.len());
-    for hit in hits {
-        let dst_binding = if hit.shard_id == routing.shard_id {
-            expand_dst_binding(
-                store,
-                execution,
-                ExpandDst::Local(VertexId::from(hit.neighbor_local_vertex_id)),
-                dst_property_projection,
-            )?
-        } else {
-            if dst_property_projection.is_some_and(|props| !props.is_empty()) {
-                return Err(PlanQueryError::InvalidExpressionValue {
-                    expression: "property projection on remote vertex binding".into(),
-                });
-            }
-            PlanBinding::RemoteVertex(hit.neighbor_vertex_id)
-        };
-
-        if let PlanBinding::Vertex(dst_id) = &dst_binding
-            && dst_only_prefilter
-            && !vertex_row_matches_dst_filters(
-                store,
-                parameters,
-                &Str::from(dst),
-                *dst_id,
-                dst_filter,
-                caller,
-                gleaph_weight_decoders,
-            )?
-        {
-            continue;
-        }
-
-        let expanded = if let Some(edge_key) = edge_key.as_ref() {
-            let edge_binding = edge_binding_for_federated_expand_hit(store, hit, routing.shard_id)?;
-            if let Some(expr) = label_expr
-                && !edge_binding_matches_label_expr(execution, expr, &edge_binding)
-            {
-                continue;
-            }
-            let mut pairs = vec![
-                (dst, dst_binding),
-                (edge_key.as_str(), PlanBinding::Edge(edge_binding.clone())),
-            ];
-            if let Some(hop_aux_key) = hop_aux_key {
-                pairs.push((
-                    hop_aux_key,
-                    PlanBinding::Value(hop_aux_scalar(&edge_binding)),
-                ));
-            }
-            row.fork(pairs)
-        } else {
-            let mut pairs = vec![(dst, dst_binding)];
-            if let Some(hop_aux_key) = hop_aux_key {
-                let edge_binding =
-                    edge_binding_for_federated_expand_hit(store, hit, routing.shard_id)?;
-                pairs.push((
-                    hop_aux_key,
-                    PlanBinding::Value(hop_aux_scalar(&edge_binding)),
-                ));
-            }
-            row.fork(pairs)
-        };
-        if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
-            continue;
-        }
-        out.push(expanded);
-    }
-    Ok(out)
-}
-
-pub(crate) async fn peer_expand_remote_vertex(
-    ctx: &ExecuteCtx<'_>,
-    logical: GlobalVertexId,
-    gql_direction: EdgeDirection,
-    label_id: Option<EdgeLabelId>,
-) -> Result<Vec<FederatedExpandNeighbor>, PlanQueryError> {
-    let label_id_raw = federated_expand_label_id_raw(label_id, gql_direction);
-    ctx.federation
-        .peer_expand(
-            ctx.store,
-            FederatedExpandArgs {
-                vertex_id: logical,
-                direction: federated_direction_for_expand(gql_direction),
-                label_id_raw,
-            },
-        )
-        .await
-}
 
 #[allow(clippy::too_many_arguments)]
 pub(crate) async fn execute_expand(
@@ -221,27 +102,6 @@ pub(crate) async fn execute_expand(
     for row in rows {
         match resolve_traversal_expand_source(store, row.get(src.as_ref()), direction).await? {
             None => continue,
-            Some(TraversalExpandSource::PeerExpand(logical)) => {
-                let hits = peer_expand_remote_vertex(ctx, logical, direction, label_id).await?;
-                out.extend(expand_rows_from_federated_expand_hits(
-                    store,
-                    &row,
-                    &hits,
-                    dst.as_ref(),
-                    edge.as_ref(),
-                    emit_edge_binding,
-                    hop_aux_key,
-                    dst_property_projection,
-                    dst_filter,
-                    label_expr,
-                    execution,
-                    parameters,
-                    caller,
-                    gleaph_weight_decoders,
-                    &evaluator,
-                )?);
-                continue;
-            }
             Some(TraversalExpandSource::LocalCsr(src_id)) => {
                 if let Some(fast_path) = csr_expand_fast_path {
                     let mut offset_slot = 0;

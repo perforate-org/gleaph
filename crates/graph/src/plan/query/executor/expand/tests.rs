@@ -10,7 +10,7 @@ use gleaph_graph_kernel::federation::{
 use pollster;
 
 #[test]
-fn resolve_traversal_expand_source_uses_peer_expand_for_foreign_authority() {
+fn resolve_traversal_expand_source_rejects_foreign_authority() {
     let store = GraphStore::new();
     configure_test_federation(&store);
     let vertex = store.insert_vertex().expect("vertex");
@@ -20,14 +20,14 @@ fn resolve_traversal_expand_source_uses_peer_expand_for_foreign_authority() {
         PhysicalVertexLocation::new(ShardId::new(1), u32::from(vertex)),
     );
 
-    let source = pollster::block_on(resolve_traversal_expand_source(
+    let err = pollster::block_on(resolve_traversal_expand_source(
         &store,
         Some(&PlanBinding::Vertex(vertex)),
         EdgeDirection::PointingRight,
     ))
-    .expect("resolve");
+    .expect_err("foreign placement");
 
-    assert_eq!(source, Some(TraversalExpandSource::PeerExpand(logical)));
+    assert!(matches!(err, PlanQueryError::UnsupportedOp(_)));
 }
 
 #[test]
@@ -45,115 +45,6 @@ fn resolve_traversal_expand_source_uses_local_csr_for_remote_vertex_on_home_shar
     .expect("resolve");
 
     assert_eq!(source, Some(TraversalExpandSource::LocalCsr(vertex)));
-}
-
-#[test]
-fn federated_reverse_expand_from_remote_vertex_binding() {
-    let store = GraphStore::new();
-    configure_test_federation(&store);
-    let source = store.insert_vertex().expect("source");
-    let source_logical = store.global_vertex_id(source).expect("logical");
-    let remote_logical = GlobalVertexId::new(ShardId::new(1), 88_001);
-    store
-        .insert_directed_edge_to_logical(source, remote_logical, None)
-        .expect("remote edge");
-
-    let mut seed = PlanRow::new();
-    seed.insert("b".to_owned(), PlanBinding::RemoteVertex(remote_logical));
-
-    let parameters = params();
-    let ctx = ExecuteCtx::new(
-        &store,
-        &parameters,
-        None,
-        GqlExecutionContext::default(),
-        None,
-    );
-    let out = pollster::block_on(execute_expand(
-        &ctx,
-        vec![seed],
-        &"b".into(),
-        &"e".into(),
-        &"a".into(),
-        EdgeDirection::PointingLeft,
-        None,
-        None,
-        &ctx.execution,
-        EdgeSequenceOrder::Descending,
-        &[],
-        true,
-        None,
-        None,
-        None,
-        None,
-        None,
-        None,
-    ))
-    .expect("federated reverse expand");
-
-    assert_eq!(out.len(), 1);
-    assert!(matches!(
-        out[0].get("a"),
-        Some(PlanBinding::Vertex(v)) if *v == source
-    ));
-    assert_eq!(
-        store.global_vertex_id(source).expect("source logical"),
-        source_logical
-    );
-}
-
-#[test]
-fn federated_var_len_one_hop_from_remote_vertex_binding() {
-    let store = GraphStore::new();
-    configure_test_federation(&store);
-    let source = store.insert_vertex().expect("source");
-    let remote_logical = GlobalVertexId::new(ShardId::new(1), 88_002);
-    store
-        .insert_directed_edge_to_logical(source, remote_logical, None)
-        .expect("remote edge");
-
-    let mut seed = PlanRow::new();
-    seed.insert("b".to_owned(), PlanBinding::RemoteVertex(remote_logical));
-
-    let parameters = params();
-    let ctx = ExecuteCtx::new(
-        &store,
-        &parameters,
-        None,
-        GqlExecutionContext::default(),
-        None,
-    );
-    let out = pollster::block_on(execute_var_len_expand(
-        &ctx,
-        vec![seed],
-        &"b".into(),
-        &"e".into(),
-        &"a".into(),
-        EdgeDirection::PointingLeft,
-        None,
-        None,
-        &ctx.execution,
-        &VarLenSpec {
-            min: 1,
-            max: Some(1),
-        },
-        &[],
-        true,
-        None,
-        None,
-        None,
-        None,
-        false,
-        None,
-        None,
-        None,
-        None,
-        None,
-    ))
-    .expect("federated var_len one hop");
-
-    assert_eq!(out.len(), 1);
-    assert!(matches!(out[0].get("a"), Some(PlanBinding::Vertex(v)) if v == &source));
 }
 
 #[test]
@@ -207,10 +98,7 @@ fn federated_var_len_rejects_peer_expand_source() {
     ))
     .expect_err("peer expand var_len source");
 
-    assert!(
-        matches!(err, PlanQueryError::UnsupportedOp("Expand.var_len.peer")),
-        "unexpected error: {err}"
-    );
+    assert!(matches!(err, PlanQueryError::UnsupportedOp(_)));
 }
 
 #[test]

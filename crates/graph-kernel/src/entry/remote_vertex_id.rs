@@ -1,4 +1,4 @@
-//! Shard-local interned references to logical vertices on other graph shards.
+//! Shard-local handles for cross-shard CSR edge endpoints.
 
 use ic_stable_lara::VertexId;
 use ic_stable_structures::{Storable, storable::Bound};
@@ -6,28 +6,21 @@ use std::borrow::Cow;
 
 /// Dense shard-local handle stored in remote [`super::vertex_ref::VertexRef`] slots.
 ///
-/// Many edges may share one `RemoteRefId` for the same [`LogicalVertexId`].
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Default)]
-pub struct RemoteRefId(u32);
+/// Many edges may share one `RemoteVertexId` for the same global target vertex.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct RemoteVertexId(u32);
 
-const REMOTE_REF_MASK: u32 = (1 << 30) - 1;
+const REMOTE_VERTEX_ID_MASK: u32 = (1 << 30) - 1;
 
-impl RemoteRefId {
-    pub const INVALID: Self = Self(0);
-
+impl RemoteVertexId {
     #[inline]
     pub const fn from_raw(raw: u32) -> Self {
-        Self(raw & REMOTE_REF_MASK)
+        Self(raw & REMOTE_VERTEX_ID_MASK)
     }
 
     #[inline]
     pub const fn raw(self) -> u32 {
         self.0
-    }
-
-    #[inline]
-    pub const fn is_valid(self) -> bool {
-        self.0 != 0
     }
 
     #[inline]
@@ -41,7 +34,7 @@ impl RemoteRefId {
     }
 }
 
-impl Storable for RemoteRefId {
+impl Storable for RemoteVertexId {
     const BOUND: Bound = Bound::Bounded {
         max_size: 4,
         is_fixed_size: true,
@@ -66,7 +59,7 @@ impl Storable for RemoteRefId {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EdgeTarget {
     Local(VertexId),
-    Remote(RemoteRefId),
+    Remote(RemoteVertexId),
 }
 
 impl EdgeTarget {

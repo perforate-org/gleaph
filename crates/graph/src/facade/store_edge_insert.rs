@@ -85,22 +85,7 @@ impl GraphStore {
                     spec.catalog_label,
                     value,
                 ),
-            (InsertEdgeTarget::Remote(vertex_id), InsertEdgeTopology::Directed, false) => self
-                .insert_directed_edge_to_logical(source_vertex_id, vertex_id, spec.catalog_label),
-            (InsertEdgeTarget::Remote(vertex_id), InsertEdgeTopology::Directed, true) => self
-                .insert_directed_edge_to_logical_with_payload_bytes(
-                    source_vertex_id,
-                    vertex_id,
-                    spec.catalog_label,
-                    value,
-                ),
-            (InsertEdgeTarget::Remote(vertex_id), InsertEdgeTopology::Undirected, _) => self
-                .insert_undirected_edge_to_logical_with_payload_bytes(
-                    source_vertex_id,
-                    vertex_id,
-                    spec.catalog_label,
-                    value,
-                ),
+            (InsertEdgeTarget::Remote(_), _, _) => Err(GraphStoreError::RemoteEdgeNotSupported),
         }
     }
 }

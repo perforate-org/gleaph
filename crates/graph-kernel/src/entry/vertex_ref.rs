@@ -1,6 +1,6 @@
 //! Compact vertex reference stored inside labeled edge records.
 
-use super::remote_ref::{EdgeTarget, RemoteRefId};
+use super::remote_vertex_id::{EdgeTarget, RemoteVertexId};
 use ic_stable_lara::VertexId;
 
 const TOMBSTONE_BIT: u32 = 1 << 31;
@@ -9,7 +9,7 @@ const PAYLOAD_MASK: u32 = (1 << 30) - 1;
 
 /// Adjacent vertex reference with an optional remote-partition flag.
 ///
-/// Local targets store a [`VertexId`]. Remote targets store a shard-local [`RemoteRefId`].
+/// Local targets store a [`VertexId`]. Remote targets store a shard-local [`RemoteVertexId`].
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, Default)]
 pub struct VertexRef(u32);
@@ -21,9 +21,9 @@ impl VertexRef {
         Self(u32::from(vid) & PAYLOAD_MASK)
     }
 
-    /// Constructs a remote reference to a logical vertex via a shard-local [`RemoteRefId`].
+    /// Constructs a remote CSR endpoint via a shard-local [`RemoteVertexId`].
     #[inline]
-    pub fn remote_ref(id: RemoteRefId) -> Self {
+    pub fn remote_vertex(id: RemoteVertexId) -> Self {
         Self(id.raw() | REMOTE_BIT)
     }
 
@@ -52,11 +52,11 @@ impl VertexRef {
         VertexId::from(self.0 & PAYLOAD_MASK)
     }
 
-    /// Returns the shard-local remote ref id when this is a remote target.
+    /// Returns the shard-local remote vertex id when this is a remote target.
     #[inline]
-    pub fn remote_ref_id(self) -> RemoteRefId {
-        debug_assert!(self.is_remote(), "remote_ref_id on local VertexRef");
-        RemoteRefId::from_raw(self.0 & PAYLOAD_MASK)
+    pub fn remote_vertex_id(self) -> RemoteVertexId {
+        debug_assert!(self.is_remote(), "remote_vertex_id on local VertexRef");
+        RemoteVertexId::from_raw(self.0 & PAYLOAD_MASK)
     }
 
     /// Decodes this reference as an [`EdgeTarget`].
@@ -66,7 +66,7 @@ impl VertexRef {
             return None;
         }
         if self.is_remote() {
-            Some(EdgeTarget::Remote(self.remote_ref_id()))
+            Some(EdgeTarget::Remote(self.remote_vertex_id()))
         } else {
             Some(EdgeTarget::Local(self.local_id()))
         }
@@ -102,11 +102,11 @@ mod tests {
     use super::*;
 
     #[test]
-    fn remote_ref_preserves_id_bits() {
-        let id = RemoteRefId::from_raw(42);
-        let remote = VertexRef::remote_ref(id);
+    fn remote_vertex_preserves_id_bits() {
+        let id = RemoteVertexId::from_raw(42);
+        let remote = VertexRef::remote_vertex(id);
         assert!(remote.is_remote());
-        assert_eq!(remote.remote_ref_id(), id);
+        assert_eq!(remote.remote_vertex_id(), id);
     }
 
     #[test]
@@ -117,10 +117,10 @@ mod tests {
             Some(EdgeTarget::Local(VertexId::from(7)))
         );
 
-        let remote = VertexRef::remote_ref(RemoteRefId::from_raw(99));
+        let remote = VertexRef::remote_vertex(RemoteVertexId::from_raw(99));
         assert_eq!(
             remote.edge_target(),
-            Some(EdgeTarget::Remote(RemoteRefId::from_raw(99)))
+            Some(EdgeTarget::Remote(RemoteVertexId::from_raw(99)))
         );
     }
 

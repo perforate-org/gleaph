@@ -1,10 +1,7 @@
 //! Inter-canister calls from router to graph shards.
 
 use candid::Principal;
-use gleaph_graph_kernel::federation::{
-    AddGraphPeerArgs, BootstrapGraphPeersArgs, PostingBackfillArgs, PostingBackfillResult,
-    RemoveGraphPeerArgs,
-};
+use gleaph_graph_kernel::federation::{PostingBackfillArgs, PostingBackfillResult};
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanResult, LabelTelemetryEventWire, MutationId, MutationOutcomeWire,
     ShardEventSeq,
@@ -93,23 +90,6 @@ async fn call_graph_args<T, R: candid::CandidType>(
     _args: &T,
 ) -> Result<R, String> {
     Err(format!("graph {method} unavailable in native builds"))
-}
-
-pub async fn bootstrap_graph_peers(graph: Principal, peers: Vec<Principal>) -> Result<(), String> {
-    call_graph_result(
-        graph,
-        "bootstrap_graph_peers",
-        BootstrapGraphPeersArgs { peers },
-    )
-    .await
-}
-
-pub async fn add_graph_peer(graph: Principal, peer: Principal) -> Result<(), String> {
-    call_graph_result(graph, "add_graph_peer", AddGraphPeerArgs { peer }).await
-}
-
-pub async fn remove_graph_peer(graph: Principal, peer: Principal) -> Result<(), String> {
-    call_graph_result(graph, "remove_graph_peer", RemoveGraphPeerArgs { peer }).await
 }
 
 pub async fn execute_plan_on_graph(

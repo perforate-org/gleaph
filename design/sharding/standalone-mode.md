@@ -2,7 +2,7 @@
 
 ## Status
 
-**Partially implemented** — `ShardId(0)`, `GlobalVertexId`, router catalog SSOT, and encoded element ids are in code (ADR 0005/0006). Remote CSR stable regions remain for PocketIC experiments; production remote expand is deferred.
+**Partially implemented** — `ShardId(0)`, `GlobalVertexId`, router catalog SSOT, and encoded element ids are in code (ADR 0005/0006). Federation remote-ref stable, peer ACL, and `federated_expand` were **removed**; cross-shard expand is deferred.
 
 ## Purpose
 
@@ -60,12 +60,12 @@ Defer detailed implementation and **federation-only stable stores** until [feder
 
 | Area | Paths (representative) | Action |
 |------|------------------------|--------|
-| Remote edge stable | `graph/.../remote_forward_in.rs`, `remote_vertex_refs.rs` | Defer |
+| Remote edge stable | `REMOTE_VERTEX_REFS`, `REMOTE_FORWARD_IN`, `PEER_GRAPH_CANISTERS` | **Removed** |
 | Graph placement client | `graph/src/index/placement.rs` IC calls | Defer (keep native test stubs if needed) |
-| Graph → index scan on federated wire path | wasm `execute_plan_query` index client | **Removed** — router seeds + skip anchor (`execute_plan_query_federated_rejects_index_scan_without_seeds`) |
+| Graph → index scan on federated wire path | wasm `execute_plan_query` index client | **Removed** — router seeds + skip anchor |
 | Executor `RemoteVertex` bind from index | `materialize_federated_index_hits` | **Removed** — `FederationPort` local hits only |
-| Router multi-shard without anchor | `gql.rs` error path only partially useful | Rebuild with `lookup_intersection` seeds |
-| Peer graph ACL stable | `peer_graph_canisters.rs` | Defer |
+| Router multi-shard without anchor | `gql.rs` error path | Rebuild with `lookup_intersection` seeds |
+| Peer graph ACL / `federated_expand` | graph canister endpoints, router `peer_sync` | **Removed** (no-op stubs until follow-up ADR) |
 
 Enum variants such as `PlanBinding::RemoteVertex` may remain for wire compatibility; standalone code paths must not reach them.
 

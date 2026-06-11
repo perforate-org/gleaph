@@ -3,7 +3,7 @@ pub mod edge_payload;
 pub mod label;
 pub mod property;
 pub mod property_entity;
-pub mod remote_ref;
+pub mod remote_vertex_id;
 pub mod vertex;
 pub mod vertex_ref;
 pub mod weight;
@@ -20,7 +20,7 @@ pub use label::{
 };
 pub use property::PropertyId;
 pub use property_entity::PropertyEntity;
-pub use remote_ref::{EdgeTarget, RemoteRefId};
+pub use remote_vertex_id::{EdgeTarget, RemoteVertexId};
 pub use vertex::Vertex;
 pub use vertex_ref::VertexRef;
 pub use weight::{

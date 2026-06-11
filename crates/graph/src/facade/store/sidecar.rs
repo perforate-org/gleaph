@@ -58,11 +58,6 @@ impl GraphStore {
                     moved,
                     &moved_properties,
                 );
-                store.commit_move_remote_forward_in_for_compaction(
-                    owner_vertex_id,
-                    moved.label_id.raw(),
-                    moved,
-                );
             }
             LabeledOrientation::Reverse => {
                 GraphStore::commit_move_edge_local_indexes_for_compaction(

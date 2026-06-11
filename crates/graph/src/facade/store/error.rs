@@ -38,6 +38,8 @@ pub enum GraphStoreError {
         expected: usize,
         actual: usize,
     },
+    /// Remote CSR edge endpoints are not supported without federation stable.
+    RemoteEdgeNotSupported,
     /// Federated expand returned or attempted to send invalid edge-payload bytes.
     FederatedExpandPayload {
         detail: String,
@@ -93,6 +95,9 @@ impl fmt::Display for GraphStoreError {
                     "unlabeled edges expect {expected} value bytes, got {actual}"
                 ),
             },
+            Self::RemoteEdgeNotSupported => {
+                write!(f, "remote CSR edge endpoints are not supported")
+            }
             Self::FederatedExpandPayload { detail } => {
                 write!(f, "invalid federated expand edge payload: {detail}")
             }
@@ -121,6 +126,7 @@ impl std::error::Error for GraphStoreError {
             | Self::InvalidEdgeLabelId(_)
             | Self::InvalidEdgePayloadWidth(_)
             | Self::EdgePayloadWidthMismatch { .. }
+            | Self::RemoteEdgeNotSupported
             | Self::FederatedExpandPayload { .. }
             | Self::EdgeLabelProfileAlreadyInstalled(_)
             | Self::VertexPlacement(_)

@@ -19,8 +19,7 @@ use super::super::context::ExecuteCtx;
 use super::super::path::{PathBinding, PathSearchNode, local_shard_id};
 use super::{
     ExpandDst, edge_binding_matches_label_expr, expand_candidates_for_expand_op_into,
-    expand_dst_binding, expand_dst_matches_prebound_vertex, expand_rows_from_federated_expand_hits,
-    peer_expand_remote_vertex,
+    expand_dst_binding, expand_dst_matches_prebound_vertex,
 };
 use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
 use crate::plan::query::error::PlanQueryError;
@@ -90,29 +89,6 @@ pub(crate) async fn execute_var_len_expand(
     for row in rows {
         match resolve_traversal_expand_source(ctx.store, row.get(src.as_ref()), direction).await? {
             None => continue,
-            Some(TraversalExpandSource::PeerExpand(logical)) => {
-                if var_len.min != 1 || var_len.max != Some(1) {
-                    return Err(PlanQueryError::UnsupportedOp("Expand.var_len.peer"));
-                }
-                let hits = peer_expand_remote_vertex(ctx, logical, direction, label_id).await?;
-                out.extend(expand_rows_from_federated_expand_hits(
-                    ctx.store,
-                    &row,
-                    &hits,
-                    dst.as_ref(),
-                    edge.as_ref(),
-                    emit_edge_binding,
-                    hop_aux_key,
-                    dst_property_projection.as_deref(),
-                    dst_filter,
-                    label_expr,
-                    execution,
-                    ctx.parameters,
-                    caller,
-                    gleaph_weight_decoders,
-                    &evaluator,
-                )?);
-            }
             Some(TraversalExpandSource::LocalCsr(src_id)) => {
                 collect_var_len_expand_rows(
                     ctx.store,

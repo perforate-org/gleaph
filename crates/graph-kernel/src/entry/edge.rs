@@ -15,7 +15,7 @@
 //! and [`EdgePayloadStore`], not this row.
 
 use super::edge_payload::EdgePayload;
-use super::remote_ref::EdgeTarget;
+use super::remote_vertex_id::EdgeTarget;
 use super::vertex_ref::VertexRef;
 use ic_stable_lara::{
     VertexId,
@@ -117,7 +117,9 @@ impl CsrEdge for Edge {
     #[inline]
     fn with_neighbor_vid(&self, vid: VertexId) -> Self {
         let target = match self.target.edge_target() {
-            Some(EdgeTarget::Remote(remote_ref)) => VertexRef::remote_ref(remote_ref),
+            Some(EdgeTarget::Remote(remote_vertex_id)) => {
+                VertexRef::remote_vertex(remote_vertex_id)
+            }
             Some(EdgeTarget::Local(_)) | None => VertexRef::local(vid),
         };
         Self {
@@ -183,7 +185,7 @@ impl CsrEdgeTombstone for Edge {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entry::RemoteRefId;
+    use crate::entry::RemoteVertexId;
     use std::collections::hash_map::DefaultHasher;
 
     fn test_edge(slot: u32, label_id: u16) -> Edge {
@@ -226,7 +228,7 @@ mod tests {
     #[test]
     fn write_to_encodes_target_only() {
         let edge = Edge {
-            target: VertexRef::remote_ref(RemoteRefId::from_raw(0x1234_5678)),
+            target: VertexRef::remote_vertex(RemoteVertexId::from_raw(0x1234_5678)),
             edge_slot_index: EdgeSlotIndex::from_raw(0xA1B2_C3D4),
             label_id: 0,
             payload: EdgePayload::from_slice(&0x9A8Bu16.to_le_bytes()),

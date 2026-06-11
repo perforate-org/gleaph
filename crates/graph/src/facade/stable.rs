@@ -15,10 +15,7 @@ pub(crate) mod edge_properties;
 pub(crate) mod edge_weight_profiles;
 pub(crate) mod label_telemetry;
 pub(crate) mod metadata;
-pub(crate) mod peer_graph_canisters;
 pub(crate) mod property_catalog;
-pub(crate) mod remote_forward_in;
-pub(crate) mod remote_vertex_refs;
 pub(crate) mod vertex_labels;
 pub(crate) mod vertex_properties;
 
@@ -55,17 +52,8 @@ thread_local! {
     pub(crate) static EDGE_PAYLOAD_PROFILES: RefCell<memory::StableEdgePayloadProfileStore> =
         RefCell::new(memory::init_edge_payload_profiles());
 
-    pub(crate) static REMOTE_VERTEX_REFS: RefCell<memory::StableRemoteVertexRefTable> =
-        RefCell::new(memory::init_remote_vertex_refs());
-
-    pub(crate) static REMOTE_FORWARD_IN: RefCell<memory::StableRemoteForwardInIndex> =
-        RefCell::new(memory::init_remote_forward_in());
-
     pub(crate) static EDGE_EQUALITY_POSTINGS: RefCell<memory::StableEdgeEqualityPostingStore> =
         RefCell::new(memory::init_edge_equality_postings());
-
-    pub(crate) static PEER_GRAPH_CANISTERS: RefCell<memory::StablePeerGraphCanisterSet> =
-        RefCell::new(memory::init_peer_graph_canisters());
 
     pub(crate) static LABEL_TELEMETRY_SEQ: RefCell<memory::StableLabelTelemetrySeq> =
         RefCell::new(memory::init_label_telemetry_seq());

@@ -2,7 +2,7 @@
 
 use gleaph_graph_kernel::entry::{
     Edge, EdgeDirectedness, EdgeLabelId, EdgePayloadProfile, EdgeSlotIndex, EdgeTarget,
-    RemoteRefId, TaggedEdgeLabelId, VertexRef,
+    RemoteVertexId, TaggedEdgeLabelId, VertexRef,
 };
 use ic_stable_lara::{
     VertexId,
@@ -105,9 +105,9 @@ pub(super) fn build_edge_to_with_payload_bytes(target: VertexId, payload_bytes: 
     build_edge_to(target).with_payload_bytes(payload_bytes)
 }
 
-pub(super) fn build_edge_to_remote(remote_ref: RemoteRefId) -> Edge {
+pub(super) fn build_edge_to_remote(remote_vertex_id: RemoteVertexId) -> Edge {
     Edge {
-        target: VertexRef::remote_ref(remote_ref),
+        target: VertexRef::remote_vertex(remote_vertex_id),
         edge_slot_index: EdgeSlotIndex::from_raw(0),
         label_id: 0,
         payload: gleaph_graph_kernel::entry::EdgePayload::EMPTY,
@@ -115,10 +115,10 @@ pub(super) fn build_edge_to_remote(remote_ref: RemoteRefId) -> Edge {
 }
 
 pub(super) fn build_edge_to_remote_with_payload_bytes(
-    remote_ref: RemoteRefId,
+    remote_vertex_id: RemoteVertexId,
     payload_bytes: &[u8],
 ) -> Edge {
-    build_edge_to_remote(remote_ref).with_payload_bytes(payload_bytes)
+    build_edge_to_remote(remote_vertex_id).with_payload_bytes(payload_bytes)
 }
 
 pub(super) fn validate_edge_payload_bytes(payload_bytes: &[u8]) -> Result<(), GraphStoreError> {
@@ -171,15 +171,12 @@ pub(crate) fn edge_matches_local_neighbor(
 
 pub(super) fn edge_matches_remote_target(
     edge: &Edge,
-    remote_ref: RemoteRefId,
+    remote_vertex_id: RemoteVertexId,
     payload_bytes: &[u8],
 ) -> bool {
     matches!(
-
         edge.edge_target(),
-
-        Some(EdgeTarget::Remote(found)) if found == remote_ref
-
+        Some(EdgeTarget::Remote(found)) if found == remote_vertex_id
     ) && edge_payload_bytes_match(edge, payload_bytes)
 }
 

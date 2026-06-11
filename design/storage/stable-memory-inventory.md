@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
 Last updated: 2026-06-11  
-Status: Implemented (pre-federation repack per ADR 0006 slice D)  
-Anchor timestamp: 2026-06-11 14:21:44 UTC +0000
+Status: Implemented (sequential LARA MemoryIds 0–31; facade 32–42)  
+Anchor timestamp: 2026-06-11 16:18:18 UTC +0000
 
 ## Purpose
 
@@ -41,7 +41,6 @@ Thread-local pairing: `facade/stable.rs` in each crate.
 | Edge equality postings | Edge properties | Sync: `dispatch_property_index_ops` on DML | **Implemented:** `check_edge_equality_postings` + `rebuild_edge_equality_postings` (`facade/derived_state/edge_equality.rs`) |
 | Property postings (graph-index) | Vertex properties (indexable) | DML + `pending.rs` flush | **Implemented:** `backfill_property_postings` + router `admin_property_backfill_step` |
 | Label postings (graph-index) | `VertexLabelStore` | DML + `label_pending` flush | **Implemented:** `backfill_label_postings` + router `admin_label_backfill_step` ([label-index.md](../index/label-index.md)) |
-| Remote forward-in | Remote forward edges | Register/insert paths | Scan fallback per [federation/operations.md](../federation/operations.md) |
 | Router label telemetry | Graph `LabelUsageDelta` | Event apply + `ROUTER_APPLIED_LABEL_TELEMETRY` dedup | **Implemented:** graph outbox replay via `admin_label_telemetry_replay_step`; no full historical scan |
 | Router indexed-property catalog | Property catalog + planner stats | Planner registration | **Ephemeral** — rebuilt after upgrade |
 
@@ -49,7 +48,7 @@ Thread-local pairing: `facade/stable.rs` in each crate.
 
 ## Graph canister — LARA bundle
 
-`init_graph()` wires 30 `MemoryId` regions into one `DeferredBidirectionalLabeledLaraGraph`. Thread-local: `GRAPH`.
+`init_graph()` wires **32** consecutive `MemoryId` regions (0–31) into one `DeferredBidirectionalLabeledLaraGraph`. Thread-local: `GRAPH`.
 
 ### Forward orientation (canonical adjacency + payloads)
 
@@ -65,34 +64,34 @@ Thread-local pairing: `facade/stable.rs` in each crate.
 | 7 | `FWD_EDGE_SPAN_META` | Edge span metadata | maintenance | — |
 | 8 | `FWD_EDGE_FREE_SPANS` | Retired edge physical spans | maintenance | — |
 | 9 | `FWD_EDGE_FREE_SPAN_BY_START` | Edge free-span index | maintenance | — |
-| 42 | `FWD_PAYLOAD_SLAB` | Labeled edge payload slab | canonical | — |
-| 45 | `FWD_PAYLOAD_FREE_SPANS` | Payload free spans | maintenance | — |
-| 46 | `FWD_PAYLOAD_FREE_SPAN_BY_START` | Payload free-span index | maintenance | — |
-| 49 | `FWD_PAYLOAD_LOG` | Payload value log | canonical | — |
-| 57 | `FWD_PAYLOAD_BLOBS` | Large payload blobs | canonical | — |
+| 10 | `FWD_PAYLOAD_SLAB` | Labeled edge payload slab | canonical | — |
+| 11 | `FWD_PAYLOAD_FREE_SPANS` | Payload free spans | maintenance | — |
+| 12 | `FWD_PAYLOAD_FREE_SPAN_BY_START` | Payload free-span index | maintenance | — |
+| 13 | `FWD_PAYLOAD_LOG` | Payload value log | canonical | — |
+| 14 | `FWD_PAYLOAD_BLOBS` | Large payload blobs | canonical | — |
 
 ### Reverse orientation (derived adjacency + payloads)
 
 | MemoryId | Symbol | Role | Class | Rebuild |
 |--------|--------|------|-------|---------|
-| 10 | `REV_VERTICES` | Reverse vertex rows | derived | Sync co-update; no scan API |
-| 11 | `REV_BUCKETS` | Reverse buckets | derived | Sync co-update |
-| 12–13 | `REV_BUCKET_FREE_SPANS`, `REV_BUCKET_FREE_SPAN_BY_START` | Reverse bucket maintenance | maintenance | — |
-| 14 | `REV_EDGE_COUNTS` | Reverse edge counts | derived | Sync co-update |
-| 15 | `REV_EDGES` | Reverse edge slab | derived | Sync co-update |
-| 16 | `REV_EDGE_LOG` | Reverse edge log | derived | Sync co-update |
-| 17–18 | `REV_EDGE_SPAN_META`, `REV_EDGE_FREE_SPANS`, `REV_EDGE_FREE_SPAN_BY_START` | Reverse edge maintenance | maintenance | — |
-| 43 | `REV_PAYLOAD_SLAB` | Reverse payload slab | derived | Sync co-update |
-| 47–48 | `REV_PAYLOAD_FREE_SPANS`, `REV_PAYLOAD_FREE_SPAN_BY_START` | Reverse payload maintenance | maintenance | — |
-| 50 | `REV_PAYLOAD_LOG` | Reverse payload log | derived | Sync co-update |
-| 58 | `REV_PAYLOAD_BLOBS` | Reverse payload blobs | derived | Sync co-update |
+| 15 | `REV_VERTICES` | Reverse vertex rows | derived | Sync co-update; no scan API |
+| 16 | `REV_BUCKETS` | Reverse buckets | derived | Sync co-update |
+| 17–18 | `REV_BUCKET_FREE_SPANS`, `REV_BUCKET_FREE_SPAN_BY_START` | Reverse bucket maintenance | maintenance | — |
+| 19 | `REV_EDGE_COUNTS` | Reverse edge counts | derived | Sync co-update |
+| 20 | `REV_EDGES` | Reverse edge slab | derived | Sync co-update |
+| 21 | `REV_EDGE_LOG` | Reverse edge log | derived | Sync co-update |
+| 22–24 | `REV_EDGE_SPAN_META`, `REV_EDGE_FREE_SPANS`, `REV_EDGE_FREE_SPAN_BY_START` | Reverse edge maintenance | maintenance | — |
+| 25 | `REV_PAYLOAD_SLAB` | Reverse payload slab | derived | Sync co-update |
+| 26–27 | `REV_PAYLOAD_FREE_SPANS`, `REV_PAYLOAD_FREE_SPAN_BY_START` | Reverse payload maintenance | maintenance | — |
+| 28 | `REV_PAYLOAD_LOG` | Reverse payload log | derived | Sync co-update |
+| 29 | `REV_PAYLOAD_BLOBS` | Reverse payload blobs | derived | Sync co-update |
 
 ### LARA maintenance
 
 | MemoryId | Symbol | Role | Class | Rebuild |
 |--------|--------|------|-------|---------|
-| 20 | `MAINTENANCE_QUEUE` | Deferred PMA work queue | maintenance | Internal LARA drain |
-| 21 | `DIRTY_WORK_ITEMS` | Dirty work tracking | maintenance | Internal LARA drain |
+| 30 | `MAINTENANCE_QUEUE` | Deferred PMA work queue | maintenance | Internal LARA drain |
+| 31 | `DIRTY_WORK_ITEMS` | Dirty work tracking | maintenance | Internal LARA drain |
 
 Owner: `ic-stable-lara` / graph `GRAPH` thread-local. Scan paths must not consult PMA maintenance stores ([lara.md](./lara.md)).
 
@@ -100,25 +99,21 @@ Owner: `ic-stable-lara` / graph `GRAPH` thread-local. Scan paths must not consul
 
 ## Graph canister — facade regions
 
-Repacked 2026-06-11 (ADR 0006 slice D). **Removed:** property name catalog (25–26), `VERTEX_LOGICAL_IDS` (36). LARA bundle ids (0–21, 42–58) unchanged.
+Repacked 2026-06-11. **Removed:** property name catalog, `VERTEX_LOGICAL_IDS`, federation remote-ref stable (`REMOTE_VERTEX_REFS`, `REMOTE_FORWARD_IN`), `PEER_GRAPH_CANISTERS`. LARA ids are consecutive **0–31**; facade starts at **32**.
 
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
-| 22 | `VERTEX_LABEL_SETS` | `VERTEX_LABELS` | `init_vertex_label_store` | canonical | labels | — |
-| 23 | `VERTEX_PROPERTIES` | `VERTEX_PROPERTIES` | `init_vertex_property_store` | canonical | properties | — |
-| 24 | `EDGE_PROPERTIES` | `EDGE_PROPERTIES` | `init_edge_property_store` | canonical | properties | — |
-| 25 | `EDGE_ALIASES` | `EDGE_ALIASES` | `init_edge_alias_index` | derived | adjacency | `check_edge_aliases` / `rebuild_edge_aliases` |
-| 26 | `GRAPH_METADATA` | `METADATA` | `init_metadata` | canonical | federation metadata | — |
-| 27 | `EDGE_WEIGHT_PROFILES` | `EDGE_WEIGHT_PROFILES` | `init_edge_weight_profiles` | compatibility (legacy read fallback) | edge profiles | — |
-| 28 | `EDGE_PAYLOAD_PROFILES` | `EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | canonical | edge profiles | — |
-| 29 | `EDGE_EQUALITY_POSTINGS` | `EDGE_EQUALITY_POSTINGS` | `init_edge_equality_postings` | derived | local indexes | `check_edge_equality_postings` / `rebuild_edge_equality_postings` |
-| 30 | `REMOTE_REF_TO_VERTEX` | `REMOTE_VERTEX_REFS` | `init_remote_vertex_refs` | canonical | remote refs (deferred prod) | — |
-| 31 | `VERTEX_TO_REMOTE_REF` | `REMOTE_VERTEX_REFS` | `init_remote_vertex_refs` | canonical | remote refs (deferred prod) | — |
-| 32 | `REMOTE_FORWARD_IN` | `REMOTE_FORWARD_IN` | `init_remote_forward_in` | derived | remote refs (deferred prod) | Scan fallback |
-| 33 | `PEER_GRAPH_CANISTERS` | `PEER_GRAPH_CANISTERS` | `init_peer_graph_canisters` | canonical | federation peers (deferred prod) | — |
-| 34 | `LABEL_TELEMETRY_SEQ` | `LABEL_TELEMETRY_SEQ` | `init_label_telemetry_seq` | telemetry | label telemetry | — |
-| 35 | `LABEL_TELEMETRY_OUTBOX` | `LABEL_TELEMETRY_OUTBOX` | `init_label_telemetry_outbox` | telemetry | label telemetry | Event replay to router |
-| 36 | `APPLIED_MUTATION_REQUESTS` | `APPLIED_MUTATION_REQUESTS` | `init_applied_mutation_requests` | canonical | idempotency | — |
+| 32 | `VERTEX_LABEL_SETS` | `VERTEX_LABELS` | `init_vertex_label_store` | canonical | labels | — |
+| 33 | `VERTEX_PROPERTIES` | `VERTEX_PROPERTIES` | `init_vertex_property_store` | canonical | properties | — |
+| 34 | `EDGE_PROPERTIES` | `EDGE_PROPERTIES` | `init_edge_property_store` | canonical | properties | — |
+| 35 | `EDGE_ALIASES` | `EDGE_ALIASES` | `init_edge_alias_index` | derived | adjacency | `check_edge_aliases` / `rebuild_edge_aliases` |
+| 36 | `GRAPH_METADATA` | `METADATA` | `init_metadata` | canonical | federation metadata | — |
+| 37 | `EDGE_WEIGHT_PROFILES` | `EDGE_WEIGHT_PROFILES` | `init_edge_weight_profiles` | compatibility (legacy read fallback) | edge profiles | — |
+| 38 | `EDGE_PAYLOAD_PROFILES` | `EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | canonical | edge profiles | — |
+| 39 | `EDGE_EQUALITY_POSTINGS` | `EDGE_EQUALITY_POSTINGS` | `init_edge_equality_postings` | derived | local indexes | `check_edge_equality_postings` / `rebuild_edge_equality_postings` |
+| 40 | `LABEL_TELEMETRY_SEQ` | `LABEL_TELEMETRY_SEQ` | `init_label_telemetry_seq` | telemetry | label telemetry | — |
+| 41 | `LABEL_TELEMETRY_OUTBOX` | `LABEL_TELEMETRY_OUTBOX` | `init_label_telemetry_outbox` | telemetry | label telemetry | Event replay to router |
+| 42 | `APPLIED_MUTATION_REQUESTS` | `APPLIED_MUTATION_REQUESTS` | `init_applied_mutation_requests` | canonical | idempotency | — |
 
 Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores values by `PropertyId` only.
 

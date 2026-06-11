@@ -1,7 +1,6 @@
 //! Adjacency storage domain: canonical edge writes plus derived alias, journal, and maintenance.
 
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeTarget, TaggedEdgeLabelId};
-use gleaph_graph_kernel::federation::GlobalVertexId;
 use ic_stable_lara::{VertexId, traits::CsrEdge};
 
 use super::GraphStore;
@@ -55,30 +54,6 @@ impl GraphStore {
         self.journal_and_maintain_edge_insert(canonical)
     }
 
-    /// Remote/logical edge: journal and deferred maintenance after forward-in registration.
-    pub(super) fn commit_logical_edge_insert(
-        &self,
-        source_vertex_id: VertexId,
-        target_vertex_id: GlobalVertexId,
-        target_is_remote: bool,
-        catalog_label: Option<EdgeLabelId>,
-        undirected: bool,
-        payload_bytes: &[u8],
-        handle: EdgeHandle,
-    ) -> Result<(), GraphStoreError> {
-        journal_edge_insert_to_logical(
-            self,
-            source_vertex_id,
-            target_vertex_id,
-            target_is_remote,
-            catalog_label,
-            undirected,
-            payload_bytes,
-            handle,
-        )?;
-        self.run_post_edge_insert_maintenance()
-    }
-
     /// Remove a canonical edge, its alias row if present, derived sidecars, and maintenance queue.
     pub(super) fn commit_delete_edge_by_handle(
         &self,
@@ -90,7 +65,6 @@ impl GraphStore {
         let is_undirected = TaggedEdgeLabelId::from_raw(canonical.label_id.raw()).is_undirected();
         let alias = self.alias_for_canonical_edge(canonical);
         self.commit_clear_edge_sidecars(handle);
-        self.commit_unregister_remote_forward_in_for_handle(canonical);
         let edge = self.with_graph_mut(|graph| {
             graph.remove_forward_edge_at_slot(
                 canonical.owner_vertex_id,
@@ -173,19 +147,6 @@ pub(super) fn journal_edge_insert(
     _undirected: bool,
     _payload_bytes: &[u8],
     _canonical: EdgeHandle,
-) -> Result<(), GraphStoreError> {
-    Ok(())
-}
-
-pub(super) fn journal_edge_insert_to_logical(
-    _store: &GraphStore,
-    _source_vertex_id: VertexId,
-    _target_vertex_id: GlobalVertexId,
-    _target_is_remote: bool,
-    _catalog_label: Option<EdgeLabelId>,
-    _undirected: bool,
-    _payload_bytes: &[u8],
-    _source_handle: EdgeHandle,
 ) -> Result<(), GraphStoreError> {
     Ok(())
 }

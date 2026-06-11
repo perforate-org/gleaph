@@ -7,6 +7,7 @@ use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::entry::{Edge, EdgePayload};
 use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
 use ic_stable_lara::VertexId;
+use ic_stable_lara::traits::CsrEdge;
 
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 
@@ -40,7 +41,7 @@ impl EdgeBinding {
     /// Edge binding from a federated wire hit on another shard (no local CSR hydration).
     pub fn from_federated_neighbor_hit(hit: &FederatedExpandNeighbor) -> Self {
         Self {
-            handle: crate::facade::federation_expand::edge_handle_from_federated_hit_wire(hit),
+            handle: edge_handle_from_federated_hit_wire(hit),
             payload: hit.payload(),
         }
     }
@@ -49,12 +50,62 @@ impl EdgeBinding {
         store: &GraphStore,
         hit: &FederatedExpandNeighbor,
     ) -> Result<Self, GraphStoreError> {
-        let handle = crate::facade::federation_expand::edge_handle_for_federated_hit(store, hit)?;
+        let handle = edge_handle_for_federated_hit(store, hit)?;
         if let Some(edge) = store.find_outgoing_edge_record(handle)? {
             return Ok(Self::from_edge(handle, edge));
         }
         Ok(Self::from_federated_neighbor_hit(hit))
     }
+}
+
+fn edge_handle_from_federated_hit_wire(hit: &FederatedExpandNeighbor) -> EdgeHandle {
+    let label_id = ic_stable_lara::BucketLabelKey::from_raw(hit.label_id_raw);
+    let owner_vertex_id = if hit.anchor_local_vertex_id == 0 {
+        VertexId::from(hit.neighbor_local_vertex_id)
+    } else {
+        VertexId::from(hit.anchor_local_vertex_id)
+    };
+    EdgeHandle {
+        owner_vertex_id,
+        label_id,
+        slot_index: hit.slot_index,
+    }
+}
+
+fn edge_handle_for_federated_hit(
+    store: &GraphStore,
+    hit: &FederatedExpandNeighbor,
+) -> Result<EdgeHandle, GraphStoreError> {
+    let wire = edge_handle_from_federated_hit_wire(hit);
+    let anchor = VertexId::from(hit.anchor_local_vertex_id);
+    let neighbor = VertexId::from(hit.neighbor_local_vertex_id);
+    if hit.anchor_local_vertex_id == 0 {
+        return Ok(wire);
+    }
+    if store.vertex(anchor).is_some() {
+        let at_anchor = EdgeHandle {
+            owner_vertex_id: anchor,
+            label_id: wire.label_id,
+            slot_index: wire.slot_index,
+        };
+        if store
+            .find_outgoing_edge_record(at_anchor)?
+            .is_some_and(|edge| edge.neighbor_vid() == neighbor)
+        {
+            return Ok(at_anchor);
+        }
+        if store.vertex(neighbor).is_some() {
+            let at_neighbor = EdgeHandle {
+                owner_vertex_id: neighbor,
+                label_id: wire.label_id,
+                slot_index: wire.slot_index,
+            };
+            if store.find_outgoing_edge_record(at_neighbor)?.is_some() {
+                return Ok(at_neighbor);
+            }
+        }
+    }
+    Ok(wire)
 }
 
 pub(crate) fn edge_binding_for_federated_expand_hit(

@@ -1,8 +1,7 @@
 //! GraphStore `metadata` implementation.
 
-use super::super::stable::{METADATA, PEER_GRAPH_CANISTERS};
+use super::super::stable::METADATA;
 use super::super::{FederationRouting, GraphMetadata, GraphMetadataError};
-use candid::Principal;
 
 use super::GraphStore;
 
@@ -47,24 +46,5 @@ impl GraphStore {
 
     pub fn federation_configured(&self) -> bool {
         METADATA.with_borrow(|m| m.get().federation_configured())
-    }
-
-    pub fn is_peer_graph_canister(&self, principal: &Principal) -> bool {
-        PEER_GRAPH_CANISTERS.with_borrow(|peers| peers.contains(principal))
-    }
-
-    pub fn bootstrap_peer_graph_canisters(&self, peers: &[Principal], self_canister: Principal) {
-        PEER_GRAPH_CANISTERS.with_borrow_mut(|set| set.insert_many(peers, self_canister));
-    }
-
-    pub fn add_peer_graph_canister(&self, peer: Principal, self_canister: Principal) {
-        if peer == self_canister {
-            return;
-        }
-        PEER_GRAPH_CANISTERS.with_borrow_mut(|set| set.insert(peer));
-    }
-
-    pub fn remove_peer_graph_canister(&self, peer: &Principal) -> bool {
-        PEER_GRAPH_CANISTERS.with_borrow_mut(|set| set.remove(peer))
     }
 }

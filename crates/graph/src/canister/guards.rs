@@ -26,29 +26,6 @@ pub fn guard_router_canister() -> Result<(), String> {
     }
 }
 
-/// `federated_expand` is invoked by the router or a sibling graph shard (not end users).
-#[cfg(not(target_family = "wasm"))]
-pub fn guard_router_or_peer_graph() -> Result<(), String> {
-    Ok(())
-}
-
-#[cfg(target_family = "wasm")]
-pub fn guard_router_or_peer_graph() -> Result<(), String> {
-    use crate::facade::GraphStore;
-    use ic_cdk::api::msg_caller;
-
-    let caller = msg_caller();
-    if guard_router_canister().is_ok() {
-        return Ok(());
-    }
-    if GraphStore::new().is_peer_graph_canister(&caller) {
-        return Ok(());
-    }
-    Err(format!(
-        "caller {caller} is not the router or a registered peer graph canister"
-    ))
-}
-
 /// Migration and other control-plane admin hooks (installer / router operations).
 pub fn guard_control_plane_admin() -> Result<(), String> {
     guard_router_canister()

@@ -17,13 +17,13 @@ flowchart TB
     Router --> G0["Graph shard 0<br/>LARA + exec"]
     Router --> G1["Graph shard 1<br/>LARA + exec"]
     Router --> Idx["graph-index<br/>postings"]
-    G0 <-->|federated_expand / peer ACL| G1
+    G0 --- G1
 ```
 
 | Canister | Crate | State / API / execution boundary |
 |----------|-------|--------------------------------|
 | Router | `crates/router` | RBAC decisions, ad-hoc GQL parse+plan entry, prepared registry, shard registry, **vertex placement authority**, multi-shard `dispatch_plan_blob` |
-| Graph | `crates/graph` | Stable graph state, `execute_plan_*` entrypoints, federated expand, local indexes |
+| Graph | `crates/graph` | Stable graph state, `execute_plan_*` entrypoints, local indexes |
 | Graph index | `crates/graph-index` | Global property equality postings and lookup APIs returning `PostingHit { shard_id, vertex_id }` |
 
 Graph shards **do not** expose arbitrary GQL to end users; they accept `ExecutePlanArgs` from the router (or sibling graph shards for federation helpers).
@@ -70,7 +70,7 @@ From `AGENT.md`:
 | `gleaph-graph-kernel` | Shared wire types: federation, `ExecutePlanArgs`, index hits |
 | `gleaph-graph` | Storage facade, plan **executor**, federation expand |
 | `gleaph-router` | Control plane + dispatch |
-| `ic-stable-lara` | CSR/LARA primitives — **no** `LogicalVertexId` |
+| `ic-stable-lara` | CSR/LARA primitives — **no** `GlobalVertexId` |
 
 IC extensions (`IC.PRINCIPAL`, `IC.MSG_CALLER()`) are implemented in the GQL/IC bridge and executor, not in the portable parser crate.
 
@@ -87,8 +87,8 @@ A composite query must not call graph update methods (`plan_exec.rs` module docs
 
 | Mode | Configuration | Behavior |
 |------|---------------|----------|
-| **Standalone graph** | No `FederationRouting` in graph metadata | `standalone_logical_vertex_id`; single-process dev/tests |
-| **Federated graph** | Router + N shards + index | Placement via router; cross-shard expand and index routing |
+| **Standalone graph** | No `FederationRouting` in graph metadata | `GlobalVertexId(0, local)`; single-process dev/tests |
+| **Federated graph** | Router + N shards + index | Placement via router; cross-shard expand deferred |
 
 See [federation/model.md](../federation/model.md).
 

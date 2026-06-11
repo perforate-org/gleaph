@@ -13,7 +13,6 @@ use candid::Decode;
 use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_gql_planner::wire::decode_plan_bundle;
-use gleaph_graph_kernel::federation::{FederatedExpandArgs, FederatedExpandNeighbor};
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanResult, GqlExecutionMode, SeedBindingsWire,
 };
@@ -181,29 +180,6 @@ pub fn get_mutation_outcome(
     GraphStore::new().mutation_outcome(mutation_id)
 }
 
-pub fn bootstrap_graph_peers(
-    args: gleaph_graph_kernel::federation::BootstrapGraphPeersArgs,
-) -> Result<(), String> {
-    let self_canister = ic_cdk::api::canister_self();
-    GraphStore::new().bootstrap_peer_graph_canisters(&args.peers, self_canister);
-    Ok(())
-}
-
-pub fn add_graph_peer(
-    args: gleaph_graph_kernel::federation::AddGraphPeerArgs,
-) -> Result<(), String> {
-    let self_canister = ic_cdk::api::canister_self();
-    GraphStore::new().add_peer_graph_canister(args.peer, self_canister);
-    Ok(())
-}
-
-pub fn remove_graph_peer(
-    args: gleaph_graph_kernel::federation::RemoveGraphPeerArgs,
-) -> Result<(), String> {
-    GraphStore::new().remove_peer_graph_canister(&args.peer);
-    Ok(())
-}
-
 #[cfg(feature = "pocket-ic-e2e")]
 pub fn e2e_attach_federation(args: super::types::E2eAttachFederationArgs) -> Result<(), String> {
     if ic_cdk::api::msg_caller() != args.router_canister {
@@ -249,15 +225,6 @@ pub fn e2e_insert_directed_edge(
         .insert_directed_edge(source, target, None)
         .map_err(|e| e.to_string())?;
     Ok(())
-}
-
-pub async fn federated_expand(
-    args: FederatedExpandArgs,
-) -> Result<Vec<FederatedExpandNeighbor>, String> {
-    let store = GraphStore::new();
-    crate::facade::federation_expand::collect_federated_expand(&store, args)
-        .await
-        .map_err(|e| e.to_string())
 }
 
 pub async fn backfill_label_postings(

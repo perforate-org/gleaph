@@ -42,10 +42,7 @@ use ic_cdk_macros::{init, query, update};
 
 #[cfg(feature = "pocket-ic-e2e")]
 use crate::canister::guards::guard_control_plane_admin;
-use crate::canister::{
-    GraphInitArgs,
-    guards::{guard_router_canister, guard_router_or_peer_graph},
-};
+use crate::canister::{GraphInitArgs, guards::guard_router_canister};
 
 #[init]
 async fn init(args: GraphInitArgs) {
@@ -88,25 +85,6 @@ fn ack_label_telemetry_event(seq: gleaph_graph_kernel::plan_exec::ShardEventSeq)
     canister::handlers::ack_label_telemetry_event(seq);
 }
 
-#[update(guard = "guard_router_canister")]
-fn bootstrap_graph_peers(
-    args: gleaph_graph_kernel::federation::BootstrapGraphPeersArgs,
-) -> Result<(), String> {
-    canister::handlers::bootstrap_graph_peers(args)
-}
-
-#[update(guard = "guard_router_canister")]
-fn add_graph_peer(args: gleaph_graph_kernel::federation::AddGraphPeerArgs) -> Result<(), String> {
-    canister::handlers::add_graph_peer(args)
-}
-
-#[update(guard = "guard_router_canister")]
-fn remove_graph_peer(
-    args: gleaph_graph_kernel::federation::RemoveGraphPeerArgs,
-) -> Result<(), String> {
-    canister::handlers::remove_graph_peer(args)
-}
-
 #[cfg(feature = "pocket-ic-e2e")]
 #[update]
 fn e2e_attach_federation(args: canister::types::E2eAttachFederationArgs) -> Result<(), String> {
@@ -125,13 +103,6 @@ fn e2e_insert_directed_edge(
     args: canister::types::E2eInsertDirectedEdgeArgs,
 ) -> Result<(), String> {
     canister::handlers::e2e_insert_directed_edge(args)
-}
-
-#[query(composite = true, guard = "guard_router_or_peer_graph")]
-async fn federated_expand(
-    args: gleaph_graph_kernel::federation::FederatedExpandArgs,
-) -> Result<Vec<gleaph_graph_kernel::federation::FederatedExpandNeighbor>, String> {
-    canister::handlers::federated_expand(args).await
 }
 
 #[update(guard = "guard_router_canister")]

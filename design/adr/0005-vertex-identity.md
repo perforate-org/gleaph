@@ -188,12 +188,12 @@ CLIENT  → sends EncodedVertexId bytes (or SDK-decoded bytes)
 
 | Item | Status |
 |------|--------|
-| ADR and type definitions in `graph-kernel` | **Planned** |
-| Remove `LogicalVertexId` and logical stable regions | **Planned** |
-| `GlobalVertexId` router placement | **Planned** |
-| `EncodedVertexId` / `EncodedEdgeId` encode-decode | **Planned** |
-| `RemoteVertexId` rename + allocate-from-1 policy | **Planned** |
-| Persistent remote ref ↔ global index | **Deferred** |
+| ADR and type definitions in `graph-kernel` | **Implemented** |
+| Remove `LogicalVertexId` and logical stable regions | **Implemented** |
+| `GlobalVertexId` router placement | **Implemented** |
+| `EncodedVertexId` / `EncodedEdgeId` encode-decode | **Implemented** |
+| `RemoteVertexId` rename + allocate-from-1 policy | **Implemented** (type rename; no allocator/stable yet) |
+| Persistent remote vertex ↔ global index | **Deferred** |
 | Remote edge DML / expand | **Deferred** |
 
 ## Alternatives considered
@@ -230,7 +230,7 @@ optional SDK presentation.
 
 - `crates/graph-kernel/src/federation.rs` — current placement types (to be updated)
 - `crates/graph-kernel/src/path.rs` — current path id layout (to be updated)
-- `crates/graph-kernel/src/entry/remote_ref.rs` — `RemoteRefId` / `VertexRef` remote payload
+- `crates/graph-kernel/src/entry/remote_vertex_id.rs` — `RemoteVertexId` / `VertexRef` remote payload
 - `crates/gql-ic/src/wire.rs` — Candid mapping for `Value::Bytes`
 - `design/federation/model.md` — prior identity model (to be revised)
 - `design/storage/stable-memory-inventory.md` — MemoryIds 36–41 (to be revised)

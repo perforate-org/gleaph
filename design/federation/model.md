@@ -1,8 +1,8 @@
 # Federation model
 
 Last updated: 2026-06-11  
-Status: **Partially Implemented** (global vertex identity and router placement per [ADR 0005](../adr/0005-vertex-identity.md) / [ADR 0006](../adr/0006-pre-federation-foundation.md); remote CSR stable and production peer expand remain deferred)  
-Anchor timestamp: 2026-06-11 16:02:17 UTC +0000
+Status: **Partially Implemented** (global vertex identity and router placement per [ADR 0005](../adr/0005-vertex-identity.md) / [ADR 0006](../adr/0006-pre-federation-foundation.md); cross-shard remote CSR and `federated_expand` deferred)  
+Anchor timestamp: 2026-06-11 16:18:18 UTC +0000
 
 ## Purpose
 
@@ -20,9 +20,9 @@ Define the **distributed graph identity and placement model** shared by router, 
 
 - `federation/encoded.rs` — `EncodedVertexId`, `EncodedEdgeId`, `ElementIdEncodingKey`
 - `federation/global_edge_id.rs` — `GlobalEdgeId`
-- `federation/expand.rs` — `FederatedExpandArgs`, `FederatedExpandNeighbor`
+- `federation/expand.rs` — wire types for future cross-shard expand (`FederatedExpandArgs`, `FederatedExpandNeighbor`)
+
 - `federation/router_error.rs` — `RouterError`
-- `federation/peer_sync.rs` — graph peer ACL sync (deferred for standalone)
 
 ## Identifiers
 
@@ -74,18 +74,7 @@ stateDiagram-v2
 
 ## Remote edges
 
-**Status: Experimental / PocketIC only.** Stable regions exist at graph facade MemoryIds 30–32 (repacked 2026-06-11) for harness tests; production remote CSR is deferred until a follow-up ADR defines `RemoteVertexId` resolution.
-
-Cross-shard adjacency does not duplicate full vertex records on both sides.
-
-| Mechanism | Location | Role |
-|-----------|----------|------|
-| `RemoteRefId` | `graph-kernel/entry/remote_ref.rs` | Compact far-end reference on an edge (CSR bit in `VertexRef`) |
-| `EdgeTarget::Remote` | kernel | Edge endpoint is remote |
-| `REMOTE_FORWARD_IN` | `graph/src/facade/stable/remote_forward_in.rs` | Derived index: incoming edges targeting a `GlobalVertexId` via remote ref table |
-| `REMOTE_VERTEX_REFS` | `graph/src/facade/stable/remote_vertex_refs.rs` | Maps `RemoteRefId` ↔ `GlobalVertexId` (stable; PocketIC / expand tests) |
-
-Many edges may share one remote ref per global target vertex.
+**Status: Not implemented.** Kernel types (`RemoteVertexId`, `EdgeTarget::Remote`) exist for future cross-shard CSR, but graph shards have **no** remote-vertex stable, peer ACL stable, or `federated_expand` canister endpoint. Remote edge insert and cross-shard expand return `UnsupportedOp` / `RemoteEdgeNotSupported` until a follow-up ADR defines persistent `RemoteVertexId` → `GlobalVertexId` resolution.
 
 ## Shard registry
 

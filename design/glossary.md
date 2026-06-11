@@ -20,10 +20,10 @@ See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md) and [adr/0006-pre
 | **Physical vertex location** | `PhysicalVertexLocation` | `(shard_id, local_vertex_id)` — active home of vertex data; same tuple as `GlobalVertexId`. |
 | **Vertex placement** | `VertexPlacement` | Router-owned state: `Active(PhysicalVertexLocation)` keyed by `GlobalVertexId`. |
 | **Physical placement key** | `PhysicalPlacementKey` | Type alias for `GlobalVertexId` (deprecated name). |
-| **Remote vertex id** | `RemoteVertexId` (planned) | Shard-local 30-bit handle inside `VertexRef` for remote CSR endpoints — **not** exported on the client wire. Persistent table deferred. |
+| **Remote vertex id** | `RemoteVertexId` | Shard-local 30-bit handle inside `VertexRef` for remote CSR endpoints — kernel type only; **no graph stable yet**. |
 | **Standalone mode** | [sharding/standalone-mode.md](sharding/standalone-mode.md) | `n = 1` shard: `GlobalVertexId(0, local)`; router catalogs; encoded element ids on the wire. |
 
-**Removed terms:** `LogicalVertexId`, `standalone_logical_vertex_id`, router logical-id allocation, graph `VERTEX_LOGICAL_IDS`.
+**Removed terms:** `LogicalVertexId`, `standalone_logical_vertex_id`, router logical-id allocation, graph `VERTEX_LOGICAL_IDS`, `RemoteRefId`.
 
 ## Catalogs (federation)
 
@@ -38,8 +38,7 @@ See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md) and [adr/0006-pre
 | Term | Meaning |
 |------|---------|
 | **LARA** | Localized Adjacency Relocation Array; CSR-based adjacency in `ic-stable-lara`. |
-| **Remote ref** | `RemoteRefId` — compact handle for an edge whose far endpoint is on another shard (experimental; stable map to `GlobalVertexId` in PocketIC tests). |
-| **Forward-to-remote index** | `REMOTE_FORWARD_IN` — derived postings for incoming edges targeting a remote ref (deferred for production). |
+| **Forward-to-remote index** | — | **Removed**; was `REMOTE_FORWARD_IN` |
 | **Authoritative shard** | Shard holding the vertex’s primary record (`VertexPlacement::Active` location). |
 
 ## Query execution
@@ -67,5 +66,5 @@ See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md) and [adr/0006-pre
 | Canister | Role |
 |----------|------|
 | **Router** | Auth, planning entry, shard registry, placement authority, catalog SSOT, multi-shard dispatch. |
-| **Graph shard** | LARA storage, plan execution, federated expand (experimental). |
+| **Graph shard** | LARA storage, plan execution (local CSR only today). |
 | **Graph index** | Property equality postings tagged with `(shard_id, local_vertex_id)`. |

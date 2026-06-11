@@ -73,7 +73,6 @@ impl GraphStore {
     ) -> Result<Vec<EdgeHandle>, GraphStoreError> {
         let mut to_clear = Vec::new();
         let mut push_out = |edge: Edge| {
-            self.commit_unregister_remote_forward_in_for_out_edge(vertex_id, &edge);
             let owner = self.edge_sidecar_owner_from_out_row(vertex_id, &edge);
             to_clear.push(EdgeHandle {
                 owner_vertex_id: owner,

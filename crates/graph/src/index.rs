@@ -1,7 +1,6 @@
 //! Federated property index integration with [`gleaph_graph_index`].
 
 pub mod edge_equal;
-pub mod federation;
 pub mod ic;
 pub mod label_backfill;
 pub mod label_pending;

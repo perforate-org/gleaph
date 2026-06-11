@@ -189,21 +189,6 @@ pub fn install_federation() -> FederationEnv {
         );
     }
 
-    let peers = Encode!(&gleaph_graph_kernel::federation::BootstrapGraphPeersArgs {
-        peers: vec![graph_dest],
-    })
-    .expect("encode peers");
-    env.pic
-        .update_call(graph_source, router, "bootstrap_graph_peers", peers.clone())
-        .expect("bootstrap source peers");
-    let peers = Encode!(&gleaph_graph_kernel::federation::BootstrapGraphPeersArgs {
-        peers: vec![graph_source],
-    })
-    .expect("encode peers");
-    env.pic
-        .update_call(graph_dest, router, "bootstrap_graph_peers", peers)
-        .expect("bootstrap dest peers");
-
     env
 }
 

@@ -1,7 +1,6 @@
 //! Peer expand: cross-shard neighbor discovery during traverse.
 //!
-//! Wraps `facade::federation_expand` so the executor reaches peers only through the
-//! federation module boundary (see `design/sharding/federation-target.md`).
+//! Cross-shard expand is not implemented; see `design/sharding/federation-target.md`.
 
 use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
@@ -20,7 +19,6 @@ use crate::plan::{PlanBinding, PlanQueryError};
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TraversalExpandSource {
     LocalCsr(VertexId),
-    PeerExpand(GlobalVertexId),
 }
 
 /// Map GQL expand direction to federated expand API direction.
@@ -33,10 +31,7 @@ pub(crate) fn federated_direction_for_expand(direction: EdgeDirection) -> Federa
     }
 }
 
-/// Decide whether expand uses local CSR or graph ↔ graph peer expand.
-///
-/// Index/router seeds bind local [`PlanBinding::Vertex`]; when placement authority lives on
-/// another shard, peer expand replaces the legacy `RemoteVertex` index-bind entry path.
+/// Decide whether expand uses local CSR on this shard.
 pub(crate) async fn resolve_traversal_expand_source(
     store: &GraphStore,
     binding: Option<&PlanBinding>,
@@ -80,49 +75,42 @@ pub(crate) async fn resolve_traversal_expand_source(
     let placement = placement::resolve_placement(routing.router_canister, logical).await;
 
     match (binding, placement) {
-        (PlanBinding::RemoteVertex(_), Err(_)) => {
-            Ok(Some(TraversalExpandSource::PeerExpand(logical)))
-        }
+        (PlanBinding::RemoteVertex(_), Err(_)) => Err(PlanQueryError::UnsupportedOp(
+            "cross-shard expand (remote vertex binding)",
+        )),
         (_, Err(_)) => Err(PlanQueryError::UnsupportedOp(
             "Expand(remote placement lookup)",
         )),
         (_, Ok(VertexPlacement::Active(loc))) if loc.shard_id == routing.shard_id => Ok(Some(
             TraversalExpandSource::LocalCsr(VertexId::from(loc.local_vertex_id)),
         )),
-        (_, Ok(VertexPlacement::Active(_))) => Ok(Some(TraversalExpandSource::PeerExpand(logical))),
+        (_, Ok(VertexPlacement::Active(_))) => Err(PlanQueryError::UnsupportedOp(
+            "cross-shard expand (foreign placement authority)",
+        )),
     }
 }
 
 /// Resolve a traversal source to a local CSR [`VertexId`] when this shard is authoritative.
-///
-/// Returns `Ok(None)` for null bindings. [`TraversalExpandSource::PeerExpand`] maps to
-/// [`PlanQueryError::UnsupportedOp`] with `peer_expand_op` (var_len / shortest-path BFS stays local).
 pub(crate) async fn resolve_traversal_expand_local_csr(
     store: &GraphStore,
     binding: Option<&PlanBinding>,
     expand_direction: EdgeDirection,
-    peer_expand_op: &'static str,
+    _peer_expand_op: &'static str,
 ) -> Result<Option<VertexId>, PlanQueryError> {
     match resolve_traversal_expand_source(store, binding, expand_direction).await? {
         None => Ok(None),
         Some(TraversalExpandSource::LocalCsr(vertex_id)) => Ok(Some(vertex_id)),
-        Some(TraversalExpandSource::PeerExpand(_)) => {
-            Err(PlanQueryError::UnsupportedOp(peer_expand_op))
-        }
     }
 }
 
-/// Graph ↔ graph peer expand (not a canister endpoint).
+/// Cross-shard neighbor lookup (not implemented).
 pub async fn peer_expand(
-    store: &GraphStore,
-    args: FederatedExpandArgs,
+    _store: &GraphStore,
+    _args: FederatedExpandArgs,
 ) -> Result<Vec<FederatedExpandNeighbor>, PlanQueryError> {
-    crate::facade::federation_expand::federated_expand_coordinator(store, args)
-        .await
-        .map_err(|e| PlanQueryError::FederatedIndexCall {
-            op: "federated_expand",
-            detail: e.to_string(),
-        })
+    Err(PlanQueryError::UnsupportedOp(
+        "cross-shard federated_expand",
+    ))
 }
 
 /// Pack edge label + direction for [`FederatedExpandArgs::label_id_raw`].

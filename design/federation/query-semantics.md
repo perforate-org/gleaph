@@ -23,7 +23,7 @@ See [../sharding/federation-target.md](../sharding/federation-target.md) for the
 1. **Router** calls graph-index (`lookup_equal` / `lookup_intersection`).
 2. Router **slices** `PostingHit` by `shard_id` and builds **per-shard seeds**.
 3. Each **graph shard** executes the plan locally with seeds; skips leading index anchor ops.
-4. Cross-shard **traverse** uses graph ↔ graph `federated_expand` when needed.
+4. Cross-shard **traverse** is **not implemented** (`UnsupportedOp`); target uses graph ↔ graph expand when added.
    One-hop `Expand` and var_len / `ShortestPath` entry use
    `resolve_traversal_expand_source` (local CSR when this shard is authoritative;
    peer-expand sources remain unsupported for multi-hop BFS).
@@ -44,7 +44,7 @@ The following describes **today's code**, which diverges from the target and is 
 | Binding | When used (current) |
 |---------|---------------------|
 | `Vertex(VertexId)` | Local CSR vertex on this shard |
-| `RemoteVertex(LogicalVertexId)` | Index hit on another shard (legacy index bind path) |
+| `RemoteVertex(GlobalVertexId)` | Reserved wire binding; expand when placement authority is on another shard (not implemented) |
 | `Edge` / `Path` / `Value` | Same as non-federated execution |
 
 `RemoteVertex` is reserved for expand/peer paths when needed; index anchor binds use seeds → local `Vertex` only.
@@ -70,7 +70,7 @@ Expand calls `resolve_traversal_expand_source` (`graph/federation/expand.rs`) on
 - **`PlanBinding::RemoteVertex`** with authoritative placement on another shard → **peer expand** (legacy expand/peer path).
 - Authoritative on local shard → local CSR via returned `LocalCsr(VertexId)`.
 
-Peer expand invokes `federated_expand_coordinator` via `StandaloneFederation::peer_expand`.
+Peer expand is **not implemented**. `StandaloneFederation::peer_expand` returns `UnsupportedOp`.
 
 #### Local CSR expand (limitations)
 

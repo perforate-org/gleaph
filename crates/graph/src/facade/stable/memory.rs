@@ -27,47 +27,49 @@ const FWD_EDGE_LOG: MemoryId = MemoryId::new(6);
 const FWD_EDGE_SPAN_META: MemoryId = MemoryId::new(7);
 const FWD_EDGE_FREE_SPANS: MemoryId = MemoryId::new(8);
 const FWD_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(9);
-const FWD_PAYLOAD_SLAB: MemoryId = MemoryId::new(42);
-const FWD_PAYLOAD_LOG: MemoryId = MemoryId::new(49);
-const FWD_PAYLOAD_FREE_SPANS: MemoryId = MemoryId::new(45);
-const FWD_PAYLOAD_FREE_SPAN_BY_START: MemoryId = MemoryId::new(46);
-const FWD_PAYLOAD_BLOBS: MemoryId = MemoryId::new(57);
+
+// --- Labeled graph: forward payload (5 memories) ---
+const FWD_PAYLOAD_SLAB: MemoryId = MemoryId::new(10);
+const FWD_PAYLOAD_FREE_SPANS: MemoryId = MemoryId::new(11);
+const FWD_PAYLOAD_FREE_SPAN_BY_START: MemoryId = MemoryId::new(12);
+const FWD_PAYLOAD_LOG: MemoryId = MemoryId::new(13);
+const FWD_PAYLOAD_BLOBS: MemoryId = MemoryId::new(14);
 
 // --- Labeled graph: reverse orientation (10 memories) ---
-const REV_VERTICES: MemoryId = MemoryId::new(10);
-const REV_BUCKETS: MemoryId = MemoryId::new(11);
-const REV_BUCKET_FREE_SPANS: MemoryId = MemoryId::new(12);
-const REV_BUCKET_FREE_SPAN_BY_START: MemoryId = MemoryId::new(13);
-const REV_EDGE_COUNTS: MemoryId = MemoryId::new(14);
-const REV_EDGES: MemoryId = MemoryId::new(15);
-const REV_EDGE_LOG: MemoryId = MemoryId::new(16);
-const REV_EDGE_SPAN_META: MemoryId = MemoryId::new(17);
-const REV_EDGE_FREE_SPANS: MemoryId = MemoryId::new(18);
-const REV_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(19);
-const REV_PAYLOAD_SLAB: MemoryId = MemoryId::new(43);
-const REV_PAYLOAD_LOG: MemoryId = MemoryId::new(50);
-const REV_PAYLOAD_FREE_SPANS: MemoryId = MemoryId::new(47);
-const REV_PAYLOAD_FREE_SPAN_BY_START: MemoryId = MemoryId::new(48);
-const REV_PAYLOAD_BLOBS: MemoryId = MemoryId::new(58);
+const REV_VERTICES: MemoryId = MemoryId::new(15);
+const REV_BUCKETS: MemoryId = MemoryId::new(16);
+const REV_BUCKET_FREE_SPANS: MemoryId = MemoryId::new(17);
+const REV_BUCKET_FREE_SPAN_BY_START: MemoryId = MemoryId::new(18);
+const REV_EDGE_COUNTS: MemoryId = MemoryId::new(19);
+const REV_EDGES: MemoryId = MemoryId::new(20);
+const REV_EDGE_LOG: MemoryId = MemoryId::new(21);
+const REV_EDGE_SPAN_META: MemoryId = MemoryId::new(22);
+const REV_EDGE_FREE_SPANS: MemoryId = MemoryId::new(23);
+const REV_EDGE_FREE_SPAN_BY_START: MemoryId = MemoryId::new(24);
 
-const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(20);
-const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(21);
+// --- Labeled graph: reverse payload (5 memories) ---
+const REV_PAYLOAD_SLAB: MemoryId = MemoryId::new(25);
+const REV_PAYLOAD_FREE_SPANS: MemoryId = MemoryId::new(26);
+const REV_PAYLOAD_FREE_SPAN_BY_START: MemoryId = MemoryId::new(27);
+const REV_PAYLOAD_LOG: MemoryId = MemoryId::new(28);
+const REV_PAYLOAD_BLOBS: MemoryId = MemoryId::new(29);
 
-const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(22);
-const VERTEX_PROPERTIES: MemoryId = MemoryId::new(23);
-const EDGE_PROPERTIES: MemoryId = MemoryId::new(24);
-const EDGE_ALIASES: MemoryId = MemoryId::new(25);
-const GRAPH_METADATA: MemoryId = MemoryId::new(26);
-const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(27);
-const EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(28);
-const EDGE_EQUALITY_POSTINGS: MemoryId = MemoryId::new(29);
-const REMOTE_REF_TO_VERTEX: MemoryId = MemoryId::new(30);
-const VERTEX_TO_REMOTE_REF: MemoryId = MemoryId::new(31);
-const REMOTE_FORWARD_IN: MemoryId = MemoryId::new(32);
-const PEER_GRAPH_CANISTERS: MemoryId = MemoryId::new(33);
-const LABEL_TELEMETRY_SEQ: MemoryId = MemoryId::new(34);
-const LABEL_TELEMETRY_OUTBOX: MemoryId = MemoryId::new(35);
-const APPLIED_MUTATION_REQUESTS: MemoryId = MemoryId::new(36);
+// --- LARA maintenance (2 memories) ---
+const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(30);
+const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(31);
+
+// --- Graph facade (12 memories) ---
+const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(32);
+const VERTEX_PROPERTIES: MemoryId = MemoryId::new(33);
+const EDGE_PROPERTIES: MemoryId = MemoryId::new(34);
+const EDGE_ALIASES: MemoryId = MemoryId::new(35);
+const GRAPH_METADATA: MemoryId = MemoryId::new(36);
+const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(37);
+const EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(38);
+const EDGE_EQUALITY_POSTINGS: MemoryId = MemoryId::new(39);
+const LABEL_TELEMETRY_SEQ: MemoryId = MemoryId::new(40);
+const LABEL_TELEMETRY_OUTBOX: MemoryId = MemoryId::new(41);
+const APPLIED_MUTATION_REQUESTS: MemoryId = MemoryId::new(42);
 
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
@@ -84,13 +86,8 @@ pub(crate) type StableEdgeAliasIndex = EdgeAliasIndex<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
 pub(crate) type StableEdgeWeightProfileStore = EdgeWeightProfileStore<Memory>;
 pub(crate) type StableEdgePayloadProfileStore = EdgePayloadProfileStore<Memory>;
-pub(crate) type StableRemoteVertexRefTable =
-    super::remote_vertex_refs::RemoteVertexRefTable<Memory>;
-pub(crate) type StableRemoteForwardInIndex = super::remote_forward_in::RemoteForwardInIndex<Memory>;
 pub(crate) type StableEdgeEqualityPostingStore =
     super::edge_equality_postings::EdgeEqualityPostingStore<Memory>;
-pub(crate) type StablePeerGraphCanisterSet =
-    super::peer_graph_canisters::PeerGraphCanisterSet<Memory>;
 pub(crate) type StableLabelTelemetrySeq = StableCell<u64, Memory>;
 pub(crate) type StableLabelTelemetryOutbox = super::label_telemetry::LabelTelemetryOutbox<Memory>;
 pub(crate) type StableAppliedMutationRequests =
@@ -177,28 +174,9 @@ pub(crate) fn init_metadata() -> StableMetadata {
     )
 }
 
-pub(crate) fn init_remote_vertex_refs() -> StableRemoteVertexRefTable {
-    super::remote_vertex_refs::RemoteVertexRefTable::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(REMOTE_REF_TO_VERTEX)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_TO_REMOTE_REF)),
-    )
-}
-
-pub(crate) fn init_remote_forward_in() -> StableRemoteForwardInIndex {
-    super::remote_forward_in::RemoteForwardInIndex::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(REMOTE_FORWARD_IN)),
-    )
-}
-
 pub(crate) fn init_edge_equality_postings() -> StableEdgeEqualityPostingStore {
     super::edge_equality_postings::EdgeEqualityPostingStore::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_EQUALITY_POSTINGS)),
-    )
-}
-
-pub(crate) fn init_peer_graph_canisters() -> StablePeerGraphCanisterSet {
-    super::peer_graph_canisters::PeerGraphCanisterSet::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(PEER_GRAPH_CANISTERS)),
     )
 }
 

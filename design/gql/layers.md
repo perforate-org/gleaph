@@ -66,7 +66,7 @@ Proposed mutation-only procedures (`GLEAPH.FINALIZE_BULK_INGEST`, `GLEAPH.VERTEX
 | Feature | Meaning |
 |---------|---------|
 | **USE GRAPH** (planner) | Sub-query against another named graph; `analyze_remote_use_graph_pushdown` may fuse plans |
-| **Federation** (router/graph) | Shards of one logical graph; `LogicalVertexId`, placement, `federated_expand` |
+| **Federation** (router/graph) | Shards of one logical graph; `GlobalVertexId`, placement, encoded element ids |
 
 They interact only at product boundaries; planner tests for USE GRAPH are not shard-routing tests.
 
