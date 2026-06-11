@@ -1,8 +1,8 @@
 # Gleaph Refactoring Roadmap
 
 Last updated: 2026-06-11 UTC  
-Status: In progress (Phases 0–3 complete; pre-federation foundation ADR 0006 steps 1–5 complete)  
-Anchor timestamp: 2026-06-11 23:23:04 UTC +0000
+Status: In progress (Phases 0–7 complete; Phase 8+ deferred; ADR 0006 steps 1–5 complete)  
+Anchor timestamp: 2026-06-11 23:44:33 UTC +0000
 
 ## Purpose
 
@@ -245,6 +245,8 @@ Exit criteria:
 
 ### Phase 1: Quarantine inactive implementation trees
 
+**Status: Complete (2026-06-11).**
+
 Goal: reduce search noise and accidental reuse of obsolete concepts.
 
 Deliverables:
@@ -255,8 +257,8 @@ Deliverables:
 
 Exit criteria:
 
-- Repository search results clearly distinguish active implementation from archived reference.
-- New refactor work does not copy concepts from inactive crates without an explicit design reason.
+- Repository search results clearly distinguish active implementation from archived reference. **Met** — `old_crates/`, `frontend-old/`, and `escape_crates/` are absent from the workspace; active members are under `crates/`.
+- New refactor work does not copy concepts from inactive crates without an explicit design reason. **Met.**
 
 ### Phase 2: Introduce storage-domain APIs
 
@@ -370,27 +372,25 @@ Exit criteria:
 
 Goal: keep distributed query planning and index routing in the owning layer.
 
-**Status: Substantially complete (2026-06-11).**
+**Status: Complete (2026-06-11).**
 
-**Progress:** Router seed routing and graph `skip_leading_index_anchor_ops` cover equality `IndexScan`, `IndexIntersection`, labeled `NodeScan`, and leading `PropertyFilter` (including `IsLabeled` label-intersection plans) when `seed_bindings_blob` is present. Executor regressions cover intersection, equality scan, property filter, and multi-label sieve skips. `gql_run` wire tests and `canister/handlers` `ExecutePlanArgs` tests exercise candid `seed_bindings_blob` through federated graph dispatch without an index client; federated shards reject bare `IndexScan` without seeds. GPL wire decode uses `gleaph-gql` aligned/wire rkyv helpers (`rkyv_from_wire_bytes`) so wasm plans decode without handler warm-up hacks. Router dispatch encodes one plan per shard today; `run_wire_plans` consumes seeds on the first read plan via `mem::take`. Multi-statement `GPL` bundles pad statement length prefixes to keep rkyv payloads 8-byte aligned (`gql-planner` `bundle.rs`). Router regressions verify multi-shard `federated_dispatch_plan_blob` output decodes and strips post-aggregate `HAVING` before shard fan-out. Label-intersection read dispatch uses paginated label export (path D) and per-shard `seed_bindings_blob` fan-out (`label_intersection_seed_routing_fans_out_with_bindings`). Compound label + indexed-property plans intersect paginated label export with `lookup_equal` before fan-out (`compound_label_and_property_seed_routing_intersects_hits`). PocketIC `graph_seed_dispatch` exercises WASM `execute_plan_query` with and without `seed_bindings_blob`; `router_gql_query` exercises router `gql_query` composite dispatch to graph shards.
-
-**Exit criteria (met for federated wire path):** router-owned index reads and shard slicing; graph shards do not call index on federated `execute_plan_query` hot path; graph-index APIs remain posting-local.
-
-**Remaining (non-blocking):** native standalone dev may still wire `PropertyIndexLookup` for local tests; PocketIC `gql_query` with router-owned index seed routing on multi-shard graphs (property/label anchors + `seed_bindings_blob` fan-out). Single-shard `gql_query` composite dispatch is covered by `router_gql_query` (2026-06-11); `graph_client` decodes graph `Result` wire replies for `execute_plan_*`.
+**Progress:** Router seed routing and graph `skip_leading_index_anchor_ops` cover equality `IndexScan`, `IndexIntersection`, labeled `NodeScan`, and leading `PropertyFilter` (including `IsLabeled` label-intersection plans) when `seed_bindings_blob` is present. Executor regressions cover intersection, equality scan, property filter, and multi-label sieve skips. `gql_run` wire tests and `canister/handlers` `ExecutePlanArgs` tests exercise candid `seed_bindings_blob` through federated graph dispatch without an index client; federated shards reject bare `IndexScan` without seeds (`plan_wire_guard`). On wasm, `execute_plan_query` sets `PropertyIndexLookup` to `None` when federation routing or router seeds are present — graph does not call index on the federated read hot path. GPL wire decode uses `gleaph-gql` aligned/wire rkyv helpers (`rkyv_from_wire_bytes`). Router dispatch encodes one plan per shard; `run_wire_plans` consumes seeds on the first read plan via `mem::take`. Multi-statement `GPL` bundles pad statement length prefixes for 8-byte rkyv alignment (`gql-planner` `bundle.rs`). Router regressions verify multi-shard `federated_dispatch_plan_blob` decodes and strips post-aggregate `HAVING` before shard fan-out. Label-intersection read dispatch uses paginated label export and per-shard `seed_bindings_blob` fan-out. Compound label + indexed-property plans intersect label export with `lookup_equal` before fan-out. PocketIC: `graph_seed_dispatch` covers WASM `execute_plan_query` with/without seeds; `router_gql_query` covers single- and multi-shard router `gql_query` (NodeScan, index-seeded property equality, `ELEMENT_ID` rows, cross-shard merge). Query semantics documented in [federation/query-semantics.md](../federation/query-semantics.md) and [federation-target.md](../sharding/federation-target.md).
 
 Deliverables:
 
-- Complete router-owned index seed routing for supported federated query shapes.
-- Remove or isolate graph direct-index query paths once router coverage is sufficient.
-- Keep graph-index APIs posting-local: lookup, range, intersection, count, label membership, and paginated export.
-- Keep graph shard execution local except for explicit federation expand paths.
-- Update design docs when an unsupported multi-shard fallback becomes implemented or intentionally rejected.
+- Complete router-owned index seed routing for supported federated query shapes. **Done.**
+- Remove or isolate graph direct-index query paths once router coverage is sufficient. **Done** (wasm federated read path; native/mock index client retained for library tests only).
+- Keep graph-index APIs posting-local: lookup, range, intersection, count, label membership, and paginated export. **Done.**
+- Keep graph shard execution local except for explicit federation expand paths. **Done** (cross-shard expand deferred / `UnsupportedOp`).
+- Update design docs when an unsupported multi-shard fallback becomes implemented or intentionally rejected. **Done** (2026-06-11 doc sync).
 
 Exit criteria:
 
-- Router owns distributed index reads and shard slicing.
-- Graph shards do not need global index access for query hot paths.
-- Graph-index does not know graph traversal semantics.
+- Router owns distributed index reads and shard slicing. **Met.**
+- Graph shards do not need global index access for query hot paths. **Met** on federated wasm wire path.
+- Graph-index does not know graph traversal semantics. **Met.**
+
+**Out of scope (native dev only):** graph executor and `gql_run` may still accept `PropertyIndexLookup` for non-wasm tests and benchmarks; this does not affect canister federation boundaries.
 
 ### Phase 8: Stable-memory layout policy and measured consolidation
 
@@ -444,17 +444,13 @@ Validation sequence:
 
 ## Suggested Implementation Order
 
-1. Add memory inventory and design status cleanup.
-2. Archive or mark inactive implementation trees.
-3. Introduce storage-domain APIs without changing stable layout.
-4. Unify catalog rules.
-5. Centralize property value and index-event behavior.
-6. Add rebuildable derived-state checks.
-7. Continue LARA/payload physical cleanup.
-8. Remove legacy direct-index query paths.
-9. Decide stable-memory consolidation from benchmark evidence.
+Phases 0–7 are **complete**. Remaining work follows this order:
 
-This order intentionally defers memory-layout consolidation until the owning APIs and invariants are explicit. That keeps the refactor useful even if later benchmark evidence says the existing VirtualMemory separation should mostly remain.
+1. **Phase 8** — stable-memory layout ADR and benchmark-driven consolidation (only where evidence justifies grouping).
+2. **Phase 9** — ongoing validation gates on every boundary change.
+3. **Federation (ADR 0006 step 6+)** — `RemoteVertexId` table, `GROUP_SIZE`, peer expand — separate follow-up ADR, not part of this roadmap.
+
+This order intentionally deferred memory-layout consolidation until owning APIs and invariants were explicit (now met). Phase 8 proceeds only with benchmark evidence; VirtualMemory separation may remain mostly unchanged.
 
 ## Related Documents
 

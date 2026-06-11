@@ -1,17 +1,16 @@
 //! PocketIC: router `gql_query` composite path (parse → plan → graph dispatch).
 //!
-//! Multi-shard graphs require a router-owned index anchor; this file covers single-shard
-//! NodeScan and standalone placement after `e2e_insert_vertex`. Index-seeded multi-shard
-//! `gql_query` remains planned ([federation-target.md](../../../design/sharding/federation-target.md)).
+//! Covers single-shard NodeScan, index-seeded property equality, `ELEMENT_ID` rows, and
+//! multi-shard router index lookup with per-shard `seed_bindings_blob` fan-out.
 
 use gleaph_gql::Value;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, VertexPlacement};
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_pocket_ic_tests::{
-    SOURCE_SHARD, admin_intern_property, admin_set_indexed_vertex_property, e2e_insert_vertex,
-    e2e_insert_vertex_with_property, gql_query_as_admin, install_single_shard_federation,
-    resolve_placement,
+    DEST_SHARD, SOURCE_SHARD, admin_intern_property, admin_set_indexed_vertex_property,
+    e2e_insert_vertex, e2e_insert_vertex_with_property, gql_query_as_admin, install_federation,
+    install_single_shard_federation, resolve_placement,
 };
 
 #[test]
@@ -83,4 +82,33 @@ fn standalone_gql_query_returns_element_id_bytes() {
             .decode_global(&ElementIdEncodingKey::standalone()),
         inserted.global_vertex_id
     );
+}
+
+#[test]
+fn federated_gql_query_index_seeded_routes_to_hit_shard_only() {
+    let env = install_federation();
+    let age = admin_intern_property(&env, "age");
+    admin_set_indexed_vertex_property(&env, "age");
+    let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
+    let _ = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 9);
+
+    let result = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
+
+    assert_eq!(result.row_count, 1);
+}
+
+#[test]
+fn federated_gql_query_index_seeded_merges_across_shards() {
+    let env = install_federation();
+    let age = admin_intern_property(&env, "age");
+    admin_set_indexed_vertex_property(&env, "age");
+    let source = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
+    let dest = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 5);
+
+    assert_eq!(source.global_vertex_id.shard_id, SOURCE_SHARD);
+    assert_eq!(dest.global_vertex_id.shard_id, DEST_SHARD);
+
+    let result = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
+
+    assert_eq!(result.row_count, 2);
 }

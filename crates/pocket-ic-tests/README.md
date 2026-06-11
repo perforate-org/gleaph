@@ -26,3 +26,5 @@ cargo test -p gleaph-pocket-ic-tests -- --nocapture
 | `router_gql_query::standalone_e2e_insert_commits_placement_and_global_id` | Standalone `e2e_insert_vertex` → `GlobalVertexId` + router `resolve_placement` |
 | `router_gql_query::standalone_gql_query_index_seeded_property_eq` | Single-shard router `gql_query` with indexed property equality anchor |
 | `router_gql_query::standalone_gql_query_returns_element_id_bytes` | Router `gql_query` returns encoded `ELEMENT_ID` bytes via `rows_blob` |
+| `router_gql_query::federated_gql_query_index_seeded_routes_to_hit_shard_only` | Multi-shard `gql_query` slices index hits to the matching shard |
+| `router_gql_query::federated_gql_query_index_seeded_merges_across_shards` | Multi-shard `gql_query` merges rows when both shards match the anchor |
