@@ -20,7 +20,7 @@ use std::ops::Deref;
 use std::rc::Rc;
 
 pub use gleaph_gql::ast::CmpOp;
-use gleaph_gql::ast::{AggregateFunc, Expr, LetBinding, OrderByClause};
+use gleaph_gql::ast::{AggregateFunc, Expr, ExprKind, LetBinding, OrderByClause};
 pub use gleaph_gql::type_check::DmlDiagnostic as PlannerDiagnostic;
 pub use gleaph_gql::type_check::TypeDiagnostic;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
@@ -154,6 +154,38 @@ impl PlanLabelUses {
     }
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum PropertyUseIntent {
+    ReadExisting,
+    CreateIfMissing,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct PlanPropertyUses {
+    pub properties: BTreeMap<Str, PropertyUseIntent>,
+}
+
+impl PlanPropertyUses {
+    fn add_property(&mut self, name: &Str, intent: PropertyUseIntent) {
+        merge_property_intent(&mut self.properties, name.clone(), intent);
+    }
+}
+
+fn merge_property_intent(
+    properties: &mut BTreeMap<Str, PropertyUseIntent>,
+    name: Str,
+    intent: PropertyUseIntent,
+) {
+    properties
+        .entry(name)
+        .and_modify(|existing| {
+            if intent == PropertyUseIntent::CreateIfMissing {
+                *existing = intent;
+            }
+        })
+        .or_insert(intent);
+}
+
 fn merge_label_intent(
     labels: &mut BTreeMap<Str, LabelUseIntent>,
     name: Str,
@@ -236,6 +268,13 @@ impl PhysicalPlan {
     pub fn label_uses(&self) -> PlanLabelUses {
         let mut uses = PlanLabelUses::default();
         collect_label_uses_in_ops(&self.ops, &mut uses);
+        uses
+    }
+
+    /// Collect property names referenced by this plan.
+    pub fn property_uses(&self) -> PlanPropertyUses {
+        let mut uses = PlanPropertyUses::default();
+        collect_property_uses_in_ops(&self.ops, &mut uses);
         uses
     }
 }
@@ -718,6 +757,151 @@ fn collect_label_uses_in_ops(ops: &[PlanOp], uses: &mut PlanLabelUses) {
             | PlanOp::DeleteVertex { .. }
             | PlanOp::DetachDeleteVertex { .. }
             | PlanOp::DeleteEdge { .. } => {}
+        }
+    }
+}
+
+fn collect_property_names_from_expr(expr: &Expr, uses: &mut PlanPropertyUses) {
+    match &expr.kind {
+        ExprKind::RecordLiteral(fields) | ExprKind::RecordConstructor(fields) => {
+            for (name, _) in fields {
+                let name: Str = name.as_str().into();
+                uses.add_property(&name, PropertyUseIntent::CreateIfMissing);
+            }
+        }
+        _ => {}
+    }
+}
+
+fn add_property_projection(uses: &mut PlanPropertyUses, projection: Option<&[Str]>) {
+    if let Some(properties) = projection {
+        for name in properties {
+            uses.add_property(name, PropertyUseIntent::ReadExisting);
+        }
+    }
+}
+
+fn collect_property_uses_in_ops(ops: &[PlanOp], uses: &mut PlanPropertyUses) {
+    for op in ops {
+        match op {
+            PlanOp::NodeScan {
+                property_projection,
+                ..
+            } => add_property_projection(uses, property_projection.as_deref()),
+            PlanOp::IndexScan {
+                property,
+                property_projection,
+                ..
+            } => {
+                uses.add_property(property, PropertyUseIntent::ReadExisting);
+                add_property_projection(uses, property_projection.as_deref());
+            }
+            PlanOp::EdgeIndexScan {
+                property,
+                property_projection,
+                ..
+            } => {
+                uses.add_property(property, PropertyUseIntent::ReadExisting);
+                add_property_projection(uses, property_projection.as_deref());
+            }
+            PlanOp::ConditionalIndexScan {
+                candidates,
+                property_projection,
+                ..
+            } => {
+                for candidate in candidates {
+                    uses.add_property(&candidate.property, PropertyUseIntent::ReadExisting);
+                }
+                add_property_projection(uses, property_projection.as_deref());
+            }
+            PlanOp::IndexIntersection {
+                scans,
+                property_projection,
+                ..
+            } => {
+                for spec in scans {
+                    uses.add_property(&spec.property, PropertyUseIntent::ReadExisting);
+                }
+                add_property_projection(uses, property_projection.as_deref());
+            }
+            PlanOp::Expand {
+                indexed_edge_equality,
+                edge_property_projection,
+                dst_property_projection,
+                ..
+            }
+            | PlanOp::ExpandFilter {
+                indexed_edge_equality,
+                edge_property_projection,
+                dst_property_projection,
+                ..
+            } => {
+                if let Some((property, _)) = indexed_edge_equality {
+                    uses.add_property(property, PropertyUseIntent::ReadExisting);
+                }
+                add_property_projection(uses, edge_property_projection.as_deref());
+                add_property_projection(uses, dst_property_projection.as_deref());
+            }
+            PlanOp::EdgeBindEndpoints {
+                near_property_projection,
+                far_property_projection,
+                ..
+            } => {
+                add_property_projection(uses, near_property_projection.as_deref());
+                add_property_projection(uses, far_property_projection.as_deref());
+            }
+            PlanOp::InsertVertex { properties, .. } | PlanOp::InsertEdge { properties, .. } => {
+                for assignment in properties {
+                    uses.add_property(&assignment.name, PropertyUseIntent::CreateIfMissing);
+                }
+            }
+            PlanOp::SetProperties { items } => {
+                for item in items {
+                    match item {
+                        SetPlanItem::Property { property, .. } => {
+                            uses.add_property(property, PropertyUseIntent::CreateIfMissing);
+                        }
+                        SetPlanItem::AllProperties { value, .. } => {
+                            collect_property_names_from_expr(value, uses);
+                        }
+                        SetPlanItem::Label { .. } => {}
+                    }
+                }
+            }
+            PlanOp::RemoveProperties { items } => {
+                for item in items {
+                    if let RemovePlanItem::Property { property, .. } = item {
+                        uses.add_property(property, PropertyUseIntent::ReadExisting);
+                    }
+                }
+            }
+            PlanOp::HashJoin { left, right, .. } => {
+                collect_property_uses_in_ops(left, uses);
+                collect_property_uses_in_ops(right, uses);
+            }
+            PlanOp::CartesianProduct { left, right } => {
+                collect_property_uses_in_ops(left, uses);
+                collect_property_uses_in_ops(right, uses);
+            }
+            PlanOp::SetOperation { right, .. } => {
+                collect_property_uses_in_ops(&right.ops, uses);
+            }
+            PlanOp::OptionalMatch { sub_plan } => collect_property_uses_in_ops(sub_plan, uses),
+            PlanOp::InlineProcedureCall { sub_plan, .. } => {
+                collect_property_uses_in_ops(&sub_plan.ops, uses);
+            }
+            PlanOp::UseGraph {
+                sub_plan: Some(sub_plan),
+                ..
+            } => collect_property_uses_in_ops(sub_plan, uses),
+            PlanOp::WorstCaseOptimalJoin { edges, .. } => {
+                for edge in edges {
+                    if let Some((property, _)) = &edge.indexed_edge_equality {
+                        uses.add_property(property, PropertyUseIntent::ReadExisting);
+                    }
+                }
+            }
+            _ => {}
         }
     }
 }

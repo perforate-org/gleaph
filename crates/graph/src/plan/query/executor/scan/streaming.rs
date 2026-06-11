@@ -126,6 +126,7 @@ pub(crate) fn execute_limited_streaming_prefix(
         aggregate_specs,
         caller,
         resolved_labels: execution.resolved_labels.as_ref(),
+        resolved_properties: execution.resolved_properties.as_ref(),
         gleaph_weight_decoders,
     };
     let offset = match offset {
@@ -748,6 +749,7 @@ fn stream_expand(
             let expanded = build_expanded_row(
                 None,
                 store,
+                execution,
                 &row,
                 edge_key.as_deref(),
                 hop_aux_key,
@@ -783,7 +785,7 @@ fn stream_expand(
 
     if let Some(fast_path) = csr_expand_fast_path {
         let edge_equality_filter =
-            edge_equality_stream_filter(store, indexed_edge_equality, parameters)?;
+            edge_equality_stream_filter(store, execution, indexed_edge_equality, parameters)?;
         if matches!(edge_equality_filter, EdgeEqualityStreamFilter::NoMatches) {
             return Ok(false);
         }
@@ -835,6 +837,7 @@ fn stream_expand(
             let expanded = build_expanded_row(
                 None,
                 store,
+                execution,
                 &row,
                 edge_key.as_deref(),
                 hop_aux_key,
@@ -914,6 +917,7 @@ fn stream_expand(
         let expanded = build_expanded_row(
             None,
             store,
+            execution,
             &row,
             edge_key.as_deref(),
             hop_aux_key,

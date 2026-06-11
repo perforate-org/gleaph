@@ -535,6 +535,25 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             }
         },
     };
+    let mut resolved_properties = match saved_record
+        .as_ref()
+        .and_then(|record| record.resolved_properties.clone())
+    {
+        Some(resolved_properties) => resolved_properties,
+        None => match store.resolve_plan_properties(plans) {
+            Ok(resolved_properties) => resolved_properties,
+            Err(err) => {
+                release_routing_if_owner(
+                    &store,
+                    caller,
+                    logical_graph_name,
+                    client_mutation_key,
+                    mutation_reservation,
+                )?;
+                return Err(err);
+            }
+        },
+    };
 
     let mut dispatches: Vec<ShardDispatch> = if let Some(record) = saved_record.as_ref()
         && !record.shards.is_empty()
@@ -590,6 +609,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                             logical_graph_name,
                             key,
                             resolved_labels.clone(),
+                            resolved_properties.clone(),
                             0,
                         )?;
                     }
@@ -650,11 +670,15 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             logical_graph_name,
             key,
             resolved_labels.clone(),
+            resolved_properties.clone(),
             envelope_shards,
         )?;
         if let Some(record) = store.router_mutation_record(caller, logical_graph_name, key) {
             if let Some(saved_resolved_labels) = record.resolved_labels {
                 resolved_labels = saved_resolved_labels;
+            }
+            if let Some(saved_resolved_properties) = record.resolved_properties {
+                resolved_properties = saved_resolved_properties;
             }
             dispatches = record
                 .shards
@@ -680,6 +704,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 mode,
                 seed_bindings_blob: dispatch.seed_bindings_blob.clone(),
                 resolved_labels: Some(resolved_labels.clone()),
+                resolved_properties: Some(resolved_properties.clone()),
             },
         )
         .await

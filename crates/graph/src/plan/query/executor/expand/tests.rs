@@ -14,7 +14,10 @@ fn resolve_traversal_expand_source_uses_peer_expand_for_foreign_authority() {
     configure_test_federation(&store);
     let vertex = store.insert_vertex().expect("vertex");
     let logical = store.logical_vertex_id(vertex).expect("logical");
-    native_test_set_active_placement(logical, PhysicalVertexLocation::new(9, u32::from(vertex)));
+    native_test_set_active_placement(
+        logical,
+        PhysicalVertexLocation::new(ShardId::new(1), u32::from(vertex)),
+    );
 
     let source = pollster::block_on(resolve_traversal_expand_source(
         &store,
@@ -158,7 +161,10 @@ fn federated_var_len_rejects_peer_expand_source() {
     configure_test_federation(&store);
     let vertex = store.insert_vertex().expect("vertex");
     let logical = store.logical_vertex_id(vertex).expect("logical");
-    native_test_set_active_placement(logical, PhysicalVertexLocation::new(9, u32::from(vertex)));
+    native_test_set_active_placement(
+        logical,
+        PhysicalVertexLocation::new(ShardId::new(1), u32::from(vertex)),
+    );
 
     let mut seed = PlanRow::new();
     seed.insert("a".to_owned(), PlanBinding::Vertex(vertex));
@@ -1337,9 +1343,7 @@ fn indexed_edge_equality_expand_return_gleaph_weight() {
             },
         )
         .unwrap();
-    let weight_prop = store
-        .get_or_insert_property_id("weight")
-        .expect("weight property");
+    let weight_prop = crate::test_labels::property_id_for_name("weight");
     let match_edge = store
         .insert_directed_edge_with_payload_bytes(a, b_match, Some(label_id), &5u16.to_le_bytes())
         .expect("match edge");
@@ -2476,6 +2480,7 @@ fn ascending_forward_fixed_label_candidates_use_batched_edge_payloads() {
     let mut out = Vec::new();
     super::expand_candidates_into(
         &store,
+        &GqlExecutionContext::default(),
         a,
         EdgeDirection::PointingRight,
         Some(label_id),
@@ -2526,6 +2531,7 @@ fn ascending_reverse_fixed_label_candidates_use_batched_edge_payloads() {
     let mut out = Vec::new();
     super::expand_candidates_into(
         &store,
+        &GqlExecutionContext::default(),
         c,
         EdgeDirection::PointingLeft,
         Some(label_id),
@@ -2897,6 +2903,7 @@ fn ascending_forward_fixed_label_without_edge_payloads_keeps_scalar_scan() {
     let mut out = Vec::new();
     super::expand_candidates_into(
         &store,
+        &GqlExecutionContext::default(),
         a,
         EdgeDirection::PointingRight,
         Some(label_id),

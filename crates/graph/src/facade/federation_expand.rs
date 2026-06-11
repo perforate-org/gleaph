@@ -787,7 +787,7 @@ mod tests {
     };
     use gleaph_graph_kernel::federation::ShardRegistryEntry;
 
-    fn register_test_shard(shard_id: u32, graph_name: &str) {
+    fn register_test_shard(shard_id: ShardId, graph_name: &str) {
         placement::native_test_register_shard(ShardRegistryEntry {
             shard_id,
             graph_canister: Principal::management_canister(),
@@ -799,7 +799,7 @@ mod tests {
 
     #[test]
     fn authoritative_incoming_includes_edge_payload_bytes() {
-        register_test_shard(7, "g");
+        register_test_shard(ShardId::new(1), "g");
         let store = GraphStore::new();
         store
             .set_federation_routing(Some(FederationRouting {
@@ -859,7 +859,7 @@ mod tests {
                 ) + 1
             ]),
         };
-        let err = push_neighbor(&mut Vec::new(), 0, 0, 1, 1, &edge).unwrap_err();
+        let err = push_neighbor(&mut Vec::new(), ShardId::new(0), 0, 1, 1, &edge).unwrap_err();
         assert!(matches!(
             err,
             GraphStoreError::FederatedExpandPayload { .. }
@@ -969,7 +969,7 @@ mod tests {
 
     #[test]
     fn authoritative_incoming_includes_remote_predecessor_rows() {
-        register_test_shard(7, "g");
+        register_test_shard(ShardId::new(1), "g");
         let store = GraphStore::new();
         store
             .set_federation_routing(Some(FederationRouting {
@@ -1019,7 +1019,7 @@ mod tests {
     fn authoritative_undirected_includes_edge_payload_bytes() {
         use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeWeightProfile, WeightEncoding};
 
-        register_test_shard(7, "g");
+        register_test_shard(ShardId::new(1), "g");
         let store = GraphStore::new();
         store
             .set_federation_routing(Some(FederationRouting {
@@ -1062,7 +1062,7 @@ mod tests {
 
     #[test]
     fn authoritative_incoming_lists_local_predecessors() {
-        register_test_shard(7, "g");
+        register_test_shard(ShardId::new(1), "g");
         let store = GraphStore::new();
         store
             .set_federation_routing(Some(FederationRouting {
@@ -1097,7 +1097,7 @@ mod tests {
 
     #[test]
     fn forward_to_remote_uses_stable_index_after_insert() {
-        register_test_shard(7, "g");
+        register_test_shard(ShardId::new(1), "g");
         let store = GraphStore::new();
         store
             .set_federation_routing(Some(FederationRouting {
@@ -1135,7 +1135,7 @@ mod tests {
 
     #[test]
     fn delete_remote_forward_edge_removes_index_posting() {
-        register_test_shard(7, "g");
+        register_test_shard(ShardId::new(1), "g");
         let store = GraphStore::new();
         store
             .set_federation_routing(Some(FederationRouting {
@@ -1160,7 +1160,7 @@ mod tests {
 
     #[test]
     fn forward_to_remote_lists_sources_on_non_authoritative_shard() {
-        register_test_shard(7, "g");
+        register_test_shard(ShardId::new(1), "g");
         let store = GraphStore::new();
         store
             .set_federation_routing(Some(FederationRouting {
@@ -1194,7 +1194,7 @@ mod tests {
 
     #[test]
     fn authoritative_outgoing_lists_local_and_remote_targets() {
-        register_test_shard(7, "g");
+        register_test_shard(ShardId::new(1), "g");
         let store = GraphStore::new();
         store
             .set_federation_routing(Some(FederationRouting {

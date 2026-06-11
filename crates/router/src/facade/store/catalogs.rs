@@ -6,9 +6,12 @@ use super::super::stable::{
 use crate::state::RouterError;
 use crate::types::{EdgeLabelId, PropertyId, VertexLabelId};
 use candid::Principal;
-use gleaph_gql_planner::{LabelUseIntent, PhysicalPlan};
+use gleaph_gql_planner::{LabelUseIntent, PhysicalPlan, PropertyUseIntent};
 use gleaph_graph_kernel::bidirectional_catalog::CatalogError;
-use gleaph_graph_kernel::plan_exec::{ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel};
+use gleaph_graph_kernel::plan_exec::{
+    ResolvedEdgeLabel, ResolvedLabelTable, ResolvedProperty, ResolvedPropertyTable,
+    ResolvedVertexLabel,
+};
 
 use super::{RouterStore, validate_metadata_name};
 
@@ -142,6 +145,34 @@ impl RouterStore {
                 };
                 if !out.edge.iter().any(|entry| entry.name == name.as_ref()) {
                     out.edge.push(ResolvedEdgeLabel {
+                        name: name.to_string(),
+                        id,
+                    });
+                }
+            }
+        }
+        Ok(out)
+    }
+
+    pub fn resolve_plan_properties(
+        &self,
+        plans: &[PhysicalPlan],
+    ) -> Result<ResolvedPropertyTable, RouterError> {
+        let mut out = ResolvedPropertyTable::default();
+        for plan in plans {
+            let uses = plan.property_uses();
+            for (name, intent) in uses.properties {
+                validate_metadata_name(&name)?;
+                let id = match intent {
+                    PropertyUseIntent::ReadExisting => self.lookup_property_id(&name)?,
+                    PropertyUseIntent::CreateIfMissing => Self::commit_intern_property_name(&name)?,
+                };
+                if !out
+                    .properties
+                    .iter()
+                    .any(|entry| entry.name == name.as_ref())
+                {
+                    out.properties.push(ResolvedProperty {
                         name: name.to_string(),
                         id,
                     });

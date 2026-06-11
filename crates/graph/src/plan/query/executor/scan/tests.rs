@@ -40,7 +40,7 @@ fn executes_equality_index_scan_with_sortable_key() {
     let vid = store
         .insert_vertex_named(["IndexScanEq"], [("age", Value::Uint8(5))])
         .expect("insert vertex");
-    let pid = store.property_id("age").expect("age property").raw();
+    let pid = crate::test_labels::property_id_for_name("age").raw();
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
         shard_id: ShardId::new(0),
@@ -82,7 +82,7 @@ fn equality_index_scan_unifies_decimal_and_integer_key_with_final_filter() {
     let vid = store
         .insert_vertex_named(["IndexScanDecimalEq"], [("price", Value::Decimal(price))])
         .expect("insert vertex");
-    let pid = store.property_id("price").expect("price property").raw();
+    let pid = crate::test_labels::property_id_for_name("price").raw();
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
         shard_id: ShardId::new(0),
@@ -135,7 +135,7 @@ fn equality_index_scan_unifies_float_and_decimal_key_with_final_filter() {
     let vid = store
         .insert_vertex_named(["IndexScanFloatEq"], [("score", Value::Float64(1.5))])
         .expect("insert vertex");
-    let pid = store.property_id("score").expect("score property").raw();
+    let pid = crate::test_labels::property_id_for_name("score").raw();
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
         shard_id: ShardId::new(0),
@@ -232,7 +232,7 @@ fn equality_index_scan_matches_list_valued_posting() {
     let vid = store
         .insert_vertex_named(["IndexScanListEq"], [("tags", stored.clone())])
         .expect("insert vertex");
-    let pid = store.property_id("tags").expect("tags property").raw();
+    let pid = crate::test_labels::property_id_for_name("tags").raw();
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
         shard_id: ShardId::new(0),
@@ -290,10 +290,7 @@ fn equality_index_scan_matches_record_valued_posting_independent_of_field_order(
     let vid = store
         .insert_vertex_named(["IndexScanRecordEq"], [("profile", stored.clone())])
         .expect("insert vertex");
-    let pid = store
-        .property_id("profile")
-        .expect("profile property")
-        .raw();
+    let pid = crate::test_labels::property_id_for_name("profile").raw();
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
         shard_id: ShardId::new(0),
@@ -393,7 +390,7 @@ fn executes_range_index_scan_with_lookup_range() {
     let high = store
         .insert_vertex_named(["IndexScanRange"], [("age", Value::Int64(9))])
         .expect("insert high");
-    let pid = store.property_id("age").expect("age property").raw();
+    let pid = crate::test_labels::property_id_for_name("age").raw();
     let index = MockPropertyIndex::default();
     index.range_hits.borrow_mut().extend([
         PostingHit {
@@ -450,7 +447,7 @@ fn executes_list_range_index_scan_with_lookup_range() {
             [("tags", Value::List(vec![Value::Int64(0)]))],
         )
         .expect("insert miss");
-    let pid = store.property_id("tags").expect("tags property").raw();
+    let pid = crate::test_labels::property_id_for_name("tags").raw();
     let index = MockPropertyIndex::default();
     index.range_hits.borrow_mut().extend([
         PostingHit {
@@ -518,10 +515,7 @@ fn executes_record_range_index_scan_with_lookup_range() {
             )],
         )
         .expect("insert hit");
-    let pid = store
-        .property_id("profile")
-        .expect("profile property")
-        .raw();
+    let pid = crate::test_labels::property_id_for_name("profile").raw();
     let index = MockPropertyIndex::default();
     index.range_hits.borrow_mut().push(PostingHit {
         shard_id: ShardId::new(0),
@@ -578,7 +572,7 @@ fn executes_orderable_extension_equality_index_scan() {
     let vid = store
         .insert_vertex_named(["IndexScanExtensionEq"], Vec::<(&str, Value)>::new())
         .expect("insert vertex");
-    let pid = store.property_id("principal").expect("property").raw();
+    let pid = crate::test_labels::property_id_for_name("principal").raw();
     let index = MockPropertyIndex::default();
     index.equal_hits.borrow_mut().push(PostingHit {
         shard_id: ShardId::new(0),
@@ -626,7 +620,7 @@ fn executes_orderable_extension_range_index_scan() {
     let vid = store
         .insert_vertex_named(["IndexScanExtensionRange"], Vec::<(&str, Value)>::new())
         .expect("insert vertex");
-    let pid = store.property_id("principal").expect("property").raw();
+    let pid = crate::test_labels::property_id_for_name("principal").raw();
     let index = MockPropertyIndex::default();
     index.range_hits.borrow_mut().push(PostingHit {
         shard_id: ShardId::new(0),
@@ -1572,9 +1566,7 @@ fn leading_edge_bind_endpoints_hop_aux_returns_payload_bytes() {
             },
         )
         .unwrap();
-    let weight_prop = store
-        .get_or_insert_property_id("weight")
-        .expect("weight property");
+    let weight_prop = crate::test_labels::property_id_for_name("weight");
     let payload = 7u16.to_le_bytes();
     let edge = store
         .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &payload)
@@ -1708,8 +1700,8 @@ fn index_intersection_returns_vertices_in_both_postings() {
             [("email", Value::Text("alice@example.com".into()))],
         )
         .expect("vid3");
-    let uid_pid = store.property_id("uid").expect("uid").raw();
-    let email_pid = store.property_id("email").expect("email").raw();
+    let uid_pid = crate::test_labels::property_id_for_name("uid").raw();
+    let email_pid = crate::test_labels::property_id_for_name("email").raw();
     let alice_key = value_to_index_key_bytes(&Value::Text("alice".into()))
         .expect("encode uid")
         .expect("sortable uid");
@@ -1794,8 +1786,8 @@ fn index_intersection_empty_when_disjoint() {
             ],
         )
         .expect("vertex");
-    let uid_pid = store.property_id("uid").expect("uid").raw();
-    let email_pid = store.property_id("email").expect("email").raw();
+    let uid_pid = crate::test_labels::property_id_for_name("uid").raw();
+    let email_pid = crate::test_labels::property_id_for_name("email").raw();
     let alice_key = value_to_index_key_bytes(&Value::Text("alice".into()))
         .expect("encode uid")
         .expect("sortable uid");

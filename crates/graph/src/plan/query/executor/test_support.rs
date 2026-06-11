@@ -50,7 +50,7 @@ pub use gleaph_gql_planner::plan::{
     ShortestMode, ShortestPathCost, Str, VarLenSpec, WcojEdge,
 };
 pub use gleaph_graph_kernel::entry::EdgeSlotIndex;
-pub use gleaph_graph_kernel::federation::FederatedExpandNeighbor;
+pub use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
 pub use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
 pub use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 pub use ic_stable_lara::VertexId;
@@ -102,7 +102,7 @@ impl MockPropertyIndex {
         for spec in &req.specs {
             let mut set = std::collections::HashSet::new();
             for hit in lookup(spec.property_id, &spec.value) {
-                let packed = (u64::from(hit.shard_id) << 32) | u64::from(hit.vertex_id);
+                let packed = (u64::from(hit.shard_id.raw()) << 32) | u64::from(hit.vertex_id);
                 set.insert(packed);
             }
             sets.push(set);
@@ -118,7 +118,7 @@ impl MockPropertyIndex {
         intersection
             .into_iter()
             .map(|packed| PostingHit {
-                shard_id: (packed >> 32) as u32,
+                shard_id: ShardId::new((packed >> 32) as u32),
                 vertex_id: (packed & 0xFFFF_FFFF) as u32,
             })
             .collect()
@@ -162,13 +162,13 @@ impl PropertyIndexLookup for MockPropertyIndex {
         }))
     }
 
-    fn local_shard_id(&self) -> u32 {
-        0
+    fn local_shard_id(&self) -> ShardId {
+        ShardId::new(0)
     }
 
     async fn posting_insert_at(
         &self,
-        _shard_id: u32,
+        _shard_id: ShardId,
         _property_id: u32,
         _value: Vec<u8>,
         _vertex_id: u32,
@@ -178,7 +178,7 @@ impl PropertyIndexLookup for MockPropertyIndex {
 
     async fn posting_remove_at(
         &self,
-        _shard_id: u32,
+        _shard_id: ShardId,
         _property_id: u32,
         _value: Vec<u8>,
         _vertex_id: u32,
@@ -188,7 +188,7 @@ impl PropertyIndexLookup for MockPropertyIndex {
 
     async fn label_posting_insert_at(
         &self,
-        _shard_id: u32,
+        _shard_id: ShardId,
         _label_id: u32,
         _vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
@@ -197,7 +197,7 @@ impl PropertyIndexLookup for MockPropertyIndex {
 
     async fn label_posting_remove_at(
         &self,
-        _shard_id: u32,
+        _shard_id: ShardId,
         _label_id: u32,
         _vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
@@ -467,6 +467,7 @@ pub fn eval_test_expr(expr: Expr) -> Value {
         aggregate_specs: None,
         caller: None,
         resolved_labels: None,
+        resolved_properties: None,
         gleaph_weight_decoders: None,
     };
     evaluator

@@ -228,26 +228,28 @@ impl From<EdgeSequenceOrder> for OutEdgeOrder {
 
 pub(crate) fn vertex_binding_for_projection(
     store: &GraphStore,
+    execution: &GqlExecutionContext,
     vertex_id: VertexId,
     property_projection: Option<&[Str]>,
 ) -> Result<PlanBinding, PlanQueryError> {
     match property_projection {
         None | Some([]) => Ok(PlanBinding::Vertex(vertex_id)),
         Some(props) => Ok(PlanBinding::Value(vertex_to_projected_record(
-            store, vertex_id, props,
+            store, execution, vertex_id, props,
         )?)),
     }
 }
 
 fn vertex_to_projected_record(
     store: &GraphStore,
+    execution: &GqlExecutionContext,
     vertex_id: VertexId,
     properties: &[Str],
 ) -> Result<Value, PlanQueryError> {
     let mut fields = Vec::with_capacity(properties.len());
     for property in properties {
-        let value = store
-            .property_id(property.as_ref())
+        let value = execution
+            .resolved_property_id(property.as_ref())
             .and_then(|property_id| store.vertex_property(vertex_id, property_id))
             .unwrap_or(Value::Null);
         fields.push((property.to_string(), value));
@@ -257,13 +259,14 @@ fn vertex_to_projected_record(
 
 pub(crate) fn edge_to_projected_record(
     store: &GraphStore,
+    execution: &GqlExecutionContext,
     binding: EdgeBinding,
     properties: &[Str],
 ) -> Result<Value, PlanQueryError> {
     let mut fields = Vec::with_capacity(properties.len());
     for property in properties {
-        let value = store
-            .property_id(property.as_ref())
+        let value = execution
+            .resolved_property_id(property.as_ref())
             .and_then(|property_id| store.edge_property(binding.handle, property_id))
             .unwrap_or(Value::Null);
         fields.push((property.to_string(), value));
@@ -301,6 +304,7 @@ pub(crate) fn vertex_row_matches_dst_filters(
         aggregate_specs: None,
         caller,
         resolved_labels: None,
+        resolved_properties: None,
         gleaph_weight_decoders,
     };
     row_matches_all(&evaluator, &stub, dst_filter)

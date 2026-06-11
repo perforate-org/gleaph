@@ -2,7 +2,7 @@
 
 use super::test_support::*;
 use gleaph_gql::Value;
-use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
+use gleaph_graph_kernel::plan_exec::{ResolvedLabelTable, ResolvedPropertyTable};
 
 #[test]
 fn explicit_empty_resolved_table_fails_labeled_node_scan() {
@@ -15,6 +15,7 @@ fn explicit_empty_resolved_table_fails_labeled_node_scan() {
             GqlExecutionContext {
                 caller: None,
                 resolved_labels: Some(ResolvedLabelTable::default()),
+                resolved_properties: Some(ResolvedPropertyTable::default()),
             },
         )
         .expect_err("missing resolved node label must fail");
@@ -41,6 +42,7 @@ fn explicit_empty_resolved_table_fails_labeled_expand() {
         GqlExecutionContext {
             caller: None,
             resolved_labels: Some(ResolvedLabelTable::default()),
+            resolved_properties: Some(ResolvedPropertyTable::default()),
         },
         None,
     );

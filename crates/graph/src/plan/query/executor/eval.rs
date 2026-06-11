@@ -670,13 +670,11 @@ impl QueryExprEvaluator<'_> {
         if let ExprKind::Variable(name) = &expr.kind {
             return match row.get(name) {
                 Some(PlanBinding::Vertex(vertex_id)) => self
-                    .store
-                    .property_id(property)
+                    .resolved_property_id(property)
                     .and_then(|property_id| self.store.vertex_property(*vertex_id, property_id))
                     .map_or(Ok(Value::Null), Ok),
                 Some(PlanBinding::Edge(edge)) => self
-                    .store
-                    .property_id(property)
+                    .resolved_property_id(property)
                     .and_then(|property_id| self.store.edge_property(edge.handle, property_id))
                     .map_or(Ok(Value::Null), Ok),
                 Some(PlanBinding::EdgeGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {

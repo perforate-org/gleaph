@@ -6,8 +6,8 @@ use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::ObjectName;
 use gleaph_gql_ic::principal_to_value;
-use gleaph_graph_kernel::entry::{EdgeLabelId, VertexLabelId};
-use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
+use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::plan_exec::{ResolvedLabelTable, ResolvedPropertyTable};
 
 /// Carries data that is fixed for one GQL execution (adhoc, prepared, or plan replay).
 #[derive(Clone, Debug, Default)]
@@ -16,6 +16,8 @@ pub struct GqlExecutionContext {
     pub caller: Option<Principal>,
     /// Router-resolved label names for this execution.
     pub resolved_labels: Option<ResolvedLabelTable>,
+    /// Router-resolved property names for this execution.
+    pub resolved_properties: Option<ResolvedPropertyTable>,
 }
 
 impl GqlExecutionContext {
@@ -75,6 +77,28 @@ impl GqlExecutionContext {
 
     pub fn requires_resolved_labels(&self) -> bool {
         self.resolved_labels.is_some()
+    }
+
+    pub fn resolved_property_id(&self, name: &str) -> Option<PropertyId> {
+        if let Some(properties) = &self.resolved_properties {
+            return properties
+                .properties
+                .iter()
+                .find(|property| property.name == name)
+                .map(|property| property.id);
+        }
+        #[cfg(any(test, feature = "canbench"))]
+        {
+            Some(crate::test_labels::property_id_for_name(name))
+        }
+        #[cfg(not(any(test, feature = "canbench")))]
+        {
+            None
+        }
+    }
+
+    pub fn requires_resolved_properties(&self) -> bool {
+        self.resolved_properties.is_some()
     }
 }
 

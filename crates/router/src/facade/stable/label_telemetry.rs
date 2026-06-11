@@ -2,7 +2,9 @@
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::plan_exec::{LabelTelemetryEventWire, MutationId, ResolvedLabelTable};
+use gleaph_graph_kernel::plan_exec::{
+    LabelTelemetryEventWire, MutationId, ResolvedLabelTable, ResolvedPropertyTable,
+};
 use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -174,6 +176,7 @@ pub struct RouterMutationRecord {
     pub created_at_ns: u64,
     pub request_fingerprint: Vec<u8>,
     pub resolved_labels: Option<ResolvedLabelTable>,
+    pub resolved_properties: Option<ResolvedPropertyTable>,
     pub completed_row_count: Option<u64>,
     pub routing_in_progress: bool,
     pub shards: Vec<RouterMutationShard>,
@@ -186,6 +189,7 @@ impl RouterMutationRecord {
             created_at_ns,
             request_fingerprint,
             resolved_labels: None,
+            resolved_properties: None,
             completed_row_count: None,
             routing_in_progress: true,
             shards: Vec::new(),

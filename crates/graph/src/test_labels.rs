@@ -56,15 +56,20 @@ impl GraphStore {
         &self,
         properties: impl IntoIterator<Item = (impl AsRef<str>, Value)>,
     ) -> Result<Vec<(PropertyId, Value)>, GraphStoreError> {
-        properties
+        Ok(properties
             .into_iter()
-            .map(|(name, value)| {
-                self.get_or_insert_property_id(name.as_ref())
-                    .map(|id| (id, value))
-                    .map_err(GraphStoreError::from)
-            })
-            .collect()
+            .map(|(name, value)| (property_id_for_name(name.as_ref()), value))
+            .collect())
     }
+}
+
+pub(crate) fn property_id_for_name(name: &str) -> PropertyId {
+    PropertyId::from_raw(nonzero_hash_u32(name))
+}
+
+fn nonzero_hash_u32(name: &str) -> u32 {
+    let raw = stable_hash(name) as u32;
+    if raw == 0 { 1 } else { raw }
 }
 
 pub(crate) fn vertex_label_id_for_name(name: &str) -> VertexLabelId {

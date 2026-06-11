@@ -14,7 +14,7 @@ use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::federation::PhysicalVertexLocation;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
-    LabelTelemetryEventWire, LabelUsageDelta, ResolvedLabelTable,
+    LabelTelemetryEventWire, LabelUsageDelta, ResolvedLabelTable, ResolvedPropertyTable,
 };
 use std::collections::BTreeSet;
 
@@ -514,6 +514,7 @@ fn client_mutation_key_reuses_router_mutation_id() {
             "tenant.main",
             "client-key-1",
             ResolvedLabelTable::default(),
+            ResolvedPropertyTable::default(),
             vec![RouterMutationShard::new(
                 ShardId::new(0),
                 graph_principal(1),
@@ -651,6 +652,7 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
             "tenant.main",
             "client-key-1",
             ResolvedLabelTable::default(),
+            ResolvedPropertyTable::default(),
             vec![RouterMutationShard::new(
                 ShardId::new(0),
                 graph_principal(1),
@@ -708,6 +710,7 @@ fn router_mutation_journal_tracks_shard_completion() {
             "tenant.main",
             "client-key-1",
             ResolvedLabelTable::default(),
+            ResolvedPropertyTable::default(),
             vec![
                 RouterMutationShard::new(ShardId::new(0), graph_principal(1), Some(vec![1])),
                 RouterMutationShard::new(ShardId::new(1), graph_principal(2), None),
@@ -784,6 +787,7 @@ fn router_mutation_journal_records_zero_shard_completion() {
             "tenant.main",
             "client-key-1",
             ResolvedLabelTable::default(),
+            ResolvedPropertyTable::default(),
             0,
         )
         .expect("record zero-shard completion");

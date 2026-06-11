@@ -62,6 +62,7 @@ pub(crate) fn expand_rows_from_federated_expand_hits(
         let dst_binding = if hit.shard_id == routing.shard_id {
             expand_dst_binding(
                 store,
+                execution,
                 ExpandDst::Local(VertexId::from(hit.neighbor_local_vertex_id)),
                 dst_property_projection,
             )?
@@ -204,7 +205,8 @@ pub(crate) async fn execute_expand(
         parameters,
     )?;
     let edge_equality_filter = if csr_expand_fast_path.is_some() {
-        let filter = edge_equality_stream_filter(store, indexed_edge_equality, parameters)?;
+        let filter =
+            edge_equality_stream_filter(store, execution, indexed_edge_equality, parameters)?;
         if matches!(filter, EdgeEqualityStreamFilter::NoMatches) {
             return Ok(Vec::new());
         }
@@ -294,6 +296,7 @@ pub(crate) async fn execute_expand(
                         let expanded = build_expanded_row(
                             None,
                             store,
+                            execution,
                             &row,
                             edge_key.as_deref(),
                             hop_aux_key,
@@ -330,6 +333,7 @@ pub(crate) async fn execute_expand(
                 {
                     expand_vector_dst_only_rows_into(
                         store,
+                        execution,
                         &row,
                         src_id,
                         direction,
@@ -398,6 +402,7 @@ pub(crate) async fn execute_expand(
                     let expanded = build_expanded_row(
                         None,
                         store,
+                        execution,
                         &row,
                         edge_key.as_deref(),
                         hop_aux_key,

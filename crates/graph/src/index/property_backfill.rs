@@ -61,6 +61,7 @@ mod tests {
     use candid::Principal;
     use gleaph_gql::Value;
     use gleaph_graph_kernel::entry::PropertyId;
+    use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
     use std::sync::Mutex;
 
@@ -101,13 +102,13 @@ mod tests {
             Ok(vec![])
         }
 
-        fn local_shard_id(&self) -> u32 {
-            7
+        fn local_shard_id(&self) -> ShardId {
+            ShardId::new(0)
         }
 
         async fn posting_insert_at(
             &self,
-            shard_id: u32,
+            shard_id: ShardId,
             property_id: u32,
             value: Vec<u8>,
             vertex_id: u32,
@@ -115,13 +116,13 @@ mod tests {
             self.inserts
                 .lock()
                 .unwrap()
-                .push((shard_id, property_id, value, vertex_id));
+                .push((shard_id.raw(), property_id, value, vertex_id));
             Ok(())
         }
 
         async fn posting_remove_at(
             &self,
-            _shard_id: u32,
+            _shard_id: ShardId,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,
@@ -131,7 +132,7 @@ mod tests {
 
         async fn label_posting_insert_at(
             &self,
-            _shard_id: u32,
+            _shard_id: ShardId,
             _label_id: u32,
             _vertex_id: u32,
         ) -> Result<(), crate::plan::PlanQueryError> {
@@ -140,7 +141,7 @@ mod tests {
 
         async fn label_posting_remove_at(
             &self,
-            _shard_id: u32,
+            _shard_id: ShardId,
             _label_id: u32,
             _vertex_id: u32,
         ) -> Result<(), crate::plan::PlanQueryError> {
@@ -187,7 +188,7 @@ mod tests {
         assert!(result.done);
         let inserts = index.inserts.lock().unwrap().clone();
         assert_eq!(inserts.len(), 2);
-        assert!(inserts.iter().all(|(shard, _, _, _)| *shard == 7));
+        assert!(inserts.iter().all(|(shard, _, _, _)| *shard == 0));
         assert!(inserts.iter().any(|(_, property_id, _, vertex_id)| {
             *property_id == 3 && *vertex_id == u32::from(vid)
         }));

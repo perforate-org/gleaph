@@ -12,7 +12,7 @@ use crate::state::RouterError;
 use crate::types::ShardId;
 use candid::Principal;
 use gleaph_graph_kernel::plan_exec::LabelTelemetryEventWire;
-use gleaph_graph_kernel::plan_exec::{MutationId, ResolvedLabelTable};
+use gleaph_graph_kernel::plan_exec::{MutationId, ResolvedLabelTable, ResolvedPropertyTable};
 
 impl RouterStore {
     pub fn allocate_mutation_id(&self) -> Result<MutationId, RouterError> {
@@ -118,6 +118,7 @@ impl RouterStore {
         logical_graph_name: &str,
         client_key: &str,
         resolved_labels: ResolvedLabelTable,
+        resolved_properties: ResolvedPropertyTable,
         shards: Vec<RouterMutationShard>,
     ) -> Result<(), RouterError> {
         let key =
@@ -128,6 +129,7 @@ impl RouterStore {
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
             if record.shards.is_empty() && record.completed_row_count.is_none() {
                 record.resolved_labels = Some(resolved_labels);
+                record.resolved_properties = Some(resolved_properties);
                 record.routing_in_progress = false;
                 record.shards = shards;
                 m.insert(key, record);
@@ -142,6 +144,7 @@ impl RouterStore {
         logical_graph_name: &str,
         client_key: &str,
         resolved_labels: ResolvedLabelTable,
+        resolved_properties: ResolvedPropertyTable,
         row_count: u64,
     ) -> Result<(), RouterError> {
         let key =
@@ -152,6 +155,7 @@ impl RouterStore {
                 .ok_or_else(|| RouterError::Internal("client mutation record missing".into()))?;
             if record.shards.is_empty() && record.completed_row_count.is_none() {
                 record.resolved_labels = Some(resolved_labels);
+                record.resolved_properties = Some(resolved_properties);
                 record.completed_row_count = Some(row_count);
                 record.routing_in_progress = false;
                 m.insert(key, record);

@@ -6,7 +6,7 @@ use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql_planner::plan::AggregateSpec;
 use gleaph_graph_kernel::entry::PreparedWeightDecoder;
-use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
+use gleaph_graph_kernel::plan_exec::{ResolvedLabelTable, ResolvedPropertyTable};
 
 use crate::facade::GraphStore;
 use crate::federation::StandaloneFederation;
@@ -59,6 +59,7 @@ impl<'a> ExecuteCtx<'a> {
             aggregate_specs,
             caller: self.caller(),
             resolved_labels: self.execution.resolved_labels.as_ref(),
+            resolved_properties: self.execution.resolved_properties.as_ref(),
             gleaph_weight_decoders: self.gleaph_weight_decoders,
         }
     }
@@ -74,6 +75,31 @@ pub(crate) struct QueryExprEvaluator<'a> {
     pub caller: Option<Principal>,
     /// Router-resolved labels available to this execution.
     pub resolved_labels: Option<&'a ResolvedLabelTable>,
+    /// Router-resolved properties available to this execution.
+    pub resolved_properties: Option<&'a ResolvedPropertyTable>,
     /// Prepared decoders for `GLEAPH.WEIGHT(edgeVar)` (when the query uses it).
     pub gleaph_weight_decoders: Option<&'a BTreeMap<String, PreparedWeightDecoder>>,
+}
+
+impl<'a> QueryExprEvaluator<'a> {
+    pub(crate) fn resolved_property_id(
+        &self,
+        name: &str,
+    ) -> Option<gleaph_graph_kernel::entry::PropertyId> {
+        if let Some(properties) = self.resolved_properties {
+            return properties
+                .properties
+                .iter()
+                .find(|property| property.name == name)
+                .map(|property| property.id);
+        }
+        #[cfg(any(test, feature = "canbench"))]
+        {
+            Some(crate::test_labels::property_id_for_name(name))
+        }
+        #[cfg(not(any(test, feature = "canbench")))]
+        {
+            None
+        }
+    }
 }

@@ -156,7 +156,7 @@ mod tests {
             .expect("insert named vertex");
         let vertex = store.vertex(vertex_id).expect("read vertex");
         let label = crate::test_labels::vertex_label_id_for_name("Person");
-        let property = store.property_id("name").expect("name property id");
+        let property = crate::test_labels::property_id_for_name("name");
 
         assert_eq!(store.vertex_labels(vertex_id, vertex), vec![label]);
         assert_eq!(

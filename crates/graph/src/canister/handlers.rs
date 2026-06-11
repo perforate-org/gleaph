@@ -150,6 +150,7 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
         GqlExecutionContext {
             caller: None,
             resolved_labels: args.resolved_labels,
+            resolved_properties: args.resolved_properties,
         },
         seeds,
         args.mutation_id,
@@ -294,7 +295,7 @@ mod tests {
     use gleaph_graph_kernel::plan_exec::{SeedBindingEntry, SeedBindingsWire};
     use pollster;
 
-    const TEST_SHARD_ID: ShardId = 7;
+    const TEST_SHARD_ID: ShardId = ShardId::new(0);
 
     fn attach_test_federation(shard_id: ShardId) {
         let mut metadata = GraphMetadata::default();
@@ -368,6 +369,7 @@ mod tests {
             mode: GqlExecutionMode::Query,
             seed_bindings_blob: Some(seed_blob),
             resolved_labels: None,
+            resolved_properties: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -422,6 +424,7 @@ mod tests {
             mode: GqlExecutionMode::Query,
             seed_bindings_blob: Some(seed_blob),
             resolved_labels: None,
+            resolved_properties: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -462,6 +465,7 @@ mod tests {
             mode: GqlExecutionMode::Query,
             seed_bindings_blob: None,
             resolved_labels: None,
+            resolved_properties: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("missing seeds");
@@ -482,13 +486,14 @@ mod tests {
         );
         let params_blob = encode_gql_params_blob(vec![]).expect("encode params");
         let args = ExecutePlanArgs {
-            target_shard_id: TEST_SHARD_ID + 1,
+            target_shard_id: ShardId::new(1),
             mutation_id: None,
             plan_blob,
             params_blob,
             mode: GqlExecutionMode::Query,
             seed_bindings_blob: Some(seed_blob),
             resolved_labels: None,
+            resolved_properties: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("shard mismatch");

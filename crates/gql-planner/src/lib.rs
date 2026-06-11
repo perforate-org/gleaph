@@ -52,7 +52,8 @@ pub use path_extensions::{
 };
 pub use plan::{
     EdgeLabelRef, LabelUseIntent, NodeLabelRef, PhysicalPlan, PlanAnnotations, PlanDiagnostics,
-    PlanLabelUses, PlanOp, PlanSummary, ShortestPathCost, UseGraphPushdownInfo,
+    PlanLabelUses, PlanOp, PlanPropertyUses, PlanSummary, PropertyUseIntent, ShortestPathCost,
+    UseGraphPushdownInfo,
 };
 pub use planner::{
     PlanBuildOutput, PlannerError, analyze_remote_use_graph_pushdown, build_block_plan,

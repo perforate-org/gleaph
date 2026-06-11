@@ -210,6 +210,7 @@ pub(crate) fn collect_var_len_expand_rows(
             if expand_dst_matches_prebound_vertex(row, dst, edge_dst) {
                 let expanded = build_var_len_row(
                     store,
+                    execution,
                     row,
                     edge_key.as_deref(),
                     hop_aux_key.as_deref(),
@@ -276,6 +277,7 @@ pub(crate) fn collect_var_len_expand_rows(
 
 fn build_var_len_row(
     store: &crate::facade::GraphStore,
+    execution: &crate::gql_execution_context::GqlExecutionContext,
     row: &PlanRow,
     edge_key: Option<&str>,
     hop_aux_key: Option<&str>,
@@ -290,7 +292,7 @@ fn build_var_len_row(
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
 ) -> Result<PlanRow, PlanQueryError> {
-    let dst_binding = expand_dst_binding(store, dst, dst_property_projection)?;
+    let dst_binding = expand_dst_binding(store, execution, dst, dst_property_projection)?;
     let mut updates = vec![(dst_key, dst_binding)];
     let path_edges = (edge_key.is_some() || hop_aux_key.is_some()).then(|| {
         edge_bindings_along_var_len_path(
@@ -311,6 +313,7 @@ fn build_var_len_row(
                 .map(|edge| {
                     edge_to_projected_record(
                         store,
+                        execution,
                         edge,
                         edge_property_projection.expect("checked non-empty"),
                     )

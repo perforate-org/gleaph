@@ -518,6 +518,7 @@ pub(crate) fn weighted_shortest_paths_between(
                     let _generic_scope = bench_scope("weighted_shortest_expand_generic");
                     expand_candidates_into(
                         store,
+                        &crate::gql_execution_context::GqlExecutionContext::default(),
                         current,
                         direction,
                         label_id,
@@ -736,6 +737,7 @@ fn weighted_shortest_k_paths_between(
                 None => {
                     expand_candidates_into(
                         store,
+                        &crate::gql_execution_context::GqlExecutionContext::default(),
                         current,
                         direction,
                         label_id,
@@ -914,6 +916,7 @@ fn eval_shortest_hop_cost(
         aggregate_specs: None,
         caller: None,
         resolved_labels: None,
+        resolved_properties: None,
         gleaph_weight_decoders,
     };
     let value = evaluator.eval_expr(&row, expr)?;

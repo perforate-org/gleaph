@@ -400,7 +400,7 @@ fn element_id_returns_graph_kernel_bytes_for_vertices_and_edges() {
     );
     let edge_id =
         GraphPathEdgeId::try_from_slice(bytes_column(&result, "eid")).expect("edge element id");
-    assert_eq!(edge_id.shard_id, 7);
+    assert_eq!(edge_id.shard_id, ShardId::new(0));
     assert_eq!(edge_id.owner_vertex_id, edge.owner_vertex_id);
     assert_eq!(
         edge_id.edge_slot_index,

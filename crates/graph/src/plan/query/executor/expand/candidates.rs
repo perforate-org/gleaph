@@ -316,6 +316,7 @@ pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
 #[allow(clippy::too_many_arguments)]
 pub(super) fn expand_vector_dst_only_rows_into(
     store: &GraphStore,
+    execution: &GqlExecutionContext,
     row: &PlanRow,
     src_id: VertexId,
     direction: EdgeDirection,
@@ -375,7 +376,8 @@ pub(super) fn expand_vector_dst_only_rows_into(
                 } else if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection) {
                     return Ok(());
                 }
-                let dst_binding = expand_dst_binding(store, edge_dst, dst_property_projection)?;
+                let dst_binding =
+                    expand_dst_binding(store, execution, edge_dst, dst_property_projection)?;
                 let expanded = row.fork([(dst_key, dst_binding)]);
                 if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
                     return Ok(());
@@ -450,6 +452,7 @@ pub(crate) fn expand_candidates_with_label_expr_fusion_into(
     for label_id in label_ids {
         expand_candidates_into(
             store,
+            execution,
             src_id,
             direction,
             Some(label_id),
@@ -498,6 +501,7 @@ pub(crate) fn expand_candidates_for_expand_op_into(
     }
     expand_candidates_into(
         store,
+        execution,
         src_id,
         direction,
         edge_label_id,
@@ -512,6 +516,7 @@ pub(crate) fn expand_candidates_for_expand_op_into(
 
 pub(crate) fn expand_candidates_into(
     store: &GraphStore,
+    execution: &GqlExecutionContext,
     src_id: VertexId,
     direction: EdgeDirection,
     edge_label_id: Option<EdgeLabelId>,
@@ -526,6 +531,7 @@ pub(crate) fn expand_candidates_into(
     if let Some((property, scan_value)) = indexed
         && expand_candidates_via_equality_index(
             store,
+            execution,
             src_id,
             direction,
             edge_label_id,
@@ -602,6 +608,7 @@ pub(crate) fn expand_candidates_into(
                     if let Some((property, scan_value)) = indexed {
                         match edge_matches_indexed_equality(
                             store,
+                            execution,
                             src_id,
                             direction,
                             LaraLabelId::from_raw(edge.label_id),
@@ -646,6 +653,7 @@ pub(crate) fn expand_candidates_into(
                     if let Some((property, scan_value)) = indexed {
                         match edge_matches_indexed_equality(
                             store,
+                            execution,
                             src_id,
                             direction,
                             LaraLabelId::from_raw(edge.label_id),
@@ -690,6 +698,7 @@ pub(crate) fn expand_candidates_into(
                     if let Some((property, scan_value)) = indexed {
                         match edge_matches_indexed_equality(
                             store,
+                            execution,
                             src_id,
                             direction,
                             LaraLabelId::from_raw(edge.label_id),
@@ -773,6 +782,7 @@ where
 /// Returns `Ok(true)` when the index owned the lookup (including zero matches).
 fn expand_candidates_via_equality_index(
     store: &GraphStore,
+    execution: &GqlExecutionContext,
     src_id: VertexId,
     direction: EdgeDirection,
     edge_label_id: Option<EdgeLabelId>,
@@ -781,7 +791,7 @@ fn expand_candidates_via_equality_index(
     parameters: &BTreeMap<String, Value>,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<bool, PlanQueryError> {
-    let Some(property_id) = store.property_id(property) else {
+    let Some(property_id) = execution.resolved_property_id(property) else {
         return Ok(false);
     };
     let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {

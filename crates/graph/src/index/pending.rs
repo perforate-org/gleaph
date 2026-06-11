@@ -237,13 +237,13 @@ mod tests {
             Ok(vec![])
         }
 
-        fn local_shard_id(&self) -> u32 {
-            0
+        fn local_shard_id(&self) -> gleaph_graph_kernel::federation::ShardId {
+            gleaph_graph_kernel::federation::ShardId::new(0)
         }
 
         async fn posting_insert_at(
             &self,
-            _shard_id: u32,
+            _shard_id: gleaph_graph_kernel::federation::ShardId,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,
@@ -257,7 +257,7 @@ mod tests {
 
         async fn posting_remove_at(
             &self,
-            _shard_id: u32,
+            _shard_id: gleaph_graph_kernel::federation::ShardId,
             _property_id: u32,
             _value: Vec<u8>,
             _vertex_id: u32,
@@ -268,7 +268,7 @@ mod tests {
 
         async fn label_posting_insert_at(
             &self,
-            _shard_id: u32,
+            _shard_id: gleaph_graph_kernel::federation::ShardId,
             _label_id: u32,
             _vertex_id: u32,
         ) -> Result<(), PlanQueryError> {
@@ -277,7 +277,7 @@ mod tests {
 
         async fn label_posting_remove_at(
             &self,
-            _shard_id: u32,
+            _shard_id: gleaph_graph_kernel::federation::ShardId,
             _label_id: u32,
             _vertex_id: u32,
         ) -> Result<(), PlanQueryError> {

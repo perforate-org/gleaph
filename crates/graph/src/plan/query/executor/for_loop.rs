@@ -82,6 +82,7 @@ mod tests {
             aggregate_specs: None,
             caller: None,
             resolved_labels: None,
+            resolved_properties: None,
             gleaph_weight_decoders: None,
         };
         execute_for(
@@ -146,6 +147,7 @@ mod tests {
             aggregate_specs: None,
             caller: None,
             resolved_labels: None,
+            resolved_properties: None,
             gleaph_weight_decoders: None,
         };
         let list = Expr::new(ExprKind::Literal(Value::Int64(1)));

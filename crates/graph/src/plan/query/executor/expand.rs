@@ -229,12 +229,13 @@ impl ExpandDst {
 
 pub(crate) fn expand_dst_binding(
     store: &GraphStore,
+    execution: &crate::gql_execution_context::GqlExecutionContext,
     dst: ExpandDst,
     dst_property_projection: Option<&[Str]>,
 ) -> Result<PlanBinding, PlanQueryError> {
     match dst {
         ExpandDst::Local(vertex_id) => {
-            vertex_binding_for_projection(store, vertex_id, dst_property_projection)
+            vertex_binding_for_projection(store, execution, vertex_id, dst_property_projection)
         }
         ExpandDst::Remote(logical_vertex_id) => {
             if dst_property_projection.is_some_and(|props| !props.is_empty()) {
@@ -250,6 +251,7 @@ pub(crate) fn expand_dst_binding(
 pub(crate) fn build_expanded_row(
     arena: Option<&mut super::super::arena::QueryArena>,
     store: &GraphStore,
+    execution: &crate::gql_execution_context::GqlExecutionContext,
     row: &PlanRow,
     edge_key: Option<&str>,
     hop_aux_key: Option<&str>,
@@ -259,7 +261,7 @@ pub(crate) fn build_expanded_row(
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
 ) -> Result<PlanRow, PlanQueryError> {
-    let dst_binding = expand_dst_binding(store, dst, dst_property_projection)?;
+    let dst_binding = expand_dst_binding(store, execution, dst, dst_property_projection)?;
     let hop_aux_binding = hop_aux_key.map(|key| {
         (
             key,
@@ -272,6 +274,7 @@ pub(crate) fn build_expanded_row(
         let edge_plan_binding = if edge_property_projection.is_some_and(|props| !props.is_empty()) {
             PlanBinding::Value(edge_to_projected_record(
                 store,
+                execution,
                 edge_binding,
                 edge_property_projection.unwrap(),
             )?)
@@ -301,6 +304,7 @@ pub(crate) fn build_expanded_row(
 
 fn edge_matches_indexed_equality(
     store: &GraphStore,
+    execution: &crate::gql_execution_context::GqlExecutionContext,
     probe_vertex_id: VertexId,
     direction: EdgeDirection,
     label_id: LaraLabelId,
@@ -310,7 +314,7 @@ fn edge_matches_indexed_equality(
     scan_value: &ScanValue,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<bool, PlanQueryError> {
-    let Some(property_id) = store.property_id(property) else {
+    let Some(property_id) = execution.resolved_property_id(property) else {
         return Ok(false);
     };
     let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
@@ -355,14 +359,15 @@ fn equality_index_slot_key(owner: VertexId, slot_index: u32) -> u64 {
 }
 
 pub(crate) fn edge_equality_stream_filter(
-    store: &GraphStore,
+    _store: &GraphStore,
+    execution: &crate::gql_execution_context::GqlExecutionContext,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     parameters: &BTreeMap<String, Value>,
 ) -> Result<EdgeEqualityStreamFilter, PlanQueryError> {
     let Some((property, scan_value)) = indexed_edge_equality else {
         return Ok(EdgeEqualityStreamFilter::None);
     };
-    let Some(property_id) = store.property_id(property.as_ref()) else {
+    let Some(property_id) = execution.resolved_property_id(property.as_ref()) else {
         return Ok(EdgeEqualityStreamFilter::NoMatches);
     };
     let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {

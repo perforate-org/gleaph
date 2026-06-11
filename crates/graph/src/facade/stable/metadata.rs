@@ -185,6 +185,9 @@ mod tests {
         let decoded = GraphMetadata::from_bytes(bytes);
         assert_eq!(decoded.logical_graph_name(), Some("gleaph-test".into()));
         assert!(decoded.federation_configured());
-        assert_eq!(decoded.federation_routing().unwrap().shard_id, 7u32);
+        assert_eq!(
+            decoded.federation_routing().unwrap().shard_id,
+            gleaph_graph_kernel::federation::ShardId::new(0)
+        );
     }
 }

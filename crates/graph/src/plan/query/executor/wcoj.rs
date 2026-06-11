@@ -91,12 +91,13 @@ fn single_hop_candidates(
 
 fn bind_wcoj_hop(
     store: &crate::facade::GraphStore,
+    execution: &crate::gql_execution_context::GqlExecutionContext,
     row: &PlanRow,
     edge: &WcojEdge,
     dst_id: VertexId,
     edge_binding: EdgeBinding,
 ) -> Result<PlanRow, PlanQueryError> {
-    let dst_binding = expand_dst_binding(store, ExpandDst::Local(dst_id), None)?;
+    let dst_binding = expand_dst_binding(store, execution, ExpandDst::Local(dst_id), None)?;
     let mut updates = vec![
         (edge.dst.as_ref(), dst_binding),
         (
@@ -127,7 +128,14 @@ fn wcoj_search(
     let candidates = single_hop_candidates(ctx, partial_row, edge, src_id, required_dst)?;
     let evaluator = ctx.expr_evaluator(None);
     for (dst_id, edge_binding) in candidates {
-        let expanded = bind_wcoj_hop(ctx.store, partial_row, edge, dst_id, edge_binding)?;
+        let expanded = bind_wcoj_hop(
+            ctx.store,
+            &ctx.execution,
+            partial_row,
+            edge,
+            dst_id,
+            edge_binding,
+        )?;
         if !row_matches_all(&evaluator, &expanded, &edge.dst_filter)? {
             continue;
         }

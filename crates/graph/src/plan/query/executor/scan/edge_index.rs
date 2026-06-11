@@ -20,13 +20,16 @@ use crate::plan::query::executor::expand::{
 use crate::plan::query::executor::{PlanBinding, resolve_scan_payload_bytes};
 use crate::plan::query::row::PlanRow;
 
-fn property_id_for_scan(store: &GraphStore, property_name: &str) -> Result<u32, PlanQueryError> {
-    store
-        .property_id(property_name)
+fn property_id_for_scan(
+    execution: &GqlExecutionContext,
+    property_name: &str,
+) -> Result<u32, PlanQueryError> {
+    execution
+        .resolved_property_id(property_name)
         .map(|p| p.raw())
-        .ok_or(PlanQueryError::UnsupportedOp(
-            "EdgeIndexScan.unknown_property",
-        ))
+        .ok_or_else(|| PlanQueryError::MissingResolvedProperty {
+            name: property_name.to_owned(),
+        })
 }
 
 fn edge_binding_from_posting(
@@ -78,6 +81,7 @@ fn edge_binding_matches_label(
 
 pub(crate) fn execute_edge_index_scan(
     store: &GraphStore,
+    execution: &GqlExecutionContext,
     rows: Vec<PlanRow>,
     variable: &Str,
     property: &Str,
@@ -85,7 +89,7 @@ pub(crate) fn execute_edge_index_scan(
     parameters: &BTreeMap<String, Value>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
     let property_id = gleaph_graph_kernel::entry::PropertyId::from_raw(property_id_for_scan(
-        store,
+        execution,
         property.as_ref(),
     )?);
     let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
@@ -158,8 +162,9 @@ pub(crate) fn execute_edge_bind_endpoints(
         if !expand_dst_matches_prebound_vertex(&row, far, far_dst) {
             continue;
         }
-        let near_binding = expand_dst_binding(store, near_dst, near_property_projection)?;
-        let far_binding = expand_dst_binding(store, far_dst, far_property_projection)?;
+        let near_binding =
+            expand_dst_binding(store, execution, near_dst, near_property_projection)?;
+        let far_binding = expand_dst_binding(store, execution, far_dst, far_property_projection)?;
         let mut updates = vec![(near.as_ref(), near_binding), (far.as_ref(), far_binding)];
         if let Some(hop_key) = hop_aux_binding {
             updates.push((

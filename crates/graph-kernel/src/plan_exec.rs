@@ -9,7 +9,7 @@
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
 
-use crate::entry::{EdgeLabelId, VertexLabelId};
+use crate::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 use crate::federation::ShardId;
 
 /// Router-issued mutation id. `0` is reserved; ids are never reused.
@@ -40,6 +40,8 @@ pub struct ExecutePlanArgs {
     pub seed_bindings_blob: Option<Vec<u8>>,
     /// Router-resolved label names referenced by the physical plan.
     pub resolved_labels: Option<ResolvedLabelTable>,
+    /// Router-resolved property names referenced by the physical plan.
+    pub resolved_properties: Option<ResolvedPropertyTable>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
@@ -105,6 +107,17 @@ pub struct ResolvedVertexLabel {
 pub struct ResolvedEdgeLabel {
     pub name: String,
     pub id: EdgeLabelId,
+}
+
+#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ResolvedPropertyTable {
+    pub properties: Vec<ResolvedProperty>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ResolvedProperty {
+    pub name: String,
+    pub id: PropertyId,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
@@ -175,6 +188,12 @@ mod tests {
                 edge: vec![ResolvedEdgeLabel {
                     name: "KNOWS".into(),
                     id: EdgeLabelId::from_raw(1),
+                }],
+            }),
+            resolved_properties: Some(ResolvedPropertyTable {
+                properties: vec![ResolvedProperty {
+                    name: "name".into(),
+                    id: PropertyId::from_raw(1),
                 }],
             }),
         };

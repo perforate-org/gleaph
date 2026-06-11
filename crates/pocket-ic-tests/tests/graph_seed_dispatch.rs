@@ -60,6 +60,7 @@ fn graph_execute_plan_query_skips_index_scan_with_seed_bindings() {
             mode: GqlExecutionMode::Query,
             seed_bindings_blob: Some(seed_blob),
             resolved_labels: None,
+            resolved_properties: None,
         },
     );
 
@@ -79,6 +80,7 @@ fn execute_plan_args_without_seeds_preserves_plan_blob_roundtrip() {
         mode: GqlExecutionMode::Query,
         seed_bindings_blob: None,
         resolved_labels: None,
+        resolved_properties: None,
     };
     let bytes = Encode!(&args).expect("encode args");
     let decoded: ExecutePlanArgs = Decode!(&bytes, ExecutePlanArgs).expect("decode args");
@@ -104,6 +106,7 @@ fn graph_execute_plan_query_rejects_index_scan_without_seeds() {
             mode: GqlExecutionMode::Query,
             seed_bindings_blob: None,
             resolved_labels: None,
+            resolved_properties: None,
         },
     );
 

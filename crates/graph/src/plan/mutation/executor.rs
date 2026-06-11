@@ -76,7 +76,7 @@ fn execute_ops_with_bindings(
             } => {
                 let properties = evaluator.resolve_assignments(properties)?;
                 let label_ids = resolve_vertex_labels(&execution, labels)?;
-                let property_ids = resolve_mutation_properties(store, properties)?;
+                let property_ids = resolve_mutation_properties(&execution, properties)?;
                 let unique_labels = label_ids.iter().copied().collect::<BTreeSet<_>>();
                 let vertex_id = store.insert_vertex_with(label_ids, property_ids)?;
                 for label_id in unique_labels {
@@ -106,7 +106,7 @@ fn execute_ops_with_bindings(
                 })?;
                 let properties = evaluator.resolve_assignments(properties)?;
                 let resolved_label = resolve_edge_label(&execution, labels.first())?;
-                let property_ids = resolve_mutation_properties(store, properties)?;
+                let property_ids = resolve_mutation_properties(&execution, properties)?;
                 let handle = match direction {
                     EdgeDirection::PointingRight => store.insert_directed_edge_with(
                         src_id,
@@ -205,9 +205,7 @@ fn execute_set_item(
             value,
         } => {
             let value = evaluator.eval(property.as_ref(), value)?;
-            let property_id = store
-                .get_or_insert_property_id(property)
-                .map_err(GraphStoreError::from)?;
+            let property_id = resolve_property_id(execution, property.as_ref())?;
 
             if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
                 store
@@ -228,7 +226,7 @@ fn execute_set_item(
             })
         }
         SetPlanItem::AllProperties { variable, value } => {
-            execute_set_all_properties(store, variable, value, evaluator, bindings)
+            execute_set_all_properties(store, variable, value, execution, evaluator, bindings)
         }
         SetPlanItem::Label { variable, label } => {
             let label_id = execution
@@ -272,6 +270,7 @@ fn execute_set_all_properties(
     store: &GraphStore,
     variable: &Str,
     value: &gleaph_gql::ast::Expr,
+    execution: &GqlExecutionContext,
     evaluator: &impl MutationPropertyExprEvaluation,
     bindings: &PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
@@ -289,9 +288,7 @@ fn execute_set_all_properties(
             store.remove_vertex_property(*vertex_id, property_id);
         }
         for (name, value) in fields {
-            let property_id = store
-                .get_or_insert_property_id(&name)
-                .map_err(GraphStoreError::from)?;
+            let property_id = resolve_property_id(execution, &name)?;
             store
                 .set_vertex_property(*vertex_id, property_id, value)
                 .map_err(GraphStoreError::from)?;
@@ -304,9 +301,7 @@ fn execute_set_all_properties(
             store.remove_edge_property(*edge, property_id);
         }
         for (name, value) in fields {
-            let property_id = store
-                .get_or_insert_property_id(&name)
-                .map_err(GraphStoreError::from)?;
+            let property_id = resolve_property_id(execution, &name)?;
             store
                 .set_edge_property(*edge, property_id, value)
                 .map_err(GraphStoreError::from)?;
@@ -327,7 +322,7 @@ fn execute_remove_item(
 ) -> Result<(), PlanMutationError> {
     match item {
         RemovePlanItem::Property { variable, property } => {
-            let Some(property_id) = store.property_id(property) else {
+            let Some(property_id) = execution.resolved_property_id(property.as_ref()) else {
                 return Ok(());
             };
 
@@ -514,19 +509,24 @@ fn resolve_edge_label(
         .transpose()
 }
 
+fn resolve_property_id(
+    execution: &GqlExecutionContext,
+    name: &str,
+) -> Result<PropertyId, PlanMutationError> {
+    execution
+        .resolved_property_id(name)
+        .ok_or_else(|| PlanMutationError::MissingResolvedProperty {
+            name: name.to_owned(),
+        })
+}
+
 fn resolve_mutation_properties(
-    store: &GraphStore,
+    execution: &GqlExecutionContext,
     properties: impl IntoIterator<Item = (impl AsRef<str>, Value)>,
 ) -> Result<Vec<(PropertyId, Value)>, PlanMutationError> {
     properties
         .into_iter()
-        .map(|(name, value)| {
-            store
-                .get_or_insert_property_id(name.as_ref())
-                .map(|id| (id, value))
-                .map_err(GraphStoreError::from)
-                .map_err(PlanMutationError::from)
-        })
+        .map(|(name, value)| resolve_property_id(execution, name.as_ref()).map(|id| (id, value)))
         .collect()
 }
 
@@ -588,8 +588,8 @@ mod tests {
         let a = bindings.vertices["a"];
         let b = bindings.vertices["b"];
         let edge = bindings.edges["e"];
-        let name = store.property_id("name").expect("name property");
-        let since = store.property_id("since").expect("since property");
+        let name = crate::test_labels::property_id_for_name("name");
+        let since = crate::test_labels::property_id_for_name("since");
 
         assert_eq!(
             store.vertex_property(a, name),
@@ -635,7 +635,7 @@ mod tests {
             GqlExecutionContext::default(),
         )
         .expect("execute with params");
-        let property = store.property_id("name").expect("name property");
+        let property = crate::test_labels::property_id_for_name("name");
 
         assert_eq!(
             store.vertex_property(bindings.vertices["n"], property),
@@ -689,8 +689,8 @@ mod tests {
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute set properties");
-        let name = store.property_id("name").expect("name property");
-        let weight = store.property_id("weight").expect("weight property");
+        let name = crate::test_labels::property_id_for_name("name");
+        let weight = crate::test_labels::property_id_for_name("weight");
         let edge = bindings.edges["e"];
 
         assert_eq!(
@@ -754,8 +754,8 @@ mod tests {
         let bindings = store
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute remove properties");
-        let name = store.property_id("name").expect("name property");
-        let weight = store.property_id("weight").expect("weight property");
+        let name = crate::test_labels::property_id_for_name("name");
+        let weight = crate::test_labels::property_id_for_name("weight");
         let edge = bindings.edges["e"];
 
         assert_eq!(store.vertex_property(bindings.vertices["a"], name), None);
@@ -803,9 +803,9 @@ mod tests {
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute set all properties");
         let vertex_id = bindings.vertices["a"];
-        let name = store.property_id("name").expect("name property");
-        let age = store.property_id("age").expect("age property");
-        let stale = store.property_id("stale").expect("stale property");
+        let name = crate::test_labels::property_id_for_name("name");
+        let age = crate::test_labels::property_id_for_name("age");
+        let stale = crate::test_labels::property_id_for_name("stale");
 
         assert_eq!(
             store.vertex_property(vertex_id, name),
@@ -869,8 +869,8 @@ mod tests {
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute edge set all properties");
         let edge = bindings.edges["e"];
-        let weight = store.property_id("weight").expect("weight property");
-        let stale = store.property_id("stale").expect("stale property");
+        let weight = crate::test_labels::property_id_for_name("weight");
+        let stale = crate::test_labels::property_id_for_name("stale");
 
         assert_eq!(store.edge_property(edge, weight), Some(Value::Int64(9)));
         assert_eq!(store.edge_property(edge, stale), None);
@@ -1307,9 +1307,9 @@ mod tests {
         )
         .expect("execute arithmetic");
         let vertex = bindings.vertices["n"];
-        let score = store.property_id("score").expect("score property");
-        let name = store.property_id("name").expect("name property");
-        let negative = store.property_id("negative").expect("negative property");
+        let score = crate::test_labels::property_id_for_name("score");
+        let name = crate::test_labels::property_id_for_name("name");
+        let negative = crate::test_labels::property_id_for_name("negative");
 
         assert_eq!(store.vertex_property(vertex, score), Some(Value::Int64(20)));
         assert_eq!(
@@ -1370,9 +1370,9 @@ mod tests {
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute decimal arithmetic");
         let vertex = bindings.vertices["n"];
-        let price = store.property_id("price").expect("price property");
-        let ratio = store.property_id("ratio").expect("ratio property");
-        let negative = store.property_id("negative").expect("negative property");
+        let price = crate::test_labels::property_id_for_name("price");
+        let ratio = crate::test_labels::property_id_for_name("ratio");
+        let negative = crate::test_labels::property_id_for_name("negative");
 
         assert_eq!(
             store.vertex_property(vertex, price),
@@ -1457,12 +1457,12 @@ mod tests {
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute constructed values");
         let vertex = bindings.vertices["n"];
-        let logic = store.property_id("logic").expect("logic property");
-        let is_unknown = store.property_id("is_unknown").expect("truth property");
-        let nickname = store.property_id("nickname").expect("nickname property");
-        let list = store.property_id("list").expect("list property");
-        let record = store.property_id("record").expect("record property");
-        let bytes = store.property_id("bytes").expect("bytes property");
+        let logic = crate::test_labels::property_id_for_name("logic");
+        let is_unknown = crate::test_labels::property_id_for_name("is_unknown");
+        let nickname = crate::test_labels::property_id_for_name("nickname");
+        let list = crate::test_labels::property_id_for_name("list");
+        let record = crate::test_labels::property_id_for_name("record");
+        let bytes = crate::test_labels::property_id_for_name("bytes");
 
         assert_eq!(
             store.vertex_property(vertex, logic),
@@ -1562,7 +1562,7 @@ mod tests {
             .expect("delete isolated vertex");
         let before_u32: u32 = before.into();
         let vid = VertexId::from(before_u32);
-        let k = store.property_id("k").expect("k property");
+        let k = crate::test_labels::property_id_for_name("k");
         assert_eq!(store.vertex_property(vid, k), None);
     }
 
@@ -1606,7 +1606,7 @@ mod tests {
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("detach delete vertex");
         let b = bindings.vertices["b"];
-        let w = store.property_id("w").expect("w property");
+        let w = crate::test_labels::property_id_for_name("w");
         let e = bindings.edges["e"];
 
         assert_eq!(store.edge_property(e, w), None);

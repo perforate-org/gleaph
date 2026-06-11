@@ -151,6 +151,7 @@ pub(crate) fn shortest_paths_between(
                 let _generic_scope = bench_scope("shortest_bfs_expand_generic");
                 expand_candidates_into(
                     store,
+                    &crate::gql_execution_context::GqlExecutionContext::default(),
                     current,
                     direction,
                     label_id,
@@ -290,6 +291,7 @@ fn shortest_k_hop_paths_between(
             None => {
                 expand_candidates_into(
                     store,
+                    &crate::gql_execution_context::GqlExecutionContext::default(),
                     current,
                     direction,
                     label_id,

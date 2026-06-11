@@ -487,7 +487,15 @@ pub(crate) fn execute_ops_from<'a>(
                     property,
                     value,
                     property_projection: _,
-                } => execute_edge_index_scan(store, rows, variable, property, value, parameters)?,
+                } => execute_edge_index_scan(
+                    store,
+                    &ctx.execution,
+                    rows,
+                    variable,
+                    property,
+                    value,
+                    parameters,
+                )?,
                 PlanOp::EdgeBindEndpoints {
                     edge,
                     near,

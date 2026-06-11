@@ -43,7 +43,7 @@ mod tests {
     #[test]
     fn bind_local_index_hits_skips_foreign_shard() {
         let store = GraphStore::new();
-        let local_shard = 0u32;
+        let local_shard = ShardId::new(0);
         let vid = store
             .insert_vertex_named(["Local"], [("k", Value::Int64(1))])
             .expect("insert");
@@ -54,7 +54,7 @@ mod tests {
                 vertex_id: u32::from(vid),
             },
             PostingHit {
-                shard_id: local_shard + 1,
+                shard_id: ShardId::new(1),
                 vertex_id: 99,
             },
         ];

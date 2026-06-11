@@ -13,11 +13,16 @@ use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::context::ExecuteCtx;
 use crate::plan::query::row::PlanRow;
 
-fn property_id_for_scan(store: &GraphStore, property_name: &str) -> Result<u32, PlanQueryError> {
-    store
-        .property_id(property_name)
+fn property_id_for_scan(
+    execution: &GqlExecutionContext,
+    property_name: &str,
+) -> Result<u32, PlanQueryError> {
+    execution
+        .resolved_property_id(property_name)
         .map(|p| p.raw())
-        .ok_or(PlanQueryError::UnsupportedOp("IndexScan.unknown_property"))
+        .ok_or_else(|| PlanQueryError::MissingResolvedProperty {
+            name: property_name.to_owned(),
+        })
 }
 
 pub(crate) fn resolve_scan_payload_bytes(
@@ -66,7 +71,7 @@ pub(crate) async fn execute_index_scan(
     let Some(ix) = ctx.index else {
         return Err(PlanQueryError::UnsupportedOp("IndexScan(no index client)"));
     };
-    let pid = property_id_for_scan(ctx.store, property_name)?;
+    let pid = property_id_for_scan(&ctx.execution, property_name)?;
     let Some(bytes) = resolve_scan_payload_bytes(scan_value, ctx.parameters)? else {
         return Ok(Vec::new());
     };
@@ -103,7 +108,7 @@ pub(crate) async fn execute_conditional_index_scan(
                     "ConditionalIndexScan(no index client)",
                 ));
             };
-            let pid = property_id_for_scan(ctx.store, c.property.as_ref())?;
+            let pid = property_id_for_scan(&ctx.execution, c.property.as_ref())?;
             let hits = if c.cmp == CmpOp::Eq {
                 ix.lookup_equal(pid, bytes).await?
             } else {
@@ -143,7 +148,7 @@ pub(crate) async fn execute_index_intersection(
         if spec.cmp != CmpOp::Eq {
             return Err(PlanQueryError::UnsupportedOp("IndexIntersection.cmp"));
         }
-        let pid = property_id_for_scan(ctx.store, spec.property.as_ref())?;
+        let pid = property_id_for_scan(&ctx.execution, spec.property.as_ref())?;
         let Some(bytes) = resolve_scan_payload_bytes(&spec.value, ctx.parameters)? else {
             return Ok(Vec::new());
         };
