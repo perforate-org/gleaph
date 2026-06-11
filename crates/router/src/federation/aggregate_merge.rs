@@ -730,6 +730,60 @@ mod tests {
     }
 
     #[test]
+    fn federated_dispatch_plan_blob_strips_having_and_decodes() {
+        use gleaph_gql_planner::wire::decode_plan_bundle;
+
+        let having = Expr::new(ExprKind::Compare {
+            left: Box::new(Expr::var("cnt")),
+            op: gleaph_gql::ast::CmpOp::Gt,
+            right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(1)))),
+        });
+        let mut plan = PhysicalPlan::from_ops(vec![
+            PlanOp::Aggregate {
+                group_by: vec![],
+                aggregates: vec![AggregateSpec {
+                    func: AggregateFunc::CountStar,
+                    expr: None,
+                    expr2: None,
+                    distinct: false,
+                    filter: None,
+                    order_by: None,
+                    alias: None,
+                }],
+            },
+            PlanOp::Filter {
+                condition: having.clone(),
+            },
+            PlanOp::Project {
+                columns: vec![project_agg(agg_count_star(), "cnt")],
+                distinct: false,
+            },
+        ]);
+        let original_blob = encode_block_plans(&[plan.clone()], false).expect("encode");
+        let dispatch =
+            federated_dispatch_plan_blob(2, &original_blob, std::slice::from_ref(&plan), false)
+                .expect("dispatch");
+        assert_ne!(dispatch, original_blob);
+        let (_, decoded) = decode_plan_bundle(&dispatch).expect("decode dispatch blob");
+        assert_eq!(decoded.len(), 1);
+        assert!(
+            !decoded[0]
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::Filter { .. }))
+        );
+    }
+
+    #[test]
+    fn federated_dispatch_plan_blob_preserves_original_for_single_shard() {
+        let plan = sample_aggregate_plan(vec![]);
+        let blob = encode_block_plans(&[plan.clone()], false).expect("encode");
+        let dispatch = federated_dispatch_plan_blob(1, &blob, std::slice::from_ref(&plan), false)
+            .expect("dispatch");
+        assert_eq!(dispatch, blob);
+    }
+
+    #[test]
     fn avg_aggregate_falls_back_to_union_mode() {
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::Aggregate {

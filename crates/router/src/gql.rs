@@ -1387,6 +1387,44 @@ mod tests {
     }
 
     #[test]
+    fn dispatch_plan_blob_decodes_for_multi_shard_seeded_read() {
+        use gleaph_gql::ast::Expr;
+        use gleaph_gql_planner::plan::ProjectColumn;
+        use gleaph_gql_planner::wire::decode_plan_bundle;
+
+        use crate::federation::federated_dispatch_plan_blob;
+
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::IndexScan {
+                variable: Rc::from("u"),
+                property: Rc::from("uid"),
+                value: ScanValue::Literal(Value::Text("alice".into())),
+                cmp: CmpOp::Eq,
+                property_projection: None,
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::var("u"),
+                    alias: Some(Rc::from("u")),
+                }],
+                distinct: false,
+            },
+        ]);
+        let plan_blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
+        let dispatch =
+            federated_dispatch_plan_blob(2, &plan_blob, std::slice::from_ref(&plan), false)
+                .expect("dispatch");
+        let (_, decoded) = decode_plan_bundle(&dispatch).expect("decode dispatch blob");
+        assert_eq!(decoded.len(), 1);
+        assert!(
+            decoded[0]
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::IndexScan { .. }))
+        );
+    }
+
+    #[test]
     fn mismatched_label_telemetry_mutation_id_is_rejected_before_apply() {
         let store = RouterStore::new();
         store.init_from_args(&RouterInitArgs {
