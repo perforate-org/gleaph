@@ -4,7 +4,6 @@ use std::cell::RefCell;
 
 pub(crate) mod label_telemetry;
 pub(crate) mod memory;
-pub(crate) mod placement_by_physical;
 
 thread_local! {
     pub(crate) static ROUTER_CONTROLLERS: RefCell<memory::StableControllerSet> =
@@ -21,15 +20,6 @@ thread_local! {
 
     pub(crate) static ROUTER_PLACEMENTS: RefCell<memory::StablePlacementMap> =
         RefCell::new(memory::init_placements());
-
-    pub(crate) static ROUTER_PLACEMENT_BY_PHYSICAL: RefCell<memory::StablePlacementByPhysicalMap> =
-        RefCell::new(memory::init_placement_by_physical());
-
-    pub(crate) static ROUTER_LOGICAL_COUNTER: RefCell<memory::StableLogicalCounter> =
-        RefCell::new(memory::init_logical_counter());
-
-    pub(crate) static ROUTER_PENDING_LOGICAL: RefCell<memory::StablePendingLogical> =
-        RefCell::new(memory::init_pending_logical());
 
     pub(crate) static ROUTER_VERTEX_LABEL_CATALOG: RefCell<memory::StableVertexLabelCatalog> =
         RefCell::new(memory::init_vertex_label_catalog());

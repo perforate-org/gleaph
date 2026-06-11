@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-06-10  
-Status: Implemented (Phase 0 inventory)  
-Anchor timestamp: 2026-06-10 13:39:55 UTC +0000
+Last updated: 2026-06-11  
+Status: Implemented (pre-federation repack per ADR 0006 slice D)  
+Anchor timestamp: 2026-06-11 14:21:44 UTC +0000
 
 ## Purpose
 
@@ -42,7 +42,6 @@ Thread-local pairing: `facade/stable.rs` in each crate.
 | Property postings (graph-index) | Vertex properties (indexable) | DML + `pending.rs` flush | **Implemented:** `backfill_property_postings` + router `admin_property_backfill_step` |
 | Label postings (graph-index) | `VertexLabelStore` | DML + `label_pending` flush | **Implemented:** `backfill_label_postings` + router `admin_label_backfill_step` ([label-index.md](../index/label-index.md)) |
 | Remote forward-in | Remote forward edges | Register/insert paths | Scan fallback per [federation/operations.md](../federation/operations.md) |
-| Router placement-by-physical | `ROUTER_PLACEMENTS` | Placement commit | Rebuild from placement map scan |
 | Router label telemetry | Graph `LabelUsageDelta` | Event apply + `ROUTER_APPLIED_LABEL_TELEMETRY` dedup | **Implemented:** graph outbox replay via `admin_label_telemetry_replay_step`; no full historical scan |
 | Router indexed-property catalog | Property catalog + planner stats | Planner registration | **Ephemeral** — rebuilt after upgrade |
 
@@ -101,26 +100,27 @@ Owner: `ic-stable-lara` / graph `GRAPH` thread-local. Scan paths must not consul
 
 ## Graph canister — facade regions
 
+Repacked 2026-06-11 (ADR 0006 slice D). **Removed:** property name catalog (25–26), `VERTEX_LOGICAL_IDS` (36). LARA bundle ids (0–21, 42–58) unchanged.
+
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
-| 24 | `VERTEX_LABEL_SETS` | `VERTEX_LABELS` | `init_vertex_label_store` | canonical | labels | — |
-| 25 | `PROPERTY_NAME_TO_ID` | `PROPERTY_CATALOG` | `init_property_catalog` | catalog | properties | — |
-| 26 | `PROPERTY_ID_TO_NAME` | `PROPERTY_CATALOG` | `init_property_catalog` | catalog | properties | — |
-| 27 | `VERTEX_PROPERTIES` | `VERTEX_PROPERTIES` | `init_vertex_property_store` | canonical | properties | — |
-| 28 | `EDGE_PROPERTIES` | `EDGE_PROPERTIES` | `init_edge_property_store` | canonical | properties | — |
-| 29 | `EDGE_ALIASES` | `EDGE_ALIASES` | `init_edge_alias_index` | derived | adjacency | `check_edge_aliases` / `rebuild_edge_aliases` |
-| 32 | `GRAPH_METADATA` | `METADATA` | `init_metadata` | canonical | federation metadata | — |
-| 33 | `EDGE_WEIGHT_PROFILES` | `EDGE_WEIGHT_PROFILES` | `init_edge_weight_profiles` | compatibility (legacy read fallback) | edge profiles | — |
-| 44 | `EDGE_PAYLOAD_PROFILES` | `EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | canonical | edge profiles | — |
-| 36 | `VERTEX_LOGICAL_IDS` | `VERTEX_LOGICAL_IDS` | `init_vertex_logical_ids` | canonical | federation | — |
-| 37 | `REMOTE_REF_TO_LOGICAL` | `REMOTE_VERTEX_REFS` | `init_remote_vertex_refs` | canonical | remote refs | — |
-| 38 | `LOGICAL_TO_REMOTE_REF` | `REMOTE_VERTEX_REFS` | `init_remote_vertex_refs` | canonical | remote refs | — |
-| 39 | `REMOTE_FORWARD_IN` | `REMOTE_FORWARD_IN` | `init_remote_forward_in` | derived | remote refs | Scan fallback |
-| 40 | `EDGE_EQUALITY_POSTINGS` | `EDGE_EQUALITY_POSTINGS` | `init_edge_equality_postings` | derived | local indexes | `check_edge_equality_postings` / `rebuild_edge_equality_postings` |
-| 41 | `PEER_GRAPH_CANISTERS` | `PEER_GRAPH_CANISTERS` | `init_peer_graph_canisters` | canonical | federation peers | — |
-| 59 | `LABEL_TELEMETRY_SEQ` | `LABEL_TELEMETRY_SEQ` | `init_label_telemetry_seq` | telemetry | label telemetry | — |
-| 60 | `LABEL_TELEMETRY_OUTBOX` | `LABEL_TELEMETRY_OUTBOX` | `init_label_telemetry_outbox` | telemetry | label telemetry | Event replay to router |
-| 61 | `APPLIED_MUTATION_REQUESTS` | `APPLIED_MUTATION_REQUESTS` | `init_applied_mutation_requests` | canonical | idempotency | — |
+| 22 | `VERTEX_LABEL_SETS` | `VERTEX_LABELS` | `init_vertex_label_store` | canonical | labels | — |
+| 23 | `VERTEX_PROPERTIES` | `VERTEX_PROPERTIES` | `init_vertex_property_store` | canonical | properties | — |
+| 24 | `EDGE_PROPERTIES` | `EDGE_PROPERTIES` | `init_edge_property_store` | canonical | properties | — |
+| 25 | `EDGE_ALIASES` | `EDGE_ALIASES` | `init_edge_alias_index` | derived | adjacency | `check_edge_aliases` / `rebuild_edge_aliases` |
+| 26 | `GRAPH_METADATA` | `METADATA` | `init_metadata` | canonical | federation metadata | — |
+| 27 | `EDGE_WEIGHT_PROFILES` | `EDGE_WEIGHT_PROFILES` | `init_edge_weight_profiles` | compatibility (legacy read fallback) | edge profiles | — |
+| 28 | `EDGE_PAYLOAD_PROFILES` | `EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | canonical | edge profiles | — |
+| 29 | `EDGE_EQUALITY_POSTINGS` | `EDGE_EQUALITY_POSTINGS` | `init_edge_equality_postings` | derived | local indexes | `check_edge_equality_postings` / `rebuild_edge_equality_postings` |
+| 30 | `REMOTE_REF_TO_VERTEX` | `REMOTE_VERTEX_REFS` | `init_remote_vertex_refs` | canonical | remote refs (deferred prod) | — |
+| 31 | `VERTEX_TO_REMOTE_REF` | `REMOTE_VERTEX_REFS` | `init_remote_vertex_refs` | canonical | remote refs (deferred prod) | — |
+| 32 | `REMOTE_FORWARD_IN` | `REMOTE_FORWARD_IN` | `init_remote_forward_in` | derived | remote refs (deferred prod) | Scan fallback |
+| 33 | `PEER_GRAPH_CANISTERS` | `PEER_GRAPH_CANISTERS` | `init_peer_graph_canisters` | canonical | federation peers (deferred prod) | — |
+| 34 | `LABEL_TELEMETRY_SEQ` | `LABEL_TELEMETRY_SEQ` | `init_label_telemetry_seq` | telemetry | label telemetry | — |
+| 35 | `LABEL_TELEMETRY_OUTBOX` | `LABEL_TELEMETRY_OUTBOX` | `init_label_telemetry_outbox` | telemetry | label telemetry | Event replay to router |
+| 36 | `APPLIED_MUTATION_REQUESTS` | `APPLIED_MUTATION_REQUESTS` | `init_applied_mutation_requests` | canonical | idempotency | — |
+
+Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores values by `PropertyId` only.
 
 ### Graph ephemeral (not in `memory.rs`)
 
@@ -133,30 +133,28 @@ Owner: `ic-stable-lara` / graph `GRAPH` thread-local. Scan paths must not consul
 
 ## Router canister — stable regions
 
+Repacked 2026-06-11 (ADR 0006 slice D). **Removed:** `ROUTER_LOGICAL_COUNTER` (5), `ROUTER_PENDING_LOGICAL` (6), `ROUTER_PLACEMENT_BY_PHYSICAL` (13). `ROUTER_PLACEMENTS` keyed by `GlobalVertexId`.
+
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
 | 0 | `ROUTER_CONTROLLERS` | `ROUTER_CONTROLLERS` | `init_controllers` | canonical | auth | — |
 | 1 | `ROUTER_GRAPHS` | `ROUTER_GRAPHS` | `init_graphs` | canonical | registry | — |
 | 2 | `ROUTER_SHARDS` | `ROUTER_SHARDS` | `init_shards` | canonical | registry | — |
 | 3 | `ROUTER_SHARD_BY_GRAPH` | `ROUTER_SHARD_BY_GRAPH` | `init_shard_by_graph` | canonical | registry | — |
-| 4 | `ROUTER_PLACEMENTS` | `ROUTER_PLACEMENTS` | `init_placements` | canonical | placement | — |
-| 5 | `ROUTER_LOGICAL_COUNTER` | `ROUTER_LOGICAL_COUNTER` | `init_logical_counter` | canonical | placement | — |
-| 6 | `ROUTER_PENDING_LOGICAL` | `ROUTER_PENDING_LOGICAL` | `init_pending_logical` | maintenance | placement | — |
-| 7–8 | `ROUTER_VERTEX_LABEL_BY_NAME` / `ROUTER_VERTEX_LABEL_BY_ID` | `ROUTER_VERTEX_LABEL_CATALOG` | `init_vertex_label_catalog` | catalog | resolution | `BidirectionalCatalog` (dense) |
-| 9–10 | `ROUTER_EDGE_LABEL_BY_NAME` / `ROUTER_EDGE_LABEL_BY_ID` | `ROUTER_EDGE_LABEL_CATALOG` | `init_edge_label_catalog` | catalog | resolution | `BidirectionalCatalog` (dense, capped) |
-| 11–12 | `ROUTER_PROPERTY_BY_NAME` / `ROUTER_PROPERTY_BY_ID` | `ROUTER_PROPERTY_CATALOG` | `init_property_catalog` | catalog | resolution | `BidirectionalCatalog` (dense) |
-| 13 | `ROUTER_PLACEMENT_BY_PHYSICAL` | `ROUTER_PLACEMENT_BY_PHYSICAL` | `init_placement_by_physical` | derived | placement | Scan `ROUTER_PLACEMENTS` |
-| 14 | — | — | — | reserved | — | Unused; do not allocate |
-| 15 | `ROUTER_AUTH_PRINCIPAL_RECORDS` | `ROUTER_AUTH_STATE` | `init_auth_state` | canonical | auth | — |
-| 16 | `ROUTER_VERTEX_LABEL_STATS` | `ROUTER_VERTEX_LABEL_STATS` | `init_vertex_label_stats` | telemetry | label telemetry | Event replay |
-| 17 | `ROUTER_EDGE_LABEL_STATS` | `ROUTER_EDGE_LABEL_STATS` | `init_edge_label_stats` | telemetry | label telemetry | Event replay |
-| 18 | `ROUTER_VERTEX_LABEL_LIVE_BY_SHARD` | `ROUTER_VERTEX_LABEL_LIVE_BY_SHARD` | `init_vertex_label_live_by_shard` | telemetry | label telemetry | Event replay |
-| 19 | `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `init_edge_label_live_by_shard` | telemetry | label telemetry | Event replay |
-| 20 | `ROUTER_MUTATION_COUNTER` | `ROUTER_MUTATION_COUNTER` | `init_mutation_counter` | canonical | idempotency | — |
-| 21 | `ROUTER_APPLIED_LABEL_TELEMETRY` | `ROUTER_APPLIED_LABEL_TELEMETRY` | `init_applied_label_telemetry` | telemetry | label telemetry | Dedup set for replay |
-| 22 | `ROUTER_MUTATION_BY_CLIENT_KEY` | `ROUTER_MUTATION_BY_CLIENT_KEY` | `init_mutation_by_client_key` | canonical | idempotency | — |
-| 23 | `ROUTER_LABEL_BACKFILL_STATE` | `ROUTER_LABEL_BACKFILL_STATE` | `init_label_backfill_state` | maintenance | label backfill | Cursor for `admin_label_backfill_step` |
-| 24 | `ROUTER_PROPERTY_BACKFILL_STATE` | `ROUTER_PROPERTY_BACKFILL_STATE` | `init_property_backfill_state` | maintenance | property backfill | Cursor for `admin_property_backfill_step` |
+| 4 | `ROUTER_PLACEMENTS` | `ROUTER_PLACEMENTS` | `init_placements` | canonical | placement (`GlobalVertexId`) | — |
+| 5–6 | `ROUTER_VERTEX_LABEL_BY_NAME` / `ROUTER_VERTEX_LABEL_BY_ID` | `ROUTER_VERTEX_LABEL_CATALOG` | `init_vertex_label_catalog` | catalog | resolution | `BidirectionalCatalog` (dense) |
+| 7–8 | `ROUTER_EDGE_LABEL_BY_NAME` / `ROUTER_EDGE_LABEL_BY_ID` | `ROUTER_EDGE_LABEL_CATALOG` | `init_edge_label_catalog` | catalog | resolution | `BidirectionalCatalog` (dense, capped) |
+| 9–10 | `ROUTER_PROPERTY_BY_NAME` / `ROUTER_PROPERTY_BY_ID` | `ROUTER_PROPERTY_CATALOG` | `init_property_catalog` | catalog | resolution | `BidirectionalCatalog` (dense) |
+| 11 | `ROUTER_AUTH_PRINCIPAL_RECORDS` | `ROUTER_AUTH_STATE` | `init_auth_state` | canonical | auth | — |
+| 12 | `ROUTER_VERTEX_LABEL_STATS` | `ROUTER_VERTEX_LABEL_STATS` | `init_vertex_label_stats` | telemetry | label telemetry | Event replay |
+| 13 | `ROUTER_EDGE_LABEL_STATS` | `ROUTER_EDGE_LABEL_STATS` | `init_edge_label_stats` | telemetry | label telemetry | Event replay |
+| 14 | `ROUTER_VERTEX_LABEL_LIVE_BY_SHARD` | `ROUTER_VERTEX_LABEL_LIVE_BY_SHARD` | `init_vertex_label_live_by_shard` | telemetry | label telemetry | Event replay |
+| 15 | `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `init_edge_label_live_by_shard` | telemetry | label telemetry | Event replay |
+| 16 | `ROUTER_MUTATION_COUNTER` | `ROUTER_MUTATION_COUNTER` | `init_mutation_counter` | canonical | idempotency | — |
+| 17 | `ROUTER_APPLIED_LABEL_TELEMETRY` | `ROUTER_APPLIED_LABEL_TELEMETRY` | `init_applied_label_telemetry` | telemetry | label telemetry | Dedup set for replay |
+| 18 | `ROUTER_MUTATION_BY_CLIENT_KEY` | `ROUTER_MUTATION_BY_CLIENT_KEY` | `init_mutation_by_client_key` | canonical | idempotency | — |
+| 19 | `ROUTER_LABEL_BACKFILL_STATE` | `ROUTER_LABEL_BACKFILL_STATE` | `init_label_backfill_state` | maintenance | label backfill | Cursor for `admin_label_backfill_step` |
+| 20 | `ROUTER_PROPERTY_BACKFILL_STATE` | `ROUTER_PROPERTY_BACKFILL_STATE` | `init_property_backfill_state` | maintenance | property backfill | Cursor for `admin_property_backfill_step` |
 
 ### Router ephemeral
 

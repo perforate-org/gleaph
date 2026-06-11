@@ -1,7 +1,7 @@
-//! GraphStore property catalog and edge orientation helpers.
+//! GraphStore property helpers and edge orientation.
 
 use super::super::PropertyCatalogError;
-use super::super::stable::{GRAPH_DEFAULT_EDGE_LABEL, PROPERTY_CATALOG};
+use super::super::stable::GRAPH_DEFAULT_EDGE_LABEL;
 use gleaph_graph_kernel::entry::{Edge, PropertyId, TaggedEdgeLabelId};
 use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexId};
 
@@ -19,26 +19,43 @@ impl GraphStore {
         Ok(TaggedEdgeLabelId::from_raw(bucket.raw()).is_undirected())
     }
 
+    /// Standalone / test name lookup (router owns production name→id resolution).
     pub fn property_id(&self, name: &str) -> Option<PropertyId> {
-        PROPERTY_CATALOG.with_borrow(|catalog| catalog.get_id(name))
+        #[cfg(any(test, feature = "canbench"))]
+        {
+            Some(crate::test_labels::property_id_for_name(name))
+        }
+        #[cfg(not(any(test, feature = "canbench")))]
+        {
+            let _ = name;
+            None
+        }
     }
 
-    pub fn property_name(&self, id: PropertyId) -> Option<String> {
-        PROPERTY_CATALOG.with_borrow(|catalog| catalog.get_name(id))
+    pub fn property_name(&self, _id: PropertyId) -> Option<String> {
+        None
     }
 
     pub fn get_or_insert_property_id(
         &self,
         name: &str,
     ) -> Result<PropertyId, PropertyCatalogError> {
-        PROPERTY_CATALOG.with_borrow_mut(|catalog| catalog.get_or_insert(name))
+        #[cfg(any(test, feature = "canbench"))]
+        {
+            Ok(crate::test_labels::property_id_for_name(name))
+        }
+        #[cfg(not(any(test, feature = "canbench")))]
+        {
+            let _ = name;
+            Err(PropertyCatalogError::IdExhausted)
+        }
     }
 
     pub fn insert_property_with_id(
         &self,
-        name: &str,
-        id: PropertyId,
+        _name: &str,
+        _id: PropertyId,
     ) -> Result<(), PropertyCatalogError> {
-        PROPERTY_CATALOG.with_borrow_mut(|catalog| catalog.insert_with_id(name, id))
+        Err(PropertyCatalogError::IdExhausted)
     }
 }

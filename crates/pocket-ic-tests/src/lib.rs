@@ -2,7 +2,7 @@
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
-use gleaph_graph_kernel::federation::{LogicalVertexId, ShardId, VertexPlacement};
+use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId, VertexPlacement};
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::AdminRegisterShardArgs;
 use pocket_ic::{PocketIc, PocketIcBuilder};
@@ -56,7 +56,7 @@ pub struct IndexInitArgs {
 #[derive(CandidType, Clone, Debug, serde::Deserialize)]
 pub struct E2eInsertVertexResult {
     pub local_vertex_id: u32,
-    pub logical_vertex_id: LogicalVertexId,
+    pub global_vertex_id: GlobalVertexId,
 }
 
 #[derive(CandidType, Clone, Debug, serde::Deserialize)]
@@ -448,8 +448,8 @@ pub fn e2e_insert_edge(
     );
 }
 
-pub fn resolve_placement(env: &FederationEnv, logical: LogicalVertexId) -> VertexPlacement {
-    query_as_router(env, env.router, "resolve_placement", logical)
+pub fn resolve_placement(env: &FederationEnv, vertex_id: GlobalVertexId) -> VertexPlacement {
+    query_as_router(env, env.router, "resolve_placement", vertex_id)
 }
 
 /// Router composite `gql_query` (parse → plan → shard dispatch) as the bootstrap admin principal.

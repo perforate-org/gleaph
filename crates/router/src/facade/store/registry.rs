@@ -1,7 +1,7 @@
 //! Graph and shard registry plus router controller principals.
 
 use super::super::stable::{
-    ROUTER_CONTROLLERS, ROUTER_GRAPHS, ROUTER_PENDING_LOGICAL, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
+    ROUTER_CONTROLLERS, ROUTER_GRAPHS, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
 };
 use crate::index_sync;
 use crate::state::RouterError;

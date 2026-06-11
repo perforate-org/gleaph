@@ -5,7 +5,6 @@ use super::edge_payload_profiles::EdgePayloadProfileStore;
 use super::edge_properties::EdgePropertyStore;
 use super::edge_weight_profiles::EdgeWeightProfileStore;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
-use super::property_catalog::PropertyCatalog;
 use super::vertex_labels::VertexLabelStore;
 use super::vertex_properties::VertexPropertyStore;
 use gleaph_graph_kernel::entry::Edge;
@@ -54,24 +53,21 @@ const REV_PAYLOAD_BLOBS: MemoryId = MemoryId::new(58);
 const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(20);
 const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(21);
 
-const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(24);
-const PROPERTY_NAME_TO_ID: MemoryId = MemoryId::new(25);
-const PROPERTY_ID_TO_NAME: MemoryId = MemoryId::new(26);
-const VERTEX_PROPERTIES: MemoryId = MemoryId::new(27);
-const EDGE_PROPERTIES: MemoryId = MemoryId::new(28);
-const EDGE_ALIASES: MemoryId = MemoryId::new(29);
-const GRAPH_METADATA: MemoryId = MemoryId::new(32);
-const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(33);
-const EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(44);
-const VERTEX_LOGICAL_IDS: MemoryId = MemoryId::new(36);
-const REMOTE_REF_TO_LOGICAL: MemoryId = MemoryId::new(37);
-const LOGICAL_TO_REMOTE_REF: MemoryId = MemoryId::new(38);
-const REMOTE_FORWARD_IN: MemoryId = MemoryId::new(39);
-const EDGE_EQUALITY_POSTINGS: MemoryId = MemoryId::new(40);
-const PEER_GRAPH_CANISTERS: MemoryId = MemoryId::new(41);
-const LABEL_TELEMETRY_SEQ: MemoryId = MemoryId::new(59);
-const LABEL_TELEMETRY_OUTBOX: MemoryId = MemoryId::new(60);
-const APPLIED_MUTATION_REQUESTS: MemoryId = MemoryId::new(61);
+const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(22);
+const VERTEX_PROPERTIES: MemoryId = MemoryId::new(23);
+const EDGE_PROPERTIES: MemoryId = MemoryId::new(24);
+const EDGE_ALIASES: MemoryId = MemoryId::new(25);
+const GRAPH_METADATA: MemoryId = MemoryId::new(26);
+const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(27);
+const EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(28);
+const EDGE_EQUALITY_POSTINGS: MemoryId = MemoryId::new(29);
+const REMOTE_REF_TO_VERTEX: MemoryId = MemoryId::new(30);
+const VERTEX_TO_REMOTE_REF: MemoryId = MemoryId::new(31);
+const REMOTE_FORWARD_IN: MemoryId = MemoryId::new(32);
+const PEER_GRAPH_CANISTERS: MemoryId = MemoryId::new(33);
+const LABEL_TELEMETRY_SEQ: MemoryId = MemoryId::new(34);
+const LABEL_TELEMETRY_OUTBOX: MemoryId = MemoryId::new(35);
+const APPLIED_MUTATION_REQUESTS: MemoryId = MemoryId::new(36);
 
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
@@ -82,14 +78,12 @@ pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
 pub(crate) type StableGraph = DeferredBidirectionalLabeledLaraGraph<Edge, Memory>;
 pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
-pub(crate) type StablePropertyCatalog = PropertyCatalog<Memory, Memory>;
 pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
 pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
 pub(crate) type StableEdgeAliasIndex = EdgeAliasIndex<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
 pub(crate) type StableEdgeWeightProfileStore = EdgeWeightProfileStore<Memory>;
 pub(crate) type StableEdgePayloadProfileStore = EdgePayloadProfileStore<Memory>;
-pub(crate) type StableVertexLogicalIdMap = super::vertex_logical_ids::VertexLogicalIdMap<Memory>;
 pub(crate) type StableRemoteVertexRefTable =
     super::remote_vertex_refs::RemoteVertexRefTable<Memory>;
 pub(crate) type StableRemoteForwardInIndex = super::remote_forward_in::RemoteForwardInIndex<Memory>;
@@ -156,13 +150,6 @@ pub(crate) fn init_vertex_label_store() -> StableVertexLabelStore {
     VertexLabelStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_LABEL_SETS)))
 }
 
-pub(crate) fn init_property_catalog() -> StablePropertyCatalog {
-    PropertyCatalog::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(PROPERTY_NAME_TO_ID)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(PROPERTY_ID_TO_NAME)),
-    )
-}
-
 pub(crate) fn init_vertex_property_store() -> StableVertexPropertyStore {
     VertexPropertyStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_PROPERTIES)))
 }
@@ -190,16 +177,10 @@ pub(crate) fn init_metadata() -> StableMetadata {
     )
 }
 
-pub(crate) fn init_vertex_logical_ids() -> StableVertexLogicalIdMap {
-    super::vertex_logical_ids::VertexLogicalIdMap::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_LOGICAL_IDS)),
-    )
-}
-
 pub(crate) fn init_remote_vertex_refs() -> StableRemoteVertexRefTable {
     super::remote_vertex_refs::RemoteVertexRefTable::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(REMOTE_REF_TO_LOGICAL)),
-        MEMORY_MANAGER.with(|m| m.borrow().get(LOGICAL_TO_REMOTE_REF)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(REMOTE_REF_TO_VERTEX)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_TO_REMOTE_REF)),
     )
 }
 

@@ -22,33 +22,28 @@ const ROUTER_GRAPHS: MemoryId = MemoryId::new(1);
 const ROUTER_SHARDS: MemoryId = MemoryId::new(2);
 const ROUTER_SHARD_BY_GRAPH: MemoryId = MemoryId::new(3);
 const ROUTER_PLACEMENTS: MemoryId = MemoryId::new(4);
-const ROUTER_LOGICAL_COUNTER: MemoryId = MemoryId::new(5);
-const ROUTER_PENDING_LOGICAL: MemoryId = MemoryId::new(6);
-const ROUTER_VERTEX_LABEL_BY_NAME: MemoryId = MemoryId::new(7);
-const ROUTER_VERTEX_LABEL_BY_ID: MemoryId = MemoryId::new(8);
-const ROUTER_EDGE_LABEL_BY_NAME: MemoryId = MemoryId::new(9);
-const ROUTER_EDGE_LABEL_BY_ID: MemoryId = MemoryId::new(10);
-const ROUTER_PROPERTY_BY_NAME: MemoryId = MemoryId::new(11);
-const ROUTER_PROPERTY_BY_ID: MemoryId = MemoryId::new(12);
-const ROUTER_PLACEMENT_BY_PHYSICAL: MemoryId = MemoryId::new(13);
-const ROUTER_AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(15);
-const ROUTER_VERTEX_LABEL_STATS: MemoryId = MemoryId::new(16);
-const ROUTER_EDGE_LABEL_STATS: MemoryId = MemoryId::new(17);
-const ROUTER_VERTEX_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(18);
-const ROUTER_EDGE_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(19);
-const ROUTER_MUTATION_COUNTER: MemoryId = MemoryId::new(20);
-const ROUTER_APPLIED_LABEL_TELEMETRY: MemoryId = MemoryId::new(21);
-const ROUTER_MUTATION_BY_CLIENT_KEY: MemoryId = MemoryId::new(22);
-const ROUTER_LABEL_BACKFILL_STATE: MemoryId = MemoryId::new(23);
-const ROUTER_PROPERTY_BACKFILL_STATE: MemoryId = MemoryId::new(24);
+const ROUTER_VERTEX_LABEL_BY_NAME: MemoryId = MemoryId::new(5);
+const ROUTER_VERTEX_LABEL_BY_ID: MemoryId = MemoryId::new(6);
+const ROUTER_EDGE_LABEL_BY_NAME: MemoryId = MemoryId::new(7);
+const ROUTER_EDGE_LABEL_BY_ID: MemoryId = MemoryId::new(8);
+const ROUTER_PROPERTY_BY_NAME: MemoryId = MemoryId::new(9);
+const ROUTER_PROPERTY_BY_ID: MemoryId = MemoryId::new(10);
+const ROUTER_AUTH_PRINCIPAL_RECORDS: MemoryId = MemoryId::new(11);
+const ROUTER_VERTEX_LABEL_STATS: MemoryId = MemoryId::new(12);
+const ROUTER_EDGE_LABEL_STATS: MemoryId = MemoryId::new(13);
+const ROUTER_VERTEX_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(14);
+const ROUTER_EDGE_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(15);
+const ROUTER_MUTATION_COUNTER: MemoryId = MemoryId::new(16);
+const ROUTER_APPLIED_LABEL_TELEMETRY: MemoryId = MemoryId::new(17);
+const ROUTER_MUTATION_BY_CLIENT_KEY: MemoryId = MemoryId::new(18);
+const ROUTER_LABEL_BACKFILL_STATE: MemoryId = MemoryId::new(19);
+const ROUTER_PROPERTY_BACKFILL_STATE: MemoryId = MemoryId::new(20);
 
 pub(crate) type StableControllerSet = BTreeSet<Principal, Memory>;
 pub(crate) type StableGraphRegistry = BTreeMap<String, GraphRegistryEntry, Memory>;
 pub(crate) type StableShardRegistry = BTreeMap<ShardId, ShardRegistryEntry, Memory>;
 pub(crate) type StableShardByGraph = BTreeMap<Principal, ShardId, Memory>;
 pub(crate) type StablePlacementMap = BTreeMap<GlobalVertexId, VertexPlacement, Memory>;
-pub(crate) type StableLogicalCounter = Cell<u64, Memory>;
-pub(crate) type StablePendingLogical = BTreeMap<Principal, GlobalVertexId, Memory>;
 pub(crate) type StableVertexLabelCatalog =
     BidirectionalCatalog<VertexLabelId, Memory, Memory, DenseMaxPlusOnePolicy>;
 pub(crate) type StableEdgeLabelCatalog =
@@ -67,8 +62,6 @@ pub(crate) type StableMutationByClientKey = BTreeMap<
 >;
 pub(crate) type StableLabelBackfillStateMap = BTreeMap<ShardId, BackfillShardState, Memory>;
 pub(crate) type StablePropertyBackfillStateMap = BTreeMap<ShardId, BackfillShardState, Memory>;
-pub(crate) type StablePlacementByPhysicalMap =
-    super::placement_by_physical::PlacementByPhysicalMap<Memory>;
 pub(crate) type StableMutationCounter = Cell<u64, Memory>;
 pub(crate) type StableAuthState = AuthState<Memory>;
 
@@ -95,17 +88,6 @@ pub(crate) fn init_shard_by_graph() -> StableShardByGraph {
 
 pub(crate) fn init_placements() -> StablePlacementMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PLACEMENTS)))
-}
-
-pub(crate) fn init_logical_counter() -> StableLogicalCounter {
-    Cell::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_LOGICAL_COUNTER)),
-        0u64,
-    )
-}
-
-pub(crate) fn init_pending_logical() -> StablePendingLogical {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PENDING_LOGICAL)))
 }
 
 pub(crate) fn init_vertex_label_catalog() -> StableVertexLabelCatalog {
@@ -157,12 +139,6 @@ pub(crate) fn init_property_catalog() -> StablePropertyCatalog {
     BidirectionalCatalog::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BY_NAME)),
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BY_ID)),
-    )
-}
-
-pub(crate) fn init_placement_by_physical() -> StablePlacementByPhysicalMap {
-    super::placement_by_physical::PlacementByPhysicalMap::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PLACEMENT_BY_PHYSICAL)),
     )
 }
 

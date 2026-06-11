@@ -2,7 +2,7 @@
 
 ## Status
 
-**Planned** — engineering direction. Wire hooks (`ShardId`, `PostingHit`, `ExecutePlanArgs`) remain in code; detailed federation runtime and dedicated stable stores are deferred.
+**Partially implemented** — `ShardId(0)`, `GlobalVertexId`, router catalog SSOT, and encoded element ids are in code (ADR 0005/0006). Remote CSR stable regions remain for PocketIC experiments; production remote expand is deferred.
 
 ## Purpose
 
@@ -12,14 +12,15 @@ Define the **default execution mode** while multi-shard production rollout is pr
 
 - Multi-shard router fan-out (see [federation-target.md](federation-target.md)).
 - Vertex migration or placement state machines beyond minimal hooks.
-- Removing `ShardId` / `LogicalVertexId` from `graph-kernel` wire types.
+- Removing `ShardId` / `GlobalVertexId` from `graph-kernel` wire types.
 
 ## Standalone semantics
 
 | Concept | Standalone behavior |
 |---------|---------------------|
 | `ShardId` | `ShardId(0)` — sole shard under strategy A (`0..n-1`); see [ADR 0006](../adr/0006-pre-federation-foundation.md) |
-| `LogicalVertexId` | `standalone_logical_vertex_id(local)` — local dense id equals logical id |
+| `GlobalVertexId` | `GlobalVertexId { shard_id: 0, local_vertex_id }` — derived from shard routing + local dense id |
+| Client `ELEMENT_ID` | `EncodedVertexId` (8B) / `EncodedEdgeId` (12B) via router encoding key |
 | `PlanBinding` | `Vertex(VertexId)` only on the query hot path |
 | Index lookup | Router or graph calls index canister; hits filtered to `shard_id == local` |
 | Router dispatch | Single shard in registry; no seed required |
@@ -48,7 +49,7 @@ crates/router/src/federation.rs
 
 Keep in `graph-kernel` and wire formats without behavioral commitment:
 
-- `ShardId`, `LogicalVertexId`, `PhysicalPlacementKey`
+- `ShardId`, `GlobalVertexId`, `EncodedVertexId` / `EncodedEdgeId`
 - `PostingHit { shard_id, vertex_id }`
 - `ExecutePlanArgs { target_shard_id, seed_bindings_blob, ... }`
 - `ShardRegistryEntry { graph_canister, index_canister, ... }`

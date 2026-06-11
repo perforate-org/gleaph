@@ -5,9 +5,9 @@
 
 use crate::entry::EdgeSlotIndex;
 use crate::federation::{
-    decode_global_edge_id, decode_global_vertex_id, encode_global_edge_id,
-    encode_global_vertex_id, ElementIdEncodingKey, EncodedEdgeId, EncodedVertexId, GlobalEdgeId,
-    GlobalVertexId, ShardId, ENCODED_EDGE_ID_BYTES, ENCODED_VERTEX_ID_BYTES,
+    ENCODED_EDGE_ID_BYTES, ENCODED_VERTEX_ID_BYTES, ElementIdEncodingKey, EncodedEdgeId,
+    EncodedVertexId, GlobalEdgeId, GlobalVertexId, ShardId, decode_global_edge_id,
+    decode_global_vertex_id, encode_global_edge_id, encode_global_vertex_id,
 };
 use ic_stable_lara::VertexId;
 use std::fmt;

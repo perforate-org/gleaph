@@ -20,7 +20,6 @@ pub(crate) mod property_catalog;
 pub(crate) mod remote_forward_in;
 pub(crate) mod remote_vertex_refs;
 pub(crate) mod vertex_labels;
-pub(crate) mod vertex_logical_ids;
 pub(crate) mod vertex_properties;
 
 pub(crate) use memory::GRAPH_DEFAULT_EDGE_LABEL;
@@ -32,10 +31,6 @@ thread_local! {
 
     pub(crate) static VERTEX_LABELS: RefCell<memory::StableVertexLabelStore> = RefCell::new(
         memory::init_vertex_label_store()
-    );
-
-    pub(crate) static PROPERTY_CATALOG: RefCell<memory::StablePropertyCatalog> = RefCell::new(
-        memory::init_property_catalog()
     );
 
     pub(crate) static VERTEX_PROPERTIES: RefCell<memory::StableVertexPropertyStore> = RefCell::new(
@@ -59,9 +54,6 @@ thread_local! {
 
     pub(crate) static EDGE_PAYLOAD_PROFILES: RefCell<memory::StableEdgePayloadProfileStore> =
         RefCell::new(memory::init_edge_payload_profiles());
-
-    pub(crate) static VERTEX_LOGICAL_IDS: RefCell<memory::StableVertexLogicalIdMap> =
-        RefCell::new(memory::init_vertex_logical_ids());
 
     pub(crate) static REMOTE_VERTEX_REFS: RefCell<memory::StableRemoteVertexRefTable> =
         RefCell::new(memory::init_remote_vertex_refs());

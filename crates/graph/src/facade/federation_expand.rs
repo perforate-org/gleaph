@@ -861,7 +861,8 @@ mod tests {
                 ) + 1
             ]),
         };
-        let err = push_neighbor(&mut Vec::new(), ShardId::new(0), 0, gid(0, 1), 1, &edge).unwrap_err();
+        let err =
+            push_neighbor(&mut Vec::new(), ShardId::new(0), 0, gid(0, 1), 1, &edge).unwrap_err();
         assert!(matches!(
             err,
             GraphStoreError::FederatedExpandPayload { .. }

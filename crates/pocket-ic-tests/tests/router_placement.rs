@@ -1,7 +1,9 @@
 //! PocketIC smoke test: router + index shard registry and active placement.
 
 use candid::{Decode, Encode, Principal};
-use gleaph_graph_kernel::federation::{CommitVertexPlacementArgs, VertexPlacement};
+use gleaph_graph_kernel::federation::{
+    CommitVertexPlacementArgs, GlobalVertexId, ReleaseVertexPlacementArgs, VertexPlacement,
+};
 use gleaph_pocket_ic_tests::{SOURCE_SHARD, install_router_and_index, query_as_router};
 
 fn update_as_graph<
@@ -42,27 +44,30 @@ fn router_registers_shards_and_commits_active_placement() {
         graph_dest,
     );
 
-    let logical = update_as_graph(
-        &env.pic,
-        env.router,
-        graph_source,
-        "allocate_logical_vertex_id",
-        (),
-    );
     let _: () = update_as_graph(
         &env.pic,
         env.router,
         graph_source,
         "commit_vertex_placement",
         CommitVertexPlacementArgs {
-            logical_vertex_id: logical,
             local_vertex_id: 42,
         },
     );
 
-    let active = query_as_router(&env, env.router, "resolve_placement", logical);
+    let vertex_id = GlobalVertexId::new(SOURCE_SHARD, 42);
+    let active = query_as_router(&env, env.router, "resolve_placement", vertex_id);
     assert!(matches!(
         active,
         VertexPlacement::Active(loc) if loc.shard_id == SOURCE_SHARD && loc.local_vertex_id == 42
     ));
+
+    let _: () = update_as_graph(
+        &env.pic,
+        env.router,
+        graph_source,
+        "release_vertex_placement",
+        ReleaseVertexPlacementArgs {
+            local_vertex_id: 42,
+        },
+    );
 }
