@@ -4,13 +4,15 @@ use std::collections::BTreeMap;
 
 use crate::facade::{FederationRouting, GraphMetadata, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
-use crate::gql_run::{kernel_execution_mode, run_wire_plan_last_read_row_count};
+use crate::gql_run::{kernel_execution_mode, run_wire_plans_last_read_row_count};
 use crate::index::ic::IcPropertyIndexClient;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::router::verify_shard_attachment;
+use crate::plan_wire_guard::ensure_federated_seeds_for_index_anchors;
 use candid::Decode;
 use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
+use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_graph_kernel::federation::{FederatedExpandArgs, FederatedExpandNeighbor};
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanResult, GqlExecutionMode, SeedBindingsWire,
@@ -115,6 +117,15 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
         }
         None => None,
     };
+    crate::facade::init_ic_gql_extensions();
+    let (bundle_requires_write, plans) =
+        decode_plan_bundle(&args.plan_blob).map_err(|e| e.to_string())?;
+    ensure_federated_seeds_for_index_anchors(
+        seeds.as_ref(),
+        store.federation_routing().is_some(),
+        &plans,
+    )
+    .map_err(|e| e.0)?;
     // Router-owned index anchors: federated graph shards must not call index on read path.
     #[cfg(target_family = "wasm")]
     let index_holder = if seeds.is_some() || store.federation_routing().is_some() {
@@ -127,9 +138,10 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
     #[cfg(not(target_family = "wasm"))]
     let ix: Option<&dyn PropertyIndexLookup> = None;
 
-    let run = run_wire_plan_last_read_row_count(
+    let run = run_wire_plans_last_read_row_count(
         store,
-        &args.plan_blob,
+        &plans,
+        bundle_requires_write,
         &pmap,
         kernel_execution_mode(args.mode),
         ix,

@@ -582,10 +582,11 @@ async fn execute_plan_query_with_rows(
     })
 }
 
-/// Run a wire-encoded plan bundle from the router (no parse/plan on graph).
-pub async fn run_wire_plan_last_read_row_count(
+/// Run pre-decoded wire plans from the router (no parse/plan on graph).
+pub async fn run_wire_plans_last_read_row_count(
     store: GraphStore,
-    plan_blob: &[u8],
+    plans: &[gleaph_gql_planner::PhysicalPlan],
+    bundle_requires_write: bool,
     parameters: &BTreeMap<String, Value>,
     mode: GqlCanisterExecutionMode,
     index: Option<&dyn PropertyIndexLookup>,
@@ -593,12 +594,10 @@ pub async fn run_wire_plan_last_read_row_count(
     seeds: Option<SeedBindingsWire>,
     mutation_id: Option<MutationId>,
 ) -> Result<WirePlanRunResult, GqlRunError> {
-    let (requires_write, plans) =
-        decode_plan_bundle(plan_blob).map_err(|e| GqlRunError::Plan(e.to_string()))?;
     let run = run_wire_plans(
         &store,
-        &plans,
-        requires_write,
+        plans,
+        bundle_requires_write,
         parameters,
         index,
         mode,
@@ -631,6 +630,33 @@ pub async fn run_wire_plan_last_read_row_count(
         label_telemetry_events: run.label_telemetry_events,
         rows_blob,
     })
+}
+
+/// Run a wire-encoded plan bundle from the router (no parse/plan on graph).
+pub async fn run_wire_plan_last_read_row_count(
+    store: GraphStore,
+    plan_blob: &[u8],
+    parameters: &BTreeMap<String, Value>,
+    mode: GqlCanisterExecutionMode,
+    index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
+    seeds: Option<SeedBindingsWire>,
+    mutation_id: Option<MutationId>,
+) -> Result<WirePlanRunResult, GqlRunError> {
+    let (bundle_requires_write, plans) =
+        decode_plan_bundle(plan_blob).map_err(|e| GqlRunError::Plan(e.to_string()))?;
+    run_wire_plans_last_read_row_count(
+        store,
+        &plans,
+        bundle_requires_write,
+        parameters,
+        mode,
+        index,
+        execution,
+        seeds,
+        mutation_id,
+    )
+    .await
 }
 
 /// Run a wire-encoded program (router → graph); skips parser, still plans locally.

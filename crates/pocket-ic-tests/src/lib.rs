@@ -294,6 +294,29 @@ pub fn query_as_router<T: CandidType, R: CandidType + serde::de::DeserializeOwne
     }
 }
 
+pub fn execute_plan_query_as_router_reject(
+    env: &FederationEnv,
+    graph: Principal,
+    args: gleaph_graph_kernel::plan_exec::ExecutePlanArgs,
+) -> String {
+    use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
+
+    let bytes = env
+        .pic
+        .query_call(
+            graph,
+            env.router,
+            "execute_plan_query",
+            Encode!(&args).expect("encode"),
+        )
+        .unwrap_or_else(|e| panic!("execute_plan_query on {graph}: {e:?}"));
+    match Decode!(&bytes, Result<ExecutePlanResult, String>) {
+        Ok(Err(err)) => err,
+        Ok(Ok(result)) => panic!("execute_plan_query should reject, got {result:?}"),
+        Err(err) => panic!("decode execute_plan_query: {err}"),
+    }
+}
+
 pub fn e2e_insert_vertex(env: &FederationEnv, graph: Principal) -> E2eInsertVertexResult {
     update_as_router(env, graph, "e2e_insert_vertex", ())
 }

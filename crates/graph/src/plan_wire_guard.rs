@@ -1,7 +1,8 @@
 //! Defense-in-depth checks for router-delivered [`PhysicalPlan`] wire blobs.
 
 use gleaph_gql_planner::PhysicalPlan;
-use gleaph_graph_kernel::plan_exec::GqlExecutionMode;
+use gleaph_gql_planner::plan::PlanOp;
+use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, SeedBindingsWire};
 
 /// Wire plan validation failure (mapped to [`crate::gql_run::GqlRunError`] at the boundary).
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -61,6 +62,59 @@ pub fn ensure_execution_mode_matches_plans(
     }
 }
 
+fn is_leading_seed_skippable_op(op: &PlanOp) -> bool {
+    matches!(
+        op,
+        PlanOp::NodeScan { label: Some(_), .. }
+            | PlanOp::IndexScan { .. }
+            | PlanOp::IndexIntersection { .. }
+            | PlanOp::ConditionalIndexScan { .. }
+            | PlanOp::EdgeIndexScan { .. }
+            | PlanOp::PropertyFilter { .. }
+    )
+}
+
+fn plan_requires_router_seeds(plan: &PhysicalPlan) -> bool {
+    plan.ops
+        .iter()
+        .take_while(|op| is_leading_seed_skippable_op(op))
+        .any(|op| {
+            matches!(
+                op,
+                PlanOp::IndexScan { .. }
+                    | PlanOp::IndexIntersection { .. }
+                    | PlanOp::ConditionalIndexScan { .. }
+                    | PlanOp::EdgeIndexScan { .. }
+                    | PlanOp::NodeScan { label: Some(_), .. }
+            )
+        })
+}
+
+fn seeds_are_effective(seeds: Option<&SeedBindingsWire>) -> bool {
+    seeds.is_some_and(|wire| {
+        wire.entries
+            .iter()
+            .any(|entry| !entry.local_vertex_ids.is_empty())
+    })
+}
+
+/// Federated graph shards must receive router `seed_bindings_blob` for index-anchor read plans.
+pub fn ensure_federated_seeds_for_index_anchors(
+    seeds: Option<&SeedBindingsWire>,
+    federation_configured: bool,
+    plans: &[PhysicalPlan],
+) -> Result<(), PlanWireGuardError> {
+    if !federation_configured || seeds_are_effective(seeds) {
+        return Ok(());
+    }
+    if plans.iter().any(plan_requires_router_seeds) {
+        return Err(PlanWireGuardError(
+            "unsupported plan query operator: IndexScan(no index client)".into(),
+        ));
+    }
+    Ok(())
+}
+
 /// Full wire-plan gate used by [`crate::gql_run::run_wire_plans`].
 pub fn validate_wire_plan_execution(
     mode: GqlExecutionMode,
@@ -118,5 +172,38 @@ mod tests {
     fn accepts_read_only_on_query_path() {
         validate_wire_plan_execution(GqlExecutionMode::Query, &[read_only_plan()], false)
             .expect("ok");
+    }
+
+    #[test]
+    fn rejects_unseeded_federated_index_scan() {
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::IndexScan {
+                    variable: "n".into(),
+                    property: "age".into(),
+                    value: gleaph_gql_planner::plan::ScanValue::Literal(gleaph_gql::Value::Int64(
+                        5,
+                    )),
+                    cmp: gleaph_gql::ast::CmpOp::Eq,
+                    property_projection: None,
+                },
+                PlanOp::Project {
+                    columns: vec![gleaph_gql_planner::plan::ProjectColumn {
+                        expr: gleaph_gql::ast::Expr::var("n"),
+                        alias: Some("n".into()),
+                    }],
+                    distinct: false,
+                },
+            ],
+            ..Default::default()
+        };
+        let err = ensure_federated_seeds_for_index_anchors(None, true, std::slice::from_ref(&plan))
+            .expect_err("missing seeds");
+        assert!(err.0.contains("IndexScan(no index client)"));
+    }
+
+    #[test]
+    fn accepts_unseeded_federated_node_scan_without_label() {
+        ensure_federated_seeds_for_index_anchors(None, true, &[read_only_plan()]).expect("ok");
     }
 }
