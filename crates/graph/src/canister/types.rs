@@ -30,6 +30,14 @@ pub struct E2eInsertDirectedEdgeArgs {
     pub target_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
 }
 
+/// Arguments for [`super::handlers::e2e_insert_vertex_with_property`] (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eInsertVertexWithPropertyArgs {
+    pub property_id: u32,
+    pub value: i64,
+}
+
 /// Arguments supplied by the registry (or installer) on first `init`.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct GraphInitArgs {

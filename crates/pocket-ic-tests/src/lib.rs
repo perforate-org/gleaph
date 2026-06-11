@@ -65,6 +65,12 @@ pub struct E2eInsertDirectedEdgeArgs {
     pub target_local_vertex_id: u32,
 }
 
+#[derive(CandidType, Clone, Debug)]
+pub struct E2eInsertVertexWithPropertyArgs {
+    pub property_id: u32,
+    pub value: i64,
+}
+
 pub fn wasm_bytes(env_var: &str) -> Vec<u8> {
     let path = PathBuf::from(std::env::var(env_var).unwrap_or_else(|_| {
         panic!("build.rs must set {env_var} (run `cargo test -p gleaph-pocket-ic-tests` from workspace)")
@@ -261,6 +267,28 @@ pub fn install_single_shard_federation() -> FederationEnv {
     env
 }
 
+fn register_index_shard_owner(
+    pic: &PocketIc,
+    router: Principal,
+    index: Principal,
+    shard_id: ShardId,
+    graph: Principal,
+) {
+    let bytes = pic
+        .update_call(
+            index,
+            router,
+            "admin_set_shard_owner",
+            Encode!(&shard_id, &graph).expect("encode admin_set_shard_owner"),
+        )
+        .expect("admin_set_shard_owner");
+    match Decode!(&bytes, Result<(), String>) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("admin_set_shard_owner rejected: {err}"),
+        Err(err) => panic!("decode admin_set_shard_owner: {err}"),
+    }
+}
+
 pub fn register_graph_single_shard(
     pic: &PocketIc,
     admin: Principal,
@@ -300,6 +328,7 @@ pub fn register_graph_single_shard(
         Encode!(&args).expect("encode register shard"),
     )
     .expect("admin_register_shard");
+    register_index_shard_owner(pic, router, index, shard_id, graph);
 }
 
 pub fn register_graph_and_shards(
@@ -342,6 +371,7 @@ pub fn register_graph_and_shards(
             Encode!(&args).expect("encode register shard"),
         )
         .expect("admin_register_shard");
+        register_index_shard_owner(pic, router, index, shard, graph);
     }
 }
 
@@ -414,6 +444,66 @@ pub fn execute_plan_query_as_router_reject(
 
 pub fn e2e_insert_vertex(env: &FederationEnv, graph: Principal) -> E2eInsertVertexResult {
     update_as_router(env, graph, "e2e_insert_vertex", ())
+}
+
+pub fn e2e_insert_vertex_with_property(
+    env: &FederationEnv,
+    graph: Principal,
+    property_id: u32,
+    value: i64,
+) -> E2eInsertVertexResult {
+    update_as_router(
+        env,
+        graph,
+        "e2e_insert_vertex_with_property",
+        E2eInsertVertexWithPropertyArgs { property_id, value },
+    )
+}
+
+pub fn admin_intern_property(env: &FederationEnv, name: &str) -> gleaph_graph_kernel::entry::PropertyId {
+    update_as_admin(env, env.router, "admin_intern_property", name.to_string())
+}
+
+pub fn admin_set_indexed_vertex_property(env: &FederationEnv, property: &str) {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_set_indexed_vertex_property",
+            Encode!(
+                &GRAPH_NAME.to_string(),
+                &property.to_string()
+            )
+            .expect("encode admin_set_indexed_vertex_property"),
+        )
+        .unwrap_or_else(|e| panic!("admin_set_indexed_vertex_property: {e:?}"));
+    match Decode!(&bytes, Result<(), RouterError>) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("admin_set_indexed_vertex_property rejected: {err:?}"),
+        Err(err) => panic!("decode admin_set_indexed_vertex_property: {err}"),
+    }
+}
+
+fn update_as_admin<T: CandidType, R: CandidType + serde::de::DeserializeOwned>(
+    env: &FederationEnv,
+    canister: Principal,
+    method: &str,
+    args: T,
+) -> R {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .update_call(canister, env.admin, method, Encode!(&args).expect("encode"))
+        .unwrap_or_else(|e| panic!("{method} on {canister}: {e:?}"));
+    match Decode!(&bytes, Result<R, RouterError>) {
+        Ok(Ok(value)) => value,
+        Ok(Err(err)) => panic!("{method} rejected: {err:?}"),
+        Err(err) => panic!("decode {method}: {err}"),
+    }
 }
 
 pub fn e2e_insert_edge(

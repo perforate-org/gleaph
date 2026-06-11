@@ -99,6 +99,14 @@ async fn e2e_insert_vertex() -> Result<canister::types::E2eInsertVertexResult, S
 
 #[cfg(feature = "pocket-ic-e2e")]
 #[update(guard = "guard_control_plane_admin")]
+async fn e2e_insert_vertex_with_property(
+    args: canister::types::E2eInsertVertexWithPropertyArgs,
+) -> Result<canister::types::E2eInsertVertexResult, String> {
+    canister::handlers::e2e_insert_vertex_with_property(args).await
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
 fn e2e_insert_directed_edge(
     args: canister::types::E2eInsertDirectedEdgeArgs,
 ) -> Result<(), String> {
