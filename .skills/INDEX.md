@@ -26,7 +26,7 @@ Review benchmark impact, performance regressions, invariant-preserving measureme
 
 ## rust-workflow
 
-Expected validation workflow before completion.
+Format, type-check, clippy, test, benchmark, and completion reporting for Rust changes.
 
 ## document-date-accuracy
 
