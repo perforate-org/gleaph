@@ -1,8 +1,8 @@
 # Gleaph Refactoring Roadmap
 
 Last updated: 2026-06-12 UTC  
-Status: In progress (Phases 0–7 complete; Phase 8 ADR accepted; ADR 0006 steps 1–5 complete)  
-Anchor timestamp: 2026-06-12 04:38:55 UTC +0000
+Status: In progress (Phases 0–7 complete; Phase 8a in progress; Phase 9 ongoing; Federation deferred)  
+Anchor timestamp: 2026-06-12 07:31:01 UTC +0000
 
 ## Purpose
 
@@ -394,28 +394,67 @@ Exit criteria:
 
 ### Phase 8: Stable-memory layout policy and measured consolidation
 
-Goal: consolidate only where it improves efficiency without damaging ownership or recovery.
+Goal: **decide** whether to consolidate stable-memory regions — not to reduce region count by default.
+Internet Computer–facing paths use **canbench on wasm32**; criterion remains for non-IC crates
+(e.g. `gleaph-gql-planner`).
 
-**Status: In progress (2026-06-12)** — layout policy ADR [0007](../adr/0007-stable-memory-layout.md) **accepted**; layout registry **done**; benchmarks and optional consolidation patches pending.
+**Status: Near complete (2026-06-12)** — ADR [0007](../adr/0007-stable-memory-layout.md) accepted; registry
+done; **8a** benchmarks done (grouped-catalog prototype optional); **8b** preliminary judgments
+recorded (retain P2–P4; P1 deferred); **8c** not required; **8d** ready to close.
 
-Deliverables:
+Phase 8 **may close with zero consolidation** when ADR 0007 §8b records retain decisions with
+benchmark evidence.
 
-- Add a stable-memory layout ADR before changing memory ids or physical layout. **Done:** [ADR 0007](../adr/0007-stable-memory-layout.md) (accepted 2026-06-12).
-- Introduce a named memory-layout registry for graph, router, and graph-index. **Done:** `gleaph_graph_kernel::stable_layout`.
-- Benchmark many small `VirtualMemory` regions versus grouped metadata regions. **Partial:** `gleaph-graph-kernel` canbench (`bench_layout_memory_manager_cold_touch_{5,21,43}`, `bench_layout_router_three_catalog_intern_6vm`); grouped prototype and canister reopen benches pending.
-- Prototype catalog/profile consolidation only after domain APIs are explicit.
-- Keep canonical and derived stores separate unless the ADR justifies the coupling.
-- State explicitly when old development data is not migrated.
+#### 8a — Benchmark suite (ADR 0007 §6)
 
-Exit criteria:
+| Bench | Crate | Purpose | Status |
+|-------|-------|---------|--------|
+| `bench_layout_memory_manager_cold_touch_{5,21,43}` | graph-kernel | VM count at cold init | **Done** |
+| `bench_layout_router_three_catalog_intern_6vm` | graph-kernel | P2 six-region catalog baseline | **Done** |
+| `bench_layout_graph_stable_reopen_touch` | graph | Post-upgrade facade re-init | **Done** |
+| `bench_layout_router_stable_reopen_touch` | router | Post-upgrade facade re-init | **Done** |
+| `bench_layout_edge_weight_profile_{payload_only,with_legacy_fallback}` | graph | P1 sunset evidence | **Done** |
+| `bench_layout_index_posting_insert_64` | graph-index | Posting/backfill hot path | **Done** |
+| Grouped catalog prototype vs 6 VM | graph-kernel or router | P2 merge gate | **Optional** (retain without prototype) |
 
-- Any consolidation has benchmark evidence.
-- Upgrade and reopen tests cover the migration.
-- Failure isolation impact is documented.
+Run: `canbench layout` per crate; persist with `canbench --persist` when baselines change.
 
-### Phase 9: Validation and release gates
+#### 8b — Judgment (record in ADR 0007)
 
-Goal: make refactoring progress safe to merge incrementally.
+For each consolidation candidate P1–P4, record **merge / retain / defer** with canbench citation:
+
+| ID | Candidate | Decision (2026-06-12) |
+|----|-----------|-------------------------|
+| P1 | Retire `EDGE_WEIGHT_PROFILES` | **Defer retire** — read paths tie; need legacy-stable absence proof |
+| P2 | Router catalog VM grouping | **Retain** |
+| P3 | Label telemetry seq + outbox merge | **Retain** |
+| P4 | Router backfill cursor merge | **Retain** |
+
+#### 8c — Optional consolidation patches
+
+One candidate per PR; each requires ADR before/after table, inventory sync, reopen tests, and
+canbench delta. Skip entirely if 8b chooses retain for all candidates.
+
+#### 8d — Phase 8 close
+
+Mark Phase 8 **complete** when 8a rows are Done or N/A and 8b decisions are committed in ADR 0007.
+Consolidation patches (8c) are optional follow-ups, not blockers.
+
+**Completed prerequisites:**
+
+- Layout policy ADR — [0007](../adr/0007-stable-memory-layout.md) (accepted 2026-06-12).
+- Layout registry — `gleaph_graph_kernel::stable_layout` + per-canister `layout.rs`.
+
+**Exit criteria:**
+
+- Any consolidation has benchmark evidence (or explicit retain with evidence).
+- Upgrade and reopen tests cover any layout change.
+- Failure isolation impact is documented for any merge.
+
+### Phase 9: Validation and release gates (ongoing)
+
+Goal: make refactoring progress safe to merge incrementally. Apply on **every boundary-changing PR**,
+not as a one-time phase.
 
 Required tests:
 
@@ -441,18 +480,22 @@ Validation sequence:
 1. `cargo fmt --check`
 2. Targeted crate tests for the changed boundary.
 3. Broader workspace tests when shared contracts move.
-4. Relevant `canbench` or criterion runs.
+4. Relevant **canbench** (IC crates) or **criterion** (e.g. gql-planner) runs.
 5. Persist benchmark results only when the benchmark baseline intentionally changes.
 
 ## Suggested Implementation Order
 
-Phases 0–7 are **complete**. Remaining work follows this order:
+Phases 0–7 are **complete**.
 
-1. **Phase 8** — stable-memory layout ADR and benchmark-driven consolidation (only where evidence justifies grouping).
-2. **Phase 9** — ongoing validation gates on every boundary change.
-3. **Federation (ADR 0006 step 6+)** — `RemoteVertexId` table, `GROUP_SIZE`, peer expand — separate follow-up ADR, not part of this roadmap.
+| Stream | When | Content |
+|--------|------|---------|
+| **Now** | Phase 8a → 8b | Finish canbench suite; record merge/retain in ADR 0007 |
+| **Optional** | Phase 8c | P1–P4 patches only where 8b says merge |
+| **Ongoing** | Phase 9 | Tests + canbench on every boundary PR |
+| **Deferred** | Federation ADR | ADR 0006 step 6+ (`RemoteVertexId`, `GROUP_SIZE`, peer expand) — blocked on product |
+| **Independent** | Feature epics | bulk-ingest finalize, payload-first traversal, executor gaps — not Phase numbers |
 
-This order intentionally deferred memory-layout consolidation until owning APIs and invariants were explicit (now met). Phase 8 proceeds only with benchmark evidence; VirtualMemory separation may remain mostly unchanged.
+Phase 8 may end with **retain all regions**; that is a successful outcome when backed by canbench.
 
 ## Related Documents
 

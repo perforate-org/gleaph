@@ -26,3 +26,64 @@ pub use store::{
 };
 
 pub use stable::metadata::{FederationRouting, GraphMetadata, GraphMetadataError};
+
+/// Phase 8 edge-profile read benches (ADR 0007 P1).
+#[cfg(feature = "canbench")]
+pub mod bench_stable_layout {
+    use gleaph_graph_kernel::entry::{
+        EdgeLabelId, EdgePayloadProfile, EdgeWeightProfile, WeightEncoding,
+    };
+    use std::hint::black_box;
+
+    use super::GraphStore;
+    use super::stable::{EDGE_PAYLOAD_PROFILES, EDGE_WEIGHT_PROFILES};
+
+    pub fn edge_profile_label() -> EdgeLabelId {
+        EdgeLabelId::from_raw(1)
+    }
+
+    pub fn install_edge_profile_fixtures() {
+        let label = edge_profile_label();
+        let weight = EdgeWeightProfile {
+            encoding: WeightEncoding::RawU16,
+        };
+        EDGE_PAYLOAD_PROFILES.with_borrow_mut(|store| {
+            store
+                .insert(label, EdgePayloadProfile::from(weight.clone()))
+                .expect("payload profile");
+        });
+        EDGE_WEIGHT_PROFILES.with_borrow_mut(|store| {
+            store.insert(label, weight).expect("weight profile");
+        });
+    }
+
+    pub fn read_weight_payload_only(label: EdgeLabelId) -> Option<EdgeWeightProfile> {
+        black_box(
+            EDGE_PAYLOAD_PROFILES
+                .with_borrow(|store| store.get(label))
+                .and_then(|profile| profile.to_weight_profile()),
+        )
+    }
+
+    pub fn read_weight_with_legacy_fallback(label: EdgeLabelId) -> Option<EdgeWeightProfile> {
+        black_box(GraphStore::new().edge_label_weight_profile(label))
+    }
+}
+
+/// Re-initializes all graph stable stores on the persisted memory manager (canbench / ADR 0007).
+#[cfg(feature = "canbench")]
+pub fn bench_stable_reopen_touch() {
+    use stable::memory;
+    std::hint::black_box(memory::init_graph());
+    std::hint::black_box(memory::init_vertex_label_store());
+    std::hint::black_box(memory::init_vertex_property_store());
+    std::hint::black_box(memory::init_edge_property_store());
+    std::hint::black_box(memory::init_edge_alias_index());
+    std::hint::black_box(memory::init_metadata());
+    std::hint::black_box(memory::init_edge_weight_profiles());
+    std::hint::black_box(memory::init_edge_payload_profiles());
+    std::hint::black_box(memory::init_edge_equality_postings());
+    std::hint::black_box(memory::init_label_telemetry_seq());
+    std::hint::black_box(memory::init_label_telemetry_outbox());
+    std::hint::black_box(memory::init_applied_mutation_requests());
+}

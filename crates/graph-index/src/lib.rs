@@ -11,6 +11,9 @@
 //!
 //! `lookup_range` uses the same lexicographic order on encoded value bytes as `lookup_equal` (`memcmp`).
 
+#[cfg(feature = "canbench")]
+mod bench;
+
 mod facade;
 mod key;
 mod label_key;

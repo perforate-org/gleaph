@@ -1,5 +1,8 @@
 //! Gleaph router canister — federation control plane (graph registry, shard registry, placement).
 
+#[cfg(feature = "canbench")]
+mod bench;
+
 mod canister;
 mod execution_path;
 pub mod facade;

@@ -24,8 +24,11 @@ ic-cdk-macros.workspace = true
 ic-stable-structures.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+canbench-rs = { workspace = true, optional = true }
 
 [features]
+default = []
+canbench = ["dep:canbench-rs"]
 pocket-ic-e2e = []
 
 [dev-dependencies]

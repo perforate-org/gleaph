@@ -6,13 +6,11 @@ use crate::bidirectional_catalog::{
     BidirectionalCatalog, DenseEdgeLabelPolicy, DenseMaxPlusOnePolicy,
 };
 use crate::entry::{EdgeLabelId, PropertyId, VertexLabelId};
-use crate::stable_layout::{
-    GRAPH_STABLE_LAYOUT, INDEX_STABLE_LAYOUT, ROUTER_STABLE_LAYOUT,
-};
+use crate::stable_layout::{GRAPH_STABLE_LAYOUT, INDEX_STABLE_LAYOUT, ROUTER_STABLE_LAYOUT};
 use canbench_rs::bench;
 use ic_stable_structures::{
-    memory_manager::{MemoryId, MemoryManager, VirtualMemory},
     BTreeMap, DefaultMemoryImpl,
+    memory_manager::{MemoryId, MemoryManager, VirtualMemory},
 };
 use std::hint::black_box;
 
@@ -33,12 +31,7 @@ fn touch_n_empty_maps(n: u8) {
 
 fn router_three_catalog_intern_round() {
     let manager = MemoryManager::init(DefaultMemoryImpl::default());
-    let mut vertex = BidirectionalCatalog::<
-        VertexLabelId,
-        Mem,
-        Mem,
-        DenseMaxPlusOnePolicy,
-    >::init(
+    let mut vertex = BidirectionalCatalog::<VertexLabelId, Mem, Mem, DenseMaxPlusOnePolicy>::init(
         manager.get(MemoryId::new(0)),
         manager.get(MemoryId::new(1)),
     );
@@ -55,7 +48,11 @@ fn router_three_catalog_intern_round() {
         let name = format!("name_{i}");
         black_box(vertex.get_or_insert(&format!("v_{name}")).expect("vertex"));
         black_box(edge.get_or_insert(&format!("e_{name}")).expect("edge"));
-        black_box(property.get_or_insert(&format!("p_{name}")).expect("property"));
+        black_box(
+            property
+                .get_or_insert(&format!("p_{name}"))
+                .expect("property"),
+        );
     }
 }
 

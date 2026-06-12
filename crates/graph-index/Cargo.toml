@@ -7,13 +7,20 @@ license.workspace = true
 [lib]
 crate-type = ["cdylib", "rlib"]
 
+[features]
+default = []
+canbench = ["dep:canbench-rs", "dep:gleaph-gql"]
+
 [dependencies]
 candid.workspace = true
 gleaph-graph-kernel.workspace = true
+gleaph-gql = { workspace = true, optional = true }
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 ic-stable-structures.workspace = true
 serde.workspace = true
+
+canbench-rs = { workspace = true, optional = true }
 
 [dev-dependencies]
 gleaph-gql.workspace = true

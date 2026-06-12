@@ -13,6 +13,7 @@ Anchor timestamp: 2026-06-12 04:38:55 UTC +0000
 | 2026-06-12 | Accepted; policy frozen at §2 pending §6 benchmarks and registry follow-up. |
 | 2026-06-12 | Layout registry in `graph-kernel::stable_layout` + per-canister `layout.rs`. |
 | 2026-06-12 | Initial canbench suite in `graph-kernel` (cold touch 5/21/43, router catalog intern). |
+| 2026-06-12 | Extended canbench to graph/router/graph-index; §8b preliminary retain/defer judgments. |
 
 ## Context
 
@@ -150,11 +151,13 @@ Until consolidation rows exist, **no consolidation patch merges**.
 
 | Benchmark | Purpose | Status |
 |-----------|---------|--------|
-| `bench_layout_memory_manager_cold_touch_{5,21,43}` | VM count overhead at cold start (graph-index / router / graph region counts) | **Done** — see results below |
-| Reopen after simulated upgrade | `MemoryManager` + all thread-local inits | **Pending** — add on graph/router canbench |
+| `bench_layout_memory_manager_cold_touch_{5,21,43}` | VM count overhead at cold start (graph-index / router / graph region counts) | **Done** |
+| `bench_layout_graph_stable_reopen_touch` | Graph facade re-init on persisted memory manager | **Done** |
+| `bench_layout_router_stable_reopen_touch` | Router facade re-init | **Done** |
 | `bench_layout_router_three_catalog_intern_6vm` | P2 baseline (six-region router catalog layout) | **Done** — grouped prototype TBD |
-| Graph edge profile read (weight fallback vs payload-only) | P1 sunset evidence | **Pending** — add on `gleaph-graph` canbench |
-| Property posting backfill step | Baseline for index layout changes | **Pending** — add on `gleaph-graph-index` canbench |
+| `bench_layout_edge_weight_profile_{payload_only,with_legacy_fallback}` | P1 sunset evidence | **Done** |
+| `bench_layout_index_posting_insert_64` | Posting insert hot path (backfill proxy) | **Done** |
+| Grouped catalog prototype vs 6 VM | P2 merge gate | **Pending** |
 
 **Results (2026-06-12, `gleaph-graph-kernel` canbench, wasm32):**
 
@@ -164,6 +167,11 @@ Until consolidation rows exist, **no consolidation patch merges**.
 | `bench_layout_memory_manager_cold_touch_21` | 21 | 332.17 K | 2,689 |
 | `bench_layout_memory_manager_cold_touch_43` | 43 | 613.15 K | 5,505 |
 | `bench_layout_router_three_catalog_intern_6vm` | 6 (catalog) | 11.81 M | 769 |
+| `bench_layout_graph_stable_reopen_touch` | 43 (facade+LARA) | 507.15 K | 6,144 |
+| `bench_layout_router_stable_reopen_touch` | 21 | 41.91 K | 256 |
+| `bench_layout_edge_weight_profile_payload_only` | — | 193.21 K | 0 |
+| `bench_layout_edge_weight_profile_with_legacy_fallback` | — | 193.21 K | 0 |
+| `bench_layout_index_posting_insert_64` | 1 posting set | 3.44 M | 0 |
 
 **Reading:** cold `MemoryManager` + one empty `BTreeMap` insert per region scales roughly linearly
 (+~14 K instructions and +~128 pages per region in this synthetic probe). That supports keeping
@@ -173,6 +181,20 @@ grouped-layout prototype bench before merge.
 
 Existing hot-path benches (labeled hub insert/scan, router seed dispatch) remain regression guards;
 they do not substitute for layout-specific measurements.
+
+### 8b. Consolidation judgment (2026-06-12)
+
+Preliminary decisions from §6 canbench (wasm32). Final after grouped-catalog prototype if pursued.
+
+| ID | Decision | Rationale |
+|----|----------|-----------|
+| P1 `EDGE_WEIGHT_PROFILES` | **Defer retire** | Payload-only and legacy-fallback reads tie at ~193 K instructions; removal needs legacy-stable absence proof + reopen tests, not read-path savings alone |
+| P2 Router catalog grouping | **Retain** | Intern dominated by map work (~12 M ins); no grouped prototype bench yet |
+| P3 Label telemetry merge | **Retain** | Not measured; isolation outweighs unproven VM savings |
+| P4 Backfill cursors | **Retain** | Low priority; no hot-path evidence |
+
+**Phase 8 close (8d):** 8a complete except grouped-catalog prototype (optional). 8c consolidation
+**not required** for Phase 8 close at this time.
 
 ### 7. Memory layout registry (Phase 8 deliverable)
 
@@ -235,8 +257,8 @@ Any patch that changes `MemoryId` assignment or merges regions must:
 1. ~~**Accept this ADR**~~ — layout policy and baseline frozen at §2. **Done (2026-06-12).**
 2. **Fix inventory drift** — `INDEX_POSTINGS` rebuild row; link this ADR from inventory.
 3. ~~**Add layout registry**~~ — descriptive only; no id changes. **Done (2026-06-12).**
-4. **Run §6 benchmarks** — record results; accept or reject P1–P4.
-5. **Optional consolidation patches** — one candidate per patch, gated by §4.
+4. ~~**Run §6 benchmarks**~~ — **Done (2026-06-12)** except optional grouped-catalog prototype.
+5. **Optional consolidation patches** — none required per §8b; revisit P1 when legacy stable is absent.
 
 ---
 

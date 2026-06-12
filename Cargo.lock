@@ -1039,6 +1039,7 @@ dependencies = [
 name = "gleaph-graph-index"
 version = "0.1.0"
 dependencies = [
+ "canbench-rs",
  "candid",
  "gleaph-gql",
  "gleaph-gql-ic",
@@ -1097,6 +1098,7 @@ dependencies = [
 name = "gleaph-router"
 version = "0.1.0"
 dependencies = [
+ "canbench-rs",
  "candid",
  "futures",
  "gleaph-auth",

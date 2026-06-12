@@ -821,8 +821,13 @@ pub fn validate_layout(layout: &StableCanisterLayout) -> Result<(), LayoutValida
 /// Layout registry validation failure.
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum LayoutValidationError {
-    Empty { canister: &'static str },
-    IdOverflow { canister: &'static str, index: usize },
+    Empty {
+        canister: &'static str,
+    },
+    IdOverflow {
+        canister: &'static str,
+        index: usize,
+    },
     NonConsecutiveId {
         canister: &'static str,
         symbol: &'static str,
@@ -954,10 +959,7 @@ mod tests {
 
     #[test]
     fn stable_memory_class_inventory_names() {
-        assert_eq!(
-            StableMemoryClass::Canonical.inventory_name(),
-            "canonical"
-        );
+        assert_eq!(StableMemoryClass::Canonical.inventory_name(), "canonical");
         assert_eq!(StableMemoryClass::Telemetry.inventory_name(), "telemetry");
     }
 }

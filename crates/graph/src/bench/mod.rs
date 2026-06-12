@@ -4,6 +4,7 @@
 
 #[cfg(feature = "canbench_large")]
 mod large;
+mod stable_layout;
 
 use crate::facade::GraphStore;
 use crate::gql_execution_context::GqlExecutionContext;
