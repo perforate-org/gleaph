@@ -1013,13 +1013,13 @@ benches:
   bench_layout_graph_stable_reopen_touch:
     total:
       calls: 1
-      instructions: 494084
+      instructions: 487302
       heap_increase: 0
-      stable_memory_increase: 5888
+      stable_memory_increase: 5760
     scopes:
       layout_graph_reopen:
         calls: 1
-        instructions: 493075
+        instructions: 486293
         heap_increase: 0
-        stable_memory_increase: 5888
+        stable_memory_increase: 5760
 version: 0.4.0

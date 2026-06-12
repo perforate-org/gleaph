@@ -36,7 +36,7 @@ fn posting_insert_round(store: &IndexStore, owner: Principal) {
         n
     });
     let property_id = 7u32;
-    let value = value_to_index_key_bytes(&Value::Text(format!("bench_{seq}").into()))
+    let value = value_to_index_key_bytes(&Value::Text(format!("bench_{seq}")))
         .expect("index key")
         .expect("indexable");
     for vid in 0..64u32 {

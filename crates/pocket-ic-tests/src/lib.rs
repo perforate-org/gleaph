@@ -573,9 +573,8 @@ pub fn create_vertex_property_index(
 ) {
     admin_intern_vertex_label(env, vertex_label);
     let _ = admin_intern_property(env, property);
-    let ddl = format!(
-        "CREATE INDEX {index_name} IF NOT EXISTS FOR (n:{vertex_label}) ON (n.{property})"
-    );
+    let ddl =
+        format!("CREATE INDEX {index_name} IF NOT EXISTS FOR (n:{vertex_label}) ON (n.{property})");
     let row_count = gql_execute_idempotent_as_admin(env, &ddl, client_mutation_key);
     assert_eq!(
         row_count, 0,

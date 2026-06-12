@@ -23,7 +23,7 @@ fn ensure_pocket_ic_binary(manifest_dir: &Path, version: &str) -> PathBuf {
     let bin_dir = manifest_dir.join(".pocket-ic");
     let bin_path = bin_dir.join("pocket-ic");
 
-    if bin_path.is_file() && validate_pocket_ic_binary(&bin_path, &version).is_ok() {
+    if bin_path.is_file() && validate_pocket_ic_binary(&bin_path, version).is_ok() {
         println!("cargo:rerun-if-changed={}", bin_path.display());
         return bin_path;
     }
@@ -63,7 +63,7 @@ fn ensure_pocket_ic_binary(manifest_dir: &Path, version: &str) -> PathBuf {
             .unwrap_or_else(|e| panic!("chmod pocket-ic binary: {e}"));
     }
 
-    validate_pocket_ic_binary(&bin_path, &version)
+    validate_pocket_ic_binary(&bin_path, version)
         .unwrap_or_else(|e| panic!("validate pocket-ic binary at {}: {e}", bin_path.display()));
 
     println!("cargo:rerun-if-changed={}", bin_path.display());

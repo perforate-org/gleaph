@@ -142,6 +142,10 @@ impl RouterIndexClient {
         }
     }
 
+    #[expect(
+        dead_code,
+        reason = "reserved for label-export fast path; graph-index API wired ahead of router use"
+    )]
     pub async fn lookup_label_for_shard(
         &self,
         vertex_label_id: u32,

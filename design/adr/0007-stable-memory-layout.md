@@ -17,6 +17,7 @@ Anchor timestamp: 2026-06-12 07:45:56 UTC +0000
 | 2026-06-12 | P1 executed: retired `EDGE_WEIGHT_PROFILES`; graph facade repacked to 42 regions (ids 37–41). |
 | 2026-06-12 | ADR 0008 executed: retired graph `EDGE_PAYLOAD_PROFILES`; graph 41 regions (facade 32–40); router 22 regions (0–21). |
 | 2026-06-12 | ADR 0009 phase D: retired graph `EDGE_EQUALITY_POSTINGS`; graph 40 regions (facade 32–39). |
+| 2026-06-12 | canbench: `cold_touch_40` 574.83 K / 5,121 pages; graph stable reopen 487.30 K / 5,760 pages (post-0009). |
 
 ## Context
 
@@ -165,14 +166,15 @@ Until consolidation rows exist, **no consolidation patch merges**.
 
 | Bench | Regions | Instructions | Stable memory Δ (pages) |
 |-------|---------|--------------|---------------------------|
-| `bench_layout_memory_manager_cold_touch_5` | 5 | 127.81 K | 641 |
+| `bench_layout_memory_manager_cold_touch_5` | 5 (graph-index) | 140.59 K | 769 |
 | `bench_layout_memory_manager_cold_touch_21` | 22 (router, post-0008) | 344.94 K | 2,817 |
-| `bench_layout_memory_manager_cold_touch_40` | 40 (graph, post-0009) | *(rerun canbench)* | *(rerun canbench)* |
+| `bench_layout_memory_manager_cold_touch_40` | 40 (graph, post-0009) | 574.83 K | 5,121 |
 | `bench_layout_memory_manager_cold_touch_41` | 41 (graph, post-0008) | 587.61 K | 5,249 |
 | `bench_layout_memory_manager_cold_touch_42` | 42 (pre-0008) | 600.38 K | 5,377 |
 | `bench_layout_memory_manager_cold_touch_43` | 43 (pre-P1) | 613.15 K | 5,505 |
 | `bench_layout_router_three_catalog_intern_6vm` | 6 (catalog) | 11.81 M | 769 |
-| `bench_layout_graph_stable_reopen_touch` | 41 (post-0008) | 494.08 K | 5,888 |
+| `bench_layout_graph_stable_reopen_touch` | 40 (post-0009) | 487.30 K | 5,760 |
+| `bench_layout_graph_stable_reopen_touch` (post-0008) | 41 | 494.08 K | 5,888 |
 | `bench_layout_graph_stable_reopen_touch` (pre-0008) | 42 | 502.05 K | 6,016 |
 | `bench_layout_router_stable_reopen_touch` | 22 (post-0008) | 49.21 K | 384 |
 | `bench_layout_router_stable_reopen_touch` (pre-0008) | 21 | 41.91 K | 256 |

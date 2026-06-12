@@ -9,11 +9,11 @@ pub mod facade;
 mod federation;
 mod gql;
 mod graph_client;
-#[expect(
-    dead_code,
-    reason = "index client is carried by router state and deployment wiring"
-)]
 mod index_catalog;
+#[cfg_attr(
+    not(target_family = "wasm"),
+    expect(dead_code, reason = "index client issues IC calls only on wasm")
+)]
 mod index_client;
 mod index_ddl;
 mod index_lookup;
