@@ -74,9 +74,9 @@ fn bench_layout_memory_manager_cold_touch_21() -> canbench_rs::BenchResult {
     })
 }
 
-/// Same as [`bench_layout_memory_manager_cold_touch_5`] for graph layout (43 regions).
+/// Same as [`bench_layout_memory_manager_cold_touch_5`] for graph layout (42 regions).
 #[bench(raw)]
-fn bench_layout_memory_manager_cold_touch_43() -> canbench_rs::BenchResult {
+fn bench_layout_memory_manager_cold_touch_42() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("layout_mm_touch");
         touch_n_empty_maps(GRAPH_STABLE_LAYOUT.region_count() as u8);

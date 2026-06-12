@@ -14,16 +14,15 @@
 //!
 //! # Functional audit (2026-06-12)
 //!
-//! All 69 stable regions were re-reviewed against runtime behavior. Class assignments match the
+//! All 68 stable regions were re-reviewed against runtime behavior. Class assignments match the
 //! inventory; no reclassification was required. Notable distinctions captured in [`StableMemoryRegion::role`]:
 //!
 //! - **LARA reverse (15–29):** `Derived` because recovery is theoretical from forward CSR; hot path
 //!   co-updates with forward. Associated free-span regions stay `Maintenance` (physical PMA bookkeeping).
-//! - **Graph label telemetry (40–41):** `Telemetry` — event outbox toward router aggregates, not
+//! - **Graph label telemetry (39–40):** `Telemetry` — event outbox toward router aggregates, not
 //!   canonical graph membership (that is `VERTEX_LABEL_SETS` + index label postings).
 //! - **`ROUTER_APPLIED_LABEL_TELEMETRY`:** `Telemetry` — dedup for idempotent event apply, not
 //!   user mutation idempotency (`ROUTER_MUTATION_BY_CLIENT_KEY` is `Canonical`).
-//! - **`EDGE_WEIGHT_PROFILES`:** `Compatibility` — legacy read fallback; new writes use payload profiles.
 
 /// How a stable region relates to authoritative graph/router/index state.
 ///
@@ -121,8 +120,8 @@ pub enum StableMemoryClass {
     /// **Meaning:** Safe to retire when no stable snapshot depends on the region and benchmarks
     /// justify removal (ADR 0007 P1).
     ///
-    /// **Gleaph example:** `EDGE_WEIGHT_PROFILES` — read fallback; Phase 3 writes edge weight via
-    /// `EDGE_PAYLOAD_PROFILES` only.
+    /// **Gleaph:** No stable region currently uses this class (P1 `EDGE_WEIGHT_PROFILES` retired
+    /// 2026-06-12; edge profiles are `EDGE_PAYLOAD_PROFILES` only).
     Compatibility,
 }
 
@@ -200,7 +199,7 @@ const fn region(
     }
 }
 
-/// Graph canister — LARA bundle (0–31) + facade (32–42). Baseline: ADR 0007 §2.
+/// Graph canister — LARA bundle (0–31) + facade (32–41). Baseline: ADR 0007 §2.
 pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph",
     regions: &[
@@ -506,16 +505,8 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             None,
         ),
         region(
-            "EDGE_WEIGHT_PROFILES",
-            37,
-            StableMemoryClass::Compatibility,
-            "edge profiles",
-            "Legacy edge weight profiles (read fallback)",
-            None,
-        ),
-        region(
             "EDGE_PAYLOAD_PROFILES",
-            38,
+            37,
             StableMemoryClass::Canonical,
             "edge profiles",
             "Authoritative edge payload width/profile catalog",
@@ -523,7 +514,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "EDGE_EQUALITY_POSTINGS",
-            39,
+            38,
             StableMemoryClass::Derived,
             "local indexes",
             "Shard-local edge property equality postings",
@@ -531,7 +522,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "LABEL_TELEMETRY_SEQ",
-            40,
+            39,
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Monotonic seq for label usage outbox events",
@@ -539,7 +530,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "LABEL_TELEMETRY_OUTBOX",
-            41,
+            40,
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Stable outbox of LabelUsageDelta events for router",
@@ -547,7 +538,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "APPLIED_MUTATION_REQUESTS",
-            42,
+            41,
             StableMemoryClass::Canonical,
             "idempotency",
             "Graph mutation idempotency outcomes (incl. telemetry batch)",
@@ -918,11 +909,11 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 43);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(42));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 42);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(41));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
-            GRAPH_STABLE_LAYOUT.regions[42].symbol,
+            GRAPH_STABLE_LAYOUT.regions[41].symbol,
             "APPLIED_MUTATION_REQUESTS"
         );
         assert_eq!(
@@ -931,7 +922,11 @@ mod tests {
         );
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[37].class,
-            StableMemoryClass::Compatibility
+            StableMemoryClass::Canonical
+        );
+        assert_eq!(
+            GRAPH_STABLE_LAYOUT.regions[37].symbol,
+            "EDGE_PAYLOAD_PROFILES"
         );
     }
 

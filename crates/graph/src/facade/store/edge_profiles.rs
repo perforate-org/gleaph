@@ -1,6 +1,6 @@
 //! Edge profile domain: init-time payload/weight profiles and inline payload updates.
 
-use super::super::stable::{EDGE_PAYLOAD_PROFILES, EDGE_WEIGHT_PROFILES};
+use super::super::stable::EDGE_PAYLOAD_PROFILES;
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, EdgeTarget, EdgeWeightProfile};
 
 use super::GraphStore;
@@ -34,8 +34,7 @@ impl GraphStore {
     }
 
     pub(super) fn commit_remove_edge_label_weight_profile(&self, label: EdgeLabelId) {
-        EDGE_WEIGHT_PROFILES.with_borrow_mut(|store| store.remove(label));
-        EDGE_PAYLOAD_PROFILES.with_borrow_mut(|store| store.remove(label));
+        self.commit_remove_edge_label_payload_profile(label);
     }
 
     pub(super) fn commit_remove_edge_label_payload_profile(&self, label: EdgeLabelId) {
@@ -45,7 +44,6 @@ impl GraphStore {
     pub fn edge_label_weight_profile(&self, label: EdgeLabelId) -> Option<EdgeWeightProfile> {
         self.edge_label_payload_profile(label)
             .and_then(|profile| profile.to_weight_profile())
-            .or_else(|| EDGE_WEIGHT_PROFILES.with_borrow(|store| store.get(label)))
     }
 
     pub fn edge_label_payload_profile(&self, label: EdgeLabelId) -> Option<EdgePayloadProfile> {

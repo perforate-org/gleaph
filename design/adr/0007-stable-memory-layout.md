@@ -3,7 +3,7 @@
 Date: 2026-06-12  
 Status: accepted  
 Last revised: 2026-06-12  
-Anchor timestamp: 2026-06-12 04:38:55 UTC +0000
+Anchor timestamp: 2026-06-12 07:45:56 UTC +0000
 
 ## Revision history
 
@@ -14,6 +14,7 @@ Anchor timestamp: 2026-06-12 04:38:55 UTC +0000
 | 2026-06-12 | Layout registry in `graph-kernel::stable_layout` + per-canister `layout.rs`. |
 | 2026-06-12 | Initial canbench suite in `graph-kernel` (cold touch 5/21/43, router catalog intern). |
 | 2026-06-12 | Extended canbench to graph/router/graph-index; §8b preliminary retain/defer judgments. |
+| 2026-06-12 | P1 executed: retired `EDGE_WEIGHT_PROFILES`; graph facade repacked to 42 regions (ids 37–41). |
 
 ## Context
 
@@ -22,7 +23,7 @@ Storage-domain APIs, derived-state rebuild paths, and catalog abstractions are e
 repacked graph, router, and graph-index `MemoryId` assignments into consecutive layouts and removed
 federation-only stable regions from the single-shard footprint.
 
-The graph canister still allocates **43** `VirtualMemory<DefaultMemoryImpl>` regions (32 LARA + 11
+The graph canister allocates **42** `VirtualMemory<DefaultMemoryImpl>` regions (32 LARA + 10
 facade). The router allocates **21**; graph-index allocates **5**. Each region carries
 `MemoryManager` bookkeeping and encodes an ownership or recovery boundary.
 
@@ -43,7 +44,6 @@ bench results.
 | **Policy gap** | No ADR states when to keep vs merge `VirtualMemory` regions after Phase 0–7 |
 | **Layout knowledge** | `MemoryId` constants live in three `memory.rs` files; inventory is prose, not a typed registry |
 | **Consolidation pressure** | Many small regions suggest grouping, but hot-path cost of region count is unmeasured |
-| **Legacy compatibility** | Graph `EDGE_WEIGHT_PROFILES` (MemoryId 37) remains a separate region though new writes use payload profiles only |
 | **Inventory drift** | `INDEX_POSTINGS` rebuild row in inventory understates `backfill_property_postings` coverage |
 
 ### Prerequisites (met)
@@ -125,9 +125,9 @@ These are **allowed to prototype** after §6 benchmarks. None are approved by th
 
 | Priority | Candidate | Current ids | Hypothesis | Gate |
 |----------|-----------|-------------|------------|------|
-| P1 | Retire `EDGE_WEIGHT_PROFILES` | Graph 37 | Legacy read fallback only; new installs write payload profiles (Phase 3) | Prove no production reliance; reopen test without region 37 |
+| P1 | Retire `EDGE_WEIGHT_PROFILES` | ~~Graph 37~~ | ~~Legacy read fallback~~ | **Done** (2026-06-12) — dev data discard; payload profiles only at id 37 |
 | P2 | Router catalog VM grouping | Router 5–10 (3 pairs) | Pair maps always updated together via `BidirectionalCatalog` | Measure intern + reopen vs 3 grouped metadata regions |
-| P3 | Label telemetry seq + outbox | Graph 40–41 | Same mutation pipeline | Measure DML + reopen; assess telemetry replay isolation |
+| P3 | Label telemetry seq + outbox | Graph 39–40 | Same mutation pipeline | Measure DML + reopen; assess telemetry replay isolation |
 | P4 | Router backfill cursors | Router 19–20 | Same admin API surface | Low priority; measure admin step latency only |
 
 **Not candidates** without new evidence: LARA 0–31 repack, forward/reverse merge, property +
@@ -151,11 +151,11 @@ Until consolidation rows exist, **no consolidation patch merges**.
 
 | Benchmark | Purpose | Status |
 |-----------|---------|--------|
-| `bench_layout_memory_manager_cold_touch_{5,21,43}` | VM count overhead at cold start (graph-index / router / graph region counts) | **Done** |
+| `bench_layout_memory_manager_cold_touch_{5,21,42}` | VM count overhead at cold start (graph-index / router / graph region counts) | **Done** |
 | `bench_layout_graph_stable_reopen_touch` | Graph facade re-init on persisted memory manager | **Done** |
 | `bench_layout_router_stable_reopen_touch` | Router facade re-init | **Done** |
 | `bench_layout_router_three_catalog_intern_6vm` | P2 baseline (six-region router catalog layout) | **Done** — grouped prototype TBD |
-| `bench_layout_edge_weight_profile_{payload_only,with_legacy_fallback}` | P1 sunset evidence | **Done** |
+| `bench_layout_edge_weight_profile_read` | Edge profile read via `GraphStore` | **Done** (post-P1) |
 | `bench_layout_index_posting_insert_64` | Posting insert hot path (backfill proxy) | **Done** |
 | Grouped catalog prototype vs 6 VM | P2 merge gate | **Pending** |
 
@@ -165,12 +165,13 @@ Until consolidation rows exist, **no consolidation patch merges**.
 |-------|---------|--------------|---------------------------|
 | `bench_layout_memory_manager_cold_touch_5` | 5 | 127.81 K | 641 |
 | `bench_layout_memory_manager_cold_touch_21` | 21 | 332.17 K | 2,689 |
-| `bench_layout_memory_manager_cold_touch_43` | 43 | 613.15 K | 5,505 |
+| `bench_layout_memory_manager_cold_touch_42` | 42 | 600.38 K | 5,377 |
+| `bench_layout_memory_manager_cold_touch_43` | 43 (pre-P1) | 613.15 K | 5,505 |
 | `bench_layout_router_three_catalog_intern_6vm` | 6 (catalog) | 11.81 M | 769 |
-| `bench_layout_graph_stable_reopen_touch` | 43 (facade+LARA) | 507.15 K | 6,144 |
+| `bench_layout_graph_stable_reopen_touch` | 42 (facade+LARA, post-P1) | 502.05 K | 6,016 |
+| `bench_layout_graph_stable_reopen_touch` (pre-P1) | 43 | 507.15 K | 6,144 |
 | `bench_layout_router_stable_reopen_touch` | 21 | 41.91 K | 256 |
-| `bench_layout_edge_weight_profile_payload_only` | — | 193.21 K | 0 |
-| `bench_layout_edge_weight_profile_with_legacy_fallback` | — | 193.21 K | 0 |
+| `bench_layout_edge_weight_profile_{payload_only,with_legacy_fallback}` (pre-P1) | — | 193.21 K each | 0 |
 | `bench_layout_index_posting_insert_64` | 1 posting set | 3.44 M | 0 |
 
 **Reading:** cold `MemoryManager` + one empty `BTreeMap` insert per region scales roughly linearly
@@ -188,7 +189,7 @@ Preliminary decisions from §6 canbench (wasm32). Final after grouped-catalog pr
 
 | ID | Decision | Rationale |
 |----|----------|-----------|
-| P1 `EDGE_WEIGHT_PROFILES` | **Defer retire** | Payload-only and legacy-fallback reads tie at ~193 K instructions; removal needs legacy-stable absence proof + reopen tests, not read-path savings alone |
+| P1 `EDGE_WEIGHT_PROFILES` | **Retired** | Backward compatibility not required (roadmap dev policy); separate stable region removed; facade ids 37–41 repacked |
 | P2 Router catalog grouping | **Retain** | Intern dominated by map work (~12 M ins); no grouped prototype bench yet |
 | P3 Label telemetry merge | **Retain** | Not measured; isolation outweighs unproven VM savings |
 | P4 Backfill cursors | **Retain** | Low priority; no hot-path evidence |
@@ -234,7 +235,7 @@ Any patch that changes `MemoryId` assignment or merges regions must:
 
 ### Negative / cost
 
-- 43 + 21 + 5 regions retain manager overhead until benchmarks prove otherwise.
+- 42 + 21 + 5 regions retain manager overhead until benchmarks prove otherwise.
 - P1 weight-profile retirement requires confirming legacy stable read paths in tests/benches.
 - Two-step delivery: policy ADR now, registry and benchmarks before code layout changes.
 

@@ -1,7 +1,6 @@
 //! Graph store error type and conversions.
 
 use super::super::stable::edge_payload_profiles::EdgePayloadProfileStoreError;
-use super::super::stable::edge_weight_profiles::EdgeWeightProfileStoreError;
 use super::super::{PropertyCatalogError, VertexLabelStoreError, VertexPropertyStoreError};
 use crate::index::placement;
 use gleaph_graph_kernel::entry::EdgeLabelId;
@@ -14,7 +13,6 @@ use std::fmt;
 pub enum GraphStoreError {
     Graph(DeferredBidirectionalLabeledError),
     EdgePayloadProfile(EdgePayloadProfileStoreError),
-    EdgeWeightProfile(EdgeWeightProfileStoreError),
     PropertyCatalog(PropertyCatalogError),
     VertexLabel(VertexLabelStoreError),
     PropertyValue(VertexPropertyStoreError),
@@ -56,7 +54,6 @@ impl fmt::Display for GraphStoreError {
         match self {
             Self::Graph(err) => write!(f, "{err}"),
             Self::EdgePayloadProfile(err) => write!(f, "{err}"),
-            Self::EdgeWeightProfile(err) => write!(f, "{err}"),
             Self::PropertyCatalog(err) => write!(f, "{err}"),
             Self::VertexLabel(err) => write!(f, "{err}"),
             Self::PropertyValue(err) => write!(f, "{err}"),
@@ -117,7 +114,6 @@ impl std::error::Error for GraphStoreError {
         match self {
             Self::Graph(err) => Some(err),
             Self::EdgePayloadProfile(err) => Some(err),
-            Self::EdgeWeightProfile(err) => Some(err),
             Self::PropertyCatalog(err) => Some(err),
             Self::VertexLabel(err) => Some(err),
             Self::PropertyValue(err) => Some(err),
@@ -150,12 +146,6 @@ impl From<DeferredBidirectionalLabeledError> for GraphStoreError {
 impl From<EdgePayloadProfileStoreError> for GraphStoreError {
     fn from(value: EdgePayloadProfileStoreError) -> Self {
         Self::EdgePayloadProfile(value)
-    }
-}
-
-impl From<EdgeWeightProfileStoreError> for GraphStoreError {
-    fn from(value: EdgeWeightProfileStoreError) -> Self {
-        Self::EdgeWeightProfile(value)
     }
 }
 

@@ -13,7 +13,6 @@ pub(crate) mod edge_alias;
 pub(crate) mod edge_equality_postings;
 pub(crate) mod edge_payload_profiles;
 pub(crate) mod edge_properties;
-pub(crate) mod edge_weight_profiles;
 pub(crate) mod label_telemetry;
 pub(crate) mod metadata;
 pub(crate) mod property_catalog;
@@ -46,9 +45,6 @@ thread_local! {
     pub(crate) static METADATA: RefCell<memory::StableMetadata> = RefCell::new(
         memory::init_metadata()
     );
-
-    pub(crate) static EDGE_WEIGHT_PROFILES: RefCell<memory::StableEdgeWeightProfileStore> =
-        RefCell::new(memory::init_edge_weight_profiles());
 
     pub(crate) static EDGE_PAYLOAD_PROFILES: RefCell<memory::StableEdgePayloadProfileStore> =
         RefCell::new(memory::init_edge_payload_profiles());

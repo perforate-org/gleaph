@@ -4,7 +4,6 @@
 use super::edge_alias::EdgeAliasIndex;
 use super::edge_payload_profiles::EdgePayloadProfileStore;
 use super::edge_properties::EdgePropertyStore;
-use super::edge_weight_profiles::EdgeWeightProfileStore;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
 use super::vertex_labels::VertexLabelStore;
 use super::vertex_properties::VertexPropertyStore;
@@ -59,18 +58,17 @@ const REV_PAYLOAD_BLOBS: MemoryId = MemoryId::new(29);
 const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(30);
 const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(31);
 
-// --- Graph facade (12 memories) ---
+// --- Graph facade (11 memories) ---
 const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(32);
 const VERTEX_PROPERTIES: MemoryId = MemoryId::new(33);
 const EDGE_PROPERTIES: MemoryId = MemoryId::new(34);
 const EDGE_ALIASES: MemoryId = MemoryId::new(35);
 const GRAPH_METADATA: MemoryId = MemoryId::new(36);
-const EDGE_WEIGHT_PROFILES: MemoryId = MemoryId::new(37);
-const EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(38);
-const EDGE_EQUALITY_POSTINGS: MemoryId = MemoryId::new(39);
-const LABEL_TELEMETRY_SEQ: MemoryId = MemoryId::new(40);
-const LABEL_TELEMETRY_OUTBOX: MemoryId = MemoryId::new(41);
-const APPLIED_MUTATION_REQUESTS: MemoryId = MemoryId::new(42);
+const EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(37);
+const EDGE_EQUALITY_POSTINGS: MemoryId = MemoryId::new(38);
+const LABEL_TELEMETRY_SEQ: MemoryId = MemoryId::new(39);
+const LABEL_TELEMETRY_OUTBOX: MemoryId = MemoryId::new(40);
+const APPLIED_MUTATION_REQUESTS: MemoryId = MemoryId::new(41);
 
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
@@ -85,7 +83,6 @@ pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
 pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
 pub(crate) type StableEdgeAliasIndex = EdgeAliasIndex<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
-pub(crate) type StableEdgeWeightProfileStore = EdgeWeightProfileStore<Memory>;
 pub(crate) type StableEdgePayloadProfileStore = EdgePayloadProfileStore<Memory>;
 pub(crate) type StableEdgeEqualityPostingStore =
     super::edge_equality_postings::EdgeEqualityPostingStore<Memory>;
@@ -158,10 +155,6 @@ pub(crate) fn init_edge_property_store() -> StableEdgePropertyStore {
 
 pub(crate) fn init_edge_alias_index() -> StableEdgeAliasIndex {
     EdgeAliasIndex::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_ALIASES)))
-}
-
-pub(crate) fn init_edge_weight_profiles() -> StableEdgeWeightProfileStore {
-    EdgeWeightProfileStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(EDGE_WEIGHT_PROFILES)))
 }
 
 pub(crate) fn init_edge_payload_profiles() -> StableEdgePayloadProfileStore {

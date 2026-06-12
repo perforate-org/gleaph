@@ -286,7 +286,7 @@ Goal: remove duplicated name/id catalog rules.
 
 **Status: Complete (2026-06-10).**
 
-**Progress:** `gleaph-graph-kernel::bidirectional_catalog` provides shared `BidirectionalCatalog` with sparse and dense allocation policies. Graph property catalog and router vertex/edge/property resolution catalogs use the shared type (same stable memory regions). Router retains ownership of federated label and property resolution APIs. Edge weight profiles are a compatibility view over canonical payload profiles (`to_weight_profile` on read; new installs write payload only).
+**Progress:** `gleaph-graph-kernel::bidirectional_catalog` provides shared `BidirectionalCatalog` with sparse and dense allocation policies. Graph property catalog and router vertex/edge/property resolution catalogs use the shared type (same stable memory regions). Router retains ownership of federated label and property resolution APIs. Edge weight API reads canonical payload profiles via `to_weight_profile`; legacy `EDGE_WEIGHT_PROFILES` stable region retired in Phase 8 P1.
 
 Deliverables:
 
@@ -294,7 +294,7 @@ Deliverables:
 - Move router label catalogs and property catalogs onto the shared implementation where the semantics match. **Done** (vertex/edge dense, property dense; graph property sparse).
 - Preserve router ownership of federated label and property resolution. **Done** (router `catalogs` domain unchanged at API boundary).
 - Evaluate graph property catalog migration separately from router catalogs. **Done** (graph re-exports shared catalog with `SparseFromOnePolicy`).
-- Convert edge weight profiles into a compatibility layer over edge payload profiles, if the compatibility surface is still required. **Done** (`EdgePayloadProfile::to_weight_profile`; weight install writes payload only; `EDGE_WEIGHT_PROFILES` read fallback for legacy stable data).
+- Convert edge weight profiles into a compatibility layer over edge payload profiles, if the compatibility surface is still required. **Done** (`EdgePayloadProfile::to_weight_profile`; weight install writes payload only). Legacy stable region **retired** in Phase 8 P1 (2026-06-12).
 
 Exit criteria:
 
@@ -409,11 +409,11 @@ benchmark evidence.
 
 | Bench | Crate | Purpose | Status |
 |-------|-------|---------|--------|
-| `bench_layout_memory_manager_cold_touch_{5,21,43}` | graph-kernel | VM count at cold init | **Done** |
+| `bench_layout_memory_manager_cold_touch_{5,21,42}` | graph-kernel | VM count at cold init | **Done** |
 | `bench_layout_router_three_catalog_intern_6vm` | graph-kernel | P2 six-region catalog baseline | **Done** |
 | `bench_layout_graph_stable_reopen_touch` | graph | Post-upgrade facade re-init | **Done** |
 | `bench_layout_router_stable_reopen_touch` | router | Post-upgrade facade re-init | **Done** |
-| `bench_layout_edge_weight_profile_{payload_only,with_legacy_fallback}` | graph | P1 sunset evidence | **Done** |
+| `bench_layout_edge_weight_profile_read` | graph | Edge profile read path | **Done** |
 | `bench_layout_index_posting_insert_64` | graph-index | Posting/backfill hot path | **Done** |
 | Grouped catalog prototype vs 6 VM | graph-kernel or router | P2 merge gate | **Optional** (retain without prototype) |
 
@@ -425,7 +425,7 @@ For each consolidation candidate P1–P4, record **merge / retain / defer** with
 
 | ID | Candidate | Decision (2026-06-12) |
 |----|-----------|-------------------------|
-| P1 | Retire `EDGE_WEIGHT_PROFILES` | **Defer retire** — read paths tie; need legacy-stable absence proof |
+| P1 | Retire `EDGE_WEIGHT_PROFILES` | **Retired** (2026-06-12) — dev policy; facade repacked to 42 regions |
 | P2 | Router catalog VM grouping | **Retain** |
 | P3 | Label telemetry seq + outbox merge | **Retain** |
 | P4 | Router backfill cursor merge | **Retain** |

@@ -11,18 +11,18 @@ benches:
         instructions: 331157
         heap_increase: 0
         stable_memory_increase: 2689
-  bench_layout_memory_manager_cold_touch_43:
+  bench_layout_memory_manager_cold_touch_42:
     total:
       calls: 1
-      instructions: 613150
+      instructions: 600378
       heap_increase: 0
-      stable_memory_increase: 5505
+      stable_memory_increase: 5377
     scopes:
       layout_mm_touch:
         calls: 1
-        instructions: 612141
+        instructions: 599369
         heap_increase: 0
-        stable_memory_increase: 5505
+        stable_memory_increase: 5377
   bench_layout_memory_manager_cold_touch_5:
     total:
       calls: 1

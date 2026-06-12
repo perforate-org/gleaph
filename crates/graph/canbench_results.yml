@@ -1,38 +1,26 @@
 benches:
-  bench_layout_edge_weight_profile_payload_only:
+  bench_layout_edge_weight_profile_read:
     total:
       calls: 1
-      instructions: 193208
+      instructions: 146774
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      layout_edge_profile_payload_only:
+      layout_edge_profile_read:
         calls: 1
-        instructions: 192209
-        heap_increase: 0
-        stable_memory_increase: 0
-  bench_layout_edge_weight_profile_with_legacy_fallback:
-    total:
-      calls: 1
-      instructions: 193212
-      heap_increase: 0
-      stable_memory_increase: 0
-    scopes:
-      layout_edge_profile_legacy_fallback:
-        calls: 1
-        instructions: 192213
+        instructions: 145765
         heap_increase: 0
         stable_memory_increase: 0
   bench_layout_graph_stable_reopen_touch:
     total:
       calls: 1
-      instructions: 507153
+      instructions: 502050
       heap_increase: 0
-      stable_memory_increase: 6144
+      stable_memory_increase: 6016
     scopes:
       layout_graph_reopen:
         calls: 1
-        instructions: 506144
+        instructions: 501041
         heap_increase: 0
-        stable_memory_increase: 6144
+        stable_memory_increase: 6016
 version: 0.4.0
