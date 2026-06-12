@@ -279,6 +279,31 @@ pub async fn backfill_property_postings(
     crate::index::property_backfill::backfill_property_postings(&store, &index, args).await
 }
 
+pub fn register_indexed_property(
+    args: gleaph_graph_kernel::index::RegisterIndexedPropertyArgs,
+) -> Result<(), String> {
+    crate::index::registry::apply_register(args);
+    Ok(())
+}
+
+pub fn unregister_indexed_property(
+    args: gleaph_graph_kernel::index::RegisterIndexedPropertyArgs,
+) -> Result<(), String> {
+    crate::index::registry::apply_unregister(args);
+    Ok(())
+}
+
+pub async fn backfill_edge_property_postings(
+    args: gleaph_graph_kernel::federation::EdgePostingBackfillArgs,
+) -> Result<gleaph_graph_kernel::federation::EdgePostingBackfillResult, String> {
+    let store = GraphStore::new();
+    let Some(index) = wasm_index_client_holder() else {
+        return Err("federation not configured".into());
+    };
+    crate::index::edge_property_backfill::backfill_edge_property_postings(&store, &index, args)
+        .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -346,6 +371,7 @@ mod tests {
             entries: vec![SeedBindingEntry {
                 variable: "n".into(),
                 local_vertex_ids: vec![local_vid],
+                local_edge_postings: Vec::new(),
             }],
         };
         let seed_blob = Encode!(&seeds).expect("encode seeds");
@@ -410,6 +436,7 @@ mod tests {
             entries: vec![SeedBindingEntry {
                 variable: "n".into(),
                 local_vertex_ids: vec![local_vid],
+                local_edge_postings: Vec::new(),
             }],
         };
         let seed_blob = Encode!(&seeds).expect("encode seeds");

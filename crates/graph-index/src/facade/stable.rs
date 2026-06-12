@@ -18,6 +18,9 @@ thread_local! {
     pub(crate) static INDEX_LABEL_POSTINGS: RefCell<memory::StableIndexLabelPostingSet> =
         RefCell::new(memory::init_index_label_postings());
 
+    pub(crate) static INDEX_EDGE_POSTINGS: RefCell<memory::StableIndexEdgePostingSet> =
+        RefCell::new(memory::init_index_edge_postings());
+
     pub(crate) static INDEX_ROUTER: RefCell<memory::StableIndexRouterCell> =
         RefCell::new(memory::init_index_router());
 }

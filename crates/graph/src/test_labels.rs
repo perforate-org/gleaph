@@ -101,6 +101,16 @@ pub(crate) fn property_id_for_name(name: &str) -> PropertyId {
     PropertyId::from_raw(nonzero_hash_u32(name))
 }
 
+#[cfg(test)]
+pub(crate) fn register_indexed_vertex_property_named(name: &str) {
+    crate::index::registry::register_vertex_property(property_id_for_name(name));
+}
+
+#[cfg(test)]
+pub(crate) fn register_indexed_edge_property_named(name: &str) {
+    crate::index::registry::register_edge_property(property_id_for_name(name));
+}
+
 fn nonzero_hash_u32(name: &str) -> u32 {
     let raw = stable_hash(name) as u32;
     if raw == 0 { 1 } else { raw }

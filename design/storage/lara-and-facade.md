@@ -50,7 +50,7 @@ LARA does not know `GlobalVertexId`, router placement, or GQL.
 | Vertex/edge properties | Property values by `PropertyId` (names on router) |
 | Label catalogs | Vertex/edge labels by id |
 | `metadata` | `FederationRouting`, graph name |
-| `edge_equality_postings` | Local edge property equality |
+| `edge_pending` (ephemeral) | Federated edge property index ops → graph-index |
 
 **Removed:** `remote_vertex_refs`, `remote_forward_in`, `peer_graph_canisters` stable regions.
 

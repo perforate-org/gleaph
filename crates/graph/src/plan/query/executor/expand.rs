@@ -20,7 +20,8 @@ use super::{
     row_matches_all, vertex_binding_for_projection,
 };
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError, canonical_undirected_owner};
-use crate::index::edge_equal;
+use crate::index::edge_lookup::{self, LocalEdgePosting};
+use crate::index::lookup::PropertyIndexLookup;
 
 #[derive(Clone, Copy)]
 pub(crate) enum CsrOffsetFastPath {
@@ -351,9 +352,11 @@ fn equality_index_slot_key(owner: VertexId, slot_index: u32) -> u64 {
 }
 
 pub(crate) fn edge_equality_stream_filter(
+    index: Option<&dyn PropertyIndexLookup>,
     execution: &crate::gql_execution_context::GqlExecutionContext,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     parameters: &BTreeMap<String, Value>,
+    edge_label_id: Option<u16>,
 ) -> Result<EdgeEqualityStreamFilter, PlanQueryError> {
     let Some((property, scan_value)) = indexed_edge_equality else {
         return Ok(EdgeEqualityStreamFilter::None);
@@ -364,15 +367,26 @@ pub(crate) fn edge_equality_stream_filter(
     let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
         return Ok(EdgeEqualityStreamFilter::NoMatches);
     };
-    let Some(postings) = edge_equal::lookup_equal(property_id, &expected) else {
+    let postings =
+        edge_lookup::lookup_edge_equal_local_sync(index, property_id, &expected, edge_label_id)?;
+    if postings.is_empty() {
+        if index.is_some() {
+            return Ok(EdgeEqualityStreamFilter::NoMatches);
+        }
         return Ok(EdgeEqualityStreamFilter::StoreLookup {
             property_id,
             expected,
         });
-    };
+    }
+    stream_filter_from_postings(&postings)
+}
+
+fn stream_filter_from_postings(
+    postings: &[LocalEdgePosting],
+) -> Result<EdgeEqualityStreamFilter, PlanQueryError> {
     let mut labels = IntSet::default();
     let mut slots = IntSet::default();
-    for posting in &postings {
+    for posting in postings {
         labels.insert(posting.label_id);
         slots.insert(equality_index_slot_key(
             posting.owner_vertex_id,
@@ -384,7 +398,7 @@ pub(crate) fn edge_equality_stream_filter(
         Ok(EdgeEqualityStreamFilter::IndexedSingleLabel { label_id, slots })
     } else {
         let mut heterogeneous = BTreeSet::new();
-        for posting in &postings {
+        for posting in postings {
             heterogeneous.insert((
                 u32::from(posting.owner_vertex_id),
                 posting.label_id,

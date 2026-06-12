@@ -3,7 +3,7 @@
 Date: 2026-06-12  
 Status: accepted  
 Last revised: 2026-06-12  
-Anchor timestamp: 2026-06-12 12:11:38 UTC +0000
+Anchor timestamp: 2026-06-12 13:30:00 UTC +0000
 
 ## Revision history
 
@@ -11,6 +11,12 @@ Anchor timestamp: 2026-06-12 12:11:38 UTC +0000
 |------|--------|
 | 2026-06-12 | Proposed; edge postings on graph-index, mixed intersection, opt-in `CREATE INDEX` / `DROP INDEX` DDL. |
 | 2026-06-12 | Accepted; policy frozen pending implementation phases A–E in §Implementation phases. |
+| 2026-06-12 | Phase A implemented: shard index registry, opt-in DML gate, router fan-out admin APIs. |
+| 2026-06-12 | Phase B implemented: `INDEX_EDGE_POSTINGS` on graph-index; federated edge DML flush; edge backfill API. |
+| 2026-06-12 | Phase C implemented: `IndexSubject` / `IndexIntersectionResult`; mixed vertex/edge intersection on graph-index. |
+| 2026-06-12 | Phase D (partial): router `EdgeIndexScan` / all-edge intersection seeds; `LocalEdgePosting` wire; graph edge seed apply + skip leading `EdgeIndexScan`. `EDGE_EQUALITY_POSTINGS` retire pending. |
+| 2026-06-12 | Phase D implemented: retired graph `EDGE_EQUALITY_POSTINGS`; MemoryId repack (40 regions); expand/edge scan via graph-index client, router seeds, or `EDGE_PROPERTIES` scan fallback. |
+| 2026-06-12 | Phase E implemented: router `CREATE INDEX` / `DROP INDEX` extension DDL via `gql_execute*`; named index catalog; shard `unregister_indexed_property`. |
 
 ## Context
 

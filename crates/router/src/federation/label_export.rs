@@ -116,7 +116,32 @@ mod tests {
         fn lookup_intersection(
             &self,
             _req: IndexIntersectionRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            gleaph_graph_kernel::index::IndexIntersectionResult,
+                            String,
+                        >,
+                    > + '_,
+            >,
+        > {
+            Box::pin(async {
+                Ok(gleaph_graph_kernel::index::IndexIntersectionResult::Vertices(Vec::new()))
+            })
+        }
+
+        fn lookup_edge_equal(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+            _label_id: Option<u16>,
+        ) -> Pin<
+            Box<
+                dyn Future<Output = Result<Vec<gleaph_graph_kernel::index::EdgePostingHit>, String>>
+                    + '_,
+            >,
+        > {
             Box::pin(async { Ok(Vec::new()) })
         }
 

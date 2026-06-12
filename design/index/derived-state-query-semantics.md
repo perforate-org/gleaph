@@ -31,7 +31,7 @@ not paper over sync gaps with graph-side tombstone filtering at the index layer.
 
 | Derived store | Update contract | Acceptable lag | Query impact when lagging |
 |---------------|-----------------|----------------|---------------------------|
-| Edge equality postings | **Sync** on edge property DML | None (bug if mismatched) | Expand equality probes miss or over-match; use `check_edge_equality_postings` / `rebuild_edge_equality_postings` |
+| Edge property postings (graph-index) | **Async** via `edge_pending` flush on federated DML | graph-index may lag canonical | Expand equality may miss until backfill; use `backfill_edge_property_postings` |
 | Edge aliases | **Sync** on edge insert/delete | None (bug if mismatched) | Wrong reverse/undirected expand; use `check_edge_aliases` / `rebuild_edge_aliases` |
 | Property postings (graph-index) | DML enqueue + `pending` flush | Pending queue before flush; flush retry; historical **backfill** in progress | **Under-posted:** equality/range/seed miss live vertices. **Over-posted:** extra hits until remove syncs. No silent drop at read time |
 | Label postings (graph-index) | DML enqueue + `label_pending` flush | Same as property postings | **Under-posted:** label sieve / export / intersection miss. **Over-posted:** extra hits until remove syncs |
@@ -87,7 +87,7 @@ count completeness is required.
 | Index miss for known property value | Unindexable value, pending not flushed, or backfill incomplete | Check `property_indexability`; flush pending; run property backfill |
 | Extra index hit for deleted vertex | Remove posting not synced | Flush/retry pending; verify DML index path |
 | `COUNT(*)` wrong for label | Telemetry lag | `admin_label_telemetry_replay_step` per shard |
-| Expand equality wrong | Edge equality derived drift | `check_edge_equality_postings`; `rebuild_edge_equality_postings` |
+| Expand equality wrong | graph-index edge posting lag or unregistered property | `backfill_edge_property_postings`; verify index registry |
 | Reverse expand wrong | Edge alias drift | `check_edge_aliases`; `rebuild_edge_aliases` |
 
 ## Related documents

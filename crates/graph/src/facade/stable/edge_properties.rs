@@ -207,6 +207,23 @@ impl<M: Memory> EdgePropertyStore<M> {
         }
     }
 
+    /// Returns up to `max_entries` edge properties after `after` in stable key order.
+    pub(crate) fn scan_properties_batch(
+        &self,
+        after: Option<EdgePropertyKey>,
+        max_entries: u32,
+    ) -> Vec<(EdgePropertyKey, Value)> {
+        let max = usize::try_from(max_entries).unwrap_or(usize::MAX);
+        let range = after
+            .map(|key| (std::ops::Bound::Excluded(key), std::ops::Bound::Unbounded))
+            .unwrap_or((std::ops::Bound::Unbounded, std::ops::Bound::Unbounded));
+        self.properties
+            .range(range)
+            .take(max)
+            .map(|entry| (*entry.key(), entry.value().0.clone()))
+            .collect()
+    }
+
     pub(crate) fn for_each_property_for_edge<F>(
         &self,
         owner_vertex_id: VertexId,

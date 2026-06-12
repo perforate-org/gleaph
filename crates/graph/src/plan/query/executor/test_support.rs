@@ -154,11 +154,14 @@ impl PropertyIndexLookup for MockPropertyIndex {
     async fn lookup_intersection(
         &self,
         req: &IndexIntersectionRequest,
-    ) -> Result<Vec<PostingHit>, PlanQueryError> {
+    ) -> Result<gleaph_graph_kernel::index::IndexIntersectionResult, PlanQueryError> {
         self.intersection_calls.borrow_mut().push(req.clone());
-        Ok(Self::intersect_hits(req, |pid, value| {
-            self.equal_hits_for(pid, value)
-        }))
+        Ok(
+            gleaph_graph_kernel::index::IndexIntersectionResult::Vertices(Self::intersect_hits(
+                req,
+                |pid, value| self.equal_hits_for(pid, value),
+            )),
+        )
     }
 
     fn local_shard_id(&self) -> ShardId {

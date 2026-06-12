@@ -2,7 +2,7 @@
 
 ## Status
 
-**Partially Implemented** — graph-index `lookup_intersection`, graph executor single-call path, router `IndexAnchor` + `lookup_intersection` seeds, and graph skip of leading `IndexIntersection` are implemented. Client-side intersection in the executor is removed.
+**Implemented** — graph-index `lookup_intersection` returns `IndexIntersectionResult` (vertex, mixed, and all-edge arms per ADR 0009). Router seeds vertices (`PostingHit`) and edges (`LocalEdgePosting` via `EdgeIndexScan` / all-edge intersection). Graph skips leading `IndexIntersection` / `EdgeIndexScan` when seeded. Shard-local `EDGE_EQUALITY_POSTINGS` retired (ADR 0009 phase D).
 
 ## Purpose
 
@@ -15,9 +15,9 @@ Define **`lookup_intersection`** on the graph-index canister: intersect equality
 - Logical vertex id intersection (index uses physical `(shard_id, vertex_id)` keys).
 - Graph canister calls during intersection.
 
-**Planned ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)):** mixed vertex/edge arms,
-edge posting store, `EdgePostingHit`, and projection of edge arms to `(shard_id, owner_vertex_id)` for
-vertex-led seeds.
+**Implemented ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md) phase C):** `IndexSubject` on
+each arm; mixed vertex+edge intersection projects edge owners to vertex hits; all-edge arms return
+`Edges(Vec<EdgePostingHit>)`.
 
 ## Problem
 

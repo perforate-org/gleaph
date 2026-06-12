@@ -5,7 +5,7 @@ use gleaph_graph_kernel::plan_exec::GqlExecutionMode;
 
 use crate::state::RouterError;
 
-const REMEDY_WRITE_ON_QUERY: &str =
+pub(crate) const REMEDY_WRITE_ON_QUERY: &str =
     "use gql_execute_idempotent (update call with client_mutation_key)";
 const REMEDY_READ_ON_UPDATE: &str = "use gql_query (composite query call) or force_gql_execute";
 const REMEDY_PREPARED_WRITE_ON_QUERY: &str =

@@ -92,9 +92,9 @@ fn plan_requires_router_seeds(plan: &PhysicalPlan) -> bool {
 
 fn seeds_are_effective(seeds: Option<&SeedBindingsWire>) -> bool {
     seeds.is_some_and(|wire| {
-        wire.entries
-            .iter()
-            .any(|entry| !entry.local_vertex_ids.is_empty())
+        wire.entries.iter().any(|entry| {
+            !entry.local_vertex_ids.is_empty() || !entry.local_edge_postings.is_empty()
+        })
     })
 }
 

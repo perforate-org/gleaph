@@ -770,8 +770,13 @@ fn stream_expand(
     }
 
     if let Some(fast_path) = csr_expand_fast_path {
-        let edge_equality_filter =
-            edge_equality_stream_filter(execution, indexed_edge_equality, parameters)?;
+        let edge_equality_filter = edge_equality_stream_filter(
+            None,
+            execution,
+            indexed_edge_equality,
+            parameters,
+            label_id.map(|id| id.raw()),
+        )?;
         if matches!(edge_equality_filter, EdgeEqualityStreamFilter::NoMatches) {
             return Ok(false);
         }

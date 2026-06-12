@@ -1,7 +1,7 @@
-//! Local index domain: edge aliases and edge-property equality postings.
+//! Local index domain: edge aliases; edge property postings live on graph-index (ADR 0009).
 
 use super::super::stable::EDGE_ALIASES;
-use crate::index::edge_equal;
+use crate::index::edge_pending;
 use crate::property::{PropertyValueChange, dispatch_property_index_ops};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::PropertyId;
@@ -42,11 +42,11 @@ impl GraphStore {
 
     pub(super) fn commit_remove_all_edge_equality_postings(
         &self,
-        owner_vertex_id: VertexId,
-        label_id: u16,
-        slot_index: u32,
+        _owner_vertex_id: VertexId,
+        _label_id: u16,
+        _slot_index: u32,
     ) {
-        edge_equal::remove_all_for_edge(owner_vertex_id, label_id, slot_index);
+        // Edge equality postings live on graph-index (ADR 0009); removals enqueue via edge_pending.
     }
 
     pub(super) fn commit_remove_edge_alias_entries(
@@ -63,7 +63,7 @@ impl GraphStore {
 
     pub(super) fn commit_clear_edge_local_indexes(&self, handle: EdgeHandle) {
         let handle = self.canonical_edge_handle_for_sidecar(handle);
-        self.commit_remove_all_edge_equality_postings(
+        edge_pending::enqueue_removals_for_edge(
             handle.owner_vertex_id,
             handle.label_id.raw(),
             handle.slot_index,

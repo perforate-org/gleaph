@@ -189,6 +189,7 @@ async fn run_transaction_block(
             let mutation = store.execute_plan_mutations(&plan, execution.clone())?;
             merge_label_usage_delta(&mut label_usage_delta, mutation.label_usage_delta);
             pending::flush_pending(index).await?;
+            crate::index::edge_pending::flush_pending(index).await?;
             label_pending::flush_pending(index).await?;
         } else {
             match materialize {
@@ -389,6 +390,11 @@ fn seed_initial_rows(
     store: &GraphStore,
     seeds: &SeedBindingsWire,
 ) -> Result<(Vec<PlanQueryRow>, bool), GqlRunError> {
+    use ic_stable_lara::BucketLabelKey as LaraLabelId;
+
+    use crate::facade::EdgeHandle;
+    use crate::plan::EdgeBinding;
+
     let mut all_rows = Vec::new();
     for entry in &seeds.entries {
         for &vid in &entry.local_vertex_ids {
@@ -401,6 +407,25 @@ fn seed_initial_rows(
             }
             let mut row = PlanQueryRow::new();
             row.insert(entry.variable.clone(), PlanBinding::Vertex(vertex_id));
+            all_rows.push(row);
+        }
+        for posting in &entry.local_edge_postings {
+            let handle = EdgeHandle {
+                owner_vertex_id: VertexId::from(posting.owner_vertex_id),
+                label_id: LaraLabelId::from_raw(posting.label_id),
+                slot_index: posting.slot_index,
+            };
+            let Some(edge) = store
+                .find_outgoing_edge_record(handle)
+                .map_err(|e| GqlRunError::Plan(e.to_string()))?
+            else {
+                continue;
+            };
+            let mut row = PlanQueryRow::new();
+            row.insert(
+                entry.variable.clone(),
+                PlanBinding::Edge(EdgeBinding::from_edge(handle, edge)),
+            );
             all_rows.push(row);
         }
     }
@@ -525,6 +550,7 @@ async fn run_wire_plans_inner(
             }
             merge_label_usage_delta(&mut label_usage_delta, mutation.label_usage_delta);
             pending::flush_pending(index).await?;
+            crate::index::edge_pending::flush_pending(index).await?;
             label_pending::flush_pending(index).await?;
             skip_index = false;
             seed_rows.clear();
@@ -930,6 +956,7 @@ mod tests {
             entries: vec![SeedBindingEntry {
                 variable: "n".into(),
                 local_vertex_ids: vec![local_vid],
+                local_edge_postings: Vec::new(),
             }],
         };
         let params = BTreeMap::new();
@@ -994,6 +1021,7 @@ mod tests {
             entries: vec![SeedBindingEntry {
                 variable: "n".into(),
                 local_vertex_ids: vec![local_vid],
+                local_edge_postings: Vec::new(),
             }],
         };
         let params = BTreeMap::new();

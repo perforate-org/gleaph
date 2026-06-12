@@ -168,6 +168,7 @@ fn is_router_seed_skippable_op(op: &PlanOp) -> bool {
         PlanOp::NodeScan { label: Some(_), .. }
             | PlanOp::IndexScan { .. }
             | PlanOp::IndexIntersection { .. }
+            | PlanOp::EdgeIndexScan { .. }
             | PlanOp::PropertyFilter { .. }
     )
 }

@@ -13,7 +13,9 @@ mod graph_client;
     dead_code,
     reason = "index client is carried by router state and deployment wiring"
 )]
+mod index_catalog;
 mod index_client;
+mod index_ddl;
 mod index_lookup;
 mod index_sync;
 pub mod init;
@@ -276,11 +278,19 @@ async fn force_prepared_execute_update(
 }
 
 #[update]
-fn admin_set_indexed_vertex_property(
+async fn admin_set_indexed_vertex_property(
     logical_graph_name: String,
     property: String,
 ) -> Result<(), RouterError> {
-    canister::admin_set_indexed_vertex_property(logical_graph_name, property)
+    canister::admin_set_indexed_vertex_property(logical_graph_name, property).await
+}
+
+#[update]
+async fn admin_set_indexed_edge_property(
+    logical_graph_name: String,
+    property: String,
+) -> Result<(), RouterError> {
+    canister::admin_set_indexed_edge_property(logical_graph_name, property).await
 }
 
 /// Advance label posting backfill for one graph shard (controller-only; call in a loop).

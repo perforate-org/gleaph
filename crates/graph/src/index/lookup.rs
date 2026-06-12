@@ -3,7 +3,10 @@
 use crate::plan::PlanQueryError;
 use async_trait::async_trait;
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
+use gleaph_graph_kernel::index::{
+    EdgePostingHit, IndexIntersectionRequest, IndexIntersectionResult, PostingHit,
+    PostingRangeRequest,
+};
 
 #[async_trait(?Send)]
 pub trait PropertyIndexLookup {
@@ -22,7 +25,17 @@ pub trait PropertyIndexLookup {
     async fn lookup_intersection(
         &self,
         req: &IndexIntersectionRequest,
-    ) -> Result<Vec<PostingHit>, PlanQueryError>;
+    ) -> Result<IndexIntersectionResult, PlanQueryError>;
+
+    async fn lookup_edge_equal(
+        &self,
+        property_id: u32,
+        value: Vec<u8>,
+        label_id: Option<u16>,
+    ) -> Result<Vec<EdgePostingHit>, PlanQueryError> {
+        let _ = (property_id, value, label_id);
+        Ok(vec![])
+    }
 
     async fn posting_insert(
         &self,
@@ -94,6 +107,30 @@ pub trait PropertyIndexLookup {
         label_id: u32,
         vertex_id: u32,
     ) -> Result<(), PlanQueryError>;
+
+    async fn edge_posting_insert_at(
+        &self,
+        _shard_id: ShardId,
+        _property_id: u32,
+        _value: Vec<u8>,
+        _label_id: u16,
+        _owner_vertex_id: u32,
+        _slot_index: u32,
+    ) -> Result<(), PlanQueryError> {
+        Ok(())
+    }
+
+    async fn edge_posting_remove_at(
+        &self,
+        _shard_id: ShardId,
+        _property_id: u32,
+        _value: Vec<u8>,
+        _label_id: u16,
+        _owner_vertex_id: u32,
+        _slot_index: u32,
+    ) -> Result<(), PlanQueryError> {
+        Ok(())
+    }
 }
 
 /// Used when no index canister is wired; mutations ignore postings and scans fail at runtime.
@@ -124,7 +161,7 @@ impl PropertyIndexLookup for NoPropertyIndex {
     async fn lookup_intersection(
         &self,
         _req: &IndexIntersectionRequest,
-    ) -> Result<Vec<PostingHit>, PlanQueryError> {
+    ) -> Result<IndexIntersectionResult, PlanQueryError> {
         Err(PlanQueryError::UnsupportedOp(
             "IndexIntersection(no index client)",
         ))

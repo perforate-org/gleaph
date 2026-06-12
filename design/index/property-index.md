@@ -1,13 +1,21 @@
 # Property index
 
 Last updated: 2026-06-12  
-Anchor timestamp: 2026-06-12 12:11:38 UTC +0000
+Anchor timestamp: 2026-06-12 13:30:00 UTC +0000
 
 ## Status
 
 **Partially Implemented** — `lookup_equal` / `lookup_range` and DML posting sync exist. **`lookup_intersection`** is implemented on graph-index; router `IndexAnchor` + per-shard seeds and graph skip of leading intersection op are **Implemented**. Graph federated wire path does not call index; library tests may still inject a mock index client.
 
-**Planned ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)):** edge property postings on graph-index (retire graph `EDGE_EQUALITY_POSTINGS`); mixed vertex/edge intersection; **opt-in** indexes only; `CREATE INDEX` / `DROP INDEX` on router.
+**Phase A ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)) — Implemented:** graph shard registry (`register_indexed_property`); DML/backfill maintain postings **only for registered** vertex/edge properties; router `admin_set_indexed_vertex_property` / `admin_set_indexed_edge_property` fan out to shards.
+
+**Phase B (ADR 0009) — Implemented:** `INDEX_EDGE_POSTINGS` on graph-index (`EdgePostingKey`); `edge_posting_insert` / `remove`, `lookup_edge_equal`; federated graph `edge_pending` flush; `backfill_edge_property_postings`.
+
+**Phase C (ADR 0009) — Implemented:** `IndexSubject` on `IndexEqualSpec`; `lookup_intersection` returns `IndexIntersectionResult` (`Vertices` or `Edges`); mixed vertex+edge arms project to `(shard_id, owner_vertex_id)`.
+
+**Phase D (ADR 0009) — Implemented:** router `EdgeIndexScan` / all-edge intersection → `lookup_edge_equal` / `lookup_intersection`; per-shard `LocalEdgePosting` seeds; graph applies edge seeds and skips leading `EdgeIndexScan`; shard-local `EDGE_EQUALITY_POSTINGS` retired (MemoryId repack to 40 regions); expand reads graph-index or canonical `EDGE_PROPERTIES` scan when no index client.
+
+**Phase E (ADR 0009) — Implemented:** router extension DDL `CREATE INDEX` / `DROP INDEX` (parsed in `router/index_ddl.rs`, executed on `gql_execute*`); named index catalog per logical graph; controller or Manager+ auth; `admin_set_indexed_*` unchanged (property-level register without index name).
 
 Property **name → `property_id`** assignment is **router SSOT** ([ADR 0006](../adr/0006-pre-federation-foundation.md) §2). Graph shards no longer maintain `PROPERTY_CATALOG` stable; DML and plan execution use router-resolved `PropertyId` on the wire (`ResolvedPropertyTable`).
 
@@ -90,12 +98,11 @@ Legacy: graph executor still calls `PropertyIndexLookup` for `IndexScan` / `Inde
 
 ## Graph shard local indexes
 
-**Today (pre-ADR 0009):** graph maintains **shard-local** edge equality postings
-(`EDGE_EQUALITY_POSTINGS`) for `indexed_edge_equality` / `EdgeIndexScan` expand fast paths.
-
-**Target (ADR 0009):** edge property equality moves to **graph-index** with key
-`(property_id, value, label_id, shard_id, owner_vertex_id, slot_index)`; graph shard retains
-`EDGE_PROPERTIES` values only. Postings are maintained **only for administrator-registered**
+**Implemented (ADR 0009 phase D):** edge property equality postings live on **graph-index** with key
+`(property_id, value, label_id, shard_id, owner_vertex_id, slot_index)`. Graph shard retains
+`EDGE_PROPERTIES` as canonical values; `indexed_edge_equality` / `EdgeIndexScan` expand paths use
+router seeds, a graph-index client when present, or a registered-property scan of `EDGE_PROPERTIES`
+in standalone/library mode. Postings are maintained **only for administrator-registered**
 properties (see ADR 0009 §2).
 
 ## Indexability vs primary storage

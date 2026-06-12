@@ -7,6 +7,7 @@ use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemor
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
 use std::cell::RefCell;
 
+use crate::edge_key::EdgePostingKey;
 use crate::key::PostingKey;
 use crate::label_key::LabelPostingKey;
 
@@ -17,11 +18,13 @@ const INDEX_SHARD_OWNERS: MemoryId = MemoryId::new(1);
 const INDEX_POSTINGS: MemoryId = MemoryId::new(2);
 const INDEX_ROUTER: MemoryId = MemoryId::new(3);
 const INDEX_LABEL_POSTINGS: MemoryId = MemoryId::new(4);
+const INDEX_EDGE_POSTINGS: MemoryId = MemoryId::new(5);
 
 pub(crate) type StableIndexAdminSet = BTreeSet<Principal, Memory>;
 pub(crate) type StableIndexShardOwnerMap = BTreeMap<ShardId, Principal, Memory>;
 pub(crate) type StableIndexPostingSet = BTreeSet<PostingKey, Memory>;
 pub(crate) type StableIndexLabelPostingSet = BTreeSet<LabelPostingKey, Memory>;
+pub(crate) type StableIndexEdgePostingSet = BTreeSet<EdgePostingKey, Memory>;
 pub(crate) type StableIndexRouterCell = Cell<Principal, Memory>;
 
 thread_local! {
@@ -43,6 +46,10 @@ pub(crate) fn init_index_postings() -> StableIndexPostingSet {
 
 pub(crate) fn init_index_label_postings() -> StableIndexLabelPostingSet {
     BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_LABEL_POSTINGS)))
+}
+
+pub(crate) fn init_index_edge_postings() -> StableIndexEdgePostingSet {
+    BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_EDGE_POSTINGS)))
 }
 
 pub(crate) fn init_index_router() -> StableIndexRouterCell {

@@ -11,7 +11,9 @@ use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::build_block_plan_with_schema;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
-use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, ValuePostingCount};
+use gleaph_graph_kernel::index::{
+    IndexIntersectionRequest, IndexIntersectionResult, PostingHit, ValuePostingCount,
+};
 use gleaph_graph_kernel::plan_exec::{
     GqlExecutionMode, GqlQueryResult, LabelTelemetryEventWire, MutationId,
 };
@@ -21,7 +23,7 @@ use crate::execution_path::check_adhoc_execution_path;
 use crate::facade::stable::label_telemetry::RouterMutationShard;
 use crate::facade::store::RouterStore;
 use crate::federation::{
-    AggregateIndexFastPath, FederatedMergeMode, ShardDispatch, ShardingPolicy,
+    AggregateIndexFastPath, FederatedMergeMode, SeedHits, ShardDispatch, ShardingPolicy,
     apply_federated_aggregate_having, collect_label_hits_for_shards,
     collect_label_intersection_hits_for_shards, empty_execute_plan_result,
     federated_dispatch_plan_blob, federated_merge_mode_from_plans,
@@ -38,7 +40,7 @@ use crate::graph_client::{
 use crate::index_client::RouterIndexClient;
 use crate::index_lookup::IndexLookup;
 use crate::planner_stats::RouterGraphStats;
-use crate::rbac::authorize_adhoc_gql;
+use crate::rbac::{authorize_adhoc_gql, authorize_index_ddl};
 use crate::seed::{IndexAnchor, SeedAnchorSet, SeedProbe};
 use crate::state::RouterError;
 
@@ -95,23 +97,37 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
     index: &I,
     anchor: &IndexAnchor,
     shard_ids: &[ShardId],
-) -> Result<Vec<PostingHit>, String> {
+) -> Result<SeedHits, String> {
     match anchor {
         IndexAnchor::Equal(SeedProbe {
             property_id,
             payload_bytes,
             ..
-        }) => {
+        }) => Ok(SeedHits::Vertices(
             index
                 .lookup_equal(*property_id, payload_bytes.clone())
-                .await
-        }
-        IndexAnchor::Intersection { specs, .. } => {
+                .await?,
+        )),
+        IndexAnchor::EdgeEqual(crate::seed::EdgeSeedProbe {
+            property_id,
+            payload_bytes,
+            label_id,
+            ..
+        }) => Ok(SeedHits::Edges(
             index
+                .lookup_edge_equal(*property_id, payload_bytes.clone(), *label_id)
+                .await?,
+        )),
+        IndexAnchor::Intersection { specs, .. } => {
+            let result = index
                 .lookup_intersection(IndexIntersectionRequest {
                     specs: specs.clone(),
                 })
-                .await
+                .await?;
+            match result {
+                IndexIntersectionResult::Vertices(hits) => Ok(SeedHits::Vertices(hits)),
+                IndexIntersectionResult::Edges(hits) => Ok(SeedHits::Edges(hits)),
+            }
         }
         IndexAnchor::Label {
             vertex_label_id, ..
@@ -119,7 +135,9 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
             if shard_ids.is_empty() {
                 return Err("label export requires registered shards".into());
             }
-            collect_label_hits_for_shards(index, *vertex_label_id, shard_ids).await
+            Ok(SeedHits::Vertices(
+                collect_label_hits_for_shards(index, *vertex_label_id, shard_ids).await?,
+            ))
         }
         IndexAnchor::LabelIntersection {
             vertex_label_ids, ..
@@ -127,7 +145,10 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
             if shard_ids.is_empty() {
                 return Err("label intersection export requires registered shards".into());
             }
-            collect_label_intersection_hits_for_shards(index, vertex_label_ids, shard_ids).await
+            Ok(SeedHits::Vertices(
+                collect_label_intersection_hits_for_shards(index, vertex_label_ids, shard_ids)
+                    .await?,
+            ))
         }
     }
 }
@@ -136,25 +157,39 @@ async fn resolve_seed_hits_from_anchors<I: IndexLookup + ?Sized>(
     index: &I,
     anchors: &[IndexAnchor],
     shard_ids: &[ShardId],
-) -> Result<Vec<PostingHit>, String> {
+) -> Result<SeedHits, String> {
     if anchors.is_empty() {
-        return Ok(Vec::new());
+        return Ok(SeedHits::Vertices(Vec::new()));
     }
-    let mut hit_sets = Vec::with_capacity(anchors.len());
-    for anchor in anchors {
-        let hits = lookup_anchor_hits(index, anchor, shard_ids).await?;
-        if hits.is_empty() {
-            return Ok(Vec::new());
+    let first = lookup_anchor_hits(index, &anchors[0], shard_ids).await?;
+    if first.is_empty() {
+        return Ok(first);
+    }
+    if anchors.len() == 1 {
+        return Ok(first);
+    }
+    match first {
+        SeedHits::Vertices(mut accumulated) => {
+            for anchor in &anchors[1..] {
+                let SeedHits::Vertices(hits) = lookup_anchor_hits(index, anchor, shard_ids).await?
+                else {
+                    return Err("mixed vertex and edge anchors in seed prefix".into());
+                };
+                accumulated = intersect_posting_hits(vec![accumulated, hits]);
+                if accumulated.is_empty() {
+                    return Ok(SeedHits::Vertices(Vec::new()));
+                }
+            }
+            Ok(SeedHits::Vertices(accumulated))
         }
-        hit_sets.push(hits);
+        SeedHits::Edges(_) => Err("edge anchor cannot combine with additional anchors".into()),
     }
-    Ok(intersect_posting_hits(hit_sets))
 }
 
 async fn lookup_hits_for_anchor<I: IndexLookup + ?Sized>(
     index: &I,
     anchor: &IndexAnchor,
-) -> Result<Vec<PostingHit>, String> {
+) -> Result<SeedHits, String> {
     lookup_anchor_hits(index, anchor, &[]).await
 }
 
@@ -169,6 +204,9 @@ async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
     }
     if anchors.len() == 1 {
         let hits = lookup_hits_for_anchor(index, &anchors[0]).await?;
+        let SeedHits::Vertices(hits) = hits else {
+            return Ok(FastPathFilterResolution::Oversized);
+        };
         if posting_hits_exceed_fast_path_budget(&hits) {
             return Ok(FastPathFilterResolution::Oversized);
         }
@@ -183,6 +221,9 @@ async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
     let mut sets: Vec<std::collections::HashSet<u64>> = Vec::with_capacity(anchors.len());
     for anchor in anchors {
         let hits = lookup_hits_for_anchor(index, anchor).await?;
+        let SeedHits::Vertices(hits) = hits else {
+            return Ok(FastPathFilterResolution::Oversized);
+        };
         if posting_hits_exceed_fast_path_budget(&hits) {
             return Ok(FastPathFilterResolution::Oversized);
         }
@@ -372,6 +413,22 @@ async fn run_gql(
     force: bool,
     client_mutation_key: Option<&str>,
 ) -> Result<GqlQueryResult, RouterError> {
+    if let Some(ddl) = crate::index_ddl::try_parse(query) {
+        let caller = msg_caller();
+        authorize_index_ddl(&caller)?;
+        if mode == GqlExecutionMode::Query && !force {
+            return Err(RouterError::ExecutionPathMismatch {
+                entrypoint: entrypoint.to_string(),
+                program_kind: "write".to_string(),
+                call_kind: "query".to_string(),
+                remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
+            });
+        }
+        let stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        crate::canister::execute_index_ddl(logical_graph_name, stmt).await?;
+        return Ok(GqlQueryResult::row_count_only(0));
+    }
+
     let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let flags = classify_program(&program);
     let caller = msg_caller();
@@ -617,7 +674,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     logical_graph_name,
                     &shards,
                     set.routing_anchor(),
-                    &hits,
+                    hits,
                 ) {
                     Ok(routings) => routings,
                     Err(err) => {
@@ -965,6 +1022,7 @@ mod tests {
     use std::pin::Pin;
     use std::rc::Rc;
 
+    use crate::federation::SeedHits;
     use crate::index_lookup::IndexLookup;
     use candid::{Decode, Principal};
     use gleaph_gql::Value;
@@ -974,7 +1032,8 @@ mod tests {
     use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
     use gleaph_graph_kernel::index::{
-        IndexLabelIntersectionRequest, LabelLookupPageResult, PostingHit, ValuePostingCount,
+        EdgePostingHit, IndexLabelIntersectionRequest, LabelLookupPageResult, PostingHit,
+        ValuePostingCount,
     };
     use gleaph_graph_kernel::plan_exec::{
         ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelTelemetryEventWire,
@@ -1059,10 +1118,32 @@ mod tests {
         fn lookup_intersection(
             &self,
             _req: gleaph_graph_kernel::index::IndexIntersectionRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            gleaph_graph_kernel::index::IndexIntersectionResult,
+                            String,
+                        >,
+                    > + '_,
+            >,
+        > {
             self.calls.set(self.calls.get() + 1);
-            let result = self.results.borrow_mut().remove(0);
+            let result = self
+                .results
+                .borrow_mut()
+                .remove(0)
+                .map(gleaph_graph_kernel::index::IndexIntersectionResult::Vertices);
             Box::pin(async move { result })
+        }
+
+        fn lookup_edge_equal(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+            _label_id: Option<u16>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
+            Box::pin(async move { Ok(Vec::new()) })
         }
 
         fn count_postings_by_value(
@@ -1153,7 +1234,27 @@ mod tests {
         fn lookup_intersection(
             &self,
             _req: gleaph_graph_kernel::index::IndexIntersectionRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            gleaph_graph_kernel::index::IndexIntersectionResult,
+                            String,
+                        >,
+                    > + '_,
+            >,
+        > {
+            Box::pin(async move {
+                Ok(gleaph_graph_kernel::index::IndexIntersectionResult::Vertices(Vec::new()))
+            })
+        }
+
+        fn lookup_edge_equal(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+            _label_id: Option<u16>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
             Box::pin(async move { Ok(Vec::new()) })
         }
 
@@ -1342,7 +1443,27 @@ mod tests {
         fn lookup_intersection(
             &self,
             _req: gleaph_graph_kernel::index::IndexIntersectionRequest,
-        ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+        ) -> Pin<
+            Box<
+                dyn Future<
+                        Output = Result<
+                            gleaph_graph_kernel::index::IndexIntersectionResult,
+                            String,
+                        >,
+                    > + '_,
+            >,
+        > {
+            Box::pin(async move {
+                Ok(gleaph_graph_kernel::index::IndexIntersectionResult::Vertices(Vec::new()))
+            })
+        }
+
+        fn lookup_edge_equal(
+            &self,
+            _property_id: u32,
+            _value: Vec<u8>,
+            _label_id: Option<u16>,
+        ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
             Box::pin(async move { Ok(Vec::new()) })
         }
 
@@ -1703,14 +1824,21 @@ mod tests {
                 vertex_id: 20,
             },
         ];
-        let routings =
-            resolve_seed_routings_multi(&store, &hits, "tenant.main", IndexAnchor::Equal(probe))
-                .expect("route");
+        let routings = resolve_seed_routings_multi(
+            &store,
+            SeedHits::Vertices(hits),
+            "tenant.main",
+            IndexAnchor::Equal(probe),
+        )
+        .expect("route");
         assert_eq!(routings.len(), 2);
         assert_eq!(routings[0].shard_id, ShardId::new(0));
         assert_eq!(routings[1].shard_id, ShardId::new(1));
-        assert_eq!(routings[0].hits.len(), 1);
-        assert_eq!(routings[0].hits[0].vertex_id, 10);
+        let SeedHits::Vertices(shard_hits) = &routings[0].hits else {
+            panic!("expected vertex hits");
+        };
+        assert_eq!(shard_hits.len(), 1);
+        assert_eq!(shard_hits[0].vertex_id, 10);
         assert!(routings[0].anchor.is_some());
         assert_eq!(routings[0].graph_canister, graph_principal(1));
     }
@@ -1733,13 +1861,17 @@ mod tests {
             },
         ];
         let routings =
-            resolve_seed_routings_multi(&store, &hits, "tenant.main", anchor).expect("route");
+            resolve_seed_routings_multi(&store, SeedHits::Vertices(hits), "tenant.main", anchor)
+                .expect("route");
         assert_eq!(routings.len(), 2);
         let blob7 = routings[0]
             .anchor
             .as_ref()
             .and_then(|a| {
-                seeds_for_local_shard(a.variable(), &routings[0].hits, routings[0].shard_id)
+                let SeedHits::Vertices(shard_hits) = &routings[0].hits else {
+                    return None;
+                };
+                seeds_for_local_shard(a.variable(), shard_hits, routings[0].shard_id)
             })
             .expect("shard 7 seeds");
         let seeds: SeedBindingsWire = candid::Decode!(&blob7, SeedBindingsWire).expect("decode");
@@ -1760,9 +1892,13 @@ mod tests {
             shard_id: ShardId::new(99),
             vertex_id: 1,
         }];
-        let err =
-            resolve_seed_routings_multi(&store, &hits, "tenant.main", IndexAnchor::Equal(probe))
-                .expect_err("unknown shard");
+        let err = resolve_seed_routings_multi(
+            &store,
+            SeedHits::Vertices(hits),
+            "tenant.main",
+            IndexAnchor::Equal(probe),
+        )
+        .expect_err("unknown shard");
         assert!(matches!(err, RouterError::ShardNotRegistered));
     }
 
@@ -1791,14 +1927,14 @@ mod tests {
         .expect("intersect label and property hits");
         assert_eq!(
             hits,
-            vec![PostingHit {
+            SeedHits::Vertices(vec![PostingHit {
                 shard_id: ShardId::new(0),
                 vertex_id: 10,
-            }]
+            }])
         );
 
         let routings =
-            resolve_seed_routings_multi(&store, &hits, "tenant.main", set.routing_anchor())
+            resolve_seed_routings_multi(&store, hits, "tenant.main", set.routing_anchor())
                 .expect("route");
         let dispatches = routings_to_dispatches(routings);
         assert_eq!(dispatches.len(), 1);
@@ -1880,9 +2016,13 @@ mod tests {
             ]
         );
 
-        let routings =
-            resolve_seed_routings_multi(&store, &hits, "tenant.main", set.routing_anchor())
-                .expect("route");
+        let routings = resolve_seed_routings_multi(
+            &store,
+            SeedHits::Vertices(hits),
+            "tenant.main",
+            set.routing_anchor(),
+        )
+        .expect("route");
         let dispatches = routings_to_dispatches(routings);
         assert_eq!(dispatches.len(), 2);
 

@@ -140,3 +140,28 @@ pub async fn backfill_property_postings(
 ) -> Result<PostingBackfillResult, String> {
     call_graph_result(graph, "backfill_property_postings", args).await
 }
+
+pub async fn register_indexed_property(
+    graph: Principal,
+    args: gleaph_graph_kernel::index::RegisterIndexedPropertyArgs,
+) -> Result<(), String> {
+    call_graph_result(graph, "register_indexed_property", args).await
+}
+
+pub async fn unregister_indexed_property(
+    graph: Principal,
+    args: gleaph_graph_kernel::index::RegisterIndexedPropertyArgs,
+) -> Result<(), String> {
+    call_graph_result(graph, "unregister_indexed_property", args).await
+}
+
+#[expect(
+    dead_code,
+    reason = "wired in router admin edge backfill step (ADR 0009 phase C follow-up)"
+)]
+pub async fn backfill_edge_property_postings(
+    graph: Principal,
+    args: gleaph_graph_kernel::federation::EdgePostingBackfillArgs,
+) -> Result<gleaph_graph_kernel::federation::EdgePostingBackfillResult, String> {
+    call_graph_result(graph, "backfill_edge_property_postings", args).await
+}

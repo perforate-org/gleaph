@@ -1495,6 +1495,7 @@ fn aggregate_count_star_after_node_scan() {
 #[test]
 fn leading_edge_index_scan_binds_matching_edges_and_endpoints() {
     let store = GraphStore::new();
+    crate::test_labels::register_indexed_edge_property_named("weight");
     let a = store
         .insert_vertex_named(["LeadIdxA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1565,6 +1566,7 @@ fn leading_edge_bind_endpoints_hop_aux_returns_payload_bytes() {
         },
     );
     let weight_prop = crate::test_labels::property_id_for_name("weight");
+    crate::test_labels::register_indexed_edge_property_named("weight");
     let payload = 7u16.to_le_bytes();
     let edge = store
         .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &payload)
@@ -1610,6 +1612,7 @@ fn leading_edge_bind_endpoints_hop_aux_returns_payload_bytes() {
 #[test]
 fn leading_edge_bind_endpoints_honors_prebound_far_vertex() {
     let store = GraphStore::new();
+    crate::test_labels::register_indexed_edge_property_named("weight");
     let a = store
         .insert_vertex_named(["LeadPreA"], Vec::<(&str, Value)>::new())
         .expect("a");

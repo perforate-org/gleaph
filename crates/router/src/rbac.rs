@@ -28,6 +28,17 @@ pub fn authorize_prepared_execute(caller: &Principal) -> Result<(), RouterError>
     Ok(())
 }
 
+/// Index DDL (`CREATE INDEX` / `DROP INDEX`): controller or Manager with `PREPARE_REGISTER`.
+pub fn authorize_index_ddl(caller: &Principal) -> Result<(), RouterError> {
+    if crate::facade::store::RouterStore::new().is_controller(*caller)
+        || auth::can_prepare_register(caller)
+    {
+        Ok(())
+    } else {
+        Err(RouterError::Forbidden)
+    }
+}
+
 /// `prepared_register` / `prepared_drop`: Admin or Manager with `PREPARE_REGISTER`.
 pub fn authorize_prepared_catalog_change(caller: &Principal) -> Result<(), RouterError> {
     if auth::can_prepare_register(caller) {

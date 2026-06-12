@@ -16,6 +16,7 @@ Anchor timestamp: 2026-06-12 07:45:56 UTC +0000
 | 2026-06-12 | Extended canbench to graph/router/graph-index; §8b preliminary retain/defer judgments. |
 | 2026-06-12 | P1 executed: retired `EDGE_WEIGHT_PROFILES`; graph facade repacked to 42 regions (ids 37–41). |
 | 2026-06-12 | ADR 0008 executed: retired graph `EDGE_PAYLOAD_PROFILES`; graph 41 regions (facade 32–40); router 22 regions (0–21). |
+| 2026-06-12 | ADR 0009 phase D: retired graph `EDGE_EQUALITY_POSTINGS`; graph 40 regions (facade 32–39). |
 
 ## Context
 
@@ -166,6 +167,7 @@ Until consolidation rows exist, **no consolidation patch merges**.
 |-------|---------|--------------|---------------------------|
 | `bench_layout_memory_manager_cold_touch_5` | 5 | 127.81 K | 641 |
 | `bench_layout_memory_manager_cold_touch_21` | 22 (router, post-0008) | 344.94 K | 2,817 |
+| `bench_layout_memory_manager_cold_touch_40` | 40 (graph, post-0009) | *(rerun canbench)* | *(rerun canbench)* |
 | `bench_layout_memory_manager_cold_touch_41` | 41 (graph, post-0008) | 587.61 K | 5,249 |
 | `bench_layout_memory_manager_cold_touch_42` | 42 (pre-0008) | 600.38 K | 5,377 |
 | `bench_layout_memory_manager_cold_touch_43` | 43 (pre-P1) | 613.15 K | 5,505 |

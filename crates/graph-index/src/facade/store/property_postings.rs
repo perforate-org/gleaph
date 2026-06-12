@@ -8,9 +8,7 @@ use crate::posting_range::{posting_key_half_open_range, property_posting_bucket}
 use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::{
-    IndexIntersectionRequest, PostingHit, PostingRangeRequest, ValuePostingCount,
-};
+use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest, ValuePostingCount};
 
 impl IndexStore {
     pub(super) fn commit_posting_insert(
@@ -89,40 +87,6 @@ impl IndexStore {
                 })
                 .collect()
         })
-    }
-
-    pub fn lookup_intersection(&self, req: &IndexIntersectionRequest) -> Vec<PostingHit> {
-        if req.specs.len() < 2 {
-            return Vec::new();
-        }
-        let mut sets: Vec<std::collections::HashSet<u64>> = Vec::with_capacity(req.specs.len());
-        for spec in &req.specs {
-            let lo = PostingKey::prefix_lower(spec.property_id, &spec.value);
-            let hi = PostingKey::prefix_upper(spec.property_id, &spec.value);
-            let mut set = std::collections::HashSet::new();
-            INDEX_POSTINGS.with_borrow(|postings| {
-                for key in postings.range(lo..=hi) {
-                    let packed = pack_posting_vertex(key.shard_id, key.vertex_id);
-                    set.insert(packed);
-                }
-            });
-            sets.push(set);
-        }
-        sets.sort_by_key(|set| set.len());
-        let mut intersection = sets[0].clone();
-        for set in sets.iter().skip(1) {
-            intersection = intersection.intersection(set).copied().collect();
-            if intersection.is_empty() {
-                return Vec::new();
-            }
-        }
-        intersection
-            .into_iter()
-            .map(|packed| PostingHit {
-                shard_id: ShardId::new((packed >> 32) as u32),
-                vertex_id: (packed & 0xFFFF_FFFF) as u32,
-            })
-            .collect()
     }
 
     /// Walk the property bucket and return `(encoded_value, global_count)` groups with `count >= min_count`.

@@ -11,7 +11,7 @@ benches:
         instructions: 343929
         heap_increase: 0
         stable_memory_increase: 2817
-  bench_layout_memory_manager_cold_touch_41:
+  bench_layout_memory_manager_cold_touch_40:
     total:
       calls: 1
       instructions: 587606

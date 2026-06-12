@@ -24,9 +24,9 @@ pub use aggregate_merge::{
     federated_merge_mode_from_ops, federated_merge_mode_from_plans, merge_aggregate_blobs,
     merge_optional_aggregate_blobs, strip_post_aggregate_having,
 };
-pub use dispatch::SeedRouting;
 #[allow(unused_imports)] // public federation API surface
 pub use dispatch::resolve_seed_routings_multi;
+pub use dispatch::{SeedHits, SeedRouting};
 pub use having_filter::apply_federated_aggregate_having;
 pub use limits::{packed_vertices_exceed_fast_path_budget, posting_hits_exceed_fast_path_budget};
 #[expect(unused_imports, reason = "public federation API surface")]
@@ -37,10 +37,9 @@ pub use standalone::StandaloneSharding;
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
-use gleaph_graph_kernel::index::PostingHit;
 
 use crate::facade::store::RouterStore;
-use crate::seed::{IndexAnchor, seeds_for_local_shard};
+use crate::seed::{IndexAnchor, seeds_for_local_shard, seeds_for_local_shard_edges};
 use crate::state::RouterError;
 
 /// Per-shard graph execution target after routing.
@@ -64,7 +63,7 @@ pub trait ShardingPolicy {
         logical_graph_name: &str,
         shards: &[ShardRegistryEntry],
         anchor: IndexAnchor,
-        hits: &[PostingHit],
+        hits: SeedHits,
     ) -> Result<Vec<SeedRouting>, RouterError>;
 }
 
@@ -98,7 +97,7 @@ impl ShardingPolicy for ActiveShardingPolicy {
         logical_graph_name: &str,
         shards: &[ShardRegistryEntry],
         anchor: IndexAnchor,
-        hits: &[PostingHit],
+        hits: SeedHits,
     ) -> Result<Vec<SeedRouting>, RouterError> {
         match self {
             Self::Standalone(policy) => {
@@ -117,9 +116,17 @@ pub fn routings_to_dispatches(routings: Vec<SeedRouting>) -> Vec<ShardDispatch> 
         .map(|routing| ShardDispatch {
             shard_id: routing.shard_id,
             graph_canister: routing.graph_canister,
-            seed_bindings_blob: routing.anchor.as_ref().and_then(|anchor| {
-                seeds_for_local_shard(anchor.variable(), &routing.hits, routing.shard_id)
-            }),
+            seed_bindings_blob: routing
+                .anchor
+                .as_ref()
+                .and_then(|anchor| match &routing.hits {
+                    SeedHits::Vertices(hits) => {
+                        seeds_for_local_shard(anchor.variable(), hits, routing.shard_id)
+                    }
+                    SeedHits::Edges(hits) => {
+                        seeds_for_local_shard_edges(anchor.variable(), hits, routing.shard_id)
+                    }
+                }),
         })
         .collect()
 }

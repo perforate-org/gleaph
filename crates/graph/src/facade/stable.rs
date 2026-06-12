@@ -10,7 +10,6 @@ pub(crate) mod layout;
 pub(crate) mod memory;
 
 pub(crate) mod edge_alias;
-pub(crate) mod edge_equality_postings;
 pub(crate) mod edge_properties;
 pub(crate) mod label_telemetry;
 pub(crate) mod metadata;
@@ -44,9 +43,6 @@ thread_local! {
     pub(crate) static METADATA: RefCell<memory::StableMetadata> = RefCell::new(
         memory::init_metadata()
     );
-
-    pub(crate) static EDGE_EQUALITY_POSTINGS: RefCell<memory::StableEdgeEqualityPostingStore> =
-        RefCell::new(memory::init_edge_equality_postings());
 
     pub(crate) static LABEL_TELEMETRY_SEQ: RefCell<memory::StableLabelTelemetrySeq> =
         RefCell::new(memory::init_label_telemetry_seq());

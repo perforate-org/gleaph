@@ -6,6 +6,8 @@
 //! - [`label_postings`] — vertex label membership postings read/write
 
 mod authorization;
+mod edge_postings;
+mod intersection;
 mod label_postings;
 mod property_postings;
 
@@ -32,4 +34,16 @@ impl IndexStore {
 
 pub(crate) fn pack_posting_vertex(shard_id: ShardId, vertex_id: u32) -> u64 {
     (u64::from(shard_id.raw()) << 32) | u64::from(vertex_id)
+}
+
+pub(crate) fn pack_edge_identity(
+    shard_id: ShardId,
+    owner_vertex_id: u32,
+    label_id: u16,
+    slot_index: u32,
+) -> u128 {
+    (u128::from(shard_id.raw()) << 96)
+        | (u128::from(owner_vertex_id) << 64)
+        | (u128::from(u32::from(label_id)) << 32)
+        | u128::from(slot_index)
 }

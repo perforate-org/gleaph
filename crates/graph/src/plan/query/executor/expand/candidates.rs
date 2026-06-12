@@ -23,7 +23,7 @@ use super::{
 };
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::gql_execution_context::GqlExecutionContext;
-use crate::index::edge_equal;
+use crate::index::edge_lookup;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::EdgeBinding;
 use crate::plan::query::executor::context::QueryExprEvaluator;
@@ -798,9 +798,15 @@ fn expand_candidates_via_equality_index(
         out.clear();
         return Ok(true);
     };
-    let Some(postings) = edge_equal::lookup_equal(property_id, &expected) else {
+    let postings = edge_lookup::lookup_edge_equal_local_sync(
+        None,
+        property_id,
+        &expected,
+        edge_label_id.map(|id| id.raw()),
+    )?;
+    if postings.is_empty() {
         return Ok(false);
-    };
+    }
 
     let mut out_slots: BTreeSet<(u16, u32)> = BTreeSet::new();
     let mut in_slots: BTreeSet<(u32, u16, u32)> = BTreeSet::new();

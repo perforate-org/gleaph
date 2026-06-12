@@ -14,6 +14,7 @@
 #[cfg(feature = "canbench")]
 mod bench;
 
+mod edge_key;
 mod facade;
 mod key;
 mod label_key;
@@ -25,11 +26,12 @@ pub mod init;
 
 mod canister;
 
+pub use edge_key::EdgePostingKey;
 pub use facade::IndexStore;
 pub use gleaph_graph_kernel::index::{
-    IndexEqualSpec, IndexIntersectionRequest, IndexLabelIntersectionRequest,
-    LabelLookupPageRequest, LabelLookupPageResult, LabelPostingCursor, PostingHit,
-    PostingRangeRequest, ValuePostingCount,
+    EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
+    IndexLabelIntersectionRequest, IndexSubject, LabelLookupPageRequest, LabelLookupPageResult,
+    LabelPostingCursor, PostingHit, PostingRangeRequest, ValuePostingCount,
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
@@ -66,6 +68,44 @@ fn posting_remove(shard_id: ShardId, property_id: u32, value: Vec<u8>, vertex_id
 }
 
 #[update]
+fn edge_posting_insert(
+    shard_id: ShardId,
+    property_id: u32,
+    value: Vec<u8>,
+    label_id: u16,
+    owner_vertex_id: u32,
+    slot_index: u32,
+) {
+    canister::edge_posting_insert(
+        shard_id,
+        property_id,
+        value,
+        label_id,
+        owner_vertex_id,
+        slot_index,
+    );
+}
+
+#[update]
+fn edge_posting_remove(
+    shard_id: ShardId,
+    property_id: u32,
+    value: Vec<u8>,
+    label_id: u16,
+    owner_vertex_id: u32,
+    slot_index: u32,
+) {
+    canister::edge_posting_remove(
+        shard_id,
+        property_id,
+        value,
+        label_id,
+        owner_vertex_id,
+        slot_index,
+    );
+}
+
+#[update]
 fn label_posting_insert(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32) {
     canister::label_posting_insert(shard_id, vertex_label_id, vertex_id);
 }
@@ -78,6 +118,15 @@ fn label_posting_remove(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32)
 #[query]
 fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
     canister::lookup_equal(property_id, value)
+}
+
+#[query]
+fn lookup_edge_equal(
+    property_id: u32,
+    value: Vec<u8>,
+    label_id: Option<u16>,
+) -> Vec<EdgePostingHit> {
+    canister::lookup_edge_equal(property_id, value, label_id)
 }
 
 #[query]
@@ -96,7 +145,7 @@ fn lookup_label_page(req: LabelLookupPageRequest) -> LabelLookupPageResult {
 }
 
 #[query]
-fn lookup_intersection(req: IndexIntersectionRequest) -> Vec<PostingHit> {
+fn lookup_intersection(req: IndexIntersectionRequest) -> IndexIntersectionResult {
     canister::lookup_intersection(req)
 }
 

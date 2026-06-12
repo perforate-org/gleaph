@@ -11,7 +11,8 @@ use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use crate::facade::catalog_edge_label_from_wire;
 use crate::facade::{EdgeHandle, GraphStore};
 use crate::gql_execution_context::GqlExecutionContext;
-use crate::index::edge_equal;
+use crate::index::edge_lookup;
+use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::{EdgeBinding, hop_aux_scalar};
 use crate::plan::query::executor::expand::{
@@ -80,6 +81,7 @@ fn edge_binding_matches_label(
 
 pub(crate) fn execute_edge_index_scan(
     store: &GraphStore,
+    index: Option<&dyn PropertyIndexLookup>,
     execution: &GqlExecutionContext,
     rows: Vec<PlanRow>,
     variable: &Str,
@@ -94,9 +96,10 @@ pub(crate) fn execute_edge_index_scan(
     let Some(expected) = resolve_scan_payload_bytes(scan_value, parameters)? else {
         return Ok(Vec::new());
     };
-    let Some(postings) = edge_equal::lookup_equal(property_id, &expected) else {
+    let postings = edge_lookup::lookup_edge_equal_local_sync(index, property_id, &expected, None)?;
+    if postings.is_empty() {
         return Ok(Vec::new());
-    };
+    }
     let mut out = Vec::new();
     for row in rows {
         for posting in &postings {

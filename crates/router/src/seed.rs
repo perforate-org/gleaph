@@ -16,8 +16,8 @@ use gleaph_gql_planner::GraphStats;
 use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::plan::{PlanOp, ScanValue};
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::{IndexEqualSpec, PostingHit};
-use gleaph_graph_kernel::plan_exec::{SeedBindingEntry, SeedBindingsWire};
+use gleaph_graph_kernel::index::{EdgePostingHit, IndexEqualSpec, PostingHit};
+use gleaph_graph_kernel::plan_exec::{LocalEdgePosting, SeedBindingEntry, SeedBindingsWire};
 
 use crate::facade::store::RouterStore;
 use crate::planner_stats::RouterGraphStats;
@@ -28,6 +28,8 @@ use crate::state::RouterError;
 pub enum IndexAnchor {
     /// Single equality `IndexScan` (`lookup_equal`).
     Equal(SeedProbe),
+    /// Leading `EdgeIndexScan` (`lookup_edge_equal`).
+    EdgeEqual(EdgeSeedProbe),
     /// Multiple equality arms (`lookup_intersection`).
     Intersection {
         variable: String,
@@ -50,6 +52,7 @@ impl IndexAnchor {
     pub fn variable(&self) -> &str {
         match self {
             Self::Equal(probe) => probe.variable.as_str(),
+            Self::EdgeEqual(probe) => probe.variable.as_str(),
             Self::Intersection { variable, .. } => variable.as_str(),
             Self::Label { variable, .. } => variable.as_str(),
             Self::LabelIntersection { variable, .. } => variable.as_str(),
@@ -124,6 +127,16 @@ pub struct SeedProbe {
     pub payload_bytes: Vec<u8>,
 }
 
+/// Equality `EdgeIndexScan` anchor (`lookup_edge_equal`).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct EdgeSeedProbe {
+    pub variable: String,
+    pub property: String,
+    pub property_id: u32,
+    pub payload_bytes: Vec<u8>,
+    pub label_id: Option<u16>,
+}
+
 impl SeedProbe {
     /// Returns `Some` only when the anchor is a single equality `IndexScan`.
     #[cfg_attr(not(test), expect(dead_code, reason = "test and tooling helper"))]
@@ -135,6 +148,7 @@ impl SeedProbe {
         Ok(match IndexAnchor::from_plans(plans, parameters, store)? {
             Some(IndexAnchor::Equal(probe)) => Some(probe),
             Some(IndexAnchor::Intersection { .. })
+            | Some(IndexAnchor::EdgeEqual(_))
             | Some(IndexAnchor::Label { .. })
             | Some(IndexAnchor::LabelIntersection { .. })
             | None => None,
@@ -151,6 +165,22 @@ pub(crate) fn index_anchor_from_prefix_ops(
     match ops {
         [] => Ok(None),
         [op] => extract_from_op(op, parameters, store),
+        [
+            PlanOp::EdgeIndexScan {
+                variable,
+                property,
+                value,
+                ..
+            },
+            PlanOp::EdgeBindEndpoints { label, .. },
+        ] => Ok(Some(edge_equal_anchor(
+            store,
+            parameters,
+            variable,
+            property.as_ref(),
+            value,
+            label.as_ref().map(|l| l.as_ref()),
+        )?)),
         _ => Ok(None),
     }
 }
@@ -162,6 +192,43 @@ fn resolve_vertex_label_id(store: &RouterStore, label: &str) -> Result<u32, Rout
             .map_err(|_| RouterError::NotFound(format!("label {label}")))?
             .raw(),
     ))
+}
+
+fn resolve_edge_label_id(store: &RouterStore, label: &str) -> Result<u16, RouterError> {
+    let raw = store
+        .lookup_edge_label_id(label)
+        .map_err(|_| RouterError::NotFound(format!("edge label {label}")))?
+        .raw();
+    u16::try_from(u32::from(raw)).map_err(|_| {
+        RouterError::InvalidArgument(format!("edge label id does not fit u16: {label}"))
+    })
+}
+
+fn edge_equal_anchor(
+    store: &RouterStore,
+    params: &BTreeMap<String, Value>,
+    variable: impl AsRef<str>,
+    property: impl AsRef<str>,
+    value: &ScanValue,
+    edge_label: Option<&str>,
+) -> Result<IndexAnchor, RouterError> {
+    let payload_bytes = resolve_scan_value(value, params)
+        .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
+    let property_id = store
+        .lookup_property_id(property.as_ref())
+        .map_err(|_| RouterError::NotFound(format!("property {}", property.as_ref())))?
+        .raw();
+    let label_id = match edge_label {
+        Some(label) => Some(resolve_edge_label_id(store, label)?),
+        None => None,
+    };
+    Ok(IndexAnchor::EdgeEqual(EdgeSeedProbe {
+        variable: variable.as_ref().to_string(),
+        property: property.as_ref().to_string(),
+        property_id,
+        payload_bytes,
+        label_id,
+    }))
 }
 
 fn variable_from_expr(expr: &Expr) -> Option<&str> {
@@ -198,8 +265,9 @@ pub(crate) fn parse_seed_anchor_prefix(
 
     let mut anchors = Vec::new();
     let mut bound_var: Option<String> = None;
-    for op in ops {
-        match op {
+    let mut i = 0;
+    while i < ops.len() {
+        match &ops[i] {
             PlanOp::NodeScan {
                 label: Some(label),
                 variable,
@@ -238,10 +306,7 @@ pub(crate) fn parse_seed_anchor_prefix(
                             RouterError::NotFound(format!("property {}", scan.property.as_ref()))
                         })?
                         .raw();
-                    specs.push(IndexEqualSpec {
-                        property_id,
-                        value: payload_bytes,
-                    });
+                    specs.push(IndexEqualSpec::vertex(property_id, payload_bytes));
                 }
                 push_unique_anchor(
                     &mut anchors,
@@ -250,6 +315,32 @@ pub(crate) fn parse_seed_anchor_prefix(
                         specs,
                     },
                 );
+            }
+            PlanOp::EdgeIndexScan {
+                variable,
+                property,
+                value,
+                ..
+            } => {
+                record_bound_var(&mut bound_var, variable)?;
+                let edge_label = ops.get(i + 1).and_then(|next| match next {
+                    PlanOp::EdgeBindEndpoints {
+                        label: Some(label), ..
+                    } => Some(label.as_ref()),
+                    _ => None,
+                });
+                push_unique_anchor(
+                    &mut anchors,
+                    edge_equal_anchor(
+                        store,
+                        params,
+                        variable,
+                        property.as_ref(),
+                        value,
+                        edge_label,
+                    )?,
+                );
+                break;
             }
             PlanOp::IndexScan { .. } | PlanOp::IndexIntersection { .. } => break,
             PlanOp::PropertyFilter { predicates, .. } => {
@@ -274,6 +365,7 @@ pub(crate) fn parse_seed_anchor_prefix(
             }
             _ => break,
         }
+        i += 1;
     }
     if anchors.is_empty() {
         Ok(None)
@@ -521,10 +613,7 @@ fn extract_from_op(
                         RouterError::NotFound(format!("property {}", scan.property.as_ref()))
                     })?
                     .raw();
-                specs.push(IndexEqualSpec {
-                    property_id,
-                    value: payload_bytes,
-                });
+                specs.push(IndexEqualSpec::vertex(property_id, payload_bytes));
             }
             Ok(Some(IndexAnchor::Intersection {
                 variable: variable.to_string(),
@@ -559,6 +648,19 @@ fn extract_from_op(
                 payload_bytes,
             })))
         }
+        PlanOp::EdgeIndexScan {
+            variable,
+            property,
+            value,
+            ..
+        } => Ok(Some(edge_equal_anchor(
+            store,
+            parameters,
+            variable,
+            property.as_ref(),
+            value,
+            None,
+        )?)),
         PlanOp::HashJoin { left, right, .. } => {
             if let Some(p) = extract_from_ops(left, parameters, store)? {
                 return Ok(Some(p));
@@ -618,6 +720,35 @@ pub fn seeds_for_local_shard(
         entries: vec![SeedBindingEntry {
             variable: variable.to_string(),
             local_vertex_ids: local_ids,
+            local_edge_postings: Vec::new(),
+        }],
+    };
+    Some(Encode!(&wire).expect("SeedBindingsWire encode"))
+}
+
+/// Encode local edge postings for one shard into `ExecutePlanArgs.seed_bindings_blob`.
+pub fn seeds_for_local_shard_edges(
+    variable: &str,
+    hits: &[EdgePostingHit],
+    target_shard: ShardId,
+) -> Option<Vec<u8>> {
+    let local_postings: Vec<LocalEdgePosting> = hits
+        .iter()
+        .filter(|h| h.shard_id == target_shard)
+        .map(|h| LocalEdgePosting {
+            owner_vertex_id: h.owner_vertex_id,
+            label_id: h.label_id,
+            slot_index: h.slot_index,
+        })
+        .collect();
+    if local_postings.is_empty() {
+        return None;
+    }
+    let wire = SeedBindingsWire {
+        entries: vec![SeedBindingEntry {
+            variable: variable.to_string(),
+            local_vertex_ids: Vec::new(),
+            local_edge_postings: local_postings,
         }],
     };
     Some(Encode!(&wire).expect("SeedBindingsWire encode"))
@@ -639,7 +770,11 @@ mod tests {
     use gleaph_graph_kernel::index::PostingHit;
     use gleaph_graph_kernel::plan_exec::SeedBindingsWire;
 
-    use super::{IndexAnchor, SeedAnchorSet, SeedProbe, seeds_for_local_shard};
+    use gleaph_graph_kernel::index::EdgePostingHit;
+
+    use super::{
+        IndexAnchor, SeedAnchorSet, SeedProbe, seeds_for_local_shard, seeds_for_local_shard_edges,
+    };
     use crate::facade::store::RouterStore;
     use crate::init::RouterInitArgs;
     use crate::planner_stats::RouterGraphStats;
@@ -898,5 +1033,63 @@ mod tests {
             Decode!(&Encode!(&wire).expect("re-encode"), SeedBindingsWire).expect("roundtrip");
         assert_eq!(wire, roundtrip);
         assert!(seeds_for_local_shard("u", &hits, ShardId::new(99)).is_none());
+    }
+
+    #[test]
+    fn edge_index_scan_anchor_resolves_label_and_encodes_edge_seeds() {
+        use gleaph_gql::types::EdgeDirection;
+        use gleaph_gql_planner::plan::EdgeLabelRef;
+
+        let store = test_store_with_property("weight");
+        let admin = candid::Principal::anonymous();
+        store
+            .admin_intern_edge_label(admin, "KNOWS")
+            .expect("intern edge label");
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::EdgeIndexScan {
+                variable: Rc::from("e"),
+                property: Rc::from("weight"),
+                value: ScanValue::Literal(Value::Int64(5)),
+                property_projection: None,
+            },
+            PlanOp::EdgeBindEndpoints {
+                edge: Rc::from("e"),
+                near: Rc::from("a"),
+                far: Rc::from("b"),
+                direction: EdgeDirection::PointingRight,
+                label: Some(EdgeLabelRef::from("KNOWS")),
+                near_property_projection: None,
+                far_property_projection: None,
+                hop_aux_binding: None,
+            },
+        ]);
+        let anchor = IndexAnchor::from_plans(std::slice::from_ref(&plan), &BTreeMap::new(), &store)
+            .expect("anchor")
+            .expect("edge anchor");
+        let IndexAnchor::EdgeEqual(probe) = anchor else {
+            panic!("expected EdgeEqual anchor");
+        };
+        assert_eq!(probe.variable, "e");
+        assert_eq!(probe.label_id, Some(1));
+
+        let hits = vec![
+            EdgePostingHit {
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 3,
+                label_id: 1,
+                slot_index: 2,
+            },
+            EdgePostingHit {
+                shard_id: ShardId::new(1),
+                owner_vertex_id: 9,
+                label_id: 1,
+                slot_index: 0,
+            },
+        ];
+        let blob = seeds_for_local_shard_edges("e", &hits, ShardId::new(0)).expect("edge seeds");
+        let wire: SeedBindingsWire = Decode!(&blob, SeedBindingsWire).expect("decode");
+        assert_eq!(wire.entries[0].local_edge_postings.len(), 1);
+        assert_eq!(wire.entries[0].local_edge_postings[0].owner_vertex_id, 3);
+        assert_eq!(wire.entries[0].local_edge_postings[0].slot_index, 2);
     }
 }

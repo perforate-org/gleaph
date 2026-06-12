@@ -4,8 +4,9 @@ use std::future::Future;
 use std::pin::Pin;
 
 use gleaph_graph_kernel::index::{
-    IndexIntersectionRequest, IndexLabelIntersectionRequest, LabelLookupPageRequest,
-    LabelLookupPageResult, PostingHit, ValuePostingCount,
+    EdgePostingHit, IndexIntersectionRequest, IndexIntersectionResult,
+    IndexLabelIntersectionRequest, LabelLookupPageRequest, LabelLookupPageResult, PostingHit,
+    ValuePostingCount,
 };
 
 use crate::index_client::RouterIndexClient;
@@ -20,7 +21,14 @@ pub(crate) trait IndexLookup {
     fn lookup_intersection(
         &self,
         req: IndexIntersectionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>>;
+    ) -> Pin<Box<dyn Future<Output = Result<IndexIntersectionResult, String>> + '_>>;
+
+    fn lookup_edge_equal(
+        &self,
+        property_id: u32,
+        value: Vec<u8>,
+        label_id: Option<u16>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>>;
 
     fn count_postings_by_value(
         &self,
@@ -69,8 +77,17 @@ impl IndexLookup for RouterIndexClient {
     fn lookup_intersection(
         &self,
         req: IndexIntersectionRequest,
-    ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
+    ) -> Pin<Box<dyn Future<Output = Result<IndexIntersectionResult, String>> + '_>> {
         Box::pin(self.lookup_intersection(req))
+    }
+
+    fn lookup_edge_equal(
+        &self,
+        property_id: u32,
+        value: Vec<u8>,
+        label_id: Option<u16>,
+    ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
+        Box::pin(self.lookup_edge_equal(property_id, value, label_id))
     }
 
     fn count_postings_by_value(

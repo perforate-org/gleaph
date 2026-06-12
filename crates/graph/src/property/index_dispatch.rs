@@ -6,6 +6,17 @@ use super::{PropertyValueChange, index_ops_for_value_change};
 
 /// Applies index-maintenance operations implied by a primary-store property change.
 pub(crate) fn dispatch_property_index_ops(change: PropertyValueChange<'_>) {
+    let indexed = match change.entity {
+        PropertyEntity::Vertex(_) => {
+            crate::index::registry::is_vertex_property_indexed(change.property_id)
+        }
+        PropertyEntity::Edge { .. } => {
+            crate::index::registry::is_edge_property_indexed(change.property_id)
+        }
+    };
+    if !indexed {
+        return;
+    }
     let ops = index_ops_for_value_change(change.property_id, change.prev, change.new);
     match change.entity {
         PropertyEntity::Vertex(vertex_id) => {
@@ -19,7 +30,7 @@ pub(crate) fn dispatch_property_index_ops(change: PropertyValueChange<'_>) {
             slot_index,
         } => {
             for op in ops {
-                crate::facade::edge_equality_index::apply_edge_index_op(
+                crate::index::edge_pending::push_edge_index_op(
                     owner_vertex_id,
                     label_id,
                     slot_index,

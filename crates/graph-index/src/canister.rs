@@ -5,7 +5,9 @@ use crate::init::IndexInitArgs;
 use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest, ValuePostingCount};
+use gleaph_graph_kernel::index::{
+    EdgePostingHit, IndexIntersectionResult, PostingHit, PostingRangeRequest, ValuePostingCount,
+};
 use ic_cdk::api::msg_caller;
 
 fn trap_err(e: IndexError) {
@@ -49,6 +51,50 @@ pub(crate) fn posting_remove(shard_id: ShardId, property_id: u32, value: Vec<u8>
     }
 }
 
+pub(crate) fn edge_posting_insert(
+    shard_id: ShardId,
+    property_id: u32,
+    value: Vec<u8>,
+    label_id: u16,
+    owner_vertex_id: u32,
+    slot_index: u32,
+) {
+    let caller = msg_caller();
+    if let Err(e) = IndexStore::new().edge_posting_insert(
+        caller,
+        shard_id,
+        property_id,
+        value,
+        label_id,
+        owner_vertex_id,
+        slot_index,
+    ) {
+        trap_err(e);
+    }
+}
+
+pub(crate) fn edge_posting_remove(
+    shard_id: ShardId,
+    property_id: u32,
+    value: Vec<u8>,
+    label_id: u16,
+    owner_vertex_id: u32,
+    slot_index: u32,
+) {
+    let caller = msg_caller();
+    if let Err(e) = IndexStore::new().edge_posting_remove(
+        caller,
+        shard_id,
+        property_id,
+        value,
+        label_id,
+        owner_vertex_id,
+        slot_index,
+    ) {
+        trap_err(e);
+    }
+}
+
 pub(crate) fn label_posting_insert(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32) {
     let caller = msg_caller();
     if let Err(e) =
@@ -88,9 +134,17 @@ pub(crate) fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> 
     IndexStore::new().lookup_equal(property_id, &value)
 }
 
+pub(crate) fn lookup_edge_equal(
+    property_id: u32,
+    value: Vec<u8>,
+    label_id: Option<u16>,
+) -> Vec<EdgePostingHit> {
+    IndexStore::new().lookup_edge_equal(property_id, &value, label_id)
+}
+
 pub(crate) fn lookup_intersection(
     req: gleaph_graph_kernel::index::IndexIntersectionRequest,
-) -> Vec<PostingHit> {
+) -> IndexIntersectionResult {
     IndexStore::new().lookup_intersection(&req)
 }
 

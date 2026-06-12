@@ -1,9 +1,9 @@
 //! Single-shard routing: one registry entry, local hits only.
 
 use gleaph_graph_kernel::federation::ShardRegistryEntry;
-use gleaph_graph_kernel::index::PostingHit;
 
 use crate::facade::store::RouterStore;
+use crate::federation::dispatch::SeedHits;
 use crate::federation::{SeedRouting, ShardingPolicy};
 use crate::seed::IndexAnchor;
 use crate::state::RouterError;
@@ -26,14 +26,21 @@ impl ShardingPolicy for StandaloneSharding {
         _logical_graph_name: &str,
         shards: &[ShardRegistryEntry],
         anchor: IndexAnchor,
-        hits: &[PostingHit],
+        hits: SeedHits,
     ) -> Result<Vec<SeedRouting>, RouterError> {
         let entry = single_shard_entry(shards)?;
-        let shard_hits: Vec<PostingHit> = hits
-            .iter()
-            .filter(|hit| hit.shard_id == entry.shard_id)
-            .cloned()
-            .collect();
+        let shard_hits = match hits {
+            SeedHits::Vertices(hits) => SeedHits::Vertices(
+                hits.into_iter()
+                    .filter(|hit| hit.shard_id == entry.shard_id)
+                    .collect(),
+            ),
+            SeedHits::Edges(hits) => SeedHits::Edges(
+                hits.into_iter()
+                    .filter(|hit| hit.shard_id == entry.shard_id)
+                    .collect(),
+            ),
+        };
         Ok(vec![SeedRouting {
             shard_id: entry.shard_id,
             graph_canister: entry.graph_canister,
@@ -54,7 +61,7 @@ fn resolve_standalone_routing(shards: &[ShardRegistryEntry]) -> Result<SeedRouti
     Ok(SeedRouting {
         shard_id: entry.shard_id,
         graph_canister: entry.graph_canister,
-        hits: Vec::new(),
+        hits: SeedHits::Vertices(Vec::new()),
         anchor: None,
     })
 }
@@ -64,6 +71,7 @@ mod tests {
     use candid::Principal;
 
     use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::index::PostingHit;
 
     use super::*;
     use crate::federation::ShardingPolicy;
@@ -140,6 +148,7 @@ mod tests {
         assert_eq!(routings[0].shard_id, entry.shard_id);
         assert_eq!(routings[0].graph_canister, entry.graph_canister);
         assert!(routings[0].hits.is_empty());
+        assert!(matches!(routings[0].hits, SeedHits::Vertices(_)));
         assert!(routings[0].anchor.is_none());
     }
 
@@ -164,10 +173,19 @@ mod tests {
             },
         ];
         let routings = StandaloneSharding
-            .resolve_with_hits(&store, "tenant.main", &shards, anchor, &hits)
+            .resolve_with_hits(
+                &store,
+                "tenant.main",
+                &shards,
+                anchor,
+                SeedHits::Vertices(hits),
+            )
             .expect("route");
         assert_eq!(routings.len(), 1);
-        assert_eq!(routings[0].hits.len(), 1);
-        assert_eq!(routings[0].hits[0].vertex_id, 10);
+        let SeedHits::Vertices(shard_hits) = &routings[0].hits else {
+            panic!("expected vertex hits");
+        };
+        assert_eq!(shard_hits.len(), 1);
+        assert_eq!(shard_hits[0].vertex_id, 10);
     }
 }

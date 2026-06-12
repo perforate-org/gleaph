@@ -159,11 +159,22 @@ pub struct LabelUsageDelta {
     pub edge: Vec<(EdgeLabelId, i64)>,
 }
 
+/// Shard-local edge identity for router seed bindings (ADR 0009 phase D).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct LocalEdgePosting {
+    pub owner_vertex_id: u32,
+    pub label_id: u16,
+    pub slot_index: u32,
+}
+
 /// Router → graph seed bindings for a single variable on the target shard.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct SeedBindingEntry {
     pub variable: String,
+    #[serde(default)]
     pub local_vertex_ids: Vec<u32>,
+    #[serde(default)]
+    pub local_edge_postings: Vec<LocalEdgePosting>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
@@ -203,6 +214,7 @@ mod tests {
             entries: vec![SeedBindingEntry {
                 variable: "u".into(),
                 local_vertex_ids: vec![1, 2],
+                local_edge_postings: Vec::new(),
             }],
         };
         let seed_blob = Encode!(&seed).expect("seed encode");
@@ -243,12 +255,39 @@ mod tests {
                 SeedBindingEntry {
                     variable: "a".into(),
                     local_vertex_ids: vec![10],
+                    local_edge_postings: Vec::new(),
                 },
                 SeedBindingEntry {
                     variable: "b".into(),
                     local_vertex_ids: vec![20, 21],
+                    local_edge_postings: Vec::new(),
                 },
             ],
+        };
+        let bytes = Encode!(&wire).expect("encode");
+        let decoded: SeedBindingsWire = Decode!(&bytes, SeedBindingsWire).expect("decode");
+        assert_eq!(wire, decoded);
+    }
+
+    #[test]
+    fn edge_seed_bindings_wire_roundtrip() {
+        let wire = SeedBindingsWire {
+            entries: vec![SeedBindingEntry {
+                variable: "e".into(),
+                local_vertex_ids: Vec::new(),
+                local_edge_postings: vec![
+                    LocalEdgePosting {
+                        owner_vertex_id: 3,
+                        label_id: 7,
+                        slot_index: 1,
+                    },
+                    LocalEdgePosting {
+                        owner_vertex_id: 4,
+                        label_id: 7,
+                        slot_index: 0,
+                    },
+                ],
+            }],
         };
         let bytes = Encode!(&wire).expect("encode");
         let decoded: SeedBindingsWire = Decode!(&bytes, SeedBindingsWire).expect("decode");

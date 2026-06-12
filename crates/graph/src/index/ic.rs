@@ -4,7 +4,10 @@ use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use async_trait::async_trait;
 use candid::Principal;
-use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
+use gleaph_graph_kernel::index::{
+    EdgePostingHit, IndexIntersectionRequest, IndexIntersectionResult, PostingHit,
+    PostingRangeRequest,
+};
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
 
@@ -65,13 +68,30 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
     async fn lookup_intersection(
         &self,
         req: &IndexIntersectionRequest,
-    ) -> Result<Vec<PostingHit>, PlanQueryError> {
-        let hits: Vec<PostingHit> = Call::bounded_wait(self.index_principal, "lookup_intersection")
-            .with_args(&(req.clone(),))
-            .await
-            .map_err(|e| ic_wait_err("lookup_intersection", e))?
-            .candid()
-            .map_err(|_| ic_candid_decode_err("lookup_intersection"))?;
+    ) -> Result<IndexIntersectionResult, PlanQueryError> {
+        let result: IndexIntersectionResult =
+            Call::bounded_wait(self.index_principal, "lookup_intersection")
+                .with_args(&(req.clone(),))
+                .await
+                .map_err(|e| ic_wait_err("lookup_intersection", e))?
+                .candid()
+                .map_err(|_| ic_candid_decode_err("lookup_intersection"))?;
+        Ok(result)
+    }
+
+    async fn lookup_edge_equal(
+        &self,
+        property_id: u32,
+        value: Vec<u8>,
+        label_id: Option<u16>,
+    ) -> Result<Vec<EdgePostingHit>, PlanQueryError> {
+        let hits: Vec<EdgePostingHit> =
+            Call::bounded_wait(self.index_principal, "lookup_edge_equal")
+                .with_args(&(property_id, value, label_id))
+                .await
+                .map_err(|e| ic_wait_err("lookup_edge_equal", e))?
+                .candid()
+                .map_err(|_| ic_candid_decode_err("lookup_edge_equal"))?;
         Ok(hits)
     }
 
@@ -134,6 +154,56 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
             .map_err(|e| ic_wait_err("label_posting_remove", e))?
             .candid()
             .map_err(|_| ic_candid_decode_err("label_posting_remove"))?;
+        Ok(())
+    }
+
+    async fn edge_posting_insert_at(
+        &self,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
+        property_id: u32,
+        value: Vec<u8>,
+        label_id: u16,
+        owner_vertex_id: u32,
+        slot_index: u32,
+    ) -> Result<(), PlanQueryError> {
+        let (): () = Call::bounded_wait(self.index_principal, "edge_posting_insert")
+            .with_args(&(
+                shard_id,
+                property_id,
+                value,
+                label_id,
+                owner_vertex_id,
+                slot_index,
+            ))
+            .await
+            .map_err(|e| ic_wait_err("edge_posting_insert", e))?
+            .candid()
+            .map_err(|_| ic_candid_decode_err("edge_posting_insert"))?;
+        Ok(())
+    }
+
+    async fn edge_posting_remove_at(
+        &self,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
+        property_id: u32,
+        value: Vec<u8>,
+        label_id: u16,
+        owner_vertex_id: u32,
+        slot_index: u32,
+    ) -> Result<(), PlanQueryError> {
+        let (): () = Call::bounded_wait(self.index_principal, "edge_posting_remove")
+            .with_args(&(
+                shard_id,
+                property_id,
+                value,
+                label_id,
+                owner_vertex_id,
+                slot_index,
+            ))
+            .await
+            .map_err(|e| ic_wait_err("edge_posting_remove", e))?
+            .candid()
+            .map_err(|_| ic_candid_decode_err("edge_posting_remove"))?;
         Ok(())
     }
 }

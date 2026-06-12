@@ -128,4 +128,25 @@ async fn backfill_property_postings(
     canister::handlers::backfill_property_postings(args).await
 }
 
+#[update(guard = "guard_router_canister")]
+fn register_indexed_property(
+    args: gleaph_graph_kernel::index::RegisterIndexedPropertyArgs,
+) -> Result<(), String> {
+    canister::handlers::register_indexed_property(args)
+}
+
+#[update(guard = "guard_router_canister")]
+fn unregister_indexed_property(
+    args: gleaph_graph_kernel::index::RegisterIndexedPropertyArgs,
+) -> Result<(), String> {
+    canister::handlers::unregister_indexed_property(args)
+}
+
+#[update(guard = "guard_router_canister")]
+async fn backfill_edge_property_postings(
+    args: gleaph_graph_kernel::federation::EdgePostingBackfillArgs,
+) -> Result<gleaph_graph_kernel::federation::EdgePostingBackfillResult, String> {
+    canister::handlers::backfill_edge_property_postings(args).await
+}
+
 ic_cdk::export_candid!();

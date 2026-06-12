@@ -2,19 +2,35 @@
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
-use gleaph_graph_kernel::index::PostingHit;
+use gleaph_graph_kernel::index::{EdgePostingHit, PostingHit};
 
 use crate::facade::store::RouterStore;
 use crate::federation::ShardingPolicy;
 use crate::seed::IndexAnchor;
 use crate::state::RouterError;
 
+/// Vertex or edge index hits from graph-index for per-shard seed encoding.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub enum SeedHits {
+    Vertices(Vec<PostingHit>),
+    Edges(Vec<EdgePostingHit>),
+}
+
+impl SeedHits {
+    pub fn is_empty(&self) -> bool {
+        match self {
+            Self::Vertices(hits) => hits.is_empty(),
+            Self::Edges(hits) => hits.is_empty(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SeedRouting {
     pub shard_id: ShardId,
     pub graph_canister: Principal,
-    pub hits: Vec<PostingHit>,
-    /// Present when dispatch used an index anchor; drives [`crate::seed::seeds_for_local_shard`].
+    pub hits: SeedHits,
+    /// Present when dispatch used an index anchor; drives seed blob encoding.
     pub anchor: Option<IndexAnchor>,
 }
 
@@ -30,7 +46,7 @@ impl ShardingPolicy for MultiShardDispatch {
             Ok(vec![SeedRouting {
                 shard_id: shards[0].shard_id,
                 graph_canister: shards[0].graph_canister,
-                hits: Vec::new(),
+                hits: SeedHits::Vertices(Vec::new()),
                 anchor: None,
             }])
         } else {
@@ -46,7 +62,7 @@ impl ShardingPolicy for MultiShardDispatch {
         logical_graph_name: &str,
         _shards: &[ShardRegistryEntry],
         anchor: IndexAnchor,
-        hits: &[PostingHit],
+        hits: SeedHits,
     ) -> Result<Vec<SeedRouting>, RouterError> {
         resolve_seed_routings_multi(store, hits, logical_graph_name, anchor)
     }
@@ -55,7 +71,7 @@ impl ShardingPolicy for MultiShardDispatch {
 /// Fan out one routing per distinct shard in index hits.
 pub fn resolve_seed_routings_multi(
     store: &RouterStore,
-    hits: &[PostingHit],
+    hits: SeedHits,
     logical_graph_name: &str,
     anchor: IndexAnchor,
 ) -> Result<Vec<SeedRouting>, RouterError> {
@@ -63,9 +79,20 @@ pub fn resolve_seed_routings_multi(
         return Ok(Vec::new());
     }
     let shards = store.list_shards_for_graph(logical_graph_name)?;
-    let mut shard_ids: Vec<ShardId> = hits.iter().map(|h| h.shard_id).collect();
-    shard_ids.sort_unstable();
-    shard_ids.dedup();
+    let shard_ids = match &hits {
+        SeedHits::Vertices(hits) => {
+            let mut shard_ids: Vec<ShardId> = hits.iter().map(|h| h.shard_id).collect();
+            shard_ids.sort_unstable();
+            shard_ids.dedup();
+            shard_ids
+        }
+        SeedHits::Edges(hits) => {
+            let mut shard_ids: Vec<ShardId> = hits.iter().map(|h| h.shard_id).collect();
+            shard_ids.sort_unstable();
+            shard_ids.dedup();
+            shard_ids
+        }
+    };
 
     let mut out = Vec::with_capacity(shard_ids.len());
     for shard_id in shard_ids {
@@ -73,11 +100,20 @@ pub fn resolve_seed_routings_multi(
             .iter()
             .find(|s| s.shard_id == shard_id)
             .ok_or(RouterError::ShardNotRegistered)?;
-        let shard_hits: Vec<PostingHit> = hits
-            .iter()
-            .filter(|h| h.shard_id == shard_id)
-            .cloned()
-            .collect();
+        let shard_hits = match &hits {
+            SeedHits::Vertices(hits) => SeedHits::Vertices(
+                hits.iter()
+                    .filter(|h| h.shard_id == shard_id)
+                    .cloned()
+                    .collect(),
+            ),
+            SeedHits::Edges(hits) => SeedHits::Edges(
+                hits.iter()
+                    .filter(|h| h.shard_id == shard_id)
+                    .cloned()
+                    .collect(),
+            ),
+        };
         out.push(SeedRouting {
             shard_id,
             graph_canister: entry.graph_canister,

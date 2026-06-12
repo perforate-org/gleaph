@@ -182,19 +182,59 @@ pub(crate) async fn admin_label_telemetry_replay_step(
     .await
 }
 
-pub(crate) fn admin_set_indexed_vertex_property(
+pub(crate) async fn admin_set_indexed_vertex_property(
     logical_graph_name: String,
     property: String,
 ) -> Result<(), RouterError> {
     use crate::facade::stable::ROUTER_INDEXED_PROPERTIES;
     use crate::planner_stats::RouterGraphStats;
+    use gleaph_graph_kernel::index::IndexedPropertyKind;
+
+    let store = RouterStore::new();
+    let property_id = store.lookup_property_id(&property)?;
     ROUTER_INDEXED_PROPERTIES.with_borrow_mut(|m| {
         let entry = m
-            .entry(logical_graph_name)
+            .entry(logical_graph_name.clone())
             .or_insert_with(RouterGraphStats::default);
         *entry = entry.clone().with_indexed_vertex_property(property);
     });
-    Ok(())
+    crate::index_catalog::register_indexed_property_on_shards(
+        &logical_graph_name,
+        IndexedPropertyKind::Vertex,
+        property_id,
+    )
+    .await
+}
+
+pub(crate) async fn admin_set_indexed_edge_property(
+    logical_graph_name: String,
+    property: String,
+) -> Result<(), RouterError> {
+    use crate::facade::stable::ROUTER_INDEXED_PROPERTIES;
+    use crate::planner_stats::RouterGraphStats;
+    use gleaph_graph_kernel::index::IndexedPropertyKind;
+
+    let store = RouterStore::new();
+    let property_id = store.lookup_property_id(&property)?;
+    ROUTER_INDEXED_PROPERTIES.with_borrow_mut(|m| {
+        let entry = m
+            .entry(logical_graph_name.clone())
+            .or_insert_with(RouterGraphStats::default);
+        *entry = entry.clone().with_indexed_edge_property(property);
+    });
+    crate::index_catalog::register_indexed_property_on_shards(
+        &logical_graph_name,
+        IndexedPropertyKind::Edge,
+        property_id,
+    )
+    .await
+}
+
+pub(crate) async fn execute_index_ddl(
+    logical_graph_name: &str,
+    stmt: crate::index_ddl::IndexDdlStatement,
+) -> Result<(), RouterError> {
+    crate::index_catalog::execute_index_ddl(logical_graph_name, stmt).await
 }
 
 pub(crate) fn commit_vertex_placement(args: CommitVertexPlacementArgs) -> Result<(), RouterError> {

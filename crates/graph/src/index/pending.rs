@@ -233,8 +233,8 @@ mod tests {
         async fn lookup_intersection(
             &self,
             _req: &IndexIntersectionRequest,
-        ) -> Result<Vec<PostingHit>, PlanQueryError> {
-            Ok(vec![])
+        ) -> Result<gleaph_graph_kernel::index::IndexIntersectionResult, PlanQueryError> {
+            Ok(gleaph_graph_kernel::index::IndexIntersectionResult::Vertices(vec![]))
         }
 
         fn local_shard_id(&self) -> gleaph_graph_kernel::federation::ShardId {

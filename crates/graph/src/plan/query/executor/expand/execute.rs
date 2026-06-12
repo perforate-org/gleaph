@@ -83,7 +83,13 @@ pub(crate) async fn execute_expand(
         parameters,
     )?;
     let edge_equality_filter = if csr_expand_fast_path.is_some() {
-        let filter = edge_equality_stream_filter(execution, indexed_edge_equality, parameters)?;
+        let filter = edge_equality_stream_filter(
+            ctx.index,
+            execution,
+            indexed_edge_equality,
+            parameters,
+            label_id.map(|id| id.raw()),
+        )?;
         if matches!(filter, EdgeEqualityStreamFilter::NoMatches) {
             return Ok(Vec::new());
         }

@@ -60,7 +60,7 @@ pub enum StableMemoryClass {
     /// **Gleaph examples:**
     /// - LARA reverse orientation (`REV_*` adjacency and payloads) — co-updated on DML, no public
     ///   scan-rebuild API
-    /// - `EDGE_ALIASES`, `EDGE_EQUALITY_POSTINGS` — sync rebuild APIs on graph shard
+    /// - `EDGE_ALIASES` — sync rebuild API on graph shard
     /// - `INDEX_POSTINGS`, `INDEX_LABEL_POSTINGS` — graph-index projections; backfill from graph
     ///
     /// **Merge policy (ADR 0007):** Do not merge with canonical neighbor regions without benchmark
@@ -505,16 +505,8 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             None,
         ),
         region(
-            "EDGE_EQUALITY_POSTINGS",
-            37,
-            StableMemoryClass::Derived,
-            "local indexes",
-            "Shard-local edge property equality postings",
-            Some("rebuild_edge_equality_postings"),
-        ),
-        region(
             "LABEL_TELEMETRY_SEQ",
-            38,
+            37,
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Monotonic seq for label usage outbox events",
@@ -522,7 +514,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "LABEL_TELEMETRY_OUTBOX",
-            39,
+            38,
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Stable outbox of LabelUsageDelta events for router",
@@ -530,7 +522,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "APPLIED_MUTATION_REQUESTS",
-            40,
+            39,
             StableMemoryClass::Canonical,
             "idempotency",
             "Graph mutation idempotency outcomes (incl. telemetry batch)",
@@ -766,6 +758,14 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "Global vertex label membership posting set",
             Some("backfill_label_postings"),
         ),
+        region(
+            "INDEX_EDGE_POSTINGS",
+            5,
+            StableMemoryClass::Derived,
+            "edge property postings",
+            "Global edge property equality posting set (ADR 0009)",
+            Some("backfill_edge_property_postings"),
+        ),
     ],
 };
 
@@ -861,10 +861,7 @@ pub fn validate_class_invariants(layout: &StableCanisterLayout) -> Result<(), Cl
                     && !region.symbol.starts_with("FWD_")
                 {
                     // INDEX_* and EDGE_* derived stores require rebuild/backfill names.
-                    if region.symbol.starts_with("INDEX_")
-                        || region.symbol == "EDGE_ALIASES"
-                        || region.symbol == "EDGE_EQUALITY_POSTINGS"
-                    {
+                    if region.symbol.starts_with("INDEX_") || region.symbol == "EDGE_ALIASES" {
                         return Err(ClassInvariantError::DerivedWithoutRebuild {
                             canister: layout.canister,
                             symbol: region.symbol,
@@ -909,20 +906,16 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 41);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(40));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 40);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(39));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
-            GRAPH_STABLE_LAYOUT.regions[40].symbol,
+            GRAPH_STABLE_LAYOUT.regions[39].symbol,
             "APPLIED_MUTATION_REQUESTS"
         );
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[35].class,
             StableMemoryClass::Derived
-        );
-        assert_eq!(
-            GRAPH_STABLE_LAYOUT.regions[37].symbol,
-            "EDGE_EQUALITY_POSTINGS"
         );
     }
 
@@ -944,8 +937,8 @@ mod tests {
     #[test]
     fn index_layout_registry_matches_baseline() {
         assert_layout(&INDEX_STABLE_LAYOUT);
-        assert_eq!(INDEX_STABLE_LAYOUT.region_count(), 5);
-        assert_eq!(INDEX_STABLE_LAYOUT.max_memory_id(), Some(4));
+        assert_eq!(INDEX_STABLE_LAYOUT.region_count(), 6);
+        assert_eq!(INDEX_STABLE_LAYOUT.max_memory_id(), Some(5));
     }
 
     #[test]

@@ -6,7 +6,8 @@ use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_ic::PrincipalValue;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    LabelLookupPageRequest, LabelPostingCursor, PostingHit, PostingRangeRequest,
+    EdgePostingHit, IndexEqualSpec, IndexIntersectionResult, LabelLookupPageRequest,
+    LabelPostingCursor, PostingHit, PostingRangeRequest,
 };
 
 fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
@@ -416,24 +417,18 @@ fn lookup_intersection_returns_vertices_in_all_specs() {
         .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), 30)
         .expect("email v30");
 
-    let hits = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+    let result = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
         specs: vec![
-            gleaph_graph_kernel::index::IndexEqualSpec {
-                property_id: 1,
-                value: b"alice".to_vec(),
-            },
-            gleaph_graph_kernel::index::IndexEqualSpec {
-                property_id: 2,
-                value: b"a@b.c".to_vec(),
-            },
+            IndexEqualSpec::vertex(1, b"alice".to_vec()),
+            IndexEqualSpec::vertex(2, b"a@b.c".to_vec()),
         ],
     });
     assert_eq!(
-        hits,
-        vec![PostingHit {
+        result,
+        IndexIntersectionResult::Vertices(vec![PostingHit {
             shard_id: ShardId::new(0),
             vertex_id: 20
-        }]
+        }])
     );
 }
 
@@ -451,31 +446,85 @@ fn lookup_intersection_empty_when_disjoint() {
         .posting_insert(shard_principal, ShardId::new(0), 2, b"bob".to_vec(), 20)
         .expect("email");
 
-    let hits = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+    let result = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
         specs: vec![
-            gleaph_graph_kernel::index::IndexEqualSpec {
-                property_id: 1,
-                value: b"alice".to_vec(),
-            },
-            gleaph_graph_kernel::index::IndexEqualSpec {
-                property_id: 2,
-                value: b"bob".to_vec(),
-            },
+            IndexEqualSpec::vertex(1, b"alice".to_vec()),
+            IndexEqualSpec::vertex(2, b"bob".to_vec()),
         ],
     });
-    assert!(hits.is_empty());
+    assert_eq!(result, IndexIntersectionResult::Vertices(vec![]));
 }
 
 #[test]
 fn lookup_intersection_requires_two_specs() {
     let store = IndexStore::new();
-    let hits = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
-        specs: vec![gleaph_graph_kernel::index::IndexEqualSpec {
-            property_id: 1,
-            value: b"x".to_vec(),
-        }],
+    let result = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+        specs: vec![IndexEqualSpec::vertex(1, b"x".to_vec())],
     });
-    assert!(hits.is_empty());
+    assert_eq!(result, IndexIntersectionResult::Vertices(vec![]));
+}
+
+#[test]
+fn lookup_intersection_mixed_vertex_and_edge_projects_owners() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let owner = Principal::from_slice(&[1]);
+    register_shard_owner(&store, router, ShardId::new(0), owner);
+
+    store
+        .posting_insert(owner, ShardId::new(0), 10, b"30".to_vec(), 100)
+        .expect("age");
+    store
+        .edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, 100, 2)
+        .expect("weight edge");
+    store
+        .edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, 101, 0)
+        .expect("other owner");
+
+    let result = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+        specs: vec![
+            IndexEqualSpec::vertex(10, b"30".to_vec()),
+            IndexEqualSpec::edge(20, b"5".to_vec(), Some(7)),
+        ],
+    });
+    assert_eq!(
+        result,
+        IndexIntersectionResult::Vertices(vec![PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 100,
+        }])
+    );
+}
+
+#[test]
+fn lookup_intersection_all_edge_arms_returns_edge_hits() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let owner = Principal::from_slice(&[1]);
+    register_shard_owner(&store, router, ShardId::new(0), owner);
+
+    store
+        .edge_posting_insert(owner, ShardId::new(0), 30, b"1".to_vec(), 9, 50, 1)
+        .expect("prop a");
+    store
+        .edge_posting_insert(owner, ShardId::new(0), 31, b"2".to_vec(), 9, 50, 1)
+        .expect("prop b");
+
+    let result = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+        specs: vec![
+            IndexEqualSpec::edge(30, b"1".to_vec(), Some(9)),
+            IndexEqualSpec::edge(31, b"2".to_vec(), Some(9)),
+        ],
+    });
+    assert_eq!(
+        result,
+        IndexIntersectionResult::Edges(vec![EdgePostingHit {
+            shard_id: ShardId::new(0),
+            owner_vertex_id: 50,
+            label_id: 9,
+            slot_index: 1,
+        }])
+    );
 }
 
 #[test]
@@ -696,4 +745,86 @@ fn count_postings_by_value_for_label_sieves_by_label() {
     assert_eq!(counts.len(), 1);
     assert_eq!(counts[0].encoded_value, us);
     assert_eq!(counts[0].count, 3);
+}
+
+#[test]
+fn edge_posting_insert_remove_and_lookup_equal() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let owner = Principal::from_slice(&[3]);
+    register_shard_owner(&store, router, ShardId::new(0), owner);
+
+    let property_id = 77;
+    let value = index_key(Value::Int64(5));
+    store
+        .edge_posting_insert(
+            owner,
+            ShardId::new(0),
+            property_id,
+            value.clone(),
+            9,
+            100,
+            2,
+        )
+        .expect("insert");
+    store
+        .edge_posting_insert(
+            owner,
+            ShardId::new(0),
+            property_id,
+            value.clone(),
+            9,
+            101,
+            0,
+        )
+        .expect("insert other slot");
+
+    let hits = store.lookup_edge_equal(property_id, &value, Some(9));
+    assert_eq!(hits.len(), 2);
+    assert!(
+        hits.iter()
+            .any(|h| h.owner_vertex_id == 100 && h.slot_index == 2)
+    );
+    assert!(
+        hits.iter()
+            .any(|h| h.owner_vertex_id == 101 && h.slot_index == 0)
+    );
+
+    store
+        .edge_posting_remove(
+            owner,
+            ShardId::new(0),
+            property_id,
+            value.clone(),
+            9,
+            100,
+            2,
+        )
+        .expect("remove");
+    let remaining = store.lookup_edge_equal(property_id, &value, None);
+    assert_eq!(remaining.len(), 1);
+    assert_eq!(remaining[0].owner_vertex_id, 101);
+}
+
+#[test]
+fn edge_posting_lookup_filters_by_label_prefix() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let owner = Principal::from_slice(&[1]);
+    register_shard_owner(&store, router, ShardId::new(0), owner);
+
+    let property_id = 88;
+    let value = index_key(Value::Int64(1));
+    store
+        .edge_posting_insert(owner, ShardId::new(0), property_id, value.clone(), 1, 10, 0)
+        .expect("label 1");
+    store
+        .edge_posting_insert(owner, ShardId::new(0), property_id, value.clone(), 2, 11, 0)
+        .expect("label 2");
+
+    assert_eq!(
+        store.lookup_edge_equal(property_id, &value, Some(1)).len(),
+        1
+    );
+    assert_eq!(store.lookup_edge_equal(property_id, &value, None).len(), 2);
 }

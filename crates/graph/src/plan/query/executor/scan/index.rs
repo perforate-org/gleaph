@@ -151,17 +151,15 @@ pub(crate) async fn execute_index_intersection(
         let Some(bytes) = resolve_scan_payload_bytes(&spec.value, ctx.parameters)? else {
             return Ok(Vec::new());
         };
-        specs.push(IndexEqualSpec {
-            property_id: pid,
-            value: bytes,
-        });
+        specs.push(IndexEqualSpec::vertex(pid, bytes));
     }
     if specs.len() < 2 {
         return Ok(Vec::new());
     }
-    let hits = ix
+    let result = ix
         .lookup_intersection(&IndexIntersectionRequest { specs })
         .await?;
+    let hits = result.vertices();
     Ok(ctx
         .federation
         .bind_index_hits(ctx.store, &rows, variable, &hits))

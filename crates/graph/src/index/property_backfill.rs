@@ -34,6 +34,9 @@ pub async fn backfill_property_postings(
         }
         let local_raw = u32::from_le_bytes(vertex_id.to_le_bytes());
         for (property_id, value) in store.vertex_properties(vertex_id) {
+            if !crate::index::registry::is_vertex_property_indexed(property_id) {
+                continue;
+            }
             let Some(payload_bytes) = sortable_index_key(&value) else {
                 continue;
             };
@@ -98,8 +101,9 @@ mod tests {
         async fn lookup_intersection(
             &self,
             _req: &IndexIntersectionRequest,
-        ) -> Result<Vec<PostingHit>, crate::plan::PlanQueryError> {
-            Ok(vec![])
+        ) -> Result<gleaph_graph_kernel::index::IndexIntersectionResult, crate::plan::PlanQueryError>
+        {
+            Ok(gleaph_graph_kernel::index::IndexIntersectionResult::Vertices(vec![]))
         }
 
         fn local_shard_id(&self) -> ShardId {
@@ -166,8 +170,9 @@ mod tests {
         let store = federated_store();
         let index = RecordingIndex::new();
         let vid = store.insert_vertex().expect("vertex");
-        let name = PropertyId::from_raw(3);
-        let score = PropertyId::from_raw(4);
+        let name = crate::test_labels::property_id_for_name("backfill_name");
+        let score = crate::test_labels::property_id_for_name("backfill_score");
+        crate::test_labels::register_indexed_vertex_property_named("backfill_name");
         store
             .set_vertex_property(vid, name, Value::Int64(42))
             .expect("name");
@@ -187,16 +192,15 @@ mod tests {
 
         assert!(result.done);
         let inserts = index.inserts.lock().unwrap().clone();
-        assert_eq!(inserts.len(), 2);
+        assert_eq!(
+            inserts.len(),
+            1,
+            "only registered properties are backfilled"
+        );
         assert!(inserts.iter().all(|(shard, _, _, _)| *shard == 0));
         assert!(inserts.iter().any(|(_, property_id, _, vertex_id)| {
-            *property_id == 3 && *vertex_id == u32::from(vid)
+            *property_id == name.raw() && *vertex_id == u32::from(vid)
         }));
-        assert!(
-            inserts
-                .iter()
-                .any(|(_, property_id, _, _)| *property_id == 4)
-        );
     }
 
     #[test]

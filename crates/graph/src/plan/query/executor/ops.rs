@@ -488,6 +488,7 @@ pub(crate) fn execute_ops_from<'a>(
                     property_projection: _,
                 } => execute_edge_index_scan(
                     store,
+                    ctx.index,
                     &ctx.execution,
                     rows,
                     variable,
