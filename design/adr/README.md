@@ -43,5 +43,6 @@ Last revised: YYYY-MM-DD
 | [0006](0006-pre-federation-foundation.md) | Pre-federation foundation: ShardId, catalogs, MemoryId, placement | accepted |
 | [0007](0007-stable-memory-layout.md) | Stable-memory layout policy and measured consolidation | accepted |
 | [0008](0008-edge-payload-profile-router-ssot.md) | Edge payload profile schema: router SSOT; retire graph `EDGE_PAYLOAD_PROFILES` | accepted |
+| [0009](0009-edge-property-index-and-index-ddl.md) | Edge property index on graph-index; mixed intersection; opt-in `CREATE INDEX` / `DROP INDEX` DDL | accepted |
 
 When adding an ADR, link it from the relevant design doc and update this table.

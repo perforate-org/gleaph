@@ -1,11 +1,13 @@
 # Property index
 
-Last updated: 2026-06-11  
-Anchor timestamp: 2026-06-11 16:02:17 UTC +0000
+Last updated: 2026-06-12  
+Anchor timestamp: 2026-06-12 12:11:38 UTC +0000
 
 ## Status
 
 **Partially Implemented** — `lookup_equal` / `lookup_range` and DML posting sync exist. **`lookup_intersection`** is implemented on graph-index; router `IndexAnchor` + per-shard seeds and graph skip of leading intersection op are **Implemented**. Graph federated wire path does not call index; library tests may still inject a mock index client.
+
+**Planned ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)):** edge property postings on graph-index (retire graph `EDGE_EQUALITY_POSTINGS`); mixed vertex/edge intersection; **opt-in** indexes only; `CREATE INDEX` / `DROP INDEX` on router.
 
 Property **name → `property_id`** assignment is **router SSOT** ([ADR 0006](../adr/0006-pre-federation-foundation.md) §2). Graph shards no longer maintain `PROPERTY_CATALOG` stable; DML and plan execution use router-resolved `PropertyId` on the wire (`ResolvedPropertyTable`).
 
@@ -88,10 +90,13 @@ Legacy: graph executor still calls `PropertyIndexLookup` for `IndexScan` / `Inde
 
 ## Graph shard local indexes
 
-Graph maintains **shard-local** structures distinct from the property index canister:
+**Today (pre-ADR 0009):** graph maintains **shard-local** edge equality postings
+(`EDGE_EQUALITY_POSTINGS`) for `indexed_edge_equality` / `EdgeIndexScan` expand fast paths.
 
-- Edge equality postings (`facade/stable/edge_equality_postings.rs`)
-- Used for `EdgeIndexScan`, expand equality fast paths
+**Target (ADR 0009):** edge property equality moves to **graph-index** with key
+`(property_id, value, label_id, shard_id, owner_vertex_id, slot_index)`; graph shard retains
+`EDGE_PROPERTIES` values only. Postings are maintained **only for administrator-registered**
+properties (see ADR 0009 §2).
 
 ## Indexability vs primary storage
 

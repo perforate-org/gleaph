@@ -10,10 +10,14 @@ Define **`lookup_intersection`** on the graph-index canister: intersect equality
 
 ## Non-goals
 
-- Planner changes (`PlanOp::IndexIntersection` shape stays).
+- Planner changes (`PlanOp::IndexIntersection` shape stays) — *vertex-only v1*.
 - Range predicates inside intersection (v1: equality only).
 - Logical vertex id intersection (index uses physical `(shard_id, vertex_id)` keys).
 - Graph canister calls during intersection.
+
+**Planned ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)):** mixed vertex/edge arms,
+edge posting store, `EdgePostingHit`, and projection of edge arms to `(shard_id, owner_vertex_id)` for
+vertex-led seeds.
 
 ## Problem
 
