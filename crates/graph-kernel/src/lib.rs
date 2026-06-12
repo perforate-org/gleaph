@@ -4,3 +4,4 @@ pub mod federation;
 pub mod index;
 pub mod path;
 pub mod plan_exec;
+pub mod stable_layout;

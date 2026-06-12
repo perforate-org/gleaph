@@ -1,32 +1,41 @@
 # Stable-memory inventory
 
-Last updated: 2026-06-11  
+Last updated: 2026-06-12  
 Status: Implemented (sequential LARA MemoryIds 0–31; facade 32–42)  
-Anchor timestamp: 2026-06-11 16:18:18 UTC +0000
+Anchor timestamp: 2026-06-12 04:35:53 UTC +0000
+
+Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
 ## Purpose
 
 Single inventory of stable-memory regions and heap-only facade state for the graph, router, and graph-index canisters. Each row names the owning domain, classification, and rebuild path where one exists.
 
-Code source of truth for `MemoryId` constants:
+Code source of truth for runtime `MemoryId` constants:
 
 - `crates/graph/src/facade/stable/memory.rs`
 - `crates/router/src/facade/stable/memory.rs`
 - `crates/graph-index/src/facade/stable/memory.rs`
 
+Typed layout registry (descriptive mirror + validation tests): `gleaph_graph_kernel::stable_layout`
+and per-canister `facade/stable/layout.rs` — [ADR 0007](../adr/0007-stable-memory-layout.md) §7.
+
 Thread-local pairing: `facade/stable.rs` in each crate.
 
 ## Classifications
 
-| Class | Meaning |
-|-------|---------|
-| `canonical` | Authoritative state; recoverable without consulting derived stores |
-| `derived` | Rebuildable or optimizable from canonical state |
-| `maintenance` | PMA/LARA deferred work, free spans, or operational cursors |
-| `catalog` | Bidirectional name/id maps |
-| `telemetry` | Aggregates derived from graph shard events |
-| `compatibility` | Legacy or transitional view over another store |
-| `ephemeral` | Heap-only; lost on canister upgrade |
+Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layout::StableMemoryClass`
+(rustdoc on each variant). Per-region class and functional role: `GRAPH_STABLE_LAYOUT`,
+`ROUTER_STABLE_LAYOUT`, `INDEX_STABLE_LAYOUT`.
+
+| Class | Meaning | Examples in this repo |
+|-------|---------|------------------------|
+| `canonical` | Authoritative facts; system meaning does not depend on derived stores | Forward LARA CSR/payloads; vertex/edge properties; router placement and catalogs; mutation idempotency |
+| `derived` | Projection or mirror rebuildable from canonical state | Reverse LARA; edge aliases/equality postings; graph-index postings |
+| `maintenance` | Physical or admin bookkeeping; not query truth | LARA free spans; maintenance queue; router backfill cursors |
+| `catalog` | Bidirectional name ↔ id maps (`BidirectionalCatalog`) | Router label/property resolution pairs |
+| `telemetry` | Event-sourced label stats and dedup/outbox adjuncts | Graph label outbox; router label stats and `ROUTER_APPLIED_LABEL_TELEMETRY` |
+| `compatibility` | Legacy read view; another store owns new writes | `EDGE_WEIGHT_PROFILES` (payload profiles authoritative) |
+| `ephemeral` | Heap-only; no `MemoryId` — **not in layout registry** | Graph `PENDING` queues; router planner catalog |
 
 **Sync co-update:** Some derived stores are updated in the same mutation as their canonical source (no async lag). They still have a separate physical region and are classified `derived`.
 
@@ -166,7 +175,7 @@ Repacked 2026-06-11 (ADR 0006 slice D). **Removed:** `ROUTER_LOGICAL_COUNTER` (5
 |--------|--------|--------------|---------|-------|--------------|---------|
 | 0 | `INDEX_ADMINS` | `INDEX_ADMINS` | `init_index_admins` | canonical | authorization | — |
 | 1 | `INDEX_SHARD_OWNERS` | `INDEX_SHARD_OWNERS` | `init_index_shard_owners` | canonical | shard ownership | — |
-| 2 | `INDEX_POSTINGS` | `INDEX_POSTINGS` | `init_index_postings` | derived | property postings | **Not implemented** |
+| 2 | `INDEX_POSTINGS` | `INDEX_POSTINGS` | `init_index_postings` | derived | property postings | **Implemented:** `backfill_property_postings` + router `admin_property_backfill_step` |
 | 3 | `INDEX_ROUTER` | `INDEX_ROUTER` | `init_index_router` | canonical | router authorization | — |
 | 4 | `INDEX_LABEL_POSTINGS` | `INDEX_LABEL_POSTINGS` | `init_index_label_postings` | derived | label postings | `backfill_label_postings` |
 

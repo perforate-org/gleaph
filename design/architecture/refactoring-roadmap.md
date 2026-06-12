@@ -1,8 +1,8 @@
 # Gleaph Refactoring Roadmap
 
-Last updated: 2026-06-11 UTC  
-Status: In progress (Phases 0–7 complete; Phase 8+ deferred; ADR 0006 steps 1–5 complete)  
-Anchor timestamp: 2026-06-11 23:44:33 UTC +0000
+Last updated: 2026-06-12 UTC  
+Status: In progress (Phases 0–7 complete; Phase 8 ADR accepted; ADR 0006 steps 1–5 complete)  
+Anchor timestamp: 2026-06-12 04:38:55 UTC +0000
 
 ## Purpose
 
@@ -396,10 +396,12 @@ Exit criteria:
 
 Goal: consolidate only where it improves efficiency without damaging ownership or recovery.
 
+**Status: In progress (2026-06-12)** — layout policy ADR [0007](../adr/0007-stable-memory-layout.md) **accepted**; layout registry **done**; benchmarks and optional consolidation patches pending.
+
 Deliverables:
 
-- Add a stable-memory layout ADR before changing memory ids or physical layout.
-- Introduce a named memory-layout registry for graph, router, and graph-index.
+- Add a stable-memory layout ADR before changing memory ids or physical layout. **Done:** [ADR 0007](../adr/0007-stable-memory-layout.md) (accepted 2026-06-12).
+- Introduce a named memory-layout registry for graph, router, and graph-index. **Done:** `gleaph_graph_kernel::stable_layout`.
 - Benchmark many small `VirtualMemory` regions versus grouped metadata regions.
 - Prototype catalog/profile consolidation only after domain APIs are explicit.
 - Keep canonical and derived stores separate unless the ADR justifies the coupling.

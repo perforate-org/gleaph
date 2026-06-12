@@ -41,5 +41,6 @@ Last revised: YYYY-MM-DD
 | [0004](0004-label-index.md) | Label index: sieve + telemetry; vertex export only when needed | accepted |
 | [0005](0005-vertex-identity.md) | Vertex/edge identity: global physical keys and encoded wire ids | accepted |
 | [0006](0006-pre-federation-foundation.md) | Pre-federation foundation: ShardId, catalogs, MemoryId, placement | accepted |
+| [0007](0007-stable-memory-layout.md) | Stable-memory layout policy and measured consolidation | accepted |
 
 When adding an ADR, link it from the relevant design doc and update this table.

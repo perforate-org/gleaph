@@ -7,6 +7,7 @@
 use std::cell::RefCell;
 
 pub(crate) mod memory;
+pub(crate) mod layout;
 
 pub(crate) mod edge_alias;
 pub(crate) mod edge_equality_postings;

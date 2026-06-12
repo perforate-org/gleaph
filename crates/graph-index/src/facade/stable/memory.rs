@@ -1,4 +1,5 @@
-//! Graph-index canister stable-memory layout — see `design/storage/stable-memory-inventory.md`.
+//! Graph-index canister stable-memory layout — see `design/storage/stable-memory-inventory.md`
+//! and `facade/stable/layout.rs` (ADR 0007 registry).
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;

@@ -1,4 +1,5 @@
-//! Graph canister stable-memory layout — see `design/storage/stable-memory-inventory.md`.
+//! Graph canister stable-memory layout — see `design/storage/stable-memory-inventory.md`
+//! and `facade/stable/layout.rs` (ADR 0007 registry).
 
 use super::edge_alias::EdgeAliasIndex;
 use super::edge_payload_profiles::EdgePayloadProfileStore;

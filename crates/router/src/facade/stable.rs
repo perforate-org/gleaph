@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 
 pub(crate) mod label_telemetry;
+pub(crate) mod layout;
 pub(crate) mod memory;
 
 thread_local! {
