@@ -39,7 +39,7 @@ ic-stable-lara = { path = "crates/ic-stable-lara" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
 
-bitflags = "2.11.1"
+bitflags = "2.13.0"
 canbench-rs = "0.6"
 candid = "0.10"
 concat-string = "1"

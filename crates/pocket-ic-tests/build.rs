@@ -37,8 +37,12 @@ fn ensure_pocket_ic_binary(manifest_dir: &Path) -> PathBuf {
     let mut response = ureq::get(&url)
         .call()
         .unwrap_or_else(|e| panic!("download PocketIC from {url}: {e}"));
+    // PocketIC server binaries exceed ureq's default 10 MiB body limit.
+    const POCKET_IC_DOWNLOAD_LIMIT: u64 = 128 * 1024 * 1024;
     let gz_bytes = response
         .body_mut()
+        .with_config()
+        .limit(POCKET_IC_DOWNLOAD_LIMIT)
         .read_to_vec()
         .unwrap_or_else(|e| panic!("read PocketIC download from {url}: {e}"));
 
