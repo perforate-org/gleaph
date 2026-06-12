@@ -12,6 +12,7 @@ Anchor timestamp: 2026-06-12 04:38:55 UTC +0000
 | 2026-06-12 | Proposed; baseline layout, separation rules, benchmark-gated consolidation candidates. |
 | 2026-06-12 | Accepted; policy frozen at §2 pending §6 benchmarks and registry follow-up. |
 | 2026-06-12 | Layout registry in `graph-kernel::stable_layout` + per-canister `layout.rs`. |
+| 2026-06-12 | Initial canbench suite in `graph-kernel` (cold touch 5/21/43, router catalog intern). |
 
 ## Context
 
@@ -143,16 +144,32 @@ label posting merge on graph-index, router telemetry merge into placement.
 
 ### 6. Benchmark plan (Phase 8 deliverable)
 
-Record results in this ADR (revision history) or linked canbench/criterion output. Until rows exist,
-**no consolidation patch merges**.
+Record results in this ADR (revision history) or linked **canbench** output (`crates/graph-kernel/canbench_results.yml`).
+Internet Computer–facing stable-memory paths use **canbench on wasm32**, not native criterion.
+Until consolidation rows exist, **no consolidation patch merges**.
 
 | Benchmark | Purpose | Status |
 |-----------|---------|--------|
-| Canister init / first touch all regions | VM count overhead at cold start | **Pending** |
-| Reopen after simulated upgrade | `MemoryManager` + all thread-local inits | **Pending** |
-| Router catalog intern (6 VM vs grouped prototype) | P2 candidate | **Pending** |
-| Graph edge profile read (weight fallback vs payload-only) | P1 sunset evidence | **Pending** |
-| Property posting backfill step | Baseline for index layout changes | **Pending** |
+| `bench_layout_memory_manager_cold_touch_{5,21,43}` | VM count overhead at cold start (graph-index / router / graph region counts) | **Done** — see results below |
+| Reopen after simulated upgrade | `MemoryManager` + all thread-local inits | **Pending** — add on graph/router canbench |
+| `bench_layout_router_three_catalog_intern_6vm` | P2 baseline (six-region router catalog layout) | **Done** — grouped prototype TBD |
+| Graph edge profile read (weight fallback vs payload-only) | P1 sunset evidence | **Pending** — add on `gleaph-graph` canbench |
+| Property posting backfill step | Baseline for index layout changes | **Pending** — add on `gleaph-graph-index` canbench |
+
+**Results (2026-06-12, `gleaph-graph-kernel` canbench, wasm32):**
+
+| Bench | Regions | Instructions | Stable memory Δ (pages) |
+|-------|---------|--------------|---------------------------|
+| `bench_layout_memory_manager_cold_touch_5` | 5 | 127.81 K | 641 |
+| `bench_layout_memory_manager_cold_touch_21` | 21 | 332.17 K | 2,689 |
+| `bench_layout_memory_manager_cold_touch_43` | 43 | 613.15 K | 5,505 |
+| `bench_layout_router_three_catalog_intern_6vm` | 6 (catalog) | 11.81 M | 769 |
+
+**Reading:** cold `MemoryManager` + one empty `BTreeMap` insert per region scales roughly linearly
+(+~14 K instructions and +~128 pages per region in this synthetic probe). That supports keeping
+separation unless a **hot-path** benchmark shows consolidation wins. Router catalog intern cost is
+dominated by map inserts (~12 M instructions for 96 intern ops), not region count alone — P2 needs a
+grouped-layout prototype bench before merge.
 
 Existing hot-path benches (labeled hub insert/scan, router seed dispatch) remain regression guards;
 they do not substitute for layout-specific measurements.

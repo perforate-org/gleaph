@@ -1054,9 +1054,11 @@ name = "gleaph-graph-kernel"
 version = "0.1.0"
 dependencies = [
  "bitflags",
+ "canbench-rs",
  "candid",
  "ethnum",
  "half 2.7.1",
+ "ic-cdk",
  "ic-stable-lara",
  "ic-stable-structures",
  "serde",

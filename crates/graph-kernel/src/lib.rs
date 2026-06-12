@@ -1,3 +1,6 @@
+#[cfg(feature = "canbench")]
+mod bench;
+
 pub mod bidirectional_catalog;
 pub mod entry;
 pub mod federation;

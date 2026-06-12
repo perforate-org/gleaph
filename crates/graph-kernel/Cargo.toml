@@ -4,12 +4,22 @@ edition.workspace = true
 version.workspace = true
 license.workspace = true
 
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[features]
+default = []
+canbench = ["dep:canbench-rs", "dep:ic-cdk"]
+
 [dependencies]
 bitflags.workspace = true
 candid.workspace = true
+ic-cdk = { workspace = true, optional = true }
 ethnum.workspace = true
 half.workspace = true
 ic-stable-lara.workspace = true
 ic-stable-structures.workspace = true
 serde.workspace = true
 thiserror.workspace = true
+
+canbench-rs = { workspace = true, optional = true }

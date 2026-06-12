@@ -402,7 +402,7 @@ Deliverables:
 
 - Add a stable-memory layout ADR before changing memory ids or physical layout. **Done:** [ADR 0007](../adr/0007-stable-memory-layout.md) (accepted 2026-06-12).
 - Introduce a named memory-layout registry for graph, router, and graph-index. **Done:** `gleaph_graph_kernel::stable_layout`.
-- Benchmark many small `VirtualMemory` regions versus grouped metadata regions.
+- Benchmark many small `VirtualMemory` regions versus grouped metadata regions. **Partial:** `gleaph-graph-kernel` canbench (`bench_layout_memory_manager_cold_touch_{5,21,43}`, `bench_layout_router_three_catalog_intern_6vm`); grouped prototype and canister reopen benches pending.
 - Prototype catalog/profile consolidation only after domain APIs are explicit.
 - Keep canonical and derived stores separate unless the ADR justifies the coupling.
 - State explicitly when old development data is not migrated.
