@@ -60,19 +60,16 @@ pub(crate) fn eval_sort_expr(
 }
 
 fn decode_gleaph_weight_for_edge_binding(
-    store: &GraphStore,
     decoder: &PreparedWeightDecoder,
     edge: &EdgeBinding,
 ) -> Result<f32, PlanQueryError> {
-    super::super::gleaph_weight::decode_shortest_hop_cost_from_edge_binding(store, edge).or_else(
-        |_| {
-            super::super::gleaph_weight::decode_traversal_edge_weight_prepared(
-                decoder,
-                edge.payload_len(),
-                edge.payload_bytes_slice(),
-            )
-        },
-    )
+    super::super::gleaph_weight::decode_shortest_hop_cost_from_edge_binding(edge).or_else(|_| {
+        super::super::gleaph_weight::decode_traversal_edge_weight_prepared(
+            decoder,
+            edge.payload_len(),
+            edge.payload_bytes_slice(),
+        )
+    })
 }
 
 fn eval_list_index_value(
@@ -187,13 +184,12 @@ fn try_eval_horizontal_sum_gleaph_weight(
         })?;
     let mut sum = 0.0f32;
     for edge in edges.iter() {
-        sum += decode_gleaph_weight_for_edge_binding(evaluator.store, decoder, edge)?;
+        sum += decode_gleaph_weight_for_edge_binding(decoder, edge)?;
     }
     Ok(Some(Value::Float32(sum)))
 }
 
 fn try_eval_gleaph_weight(
-    store: &GraphStore,
     decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     name: &ObjectName,
     args: &[Expr],
@@ -241,7 +237,7 @@ fn try_eval_gleaph_weight(
             match binding {
                 PlanBinding::Value(Value::Null) => Ok(Some(Value::Null)),
                 PlanBinding::Edge(edge) => {
-                    let w = decode_gleaph_weight_for_edge_binding(store, decoder, edge)?;
+                    let w = decode_gleaph_weight_for_edge_binding(decoder, edge)?;
                     Ok(Some(Value::Float32(w)))
                 }
                 PlanBinding::EdgeGroup(_) => Err(PlanQueryError::GleaphWeight {
@@ -276,7 +272,7 @@ fn try_eval_gleaph_weight(
             let Some(edge) = edge_group_element_at_index(edges, idx) else {
                 return Ok(Some(Value::Null));
             };
-            let w = decode_gleaph_weight_for_edge_binding(store, decoder, edge)?;
+            let w = decode_gleaph_weight_for_edge_binding(decoder, edge)?;
             Ok(Some(Value::Float32(w)))
         }
     }
@@ -595,7 +591,6 @@ impl QueryExprEvaluator<'_> {
                 distinct,
             } => {
                 if let Some(v) = try_eval_gleaph_weight(
-                    self.store,
                     self.gleaph_weight_decoders,
                     name,
                     args,

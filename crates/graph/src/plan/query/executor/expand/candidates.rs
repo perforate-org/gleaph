@@ -445,7 +445,7 @@ pub(crate) fn expand_candidates_with_label_expr_fusion_into(
         return Ok(false);
     }
     let label_ids = fusion_edge_label_ids_for_expr(execution, label_expr)
-        .unwrap_or_else(|| catalog_edge_label_ids_for_predicate_fusion(execution, store));
+        .unwrap_or_else(|| catalog_edge_label_ids_for_predicate_fusion(execution));
     if label_ids.is_empty() {
         return Ok(false);
     }
@@ -548,7 +548,7 @@ pub(crate) fn expand_candidates_into(
             return Ok(());
         };
         let Some(predicate) = PreparedEdgePayloadPredicate::prepare(
-            store,
+            execution.resolved_labels.as_ref(),
             edge_label_id,
             edge_payload_predicate,
             parameters,
@@ -572,7 +572,7 @@ pub(crate) fn expand_candidates_into(
             return Ok(());
         };
         let Some(predicate) = PreparedEdgeVectorThreshold::prepare(
-            store,
+            execution.resolved_labels.as_ref(),
             edge_label_id,
             edge_vector_predicate,
             parameters,

@@ -199,7 +199,7 @@ const fn region(
     }
 }
 
-/// Graph canister — LARA bundle (0–31) + facade (32–41). Baseline: ADR 0007 §2.
+/// Graph canister — LARA bundle (0–31) + facade (32–40). Baseline: ADR 0007 §2 / ADR 0008.
 pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph",
     regions: &[
@@ -505,16 +505,8 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             None,
         ),
         region(
-            "EDGE_PAYLOAD_PROFILES",
-            37,
-            StableMemoryClass::Canonical,
-            "edge profiles",
-            "Authoritative edge payload width/profile catalog",
-            None,
-        ),
-        region(
             "EDGE_EQUALITY_POSTINGS",
-            38,
+            37,
             StableMemoryClass::Derived,
             "local indexes",
             "Shard-local edge property equality postings",
@@ -522,7 +514,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "LABEL_TELEMETRY_SEQ",
-            39,
+            38,
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Monotonic seq for label usage outbox events",
@@ -530,7 +522,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "LABEL_TELEMETRY_OUTBOX",
-            40,
+            39,
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Stable outbox of LabelUsageDelta events for router",
@@ -538,7 +530,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "APPLIED_MUTATION_REQUESTS",
-            41,
+            40,
             StableMemoryClass::Canonical,
             "idempotency",
             "Graph mutation idempotency outcomes (incl. telemetry batch)",
@@ -717,6 +709,14 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "property backfill",
             "Per-shard cursor for property posting backfill admin",
+            None,
+        ),
+        region(
+            "ROUTER_EDGE_PAYLOAD_PROFILES",
+            21,
+            StableMemoryClass::Catalog,
+            "edge payload schema",
+            "EdgeLabelId → EdgePayloadProfile (ADR 0008 SSOT)",
             None,
         ),
     ],
@@ -909,11 +909,11 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 42);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(41));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 41);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(40));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
-            GRAPH_STABLE_LAYOUT.regions[41].symbol,
+            GRAPH_STABLE_LAYOUT.regions[40].symbol,
             "APPLIED_MUTATION_REQUESTS"
         );
         assert_eq!(
@@ -921,20 +921,16 @@ mod tests {
             StableMemoryClass::Derived
         );
         assert_eq!(
-            GRAPH_STABLE_LAYOUT.regions[37].class,
-            StableMemoryClass::Canonical
-        );
-        assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[37].symbol,
-            "EDGE_PAYLOAD_PROFILES"
+            "EDGE_EQUALITY_POSTINGS"
         );
     }
 
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 21);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(20));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 22);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(21));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[17].class,
             StableMemoryClass::Telemetry

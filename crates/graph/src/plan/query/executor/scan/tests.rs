@@ -1557,15 +1557,13 @@ fn leading_edge_bind_endpoints_hop_aux_returns_payload_bytes() {
         .insert_vertex_named(["LeadHopB"], Vec::<(&str, Value)>::new())
         .expect("b");
     let label_id = crate::test_labels::edge_label_id_for_name("LeadHopRoad");
-    store
-        .install_edge_label_payload_profile_at_init(
-            label_id,
-            EdgePayloadProfile {
-                byte_width: 2,
-                encoding: EdgePayloadEncoding::WeightRawU16,
-            },
-        )
-        .unwrap();
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        EdgePayloadProfile {
+            byte_width: 2,
+            encoding: EdgePayloadEncoding::WeightRawU16,
+        },
+    );
     let weight_prop = crate::test_labels::property_id_for_name("weight");
     let payload = 7u16.to_le_bytes();
     let edge = store

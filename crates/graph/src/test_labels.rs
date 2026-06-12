@@ -9,10 +9,43 @@ use std::sync::Mutex;
 use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
 use ic_stable_lara::VertexId;
 
 static EDGE_LABEL_NAMES: Mutex<Option<HashMap<u16, String>>> = Mutex::new(None);
+static EDGE_PAYLOAD_PROFILES: Mutex<Option<HashMap<u16, EdgePayloadProfile>>> = Mutex::new(None);
+
+pub(crate) fn install_test_edge_payload_profile(label: EdgeLabelId, profile: EdgePayloadProfile) {
+    EDGE_PAYLOAD_PROFILES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(label.raw(), profile);
+}
+
+pub(crate) fn edge_payload_profile_for_id(label: EdgeLabelId) -> Option<EdgePayloadProfile> {
+    EDGE_PAYLOAD_PROFILES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()?
+        .get(&label.raw())
+        .cloned()
+}
+
+pub(crate) fn edge_label_ids_with_payload_profiles() -> Vec<EdgeLabelId> {
+    EDGE_PAYLOAD_PROFILES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()
+        .map(|profiles| {
+            profiles
+                .iter()
+                .filter(|(_, profile)| profile.required_byte_width() > 0)
+                .map(|(id, _)| EdgeLabelId::from_raw(*id))
+                .collect()
+        })
+        .unwrap_or_default()
+}
 
 impl GraphStore {
     pub(crate) fn insert_vertex_named(

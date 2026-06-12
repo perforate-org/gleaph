@@ -2,6 +2,7 @@
 
 use std::cell::RefCell;
 
+pub(crate) mod edge_payload_profiles;
 pub(crate) mod label_telemetry;
 pub(crate) mod layout;
 pub(crate) mod memory;
@@ -69,4 +70,7 @@ thread_local! {
 
     pub(crate) static ROUTER_AUTH_STATE: RefCell<memory::StableAuthState> =
         RefCell::new(memory::init_auth_state());
+
+    pub(crate) static ROUTER_EDGE_PAYLOAD_PROFILES: RefCell<memory::StableEdgePayloadProfileStore> =
+        RefCell::new(memory::init_edge_payload_profiles());
 }

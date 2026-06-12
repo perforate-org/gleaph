@@ -2,27 +2,27 @@ benches:
   bench_layout_memory_manager_cold_touch_21:
     total:
       calls: 1
-      instructions: 332166
+      instructions: 344938
       heap_increase: 0
-      stable_memory_increase: 2689
+      stable_memory_increase: 2817
     scopes:
       layout_mm_touch:
         calls: 1
-        instructions: 331157
+        instructions: 343929
         heap_increase: 0
-        stable_memory_increase: 2689
-  bench_layout_memory_manager_cold_touch_42:
+        stable_memory_increase: 2817
+  bench_layout_memory_manager_cold_touch_41:
     total:
       calls: 1
-      instructions: 600378
+      instructions: 587606
       heap_increase: 0
-      stable_memory_increase: 5377
+      stable_memory_increase: 5249
     scopes:
       layout_mm_touch:
         calls: 1
-        instructions: 599369
+        instructions: 586597
         heap_increase: 0
-        stable_memory_increase: 5377
+        stable_memory_increase: 5249
   bench_layout_memory_manager_cold_touch_5:
     total:
       calls: 1

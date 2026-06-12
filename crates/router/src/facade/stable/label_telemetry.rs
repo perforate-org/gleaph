@@ -170,7 +170,7 @@ impl Storable for ClientMutationKey {
     }
 }
 
-#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RouterMutationRecord {
     pub mutation_id: MutationId,
     pub created_at_ns: u64,

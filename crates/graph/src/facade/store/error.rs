@@ -1,6 +1,5 @@
 //! Graph store error type and conversions.
 
-use super::super::stable::edge_payload_profiles::EdgePayloadProfileStoreError;
 use super::super::{PropertyCatalogError, VertexLabelStoreError, VertexPropertyStoreError};
 use crate::index::placement;
 use gleaph_graph_kernel::entry::EdgeLabelId;
@@ -12,7 +11,6 @@ use std::fmt;
 #[derive(Debug)]
 pub enum GraphStoreError {
     Graph(DeferredBidirectionalLabeledError),
-    EdgePayloadProfile(EdgePayloadProfileStoreError),
     PropertyCatalog(PropertyCatalogError),
     VertexLabel(VertexLabelStoreError),
     PropertyValue(VertexPropertyStoreError),
@@ -42,8 +40,6 @@ pub enum GraphStoreError {
     FederatedExpandPayload {
         detail: String,
     },
-    /// Edge payload profile was already installed for this catalog label at init.
-    EdgeLabelProfileAlreadyInstalled(EdgeLabelId),
     VertexPlacement(placement::VertexPlacementError),
     /// Shard-local CSR row is tombstoned.
     VertexTombstoned,
@@ -53,7 +49,6 @@ impl fmt::Display for GraphStoreError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Graph(err) => write!(f, "{err}"),
-            Self::EdgePayloadProfile(err) => write!(f, "{err}"),
             Self::PropertyCatalog(err) => write!(f, "{err}"),
             Self::VertexLabel(err) => write!(f, "{err}"),
             Self::PropertyValue(err) => write!(f, "{err}"),
@@ -98,11 +93,6 @@ impl fmt::Display for GraphStoreError {
             Self::FederatedExpandPayload { detail } => {
                 write!(f, "invalid federated expand edge payload: {detail}")
             }
-            Self::EdgeLabelProfileAlreadyInstalled(id) => write!(
-                f,
-                "edge label {} payload profile is already installed (init-time only)",
-                id.raw()
-            ),
             Self::VertexPlacement(err) => write!(f, "{err}"),
             Self::VertexTombstoned => write!(f, "vertex row is tombstoned on this shard"),
         }
@@ -113,7 +103,6 @@ impl std::error::Error for GraphStoreError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Graph(err) => Some(err),
-            Self::EdgePayloadProfile(err) => Some(err),
             Self::PropertyCatalog(err) => Some(err),
             Self::VertexLabel(err) => Some(err),
             Self::PropertyValue(err) => Some(err),
@@ -124,7 +113,6 @@ impl std::error::Error for GraphStoreError {
             | Self::EdgePayloadWidthMismatch { .. }
             | Self::RemoteEdgeNotSupported
             | Self::FederatedExpandPayload { .. }
-            | Self::EdgeLabelProfileAlreadyInstalled(_)
             | Self::VertexPlacement(_)
             | Self::VertexTombstoned => None,
         }
@@ -140,12 +128,6 @@ impl From<placement::VertexPlacementError> for GraphStoreError {
 impl From<DeferredBidirectionalLabeledError> for GraphStoreError {
     fn from(value: DeferredBidirectionalLabeledError) -> Self {
         Self::Graph(value)
-    }
-}
-
-impl From<EdgePayloadProfileStoreError> for GraphStoreError {
-    fn from(value: EdgePayloadProfileStoreError) -> Self {
-        Self::EdgePayloadProfile(value)
     }
 }
 

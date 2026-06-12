@@ -1,0 +1,65 @@
+//! Resolve `EdgePayloadProfile` from execution wire (ADR 0008).
+
+use std::cell::RefCell;
+
+use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile};
+use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
+
+thread_local! {
+    static ACTIVE_RESOLVED_LABELS: RefCell<Option<ResolvedLabelTable>> =
+        const { RefCell::new(None) };
+}
+
+/// Binds router-resolved label schema for the current graph invocation (plan/DML).
+pub(crate) fn set_execution_resolved_labels(labels: Option<ResolvedLabelTable>) {
+    ACTIVE_RESOLVED_LABELS.with(|cell| *cell.borrow_mut() = labels);
+}
+
+pub(crate) fn clear_execution_resolved_labels() {
+    ACTIVE_RESOLVED_LABELS.with(|cell| *cell.borrow_mut() = None);
+}
+
+pub(crate) fn lookup_edge_payload_profile_with(
+    labels: Option<&ResolvedLabelTable>,
+    label: EdgeLabelId,
+) -> EdgePayloadProfile {
+    if let Some(profile) = labels.and_then(|table| table.edge_payload_profile(label)) {
+        return profile.clone();
+    }
+    if let Some(profile) = ACTIVE_RESOLVED_LABELS.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .and_then(|table| table.edge_payload_profile(label))
+            .cloned()
+    }) {
+        return profile;
+    }
+    #[cfg(any(test, feature = "canbench"))]
+    if let Some(profile) = crate::test_labels::edge_payload_profile_for_id(label) {
+        return profile;
+    }
+    EdgePayloadProfile::no_payload()
+}
+
+pub(crate) fn lookup_edge_payload_profile(label: EdgeLabelId) -> EdgePayloadProfile {
+    lookup_edge_payload_profile_with(None, label)
+}
+
+pub(crate) fn edge_label_ids_for_predicate_fusion(
+    labels: Option<&ResolvedLabelTable>,
+) -> Vec<EdgeLabelId> {
+    if let Some(table) = labels {
+        return table.edge_label_ids_with_nonzero_payload();
+    }
+    if let Some(table) = ACTIVE_RESOLVED_LABELS.with(|cell| cell.borrow().clone()) {
+        return table.edge_label_ids_with_nonzero_payload();
+    }
+    #[cfg(any(test, feature = "canbench"))]
+    {
+        crate::test_labels::edge_label_ids_with_payload_profiles()
+    }
+    #[cfg(not(any(test, feature = "canbench")))]
+    {
+        Vec::new()
+    }
+}

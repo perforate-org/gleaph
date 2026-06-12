@@ -55,7 +55,7 @@ impl GraphStore {
         self.ensure_vertex_id(source_vertex_id)?;
         self.ensure_vertex_id(target_vertex_id)?;
         Self::validate_catalog_edge_label(catalog_label)?;
-        validate_edge_payload_bytes_for_label(self, catalog_label, payload_bytes)?;
+        validate_edge_payload_bytes_for_label(catalog_label, payload_bytes)?;
 
         let label = lara_label(edge_storage_label(catalog_label, false));
         let payload_width = Self::edge_payload_width_u16(payload_bytes)?;
@@ -124,7 +124,7 @@ impl GraphStore {
         self.ensure_vertex_id(endpoint_a)?;
         self.ensure_vertex_id(endpoint_b)?;
         Self::validate_catalog_edge_label(catalog_label)?;
-        validate_edge_payload_bytes_for_label(self, catalog_label, payload_bytes)?;
+        validate_edge_payload_bytes_for_label(catalog_label, payload_bytes)?;
 
         let label = lara_label(edge_storage_label(catalog_label, true));
         let payload_width = Self::edge_payload_width_u16(payload_bytes)?;

@@ -36,7 +36,7 @@ pub mod bench_stable_layout {
     use std::hint::black_box;
 
     use super::GraphStore;
-    use super::stable::EDGE_PAYLOAD_PROFILES;
+    use crate::test_labels::install_test_edge_payload_profile;
 
     pub fn edge_profile_label() -> EdgeLabelId {
         EdgeLabelId::from_raw(1)
@@ -47,11 +47,7 @@ pub mod bench_stable_layout {
         let weight = EdgeWeightProfile {
             encoding: WeightEncoding::RawU16,
         };
-        EDGE_PAYLOAD_PROFILES.with_borrow_mut(|store| {
-            store
-                .insert(label, EdgePayloadProfile::from(weight))
-                .expect("payload profile");
-        });
+        install_test_edge_payload_profile(label, EdgePayloadProfile::from(weight));
     }
 
     pub fn read_weight_via_store(label: EdgeLabelId) -> Option<EdgeWeightProfile> {
@@ -69,7 +65,6 @@ pub fn bench_stable_reopen_touch() {
     std::hint::black_box(memory::init_edge_property_store());
     std::hint::black_box(memory::init_edge_alias_index());
     std::hint::black_box(memory::init_metadata());
-    std::hint::black_box(memory::init_edge_payload_profiles());
     std::hint::black_box(memory::init_edge_equality_postings());
     std::hint::black_box(memory::init_label_telemetry_seq());
     std::hint::black_box(memory::init_label_telemetry_outbox());

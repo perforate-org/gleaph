@@ -261,14 +261,12 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
         .expect("insert dst");
 
     let label_id = crate::test_labels::edge_label_id_for_name("BenchWspWgtEdge");
-    store
-        .install_edge_label_weight_profile_at_init(
-            label_id,
-            EdgeWeightProfile {
-                encoding: WeightEncoding::RawU16,
-            },
-        )
-        .expect("weight profile");
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        gleaph_graph_kernel::entry::EdgePayloadProfile::from(EdgeWeightProfile {
+            encoding: WeightEncoding::RawU16,
+        }),
+    );
     let road = catalog_edge_label("BenchWspWgtEdge");
 
     let mut prefixes = Vec::with_capacity(CACHE_PREFIX_COUNT);
@@ -1231,17 +1229,15 @@ fn setup_expand_vector_graph_with_scale(store: &GraphStore, scale: ExpandVectorG
         "W64 vector profile can hold at most 64 bytes"
     );
     let label_id = crate::test_labels::edge_label_id_for_name(scale.edge_label);
-    store
-        .install_edge_label_payload_profile_at_init(
-            label_id,
-            EdgePayloadProfile {
-                byte_width: 64,
-                encoding: EdgePayloadEncoding::VectorF32 {
-                    dims: scale.dims as u16,
-                },
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        EdgePayloadProfile {
+            byte_width: 64,
+            encoding: EdgePayloadEncoding::VectorF32 {
+                dims: scale.dims as u16,
             },
-        )
-        .expect("vector profile");
+        },
+    );
 
     let near = vec![1.0; scale.dims];
     let far = vec![9.0; scale.dims];

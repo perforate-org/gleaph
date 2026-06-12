@@ -6,7 +6,7 @@ use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::ObjectName;
 use gleaph_gql_ic::principal_to_value;
-use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::plan_exec::{ResolvedLabelTable, ResolvedPropertyTable};
 
 /// Carries data that is fixed for one GQL execution (adhoc, prepared, or plan replay).
@@ -77,6 +77,13 @@ impl GqlExecutionContext {
 
     pub fn requires_resolved_labels(&self) -> bool {
         self.resolved_labels.is_some()
+    }
+
+    pub fn resolved_edge_payload_profile(&self, id: EdgeLabelId) -> EdgePayloadProfile {
+        crate::edge_payload_schema::lookup_edge_payload_profile_with(
+            self.resolved_labels.as_ref(),
+            id,
+        )
     }
 
     pub fn resolved_property_id(&self, name: &str) -> Option<PropertyId> {

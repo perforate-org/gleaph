@@ -3,6 +3,13 @@
 pub use gleaph_graph_kernel::stable_layout::ROUTER_STABLE_LAYOUT;
 
 /// Stable region count for this canister (ADR 0007 baseline).
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "layout baseline constant; asserted in layout registry tests"
+    )
+)]
 pub const STABLE_REGION_COUNT: usize = ROUTER_STABLE_LAYOUT.region_count();
 
 #[cfg(test)]
@@ -13,6 +20,6 @@ mod tests {
     #[test]
     fn router_canister_layout_registry() {
         validate_layout(&ROUTER_STABLE_LAYOUT).expect("router layout invariants");
-        assert_eq!(STABLE_REGION_COUNT, 21);
+        assert_eq!(STABLE_REGION_COUNT, 22);
     }
 }

@@ -1260,14 +1260,14 @@ mod tests {
     fn optional_match_gleaph_weight_on_null_edge_returns_null() {
         let store = GraphStore::new();
         crate::test_labels::edge_label_id_for_name("NullWgtRel");
-        store
-            .install_edge_label_weight_profile_at_init(
-                crate::test_labels::edge_label_id_for_name("NullWgtRel"),
+        crate::test_labels::install_test_edge_payload_profile(
+            crate::test_labels::edge_label_id_for_name("NullWgtRel"),
+            gleaph_graph_kernel::entry::EdgePayloadProfile::from(
                 gleaph_graph_kernel::entry::EdgeWeightProfile {
                     encoding: gleaph_graph_kernel::entry::WeightEncoding::RawU16,
                 },
-            )
-            .expect("profile");
+            ),
+        );
         store
             .insert_vertex_named(["NullWgtN"], Vec::<(&str, Value)>::new())
             .expect("insert n");

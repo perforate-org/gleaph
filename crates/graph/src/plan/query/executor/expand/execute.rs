@@ -16,7 +16,6 @@ use super::{
     edge_binding_for_scanned_expand, edge_equality_stream_filter, edge_matches_stream_filter,
     expand_accepts_remote_dst, visit_csr_expand_fast_path,
 };
-use crate::facade::GraphStore;
 use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::context::ExecuteCtx;
@@ -72,7 +71,7 @@ pub(crate) async fn execute_expand(
     .then(|| csr_offset_fast_path_for_expand(direction, label_id, sequence_order))
     .flatten();
     let prepared_vector_dst_only_predicate = prepare_vector_dst_only_expand_predicate(
-        store,
+        execution.resolved_labels.as_ref(),
         label_id,
         direction,
         emit_edge_binding,
@@ -282,7 +281,7 @@ pub(crate) async fn execute_expand(
 
 #[allow(clippy::too_many_arguments)]
 fn prepare_vector_dst_only_expand_predicate(
-    store: &GraphStore,
+    resolved_labels: Option<&gleaph_graph_kernel::plan_exec::ResolvedLabelTable>,
     label_id: Option<EdgeLabelId>,
     direction: EdgeDirection,
     emit_edge_binding: bool,
@@ -310,7 +309,7 @@ fn prepare_vector_dst_only_expand_predicate(
         return Ok(None);
     };
     let Some(predicate) = PreparedEdgeVectorThreshold::prepare(
-        store,
+        resolved_labels,
         edge_label_id,
         edge_vector_predicate.expect("checked above"),
         parameters,

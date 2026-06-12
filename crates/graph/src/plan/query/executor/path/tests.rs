@@ -91,14 +91,12 @@ mod path_test_helpers {
             .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
             .expect("insert c");
         let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
-        store
-            .install_edge_label_weight_profile_at_init(
-                label_id,
-                EdgeWeightProfile {
-                    encoding: WeightEncoding::RawU16,
-                },
-            )
-            .expect("weight profile");
+        crate::test_labels::install_test_edge_payload_profile(
+            label_id,
+            gleaph_graph_kernel::entry::EdgePayloadProfile::from(EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            }),
+        );
         let road = catalog_edge_label("WgtRoad");
         store
             .insert_directed_edge_with_payload_bytes(a, b, Some(road), &1u16.to_le_bytes())
@@ -1464,14 +1462,12 @@ fn weighted_shortest_union_label_expr_prefers_lower_cost_label() {
     let knows = crate::test_labels::edge_label_id_for_name("WgtUnionKnows");
     let likes = crate::test_labels::edge_label_id_for_name("WgtUnionLikes");
     for label_id in [knows, likes] {
-        store
-            .install_edge_label_weight_profile_at_init(
-                label_id,
-                EdgeWeightProfile {
-                    encoding: WeightEncoding::RawU16,
-                },
-            )
-            .expect("weight profile");
+        crate::test_labels::install_test_edge_payload_profile(
+            label_id,
+            gleaph_graph_kernel::entry::EdgePayloadProfile::from(EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            }),
+        );
     }
     let knows_wire = catalog_edge_label("WgtUnionKnows");
     let likes_wire = catalog_edge_label("WgtUnionLikes");
@@ -1568,14 +1564,12 @@ fn weighted_shortest_k_prefers_lower_cost_over_extra_hop_paths() {
         .insert_vertex_named(["WgtKTarget"], Vec::<(&str, Value)>::new())
         .expect("insert target");
     let label_id = crate::test_labels::edge_label_id_for_name("WgtKRoad");
-    store
-        .install_edge_label_weight_profile_at_init(
-            label_id,
-            EdgeWeightProfile {
-                encoding: WeightEncoding::RawU16,
-            },
-        )
-        .expect("weight profile");
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        gleaph_graph_kernel::entry::EdgePayloadProfile::from(EdgeWeightProfile {
+            encoding: WeightEncoding::RawU16,
+        }),
+    );
     let road = catalog_edge_label("WgtKRoad");
     let cheap = 1u16.to_le_bytes();
     let expensive = 50u16.to_le_bytes();
@@ -1667,14 +1661,12 @@ fn setup_hop_bound_cheaper_vertex_unusable_graph(store: &GraphStore) -> (VertexI
         .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
         .expect("insert dst");
     let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
-    store
-        .install_edge_label_weight_profile_at_init(
-            label_id,
-            EdgeWeightProfile {
-                encoding: WeightEncoding::RawU16,
-            },
-        )
-        .expect("weight profile");
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        gleaph_graph_kernel::entry::EdgePayloadProfile::from(EdgeWeightProfile {
+            encoding: WeightEncoding::RawU16,
+        }),
+    );
     let road = catalog_edge_label("WgtRoad");
     store
         .insert_directed_edge_with_payload_bytes(s, x, Some(road), &2u16.to_le_bytes())
@@ -1757,14 +1749,12 @@ fn setup_stale_mid_diamond_graph(store: &GraphStore) -> (VertexId, VertexId) {
         .insert_vertex_named(["WgtC"], Vec::<(&str, Value)>::new())
         .expect("insert dst");
     let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
-    store
-        .install_edge_label_weight_profile_at_init(
-            label_id,
-            EdgeWeightProfile {
-                encoding: WeightEncoding::RawU16,
-            },
-        )
-        .expect("weight profile");
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        gleaph_graph_kernel::entry::EdgePayloadProfile::from(EdgeWeightProfile {
+            encoding: WeightEncoding::RawU16,
+        }),
+    );
     let road = catalog_edge_label("WgtRoad");
     store
         .insert_directed_edge_with_payload_bytes(s, mid, Some(road), &10u16.to_le_bytes())
@@ -1789,7 +1779,6 @@ fn stale_mid_diamond_edge_bindings_carry_expected_weights() {
     let road = catalog_edge_label("WgtRoad");
     let cost_expr = gleaph_weight_call("e");
     let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
-        &store,
         &crate::gql_execution_context::GqlExecutionContext::default(),
         &[PlanOp::ShortestPath {
             src: "a".into(),
@@ -1822,7 +1811,6 @@ fn stale_mid_diamond_edge_bindings_carry_expected_weights() {
             let binding = edge_binding_for_expand(&store, s, EdgeDirection::PointingRight, edge)
                 .expect("binding");
             let w = crate::plan::query::gleaph_weight::decode_traversal_edge_weight(
-                &store,
                 binding.handle,
                 binding.payload_len(),
                 binding.payload_bytes_slice(),
@@ -1844,7 +1832,6 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
     let road = catalog_edge_label("WgtRoad");
     let cost_expr = gleaph_weight_call("e");
     let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
-        &store,
         &crate::gql_execution_context::GqlExecutionContext::default(),
         &[PlanOp::ShortestPath {
             src: "a".into(),
@@ -1961,7 +1948,6 @@ fn stale_mid_diamond_weighted_search_finds_cheaper_three_hop_path() {
     let road = catalog_edge_label("WgtRoad");
     let cost_expr = gleaph_weight_call("e");
     let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
-        &store,
         &crate::gql_execution_context::GqlExecutionContext::default(),
         &[PlanOp::ShortestPath {
             src: "a".into(),
@@ -2103,14 +2089,12 @@ fn weighted_shortest_prefers_zero_weight_detour_over_direct_edge() {
         .insert_vertex_named(["WgtD2"], Vec::<(&str, Value)>::new())
         .expect("insert d2");
     let label_id = crate::test_labels::edge_label_id_for_name("WgtRoad");
-    store
-        .install_edge_label_weight_profile_at_init(
-            label_id,
-            EdgeWeightProfile {
-                encoding: WeightEncoding::RawU16,
-            },
-        )
-        .expect("weight profile");
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        gleaph_graph_kernel::entry::EdgePayloadProfile::from(EdgeWeightProfile {
+            encoding: WeightEncoding::RawU16,
+        }),
+    );
     let road = catalog_edge_label("WgtRoad");
     store
         .insert_directed_edge_with_payload_bytes(a, d1, Some(road), &0u16.to_le_bytes())

@@ -11,6 +11,7 @@ use crate::types::{
 use candid::Principal;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
+use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
 use gleaph_graph_kernel::federation::PhysicalVertexLocation;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
@@ -302,6 +303,41 @@ fn dml_plan_creates_only_requested_label_namespaces() {
     assert_eq!(resolved.edge[0].id.raw(), 1);
     assert_eq!(store.lookup_vertex_label_id("Person").unwrap().raw(), 1);
     assert_eq!(store.lookup_edge_label_id("Person").unwrap().raw(), 1);
+}
+
+#[test]
+fn resolve_plan_attaches_edge_payload_profile() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    store.bootstrap_controllers(&[admin]);
+
+    let profile = EdgePayloadProfile {
+        byte_width: 2,
+        encoding: EdgePayloadEncoding::WeightRawU16,
+    };
+    store
+        .admin_intern_edge_label(admin, "KNOWS")
+        .expect("intern edge");
+    store
+        .admin_set_edge_label_payload_profile(admin, "KNOWS", profile.clone())
+        .expect("set profile");
+
+    let edge_only = PhysicalPlan::from_ops(vec![PlanOp::InsertEdge {
+        variable: Some("e".into()),
+        src: "a".into(),
+        dst: "b".into(),
+        direction: EdgeDirection::PointingRight,
+        labels: vec!["KNOWS".into()],
+        properties: vec![],
+    }]);
+
+    let resolved = store
+        .resolve_plan_labels(&[edge_only])
+        .expect("resolve edge DML labels");
+    assert_eq!(resolved.edge.len(), 1);
+    assert_eq!(resolved.edge[0].name, "KNOWS");
+    assert_eq!(resolved.edge[0].payload_profile, profile);
 }
 
 #[test]

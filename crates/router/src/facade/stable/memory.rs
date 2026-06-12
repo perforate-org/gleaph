@@ -1,6 +1,7 @@
 //! Router canister stable-memory layout — see `design/storage/stable-memory-inventory.md`
 //! and `facade/stable/layout.rs` (ADR 0007 registry).
 
+use super::edge_payload_profiles::EdgePayloadProfileStore;
 use candid::Principal;
 use gleaph_graph_kernel::bidirectional_catalog::{
     BidirectionalCatalog, DenseEdgeLabelPolicy, DenseMaxPlusOnePolicy,
@@ -39,6 +40,7 @@ const ROUTER_APPLIED_LABEL_TELEMETRY: MemoryId = MemoryId::new(17);
 const ROUTER_MUTATION_BY_CLIENT_KEY: MemoryId = MemoryId::new(18);
 const ROUTER_LABEL_BACKFILL_STATE: MemoryId = MemoryId::new(19);
 const ROUTER_PROPERTY_BACKFILL_STATE: MemoryId = MemoryId::new(20);
+const ROUTER_EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(21);
 
 pub(crate) type StableControllerSet = BTreeSet<Principal, Memory>;
 pub(crate) type StableGraphRegistry = BTreeMap<String, GraphRegistryEntry, Memory>;
@@ -51,6 +53,7 @@ pub(crate) type StableEdgeLabelCatalog =
     BidirectionalCatalog<EdgeLabelId, Memory, Memory, DenseEdgeLabelPolicy>;
 pub(crate) type StablePropertyCatalog =
     BidirectionalCatalog<PropertyId, Memory, Memory, DenseMaxPlusOnePolicy>;
+pub(crate) type StableEdgePayloadProfileStore = EdgePayloadProfileStore<Memory>;
 pub(crate) type StableLabelStatsMap = BTreeMap<u16, super::label_telemetry::LabelStats, Memory>;
 pub(crate) type StableLabelShardLiveMap =
     BTreeMap<super::label_telemetry::LabelShardKey, u64, Memory>;
@@ -153,4 +156,10 @@ pub(crate) fn init_label_backfill_state() -> StableLabelBackfillStateMap {
 
 pub(crate) fn init_property_backfill_state() -> StablePropertyBackfillStateMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BACKFILL_STATE)))
+}
+
+pub(crate) fn init_edge_payload_profiles() -> StableEdgePayloadProfileStore {
+    EdgePayloadProfileStore::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_PAYLOAD_PROFILES)),
+    )
 }

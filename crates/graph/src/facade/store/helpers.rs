@@ -130,20 +130,15 @@ pub(super) fn validate_edge_payload_bytes(payload_bytes: &[u8]) -> Result<(), Gr
     Ok(())
 }
 
-/// Checks supported physical widths and that bytes match the label's catalog payload profile width.
-///
-/// New catalog labels default to [`EdgePayloadProfile::no_payload`] (0 bytes). Non-zero payloads require
-/// a matching profile installed at graph init via [`GraphStore::install_edge_label_payload_profile_at_init`]
-/// or [`GraphStore::install_edge_label_weight_profile_at_init`].
+/// Checks supported physical widths and that bytes match the router-resolved payload profile.
 pub(super) fn validate_edge_payload_bytes_for_label(
-    store: &GraphStore,
     catalog_label: Option<EdgeLabelId>,
     payload_bytes: &[u8],
 ) -> Result<(), GraphStoreError> {
     validate_edge_payload_bytes(payload_bytes)?;
     let expected_width = catalog_label
-        .and_then(|id| store.edge_label_payload_profile(id))
-        .unwrap_or(EdgePayloadProfile::no_payload())
+        .map(crate::edge_payload_schema::lookup_edge_payload_profile)
+        .unwrap_or_else(EdgePayloadProfile::no_payload)
         .required_byte_width();
     let expected = usize::from(expected_width);
     let actual = payload_bytes.len();

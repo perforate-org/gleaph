@@ -13,6 +13,6 @@ mod tests {
     #[test]
     fn graph_canister_layout_registry() {
         validate_layout(&GRAPH_STABLE_LAYOUT).expect("graph layout invariants");
-        assert_eq!(STABLE_REGION_COUNT, 42);
+        assert_eq!(STABLE_REGION_COUNT, 41);
     }
 }

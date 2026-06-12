@@ -11,6 +11,7 @@ Anchor timestamp: 2026-06-12 08:07:55 UTC +0000
 |------|--------|
 | 2026-06-12 | Proposed; router-owned logical schema, graph `EDGE_PAYLOAD_PROFILES` retirement plan. |
 | 2026-06-12 | Accepted; policy frozen pending implementation phases A–E in §6. |
+| 2026-06-12 | Implemented phases A–E; router region 21 live; graph `EDGE_PAYLOAD_PROFILES` retired (41 regions). |
 
 ## Context
 

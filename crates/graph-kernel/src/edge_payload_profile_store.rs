@@ -1,8 +1,6 @@
-//! Optional [`gleaph_graph_kernel::entry::EdgePayloadProfile`] per catalog [`EdgeLabelId`].
+//! Stable `EdgeLabelId → EdgePayloadProfile` map (router SSOT per ADR 0008).
 
-use gleaph_graph_kernel::entry::{
-    EdgeLabelId, EdgePayloadProfile, EdgePayloadProfileError, EdgeWeightProfile,
-};
+use crate::entry::{EdgeLabelId, EdgePayloadProfile, EdgePayloadProfileError, EdgeWeightProfile};
 use ic_stable_structures::{Memory, StableBTreeMap};
 use std::fmt;
 
@@ -10,6 +8,7 @@ use std::fmt;
 pub enum EdgePayloadProfileStoreError {
     InvalidCatalogLabel(EdgeLabelId),
     InvalidProfile(EdgePayloadProfileError),
+    ProfileAlreadyInstalled(EdgeLabelId),
 }
 
 impl fmt::Display for EdgePayloadProfileStoreError {
@@ -23,6 +22,11 @@ impl fmt::Display for EdgePayloadProfileStoreError {
                 )
             }
             Self::InvalidProfile(e) => write!(f, "{e}"),
+            Self::ProfileAlreadyInstalled(id) => write!(
+                f,
+                "edge label {} payload profile is already installed",
+                id.raw()
+            ),
         }
     }
 }
@@ -59,6 +63,17 @@ impl<M: Memory> EdgePayloadProfileStore<M> {
         Ok(())
     }
 
+    pub fn insert_if_absent(
+        &mut self,
+        label: EdgeLabelId,
+        profile: EdgePayloadProfile,
+    ) -> Result<(), EdgePayloadProfileStoreError> {
+        if self.inner.get(&label).is_some() {
+            return Ok(());
+        }
+        self.insert(label, profile)
+    }
+
     pub fn insert_from_weight_profile(
         &mut self,
         label: EdgeLabelId,
@@ -75,6 +90,19 @@ impl<M: Memory> EdgePayloadProfileStore<M> {
         self.inner.iter().map(|entry| *entry.key()).collect()
     }
 
+    pub fn label_ids_with_nonzero_payload(&self) -> Vec<EdgeLabelId> {
+        self.inner
+            .iter()
+            .filter_map(|entry| {
+                if entry.value().required_byte_width() > 0 {
+                    Some(*entry.key())
+                } else {
+                    None
+                }
+            })
+            .collect()
+    }
+
     pub fn into_memory(self) -> M {
         self.inner.into_memory()
     }
@@ -83,7 +111,7 @@ impl<M: Memory> EdgePayloadProfileStore<M> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile};
+    use crate::entry::{EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile};
     use ic_stable_structures::VectorMemory;
     use std::{cell::RefCell, rc::Rc};
 

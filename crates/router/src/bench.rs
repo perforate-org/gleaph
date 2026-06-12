@@ -15,6 +15,7 @@ fn router_stable_reopen_round() {
     black_box(memory::init_vertex_label_catalog());
     black_box(memory::init_edge_label_catalog());
     black_box(memory::init_property_catalog());
+    black_box(memory::init_edge_payload_profiles());
     black_box(memory::init_auth_state());
     black_box(memory::init_vertex_label_stats());
     black_box(memory::init_edge_label_stats());

@@ -8,12 +8,12 @@ use gleaph_gql_planner::plan::{
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile};
 use half::f16;
 
-use crate::facade::GraphStore;
 use crate::plan::query::edge_payload_batch_kernel::PreparedEdgePayloadBatchKernel;
 use crate::plan::query::edge_vector_kernel::{
     EdgeVectorMetric as KernelEdgeVectorMetric, PreparedEdgeVectorKernel,
 };
 use crate::plan::query::error::PlanQueryError;
+use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedEdgePayloadPredicate {
     pub(crate) kernel: PreparedEdgePayloadBatchKernel,
@@ -32,14 +32,16 @@ pub(crate) struct PreparedEdgeVectorThreshold {
 
 impl PreparedEdgeVectorThreshold {
     pub(crate) fn prepare(
-        store: &GraphStore,
+        resolved_labels: Option<&ResolvedLabelTable>,
         label_id: EdgeLabelId,
         predicate: &EdgeVectorPredicate,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<Option<Self>, PlanQueryError> {
-        let Some(profile) = store.edge_label_payload_profile(label_id) else {
+        let profile =
+            crate::edge_payload_schema::lookup_edge_payload_profile_with(resolved_labels, label_id);
+        if profile.required_byte_width() == 0 {
             return Ok(None);
-        };
+        }
         let EdgePayloadEncoding::VectorF32 { dims } = profile.encoding else {
             return Err(PlanQueryError::UnsupportedOp(
                 "edge vector predicate for non-vector encodings",
@@ -117,14 +119,13 @@ fn kernel_edge_vector_metric(metric: PlanEdgeVectorMetric) -> KernelEdgeVectorMe
 
 impl PreparedEdgePayloadPredicate {
     pub(crate) fn prepare(
-        store: &GraphStore,
+        resolved_labels: Option<&ResolvedLabelTable>,
         label_id: EdgeLabelId,
         predicate: &EdgePayloadPredicate,
         parameters: &BTreeMap<String, Value>,
     ) -> Result<Option<Self>, PlanQueryError> {
-        let Some(profile) = store.edge_label_payload_profile(label_id) else {
-            return Ok(None);
-        };
+        let profile =
+            crate::edge_payload_schema::lookup_edge_payload_profile_with(resolved_labels, label_id);
         if profile.required_byte_width() == 0 {
             return Ok(None);
         }

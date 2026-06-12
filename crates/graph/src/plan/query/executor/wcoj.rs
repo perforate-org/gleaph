@@ -191,15 +191,13 @@ mod tests {
     fn install_wcoj_triangle(store: &GraphStore, payload: &[u8]) -> (VertexId, VertexId, VertexId) {
         use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
         let label_id = crate::test_labels::edge_label_id_for_name("WcojTriRel");
-        store
-            .install_edge_label_payload_profile_at_init(
-                label_id,
-                EdgePayloadProfile {
-                    byte_width: 2,
-                    encoding: EdgePayloadEncoding::WeightRawU16,
-                },
-            )
-            .unwrap();
+        crate::test_labels::install_test_edge_payload_profile(
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        );
         let a = store
             .insert_vertex_named(["WcojTriNode"], Vec::<(&str, Value)>::new())
             .expect("a");

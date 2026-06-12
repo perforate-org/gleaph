@@ -9,7 +9,7 @@
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
 
-use crate::entry::{EdgeLabelId, PropertyId, VertexLabelId};
+use crate::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
 use crate::federation::ShardId;
 
 /// Router-issued mutation id. `0` is reserved; ids are never reused.
@@ -28,7 +28,7 @@ pub enum GqlExecutionMode {
 }
 
 /// Router → graph: execute a pre-built physical plan on a target shard.
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanArgs {
     pub target_shard_id: ShardId,
     /// Router-issued idempotency key for update/DML execution.
@@ -91,7 +91,7 @@ pub struct MutationOutcomeWire {
     pub label_telemetry_events: Vec<LabelTelemetryEventWire>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ResolvedLabelTable {
     pub vertex: Vec<ResolvedVertexLabel>,
     pub edge: Vec<ResolvedEdgeLabel>,
@@ -103,10 +103,43 @@ pub struct ResolvedVertexLabel {
     pub id: VertexLabelId,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ResolvedEdgeLabel {
     pub name: String,
     pub id: EdgeLabelId,
+    /// Router-owned logical schema (ADR 0008). Default `no_payload` when omitted on legacy wire.
+    pub payload_profile: EdgePayloadProfile,
+}
+
+impl ResolvedEdgeLabel {
+    pub fn new(
+        name: impl Into<String>,
+        id: EdgeLabelId,
+        payload_profile: EdgePayloadProfile,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            id,
+            payload_profile,
+        }
+    }
+}
+
+impl ResolvedLabelTable {
+    pub fn edge_payload_profile(&self, id: EdgeLabelId) -> Option<&EdgePayloadProfile> {
+        self.edge
+            .iter()
+            .find(|entry| entry.id == id)
+            .map(|entry| &entry.payload_profile)
+    }
+
+    pub fn edge_label_ids_with_nonzero_payload(&self) -> Vec<EdgeLabelId> {
+        self.edge
+            .iter()
+            .filter(|entry| entry.payload_profile.required_byte_width() > 0)
+            .map(|entry| entry.id)
+            .collect()
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
@@ -185,10 +218,11 @@ mod tests {
                     name: "User".into(),
                     id: VertexLabelId::from_raw(1),
                 }],
-                edge: vec![ResolvedEdgeLabel {
-                    name: "KNOWS".into(),
-                    id: EdgeLabelId::from_raw(1),
-                }],
+                edge: vec![ResolvedEdgeLabel::new(
+                    "KNOWS",
+                    EdgeLabelId::from_raw(1),
+                    EdgePayloadProfile::no_payload(),
+                )],
             }),
             resolved_properties: Some(ResolvedPropertyTable {
                 properties: vec![ResolvedProperty {

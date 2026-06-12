@@ -15,6 +15,7 @@ Anchor timestamp: 2026-06-12 07:45:56 UTC +0000
 | 2026-06-12 | Initial canbench suite in `graph-kernel` (cold touch 5/21/43, router catalog intern). |
 | 2026-06-12 | Extended canbench to graph/router/graph-index; §8b preliminary retain/defer judgments. |
 | 2026-06-12 | P1 executed: retired `EDGE_WEIGHT_PROFILES`; graph facade repacked to 42 regions (ids 37–41). |
+| 2026-06-12 | ADR 0008 executed: retired graph `EDGE_PAYLOAD_PROFILES`; graph 41 regions (facade 32–40); router 22 regions (0–21). |
 
 ## Context
 
@@ -23,8 +24,8 @@ Storage-domain APIs, derived-state rebuild paths, and catalog abstractions are e
 repacked graph, router, and graph-index `MemoryId` assignments into consecutive layouts and removed
 federation-only stable regions from the single-shard footprint.
 
-The graph canister allocates **42** `VirtualMemory<DefaultMemoryImpl>` regions (32 LARA + 10
-facade). The router allocates **21**; graph-index allocates **5**. Each region carries
+The graph canister allocates **41** `VirtualMemory<DefaultMemoryImpl>` regions (32 LARA + 9
+facade). The router allocates **22**; graph-index allocates **5**. Each region carries
 `MemoryManager` bookkeeping and encodes an ownership or recovery boundary.
 
 That separation is intentional: canonical adjacency, derived reverse orientation, maintenance free
@@ -94,8 +95,8 @@ Code source of truth:
 | Canister | Region count | Id range | Notes |
 |----------|-------------|----------|-------|
 | Graph — LARA bundle | 32 | 0–31 | Forward canonical + reverse derived + maintenance; wired into one `DeferredBidirectionalLabeledLaraGraph` |
-| Graph — facade | 11 | 32–42 | Properties, labels, aliases, profiles, local indexes, telemetry, idempotency |
-| Router | 21 | 0–20 | Registry, placement, catalogs (3 pairs), auth, telemetry (4), idempotency (2), backfill cursors (2) |
+| Graph — facade | 9 | 32–40 | Properties, labels, aliases, local indexes, telemetry, idempotency |
+| Router | 22 | 0–21 | Registry, placement, catalogs (3 pairs + edge payload schema), auth, telemetry (4), idempotency (2), backfill cursors (2) |
 | Graph-index | 5 | 0–4 | Admins, shard owners, property postings, router auth, label postings |
 
 Ephemeral heap state (pending posting queues, router planner catalog, prepared plans) is **not**
@@ -151,7 +152,7 @@ Until consolidation rows exist, **no consolidation patch merges**.
 
 | Benchmark | Purpose | Status |
 |-----------|---------|--------|
-| `bench_layout_memory_manager_cold_touch_{5,21,42}` | VM count overhead at cold start (graph-index / router / graph region counts) | **Done** |
+| `bench_layout_memory_manager_cold_touch_{5,21,41}` | VM count overhead at cold start (graph-index / router / graph region counts) | **Done** |
 | `bench_layout_graph_stable_reopen_touch` | Graph facade re-init on persisted memory manager | **Done** |
 | `bench_layout_router_stable_reopen_touch` | Router facade re-init | **Done** |
 | `bench_layout_router_three_catalog_intern_6vm` | P2 baseline (six-region router catalog layout) | **Done** — grouped prototype TBD |
@@ -159,19 +160,21 @@ Until consolidation rows exist, **no consolidation patch merges**.
 | `bench_layout_index_posting_insert_64` | Posting insert hot path (backfill proxy) | **Done** |
 | Grouped catalog prototype vs 6 VM | P2 merge gate | **Pending** |
 
-**Results (2026-06-12, `gleaph-graph-kernel` canbench, wasm32):**
+**Results (2026-06-12, layout canbench, wasm32):**
 
 | Bench | Regions | Instructions | Stable memory Δ (pages) |
 |-------|---------|--------------|---------------------------|
 | `bench_layout_memory_manager_cold_touch_5` | 5 | 127.81 K | 641 |
-| `bench_layout_memory_manager_cold_touch_21` | 21 | 332.17 K | 2,689 |
-| `bench_layout_memory_manager_cold_touch_42` | 42 | 600.38 K | 5,377 |
+| `bench_layout_memory_manager_cold_touch_21` | 22 (router, post-0008) | 344.94 K | 2,817 |
+| `bench_layout_memory_manager_cold_touch_41` | 41 (graph, post-0008) | 587.61 K | 5,249 |
+| `bench_layout_memory_manager_cold_touch_42` | 42 (pre-0008) | 600.38 K | 5,377 |
 | `bench_layout_memory_manager_cold_touch_43` | 43 (pre-P1) | 613.15 K | 5,505 |
 | `bench_layout_router_three_catalog_intern_6vm` | 6 (catalog) | 11.81 M | 769 |
-| `bench_layout_graph_stable_reopen_touch` | 42 (facade+LARA, post-P1) | 502.05 K | 6,016 |
-| `bench_layout_graph_stable_reopen_touch` (pre-P1) | 43 | 507.15 K | 6,144 |
-| `bench_layout_router_stable_reopen_touch` | 21 | 41.91 K | 256 |
-| `bench_layout_edge_weight_profile_{payload_only,with_legacy_fallback}` (pre-P1) | — | 193.21 K each | 0 |
+| `bench_layout_graph_stable_reopen_touch` | 41 (post-0008) | 494.08 K | 5,888 |
+| `bench_layout_graph_stable_reopen_touch` (pre-0008) | 42 | 502.05 K | 6,016 |
+| `bench_layout_router_stable_reopen_touch` | 22 (post-0008) | 49.21 K | 384 |
+| `bench_layout_router_stable_reopen_touch` (pre-0008) | 21 | 41.91 K | 256 |
+| `bench_layout_edge_weight_profile_read` (post-0008, test registry) | — | 2.16 K | 0 |
 | `bench_layout_index_posting_insert_64` | 1 posting set | 3.44 M | 0 |
 
 **Reading:** cold `MemoryManager` + one empty `BTreeMap` insert per region scales roughly linearly

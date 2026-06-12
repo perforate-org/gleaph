@@ -419,6 +419,36 @@ async fn run_wire_plans(
     materialize: TransactionReadMaterialize,
     mutation_id: Option<MutationId>,
 ) -> Result<TransactionBlockRun, GqlRunError> {
+    crate::edge_payload_schema::set_execution_resolved_labels(execution.resolved_labels.clone());
+    let run_result = run_wire_plans_inner(
+        store,
+        plans,
+        requires_write_path,
+        parameters,
+        index,
+        mode,
+        execution,
+        seeds,
+        materialize,
+        mutation_id,
+    )
+    .await;
+    crate::edge_payload_schema::clear_execution_resolved_labels();
+    run_result
+}
+
+async fn run_wire_plans_inner(
+    store: &GraphStore,
+    plans: &[gleaph_gql_planner::PhysicalPlan],
+    requires_write_path: bool,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    mode: GqlCanisterExecutionMode,
+    execution: GqlExecutionContext,
+    seeds: Option<SeedBindingsWire>,
+    materialize: TransactionReadMaterialize,
+    mutation_id: Option<MutationId>,
+) -> Result<TransactionBlockRun, GqlRunError> {
     if let Some(mutation_id) = mutation_id
         && let Some(applied) = store.applied_mutation_request(mutation_id)
     {
@@ -1283,14 +1313,12 @@ mod tests {
             .insert_vertex_named(["WgtGqlC"], Vec::<(&str, Value)>::new())
             .expect("c");
         let label_id = crate::test_labels::edge_label_id_for_name("WgtGqlRoad");
-        store
-            .install_edge_label_weight_profile_at_init(
-                label_id,
-                EdgeWeightProfile {
-                    encoding: WeightEncoding::RawU16,
-                },
-            )
-            .expect("profile");
+        crate::test_labels::install_test_edge_payload_profile(
+            label_id,
+            gleaph_graph_kernel::entry::EdgePayloadProfile::from(EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            }),
+        );
         store
             .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &1u16.to_le_bytes())
             .expect("a->b");

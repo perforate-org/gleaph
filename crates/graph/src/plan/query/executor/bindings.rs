@@ -238,14 +238,14 @@ mod tests {
         let a = store.insert_vertex().expect("a");
         let b = store.insert_vertex().expect("b");
         let label_id = crate::test_labels::edge_label_id_for_name("RevExpandWgt");
-        store
-            .install_edge_label_weight_profile_at_init(
-                label_id,
+        crate::test_labels::install_test_edge_payload_profile(
+            label_id,
+            gleaph_graph_kernel::entry::EdgePayloadProfile::from(
                 gleaph_graph_kernel::entry::EdgeWeightProfile {
                     encoding: gleaph_graph_kernel::entry::WeightEncoding::RawU16,
                 },
-            )
-            .expect("profile");
+            ),
+        );
         store
             .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &42u16.to_le_bytes())
             .expect("edge");
@@ -257,7 +257,6 @@ mod tests {
         assert_eq!(binding.payload_bytes_slice(), &[42, 0]);
 
         let weight = crate::plan::query::gleaph_weight::decode_traversal_edge_weight(
-            &store,
             binding.handle,
             binding.payload_len(),
             binding.payload_bytes_slice(),

@@ -15,7 +15,7 @@ use gleaph_graph_kernel::entry::{
     PreparedWeightDecoder, WeightDecodeError, WeightProfilePrepareError, decode_edge_payload,
 };
 
-use crate::facade::{EdgeHandle, GraphStore, catalog_edge_label_from_wire};
+use crate::facade::{EdgeHandle, catalog_edge_label_from_wire};
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::plan::query::executor::EdgeBinding;
 
@@ -44,14 +44,20 @@ pub(crate) fn decode_traversal_edge_weight_prepared(
 
 /// Decodes a traversal edge's stored bytes into a non-negative `f32` weight.
 pub(crate) fn decode_traversal_edge_weight(
-    store: &GraphStore,
     handle: EdgeHandle,
     payload_len: usize,
     payload_bytes: &[u8],
 ) -> Result<f32, PlanQueryError> {
-    if let Some(catalog) = catalog_edge_label_from_wire(handle.label_id)
-        && let Some(profile) = store.edge_label_payload_profile(catalog)
-    {
+    if let Some(catalog) = catalog_edge_label_from_wire(handle.label_id) {
+        let profile = crate::edge_payload_schema::lookup_edge_payload_profile(catalog);
+        if profile.required_byte_width() == 0 {
+            return Err(PlanQueryError::GleaphWeight {
+                message: format!(
+                    "edge label row has no payload profile (stored width {} bytes)",
+                    payload_len
+                ),
+            });
+        }
         let decoder = profile.prepare().map_err(
             |e: gleaph_graph_kernel::entry::EdgePayloadProfileError| PlanQueryError::GleaphWeight {
                 message: format!("edge payload profile decode prepare failed: {e}"),
@@ -75,10 +81,7 @@ pub(crate) fn decode_traversal_edge_weight(
         return decoded_edge_payload_to_weight(decoded);
     }
     Err(PlanQueryError::GleaphWeight {
-        message: format!(
-            "edge label row has no payload profile (stored width {} bytes)",
-            payload_len
-        ),
+        message: "unlabeled edge cannot decode GLEAPH.WEIGHT".into(),
     })
 }
 
@@ -93,7 +96,6 @@ fn decoded_edge_payload_to_weight(decoded: DecodedEdgePayload) -> Result<f32, Pl
 
 /// Per-edge-variable prepared decoders for `GLEAPH.WEIGHT`.
 pub(crate) fn prepare_gleaph_weight_decoders(
-    store: &GraphStore,
     execution: &GqlExecutionContext,
     ops: &[PlanOp],
 ) -> Result<Option<BTreeMap<String, PreparedWeightDecoder>>, PlanQueryError> {
@@ -110,7 +112,7 @@ pub(crate) fn prepare_gleaph_weight_decoders(
 
     let mut out = BTreeMap::new();
     for edge_var in edge_vars {
-        let decoder = decoder_for_gleaph_weight_edge(store, execution, ops, &edge_var)?;
+        let decoder = decoder_for_gleaph_weight_edge(execution, ops, &edge_var)?;
         out.insert(edge_var, decoder);
     }
     Ok(Some(out))
@@ -198,7 +200,6 @@ fn gleaph_weight_edge_var(expr: &Expr) -> Option<String> {
 }
 
 fn decoder_for_gleaph_weight_edge(
-    store: &GraphStore,
     execution: &GqlExecutionContext,
     ops: &[PlanOp],
     edge_var: &str,
@@ -232,7 +233,7 @@ fn decoder_for_gleaph_weight_edge(
                 });
             }
             if let Some(expr) = label_expr {
-                validate_label_expr_edge_weight_profiles(store, execution, edge_var, expr)?;
+                validate_label_expr_edge_weight_profiles(execution, edge_var, expr)?;
                 let first_name = first_edge_label_name_in_expr(expr).ok_or_else(|| {
                     PlanQueryError::GleaphWeight {
                         message: format!(
@@ -240,14 +241,14 @@ fn decoder_for_gleaph_weight_edge(
                         ),
                     }
                 })?;
-                return finish_decoder_from_label_name(store, execution, edge_var, first_name);
+                return finish_decoder_from_label_name(execution, edge_var, first_name);
             }
             let label_name = label.ok_or_else(|| PlanQueryError::GleaphWeight {
                 message: format!(
                     "GLEAPH.WEIGHT({edge_var}): edge pattern must have exactly one fixed edge label"
                 ),
             })?;
-            finish_decoder_from_label_name(store, execution, edge_var, label_name)
+            finish_decoder_from_label_name(execution, edge_var, label_name)
         }
         EdgeProducer::ShortestPath {
             label,
@@ -255,7 +256,7 @@ fn decoder_for_gleaph_weight_edge(
             var_len: _,
         } => {
             if let Some(expr) = label_expr {
-                validate_label_expr_edge_weight_profiles(store, execution, edge_var, expr)?;
+                validate_label_expr_edge_weight_profiles(execution, edge_var, expr)?;
                 let first_name = first_edge_label_name_in_expr(expr).ok_or_else(|| {
                     PlanQueryError::GleaphWeight {
                         message: format!(
@@ -263,20 +264,19 @@ fn decoder_for_gleaph_weight_edge(
                         ),
                     }
                 })?;
-                return finish_decoder_from_label_name(store, execution, edge_var, first_name);
+                return finish_decoder_from_label_name(execution, edge_var, first_name);
             }
             let label_name = label.ok_or_else(|| PlanQueryError::GleaphWeight {
                 message: format!(
                     "GLEAPH.WEIGHT({edge_var}): shortest-path must have exactly one fixed edge label"
                 ),
             })?;
-            finish_decoder_from_label_name(store, execution, edge_var, label_name)
+            finish_decoder_from_label_name(execution, edge_var, label_name)
         }
     }
 }
 
 fn finish_decoder_from_label_name(
-    store: &GraphStore,
     execution: &GqlExecutionContext,
     edge_var: &str,
     label_name: &str,
@@ -287,11 +287,11 @@ fn finish_decoder_from_label_name(
             namespace: "edge",
             name: label_name.to_owned(),
         })?;
-    prepared_weight_decoder_for_catalog_label(store, edge_var, label_name, label_id)
+    prepared_weight_decoder_for_catalog_label(execution, edge_var, label_name, label_id)
 }
 
 fn prepared_weight_decoder_for_catalog_label(
-    store: &GraphStore,
+    execution: &GqlExecutionContext,
     edge_var: &str,
     label_name: &str,
     label_id: EdgeLabelId,
@@ -303,32 +303,35 @@ fn prepared_weight_decoder_for_catalog_label(
             ),
         });
     }
-    if let Some(profile) = store.edge_label_payload_profile(label_id) {
-        let decoder = profile.prepare().map_err(|e: EdgePayloadProfileError| {
-            PlanQueryError::GleaphWeight {
-                message: format!("GLEAPH.WEIGHT({edge_var}): invalid payload profile: {e}"),
-            }
-        })?;
-        ensure_edge_payload_decoder_is_weight(edge_var, label_name, &decoder)?;
-        return Ok(PreparedWeightDecoder::RawU16);
-    }
-
-    let profile = store.edge_label_weight_profile(label_id).ok_or_else(|| {
-        PlanQueryError::GleaphWeight {
+    let profile = execution.resolved_edge_payload_profile(label_id);
+    if profile.required_byte_width() == 0 {
+        return Err(PlanQueryError::GleaphWeight {
             message: format!(
                 "GLEAPH.WEIGHT({edge_var}): edge label '{label_name}' has no weight profile configured"
             ),
-        }
-    })?;
-    profile.prepare().map_err(
-        |e: WeightProfilePrepareError| PlanQueryError::GleaphWeight {
+        });
+    }
+    let decoder =
+        profile
+            .prepare()
+            .map_err(|e: EdgePayloadProfileError| PlanQueryError::GleaphWeight {
+                message: format!("GLEAPH.WEIGHT({edge_var}): invalid payload profile: {e}"),
+            })?;
+    ensure_edge_payload_decoder_is_weight(edge_var, label_name, &decoder)?;
+    profile
+        .to_weight_profile()
+        .ok_or_else(|| PlanQueryError::GleaphWeight {
+            message: format!(
+                "GLEAPH.WEIGHT({edge_var}): edge label '{label_name}' payload profile is not a weight encoding"
+            ),
+        })?
+        .prepare()
+        .map_err(|e: WeightProfilePrepareError| PlanQueryError::GleaphWeight {
             message: format!("GLEAPH.WEIGHT({edge_var}): invalid weight profile: {e}"),
-        },
-    )
+        })
 }
 
 fn validate_label_expr_edge_weight_profiles(
-    store: &GraphStore,
     execution: &GqlExecutionContext,
     edge_var: &str,
     expr: &LabelExpr,
@@ -345,7 +348,7 @@ fn validate_label_expr_edge_weight_profiles(
         });
     }
     for name in names {
-        finish_decoder_from_label_name(store, execution, edge_var, &name)?;
+        finish_decoder_from_label_name(execution, edge_var, &name)?;
     }
     Ok(())
 }
@@ -375,7 +378,6 @@ fn for_each_edge_label_name_in_expr(expr: &LabelExpr, f: &mut impl FnMut(&str)) 
 
 /// Hop cost for weighted shortest-path search when edge labels vary within a `label_expr`.
 pub(crate) fn decode_shortest_hop_cost_from_edge_binding(
-    store: &GraphStore,
     edge_binding: &EdgeBinding,
 ) -> Result<f32, PlanQueryError> {
     let catalog = catalog_edge_label_from_wire(edge_binding.handle.label_id).ok_or_else(|| {
@@ -383,8 +385,29 @@ pub(crate) fn decode_shortest_hop_cost_from_edge_binding(
             message: "weighted shortest-path hop encountered an unlabeled edge".into(),
         }
     })?;
-    let label_name = catalog.raw().to_string();
-    let decoder = prepared_weight_decoder_for_catalog_label(store, "edge", &label_name, catalog)?;
+    let profile = crate::edge_payload_schema::lookup_edge_payload_profile(catalog);
+    if profile.required_byte_width() == 0 {
+        return Err(PlanQueryError::GleaphWeight {
+            message: format!(
+                "weighted shortest-path hop: edge label {} has no weight profile",
+                catalog.raw()
+            ),
+        });
+    }
+    let decoder = profile
+        .to_weight_profile()
+        .ok_or_else(|| PlanQueryError::GleaphWeight {
+            message: format!(
+                "weighted shortest-path hop: edge label {} payload is not a weight encoding",
+                catalog.raw()
+            ),
+        })?
+        .prepare()
+        .map_err(
+            |e: WeightProfilePrepareError| PlanQueryError::GleaphWeight {
+                message: format!("weighted shortest-path hop: invalid weight profile: {e}"),
+            },
+        )?;
     decode_traversal_edge_weight_prepared(
         &decoder,
         edge_binding.payload_len(),
@@ -665,27 +688,24 @@ mod tests {
         };
         use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
 
-        let store = GraphStore::new();
         let label_id = crate::test_labels::edge_label_id_for_name("DecodeTraversalWgt");
-        store
-            .install_edge_label_payload_profile_at_init(
-                label_id,
-                EdgePayloadProfile {
-                    byte_width: 2,
-                    encoding: EdgePayloadEncoding::WeightRawU16,
-                },
-            )
-            .expect("payload profile");
+        crate::test_labels::install_test_edge_payload_profile(
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        );
         let wire = label_id.pack(EdgeDirectedness::Directed);
         let handle = EdgeHandle {
             owner_vertex_id: VertexId::from(0),
             label_id: LaraLabelId::from_raw(wire.raw()),
             slot_index: 0,
         };
-        let w = decode_traversal_edge_weight(&store, handle, 2, &[9, 0]).expect("decode");
+        let w = decode_traversal_edge_weight(handle, 2, &[9, 0]).expect("decode");
         assert_eq!(w, 9.0);
 
-        let err = decode_traversal_edge_weight(&store, handle, 0, &[]).expect_err("no bytes");
+        let err = decode_traversal_edge_weight(handle, 0, &[]).expect_err("no bytes");
         assert!(
             err.to_string().contains("edge payload width mismatch"),
             "unexpected error: {err}"
