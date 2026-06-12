@@ -11,14 +11,15 @@ fn main() {
         PathBuf::from(std::env::var("CARGO_MANIFEST_DIR").expect("CARGO_MANIFEST_DIR"));
     println!("cargo:rerun-if-changed=Cargo.toml");
 
-    let pocket_ic_bin = ensure_pocket_ic_binary(&manifest_dir);
+    let pocket_ic_version = pocket_ic_version_from_manifest(&manifest_dir);
+    let pocket_ic_bin = ensure_pocket_ic_binary(&manifest_dir, &pocket_ic_version);
     println!("cargo:rustc-env=POCKET_IC_BIN={}", pocket_ic_bin.display());
+    println!("cargo:rustc-env=POCKET_IC_VERSION={pocket_ic_version}");
 
     build_wasm(&manifest_dir);
 }
 
-fn ensure_pocket_ic_binary(manifest_dir: &Path) -> PathBuf {
-    let version = pocket_ic_version_from_manifest(manifest_dir);
+fn ensure_pocket_ic_binary(manifest_dir: &Path, version: &str) -> PathBuf {
     let bin_dir = manifest_dir.join(".pocket-ic");
     let bin_path = bin_dir.join("pocket-ic");
 

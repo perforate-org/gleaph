@@ -6,17 +6,72 @@ use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId, VertexPlacement};
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::AdminRegisterShardArgs;
 use pocket_ic::{PocketIc, PocketIcBuilder};
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
-/// PocketIC instance using `POCKET_IC_BIN` at runtime, or `.pocket-ic/pocket-ic` from `build.rs`.
+/// PocketIC instance using a server binary compatible with the `pocket-ic` crate version.
+///
+/// `POCKET_IC_BIN` may override the build-managed `.pocket-ic/pocket-ic` when it reports
+/// `pocket-ic-server {version}` matching [`env!("POCKET_IC_VERSION")`]. A stale override
+/// (for example an older install on `PATH`) is ignored with a warning.
 pub fn new_pocket_ic() -> PocketIc {
-    let server_binary = std::env::var_os("POCKET_IC_BIN")
-        .map(PathBuf::from)
-        .unwrap_or_else(|| PathBuf::from(env!("POCKET_IC_BIN")));
+    let server_binary = resolve_pocket_ic_server_binary();
     PocketIcBuilder::new()
         .with_server_binary(server_binary)
         .with_application_subnet()
         .build()
+}
+
+fn resolve_pocket_ic_server_binary() -> PathBuf {
+    const BUILD_BIN: &str = env!("POCKET_IC_BIN");
+    const EXPECTED_VERSION: &str = env!("POCKET_IC_VERSION");
+    let build_bin = PathBuf::from(BUILD_BIN);
+
+    if let Some(override_path) = std::env::var_os("POCKET_IC_BIN") {
+        let path = PathBuf::from(override_path);
+        if path == build_bin {
+            return build_bin;
+        }
+        match validate_pocket_ic_server_binary(&path, EXPECTED_VERSION) {
+            Ok(()) => return path,
+            Err(reason) => eprintln!(
+                "warning: ignoring POCKET_IC_BIN={} ({}); using {}",
+                path.display(),
+                reason,
+                build_bin.display()
+            ),
+        }
+    }
+
+    build_bin
+}
+
+fn validate_pocket_ic_server_binary(path: &Path, version: &str) -> Result<(), String> {
+    let output = Command::new(path)
+        .arg("--version")
+        .output()
+        .map_err(|e| format!("run --version: {e}"))?;
+    if !output.status.success() {
+        return Err(format!(
+            "pocket-ic --version failed: status {}; stderr: {}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        ));
+    }
+    let line = String::from_utf8_lossy(&output.stdout);
+    let line = line.trim_end();
+    let expected = format!("pocket-ic-server {version}");
+    if line == expected {
+        return Ok(());
+    }
+    if line.starts_with("pocket-ic-server ")
+        && line
+            .strip_prefix("pocket-ic-server ")
+            .is_some_and(|v| v == version || v.starts_with(&format!("{version}.")))
+    {
+        return Ok(());
+    }
+    Err(format!("expected pocket-ic-server {version}, got {line:?}"))
 }
 
 pub const GRAPH_NAME: &str = "gleaph.pocket_ic";
@@ -553,5 +608,20 @@ pub fn gql_query_as_admin(
         Ok(Ok(result)) => result,
         Ok(Err(err)) => panic!("gql_query rejected: {err:?}"),
         Err(err) => panic!("decode gql_query: {err}"),
+    }
+}
+
+#[cfg(test)]
+mod pocket_ic_server_binary_tests {
+    use super::validate_pocket_ic_server_binary;
+    use std::path::Path;
+
+    #[test]
+    fn build_managed_binary_matches_crate_version() {
+        validate_pocket_ic_server_binary(
+            Path::new(env!("POCKET_IC_BIN")),
+            env!("POCKET_IC_VERSION"),
+        )
+        .expect("build-managed PocketIC server binary");
     }
 }

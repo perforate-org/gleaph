@@ -2,7 +2,7 @@
 
 ## Prerequisites
 
-- PocketIC server: `.pocket-ic/pocket-ic` (fetched at build time if missing or version mismatch), or override with `POCKET_IC_BIN` at test runtime
+- PocketIC server: `.pocket-ic/pocket-ic` (fetched at build time if missing or version mismatch). `POCKET_IC_BIN` may override it only when the binary reports the same `pocket-ic-server` version as the `pocket-ic` crate dependency; a mismatched override is ignored (stale shell exports otherwise cause composite-query timeouts).
 - `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`
 
 ## Run
