@@ -1,7 +1,6 @@
 //! §20.14 — Constructed values (list, path, slice).
 
 use crate::section_tests::p;
-use gleaph_gql::Value;
 use gleaph_gql::ast::*;
 
 /// Extract the first return item expression.

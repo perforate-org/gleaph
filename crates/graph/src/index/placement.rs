@@ -1,9 +1,11 @@
 //! Router placement protocol for federated graph shards.
 
 use candid::Principal;
+#[cfg(not(target_family = "wasm"))]
+use gleaph_graph_kernel::federation::PhysicalVertexLocation;
 use gleaph_graph_kernel::federation::{
-    CommitVertexPlacementArgs, GlobalVertexId, LocalVertexId, PhysicalVertexLocation,
-    ReleaseVertexPlacementArgs, RouterError, ShardId, ShardRegistryEntry, VertexPlacement,
+    CommitVertexPlacementArgs, GlobalVertexId, LocalVertexId, ReleaseVertexPlacementArgs,
+    RouterError, ShardId, ShardRegistryEntry, VertexPlacement,
 };
 use ic_stable_lara::VertexId;
 use std::cell::RefCell;
@@ -44,7 +46,7 @@ pub async fn commit_vertex_placement(
             super::router_call::call_router1(router_canister, "commit_vertex_placement", args)
                 .await
                 .map_err(VertexPlacementError::Call)?;
-        return result.map_err(VertexPlacementError::Rejected);
+        result.map_err(VertexPlacementError::Rejected)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -80,7 +82,7 @@ pub async fn list_shards_for_graph(
             )
             .await
             .map_err(VertexPlacementError::Call)?;
-        return shards.map_err(VertexPlacementError::Rejected);
+        shards.map_err(VertexPlacementError::Rejected)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -118,7 +120,7 @@ pub async fn resolve_placement(
             super::router_call::call_router1(router_canister, "resolve_placement", vertex_id)
                 .await
                 .map_err(VertexPlacementError::Call)?;
-        return placement.map_err(VertexPlacementError::Rejected);
+        placement.map_err(VertexPlacementError::Rejected)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -140,7 +142,7 @@ pub async fn release_vertex_placement(
             super::router_call::call_router1(router_canister, "release_vertex_placement", args)
                 .await
                 .map_err(VertexPlacementError::Call)?;
-        return result.map_err(VertexPlacementError::Rejected);
+        result.map_err(VertexPlacementError::Rejected)
     }
 
     #[cfg(not(target_family = "wasm"))]
@@ -207,11 +209,11 @@ pub async fn resolve_global_at(
         .await
         .map_err(VertexPlacementError::Call)?;
 
-        return match vertex_id {
+        match vertex_id {
             Ok(id) => Ok(Some(id)),
             Err(RouterError::VertexNotFound) => Ok(None),
             Err(err) => Err(VertexPlacementError::Rejected(err)),
-        };
+        }
     }
 
     #[cfg(not(target_family = "wasm"))]

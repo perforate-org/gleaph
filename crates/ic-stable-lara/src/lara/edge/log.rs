@@ -195,9 +195,12 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     }
 
     /// Reads the next-free entry index for a leaf segment.
-    #[expect(
-        dead_code,
-        reason = "stable LogStore API; in-crate uses read_idx_with_header"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "stable LogStore API; in-crate uses read_idx_with_header"
+        )
     )]
     pub fn read_idx(&self, leaf_segment: u32) -> i32 {
         let h = self.header();
@@ -243,9 +246,12 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     }
 
     /// Writes the next-free entry index for a leaf segment.
-    #[expect(
-        dead_code,
-        reason = "stable LogStore API; in-crate uses write_idx_with_header"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "stable LogStore API; in-crate uses write_idx_with_header"
+        )
     )]
     pub fn write_idx(&self, leaf_segment: u32, idx: i32) {
         let h = self.header();
@@ -261,9 +267,12 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     }
 
     /// Reads one log entry payload and returns `(previous_entry, source_vertex)`.
-    #[expect(
-        dead_code,
-        reason = "stable LogStore API; in-crate uses read_entry_with_header"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "stable LogStore API; in-crate uses read_entry_with_header"
+        )
     )]
     pub fn read_entry(&self, leaf_segment: u32, entry_idx: u32, out: &mut [u8]) -> (i32, i32) {
         let h = self.header();
@@ -285,9 +294,12 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
     }
 
     /// Writes one log entry in a leaf segment.
-    #[expect(
-        dead_code,
-        reason = "stable LogStore API; in-crate uses write_entry_with_header"
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "stable LogStore API; in-crate uses write_entry_with_header"
+        )
     )]
     pub fn write_entry(
         &self,

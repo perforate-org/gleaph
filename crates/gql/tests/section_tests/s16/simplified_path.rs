@@ -1,9 +1,7 @@
 //! §16.12 — Simplified path patterns.
 
-use super::helpers::{first_edge_dir, graph_pat};
-use crate::section_tests::{body, p};
-use gleaph_gql::ast::*;
-use gleaph_gql::types::EdgeDirection;
+use super::helpers::graph_pat;
+use crate::section_tests::p;
 
 // ── Simplified path patterns ────────────────────────────────────────────
 

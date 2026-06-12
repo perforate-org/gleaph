@@ -13,8 +13,6 @@ use crate::{
     },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
-#[cfg(feature = "canbench")]
-use canbench_rs::bench_scope;
 use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
@@ -744,7 +742,8 @@ where
             gaps_u
                 .checked_mul(P)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?
-                / tw
+                .checked_div(tw)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
         };
 
         let mut cursor_fp = u128::from(leaf_start)
@@ -1263,7 +1262,8 @@ where
             gaps_u
                 .checked_mul(P)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?
-                / tw
+                .checked_div(tw)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
         };
 
         let mut cursor_fp = u128::from(start_slot)
@@ -1347,7 +1347,8 @@ where
             gaps_u
                 .checked_mul(P)
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?
-                / tw
+                .checked_div(tw)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?
         };
 
         let mut cursor_fp = u128::from(start_slot)

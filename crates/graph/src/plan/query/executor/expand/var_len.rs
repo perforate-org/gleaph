@@ -82,9 +82,6 @@ pub(crate) async fn execute_var_len_expand(
     };
 
     let evaluator = ctx.expr_evaluator(None);
-    let caller = ctx.caller();
-    let gleaph_weight_decoders = ctx.gleaph_weight_decoders;
-    let hop_aux_key = hop_aux_binding.map(|name| name.as_ref());
     let mut out = Vec::new();
     for row in rows {
         match resolve_traversal_expand_source(ctx.store, row.get(src.as_ref()), direction).await? {

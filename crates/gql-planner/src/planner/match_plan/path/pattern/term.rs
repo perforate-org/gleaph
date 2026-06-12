@@ -401,114 +401,112 @@ pub(super) fn plan_path_term(
                 prev_node_var = None;
             }
             PathElement::Sub { expr, quantifier } => {
-                if let Some(quantifier) = quantifier {
-                    if let Some(hop) = try_parse_quantified_hop_subpath(expr, quantifier)? {
-                        let Some(src_var) = prev_node_var.clone() else {
-                            return Err(PlannerError::UnsupportedPattern(
-                                "quantified subpath requires a preceding node".into(),
-                            ));
-                        };
-                        let (dst_var, dst_node) = elements[idx + 1..]
-                            .iter()
-                            .find_map(|e| match e {
-                                PathElement::Node { var, node } => Some((var.clone(), Some(node))),
-                                _ => None,
-                            })
-                            .unwrap_or_else(|| (format!("__anon_dst_{}", idx), None));
+                if let Some(quantifier) = quantifier
+                    && let Some(hop) = try_parse_quantified_hop_subpath(expr, quantifier)?
+                {
+                    let Some(src_var) = prev_node_var.clone() else {
+                        return Err(PlannerError::UnsupportedPattern(
+                            "quantified subpath requires a preceding node".into(),
+                        ));
+                    };
+                    let (dst_var, dst_node) = elements[idx + 1..]
+                        .iter()
+                        .find_map(|e| match e {
+                            PathElement::Node { var, node } => Some((var.clone(), Some(node))),
+                            _ => None,
+                        })
+                        .unwrap_or_else(|| (format!("__anon_dst_{}", idx), None));
 
-                        let (label_str, label_expr) = plan_edge_expand_labels(&hop.edge);
-                        let dst_filters = dst_node
-                            .map(|n| {
-                                super::super::filters::collect_node_inline_predicates(&dst_var, n)
-                            })
-                            .unwrap_or_default();
+                    let (label_str, label_expr) = plan_edge_expand_labels(&hop.edge);
+                    let dst_filters = dst_node
+                        .map(|n| super::super::filters::collect_node_inline_predicates(&dst_var, n))
+                        .unwrap_or_default();
 
-                        let src_str: Str = src_var.as_str().into();
-                        let edge_str: Str = hop.edge_var.as_str().into();
-                        let dst_str: Str = dst_var.as_str().into();
-                        let near_group_var: Str = hop.near_var.as_str().into();
-                        let far_group_var: Str = hop.far_var.as_str().into();
+                    let src_str: Str = src_var.as_str().into();
+                    let edge_str: Str = hop.edge_var.as_str().into();
+                    let dst_str: Str = dst_var.as_str().into();
+                    let near_group_var: Str = hop.near_var.as_str().into();
+                    let far_group_var: Str = hop.far_var.as_str().into();
 
-                        let edge_fusion = if shortest_mode.is_some() {
-                            EdgeFilterFusion::default()
-                        } else {
-                            super::super::filters::plan_edge_filter_fusion(
-                                &hop.edge_var,
-                                &hop.edge,
-                                stats,
-                                label_str.is_some() || label_expr.is_some(),
-                                where_conjuncts,
-                            )
-                        };
-                        let indexed_edge_equality = edge_fusion.indexed_equality.clone();
-                        let edge_payload_predicate = edge_fusion.edge_payload_predicate.clone();
-                        let edge_vector_predicate = edge_fusion.edge_vector_predicate.clone();
-                        let hop_var_len = Some(&hop.var_len);
-                        let (path_var_binding, emit_path_binding) =
-                            var_len_path_var_fields(path_var, hop_var_len);
-
-                        if !dst_filters.is_empty() {
-                            ops.push(PlanOp::ExpandFilter {
-                                src: src_str,
-                                edge: edge_str,
-                                dst: dst_str.clone(),
-                                direction: hop.edge.direction,
-                                label: label_str,
-                                label_expr,
-                                var_len: Some(hop.var_len),
-                                indexed_edge_equality,
-                                edge_payload_predicate,
-                                edge_vector_predicate,
-                                dst_filter: dst_filters,
-                                edge_property_projection: None,
-                                dst_property_projection: None,
-                                hop_aux_binding: hop_aux_binding_for_edge_if_referenced(
-                                    &hop.edge_var,
-                                    referenced_vars,
-                                ),
-                                emit_edge_binding: true,
-                                near_group_var: Some(near_group_var),
-                                far_group_var: Some(far_group_var),
-                                path_var: path_var_binding.clone(),
-                                emit_path_binding,
-                            });
-                            fused_nodes.insert(dst_var.clone());
-                        } else {
-                            ops.push(PlanOp::Expand {
-                                src: src_str,
-                                edge: edge_str,
-                                dst: dst_str.clone(),
-                                direction: hop.edge.direction,
-                                label: label_str,
-                                label_expr,
-                                var_len: Some(hop.var_len),
-                                indexed_edge_equality,
-                                edge_payload_predicate,
-                                edge_vector_predicate,
-                                edge_property_projection: None,
-                                dst_property_projection: None,
-                                hop_aux_binding: hop_aux_binding_for_edge_if_referenced(
-                                    &hop.edge_var,
-                                    referenced_vars,
-                                ),
-                                emit_edge_binding: true,
-                                near_group_var: Some(near_group_var),
-                                far_group_var: Some(far_group_var),
-                                path_var: path_var_binding,
-                                emit_path_binding,
-                            });
-                        }
-                        bound_node_vars.insert(dst_var.clone());
-                        path_bound_node_vars.insert(dst_var.clone());
-                        super::super::filters::emit_edge_inline_filters(
+                    let edge_fusion = if shortest_mode.is_some() {
+                        EdgeFilterFusion::default()
+                    } else {
+                        super::super::filters::plan_edge_filter_fusion(
                             &hop.edge_var,
                             &hop.edge,
-                            &edge_fusion,
-                            ops,
-                        );
-                        prev_node_var = Some(dst_var);
-                        continue;
+                            stats,
+                            label_str.is_some() || label_expr.is_some(),
+                            where_conjuncts,
+                        )
+                    };
+                    let indexed_edge_equality = edge_fusion.indexed_equality.clone();
+                    let edge_payload_predicate = edge_fusion.edge_payload_predicate.clone();
+                    let edge_vector_predicate = edge_fusion.edge_vector_predicate.clone();
+                    let hop_var_len = Some(&hop.var_len);
+                    let (path_var_binding, emit_path_binding) =
+                        var_len_path_var_fields(path_var, hop_var_len);
+
+                    if !dst_filters.is_empty() {
+                        ops.push(PlanOp::ExpandFilter {
+                            src: src_str,
+                            edge: edge_str,
+                            dst: dst_str.clone(),
+                            direction: hop.edge.direction,
+                            label: label_str,
+                            label_expr,
+                            var_len: Some(hop.var_len),
+                            indexed_edge_equality,
+                            edge_payload_predicate,
+                            edge_vector_predicate,
+                            dst_filter: dst_filters,
+                            edge_property_projection: None,
+                            dst_property_projection: None,
+                            hop_aux_binding: hop_aux_binding_for_edge_if_referenced(
+                                &hop.edge_var,
+                                referenced_vars,
+                            ),
+                            emit_edge_binding: true,
+                            near_group_var: Some(near_group_var),
+                            far_group_var: Some(far_group_var),
+                            path_var: path_var_binding.clone(),
+                            emit_path_binding,
+                        });
+                        fused_nodes.insert(dst_var.clone());
+                    } else {
+                        ops.push(PlanOp::Expand {
+                            src: src_str,
+                            edge: edge_str,
+                            dst: dst_str.clone(),
+                            direction: hop.edge.direction,
+                            label: label_str,
+                            label_expr,
+                            var_len: Some(hop.var_len),
+                            indexed_edge_equality,
+                            edge_payload_predicate,
+                            edge_vector_predicate,
+                            edge_property_projection: None,
+                            dst_property_projection: None,
+                            hop_aux_binding: hop_aux_binding_for_edge_if_referenced(
+                                &hop.edge_var,
+                                referenced_vars,
+                            ),
+                            emit_edge_binding: true,
+                            near_group_var: Some(near_group_var),
+                            far_group_var: Some(far_group_var),
+                            path_var: path_var_binding,
+                            emit_path_binding,
+                        });
                     }
+                    bound_node_vars.insert(dst_var.clone());
+                    path_bound_node_vars.insert(dst_var.clone());
+                    super::super::filters::emit_edge_inline_filters(
+                        &hop.edge_var,
+                        &hop.edge,
+                        &edge_fusion,
+                        ops,
+                    );
+                    prev_node_var = Some(dst_var);
+                    continue;
                 }
                 super::lower::plan_path_expr(
                     expr,

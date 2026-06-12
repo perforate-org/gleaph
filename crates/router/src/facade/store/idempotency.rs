@@ -201,7 +201,7 @@ impl RouterStore {
                 .shards
                 .iter_mut()
                 .find(|shard| shard.shard_id == shard_id)
-                .ok_or_else(|| RouterError::ShardNotRegistered)?;
+                .ok_or(RouterError::ShardNotRegistered)?;
             shard.completed = true;
             shard.telemetry_acked = false;
             shard.row_count = row_count;
@@ -228,7 +228,7 @@ impl RouterStore {
                 .shards
                 .iter_mut()
                 .find(|shard| shard.shard_id == shard_id)
-                .ok_or_else(|| RouterError::ShardNotRegistered)?;
+                .ok_or(RouterError::ShardNotRegistered)?;
             shard.telemetry_acked = true;
             shard.label_telemetry_events.clear();
             m.insert(key, record);

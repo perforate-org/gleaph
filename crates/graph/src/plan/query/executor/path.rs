@@ -116,23 +116,13 @@ pub(crate) async fn execute_shortest_path(
     let store_hop_edges = emit_edge_binding || emit_path_binding;
     let mut out = Vec::new();
     for row in rows {
-        let Some(src_id) = resolve_traversal_expand_local_csr(
-            store,
-            row.get(src.as_ref()),
-            direction,
-            "ShortestPath.src.peer",
-        )
-        .await?
+        let Some(src_id) =
+            resolve_traversal_expand_local_csr(store, row.get(src.as_ref()), direction).await?
         else {
             continue;
         };
-        let Some(dst_id) = resolve_traversal_expand_local_csr(
-            store,
-            row.get(dst.as_ref()),
-            direction,
-            "ShortestPath.dst.peer",
-        )
-        .await?
+        let Some(dst_id) =
+            resolve_traversal_expand_local_csr(store, row.get(dst.as_ref()), direction).await?
         else {
             continue;
         };
@@ -331,9 +321,7 @@ impl ShortestFixedLabelExpand {
                     if expand_err.is_some() {
                         return;
                     }
-                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
-                        ExpandDst::from_edge(store, &edge)
-                    {
+                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) = ExpandDst::from_edge(&edge) {
                         match edge_binding_for_scanned_expand(
                             store,
                             current,
@@ -382,9 +370,7 @@ impl ShortestFixedLabelExpand {
                     if expand_err.is_some() {
                         return;
                     }
-                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
-                        ExpandDst::from_edge(store, &edge)
-                    {
+                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) = ExpandDst::from_edge(&edge) {
                         match edge_binding_for_scanned_expand(
                             store,
                             current,
@@ -433,9 +419,7 @@ impl ShortestFixedLabelExpand {
                     if expand_err.is_some() {
                         return;
                     }
-                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) =
-                        ExpandDst::from_edge(store, &edge)
-                    {
+                    if let Ok(Some(edge_dst @ ExpandDst::Local(_))) = ExpandDst::from_edge(&edge) {
                         match edge_binding_for_scanned_expand(
                             store,
                             current,
@@ -521,8 +505,7 @@ impl ShortestFixedLabelExpand {
             }
             Self::Undirected { .. } => {
                 return Err(PlanQueryError::UnsupportedOp(
-                    "weighted shortest-path slice expand does not support undirected labels yet"
-                        .into(),
+                    "weighted shortest-path slice expand does not support undirected labels yet",
                 ));
             }
         }
@@ -599,8 +582,7 @@ impl ShortestFixedLabelExpand {
             }
             Self::Undirected { .. } => {
                 return Err(PlanQueryError::UnsupportedOp(
-                    "weighted shortest-path batch expand does not support undirected labels yet"
-                        .into(),
+                    "weighted shortest-path batch expand does not support undirected labels yet",
                 ));
             }
         }

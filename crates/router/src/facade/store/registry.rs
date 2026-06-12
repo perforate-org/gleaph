@@ -3,6 +3,7 @@
 use super::super::stable::{
     ROUTER_CONTROLLERS, ROUTER_GRAPHS, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
 };
+#[cfg(not(feature = "pocket-ic-e2e"))]
 use crate::index_sync;
 use crate::state::RouterError;
 use crate::types::{AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ShardId};

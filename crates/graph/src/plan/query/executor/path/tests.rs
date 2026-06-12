@@ -59,7 +59,7 @@ mod path_test_helpers {
         }
     }
 
-    pub fn catalog_edge_label(_store: &GraphStore, label_name: &str) -> EdgeLabelId {
+    pub fn catalog_edge_label(label_name: &str) -> EdgeLabelId {
         crate::test_labels::edge_label_id_for_name(label_name)
     }
 
@@ -99,7 +99,7 @@ mod path_test_helpers {
                 },
             )
             .expect("weight profile");
-        let road = catalog_edge_label(store, "WgtRoad");
+        let road = catalog_edge_label("WgtRoad");
         store
             .insert_directed_edge_with_payload_bytes(a, b, Some(road), &1u16.to_le_bytes())
             .expect("a->b");
@@ -1473,8 +1473,8 @@ fn weighted_shortest_union_label_expr_prefers_lower_cost_label() {
             )
             .expect("weight profile");
     }
-    let knows_wire = catalog_edge_label(&store, "WgtUnionKnows");
-    let likes_wire = catalog_edge_label(&store, "WgtUnionLikes");
+    let knows_wire = catalog_edge_label("WgtUnionKnows");
+    let likes_wire = catalog_edge_label("WgtUnionLikes");
     store
         .insert_directed_edge_with_payload_bytes(
             a,
@@ -1576,7 +1576,7 @@ fn weighted_shortest_k_prefers_lower_cost_over_extra_hop_paths() {
             },
         )
         .expect("weight profile");
-    let road = catalog_edge_label(&store, "WgtKRoad");
+    let road = catalog_edge_label("WgtKRoad");
     let cheap = 1u16.to_le_bytes();
     let expensive = 50u16.to_le_bytes();
     store
@@ -1675,7 +1675,7 @@ fn setup_hop_bound_cheaper_vertex_unusable_graph(store: &GraphStore) -> (VertexI
             },
         )
         .expect("weight profile");
-    let road = catalog_edge_label(store, "WgtRoad");
+    let road = catalog_edge_label("WgtRoad");
     store
         .insert_directed_edge_with_payload_bytes(s, x, Some(road), &2u16.to_le_bytes())
         .expect("s->x");
@@ -1765,7 +1765,7 @@ fn setup_stale_mid_diamond_graph(store: &GraphStore) -> (VertexId, VertexId) {
             },
         )
         .expect("weight profile");
-    let road = catalog_edge_label(store, "WgtRoad");
+    let road = catalog_edge_label("WgtRoad");
     store
         .insert_directed_edge_with_payload_bytes(s, mid, Some(road), &10u16.to_le_bytes())
         .expect("s->mid");
@@ -1786,7 +1786,7 @@ fn stale_mid_diamond_edge_bindings_carry_expected_weights() {
     use gleaph_gql_planner::plan::{PlanOp, ShortestMode, VarLenSpec};
     let store = GraphStore::new();
     let (s, _dst) = setup_stale_mid_diamond_graph(&store);
-    let road = catalog_edge_label(&store, "WgtRoad");
+    let road = catalog_edge_label("WgtRoad");
     let cost_expr = gleaph_weight_call("e");
     let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
         &store,
@@ -1841,7 +1841,7 @@ fn stale_mid_diamond_shortest_expand_hop_costs_are_5_10_and_1() {
     use gleaph_gql_planner::plan::{PlanOp, ShortestMode, VarLenSpec};
     let store = GraphStore::new();
     let (s, dst) = setup_stale_mid_diamond_graph(&store);
-    let road = catalog_edge_label(&store, "WgtRoad");
+    let road = catalog_edge_label("WgtRoad");
     let cost_expr = gleaph_weight_call("e");
     let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
         &store,
@@ -1958,7 +1958,7 @@ fn stale_mid_diamond_weighted_search_finds_cheaper_three_hop_path() {
     use gleaph_gql_planner::plan::{PlanOp, ShortestMode, VarLenSpec};
     let store = GraphStore::new();
     let (s, dst) = setup_stale_mid_diamond_graph(&store);
-    let road = catalog_edge_label(&store, "WgtRoad");
+    let road = catalog_edge_label("WgtRoad");
     let cost_expr = gleaph_weight_call("e");
     let decoders = crate::plan::query::gleaph_weight::prepare_gleaph_weight_decoders(
         &store,
@@ -2028,7 +2028,7 @@ fn stale_mid_diamond_weighted_search_finds_cheaper_three_hop_path() {
 fn weighted_shortest_skips_stale_higher_cost_vertex_entries() {
     let store = GraphStore::new();
     let (s, dst) = setup_stale_mid_diamond_graph(&store);
-    let road = catalog_edge_label(&store, "WgtRoad");
+    let road = catalog_edge_label("WgtRoad");
     let mut weights = Vec::new();
     store
         .for_each_directed_out_edges_for_label_unchecked(s, road, |edge| {
@@ -2111,7 +2111,7 @@ fn weighted_shortest_prefers_zero_weight_detour_over_direct_edge() {
             },
         )
         .expect("weight profile");
-    let road = catalog_edge_label(&store, "WgtRoad");
+    let road = catalog_edge_label("WgtRoad");
     store
         .insert_directed_edge_with_payload_bytes(a, d1, Some(road), &0u16.to_le_bytes())
         .expect("a->d1");
@@ -2307,7 +2307,7 @@ fn weighted_shortest_path_rejects_missing_weight_profile() {
         .insert_vertex_named(["WgtNoProfileC"], Vec::<(&str, Value)>::new())
         .expect("c");
     crate::test_labels::edge_label_id_for_name("WgtNoProfileRoad");
-    let road = catalog_edge_label(&store, "WgtNoProfileRoad");
+    let road = catalog_edge_label("WgtNoProfileRoad");
     store.insert_directed_edge(a, c, Some(road)).expect("edge");
     let plan = plan(vec![
         PlanOp::NodeScan {

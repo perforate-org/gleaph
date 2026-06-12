@@ -37,7 +37,6 @@ pub(crate) use super::{
 pub use crate::facade::EdgeHandle;
 pub use crate::facade::GraphStore;
 pub use crate::gql_execution_context::GqlExecutionContext;
-pub use crate::index::placement::native_test_set_active_placement;
 pub use gleaph_gql::ast::{
     AggregateFunc, BinaryOp, CmpOp, Expr, ExprKind, NullOrder, ObjectName, OrderByClause,
     SortDirection, SortItem, Statement, WhenClause,
@@ -47,10 +46,9 @@ pub use gleaph_gql::types::{EdgeDirection, LabelExpr};
 pub use gleaph_gql::{Value, value_to_index_key_bytes};
 pub use gleaph_gql_planner::plan::{
     AggregateSpec, ConditionalScanCandidate, IndexScanSpec, PlanOp, ProjectColumn, ScanValue,
-    ShortestMode, ShortestPathCost, Str, VarLenSpec, WcojEdge,
+    ShortestMode, ShortestPathCost, Str, VarLenSpec,
 };
 pub use gleaph_graph_kernel::entry::EdgeSlotIndex;
-pub use gleaph_graph_kernel::federation::GlobalVertexId;
 pub use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
 pub use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
 pub use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};

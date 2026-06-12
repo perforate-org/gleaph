@@ -625,10 +625,7 @@ fn expand_hop_aux_binding_returns_edge_payload_bytes() {
         } => hop_aux_binding.clone(),
         _ => None,
     });
-    assert_eq!(
-        hop_aux_binding.as_deref().map(|s| s.as_ref()),
-        Some("e__hop_aux")
-    );
+    assert_eq!(hop_aux_binding.as_deref(), Some("e__hop_aux"));
 
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
@@ -684,10 +681,7 @@ fn var_len_hop_aux_binding_returns_payload_bytes_list() {
         } if var_len.is_some() => hop_aux_binding.clone(),
         _ => None,
     });
-    assert_eq!(
-        hop_aux_binding.as_deref().map(|s| s.as_ref()),
-        Some("e__hop_aux")
-    );
+    assert_eq!(hop_aux_binding.as_deref(), Some("e__hop_aux"));
 
     let result = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())

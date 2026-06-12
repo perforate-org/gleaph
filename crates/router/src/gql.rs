@@ -464,19 +464,16 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         let stats = RouterGraphStats::for_graph(logical_graph_name);
         if let Some(label_path) = try_label_count_telemetry_fast_path(plans, &stats, store, pmap) {
             let live_count = vertex_label_live_count(store, label_path.vertex_label_id);
-            return Ok(
-                gql_query_result_from_label_live_count(&label_path, live_count)
-                    .map_err(RouterError::InvalidArgument)?,
-            );
+            return gql_query_result_from_label_live_count(&label_path, live_count)
+                .map_err(RouterError::InvalidArgument);
         }
-        if let Some(fast_path) = try_aggregate_index_fast_path(plans, &stats, store, pmap) {
-            if let Some(counts) = execute_grouped_aggregate_fast_path(index, &fast_path)
+        if let Some(fast_path) = try_aggregate_index_fast_path(plans, &stats, store, pmap)
+            && let Some(counts) = execute_grouped_aggregate_fast_path(index, &fast_path)
                 .await
                 .map_err(RouterError::InvalidArgument)?
-            {
-                return Ok(gql_query_result_from_posting_counts(&fast_path, counts)
-                    .map_err(RouterError::InvalidArgument)?);
-            }
+        {
+            return gql_query_result_from_posting_counts(&fast_path, counts)
+                .map_err(RouterError::InvalidArgument);
         }
     }
     let merge_mode = federated_merge_mode_from_plans(plans);
@@ -506,7 +503,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         {
             return Ok(GqlQueryResult::row_count_only(row_count));
         }
-        reconcile_router_mutation_telemetry(&store, caller, logical_graph_name, key).await?;
+        reconcile_router_mutation_telemetry(store, caller, logical_graph_name, key).await?;
         if let Some(row_count) =
             store.router_mutation_completed_row_count(caller, logical_graph_name, key)
         {
@@ -525,7 +522,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             Ok(resolved_labels) => resolved_labels,
             Err(err) => {
                 release_routing_if_owner(
-                    &store,
+                    store,
                     caller,
                     logical_graph_name,
                     client_mutation_key,
@@ -544,7 +541,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             Ok(resolved_properties) => resolved_properties,
             Err(err) => {
                 release_routing_if_owner(
-                    &store,
+                    store,
                     caller,
                     logical_graph_name,
                     client_mutation_key,
@@ -573,7 +570,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             Ok(seed_anchors) => seed_anchors,
             Err(err) => {
                 release_routing_if_owner(
-                    &store,
+                    store,
                     caller,
                     logical_graph_name,
                     client_mutation_key,
@@ -593,7 +590,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     Ok(hits) => hits,
                     Err(err) => {
                         release_routing_if_owner(
-                            &store,
+                            store,
                             caller,
                             logical_graph_name,
                             client_mutation_key,
@@ -625,7 +622,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     Ok(routings) => routings,
                     Err(err) => {
                         release_routing_if_owner(
-                            &store,
+                            store,
                             caller,
                             logical_graph_name,
                             client_mutation_key,
@@ -639,7 +636,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 Ok(routings) => routings,
                 Err(err) => {
                     release_routing_if_owner(
-                        &store,
+                        store,
                         caller,
                         logical_graph_name,
                         client_mutation_key,
@@ -711,53 +708,51 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         {
             Ok(result) => result,
             Err(err) => {
-                if let Some(mutation_id) = mutation_id {
-                    if let Some(outcome) = recover_mutation_outcome(
-                        &store,
+                if let Some(mutation_id) = mutation_id
+                    && let Some(outcome) = recover_mutation_outcome(
+                        store,
                         dispatch.graph_canister,
                         dispatch.shard_id,
                         mutation_id,
                     )
                     .await?
-                    {
-                        if outcome.completed {
-                            let events = outcome.label_telemetry_events.clone();
-                            merge_execute_plan_result(
-                                &mut merged,
-                                gleaph_graph_kernel::plan_exec::ExecutePlanResult {
-                                    row_count: outcome.row_count,
-                                    label_telemetry_events: events.clone(),
-                                    rows_blob: None,
-                                },
-                                merge_mode.clone(),
-                            )
-                            .map_err(RouterError::InvalidArgument)?;
-                            if let Some(key) = client_mutation_key {
-                                store.record_router_mutation_shard_completed(
-                                    caller,
-                                    logical_graph_name,
-                                    key,
-                                    dispatch.shard_id,
-                                    outcome.row_count,
-                                    events,
-                                )?;
-                                store.record_router_mutation_shard_telemetry_acked(
-                                    caller,
-                                    logical_graph_name,
-                                    key,
-                                    dispatch.shard_id,
-                                )?;
-                            }
-                            continue;
-                        }
+                    && outcome.completed
+                {
+                    let events = outcome.label_telemetry_events.clone();
+                    merge_execute_plan_result(
+                        &mut merged,
+                        gleaph_graph_kernel::plan_exec::ExecutePlanResult {
+                            row_count: outcome.row_count,
+                            label_telemetry_events: events.clone(),
+                            rows_blob: None,
+                        },
+                        merge_mode.clone(),
+                    )
+                    .map_err(RouterError::InvalidArgument)?;
+                    if let Some(key) = client_mutation_key {
+                        store.record_router_mutation_shard_completed(
+                            caller,
+                            logical_graph_name,
+                            key,
+                            dispatch.shard_id,
+                            outcome.row_count,
+                            events,
+                        )?;
+                        store.record_router_mutation_shard_telemetry_acked(
+                            caller,
+                            logical_graph_name,
+                            key,
+                            dispatch.shard_id,
+                        )?;
                     }
+                    continue;
                 }
                 return Err(RouterError::InvalidArgument(err));
             }
         };
         let telemetry_events = result.label_telemetry_events.clone();
         let telemetry_acked = apply_and_ack_label_telemetry_events(
-            &store,
+            store,
             dispatch.graph_canister,
             dispatch.shard_id,
             mutation_id,
@@ -1752,6 +1747,7 @@ mod tests {
         assert_eq!(seeds.entries[0].local_vertex_ids, vec![10]);
     }
 
+    #[test]
     fn resolve_seed_routings_multi_rejects_unknown_shard() {
         let store = store_with_shards();
         let probe = SeedProbe {

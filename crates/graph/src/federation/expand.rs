@@ -6,8 +6,7 @@ use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
 use gleaph_graph_kernel::federation::{
-    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, GlobalVertexId,
-    VertexPlacement,
+    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, VertexPlacement,
 };
 use ic_stable_lara::VertexId;
 
@@ -22,6 +21,7 @@ pub(crate) enum TraversalExpandSource {
 }
 
 /// Map GQL expand direction to federated expand API direction.
+#[expect(dead_code, reason = "planned cross-shard expand wiring")]
 pub(crate) fn federated_direction_for_expand(direction: EdgeDirection) -> FederatedExpandDirection {
     match direction {
         EdgeDirection::PointingLeft => FederatedExpandDirection::Incoming,
@@ -95,7 +95,6 @@ pub(crate) async fn resolve_traversal_expand_local_csr(
     store: &GraphStore,
     binding: Option<&PlanBinding>,
     expand_direction: EdgeDirection,
-    _peer_expand_op: &'static str,
 ) -> Result<Option<VertexId>, PlanQueryError> {
     match resolve_traversal_expand_source(store, binding, expand_direction).await? {
         None => Ok(None),
@@ -104,9 +103,10 @@ pub(crate) async fn resolve_traversal_expand_local_csr(
 }
 
 /// Cross-shard neighbor lookup (not implemented).
+#[expect(dead_code, reason = "planned cross-shard expand wiring")]
 pub async fn peer_expand(
-    _store: &GraphStore,
-    _args: FederatedExpandArgs,
+    _: &GraphStore,
+    _: FederatedExpandArgs,
 ) -> Result<Vec<FederatedExpandNeighbor>, PlanQueryError> {
     Err(PlanQueryError::UnsupportedOp(
         "cross-shard federated_expand",
@@ -114,6 +114,7 @@ pub async fn peer_expand(
 }
 
 /// Pack edge label + direction for [`FederatedExpandArgs::label_id_raw`].
+#[expect(dead_code, reason = "planned cross-shard expand wiring")]
 pub(crate) fn federated_expand_label_id_raw(
     label_id: Option<EdgeLabelId>,
     direction: EdgeDirection,

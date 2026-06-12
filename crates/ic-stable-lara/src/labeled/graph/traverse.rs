@@ -2151,7 +2151,7 @@ mod tests {
         assert_eq!(it.try_advance_by(3).unwrap(), Err(NonZero::new(1).unwrap()));
 
         let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
-        assert_eq!(it.nth(0).transpose().unwrap(), Some(full[0]));
+        assert_eq!(it.next().transpose().unwrap(), Some(full[0]));
         let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();
         assert_eq!(it.nth(1).transpose().unwrap(), Some(full[1]));
         let mut it = graph.desc_out_edges_iter(VertexId::from(0)).unwrap();

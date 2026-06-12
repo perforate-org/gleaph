@@ -423,9 +423,8 @@ where
                 }
             }
             true => {
-                for local in 0..buckets.len() {
+                for (local, bucket) in buckets.iter().enumerate() {
                     let bucket_index = lo + local as u32;
-                    let bucket = &buckets[local];
                     if bucket.degree() == 0 {
                         continue;
                     }
@@ -664,13 +663,12 @@ where
                         edge.with_label_id(bucket.bucket_label_key().raw()),
                         log_chains.as_ref(),
                     )?;
-                    if matches(&edge_with_value) {
-                        if self
+                    if matches(&edge_with_value)
+                        && self
                             .remove_edge_at_slot(src, label_id, slot_index)?
                             .is_some()
-                        {
-                            return Ok(Some(edge_with_value));
-                        }
+                    {
+                        return Ok(Some(edge_with_value));
                     }
                 }
                 let leaf = self.payload_log_leaf(src);
@@ -699,13 +697,12 @@ where
                         edge.with_label_id(bucket.bucket_label_key().raw()),
                         log_chains.as_ref(),
                     )?;
-                    if matches(&edge_with_value) {
-                        if self
+                    if matches(&edge_with_value)
+                        && self
                             .remove_edge_at_slot(src, label_id, slot_index)?
                             .is_some()
-                        {
-                            return Ok(Some(edge_with_value));
-                        }
+                    {
+                        return Ok(Some(edge_with_value));
                     }
                 }
                 return Ok(None);

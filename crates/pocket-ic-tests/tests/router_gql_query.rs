@@ -72,7 +72,13 @@ fn standalone_gql_query_returns_element_id_bytes() {
         .expect("router gql_query should return rows_blob for ELEMENT_ID projection");
     let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
     assert_eq!(wire.rows.len(), 1);
-    let row = wire.rows.into_iter().next().expect("one row").try_into_value_row().expect("wire row to value row");
+    let row = wire
+        .rows
+        .into_iter()
+        .next()
+        .expect("one row")
+        .try_into_value_row()
+        .expect("wire row to value row");
     let Value::Bytes(id_bytes) = row.get("id").expect("id column") else {
         panic!("expected ELEMENT_ID bytes, got {:?}", row.get("id"));
     };

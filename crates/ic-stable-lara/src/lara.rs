@@ -1550,7 +1550,7 @@ mod tests {
         }
 
         fn with_neighbor_vid(&self, vid: VertexId) -> Self {
-            let mut edge = self.clone();
+            let mut edge = *self;
             edge.0[0] = u32::from(vid) as u8;
             edge
         }

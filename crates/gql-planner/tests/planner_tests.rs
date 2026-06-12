@@ -2955,11 +2955,7 @@ where
                 }
                 PlanOp::UseGraph {
                     sub_plan: Some(sp), ..
-                } => {
-                    if walk(sp, predicate) {
-                        return true;
-                    }
-                }
+                } if walk(sp, predicate) => return true,
                 _ => {}
             }
         }

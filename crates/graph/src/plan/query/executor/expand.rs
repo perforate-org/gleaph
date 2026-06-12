@@ -204,13 +204,10 @@ pub(crate) enum ExpandDst {
 }
 
 impl ExpandDst {
-    pub(crate) fn from_edge(
-        store: &GraphStore,
-        edge: &Edge,
-    ) -> Result<Option<Self>, PlanQueryError> {
+    pub(crate) fn from_edge(edge: &Edge) -> Result<Option<Self>, PlanQueryError> {
         match edge.edge_target() {
             Some(EdgeTarget::Local(vertex_id)) => Ok(Some(Self::Local(vertex_id))),
-            Some(EdgeTarget::Remote(_remote_vertex_id)) => Err(PlanQueryError::UnsupportedOp(
+            Some(EdgeTarget::Remote(_)) => Err(PlanQueryError::UnsupportedOp(
                 "expand across remote CSR edge endpoints",
             )),
             None => Ok(None),
@@ -354,7 +351,6 @@ fn equality_index_slot_key(owner: VertexId, slot_index: u32) -> u64 {
 }
 
 pub(crate) fn edge_equality_stream_filter(
-    _store: &GraphStore,
     execution: &crate::gql_execution_context::GqlExecutionContext,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
     parameters: &BTreeMap<String, Value>,

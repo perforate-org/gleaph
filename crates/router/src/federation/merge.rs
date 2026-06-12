@@ -10,6 +10,13 @@ use gleaph_graph_kernel::plan_exec::{ExecutePlanResult, LabelTelemetryEventWire}
 use super::aggregate_merge::{FederatedMergeMode, merge_optional_aggregate_blobs};
 
 /// Sum shard-local row counts for independent query fragments.
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "public federation merge helper; exercised in unit tests"
+    )
+)]
 pub fn merge_row_counts(shard_row_counts: impl IntoIterator<Item = u64>) -> u64 {
     shard_row_counts
         .into_iter()

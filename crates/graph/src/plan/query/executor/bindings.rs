@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use gleaph_gql::Value;
-use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::entry::{Edge, EdgePayload};
 use gleaph_graph_kernel::federation::{FederatedExpandNeighbor, ShardId};
 use ic_stable_lara::VertexId;

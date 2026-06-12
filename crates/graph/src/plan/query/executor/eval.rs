@@ -1027,7 +1027,7 @@ fn vertex_matches_label_expr(
                     .find(|entry| entry.name == name.as_ref())
                     .map(|entry| entry.id)
             })
-            .or_else(|| {
+            .or({
                 #[cfg(any(test, feature = "canbench"))]
                 {
                     Some(crate::test_labels::vertex_label_id_for_name(name.as_ref()))

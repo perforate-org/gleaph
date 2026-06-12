@@ -31,7 +31,7 @@ impl RouterIndexClient {
                 .map_err(|e| format!("lookup_equal: {e}"))?
                 .candid()
                 .map_err(|e| format!("lookup_equal decode: {e}"))?;
-            return Ok(hits);
+            Ok(hits)
         }
         #[cfg(not(target_family = "wasm"))]
         {
@@ -57,7 +57,7 @@ impl RouterIndexClient {
                     .map_err(|e| format!("count_postings_by_value: {e}"))?
                     .candid()
                     .map_err(|e| format!("count_postings_by_value decode: {e}"))?;
-            return Ok(counts);
+            Ok(counts)
         }
         #[cfg(not(target_family = "wasm"))]
         {
@@ -82,7 +82,7 @@ impl RouterIndexClient {
                     .map_err(|e| format!("filter_hits_by_label: {e}"))?
                     .candid()
                     .map_err(|e| format!("filter_hits_by_label decode: {e}"))?;
-            return Ok(filtered);
+            Ok(filtered)
         }
         #[cfg(not(target_family = "wasm"))]
         {
@@ -108,7 +108,7 @@ impl RouterIndexClient {
                     .map_err(|e| format!("count_postings_by_value_for_label: {e}"))?
                     .candid()
                     .map_err(|e| format!("count_postings_by_value_for_label decode: {e}"))?;
-            return Ok(counts);
+            Ok(counts)
         }
         #[cfg(not(target_family = "wasm"))]
         {
@@ -132,7 +132,7 @@ impl RouterIndexClient {
                     .map_err(|e| format!("lookup_label_page: {e}"))?
                     .candid()
                     .map_err(|e| format!("lookup_label_page decode: {e}"))?;
-            return Ok(page);
+            Ok(page)
         }
         #[cfg(not(target_family = "wasm"))]
         {
@@ -157,7 +157,7 @@ impl RouterIndexClient {
                     .map_err(|e| format!("lookup_label_for_shard: {e}"))?
                     .candid()
                     .map_err(|e| format!("lookup_label_for_shard decode: {e}"))?;
-            return Ok(hits);
+            Ok(hits)
         }
         #[cfg(not(target_family = "wasm"))]
         {
@@ -181,7 +181,7 @@ impl RouterIndexClient {
                     .map_err(|e| format!("lookup_label_intersection: {e}"))?
                     .candid()
                     .map_err(|e| format!("lookup_label_intersection decode: {e}"))?;
-            return Ok(hits);
+            Ok(hits)
         }
         #[cfg(not(target_family = "wasm"))]
         {
@@ -205,7 +205,7 @@ impl RouterIndexClient {
                     .map_err(|e| format!("lookup_intersection: {e}"))?
                     .candid()
                     .map_err(|e| format!("lookup_intersection decode: {e}"))?;
-            return Ok(hits);
+            Ok(hits)
         }
         #[cfg(not(target_family = "wasm"))]
         {

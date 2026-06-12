@@ -1,7 +1,6 @@
 //! §20.9–20.10 — Aggregates, EXISTS, LABEL.
 
 use crate::section_tests::p;
-use gleaph_gql::Value;
 use gleaph_gql::ast::*;
 
 /// Extract the first return item expression.

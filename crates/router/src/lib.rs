@@ -16,9 +16,12 @@ mod index_sync;
 pub mod init;
 mod label_backfill;
 mod label_telemetry_replay;
-#[expect(
-    dead_code,
-    reason = "peer sync hooks are invoked by registry lifecycle paths"
+#[cfg_attr(
+    not(target_family = "wasm"),
+    expect(
+        dead_code,
+        reason = "peer sync hooks run on wasm registry lifecycle paths"
+    )
 )]
 mod peer_sync;
 mod planner_stats;

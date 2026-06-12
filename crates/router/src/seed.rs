@@ -57,6 +57,13 @@ impl IndexAnchor {
     }
 
     /// Scan physical plans for the first index anchor (`IndexIntersection`, equality `IndexScan`, or labeled `NodeScan`).
+    #[cfg_attr(
+        not(test),
+        expect(
+            dead_code,
+            reason = "convenience wrapper over SeedAnchorSet::from_plans"
+        )
+    )]
     pub fn from_plans(
         plans: &[PhysicalPlan],
         parameters: &BTreeMap<String, Value>,
@@ -119,6 +126,7 @@ pub struct SeedProbe {
 
 impl SeedProbe {
     /// Returns `Some` only when the anchor is a single equality `IndexScan`.
+    #[cfg_attr(not(test), expect(dead_code, reason = "test and tooling helper"))]
     pub fn from_plans(
         plans: &[PhysicalPlan],
         parameters: &BTreeMap<String, Value>,

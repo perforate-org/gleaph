@@ -6,7 +6,6 @@
 mod large;
 
 use crate::facade::GraphStore;
-use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::plan::query::{PlanQueryResult, execute_plan_query, execute_plan_query_bindings};
 use canbench_rs::bench;
@@ -65,7 +64,7 @@ fn gleaph_weight_call(edge_var: &str) -> Expr {
     })
 }
 
-fn catalog_edge_label(store: &GraphStore, label_name: &str) -> EdgeLabelId {
+fn catalog_edge_label(label_name: &str) -> EdgeLabelId {
     crate::test_labels::edge_label_id_for_name(label_name)
 }
 
@@ -269,7 +268,7 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
             },
         )
         .expect("weight profile");
-    let road = catalog_edge_label(store, "BenchWspWgtEdge");
+    let road = catalog_edge_label("BenchWspWgtEdge");
 
     let mut prefixes = Vec::with_capacity(CACHE_PREFIX_COUNT);
     for _ in 0..CACHE_PREFIX_COUNT {
@@ -1671,7 +1670,7 @@ mod bench_setup_tests {
         let start = u32::from(store.vertex_count());
         let (src, _dst) = setup_repeated_edge_cost_cache_graph(&store);
         let end = u32::from(store.vertex_count());
-        let road = catalog_edge_label(&store, "BenchWspWgtEdge");
+        let road = catalog_edge_label("BenchWspWgtEdge");
         let hub_label = crate::test_labels::vertex_label_id_for_name("BenchWspHub");
 
         let mut hub = None;
@@ -1785,7 +1784,7 @@ mod bench_setup_tests {
             .insert_vertex_named(["BenchWspCacheDst"], Vec::<(&str, Value)>::new())
             .expect("dst");
         crate::test_labels::edge_label_id_for_name("BenchWspWgtEdge");
-        let road = catalog_edge_label(&store, "BenchWspWgtEdge");
+        let road = catalog_edge_label("BenchWspWgtEdge");
         let mut prefixes = Vec::new();
         for _ in 0..CACHE_PREFIX_COUNT {
             prefixes.push(
@@ -1833,7 +1832,7 @@ mod bench_setup_tests {
             .insert_vertex_named(["BenchWspHub"], Vec::<(&str, Value)>::new())
             .expect("hub");
         crate::test_labels::edge_label_id_for_name("BenchWspWgtEdge");
-        let road = catalog_edge_label(&store, "BenchWspWgtEdge");
+        let road = catalog_edge_label("BenchWspWgtEdge");
         for i in 0..3usize {
             let prefix = store
                 .insert_vertex_named(["BenchWspPrefix"], Vec::<(&str, Value)>::new())
@@ -1864,7 +1863,7 @@ mod bench_setup_tests {
             .insert_vertex_named(["BenchWspCacheSrc"], Vec::<(&str, Value)>::new())
             .expect("src");
         crate::test_labels::edge_label_id_for_name("BenchWspWgtEdge");
-        let road = catalog_edge_label(&store, "BenchWspWgtEdge");
+        let road = catalog_edge_label("BenchWspWgtEdge");
         for i in 0..3usize {
             let prefix = store
                 .insert_vertex_named(["BenchWspPrefix"], Vec::<(&str, Value)>::new())

@@ -37,7 +37,6 @@ use crate::facade::GraphStore;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use crate::property::PropertyIndexOp;
-use gleaph_graph_kernel::federation::ShardId;
 use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 
@@ -169,7 +168,7 @@ pub(crate) async fn flush_pending(
                 }
                 Err(rollback_err) => {
                     #[cfg(target_family = "wasm")]
-                    ic_cdk::trap(&format!(
+                    ic_cdk::trap(format!(
                         "gleaph-graph: federated index sync failed and rollback failed (op error: {primary}; rollback: {rollback_err})"
                     ));
                     #[cfg(not(target_family = "wasm"))]
@@ -193,6 +192,7 @@ mod tests {
     use crate::facade::FederationRouting;
     use async_trait::async_trait;
     use candid::Principal;
+    use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
     use std::sync::atomic::{AtomicUsize, Ordering};
 

@@ -236,7 +236,7 @@ fn setup_large_road_grid_graph(store: &GraphStore) {
             },
         )
         .expect("weight profile");
-    let road = catalog_edge_label(store, "BenchLargeRoad");
+    let road = catalog_edge_label("BenchLargeRoad");
 
     let mut vertices = Vec::with_capacity((ROAD_GRID_SIDE * ROAD_GRID_SIDE) as usize);
     for y in 0..ROAD_GRID_SIDE {

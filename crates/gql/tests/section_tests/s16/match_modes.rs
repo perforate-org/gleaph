@@ -1,9 +1,8 @@
 //! §16.4 — Graph pattern match modes.
 
-use super::helpers::{first_edge_dir, graph_pat};
-use crate::section_tests::{body, p};
+use super::helpers::graph_pat;
+use crate::section_tests::p;
 use gleaph_gql::ast::*;
-use gleaph_gql::types::EdgeDirection;
 
 // ── Match modes ─────────────────────────────────────────────────────────
 

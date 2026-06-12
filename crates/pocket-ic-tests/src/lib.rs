@@ -460,7 +460,10 @@ pub fn e2e_insert_vertex_with_property(
     )
 }
 
-pub fn admin_intern_property(env: &FederationEnv, name: &str) -> gleaph_graph_kernel::entry::PropertyId {
+pub fn admin_intern_property(
+    env: &FederationEnv,
+    name: &str,
+) -> gleaph_graph_kernel::entry::PropertyId {
     update_as_admin(env, env.router, "admin_intern_property", name.to_string())
 }
 
@@ -473,11 +476,8 @@ pub fn admin_set_indexed_vertex_property(env: &FederationEnv, property: &str) {
             env.router,
             env.admin,
             "admin_set_indexed_vertex_property",
-            Encode!(
-                &GRAPH_NAME.to_string(),
-                &property.to_string()
-            )
-            .expect("encode admin_set_indexed_vertex_property"),
+            Encode!(&GRAPH_NAME.to_string(), &property.to_string())
+                .expect("encode admin_set_indexed_vertex_property"),
         )
         .unwrap_or_else(|e| panic!("admin_set_indexed_vertex_property: {e:?}"));
     match Decode!(&bytes, Result<(), RouterError>) {

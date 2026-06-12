@@ -4,7 +4,6 @@ use gleaph_gql::ast::{Expr, ExprKind, ObjectName, ValueType};
 use gleaph_gql::value::Value;
 use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::for_each_immediate_child_expr;
-use gleaph_gql_planner::plan::ShortestMode;
 use gleaph_gql_planner::{
     PathPatternExtensionContext, PathPatternExtensionHandler, PlannerError, ShortestPathCost,
 };
@@ -314,7 +313,7 @@ mod tests {
     use gleaph_gql::token::Span;
     use gleaph_gql::types::EdgeDirection;
     use gleaph_gql_planner::SingleEdgePathInfo;
-    use gleaph_gql_planner::plan::VarLenSpec;
+    use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 
     fn gleaph_cost_extension() -> ObjectName {
         ObjectName::qualified(vec!["GLEAPH".into(), "COST".into()])

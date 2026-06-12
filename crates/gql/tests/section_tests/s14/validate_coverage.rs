@@ -1,8 +1,6 @@
 //! §14 — Validation coverage (access modes, constraints).
 
-use crate::section_tests::{body, p};
-use gleaph_gql::ast::*;
-use gleaph_gql::types::EdgeDirection;
+use crate::section_tests::p;
 use gleaph_gql::validate::validate;
 
 // ── Validate.rs coverage ────────────────────────────────────────────────

@@ -28,7 +28,6 @@ use super::stable::{
 };
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
-use candid::Principal;
 use gleaph_graph_kernel::plan_exec::MutationId;
 
 /// Maximum UTF-8 byte length for graph and catalog metadata names.

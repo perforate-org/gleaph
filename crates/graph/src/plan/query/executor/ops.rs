@@ -373,7 +373,6 @@ pub(crate) fn execute_ops_from<'a>(
     Box::pin(async move {
         let store = ctx.store;
         let parameters = ctx.parameters;
-        let _caller = ctx.caller();
         let gwd = ctx.gleaph_weight_decoders;
         let set_operation_input = ops_contain_set_operation(ops).then(|| initial_rows.clone());
         let mut rows = initial_rows;
@@ -481,7 +480,7 @@ pub(crate) fn execute_ops_from<'a>(
                     variable,
                     scans,
                     property_projection: _,
-                } => execute_index_intersection(&ctx, rows, variable.as_ref(), scans).await?,
+                } => execute_index_intersection(ctx, rows, variable.as_ref(), scans).await?,
                 PlanOp::EdgeIndexScan {
                     variable,
                     property,
@@ -580,14 +579,7 @@ pub(crate) fn execute_ops_from<'a>(
                     emit_path_binding,
                 } => {
                     if let Some(bounds) = var_len {
-                        ensure_var_len_expand(
-                            label_expr,
-                            hop_aux_binding,
-                            indexed_edge_equality,
-                            edge_payload_predicate,
-                            edge_vector_predicate,
-                            edge_property_projection,
-                        )?;
+                        ensure_var_len_expand()?;
                         execute_var_len_expand(
                             ctx,
                             rows,
@@ -614,7 +606,7 @@ pub(crate) fn execute_ops_from<'a>(
                         )
                         .await?
                     } else {
-                        ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
+                        ensure_simple_expand(var_len)?;
                         let sequence_order = gleaph_sequence_order_after_expand(
                             ops,
                             op_idx,
@@ -666,14 +658,7 @@ pub(crate) fn execute_ops_from<'a>(
                     emit_path_binding,
                 } => {
                     if let Some(bounds) = var_len {
-                        ensure_var_len_expand(
-                            label_expr,
-                            hop_aux_binding,
-                            indexed_edge_equality,
-                            edge_payload_predicate,
-                            edge_vector_predicate,
-                            edge_property_projection,
-                        )?;
+                        ensure_var_len_expand()?;
                         execute_var_len_expand(
                             ctx,
                             rows,
@@ -700,7 +685,7 @@ pub(crate) fn execute_ops_from<'a>(
                         )
                         .await?
                     } else {
-                        ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
+                        ensure_simple_expand(var_len)?;
                         let sequence_order = gleaph_sequence_order_after_expand(
                             ops,
                             op_idx,

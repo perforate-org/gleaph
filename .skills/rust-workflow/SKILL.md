@@ -50,6 +50,16 @@ cargo clippy --workspace --all-targets --all-features --fix --allow-dirty --allo
 6. Continue until diagnostics are resolved.
 7. Do not silence warnings with `#[allow(...)]` unless there is a documented architectural reason.
 
+### Unused variables and arguments
+
+When `unused variable` or `unused argument` appears:
+
+1. Decide whether the binding is actually required for the API, trait contract, forward compatibility, or a future hook.
+2. If it is not required, remove it from the signature or binding and update call sites.
+3. Do not default to renaming `name` to `_name` just to satisfy the compiler.
+4. Use a bare `_` parameter name only when the parameter must stay in the signature but is intentionally ignored (for example a trait method or public stub).
+5. Prefer deleting dead `let` bindings entirely rather than assigning them to `_`-prefixed locals.
+
 ## Repeated Failure Rule
 
 Do not repeatedly guess at fixes.

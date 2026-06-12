@@ -1,12 +1,9 @@
 use super::helpers::{edge_storage_label, lara_label};
 use super::*;
-use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{
-    EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeTarget, EdgeWeightProfile, VertexRef,
-    WeightEncoding,
+    EdgeDirectedness, EdgeLabelId, EdgeSlotIndex, EdgeWeightProfile, VertexRef, WeightEncoding,
 };
-use gleaph_graph_kernel::federation::ShardId;
 use ic_stable_lara::{
     MaintenanceBudget, OutEdgeOrder, VertexId,
     labeled::{BucketLabelKey as LaraLabelId, LabeledEdgePayloadBatchScratch, LabeledOrientation},

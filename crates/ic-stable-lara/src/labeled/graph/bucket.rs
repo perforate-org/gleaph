@@ -7,7 +7,7 @@ use crate::{
         record::{LabelBucket, LabeledVertex},
         slot_index::checked_add_slot_index,
     },
-    lara::{edge::counts::segment_span_density, operation_error::LaraOperationError},
+    lara::operation_error::LaraOperationError,
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 #[cfg(feature = "canbench")]
@@ -37,9 +37,7 @@ where
         except: VertexId,
     ) -> bool {
         let start_vid = leaf.saturating_mul(seg);
-        let end_vid = start_vid
-            .saturating_add(seg)
-            .min(u32::try_from(self.vertices.len()).unwrap_or(u32::MAX));
+        let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
         for vid_u in start_vid..end_vid {
             let vid = VertexId::from(vid_u);
             if vid == except {
@@ -1022,7 +1020,7 @@ mod tests {
         for target in 0..64u32 {
             graph.insert_edge(vid, road, TestEdge { target }).unwrap();
         }
-        let mut materialized = |label: BucketLabelKey| {
+        let materialized = |label: BucketLabelKey| {
             graph
                 .iter_edges_for_label(vid, label)
                 .unwrap()

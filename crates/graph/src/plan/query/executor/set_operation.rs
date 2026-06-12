@@ -127,11 +127,11 @@ fn except_all(left: Vec<PlanRow>, right: Vec<PlanRow>) -> Vec<PlanRow> {
     let mut out = Vec::new();
     for row in left {
         let key = row_key(&row);
-        if let Some((_, count)) = right_counts.iter_mut().find(|(r, _)| r == &key) {
-            if *count > 0 {
-                *count -= 1;
-                continue;
-            }
+        if let Some((_, count)) = right_counts.iter_mut().find(|(r, _)| r == &key)
+            && *count > 0
+        {
+            *count -= 1;
+            continue;
         }
         out.push(row);
     }

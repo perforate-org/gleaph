@@ -141,7 +141,7 @@ fn try_expand_matching_edge_payload_payload_first(
             return;
         };
         let edge = edge.with_payload_bytes(payload);
-        match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| match edge_dst {
+        match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
             Some(edge_dst) => {
                 push_scanned_value_expand_candidate(out, store, src_id, direction, edge_dst, edge)
             }
@@ -198,7 +198,7 @@ fn expand_matching_edge_payload_combined_batch(
             let payload_start = idx * width;
             let payload_end = payload_start + width;
             let edge = edge.with_payload_bytes(&batch.payload_bytes[payload_start..payload_end]);
-            match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| match edge_dst {
+            match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
                 Some(edge_dst) => push_scanned_value_expand_candidate(
                     out, store, src_id, direction, edge_dst, edge,
                 ),
@@ -271,7 +271,7 @@ pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
             let payload_start = idx * width;
             let payload_end = payload_start + width;
             let edge = edge.with_payload_bytes(&batch.payload_bytes[payload_start..payload_end]);
-            match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| match edge_dst {
+            match ExpandDst::from_edge(&edge).and_then(|edge_dst| match edge_dst {
                 Some(edge_dst) => push_scanned_value_expand_candidate(
                     out, store, src_id, direction, edge_dst, edge,
                 ),
@@ -352,7 +352,7 @@ pub(super) fn expand_vector_dst_only_rows_into(
             let Some(edge) = batch.edges.get(idx).cloned() else {
                 continue;
             };
-            match ExpandDst::from_edge(store, &edge).and_then(|edge_dst| {
+            match ExpandDst::from_edge(&edge).and_then(|edge_dst| {
                 let Some(edge_dst) = edge_dst else {
                     return Ok(());
                 };
@@ -626,7 +626,7 @@ pub(crate) fn expand_candidates_into(
                             }
                         }
                     }
-                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(&edge)
                         && let Err(err) =
                             push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
                     {
@@ -671,7 +671,7 @@ pub(crate) fn expand_candidates_into(
                             }
                         }
                     }
-                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(&edge)
                         && let Err(err) =
                             push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
                     {
@@ -716,7 +716,7 @@ pub(crate) fn expand_candidates_into(
                             }
                         }
                     }
-                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(&edge)
                         && let Err(err) =
                             push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
                     {
@@ -838,7 +838,7 @@ fn expand_candidates_via_equality_index(
                         if error.is_some() {
                             return;
                         }
-                        if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                        if let Ok(Some(edge_dst)) = ExpandDst::from_edge(&edge)
                             && let Err(err) =
                                 push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
                         {
@@ -873,7 +873,7 @@ fn expand_candidates_via_equality_index(
                     )) {
                         return;
                     }
-                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(&edge)
                         && let Err(err) =
                             push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
                     {
@@ -905,7 +905,7 @@ fn expand_candidates_via_equality_index(
                     )) {
                         return;
                     }
-                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(store, &edge)
+                    if let Ok(Some(edge_dst)) = ExpandDst::from_edge(&edge)
                         && let Err(err) =
                             push_expand_candidate(out, store, src_id, direction, edge_dst, edge)
                     {

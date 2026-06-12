@@ -247,7 +247,7 @@ fn decoder_for_gleaph_weight_edge(
                     "GLEAPH.WEIGHT({edge_var}): edge pattern must have exactly one fixed edge label"
                 ),
             })?;
-            finish_decoder_from_label_name(store, execution, edge_var, label_name.as_ref())
+            finish_decoder_from_label_name(store, execution, edge_var, label_name)
         }
         EdgeProducer::ShortestPath {
             label,
@@ -270,7 +270,7 @@ fn decoder_for_gleaph_weight_edge(
                     "GLEAPH.WEIGHT({edge_var}): shortest-path must have exactly one fixed edge label"
                 ),
             })?;
-            finish_decoder_from_label_name(store, execution, edge_var, label_name.as_ref())
+            finish_decoder_from_label_name(store, execution, edge_var, label_name)
         }
     }
 }

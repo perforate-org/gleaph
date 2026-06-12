@@ -8,11 +8,9 @@ mod index_bind;
 mod routing;
 
 pub(crate) use expand::{
-    TraversalExpandSource, federated_direction_for_expand, federated_expand_label_id_raw,
-    resolve_traversal_expand_local_csr, resolve_traversal_expand_source,
+    TraversalExpandSource, resolve_traversal_expand_local_csr, resolve_traversal_expand_source,
 };
 pub(crate) use index_bind::bind_local_index_hits;
-pub(crate) use routing::federation_routing;
 
 use gleaph_graph_kernel::federation::{FederatedExpandArgs, FederatedExpandNeighbor, ShardId};
 use gleaph_graph_kernel::index::PostingHit;
@@ -64,6 +62,7 @@ impl StandaloneFederation {
     }
 
     /// Cross-shard neighbor lookup when expand cannot use local CSR.
+    #[expect(dead_code, reason = "planned federation traverse entry point")]
     pub async fn peer_expand(
         &self,
         store: &GraphStore,

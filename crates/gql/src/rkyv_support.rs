@@ -221,6 +221,7 @@ fn rkyv_wire_error(context: &'static str, err: rkyv::rancor::Error) -> String {
 }
 
 /// Returns whether `bytes` satisfies rkyv root alignment for `T::Archived` at [`rkyv::api::root_position`].
+#[cfg(not(target_family = "wasm"))]
 fn wire_root_is_aligned<T: Archive>(bytes: &[u8]) -> bool
 where
     T::Archived: rkyv::Portable,

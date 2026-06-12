@@ -1,6 +1,6 @@
 //! Canister request handlers for `gleaph-graph-index`.
 
-use crate::facade::IndexStore;
+use crate::facade::{DEFAULT_COUNT_POSTINGS_MAX_GROUPS, IndexStore};
 use crate::init::IndexInitArgs;
 use crate::state::IndexError;
 use candid::Principal;
@@ -109,10 +109,13 @@ pub(crate) fn count_postings_by_value(
     min_count: u64,
     vertex_filter_packed: Option<Vec<u64>>,
 ) -> Vec<ValuePostingCount> {
-    const MAX_GROUPS: usize = 10_000;
-
     let filter = vertex_filter_packed.map(|packed| packed.into_iter().collect());
-    IndexStore::new().count_postings_by_value(property_id, min_count, MAX_GROUPS, filter.as_ref())
+    IndexStore::new().count_postings_by_value(
+        property_id,
+        min_count,
+        DEFAULT_COUNT_POSTINGS_MAX_GROUPS,
+        filter.as_ref(),
+    )
 }
 
 pub(crate) fn filter_hits_by_label(vertex_label_id: u32, hits: Vec<PostingHit>) -> Vec<PostingHit> {
@@ -124,11 +127,10 @@ pub(crate) fn count_postings_by_value_for_label(
     vertex_label_id: u32,
     min_count: u64,
 ) -> Vec<ValuePostingCount> {
-    const MAX_GROUPS: usize = 10_000;
     IndexStore::new().count_postings_by_value_for_label(
         property_id,
         vertex_label_id,
         min_count,
-        MAX_GROUPS,
+        DEFAULT_COUNT_POSTINGS_MAX_GROUPS,
     )
 }

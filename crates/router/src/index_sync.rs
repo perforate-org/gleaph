@@ -3,6 +3,13 @@
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
 
+#[cfg_attr(
+    feature = "pocket-ic-e2e",
+    expect(
+        dead_code,
+        reason = "index sync skipped when pocket-ic-e2e manages shard owners"
+    )
+)]
 #[cfg(target_family = "wasm")]
 pub async fn admin_set_shard_owner(
     index_canister: Principal,
@@ -13,7 +20,7 @@ pub async fn admin_set_shard_owner(
 
     let result: (Result<(), String>,) =
         Call::unbounded_wait(index_canister, "admin_set_shard_owner")
-            .with_arg(&(shard_id, owner_principal))
+            .with_arg((shard_id, owner_principal))
             .await
             .map_err(|e| format!("index admin_set_shard_owner call failed: {e}"))?
             .candid()
@@ -21,6 +28,13 @@ pub async fn admin_set_shard_owner(
     result.0
 }
 
+#[cfg_attr(
+    feature = "pocket-ic-e2e",
+    expect(
+        dead_code,
+        reason = "index sync skipped when pocket-ic-e2e manages shard owners"
+    )
+)]
 #[cfg(not(target_family = "wasm"))]
 pub async fn admin_set_shard_owner(
     _index_canister: Principal,
@@ -30,6 +44,13 @@ pub async fn admin_set_shard_owner(
     Ok(())
 }
 
+#[cfg_attr(
+    feature = "pocket-ic-e2e",
+    expect(
+        dead_code,
+        reason = "index sync skipped when pocket-ic-e2e manages shard owners"
+    )
+)]
 #[cfg(target_family = "wasm")]
 pub async fn admin_clear_shard_owner(
     index_canister: Principal,
@@ -39,7 +60,7 @@ pub async fn admin_clear_shard_owner(
 
     let result: (Result<(), String>,) =
         Call::unbounded_wait(index_canister, "admin_clear_shard_owner")
-            .with_arg(&(shard_id,))
+            .with_arg((shard_id,))
             .await
             .map_err(|e| format!("index admin_clear_shard_owner call failed: {e}"))?
             .candid()
@@ -47,6 +68,13 @@ pub async fn admin_clear_shard_owner(
     result.0
 }
 
+#[cfg_attr(
+    feature = "pocket-ic-e2e",
+    expect(
+        dead_code,
+        reason = "index sync skipped when pocket-ic-e2e manages shard owners"
+    )
+)]
 #[cfg(not(target_family = "wasm"))]
 pub async fn admin_clear_shard_owner(
     _index_canister: Principal,

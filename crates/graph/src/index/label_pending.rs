@@ -114,7 +114,7 @@ pub(crate) async fn flush_pending(
                 }
                 Err(rollback_err) => {
                     #[cfg(target_family = "wasm")]
-                    ic_cdk::trap(&format!(
+                    ic_cdk::trap(format!(
                         "gleaph-graph: federated label index sync failed and rollback failed (op error: {primary}; rollback: {rollback_err})"
                     ));
                     #[cfg(not(target_family = "wasm"))]

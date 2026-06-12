@@ -45,13 +45,13 @@ pub async fn verify_shard_attachment(
         )));
     }
 
-    if let Some(expected) = expected_graph_name {
-        if entry.logical_graph_name != expected {
-            return Err(RouterInitError::Rejected(format!(
-                "logical_graph_name mismatch: expected `{expected}`, got `{}`",
-                entry.logical_graph_name
-            )));
-        }
+    if let Some(expected) = expected_graph_name
+        && entry.logical_graph_name != expected
+    {
+        return Err(RouterInitError::Rejected(format!(
+            "logical_graph_name mismatch: expected `{expected}`, got `{}`",
+            entry.logical_graph_name
+        )));
     }
 
     Ok(entry)

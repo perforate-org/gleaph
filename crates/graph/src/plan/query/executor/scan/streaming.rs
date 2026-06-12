@@ -309,14 +309,7 @@ fn stream_row_through_ops(
             emit_path_binding,
         } => {
             if let Some(bounds) = var_len {
-                ensure_var_len_expand(
-                    label_expr,
-                    hop_aux_binding,
-                    indexed_edge_equality,
-                    edge_payload_predicate,
-                    edge_vector_predicate,
-                    edge_property_projection,
-                )?;
+                ensure_var_len_expand()?;
                 stream_var_len_expand(
                     store,
                     ops,
@@ -350,7 +343,7 @@ fn stream_row_through_ops(
                     clears_active_aggregate,
                 )
             } else {
-                ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
+                ensure_simple_expand(var_len)?;
                 stream_expand(
                     store,
                     ops,
@@ -403,14 +396,7 @@ fn stream_row_through_ops(
             emit_path_binding,
         } => {
             if let Some(bounds) = var_len {
-                ensure_var_len_expand(
-                    label_expr,
-                    hop_aux_binding,
-                    indexed_edge_equality,
-                    edge_payload_predicate,
-                    edge_vector_predicate,
-                    edge_property_projection,
-                )?;
+                ensure_var_len_expand()?;
                 stream_var_len_expand(
                     store,
                     ops,
@@ -444,7 +430,7 @@ fn stream_row_through_ops(
                     clears_active_aggregate,
                 )
             } else {
-                ensure_simple_expand(label_expr, var_len, hop_aux_binding)?;
+                ensure_simple_expand(var_len)?;
                 stream_expand(
                     store,
                     ops,
@@ -737,7 +723,7 @@ fn stream_expand(
             {
                 return Ok(false);
             }
-            let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
+            let Some(edge_dst) = ExpandDst::from_edge(&edge)? else {
                 return Ok(false);
             };
             if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection)
@@ -785,7 +771,7 @@ fn stream_expand(
 
     if let Some(fast_path) = csr_expand_fast_path {
         let edge_equality_filter =
-            edge_equality_stream_filter(store, execution, indexed_edge_equality, parameters)?;
+            edge_equality_stream_filter(execution, indexed_edge_equality, parameters)?;
         if matches!(edge_equality_filter, EdgeEqualityStreamFilter::NoMatches) {
             return Ok(false);
         }
@@ -798,7 +784,7 @@ fn stream_expand(
             {
                 return Ok(false);
             }
-            let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
+            let Some(edge_dst) = ExpandDst::from_edge(&edge)? else {
                 return Ok(false);
             };
             let label_id = edge.label_id;

@@ -262,7 +262,7 @@ mod tests {
                 .and_then(|e| e.hop_aux_binding.clone()),
             _ => None,
         });
-        assert_eq!(hop_aux.as_deref().map(|s| s.as_ref()), Some("e1__hop_aux"));
+        assert_eq!(hop_aux.as_deref(), Some("e1__hop_aux"));
 
         let result = store
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())

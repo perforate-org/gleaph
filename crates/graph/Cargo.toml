@@ -4,6 +4,12 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Query executor and GQL runtime paths intentionally thread many plan-local parameters;
+# splitting them would obscure the physical-plan contract at execution boundaries.
+[lints.clippy]
+too_many_arguments = "allow"
+type_complexity = "allow"
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

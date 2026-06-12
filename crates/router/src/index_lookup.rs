@@ -34,6 +34,10 @@ pub(crate) trait IndexLookup {
         req: LabelLookupPageRequest,
     ) -> Pin<Box<dyn Future<Output = Result<LabelLookupPageResult, String>> + '_>>;
 
+    #[expect(
+        dead_code,
+        reason = "IndexLookup trait surface for label intersection fast paths"
+    )]
     fn lookup_label_intersection(
         &self,
         req: IndexLabelIntersectionRequest,

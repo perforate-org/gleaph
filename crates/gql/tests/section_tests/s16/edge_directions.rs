@@ -1,8 +1,7 @@
 //! §16.7 — Path pattern edge directions.
 
 use super::helpers::{first_edge_dir, graph_pat};
-use crate::section_tests::{body, p};
-use gleaph_gql::ast::*;
+use crate::section_tests::p;
 use gleaph_gql::types::EdgeDirection;
 
 // ── Edge directions (full bracket patterns) ─────────────────────────────

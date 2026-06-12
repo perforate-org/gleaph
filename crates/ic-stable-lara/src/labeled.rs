@@ -90,9 +90,12 @@ pub(crate) mod deferred;
     reason = "labeled graph contains maintenance and diagnostics entry points"
 )]
 pub(crate) mod graph;
-#[expect(
-    dead_code,
-    reason = "layout invariant checks are compiled for targeted diagnostics"
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "layout invariant checks are compiled for targeted diagnostics"
+    )
 )]
 pub(crate) mod invariants;
 pub mod record;

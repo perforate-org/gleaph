@@ -43,7 +43,6 @@ impl GraphStore {
     }
 
     pub(super) fn commit_move_edge_sidecars_for_compaction(
-        store: &GraphStore,
         orientation: LabeledOrientation,
         owner_vertex_id: VertexId,
         moved: EdgeSlotMove,
@@ -75,12 +74,7 @@ impl GraphStore {
         owner_vertex_id: VertexId,
         moved: EdgeSlotMove,
     ) {
-        Self::commit_move_edge_sidecars_for_compaction(
-            &GraphStore,
-            orientation,
-            owner_vertex_id,
-            moved,
-        );
+        Self::commit_move_edge_sidecars_for_compaction(orientation, owner_vertex_id, moved);
     }
 }
 
@@ -88,7 +82,6 @@ impl GraphStore {
 mod tests {
     use super::*;
     use gleaph_gql::Value;
-    use gleaph_graph_kernel::entry::PropertyId;
 
     #[test]
     fn commit_clear_edge_sidecars_removes_properties_and_local_indexes() {

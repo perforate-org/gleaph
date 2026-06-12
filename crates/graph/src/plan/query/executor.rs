@@ -15,7 +15,7 @@ pub(crate) use eval::{binding_to_value, eval_sort_expr, project_row, value_row};
 pub(crate) use ops::execute_ops_from;
 pub use path::PathBinding;
 pub(crate) use path::path_binding_to_value;
-pub(crate) use scan::{federation_routing, resolve_scan_payload_bytes};
+pub(crate) use scan::resolve_scan_payload_bytes;
 
 #[cfg(test)]
 pub(crate) use expand::edge_binding_for_expand;
@@ -31,7 +31,7 @@ use candid::Principal;
 use context::{ExecuteCtx, QueryExprEvaluator};
 use gleaph_gql::Value;
 use gleaph_gql::ast::{Expr, ExprKind, ObjectName, OrderByClause, SortDirection};
-use gleaph_gql::types::{EdgeDirection, LabelExpr};
+use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::OutputSchema;
 use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, Str};
@@ -311,9 +311,7 @@ pub(crate) fn vertex_row_matches_dst_filters(
 }
 
 pub(crate) fn ensure_simple_expand(
-    _label_expr: &Option<LabelExpr>,
     var_len: &Option<gleaph_gql_planner::plan::VarLenSpec>,
-    _hop_aux_binding: &Option<Str>,
 ) -> Result<(), PlanQueryError> {
     if var_len.is_some() {
         return Err(PlanQueryError::UnsupportedOp("Expand.var_len"));
@@ -321,14 +319,7 @@ pub(crate) fn ensure_simple_expand(
     Ok(())
 }
 
-pub(crate) fn ensure_var_len_expand(
-    _label_expr: &Option<LabelExpr>,
-    _hop_aux_binding: &Option<Str>,
-    _indexed_edge_equality: &Option<(Str, gleaph_gql_planner::plan::ScanValue)>,
-    _edge_payload_predicate: &Option<gleaph_gql_planner::plan::EdgePayloadPredicate>,
-    _edge_vector_predicate: &Option<gleaph_gql_planner::plan::EdgeVectorPredicate>,
-    _edge_property_projection: &Option<std::rc::Rc<[Str]>>,
-) -> Result<(), PlanQueryError> {
+pub(crate) fn ensure_var_len_expand() -> Result<(), PlanQueryError> {
     Ok(())
 }
 

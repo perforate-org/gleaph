@@ -1,6 +1,5 @@
 //! §16.5 — INSERT graph pattern edges.
 
-use super::helpers::{first_edge_dir, graph_pat};
 use crate::section_tests::{body, p};
 use gleaph_gql::ast::*;
 use gleaph_gql::types::EdgeDirection;

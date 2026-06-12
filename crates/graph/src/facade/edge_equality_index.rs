@@ -6,7 +6,7 @@
 
 use super::stable::edge_equality_postings::EdgeEqualityPostingKey;
 use super::stable::{EDGE_EQUALITY_POSTINGS, EDGE_PROPERTIES};
-use crate::property::{PropertyIndexOp, PropertyValueChange, sortable_index_key};
+use crate::property::{PropertyIndexOp, sortable_index_key};
 use gleaph_graph_kernel::entry::PropertyId;
 use ic_stable_lara::VertexId;
 
@@ -140,6 +140,7 @@ fn remove_posting(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::property::PropertyValueChange;
     use gleaph_gql::Value;
 
     #[test]

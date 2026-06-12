@@ -7,7 +7,6 @@ use crate::facade::store::RouterStore;
 use crate::federation::{SeedRouting, ShardingPolicy};
 use crate::seed::IndexAnchor;
 use crate::state::RouterError;
-use gleaph_graph_kernel::federation::ShardId;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StandaloneSharding;
@@ -63,6 +62,8 @@ fn resolve_standalone_routing(shards: &[ShardRegistryEntry]) -> Result<SeedRouti
 #[cfg(test)]
 mod tests {
     use candid::Principal;
+
+    use gleaph_graph_kernel::federation::ShardId;
 
     use super::*;
     use crate::federation::ShardingPolicy;

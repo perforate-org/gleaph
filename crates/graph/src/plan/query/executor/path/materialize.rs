@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use gleaph_gql::Value;
 use gleaph_gql::types::PathElement;
 use gleaph_graph_kernel::entry::EdgeSlotIndex;
-use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalEdgeId, ShardId};
+use gleaph_graph_kernel::federation::{ElementIdEncodingKey, ShardId};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::VertexId;
 

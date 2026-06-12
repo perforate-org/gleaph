@@ -8,7 +8,6 @@ use gleaph_graph_kernel::index::{IndexEqualSpec, IndexIntersectionRequest, Posti
 use crate::facade::GraphStore;
 use crate::federation::FederationPort;
 use crate::gql_execution_context::GqlExecutionContext;
-use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::context::ExecuteCtx;
 use crate::plan::query::row::PlanRow;

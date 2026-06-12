@@ -4,6 +4,16 @@ version.workspace = true
 edition.workspace = true
 license.workspace = true
 
+# Low-level stable graph storage: internal APIs intentionally carry many parameters,
+# complex return tuples, and large iterator state machines. Clippy structural lints
+# are allowed here rather than forcing artificial refactors at storage boundaries.
+[lints.clippy]
+enum_variant_names = "allow"
+large_enum_variant = "allow"
+result_unit_err = "allow"
+too_many_arguments = "allow"
+type_complexity = "allow"
+
 [lib]
 crate-type = ["cdylib", "rlib"]
 

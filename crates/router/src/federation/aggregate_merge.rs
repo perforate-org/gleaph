@@ -71,7 +71,7 @@ pub fn federated_merge_mode_from_ops(ops: &[PlanOp]) -> Option<FederatedMergeMod
 
 fn aggregates_are_mergeable(aggregates: &[AggregateSpec]) -> bool {
     aggregates.iter().all(|spec| {
-        spec.distinct == false
+        !spec.distinct
             && spec.filter.is_none()
             && spec.order_by.is_none()
             && spec.expr2.is_none()
@@ -738,7 +738,7 @@ mod tests {
             op: gleaph_gql::ast::CmpOp::Gt,
             right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(1)))),
         });
-        let mut plan = PhysicalPlan::from_ops(vec![
+        let plan = PhysicalPlan::from_ops(vec![
             PlanOp::Aggregate {
                 group_by: vec![],
                 aggregates: vec![AggregateSpec {
@@ -759,7 +759,7 @@ mod tests {
                 distinct: false,
             },
         ]);
-        let original_blob = encode_block_plans(&[plan.clone()], false).expect("encode");
+        let original_blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
         let dispatch =
             federated_dispatch_plan_blob(2, &original_blob, std::slice::from_ref(&plan), false)
                 .expect("dispatch");
@@ -777,7 +777,7 @@ mod tests {
     #[test]
     fn federated_dispatch_plan_blob_preserves_original_for_single_shard() {
         let plan = sample_aggregate_plan(vec![]);
-        let blob = encode_block_plans(&[plan.clone()], false).expect("encode");
+        let blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
         let dispatch = federated_dispatch_plan_blob(1, &blob, std::slice::from_ref(&plan), false)
             .expect("dispatch");
         assert_eq!(dispatch, blob);

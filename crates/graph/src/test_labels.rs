@@ -40,6 +40,7 @@ impl GraphStore {
         self.insert_directed_edge_with(source_vertex_id, target_vertex_id, label, properties)
     }
 
+    #[cfg_attr(not(test), expect(dead_code, reason = "test fixture helper"))]
     pub(crate) fn insert_undirected_edge_named(
         &self,
         endpoint_a: VertexId,

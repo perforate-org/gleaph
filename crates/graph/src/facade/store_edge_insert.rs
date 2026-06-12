@@ -1,12 +1,14 @@
 //! Canonical edge insert paths (directed / undirected, local / logical, valued / unvalued).
 
 use gleaph_graph_kernel::entry::EdgeLabelId;
-use gleaph_graph_kernel::federation::{GlobalVertexId, VertexPlacement};
+use gleaph_graph_kernel::federation::GlobalVertexId;
+#[cfg(not(target_family = "wasm"))]
+use gleaph_graph_kernel::federation::VertexPlacement;
 use ic_stable_lara::VertexId;
 
-use crate::index::placement;
-
 use super::store::{EdgeHandle, GraphStore, GraphStoreError};
+#[cfg(not(target_family = "wasm"))]
+use crate::index::placement;
 
 fn resolve_local_endpoint(store: &GraphStore, vertex_id: GlobalVertexId) -> Option<VertexId> {
     let routing = store.federation_routing()?;

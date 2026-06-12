@@ -1,6 +1,5 @@
 //! Instruction/size guards for federated index fast paths and seed routing.
 
-use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::PostingHit;
 
 /// Maximum `(shard_id, vertex_id)` pairs shipped as a C1 aggregate vertex filter.
@@ -22,6 +21,7 @@ pub fn packed_vertices_exceed_fast_path_budget(packed: &[u64]) -> bool {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::PostingHit;
 
     #[test]

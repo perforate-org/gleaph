@@ -1,7 +1,6 @@
 //! §20.21 — Numeric and string functions.
 
 use crate::section_tests::p;
-use gleaph_gql::Value;
 use gleaph_gql::ast::*;
 
 /// Extract the first return item expression.

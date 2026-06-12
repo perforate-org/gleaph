@@ -2,8 +2,6 @@
 
 use crate::section_tests::{body, p};
 use gleaph_gql::ast::*;
-use gleaph_gql::types::EdgeDirection;
-use gleaph_gql::validate::validate;
 
 // ── Clause coverage (parser/clause.rs) ──────────────────────────────────
 

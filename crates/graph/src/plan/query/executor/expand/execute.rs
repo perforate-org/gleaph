@@ -1,13 +1,11 @@
 use std::collections::BTreeMap;
 
-use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorPredicate, ScanValue, Str};
-use gleaph_graph_kernel::entry::{Edge, EdgeLabelId, PreparedWeightDecoder};
+use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
-use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::LabeledEdgePayloadBatchScratch;
 
 use super::candidates::{expand_candidates_for_expand_op_into, expand_vector_dst_only_rows_into};
@@ -16,12 +14,12 @@ use super::predicates::PreparedEdgeVectorThreshold;
 use super::{
     EdgeEqualityStreamFilter, ExpandDst, build_expanded_row, csr_offset_fast_path_for_expand,
     edge_binding_for_scanned_expand, edge_equality_stream_filter, edge_matches_stream_filter,
-    expand_accepts_remote_dst, expand_dst_binding, visit_csr_expand_fast_path,
+    expand_accepts_remote_dst, visit_csr_expand_fast_path,
 };
 use crate::facade::GraphStore;
 use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
 use crate::plan::query::error::PlanQueryError;
-use crate::plan::query::executor::context::{ExecuteCtx, QueryExprEvaluator};
+use crate::plan::query::executor::context::ExecuteCtx;
 use crate::plan::query::executor::{
     EdgeSequenceOrder, PlanBinding, dst_filter_is_dst_vertex_only, row_matches_all,
     vertex_row_matches_dst_filters,
@@ -86,8 +84,7 @@ pub(crate) async fn execute_expand(
         parameters,
     )?;
     let edge_equality_filter = if csr_expand_fast_path.is_some() {
-        let filter =
-            edge_equality_stream_filter(store, execution, indexed_edge_equality, parameters)?;
+        let filter = edge_equality_stream_filter(execution, indexed_edge_equality, parameters)?;
         if matches!(filter, EdgeEqualityStreamFilter::NoMatches) {
             return Ok(Vec::new());
         }
@@ -111,7 +108,7 @@ pub(crate) async fn execute_expand(
                         {
                             return Ok(false);
                         }
-                        let Some(edge_dst) = ExpandDst::from_edge(store, &edge)? else {
+                        let Some(edge_dst) = ExpandDst::from_edge(&edge)? else {
                             return Ok(false);
                         };
                         let label_id = edge.label_id;

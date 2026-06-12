@@ -1,15 +1,17 @@
 //! Vertex delete domain: clear derived sidecars and commit graph row removal.
 
 use gleaph_graph_kernel::entry::Edge;
+#[cfg(not(target_family = "wasm"))]
 use gleaph_graph_kernel::federation::{ReleaseVertexPlacementArgs, VertexPlacement};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
-    labeled::OutEdgeOrder, traits::CsrEdge,
+    labeled::OutEdgeOrder,
 };
 
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
+#[cfg(not(target_family = "wasm"))]
 use crate::index::placement;
 
 impl GraphStore {

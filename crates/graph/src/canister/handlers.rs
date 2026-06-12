@@ -292,7 +292,6 @@ mod tests {
     use gleaph_gql_planner::wire::encode_block_plans;
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::plan_exec::{SeedBindingEntry, SeedBindingsWire};
-    use pollster;
 
     const TEST_SHARD_ID: ShardId = ShardId::new(0);
 

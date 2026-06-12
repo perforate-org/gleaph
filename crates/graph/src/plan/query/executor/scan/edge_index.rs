@@ -50,12 +50,11 @@ fn edge_binding_from_posting(
 }
 
 fn expand_endpoints_for_direction(
-    store: &GraphStore,
     handle: EdgeHandle,
     edge: &Edge,
     direction: EdgeDirection,
 ) -> Result<Option<(ExpandDst, ExpandDst)>, PlanQueryError> {
-    let neighbor = ExpandDst::from_edge(store, edge)?;
+    let neighbor = ExpandDst::from_edge(edge)?;
     let owner = ExpandDst::Local(handle.owner_vertex_id);
     let Some(neighbor) = neighbor else {
         return Ok(None);
@@ -155,7 +154,7 @@ pub(crate) fn execute_edge_bind_endpoints(
             continue;
         };
         let Some((near_dst, far_dst)) =
-            expand_endpoints_for_direction(store, handle, &edge_record, direction)?
+            expand_endpoints_for_direction(handle, &edge_record, direction)?
         else {
             continue;
         };
