@@ -88,7 +88,7 @@ A composite query must not call graph update methods (`plan_exec.rs` module docs
 | Mode | Configuration | Behavior |
 |------|---------------|----------|
 | **Standalone graph** | No `FederationRouting` in graph metadata | `GlobalVertexId(0, local)`; single-process dev/tests |
-| **Federated graph** | Router + N shards + index | Placement via router; cross-shard expand deferred |
+| **Federated graph** | Router + N shards + index (`m` ≥ 1 Principals) | Placement via router; per-shard `index_canister`; index split strategy deferred ([ADR 0010](../adr/0010-index-sharding-extensibility.md)); cross-shard expand deferred |
 
 See [federation/model.md](../federation/model.md).
 

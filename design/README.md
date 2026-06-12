@@ -40,6 +40,7 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | [storage/bulk-ingest-finalize.md](storage/bulk-ingest-finalize.md) | planned | Explicit post-ingest `mark_compact` + drain hook (GQL `CALL` deferred) |
 | [security/rbac-and-prepared.md](security/rbac-and-prepared.md) | draft | Roles and prepared queries |
 | [index/property-index.md](index/property-index.md) | draft | graph-index and router seed routing |
+| [index/capacity-planning.md](index/capacity-planning.md) | planned | 500 GiB limits, posting size formulas, split thresholds |
 | [adr/README.md](adr/README.md) | draft | How we record decisions |
 | [adr/0001-labeled-segment-slide.md](adr/0001-labeled-segment-slide.md) | accepted | Labeled physical layer → PMA leaf segment slide |
 

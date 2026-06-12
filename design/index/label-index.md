@@ -205,6 +205,10 @@ Posting export and compound seeds follow label **postings**; count-only paths fo
 **telemetry**. Lag scenarios and operator expectations:
 [derived-state-query-semantics.md](derived-state-query-semantics.md).
 
+## Capacity
+
+Label postings scale **linearly with labeled vertices** (one key per membership). For 500 GiB planning formulas and split thresholds, see [capacity-planning.md](capacity-planning.md).
+
 ## Related documents
 
 - [derived-state-query-semantics.md](derived-state-query-semantics.md)

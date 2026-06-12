@@ -13,7 +13,7 @@ Describe the **intended** distributed query execution model: Router owns index a
 
 ## Non-goals
 
-- Index canister sharding (multiple index canisters) — future work; single global index with `shard_id`-tagged postings remains the near-term model.
+- Index canister sharding (multiple index canisters) — **Planned** with graph multi-shard; extensibility rules in [ADR 0010](../adr/0010-index-sharding-extensibility.md). Near-term model: per-shard `index_canister` in registry; posting keys unchanged. Capacity thresholds: [capacity-planning.md](../index/capacity-planning.md).
 - Full row shipping vs count-only aggregation policy — to be decided at merge implementation time.
 - USE GRAPH remote-graph pushdown (planner feature distinct from shard federation).
 

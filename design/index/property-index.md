@@ -27,7 +27,7 @@ Explain the **graph-index canister** and how the router uses it for query routin
 
 - Index build algorithms on graph writes (implementation in `graph/src/index/`).
 - Full Candid API listing.
-- Index canister sharding (multiple index canisters) — future work.
+- Index canister sharding (multiple index canisters) — **Planned** with graph multi-shard; split strategy deferred ([ADR 0010](../adr/0010-index-sharding-extensibility.md)). Near-term: one index Principal per shard group or shared across shards; capacity axes in [capacity-planning.md](capacity-planning.md).
 
 ## Components
 
@@ -146,6 +146,7 @@ pending flush, backfill, or index unavailability leaves postings behind canonica
 - [lookup-intersection.md](lookup-intersection.md)
 - [../sharding/standalone-mode.md](../sharding/standalone-mode.md)
 - [../sharding/federation-target.md](../sharding/federation-target.md)
+- [capacity-planning.md](capacity-planning.md) — 500 GiB headroom, split thresholds, planned inverted posting lists
 - [../architecture/overview.md](../architecture/overview.md)
 - [../federation/query-semantics.md](../federation/query-semantics.md)
 - [../gql/plan-format.md](../gql/plan-format.md)

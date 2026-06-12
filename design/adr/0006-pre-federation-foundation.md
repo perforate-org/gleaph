@@ -162,15 +162,18 @@ not stable across compaction.
 
 **No index canister numeric id.** Index instances are identified by **`Principal`** only.
 
-**Grouping:** one index canister per **shard group**. Group index is derived:
+**Grouping (illustrative — not a committed constant):** one index canister per **shard group** is
+the intended direction; an example group function is:
 
 ```text
-group_index = shard_id / GROUP_SIZE    // GROUP_SIZE fixed later (capacity-driven)
+group_index = shard_id / GROUP_SIZE    // GROUP_SIZE: capacity-driven, deferred — see ADR 0010
 ```
 
-Router resolves `group_index → index_canister Principal` at shard registration (or from a
-router-held table). **Graph shard** stores only **its** `index_canister` principal (bootstrap /
-`FederationRouting` / registry row) — not the formula, not peer indexes.
+Router resolves **`group_index → index_canister Principal`** at shard registration (or from a
+router-held table). **Per-shard `index_canister` on `ShardRegistryEntry`** is the extensible
+write-time SSOT ([ADR 0010](0010-index-sharding-extensibility.md)). **Graph shard** stores only
+**its** `index_canister` principal (bootstrap / `FederationRouting` / registry row) — not the
+formula, not peer indexes.
 
 **Single shard:** `shard_id = 0`, one group, one index canister.
 
@@ -282,7 +285,7 @@ values by id only.
 3. **Vertex identity** — `GlobalVertexId`, strip logical placement stable, encoded wire ids ([0005](0005-vertex-identity.md)).
 4. **Stable memory repack** — remove 36–41, 25–26; repack ids; update inventory.
 5. **Doc sync** — standalone, federation model, property-index.
-6. **Deferred** — `RemoteVertexId` table, index `GROUP_SIZE` constant, peer principals.
+6. **Deferred** — `RemoteVertexId` table, index **`GROUP_SIZE` / split strategy** ([ADR 0010](0010-index-sharding-extensibility.md)), peer principals.
 
 ---
 
