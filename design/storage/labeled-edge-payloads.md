@@ -29,6 +29,11 @@ Compaction and span rewrites must apply the **same logical order** to edges and 
 
 `EdgePayloadProfile` pairs `byte_width: u16` with `EdgePayloadEncoding` (e.g. `RawI32`, `RawU16`, `F32`, `WeightLinearU16`). Legacy `EdgeWeightProfile` maps to weight encodings with 2-byte width.
 
+**Ownership (planned):** logical schema (`EdgeLabelId → EdgePayloadProfile`) moves to **router SSOT**;
+graph stable `EDGE_PAYLOAD_PROFILES` is retired when wire carries resolved profiles per
+[ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md). **Implemented today:** graph stable
+MemoryId 37 (`EDGE_PAYLOAD_PROFILES`); init-time install on graph shard only.
+
 ## Stable memories (per orientation)
 
 - Existing edge/bucket memories

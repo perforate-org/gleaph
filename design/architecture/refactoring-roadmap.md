@@ -451,6 +451,12 @@ Consolidation patches (8c) are optional follow-ups, not blockers.
 - Upgrade and reopen tests cover any layout change.
 - Failure isolation impact is documented for any merge.
 
+### Follow-up: edge payload schema (ADR 0008, accepted)
+
+Move `EdgeLabelId → EdgePayloadProfile` to **router SSOT**; extend `ResolvedEdgeLabel` on plan/DML
+wire; retire graph stable `EDGE_PAYLOAD_PROFILES` (MemoryId repack 42 → 41 regions). Unlabeled edges
+remain 0-byte without catalog lookup. See [0008](../adr/0008-edge-payload-profile-router-ssot.md).
+
 ### Phase 9: Validation and release gates (ongoing)
 
 Goal: make refactoring progress safe to merge incrementally. Apply on **every boundary-changing PR**,

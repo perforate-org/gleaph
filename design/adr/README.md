@@ -42,5 +42,6 @@ Last revised: YYYY-MM-DD
 | [0005](0005-vertex-identity.md) | Vertex/edge identity: global physical keys and encoded wire ids | accepted |
 | [0006](0006-pre-federation-foundation.md) | Pre-federation foundation: ShardId, catalogs, MemoryId, placement | accepted |
 | [0007](0007-stable-memory-layout.md) | Stable-memory layout policy and measured consolidation | accepted |
+| [0008](0008-edge-payload-profile-router-ssot.md) | Edge payload profile schema: router SSOT; retire graph `EDGE_PAYLOAD_PROFILES` | accepted |
 
 When adding an ADR, link it from the relevant design doc and update this table.

@@ -117,7 +117,7 @@ Repacked 2026-06-11. **Removed:** property name catalog, `VERTEX_LOGICAL_IDS`, f
 | 34 | `EDGE_PROPERTIES` | `EDGE_PROPERTIES` | `init_edge_property_store` | canonical | properties | — |
 | 35 | `EDGE_ALIASES` | `EDGE_ALIASES` | `init_edge_alias_index` | derived | adjacency | `check_edge_aliases` / `rebuild_edge_aliases` |
 | 36 | `GRAPH_METADATA` | `METADATA` | `init_metadata` | canonical | federation metadata | — |
-| 37 | `EDGE_PAYLOAD_PROFILES` | `EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | canonical | edge profiles | — |
+| 37 | `EDGE_PAYLOAD_PROFILES` | `EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | canonical | edge profiles | — *(planned retire → [ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md); router SSOT)* |
 | 38 | `EDGE_EQUALITY_POSTINGS` | `EDGE_EQUALITY_POSTINGS` | `init_edge_equality_postings` | derived | local indexes | `check_edge_equality_postings` / `rebuild_edge_equality_postings` |
 | 39 | `LABEL_TELEMETRY_SEQ` | `LABEL_TELEMETRY_SEQ` | `init_label_telemetry_seq` | telemetry | label telemetry | — |
 | 40 | `LABEL_TELEMETRY_OUTBOX` | `LABEL_TELEMETRY_OUTBOX` | `init_label_telemetry_outbox` | telemetry | label telemetry | Event replay to router |
@@ -158,6 +158,7 @@ Repacked 2026-06-11 (ADR 0006 slice D). **Removed:** `ROUTER_LOGICAL_COUNTER` (5
 | 18 | `ROUTER_MUTATION_BY_CLIENT_KEY` | `ROUTER_MUTATION_BY_CLIENT_KEY` | `init_mutation_by_client_key` | canonical | idempotency | — |
 | 19 | `ROUTER_LABEL_BACKFILL_STATE` | `ROUTER_LABEL_BACKFILL_STATE` | `init_label_backfill_state` | maintenance | label backfill | Cursor for `admin_label_backfill_step` |
 | 20 | `ROUTER_PROPERTY_BACKFILL_STATE` | `ROUTER_PROPERTY_BACKFILL_STATE` | `init_property_backfill_state` | maintenance | property backfill | Cursor for `admin_property_backfill_step` |
+| 21 *(planned)* | `ROUTER_EDGE_PAYLOAD_PROFILES` | — | — | catalog | edge payload schema | [ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md) |
 
 ### Router ephemeral
 
