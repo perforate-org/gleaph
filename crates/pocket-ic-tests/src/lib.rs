@@ -522,24 +522,65 @@ pub fn admin_intern_property(
     update_as_admin(env, env.router, "admin_intern_property", name.to_string())
 }
 
-pub fn admin_set_indexed_vertex_property(env: &FederationEnv, property: &str) {
+pub fn admin_intern_vertex_label(
+    env: &FederationEnv,
+    name: &str,
+) -> gleaph_graph_kernel::entry::VertexLabelId {
+    update_as_admin(
+        env,
+        env.router,
+        "admin_intern_vertex_label",
+        name.to_string(),
+    )
+}
+
+/// Gleaph extension DDL on the router update path (`gql_execute_idempotent`).
+pub fn gql_execute_idempotent_as_admin(
+    env: &FederationEnv,
+    query: &str,
+    client_mutation_key: &str,
+) -> u64 {
     use gleaph_graph_kernel::federation::RouterError;
 
+    let graph_name = GRAPH_NAME.to_string();
+    let query = query.to_string();
+    let params: Vec<u8> = Vec::new();
+    let mutation_key = client_mutation_key.to_string();
     let bytes = env
         .pic
         .update_call(
             env.router,
             env.admin,
-            "admin_set_indexed_vertex_property",
-            Encode!(&GRAPH_NAME.to_string(), &property.to_string())
-                .expect("encode admin_set_indexed_vertex_property"),
+            "gql_execute_idempotent",
+            Encode!(&graph_name, &query, &params, &mutation_key)
+                .expect("encode gql_execute_idempotent"),
         )
-        .unwrap_or_else(|e| panic!("admin_set_indexed_vertex_property: {e:?}"));
-    match Decode!(&bytes, Result<(), RouterError>) {
-        Ok(Ok(())) => {}
-        Ok(Err(err)) => panic!("admin_set_indexed_vertex_property rejected: {err:?}"),
-        Err(err) => panic!("decode admin_set_indexed_vertex_property: {err}"),
+        .unwrap_or_else(|e| panic!("gql_execute_idempotent on router: {e:?}"));
+    match Decode!(&bytes, Result<u64, RouterError>) {
+        Ok(Ok(row_count)) => row_count,
+        Ok(Err(err)) => panic!("gql_execute_idempotent rejected: {err:?}"),
+        Err(err) => panic!("decode gql_execute_idempotent: {err}"),
     }
+}
+
+/// Register a vertex property index via `CREATE INDEX` (ADR 0009 phase E).
+pub fn create_vertex_property_index(
+    env: &FederationEnv,
+    index_name: &str,
+    vertex_label: &str,
+    property: &str,
+    client_mutation_key: &str,
+) {
+    admin_intern_vertex_label(env, vertex_label);
+    let _ = admin_intern_property(env, property);
+    let ddl = format!(
+        "CREATE INDEX {index_name} IF NOT EXISTS FOR (n:{vertex_label}) ON (n.{property})"
+    );
+    let row_count = gql_execute_idempotent_as_admin(env, &ddl, client_mutation_key);
+    assert_eq!(
+        row_count, 0,
+        "CREATE INDEX DDL should return row_count 0, got {row_count}"
+    );
 }
 
 fn update_as_admin<T: CandidType, R: CandidType + serde::de::DeserializeOwned>(

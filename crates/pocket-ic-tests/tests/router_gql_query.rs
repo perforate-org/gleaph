@@ -8,10 +8,13 @@ use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, VertexPlacement};
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_pocket_ic_tests::{
-    DEST_SHARD, SOURCE_SHARD, admin_intern_property, admin_set_indexed_vertex_property,
+    DEST_SHARD, SOURCE_SHARD, admin_intern_property, create_vertex_property_index,
     e2e_insert_vertex, e2e_insert_vertex_with_property, gql_query_as_admin, install_federation,
     install_single_shard_federation, resolve_placement,
 };
+
+const INDEX_VERTEX_LABEL: &str = "Person";
+const INDEX_AGE_NAME: &str = "pocket_ic_vertex_age";
 
 #[test]
 fn router_gql_query_node_scan_on_single_shard() {
@@ -49,7 +52,13 @@ fn standalone_e2e_insert_commits_placement_and_global_id() {
 fn standalone_gql_query_index_seeded_property_eq() {
     let env = install_single_shard_federation();
     let age = admin_intern_property(&env, "age");
-    admin_set_indexed_vertex_property(&env, "age");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "standalone_gql_query_index_seeded_property_eq",
+    );
     let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
 
     // Inline property equality yields a literal IndexScan anchor (match-level WHERE uses $age).
@@ -94,7 +103,13 @@ fn standalone_gql_query_returns_element_id_bytes() {
 fn federated_gql_query_index_seeded_routes_to_hit_shard_only() {
     let env = install_federation();
     let age = admin_intern_property(&env, "age");
-    admin_set_indexed_vertex_property(&env, "age");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "federated_gql_query_index_seeded_routes_to_hit_shard_only",
+    );
     let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
     let _ = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 9);
 
@@ -107,7 +122,13 @@ fn federated_gql_query_index_seeded_routes_to_hit_shard_only() {
 fn federated_gql_query_index_seeded_merges_across_shards() {
     let env = install_federation();
     let age = admin_intern_property(&env, "age");
-    admin_set_indexed_vertex_property(&env, "age");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "federated_gql_query_index_seeded_merges_across_shards",
+    );
     let source = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
     let dest = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 5);
 

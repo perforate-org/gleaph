@@ -44,6 +44,7 @@ fn graph_execute_plan_query_skips_index_scan_with_seed_bindings() {
         entries: vec![SeedBindingEntry {
             variable: "n".into(),
             local_vertex_ids: vec![inserted.local_vertex_id],
+            local_edge_postings: Vec::new(),
         }],
     };
     let seed_blob = Encode!(&seeds).expect("encode seeds");
