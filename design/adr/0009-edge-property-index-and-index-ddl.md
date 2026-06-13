@@ -2,8 +2,8 @@
 
 Date: 2026-06-12  
 Status: accepted  
-Last revised: 2026-06-12  
-Anchor timestamp: 2026-06-12 13:30:00 UTC +0000
+Last revised: 2026-06-13  
+Anchor timestamp: 2026-06-13 06:18:40 UTC +0000
 
 ## Revision history
 
@@ -18,6 +18,7 @@ Anchor timestamp: 2026-06-12 13:30:00 UTC +0000
 | 2026-06-12 | Phase D implemented: retired graph `EDGE_EQUALITY_POSTINGS`; MemoryId repack (40 regions); expand/edge scan via graph-index client, router seeds, or `EDGE_PROPERTIES` scan fallback. |
 | 2026-06-12 | Phase E implemented: router `CREATE INDEX` / `DROP INDEX` extension DDL via `gql_execute*`; named index catalog; shard `unregister_indexed_property`. |
 | 2026-06-12 | Index catalog stable layout: row-oriented `ROUTER_NAMED_INDEXES` + `ROUTER_INDEXED_PROPERTY_SET` with `PropertyId` / label ids (replaces per-graph Candid blob). |
+| 2026-06-13 | Planner stats: `RouterGraphStats` loads `PropertyId` membership; `GraphStats` adapter resolves names via property catalog; one stats load per GQL execution. |
 
 ## Context
 
