@@ -41,7 +41,7 @@ Policy: **`AGENT.md`** — Gleaph/IC-specific behavior stays out of `gql` and `g
 4. **Classify** — `classify_program` → read vs write flags
 5. **Authorize** — `router::rbac::authorize_adhoc_gql` (or prepared path)
 6. **Ingress dispatch** — `resolve_ingress_dispatch` + `analyze_use_graph_v2_dispatch`: defocus top-level or nested `USE GRAPH`, resolve focused `GraphId`, replan with target graph stats ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md) U1b/U2)
-7. **Plan** — `build_block_plan_with_schema(block, stats, schema)` with stats for dispatch `GraphId`; **planned:** schema from router `GraphCatalog` via **`try_property_schema_for_graph_id`** when a binding exists for that `GraphId` ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md))
+7. **Plan** — `build_block_plan_with_schema(block, stats, schema)` with stats for dispatch `GraphId`; schema from router `GraphCatalog` via **`try_property_schema_for_graph_id`** when a binding exists for that `GraphId` ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)). **Planned:** graph type names intern to **`GraphTypeId`** at catalog DDL ([ADR 0014](../adr/0014-graph-type-id-catalog-on-router.md)).
 8. **Encode** — `encode_block_plans` → bytes for `ExecutePlanArgs`
 9. **Dispatch** — router seed routing per dispatch `GraphId` (multi-shard federation merge on one logical graph)
 10. **Execute** — graph `execute_plan_query_bindings` (single store per shard; `UseGraph` stripped after router defocus / peel)

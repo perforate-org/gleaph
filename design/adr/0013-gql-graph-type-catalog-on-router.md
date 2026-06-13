@@ -11,6 +11,7 @@ Anchor timestamp: 2026-06-13 13:03:19 UTC +0000
 |------|--------|
 | 2026-06-13 | Proposed: mount `gleaph-graph-catalog` on router stable memory; DDL ingress; planner schema bridge. |
 | 2026-06-13 | **`binding_map` keys use `GraphId`** (align with ADR 0011); crate refactor + federation name prerequisite for `CREATE GRAPH`. |
+| 2026-06-13 | **`type_map` string keys are interim** — [`GraphTypeId` name catalog planned in ADR 0014](0014-graph-type-id-catalog-on-router.md). |
 
 ## Context
 
@@ -233,8 +234,7 @@ stats load per `GraphId` in ADR 0011 U2).
 
 - Router stable layout repack (+2 regions)
 - **`CREATE GRAPH` requires prior federation registration** (name → `GraphId` in `ROUTER_GRAPH_CATALOG`)
-- `type_map` still uses string keys (graph type names) — unlike bindings; a future **GraphTypeNameId**
-  catalog is out of scope for this ADR
+- `type_map` still uses string keys (graph type names) — unlike bindings; **[ADR 0014](0014-graph-type-id-catalog-on-router.md)** migrates to **`GraphTypeId`**
 - Label/property **names** in graph types are not automatically inserted into router id catalogs
 
 ---
