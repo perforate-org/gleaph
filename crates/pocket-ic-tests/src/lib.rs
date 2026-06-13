@@ -363,6 +363,7 @@ pub fn register_graph_single_shard(
         version: 1,
         updated_at_ns: 0,
         provisioning_state: ProvisioningState::None,
+        is_home: false,
     };
     pic.update_call(
         router,
@@ -406,6 +407,7 @@ pub fn register_graph_and_shards(
         version: 1,
         updated_at_ns: 0,
         provisioning_state: ProvisioningState::None,
+        is_home: false,
     };
     pic.update_call(
         router,

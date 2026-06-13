@@ -151,14 +151,7 @@ fn resolve_home_graph(
     store: &RouterStore,
     caller: candid::Principal,
 ) -> Result<GraphId, RouterError> {
-    let visible = store.list_visible_graph_ids(caller)?;
-    match visible.as_slice() {
-        [only] => Ok(*only),
-        [] => Err(RouterError::InvalidArgument("no graph context".into())),
-        _ => Err(RouterError::InvalidArgument(
-            "HOME_GRAPH is ambiguous: multiple graphs visible to caller".into(),
-        )),
-    }
+    store.resolve_home_graph_id(caller)
 }
 
 /// Build validator session seed after router graph resolution (ADR 0011 §2).
@@ -183,7 +176,7 @@ mod tests {
     use candid::Principal;
     use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
 
-    fn register_graph(store: &RouterStore, name: &str) {
+    fn register_graph(store: &RouterStore, name: &str, is_home: bool) {
         let owner = Principal::anonymous();
         store.bootstrap_controllers(&[owner]);
         store
@@ -199,6 +192,7 @@ mod tests {
                     version: 1,
                     updated_at_ns: 0,
                     provisioning_state: ProvisioningState::None,
+                    is_home,
                 },
             )
             .expect("register");
@@ -207,7 +201,7 @@ mod tests {
     #[test]
     fn sole_visible_graph_is_default_without_session_set() {
         let store = RouterStore::new();
-        register_graph(&store, "gleaph.pocket_ic");
+        register_graph(&store, "gleaph.pocket_ic", false);
         let ctx =
             resolve_graph_context_from_query(&store, "MATCH (n) RETURN n", Principal::anonymous())
                 .expect("resolve");
@@ -220,8 +214,8 @@ mod tests {
     #[test]
     fn session_set_graph_overrides_default() {
         let store = RouterStore::new();
-        register_graph(&store, "tenant_a");
-        register_graph(&store, "tenant_b");
+        register_graph(&store, "tenant_a", false);
+        register_graph(&store, "tenant_b", false);
         let caller = Principal::anonymous();
         let ctx = resolve_graph_context_from_query(
             &store,
@@ -238,12 +232,54 @@ mod tests {
     #[test]
     fn session_graph_seed_matches_effective_and_home() {
         let store = RouterStore::new();
-        register_graph(&store, "gleaph.pocket_ic");
+        register_graph(&store, "gleaph.pocket_ic", false);
         let caller = Principal::anonymous();
         let ctx = resolve_graph_context_from_query(&store, "MATCH (n) RETURN n", caller)
             .expect("resolve");
         let seed = session_graph_seed(&store, ctx, caller);
         assert_eq!(seed.current_graph.as_deref(), Some("gleaph.pocket_ic"));
         assert_eq!(seed.home_graph.as_deref(), Some("gleaph.pocket_ic"));
+    }
+
+    #[test]
+    fn explicit_is_home_selects_default_among_multiple_visible() {
+        let store = RouterStore::new();
+        register_graph(&store, "tenant_a", false);
+        register_graph(&store, "tenant_b", true);
+        let caller = Principal::anonymous();
+        let ctx = resolve_graph_context_from_query(&store, "MATCH (n) RETURN n", caller)
+            .expect("resolve");
+        assert_eq!(
+            graph_catalog::lookup_graph_id("tenant_b"),
+            Some(ctx.graph_id)
+        );
+    }
+
+    #[test]
+    fn duplicate_is_home_on_register_conflicts() {
+        let store = RouterStore::new();
+        register_graph(&store, "tenant_a", true);
+        let owner = Principal::anonymous();
+        let err = store
+            .admin_register_graph(
+                owner,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    graph_name: "tenant_b".into(),
+                    canister_id: Principal::management_canister(),
+                    owner,
+                    admins: Default::default(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: true,
+                },
+            )
+            .expect_err("expected conflict");
+        assert!(
+            err.to_string().contains("home graph already registered"),
+            "unexpected error: {err}"
+        );
     }
 }

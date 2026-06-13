@@ -78,6 +78,43 @@ impl RouterStore {
         Ok(out)
     }
 
+    /// Resolve HOME graph for `caller` (ADR 0011 §1.3).
+    ///
+    /// Prefer exactly one visible graph with `is_home`; otherwise fall back to the sole
+    /// visible graph (degenerate case A).
+    pub fn resolve_home_graph_id(&self, caller: Principal) -> Result<GraphId, RouterError> {
+        let mut home_marked = Vec::new();
+        let mut visible = Vec::new();
+        ROUTER_GRAPHS.with_borrow(|graphs| {
+            for lazy in graphs.iter() {
+                let entry = lazy.value();
+                if caller != entry.owner && !entry.admins.contains(&caller) {
+                    continue;
+                }
+                if !matches!(entry.status, GraphStatus::Active | GraphStatus::ReadOnly) {
+                    continue;
+                }
+                visible.push(entry.graph_id);
+                if entry.is_home {
+                    home_marked.push(entry.graph_id);
+                }
+            }
+        });
+        match home_marked.as_slice() {
+            [only] => Ok(*only),
+            [] => match visible.as_slice() {
+                [only] => Ok(*only),
+                [] => Err(RouterError::InvalidArgument("no graph context".into())),
+                _ => Err(RouterError::InvalidArgument(
+                    "HOME_GRAPH is ambiguous: multiple graphs visible to caller".into(),
+                )),
+            },
+            _ => Err(RouterError::InvalidArgument(
+                "HOME_GRAPH is ambiguous: multiple graphs marked is_home".into(),
+            )),
+        }
+    }
+
     pub fn resolve_shard(&self, shard_id: ShardId) -> Result<ShardRegistryEntry, RouterError> {
         ROUTER_SHARDS
             .with_borrow(|shards| shards.get(&shard_id))
@@ -113,6 +150,19 @@ impl RouterStore {
         }
         let graph_id = intern_graph_name(&entry.graph_name)?;
         entry.graph_id = graph_id;
+        if entry.is_home {
+            let existing_home = ROUTER_GRAPHS.with_borrow(|graphs| {
+                graphs.iter().find_map(|lazy| {
+                    let existing = lazy.value();
+                    existing.is_home.then(|| existing.graph_name.clone())
+                })
+            });
+            if let Some(name) = existing_home {
+                return Err(RouterError::Conflict(format!(
+                    "home graph already registered as `{name}`"
+                )));
+            }
+        }
         ROUTER_GRAPHS.with_borrow_mut(|g| {
             g.insert(graph_id, entry);
         });

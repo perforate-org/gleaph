@@ -48,6 +48,7 @@ fn register_test_graph(store: &RouterStore, admin: Principal, name: &str) {
                 version: 1,
                 updated_at_ns: 0,
                 provisioning_state: ProvisioningState::None,
+                is_home: false,
             },
         )
         .expect("register graph");
@@ -247,6 +248,7 @@ fn resolve_graph_checks_permissions() {
                 version: 1,
                 updated_at_ns: 0,
                 provisioning_state: ProvisioningState::None,
+                is_home: false,
             },
         )
         .expect("register");

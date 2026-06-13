@@ -12,7 +12,7 @@ Anchor timestamp: 2026-06-13 06:46:07 UTC +0000
 | 2026-06-13 | Proposed: GQL graph resolution at router ingress; deprecate Candid `logical_graph_name`. |
 | 2026-06-13 | Clarified catalog scope: **`BidirectionalCatalog` for graph and index names**; migrate all stable/router keys and stored values from `String` names to **`GraphId` / `IndexNameId`**. |
 | 2026-06-13 | Accepted. |
-| 2026-06-13 | R0/R2/G1/G2/I1/R1 implemented; U1a UseGraph guard implemented; U1b multi-graph dispatch remains planned. |
+| 2026-06-13 | R0/R2/G1/G2/I1/R1/U1a implemented; HOME B (`is_home`) implemented; U1b multi-graph dispatch remains planned. |
 
 ## Context
 
@@ -183,6 +183,10 @@ Add **home graph** resolution on the router (not in `gleaph-gql`):
 
 Until B/C exists, **A** suffices for standalone and single-tenant PocketIC.
 
+**Implemented (2026-06-13):** option **B** via `GraphRegistryEntry.is_home`. Resolution prefers
+exactly one visible graph with `is_home`; otherwise falls back to **A** (sole visible graph).
+Registering a second `is_home` graph returns `Conflict`.
+
 #### 1.4 Query API shape (target)
 
 **Target** public query entrypoints:
@@ -231,7 +235,7 @@ Same abstraction and ownership as `ROUTER_PROPERTY_CATALOG` ([ADR 0006 §2](0006
 | Stable regions | `ROUTER_GRAPH_BY_NAME` + `ROUTER_GRAPH_BY_ID` — `BidirectionalCatalog::init(...)` |
 | Allocation | `get_or_insert(graph_name)` on `admin_register_graph`; lookup on GQL resolution and `resolve_graph` |
 | `ROUTER_GRAPHS` | **`BTreeMap<GraphId, GraphRegistryEntry>`** (replaces `String` key) |
-| `GraphRegistryEntry` | Keeps `graph_name: String` for Candid / display; **not** repeated in other stable keys |
+| `GraphRegistryEntry` | Keeps `graph_name: String` for Candid / display; **`is_home: bool`** for HOME resolution (ADR 0011 §1.3 B); **not** repeated in other stable keys |
 | Rename | Update name side of graph catalog only; **`GraphId` stable** for shards, indexes, idempotency |
 
 **GQL / API boundary:** `resolve_graph_context` and admin APIs accept catalog
@@ -384,6 +388,7 @@ flowchart TB
 | **G2** | `ShardRegistryEntry.graph_id`; `ROUTER_SHARDS_BY_GRAPH_ID`; prepared + idempotency keys use `GraphId` | **Implemented** |
 | **I1** | `BidirectionalCatalog<IndexNameId>` per graph; `ROUTER_NAMED_INDEXES` / `ROUTER_INDEXED_PROPERTY_SET` keys use `GraphId` + `IndexNameId` | **Implemented** |
 | **U1a** | Reject plans with `UseGraph` ≠ effective graph | **Implemented** |
+| **HOME B** | `GraphRegistryEntry.is_home` + resolution | **Implemented** |
 | **U1b** | Multi-`UseGraph` dispatch + merge | Planned (depends on federation-target) |
 
 **Stable repack:** G1 + I1 share one ADR 0007 gate (new MemoryId pairs for graph + index name

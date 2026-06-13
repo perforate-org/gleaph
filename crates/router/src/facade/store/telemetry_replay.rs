@@ -123,6 +123,7 @@ mod tests {
                     version: 1,
                     updated_at_ns: 0,
                     provisioning_state: ProvisioningState::None,
+                    is_home: false,
                 },
             )
             .expect("register graph");

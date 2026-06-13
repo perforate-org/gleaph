@@ -32,6 +32,8 @@ pub struct GraphRegistryEntry {
     pub version: u64,
     pub updated_at_ns: u64,
     pub provisioning_state: ProvisioningState,
+    /// When true, this graph is the caller's HOME graph (ADR 0011 §1.3 option B).
+    pub is_home: bool,
 }
 
 impl Storable for GraphRegistryEntry {
@@ -135,6 +137,7 @@ mod tests {
                 version: 1,
                 updated_at_ns: 0,
                 provisioning_state: ProvisioningState::None,
+                is_home: false,
             })
             .expect("register");
 
