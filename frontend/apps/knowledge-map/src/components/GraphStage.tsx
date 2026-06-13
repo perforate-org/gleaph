@@ -1,0 +1,313 @@
+import { For, Show, createMemo } from "solid-js";
+
+import type { DemoEdge, DemoNode, KnowledgeMapViewModel, NodeKind, PlaybackStatus } from "~/types";
+
+type GraphStageProps = {
+  viewModel?: KnowledgeMapViewModel;
+  activeStepIndex: number;
+  playbackStatus: PlaybackStatus;
+};
+
+export function GraphStage(props: GraphStageProps) {
+  const nodePositions = createMemo(() => {
+    const viewModel = props.viewModel;
+    if (!viewModel) {
+      return new Map<string, { x: number; y: number }>();
+    }
+
+    return new Map(
+      viewModel.nodes.map((node) => {
+        const [sourceX, sourceY] = node.positionHint ?? [0, 0, 0];
+        const x = 50 + sourceX * 10.5;
+        const y = 50 - sourceY * 18;
+        return [node.id, { x, y }];
+      }),
+    );
+  });
+
+  const edgeById = createMemo(() => {
+    const viewModel = props.viewModel;
+    return new Map((viewModel?.edges ?? []).map((edge) => [edge.id, edge]));
+  });
+
+  const activeStep = createMemo(() => props.viewModel?.storySteps[props.activeStepIndex]);
+
+  const visitedNodeIds = createMemo(() => {
+    const viewModel = props.viewModel;
+    const visited = new Set<string>();
+    if (!viewModel) {
+      return visited;
+    }
+    for (let index = 0; index <= props.activeStepIndex; index += 1) {
+      const nodeId = viewModel.storySteps[index]?.nodeId;
+      if (nodeId) {
+        visited.add(nodeId);
+      }
+    }
+    return visited;
+  });
+
+  const visitedEdgeIds = createMemo(() => {
+    const viewModel = props.viewModel;
+    const visited = new Set<string>();
+    if (!viewModel) {
+      return visited;
+    }
+    for (let index = 0; index <= props.activeStepIndex; index += 1) {
+      const edgeId = viewModel.storySteps[index]?.edgeId;
+      if (edgeId) {
+        visited.add(edgeId);
+      }
+    }
+    return visited;
+  });
+
+  return (
+    <section class="relative min-h-[520px] overflow-hidden rounded-md border border-slate-200/80 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.08)]">
+      <div class="absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(14,165,233,0.16),transparent_28%),radial-gradient(circle_at_80%_18%,rgba(124,58,237,0.13),transparent_26%),linear-gradient(180deg,rgba(255,255,255,0.96),rgba(241,247,255,0.88))]" />
+      <Show when={props.viewModel}>
+        {(viewModel) => (
+          <svg
+            class="absolute inset-0 h-full w-full"
+            role="img"
+            aria-label="Animated relationship map"
+            viewBox="0 0 100 100"
+            preserveAspectRatio="xMidYMid meet"
+          >
+            <defs>
+              <filter id="knowledge-map-glow" x="-50%" y="-50%" width="200%" height="200%">
+                <feGaussianBlur stdDeviation="1.6" result="blur" />
+                <feMerge>
+                  <feMergeNode in="blur" />
+                  <feMergeNode in="SourceGraphic" />
+                </feMerge>
+              </filter>
+              <marker
+                id="knowledge-map-arrow"
+                viewBox="0 0 10 10"
+                refX="8"
+                refY="5"
+                markerWidth="4"
+                markerHeight="4"
+                orient="auto-start-reverse"
+              >
+                <path d="M 0 0 L 10 5 L 0 10 z" fill="rgba(71, 85, 105, 0.42)" />
+              </marker>
+            </defs>
+
+            <g opacity="0.28">
+              <For each={Array.from({ length: 15 })}>
+                {(_, index) => (
+                  <circle
+                    cx={10 + ((index() * 17) % 82)}
+                    cy={8 + ((index() * 29) % 84)}
+                    r="0.18"
+                    fill="#94a3b8"
+                  />
+                )}
+              </For>
+            </g>
+
+            <g>
+              <For each={viewModel().edges}>
+                {(edge) => (
+                  <GraphEdge
+                    edge={edge}
+                    positions={nodePositions()}
+                    active={activeStep()?.edgeId === edge.id}
+                    visited={visitedEdgeIds().has(edge.id)}
+                  />
+                )}
+              </For>
+            </g>
+
+            <ActiveTrail
+              edge={activeStep()?.edgeId ? edgeById().get(activeStep()?.edgeId ?? "") : undefined}
+              positions={nodePositions()}
+              playbackStatus={props.playbackStatus}
+            />
+
+            <g>
+              <For each={viewModel().nodes}>
+                {(node) => (
+                  <GraphNode
+                    node={node}
+                    position={nodePositions().get(node.id)}
+                    active={activeStep()?.nodeId === node.id}
+                    visited={visitedNodeIds().has(node.id)}
+                    result={viewModel().results.some(
+                      (result) =>
+                        result.nodeId === node.id && props.playbackStatus === "complete",
+                    )}
+                  />
+                )}
+              </For>
+            </g>
+          </svg>
+        )}
+      </Show>
+      <div class="pointer-events-none absolute left-4 top-4 max-w-[280px] rounded-md border border-slate-200 bg-white/74 px-3 py-2 shadow-[0_12px_34px_rgba(15,23,42,0.08)] backdrop-blur">
+        <p class="text-xs font-semibold uppercase tracking-[0.16em] text-sky-700">
+          Relationship path
+        </p>
+        <p class="mt-1 text-sm text-slate-600">
+          Graph-shaped view model, animated as a relationship trail.
+        </p>
+      </div>
+    </section>
+  );
+}
+
+type GraphEdgeProps = {
+  edge: DemoEdge;
+  positions: Map<string, { x: number; y: number }>;
+  active: boolean;
+  visited: boolean;
+};
+
+function GraphEdge(props: GraphEdgeProps) {
+  const source = () => props.positions.get(props.edge.source);
+  const target = () => props.positions.get(props.edge.target);
+  const mid = () => {
+    const a = source();
+    const b = target();
+    return a && b ? { x: (a.x + b.x) / 2, y: (a.y + b.y) / 2 } : undefined;
+  };
+
+  return (
+    <Show when={source() && target()}>
+      <g>
+        <line
+          x1={source()?.x}
+          y1={source()?.y}
+          x2={target()?.x}
+          y2={target()?.y}
+          stroke={props.active ? "#2563eb" : props.visited ? "#06b6d4" : "#94a3b8"}
+          stroke-width={props.active ? 0.7 : props.visited ? 0.42 : 0.24}
+          stroke-opacity={props.active ? 0.9 : props.visited ? 0.7 : 0.36}
+          marker-end="url(#knowledge-map-arrow)"
+          filter={props.active ? "url(#knowledge-map-glow)" : undefined}
+        />
+        <Show when={props.active || props.visited}>
+          <text
+            x={mid()?.x}
+            y={mid()?.y}
+            text-anchor="middle"
+            dominant-baseline="middle"
+            class="select-none fill-slate-700 text-[2.2px] font-semibold"
+            paint-order="stroke"
+            stroke="rgba(255,255,255,0.94)"
+            stroke-width="0.85"
+          >
+            {props.edge.label}
+          </text>
+        </Show>
+      </g>
+    </Show>
+  );
+}
+
+type ActiveTrailProps = {
+  edge?: DemoEdge;
+  positions: Map<string, { x: number; y: number }>;
+  playbackStatus: PlaybackStatus;
+};
+
+function ActiveTrail(props: ActiveTrailProps) {
+  const source = () => (props.edge ? props.positions.get(props.edge.source) : undefined);
+  const target = () => (props.edge ? props.positions.get(props.edge.target) : undefined);
+  return (
+    <Show when={props.edge && source() && target() && props.playbackStatus !== "complete"}>
+      <line
+        x1={source()?.x}
+        y1={source()?.y}
+        x2={target()?.x}
+        y2={target()?.y}
+        stroke="#2563eb"
+        stroke-width="1.08"
+        stroke-linecap="round"
+        stroke-dasharray="1.2 6"
+        filter="url(#knowledge-map-glow)"
+        class="animate-[dashTravel_1.2s_linear_infinite]"
+      />
+    </Show>
+  );
+}
+
+type GraphNodeProps = {
+  node: DemoNode;
+  position?: { x: number; y: number };
+  active: boolean;
+  visited: boolean;
+  result: boolean;
+};
+
+function GraphNode(props: GraphNodeProps) {
+  const color = () => nodeColor(props.node.kind);
+  const radius = () =>
+    props.node.kind === "project" ? 3.2 : props.node.kind === "document" ? 2.6 : 2.35;
+  const shown = () => props.active || props.visited || props.result || props.node.kind === "project";
+
+  return (
+    <Show when={props.position}>
+      {(position) => (
+        <g
+          transform={`translate(${position().x} ${position().y})`}
+          opacity={props.active || props.visited || props.result ? 1 : 0.48}
+        >
+          <circle
+            r={radius() + (props.active ? 2.4 : props.result ? 1.6 : 0.9)}
+            fill={color()}
+            opacity={props.active ? 0.22 : props.result ? 0.18 : props.visited ? 0.11 : 0.05}
+            filter={props.active || props.result ? "url(#knowledge-map-glow)" : undefined}
+            class={props.active ? "animate-pulse" : undefined}
+          />
+          <circle
+            r={radius()}
+            fill={color()}
+            stroke={props.active ? "#0f172a" : "rgba(255,255,255,0.92)"}
+            stroke-width={props.active ? 0.55 : 0.25}
+            filter={props.active ? "url(#knowledge-map-glow)" : undefined}
+          />
+          <text
+            y={radius() + 4.2}
+            text-anchor="middle"
+            class="select-none fill-slate-950 text-[2.5px] font-semibold"
+            paint-order="stroke"
+            stroke="rgba(255,255,255,0.94)"
+            stroke-width="0.92"
+            opacity={shown() ? 1 : 0}
+          >
+            {props.node.label}
+          </text>
+          <text
+            y={radius() + 7}
+            text-anchor="middle"
+            class="select-none fill-slate-500 text-[1.85px] font-medium uppercase"
+            paint-order="stroke"
+            stroke="rgba(255,255,255,0.92)"
+            stroke-width="0.74"
+            opacity={shown() ? 0.86 : 0}
+          >
+            {props.node.kind}
+          </text>
+        </g>
+      )}
+    </Show>
+  );
+}
+
+function nodeColor(kind: NodeKind) {
+  switch (kind) {
+    case "person":
+      return "#0891b2";
+    case "post":
+      return "#f59e0b";
+    case "topic":
+      return "#7c3aed";
+    case "project":
+      return "#10b981";
+    case "document":
+      return "#2563eb";
+  }
+}

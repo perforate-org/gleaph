@@ -17,6 +17,7 @@ Solid CSR apps for Gleaph operator UIs. Legacy UI lives in `frontend-old/` (igno
 | Package | Path | Audience |
 |---------|------|----------|
 | `@gleaph/dashboard` | `apps/dashboard` | Tenant admins (Manager/Admin) |
+| `@gleaph/knowledge-map` | `apps/knowledge-map` | Non-technical visual demo viewers |
 | `@gleaph/ops` | `apps/ops` (planned) | Internal operators |
 
 ## `apps/dashboard` route map
@@ -49,7 +50,29 @@ pnpm install
 pnpm --filter @gleaph/dashboard dev
 pnpm --filter @gleaph/dashboard build
 pnpm dashboard:check
+pnpm --filter @gleaph/knowledge-map dev
+pnpm --filter @gleaph/knowledge-map build
+pnpm knowledge-map:check
+pnpm knowledge-map:build
+icp build knowledge-map
+scripts/deploy-knowledge-map-local.sh
 ```
+
+`@gleaph/knowledge-map` defaults to Router-shaped fixture data. To enable its live Router scenario during Vite development, copy `apps/knowledge-map/.env.example` and set:
+
+```bash
+VITE_ROUTER_CANISTER_ID=<router-canister-id>
+VITE_IC_HOST=<local-gateway-or-replica-url>
+VITE_FETCH_ROOT_KEY=true
+```
+
+When deployed from an IC asset canister, the app first reads `PUBLIC_CANISTER_ID:gleaph-router` or `PUBLIC_CANISTER_ID:router` from the `ic_env` cookie injected by `icp deploy`.
+
+The repository root `icp.yaml` builds the `knowledge-map` asset canister and the Gleaph Router/Index/Graph canisters. `scripts/deploy-knowledge-map-local.sh` starts the local IC network, installs the Rust canisters with the required init args, registers the demo graph/shard through Router, seeds one `(:Person)-[:KNOWS {weight: 5}]->(:Project)` relationship through Router GQL, and deploys the asset canister.
+
+If the local network is already managed outside the script, set `GLEAPH_DEMO_SKIP_NETWORK_START=1`; the script will require the `local` environment to be running before it proceeds.
+
+Set `GLEAPH_DEMO_VERIFY_QUERY=1` to make the deploy script run the Router `gql_query` smoke check after seeding.
 
 ## Phases
 

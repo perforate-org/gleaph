@@ -14,7 +14,10 @@
     "sdk:pack": "vp run @gleaph/sdk#pack",
     "dashboard:dev": "pnpm --filter @gleaph/dashboard dev",
     "dashboard:check": "vp run @gleaph/dashboard#check",
-    "dashboard:build": "vp run @gleaph/dashboard#build"
+    "dashboard:build": "vp run @gleaph/dashboard#build",
+    "knowledge-map:dev": "pnpm --filter @gleaph/knowledge-map dev",
+    "knowledge-map:check": "pnpm --filter @gleaph/knowledge-map check",
+    "knowledge-map:build": "pnpm --filter @gleaph/knowledge-map build"
   },
   "devDependencies": {
     "vite-plus": "^0.1.15"
