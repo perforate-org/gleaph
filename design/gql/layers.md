@@ -36,13 +36,14 @@ Policy: **`AGENT.md`** — Gleaph/IC-specific behavior stays out of `gql` and `g
 ## End-to-end read path
 
 1. **Parse** — `gleaph_gql::parser::parse`
-2. **Classify** — `classify_program` → read vs write flags
-3. **Authorize** — `router::rbac::authorize_adhoc_gql` (or prepared path)
-4. **Plan** — `build_block_plan_with_schema(block, stats, schema)`
-5. **Encode** — `encode_block_plans` → bytes for `ExecutePlanArgs`
-6. **Dispatch** — router seed routing (optional multi-shard)
-7. **Execute** — graph `execute_plan_query_bindings`
-8. **Materialize** — bindings → GQL values for response
+2. **Resolve graph** — router `resolve_graph_context` from `session_activity` + HOME / sole-graph default ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)); **not** a separate Candid graph argument (target)
+3. **Classify** — `classify_program` → read vs write flags
+4. **Authorize** — `router::rbac::authorize_adhoc_gql` (or prepared path)
+5. **Plan** — `build_block_plan_with_schema(block, stats, schema)` with stats for resolved `GraphId`
+6. **Encode** — `encode_block_plans` → bytes for `ExecutePlanArgs`
+7. **Dispatch** — router seed routing per resolved graph (optional multi-shard; multi-`UseGraph` planned)
+8. **Execute** — graph `execute_plan_query_bindings`
+9. **Materialize** — bindings → GQL values for response
 
 Prepared queries skip parse on hot path where a cached plan blob is stored.
 
@@ -65,10 +66,13 @@ Proposed mutation-only procedures (`GLEAPH.FINALIZE_BULK_INGEST`, `GLEAPH.VERTEX
 
 | Feature | Meaning |
 |---------|---------|
-| **USE GRAPH** (planner) | Sub-query against another named graph; `analyze_remote_use_graph_pushdown` may fuse plans |
+| **Session current graph** | `SESSION SET GRAPH` in `session_activity`; default for plain `MATCH` when no `USE` ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)) |
+| **USE GRAPH** (planner) | Focused sub-plan scope; router resolves name → shard list + index catalog for that graph |
 | **Federation** (router/graph) | Shards of one logical graph; `GlobalVertexId`, placement, encoded element ids |
 
-They interact only at product boundaries; planner tests for USE GRAPH are not shard-routing tests.
+**Status:** Today router still takes Candid `logical_graph_name` and ignores session graph — **legacy**; ADR 0011 replaces that with program-based resolution.
+
+Planner pushdown tests (`analyze_remote_use_graph_pushdown`) remain planner-local; shard routing tests belong on router ingress once U1 is implemented.
 
 ## Program modification (security input)
 

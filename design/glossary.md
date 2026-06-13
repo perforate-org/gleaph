@@ -59,7 +59,11 @@ See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md) and [adr/0006-pre
 | **Prepared query** | Pre-registered GQL program; executors may run it without ad-hoc parse rights. |
 | **Program modification flags** | `gleaph_gql::program_modification` — static read vs write classification. |
 | **IC extensions** | `IC.PRINCIPAL`, `IC.MSG_CALLER()` — Gleaph-specific GQL surface (not in ISO core). |
-| **USE GRAPH** | GQL composite / remote graph reference; planner may push sub-plans (distinct from shard federation). |
+| **USE GRAPH** | GQL focused graph scope; planner emits `PlanOp::UseGraph`; router resolves to shard list + index catalog ([ADR 0011](adr/0011-gql-graph-resolution-and-catalog-scoping.md)). |
+| **Effective graph** | Session current graph after applying `session_activity`, or HOME / sole-graph default when unset; keys shard dispatch and index catalog for plain queries. |
+| **HOME_GRAPH** | GQL special reference; router resolves to caller home graph (sole visible graph in standalone; explicit config when multi-graph). |
+| **GraphId** | Router-issued `GraphId(u32)` via `BidirectionalCatalog`; stable keys for registry, shards, index rows, idempotency — **not** embedded graph name strings (ADR 0011). |
+| **IndexNameId** | Router-issued `IndexNameId(u16)` via graph-scoped `BidirectionalCatalog`; stable key component for `ROUTER_NAMED_INDEXES` — **not** index name strings (ADR 0011). |
 
 ## Canisters
 

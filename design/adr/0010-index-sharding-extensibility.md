@@ -85,8 +85,10 @@ per deployment):
 - property-id band per index
 - subject split (label vs vertex property vs edge property canisters)
 
-**Router** is the only place that maps **`(logical_graph_name, query context)` → ordered list
-of index `Principal`s** for reads. Graph shards map **`shard_id → index Principal`** for writes
+**Router** is the only place that maps **`(resolved graph, query context)` → ordered list
+of index `Principal`s** for reads (graph identity from GQL program per
+[ADR 0011](0011-gql-graph-resolution-and-catalog-scoping.md); today still uses Candid
+`logical_graph_name` until R0). Graph shards map **`shard_id → index Principal`** for writes
 (via `ShardRegistryEntry` / `FederationRouting`).
 
 No formula is stored in graph-index stable memory.

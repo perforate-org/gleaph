@@ -1,6 +1,6 @@
 # Federation operations
 
-Last updated: 2026-06-11
+Last updated: 2026-06-13
 
 ## Purpose
 
@@ -20,7 +20,9 @@ Document **operational flows**: shard registration, vertex lifecycle, and cross-
 
 **Removed:** peer graph ACL stable and `bootstrap_graph_peers` / `federated_expand` canister endpoints. Router `peer_sync` is a no-op until cross-shard expand returns in a follow-up ADR.
 
-**Router** resolves `logical_graph_name` → shard list for dispatch.
+**Router** resolves **effective graph** from the GQL program (session graph, HOME, sole-graph default) → shard list for dispatch ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)).
+
+**Legacy (today):** query APIs still pass `logical_graph_name` as a Candid argument; this bypasses `SESSION SET GRAPH` and will be removed.
 
 ## Vertex create (federated)
 
