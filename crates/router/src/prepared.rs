@@ -12,19 +12,16 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult};
 
 use crate::execution_path::check_prepared_execution_path;
-use crate::facade::stable::ROUTER_PREPARED_PLANS;
+use crate::facade::stable::prepared_catalog::{
+    PreparedPlanKey, PreparedPlanRecord, PreparedPlanRecordV1, contains_prepared_plan,
+    get_prepared_plan, insert_prepared_plan, remove_prepared_plan,
+};
 use crate::facade::store::RouterStore;
 use crate::gql::dispatch_plan_blob;
 use crate::graph_context;
 use crate::index_catalog::graph_stats_for;
 use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute};
 use crate::state::RouterError;
-
-#[derive(Clone, Debug)]
-pub struct PreparedPlanRecord {
-    pub plan_blob: Vec<u8>,
-    pub requires_write_path: bool,
-}
 
 pub fn prepared_register(name: String, query: String) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
@@ -82,15 +79,13 @@ pub fn prepared_register(name: String, query: String) -> Result<(), RouterError>
     let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let key = prepared_key(graph_id, &name);
-    ROUTER_PREPARED_PLANS.with_borrow_mut(|m| {
-        m.insert(
-            key,
-            PreparedPlanRecord {
-                plan_blob,
-                requires_write_path,
-            },
-        );
-    });
+    insert_prepared_plan(
+        key,
+        PreparedPlanRecord::from_v1(PreparedPlanRecordV1 {
+            plan_blob,
+            requires_write_path,
+        }),
+    );
     Ok(())
 }
 
@@ -98,10 +93,7 @@ pub fn prepared_drop(name: &str) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
     let store = RouterStore::new();
     let graph_id = resolve_prepared_graph_id(&store, msg_caller(), name)?;
-    let key = prepared_key(graph_id, name);
-    ROUTER_PREPARED_PLANS.with_borrow_mut(|m| {
-        m.remove(&key);
-    });
+    remove_prepared_plan(&prepared_key(graph_id, name));
     Ok(())
 }
 
@@ -180,18 +172,18 @@ async fn prepared_execute(
     let store = RouterStore::new();
     let graph_id = resolve_prepared_graph_id(&store, caller, &name)?;
     let key = prepared_key(graph_id, &name);
-    let record = ROUTER_PREPARED_PLANS
-        .with_borrow(|m| m.get(&key).cloned())
+    let record = get_prepared_plan(&key)
         .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
-    check_prepared_execution_path(entrypoint, mode, record.requires_write_path, force)?;
+    let v1 = record.as_v1()?;
+    check_prepared_execution_path(entrypoint, mode, v1.requires_write_path, force)?;
     let pmap =
         decode_gql_params_blob(&params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let (_, plans) = gleaph_gql_planner::wire::decode_plan_bundle(&record.plan_blob)
+    let (_, plans) = gleaph_gql_planner::wire::decode_plan_bundle(&v1.plan_blob)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let stats = graph_stats_for(graph_id);
     dispatch_plan_blob(
         graph_id,
-        &record.plan_blob,
+        &v1.plan_blob,
         &plans,
         &pmap,
         &params,
@@ -210,8 +202,7 @@ fn resolve_prepared_graph_id(
     let visible = store.list_visible_graph_ids(caller)?;
     let mut matches = Vec::new();
     for graph_id in visible {
-        let key = prepared_key(graph_id, name);
-        if ROUTER_PREPARED_PLANS.with_borrow(|m| m.contains_key(&key)) {
+        if contains_prepared_plan(&prepared_key(graph_id, name)) {
             matches.push(graph_id);
         }
     }
@@ -224,8 +215,8 @@ fn resolve_prepared_graph_id(
     }
 }
 
-pub(crate) fn prepared_key(graph_id: GraphId, name: &str) -> String {
-    format!("{}\0{name}", graph_id.raw())
+pub(crate) fn prepared_key(graph_id: GraphId, name: &str) -> PreparedPlanKey {
+    PreparedPlanKey::new(graph_id, name)
 }
 
 #[cfg(test)]
@@ -234,9 +225,14 @@ mod tests {
     use gleaph_graph_kernel::entry::GraphId;
 
     #[test]
-    fn prepared_key_uses_nul_separator() {
+    fn prepared_key_scopes_by_graph_and_name() {
         let graph = GraphId::from_raw(7);
-        assert_eq!(prepared_key(graph, "q1"), "7\0q1");
+        assert_eq!(prepared_key(graph, "q1").name, "q1");
+        assert_eq!(prepared_key(graph, "q1").graph_id, graph);
         assert_ne!(prepared_key(graph, "q1"), prepared_key(graph, "q2"));
+        assert_ne!(
+            prepared_key(graph, "q1"),
+            prepared_key(GraphId::from_raw(8), "q1")
+        );
     }
 }

@@ -767,6 +767,14 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "GraphId → shard id list (ADR 0011)",
             None,
         ),
+        region(
+            "ROUTER_PREPARED_PLANS",
+            29,
+            StableMemoryClass::Canonical,
+            "prepared queries",
+            "PreparedPlanKey → versioned plan wire blob",
+            None,
+        ),
     ],
 };
 
@@ -978,8 +986,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 29);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(28));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 30);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(29));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[17].class,
             StableMemoryClass::Telemetry

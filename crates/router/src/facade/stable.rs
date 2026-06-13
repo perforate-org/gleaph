@@ -9,6 +9,7 @@ pub(crate) mod indexed_catalog;
 pub(crate) mod label_telemetry;
 pub(crate) mod layout;
 pub(crate) mod memory;
+pub(crate) mod prepared_catalog;
 pub(crate) mod scoped_name_catalog;
 
 thread_local! {
@@ -74,9 +75,8 @@ thread_local! {
     pub(crate) static ROUTER_INDEXED_PROPERTY_SET: RefCell<memory::StableIndexedPropertySet> =
         RefCell::new(memory::init_indexed_property_set());
 
-    pub(crate) static ROUTER_PREPARED_PLANS: RefCell<
-        std::collections::BTreeMap<String, crate::prepared::PreparedPlanRecord>,
-    > = const { RefCell::new(std::collections::BTreeMap::new()) };
+    pub(crate) static ROUTER_PREPARED_PLANS: RefCell<memory::StablePreparedPlanMap> =
+        RefCell::new(memory::init_prepared_plans());
 
     pub(crate) static ROUTER_LABEL_BACKFILL_STATE: RefCell<memory::StableLabelBackfillStateMap> =
         RefCell::new(memory::init_label_backfill_state());

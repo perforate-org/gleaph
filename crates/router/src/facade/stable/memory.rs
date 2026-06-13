@@ -54,6 +54,7 @@ const ROUTER_GRAPH_BY_ID: MemoryId = MemoryId::new(25);
 const ROUTER_INDEX_NAME_BY_NAME: MemoryId = MemoryId::new(26);
 const ROUTER_INDEX_NAME_BY_ID: MemoryId = MemoryId::new(27);
 const ROUTER_SHARDS_BY_GRAPH_ID: MemoryId = MemoryId::new(28);
+const ROUTER_PREPARED_PLANS: MemoryId = MemoryId::new(29);
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
@@ -127,6 +128,11 @@ pub(crate) type StableLabelBackfillStateMap = BTreeMap<ShardId, BackfillShardSta
 pub(crate) type StablePropertyBackfillStateMap = BTreeMap<ShardId, BackfillShardState, Memory>;
 pub(crate) type StableMutationCounter = Cell<u64, Memory>;
 pub(crate) type StableAuthState = AuthState<Memory>;
+pub(crate) type StablePreparedPlanMap = BTreeMap<
+    super::prepared_catalog::PreparedPlanKey,
+    super::prepared_catalog::PreparedPlanRecord,
+    Memory,
+>;
 
 thread_local! {
     pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -247,4 +253,8 @@ pub(crate) fn init_index_name_catalog() -> StableIndexNameCatalog {
 
 pub(crate) fn init_shards_by_graph_id() -> StableShardsByGraphId {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_SHARDS_BY_GRAPH_ID)))
+}
+
+pub(crate) fn init_prepared_plans() -> StablePreparedPlanMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PREPARED_PLANS)))
 }

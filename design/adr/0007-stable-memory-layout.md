@@ -102,8 +102,9 @@ Code source of truth:
 | Router | 24 | 0–23 | Registry, placement, catalogs (3 pairs + edge payload schema + index rows), auth, telemetry (4), idempotency (2), backfill cursors (2) |
 | Graph-index | 5 | 0–4 | Admins, shard owners, property postings, router auth, label postings |
 
-Ephemeral heap state (pending posting queues, router prepared plans) is **not**
-part of this layout; see inventory § ephemeral.
+Ephemeral heap state (pending posting queues on graph canisters) is **not**
+part of this layout; see inventory § ephemeral. Router prepared plans are **stable**
+(`ROUTER_PREPARED_PLANS`, MemoryId 29) as of 2026-06-13.
 
 ### 3. Regions that must stay separated
 

@@ -164,14 +164,15 @@ Repacked 2026-06-13 (ADR 0011 graph/index name catalogs). Prior repack 2026-06-1
 | 24–25 | `ROUTER_GRAPH_BY_NAME` / `ROUTER_GRAPH_BY_ID` | `ROUTER_GRAPH_CATALOG` | `init_graph_catalog` | catalog | resolution | Logical graph name ↔ **`GraphId`** ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)) |
 | 26–27 | `ROUTER_INDEX_NAME_BY_NAME` / `ROUTER_INDEX_NAME_BY_ID` | `ROUTER_INDEX_NAME_CATALOG` | `init_index_name_catalog` | catalog | resolution | Graph-scoped index name ↔ **`IndexNameId`** per `GraphId` |
 | 28 | `ROUTER_SHARDS_BY_GRAPH_ID` | `ROUTER_SHARDS_BY_GRAPH_ID` | `init_shards_by_graph_id` | canonical | registry | **`GraphId → Vec<ShardId>`** shard index |
+| 29 | `ROUTER_PREPARED_PLANS` | `ROUTER_PREPARED_PLANS` | `init_prepared_plans` | canonical | prepared queries | **`PreparedPlanKey → PreparedPlanRecord::V1`**; survives upgrade |
 
-Router **29 regions** total (0–28).
+Router **30 regions** total (0–29).
 
 ### Router ephemeral
 
 | Symbol | Location | Role | Reopen behavior |
 |--------|----------|------|-----------------|
-| `ROUTER_PREPARED_PLANS` | `router/src/facade/stable.rs` | Cached prepared plan blobs | Keys **`(GraphId, prepared_name)`**; lost on upgrade; re-prepare on demand |
+| _(none beyond graph-index pending queues on other canisters)_ | — | — | — |
 
 ---
 

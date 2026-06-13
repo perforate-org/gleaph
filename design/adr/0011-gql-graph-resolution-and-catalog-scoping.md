@@ -70,7 +70,7 @@ do not** — they appear as raw `String` in stable keys and in stored records:
 | Canister uniqueness map | `ROUTER_SHARD_BY_GRAPH` | `Principal → ShardId` (**not** logical graph name) |
 | Named index row key | `ROUTER_NAMED_INDEXES` | `NamedIndexKey { graph, index_name }` |
 | Index membership key | `ROUTER_INDEXED_PROPERTY_SET` | `IndexedPropertyKey { graph, … }` |
-| Prepared plan key | `ROUTER_PREPARED_PLANS` (ephemeral) | `"{graph}\0{name}"` |
+| Prepared plan key | `ROUTER_PREPARED_PLANS` (stable, MemoryId 29) | **`PreparedPlanKey { graph_id, name }`** → **`PreparedPlanRecord::V1`** |
 | Idempotency key | `ROUTER_MUTATION_BY_CLIENT_KEY` | `ClientMutationKey.logical_graph_name` |
 | Label telemetry | mutation records | `logical_graph_name: String` |
 
@@ -294,7 +294,7 @@ interns at entry.
 | `ShardRegistryEntry` | `logical_graph_name: String` → **`graph_id: GraphId`** |
 | `list_shards_for_graph(name)` | Resolve name → `GraphId`; add **`ROUTER_SHARDS_BY_GRAPH_ID: GraphId → Vec<ShardId>`** (or equivalent index) — **distinct from** `ROUTER_SHARD_BY_GRAPH` (`Principal → ShardId`, unchanged) |
 | `ROUTER_NAMED_INDEXES` / `ROUTER_INDEXED_PROPERTY_SET` keys | §4 |
-| `ROUTER_PREPARED_PLANS` key | `(GraphId, prepared_name)` fixed struct — not `String` with `\0` |
+| `ROUTER_PREPARED_PLANS` key / value | **`PreparedPlanKey { graph_id, name }`** → **`PreparedPlanRecord::V1(PreparedPlanRecordV1)`** (stable MemoryId 29) |
 | `ClientMutationKey` / label telemetry mutation records | `logical_graph_name: String` → **`graph_id: GraphId`** |
 | `graph_stats_for`, `create_index`, `drop_index`, index fan-out | Parameters **`GraphId`** (+ `IndexNameId` for named index ops) |
 | `graph-kernel::ShardRegistryEntry` wire/Candid | **`graph_id: GraphId`**; expose name via router lookup when needed |
