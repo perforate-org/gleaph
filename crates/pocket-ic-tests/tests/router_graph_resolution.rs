@@ -69,9 +69,8 @@ fn gql_query_cross_graph_use_cartesian_product() {
     let _ = e2e_insert_vertex(&env, env.graph_source);
     let _ = e2e_insert_vertex(&env, env.graph_dest);
 
-    let query = format!(
-        "USE {GRAPH_HOME_NAME} MATCH (a) USE {GRAPH_REMOTE_NAME} MATCH (b) RETURN a, b"
-    );
+    let query =
+        format!("USE {GRAPH_HOME_NAME} MATCH (a) USE {GRAPH_REMOTE_NAME} MATCH (b) RETURN a, b");
     let result = gql_query_as_admin(&env, &query);
 
     assert_eq!(result.row_count, 1);
