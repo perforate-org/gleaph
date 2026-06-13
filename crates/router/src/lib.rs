@@ -38,6 +38,7 @@ mod rbac;
 mod seed;
 pub mod state;
 pub mod types;
+mod use_graph;
 
 pub use facade::store::RouterStore;
 pub use init::RouterInitArgs;

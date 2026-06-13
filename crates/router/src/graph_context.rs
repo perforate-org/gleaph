@@ -19,15 +19,39 @@ pub fn resolve_graph_context(
     program: &GqlProgram,
     caller: candid::Principal,
 ) -> Result<ResolvedGraphContext, RouterError> {
-    let mut current: Option<GraphId> = None;
-    for cmd in &program.session_activity {
-        current = apply_session_command(store, cmd, caller, current)?;
-    }
+    let current = session_current_after_activity(store, program, caller)?;
     let graph_id = match current {
         Some(id) => id,
         None => resolve_default_graph(store, caller)?,
     };
     Ok(ResolvedGraphContext { graph_id })
+}
+
+/// Session current graph after `session_activity`, before default/HOME fallback.
+pub fn session_current_after_activity(
+    store: &RouterStore,
+    program: &GqlProgram,
+    caller: candid::Principal,
+) -> Result<Option<GraphId>, RouterError> {
+    let mut current = None;
+    for cmd in &program.session_activity {
+        current = apply_session_command(store, cmd, caller, current)?;
+    }
+    Ok(current)
+}
+
+/// Resolve a focused graph name for physical-plan ingress (ADR 0011 §1.2).
+pub fn resolve_graph_reference_for_plan(
+    store: &RouterStore,
+    name: &gleaph_gql::ast::ObjectName,
+    caller: candid::Principal,
+    session_current: Option<GraphId>,
+    effective: GraphId,
+) -> Result<GraphId, RouterError> {
+    if name.parts.len() == 1 && name.parts[0] == "CURRENT_GRAPH" {
+        return Ok(session_current.unwrap_or(effective));
+    }
+    resolve_graph_reference(store, name, caller, session_current)
 }
 
 /// Parse and resolve graph context from a query string.

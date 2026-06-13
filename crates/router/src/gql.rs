@@ -438,6 +438,7 @@ async fn run_gql(
     let stats = graph_stats_for(resolved.graph_id);
     let plan = build_block_plan_with_schema(block, Some(&stats), &NoSchema)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    crate::use_graph::ensure_single_graph_plan(&store, &program, &plan, resolved.graph_id, caller)?;
     let requires_write_path = plan.has_dml();
     if requires_write_path != flags.requires_write_path() {
         return Err(RouterError::InvalidArgument(

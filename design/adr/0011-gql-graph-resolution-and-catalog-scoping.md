@@ -12,7 +12,7 @@ Anchor timestamp: 2026-06-13 06:46:07 UTC +0000
 | 2026-06-13 | Proposed: GQL graph resolution at router ingress; deprecate Candid `logical_graph_name`. |
 | 2026-06-13 | Clarified catalog scope: **`BidirectionalCatalog` for graph and index names**; migrate all stable/router keys and stored values from `String` names to **`GraphId` / `IndexNameId`**. |
 | 2026-06-13 | Accepted. |
-| 2026-06-13 | R0/R2/G1/G2/I1/R1 implemented; stable-memory-inventory updated; U1 multi-UseGraph remains planned. |
+| 2026-06-13 | R0/R2/G1/G2/I1/R1 implemented; U1a UseGraph guard implemented; U1b multi-graph dispatch remains planned. |
 
 ## Context
 
@@ -383,7 +383,8 @@ flowchart TB
 | **G1** | `BidirectionalCatalog<GraphId>`; `ROUTER_GRAPHS` keyed by `GraphId` | **Implemented** |
 | **G2** | `ShardRegistryEntry.graph_id`; `ROUTER_SHARDS_BY_GRAPH_ID`; prepared + idempotency keys use `GraphId` | **Implemented** |
 | **I1** | `BidirectionalCatalog<IndexNameId>` per graph; `ROUTER_NAMED_INDEXES` / `ROUTER_INDEXED_PROPERTY_SET` keys use `GraphId` + `IndexNameId` | **Implemented** |
-| **U1** | Multi-`UseGraph` dispatch + merge | Planned (depends on federation-target) |
+| **U1a** | Reject plans with `UseGraph` ≠ effective graph | **Implemented** |
+| **U1b** | Multi-`UseGraph` dispatch + merge | Planned (depends on federation-target) |
 
 **Stable repack:** G1 + I1 share one ADR 0007 gate (new MemoryId pairs for graph + index name
 catalogs; rewrite regions 1–3, 22–23 as needed). Dev snapshot discard acceptable pre-production.
