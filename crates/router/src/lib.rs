@@ -259,17 +259,19 @@ async fn force_prepared_execute_update(name: String, params: Vec<u8>) -> Result<
 #[update]
 async fn admin_set_indexed_vertex_property(
     logical_graph_name: String,
+    vertex_label: String,
     property: String,
 ) -> Result<(), RouterError> {
-    canister::admin_set_indexed_vertex_property(logical_graph_name, property).await
+    canister::admin_set_indexed_vertex_property(logical_graph_name, vertex_label, property).await
 }
 
 #[update]
 async fn admin_set_indexed_edge_property(
     logical_graph_name: String,
+    edge_label: String,
     property: String,
 ) -> Result<(), RouterError> {
-    canister::admin_set_indexed_edge_property(logical_graph_name, property).await
+    canister::admin_set_indexed_edge_property(logical_graph_name, edge_label, property).await
 }
 
 /// Advance label posting backfill for one graph shard (controller-only; call in a loop).

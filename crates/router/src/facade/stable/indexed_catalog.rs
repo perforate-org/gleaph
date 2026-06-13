@@ -284,22 +284,6 @@ pub(crate) fn is_property_registered(
     ROUTER_INDEXED_PROPERTY_SET.with_borrow(|set| set.contains(&key))
 }
 
-pub(crate) fn register_property_membership(
-    graph_id: GraphId,
-    kind: IndexedPropertyKind,
-    property_id: PropertyId,
-) -> bool {
-    let key = IndexedPropertyKey::new(graph_id, kind, property_id);
-    ROUTER_INDEXED_PROPERTY_SET.with_borrow_mut(|set| {
-        if set.contains(&key) {
-            false
-        } else {
-            set.insert(key);
-            true
-        }
-    })
-}
-
 fn graph_id_upper_bound(graph_id: GraphId) -> GraphId {
     GraphId::from_raw(graph_id.raw().saturating_add(1))
 }

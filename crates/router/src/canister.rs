@@ -2,6 +2,7 @@
 
 use crate::facade::auth;
 use crate::facade::store::RouterStore;
+use crate::index_ddl::IndexTarget;
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
 use crate::types::{
@@ -190,50 +191,43 @@ pub(crate) async fn admin_label_telemetry_replay_step(
 
 pub(crate) async fn admin_set_indexed_vertex_property(
     logical_graph_name: String,
+    vertex_label: String,
     property: String,
 ) -> Result<(), RouterError> {
     use gleaph_graph_kernel::index::IndexedPropertyKind;
 
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id(&logical_graph_name)?;
-    let property_id = store.lookup_property_id(&property)?;
-    let newly_registered = crate::index_catalog::register_property_membership_if_absent(
+    crate::index_catalog::create_admin_compat_property_index(
         graph_id,
-        IndexedPropertyKind::Vertex,
-        property_id,
-    );
-    if !newly_registered {
-        return Ok(());
-    }
-    crate::index_catalog::register_indexed_property_on_shards(
-        graph_id,
-        IndexedPropertyKind::Vertex,
-        property_id,
+        IndexTarget {
+            kind: IndexedPropertyKind::Vertex,
+            label: vertex_label,
+            property,
+            edge_direction: None,
+        },
     )
     .await
 }
 
 pub(crate) async fn admin_set_indexed_edge_property(
     logical_graph_name: String,
+    edge_label: String,
     property: String,
 ) -> Result<(), RouterError> {
+    use gleaph_gql::types::EdgeDirection;
     use gleaph_graph_kernel::index::IndexedPropertyKind;
 
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id(&logical_graph_name)?;
-    let property_id = store.lookup_property_id(&property)?;
-    let newly_registered = crate::index_catalog::register_property_membership_if_absent(
+    crate::index_catalog::create_admin_compat_property_index(
         graph_id,
-        IndexedPropertyKind::Edge,
-        property_id,
-    );
-    if !newly_registered {
-        return Ok(());
-    }
-    crate::index_catalog::register_indexed_property_on_shards(
-        graph_id,
-        IndexedPropertyKind::Edge,
-        property_id,
+        IndexTarget {
+            kind: IndexedPropertyKind::Edge,
+            label: edge_label,
+            property,
+            edge_direction: Some(EdgeDirection::AnyDirection),
+        },
     )
     .await
 }

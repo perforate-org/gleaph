@@ -76,6 +76,8 @@ fn validate_pocket_ic_server_binary(path: &Path, version: &str) -> Result<(), St
 }
 
 pub const GRAPH_NAME: &str = "gleaph.pocket_ic";
+pub const GRAPH_HOME_NAME: &str = "tenant_a";
+pub const GRAPH_REMOTE_NAME: &str = "tenant_b";
 pub const SOURCE_SHARD: ShardId = ShardId::new(0);
 pub const DEST_SHARD: ShardId = ShardId::new(1);
 
@@ -272,6 +274,87 @@ pub fn install_federation() -> FederationEnv {
     env
 }
 
+/// Two logical graphs (home + remote), one shard each — ADR 0011 remote `USE` / HOME e2e.
+pub fn install_two_graph_federation() -> FederationEnv {
+    let pic = new_pocket_ic();
+    let admin = Principal::from_slice(&[0xAB; 29]);
+
+    let router = create_funded_canister(&pic);
+    pic.install_canister(
+        router,
+        wasm_bytes("ROUTER_WASM"),
+        Encode!(&RouterInitArgs {
+            issuing_principal: admin,
+            initial_admins: vec![],
+            controllers: vec![admin],
+        })
+        .expect("encode router init"),
+        None,
+    );
+
+    let index = create_funded_canister(&pic);
+    pic.install_canister(
+        index,
+        wasm_bytes("INDEX_WASM"),
+        Encode!(&IndexInitArgs {
+            controllers: vec![admin],
+            router_canister: router,
+        })
+        .expect("encode index init"),
+        None,
+    );
+
+    let graph_source = create_funded_canister(&pic);
+    let graph_dest = create_funded_canister(&pic);
+
+    register_two_graphs_and_shards(&pic, admin, router, index, graph_source, graph_dest);
+
+    for (graph, graph_name) in [
+        (graph_source, GRAPH_HOME_NAME),
+        (graph_dest, GRAPH_REMOTE_NAME),
+    ] {
+        pic.install_canister(
+            graph,
+            wasm_bytes("GRAPH_WASM"),
+            Encode!(&GraphInitArgs {
+                logical_graph_name: Some(graph_name.into()),
+                router_canister: None,
+                shard_id: None,
+            })
+            .expect("encode graph init"),
+            None,
+        );
+    }
+
+    let env = FederationEnv {
+        pic,
+        admin,
+        router,
+        index,
+        graph_source,
+        graph_dest,
+    };
+
+    for ((graph, graph_name), shard) in [
+        ((graph_source, GRAPH_HOME_NAME), SOURCE_SHARD),
+        ((graph_dest, GRAPH_REMOTE_NAME), DEST_SHARD),
+    ] {
+        let _: () = update_as_router(
+            &env,
+            graph,
+            "e2e_attach_federation",
+            E2eAttachFederationArgs {
+                logical_graph_name: Some(graph_name.into()),
+                router_canister: router,
+                index_canister: index,
+                shard_id: shard,
+            },
+        );
+    }
+
+    env
+}
+
 /// Router + index + one federated graph shard (standalone dispatch policy).
 pub fn install_single_shard_federation() -> FederationEnv {
     let pic = new_pocket_ic();
@@ -441,6 +524,60 @@ pub fn register_graph_and_shards(
             graph_canister: graph,
             index_canister: index,
             logical_graph_name: GRAPH_NAME.into(),
+        };
+        pic.update_call(
+            router,
+            admin,
+            "admin_register_shard",
+            Encode!(&args).expect("encode register shard"),
+        )
+        .expect("admin_register_shard");
+        register_index_shard_owner(pic, router, index, shard, graph);
+    }
+}
+
+pub fn register_two_graphs_and_shards(
+    pic: &PocketIc,
+    admin: Principal,
+    router: Principal,
+    index: Principal,
+    graph_home: Principal,
+    graph_remote: Principal,
+) {
+    for (name, graph, is_home) in [
+        (GRAPH_HOME_NAME, graph_home, true),
+        (GRAPH_REMOTE_NAME, graph_remote, false),
+    ] {
+        let entry = GraphRegistryEntry {
+            graph_id: GraphId::from_raw(0),
+            graph_name: name.into(),
+            canister_id: graph,
+            owner: admin,
+            admins: Default::default(),
+            status: GraphStatus::Active,
+            version: 1,
+            updated_at_ns: 0,
+            provisioning_state: ProvisioningState::None,
+            is_home,
+        };
+        pic.update_call(
+            router,
+            admin,
+            "admin_register_graph",
+            Encode!(&entry).expect("encode graph registry"),
+        )
+        .expect("admin_register_graph");
+    }
+
+    for (shard, graph, graph_name) in [
+        (SOURCE_SHARD, graph_home, GRAPH_HOME_NAME),
+        (DEST_SHARD, graph_remote, GRAPH_REMOTE_NAME),
+    ] {
+        let args = AdminRegisterShardArgs {
+            shard_id: shard,
+            graph_canister: graph,
+            index_canister: index,
+            logical_graph_name: graph_name.into(),
         };
         pic.update_call(
             router,

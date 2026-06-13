@@ -9,7 +9,6 @@ use crate::edge_index_direction::direction_tag;
 use crate::facade::stable::index_name_catalog::{intern_index_name, lookup_index_name_id};
 use crate::facade::stable::indexed_catalog::{
     create_named_index, drop_named_index, is_property_registered, load_graph_stats,
-    register_property_membership,
 };
 use crate::facade::store::RouterStore;
 use crate::index_ddl::{IndexDdlStatement, IndexTarget};
@@ -36,6 +35,23 @@ pub(crate) async fn execute_index_ddl_for_graph(
             if_exists,
         } => drop_index(graph_id, &index_name, if_exists).await,
     }
+}
+
+fn admin_compat_index_name(kind: IndexedPropertyKind, label: &str, property: &str) -> String {
+    let kind_tag = match kind {
+        IndexedPropertyKind::Vertex => "vertex",
+        IndexedPropertyKind::Edge => "edge",
+    };
+    format!("__gleaph_admin_{kind_tag}_{label}_{property}")
+}
+
+/// Legacy admin register → same catalog path as `CREATE INDEX IF NOT EXISTS` (ADR 0009 / 0011).
+pub(crate) async fn create_admin_compat_property_index(
+    graph_id: GraphId,
+    target: IndexTarget,
+) -> Result<(), RouterError> {
+    let index_name = admin_compat_index_name(target.kind, &target.label, &target.property);
+    create_index(graph_id, &index_name, true, &target).await
 }
 
 async fn create_index(
@@ -226,18 +242,99 @@ async fn fan_out_unregister_edge_index(
     Ok(())
 }
 
-pub(crate) async fn register_indexed_property_on_shards(
-    graph_id: GraphId,
-    kind: IndexedPropertyKind,
-    property_id: gleaph_graph_kernel::entry::PropertyId,
-) -> Result<(), RouterError> {
-    fan_out_register(graph_id, kind, property_id).await
-}
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gleaph_gql::types::EdgeDirection;
+    use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
+    use gleaph_gql_planner::GraphStats;
+    use gleaph_graph_kernel::entry::GraphId;
 
-pub(crate) fn register_property_membership_if_absent(
-    graph_id: GraphId,
-    kind: IndexedPropertyKind,
-    property_id: gleaph_graph_kernel::entry::PropertyId,
-) -> bool {
-    register_property_membership(graph_id, kind, property_id)
+    fn register_test_graph(store: &RouterStore, name: &str) -> GraphId {
+        let owner = candid::Principal::anonymous();
+        store.bootstrap_controllers(&[owner]);
+        store
+            .admin_register_graph(
+                owner,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    graph_name: name.to_owned(),
+                    canister_id: candid::Principal::management_canister(),
+                    owner,
+                    admins: Default::default(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: false,
+                },
+            )
+            .expect("register graph");
+        crate::facade::stable::graph_catalog::lookup_graph_id(name).expect("graph id")
+    }
+
+    #[test]
+    fn admin_compat_index_name_is_stable() {
+        assert_eq!(
+            admin_compat_index_name(IndexedPropertyKind::Vertex, "Person", "age"),
+            "__gleaph_admin_vertex_Person_age"
+        );
+    }
+
+    #[test]
+    fn admin_compat_create_registers_named_index() {
+        let store = RouterStore::new();
+        let graph_id = register_test_graph(&store, "tenant.main");
+        store
+            .admin_intern_vertex_label(candid::Principal::anonymous(), "Person")
+            .expect("intern label");
+        store
+            .admin_intern_property(candid::Principal::anonymous(), "age")
+            .expect("intern property");
+        futures::executor::block_on(create_admin_compat_property_index(
+            graph_id,
+            IndexTarget {
+                kind: IndexedPropertyKind::Vertex,
+                label: "Person".into(),
+                property: "age".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create admin compat index");
+        let stats = graph_stats_for(graph_id);
+        assert!(stats.is_vertex_property_indexed("age"));
+        let name = admin_compat_index_name(IndexedPropertyKind::Vertex, "Person", "age");
+        assert!(
+            crate::facade::stable::index_name_catalog::lookup_index_name_id(graph_id, &name)
+                .is_some()
+        );
+    }
+
+    #[test]
+    fn admin_compat_edge_index_uses_any_direction() {
+        let store = RouterStore::new();
+        let graph_id = register_test_graph(&store, "tenant.edge");
+        store
+            .admin_intern_edge_label(candid::Principal::anonymous(), "KNOWS")
+            .expect("intern edge");
+        store
+            .admin_intern_property(candid::Principal::anonymous(), "weight")
+            .expect("intern property");
+        futures::executor::block_on(create_admin_compat_property_index(
+            graph_id,
+            IndexTarget {
+                kind: IndexedPropertyKind::Edge,
+                label: "KNOWS".into(),
+                property: "weight".into(),
+                edge_direction: Some(EdgeDirection::AnyDirection),
+            },
+        ))
+        .expect("create admin compat edge index");
+        let stats = graph_stats_for(graph_id);
+        assert!(stats.is_edge_property_indexed_for(
+            Some("KNOWS"),
+            "weight",
+            EdgeDirection::PointingRight
+        ));
+    }
 }

@@ -3,7 +3,7 @@
 Date: 2026-06-13  
 Status: accepted  
 Last revised: 2026-06-13  
-Anchor timestamp: 2026-06-13 06:46:07 UTC +0000
+Anchor timestamp: 2026-06-13 11:35:08 UTC +0000
 
 ## Revision history
 
@@ -13,6 +13,8 @@ Anchor timestamp: 2026-06-13 06:46:07 UTC +0000
 | 2026-06-13 | Clarified catalog scope: **`BidirectionalCatalog` for graph and index names**; migrate all stable/router keys and stored values from `String` names to **`GraphId` / `IndexNameId`**. |
 | 2026-06-13 | Accepted. |
 | 2026-06-13 | Design docs synced (`layers.md`, `operations.md`, `glossary.md`, `overview.md`, `operators.md`). |
+| 2026-06-13 | §1.4: R2 removed query `logical_graph_name`; transition / `GraphContextMismatch` path dropped. |
+| 2026-06-13 | Follow-up: `admin_set_indexed_*` → CREATE INDEX compat; PocketIC HOME + remote USE e2e. |
 
 ## Context
 
@@ -196,15 +198,15 @@ gql_execute : (text, blob) -> (Result<nat64, RouterError>;
 // … prepared execute similarly without logical_graph_name
 ```
 
-`logical_graph_name` is **removed** from query / prepared **execute** paths after a deprecation
-window.
+`logical_graph_name` is **removed** from query / prepared **execute** paths (R2, 2026-06-13).
 
 **Retention:** Admin and registry APIs (`admin_register_shard`, `admin_register_graph`,
-`list_shards_for_graph`, backfill status, **optional** explicit graph on idempotency metadata)
-may keep an explicit graph name where the operation is **not** parsed from GQL.
+`list_shards_for_graph`, backfill status) may keep an explicit graph **name** at the Candid
+boundary; router interns to **`GraphId`** before stable lookup.
 
-**Transition:** During deprecation, if `logical_graph_name` is still present, router **must**
-verify it equals `effective_graph` or return `GraphContextMismatch`.
+**R2 note:** A deprecation window that accepted both Candid `logical_graph_name` and program
+graph context (returning `GraphContextMismatch` on mismatch) was **not shipped**; query APIs
+were cut over directly to program-only resolution.
 
 ---
 
@@ -300,8 +302,9 @@ interns at entry.
 - `GraphRegistryEntry.graph_name` — canonical display name for admin/Candid
 - Property / label **global** catalogs — unchanged
 
-**Admin APIs:** `admin_set_indexed_*` → thin wrappers over index DDL; both paths intern graph +
-index names to ids before stable write (ADR 0009 follow-up).
+**Admin APIs:** `admin_set_indexed_*` are thin wrappers over `CREATE INDEX IF NOT EXISTS` with
+synthetic index names (ADR 0009 follow-up); both paths intern graph + index names to ids before
+stable write.
 
 ---
 
