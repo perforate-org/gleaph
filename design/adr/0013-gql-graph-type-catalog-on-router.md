@@ -1,7 +1,7 @@
 # 0013. GQL graph type catalog on router (`gleaph-graph-catalog`)
 
 Date: 2026-06-13  
-Status: proposed  
+Status: accepted  
 Last revised: 2026-06-13  
 Anchor timestamp: 2026-06-13 13:03:19 UTC +0000
 
@@ -12,6 +12,8 @@ Anchor timestamp: 2026-06-13 13:03:19 UTC +0000
 | 2026-06-13 | Proposed: mount `gleaph-graph-catalog` on router stable memory; DDL ingress; planner schema bridge. |
 | 2026-06-13 | **`binding_map` keys use `GraphId`** (align with ADR 0011); crate refactor + federation name prerequisite for `CREATE GRAPH`. |
 | 2026-06-13 | **`type_map` string keys are interim** — [`GraphTypeId` name catalog planned in ADR 0014](0014-graph-type-id-catalog-on-router.md). |
+| 2026-06-13 | S0–S3 implemented; PocketIC e2e in `router_graph_type_catalog`. |
+| 2026-06-13 | **Accepted** (S0–S3). |
 
 ## Context
 
@@ -256,11 +258,11 @@ stats load per `GraphId` in ADR 0011 U2).
 
 | Phase | Scope | Status |
 |-------|--------|--------|
-| **S0a** | Refactor `gleaph-graph-catalog`: `binding_map` **`GraphId` keys**; `try_property_schema_for_graph_id`; `GraphNotRegistered`; update unit tests | Planned |
-| **S0b** | Router MemoryId 30–31; thread-local `GraphCatalog`; layout registry + inventory | Planned |
-| **S1** | Catalog DDL on `gql_execute*`; name→`GraphId` via `ROUTER_GRAPH_CATALOG`; map `CatalogError` → `RouterError` | Planned |
-| **S2** | Inject resolved schema at plan + validate by **`GraphId`** (replace `NoSchema` when binding exists) | Planned |
-| **S3** | PocketIC e2e: register graph → `CREATE GRAPH TYPE` + `TYPED` binding → typed `MATCH` | Planned |
+| **S0a** | Refactor `gleaph-graph-catalog`: `binding_map` **`GraphId` keys**; `try_property_schema_for_graph_id`; `GraphNotRegistered`; update unit tests | **Implemented** |
+| **S0b** | Router MemoryId 30–31; thread-local `GraphCatalog`; layout registry + inventory | **Implemented** |
+| **S1** | Catalog DDL on `gql_execute*`; name→`GraphId` via `ROUTER_GRAPH_CATALOG`; map `CatalogError` → `RouterError` | **Implemented** |
+| **S2** | Inject resolved schema at **plan** by **`GraphId`** (replace `NoSchema` when binding exists) | **Implemented** |
+| **S3** | PocketIC e2e: register graph → `CREATE GRAPH TYPE` + `TYPED` binding → query | **Implemented** (`router_graph_type_catalog`) |
 
 ---
 

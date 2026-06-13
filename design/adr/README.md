@@ -47,7 +47,7 @@ Last revised: YYYY-MM-DD
 | [0010](0010-index-sharding-extensibility.md) | Index sharding: defer split strategy; stable posting wire; router index resolution | accepted |
 | [0011](0011-gql-graph-resolution-and-catalog-scoping.md) | GQL graph resolution; `BidirectionalCatalog` for graph/index names; migrate stable keys to `GraphId` / `IndexNameId` | accepted |
 | [0012](0012-edge-index-direction-in-ddl.md) | Edge index direction in `CREATE INDEX FOR` (GQL patterns); wire label in graph-index keys; planner subset rule | accepted |
-| [0013](0013-gql-graph-type-catalog-on-router.md) | Mount `gleaph-graph-catalog` on router; `GraphId`-keyed schema bindings; GQL catalog DDL; planner schema bridge | proposed |
+| [0013](0013-gql-graph-type-catalog-on-router.md) | Mount `gleaph-graph-catalog` on router; `GraphId`-keyed schema bindings; GQL catalog DDL; planner schema bridge | accepted |
 | [0014](0014-graph-type-id-catalog-on-router.md) | Graph type name ↔ `GraphTypeId` catalog on router; migrate `type_map` and `TypeRef` off string keys (0013 follow-up) | proposed |
 
 When adding an ADR, link it from the relevant design doc and update this table.

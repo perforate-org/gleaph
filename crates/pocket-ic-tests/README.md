@@ -35,3 +35,7 @@ cargo test -p gleaph-pocket-ic-tests -- --nocapture
 | `router_gql_query::federated_drop_edge_index_property_eq_loses_federated_anchor` | `DROP INDEX` on multi-shard; indexed edge equality query fails without anchor |
 | `router_gql_query::drop_index_if_exists_is_idempotent` | `DROP INDEX … IF EXISTS` twice succeeds |
 | `router_gql_query::drop_index_without_if_exists_errors_when_missing` | Bare `DROP INDEX` on missing name returns `NotFound` |
+| `router_graph_type_catalog::catalog_create_graph_type_returns_zero_rows` | ADR 0013: `CREATE GRAPH TYPE` on router stable catalog |
+| `router_graph_type_catalog::catalog_typed_binding_persists_across_calls` | ADR 0013: `CREATE GRAPH … TYPED` + `gql_query` after catalog DDL |
+| `router_graph_type_catalog::catalog_create_graph_unregistered_name_rejected` | ADR 0013: `CREATE GRAPH` without federation registration → `NotFound` |
+| `router_graph_type_catalog::catalog_drop_graph_type_cascades_typed_binding` | ADR 0013: `DROP GRAPH TYPE` removes type; rebinding fails |
