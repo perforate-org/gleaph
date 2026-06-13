@@ -3,7 +3,7 @@
 Date: 2026-06-13  
 Status: accepted  
 Last revised: 2026-06-13  
-Anchor timestamp: 2026-06-13 11:35:08 UTC +0000
+Anchor timestamp: 2026-06-13 12:02:27 UTC +0000
 
 ## Revision history
 
@@ -15,6 +15,7 @@ Anchor timestamp: 2026-06-13 11:35:08 UTC +0000
 | 2026-06-13 | Design docs synced (`layers.md`, `operations.md`, `glossary.md`, `overview.md`, `operators.md`). |
 | 2026-06-13 | §1.4: R2 removed query `logical_graph_name`; transition / `GraphContextMismatch` path dropped. |
 | 2026-06-13 | Follow-up: `admin_set_indexed_*` → CREATE INDEX compat; PocketIC HOME + remote USE e2e. |
+| 2026-06-13 | **U2 (partial):** nested `USE GRAPH` chain peel + sequential multi-graph union merge at router. |
 
 ## Context
 
@@ -166,7 +167,9 @@ For each `PlanOp::UseGraph { graph_name, sub_plan }` in the physical plan:
 - **Dispatch** that sub-plan against **that graph’s** shard list and stats — not necessarily
   `effective_graph`.
 - v1 may reject plans where multiple distinct focused graphs appear and multi-graph federated
-  merge is not implemented; v2 fans out per graph and merges at router (product milestone).
+  merge is not implemented; **v2 (partial, 2026-06-13)** peels nested `USE GRAPH` chains to the
+  innermost graph and merges sequential top-level `UseGraph` segments with row union at the router.
+  HashJoin / CartesianProduct branches across graphs remain rejected.
 
 This unifies GQL **`USE`** with federation routing. It is distinct from “shards of one logical
 graph” in [layers.md](../gql/layers.md) only in **naming**: both use the same graph registry
@@ -341,7 +344,7 @@ flowchart TB
 | Graph / shard registry stable keys | **`GraphId`**, not string |
 | Index DDL metadata stable keys | **`GraphId` + `IndexNameId`**, not string |
 | Shard list per graph | `ROUTER_SHARDS_BY_GRAPH_ID` (new); not `ROUTER_SHARD_BY_GRAPH` (canister map) |
-| **`UseGraph` sub-plan routing** | Router `resolve_ingress_dispatch` (top-level remote `USE`, read path) |
+| **`UseGraph` sub-plan routing** | Router `resolve_ingress_dispatch` + `analyze_use_graph_v2_dispatch` (top-level remote `USE`, nested chain peel, sequential multi-graph union) |
 | Plan execution | Graph shard(s) |
 
 ---
@@ -360,7 +363,9 @@ flowchart TB
 
 - Router ingress complexity (session evaluation, HOME rules, validator seed sync)
 - Breaking Candid change for SDKs and PocketIC tests (**done** in R2)
-- Nested or multi-target `USE GRAPH` in one plan — still rejected; sequential multi-graph merge not implemented
+- Nested or multi-target `USE GRAPH` in one plan — **partial U2:** nested chain peel and
+  sequential top-level union merge implemented; HashJoin / CartesianProduct multi-graph merge
+  and prepared multi-graph plans still rejected
 - Validator + router must stay in sync for session graph seeding
 
 ---
@@ -391,7 +396,8 @@ flowchart TB
 | **I1** | `BidirectionalCatalog<IndexNameId>` per graph; `ROUTER_NAMED_INDEXES` / `ROUTER_INDEXED_PROPERTY_SET` keys use `GraphId` + `IndexNameId` | **Implemented** |
 | **U1a** | Reject plans with `UseGraph` ≠ effective graph | **Implemented** |
 | **HOME B** | `GraphRegistryEntry.is_home` + resolution | **Implemented** |
-| **U1b** | Remote `USE GRAPH` defocus + per-graph dispatch (read path) | **Implemented** — nested/multi-target USE still rejected |
+| **U1b** | Remote `USE GRAPH` defocus + per-graph dispatch (read path) | **Implemented** — nested chain peel via U2 |
+| **U2** | Multi-graph fan-out + router merge (nested peel, sequential union) | **Partial** — HashJoin cross-graph merge deferred |
 
 **Stable repack:** G1 + I1 share one ADR 0007 gate (new MemoryId pairs for graph + index name
 catalogs; rewrite regions 1–3, 22–23 as needed). Dev snapshot discard acceptable pre-production.

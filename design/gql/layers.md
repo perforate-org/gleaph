@@ -40,11 +40,11 @@ Policy: **`AGENT.md`** — Gleaph/IC-specific behavior stays out of `gql` and `g
 3. **Validate** — `gleaph_gql::validate_with_seed` with router `SessionGraphSeed` (`CURRENT_GRAPH` / `HOME_GRAPH` vs session effective graph)
 4. **Classify** — `classify_program` → read vs write flags
 5. **Authorize** — `router::rbac::authorize_adhoc_gql` (or prepared path)
-6. **Ingress dispatch** — `resolve_ingress_dispatch`: defocus top-level `USE GRAPH`, resolve focused `GraphId`, replan with that graph’s stats ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md) U1b)
+6. **Ingress dispatch** — `resolve_ingress_dispatch` + `analyze_use_graph_v2_dispatch`: defocus top-level or nested `USE GRAPH`, resolve focused `GraphId`, replan with target graph stats ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md) U1b/U2)
 7. **Plan** — `build_block_plan_with_schema(block, stats, schema)` with stats for dispatch `GraphId`
 8. **Encode** — `encode_block_plans` → bytes for `ExecutePlanArgs`
 9. **Dispatch** — router seed routing per dispatch `GraphId` (multi-shard federation merge on one logical graph)
-10. **Execute** — graph `execute_plan_query_bindings` (single store per shard; `UseGraph` stripped on remote ingress path)
+10. **Execute** — graph `execute_plan_query_bindings` (single store per shard; `UseGraph` stripped after router defocus / peel)
 11. **Materialize** — bindings → GQL values for response
 
 Prepared queries skip parse on hot path where a cached plan blob is stored.
@@ -70,10 +70,10 @@ Proposed mutation-only procedures (`GLEAPH.FINALIZE_BULK_INGEST`, `GLEAPH.VERTEX
 |---------|---------|
 | **Session current graph** | `SESSION SET GRAPH` in `session_activity`; default for plain `MATCH` when no `USE` ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)) |
 | **HOME graph** | `HOME_GRAPH` or sole visible graph; optional `GraphRegistryEntry.is_home` when multiple graphs are visible |
-| **USE GRAPH** (planner) | Focused sub-plan scope; router **defocuses** top-level `USE`, replans with target graph stats, dispatches to that graph’s shard list + index catalog (read path; pushdown rules in planner) |
+| **USE GRAPH** (planner) | Focused sub-plan scope; router **defocuses** or **peels** nested chains, replans with target graph stats, dispatches per graph (read path; pushdown rules in planner). Sequential top-level segments merge with row union at router (U2). |
 | **Federation** (router/graph) | Shards of **one** logical graph; `GlobalVertexId`, placement, encoded element ids |
 
-**Implemented (2026-06-13):** program-based graph resolution (R0–R2), validator session seed (R1), remote top-level `USE GRAPH` dispatch (U1b). **Not implemented:** nested or multi-target `USE GRAPH` in one plan, remote `USE` DML, cross-call session persistence.
+**Implemented (2026-06-13):** program-based graph resolution (R0–R2), validator session seed (R1), remote top-level `USE GRAPH` dispatch (U1b), nested `USE GRAPH` chain peel + sequential multi-graph union merge (U2 partial). **Not implemented:** HashJoin / CartesianProduct multi-graph merge, remote `USE` DML, prepared multi-graph plans, cross-call session persistence.
 
 Planner pushdown analysis (`analyze_remote_use_graph_pushdown`) runs at router ingress for remote `USE`; shard routing tests live in `crates/router/src/use_graph.rs` and PocketIC.
 

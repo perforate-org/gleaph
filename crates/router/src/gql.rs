@@ -16,7 +16,7 @@ use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, PostingHit, ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
-    GqlExecutionMode, GqlQueryResult, LabelTelemetryEventWire, MutationId,
+    ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelTelemetryEventWire, MutationId,
 };
 use ic_cdk::api::msg_caller;
 
@@ -482,22 +482,111 @@ async fn run_gql(
             "planner DML content does not match program classification".into(),
         ));
     }
-    let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+
+    let session_current =
+        crate::graph_context::session_current_after_activity(&store, &program, caller)?;
+    let v2 = crate::use_graph::analyze_use_graph_v2_dispatch(
+        plan,
+        &store,
+        caller,
+        session_current,
+        resolved.graph_id,
+    )?;
 
     let pmap =
         decode_gql_params_blob(params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    dispatch_plan_blob(
-        dispatch.dispatch_graph_id,
-        &plan_blob,
-        std::slice::from_ref(&plan),
-        &pmap,
-        params,
-        mode,
-        client_mutation_key,
-        &stats,
-    )
-    .await
+
+    match v2 {
+        crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
+            let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
+                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+            dispatch_plan_blob(
+                dispatch.dispatch_graph_id,
+                &plan_blob,
+                std::slice::from_ref(&plan),
+                &pmap,
+                params,
+                mode,
+                client_mutation_key,
+                &stats,
+            )
+            .await
+        }
+        crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
+            let stats = graph_stats_for(graph_id);
+            let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
+                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+            dispatch_plan_blob(
+                graph_id,
+                &plan_blob,
+                std::slice::from_ref(&plan),
+                &pmap,
+                params,
+                mode,
+                client_mutation_key,
+                &stats,
+            )
+            .await
+        }
+        crate::use_graph::UseGraphV2Dispatch::Multi { segments, plan } => {
+            dispatch_multi_graph_use_segments(
+                segments,
+                &plan,
+                requires_write_path,
+                &pmap,
+                params,
+                mode,
+                client_mutation_key,
+            )
+            .await
+        }
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_multi_graph_use_segments(
+    segments: Vec<crate::use_graph::UseGraphSegment>,
+    output_plan: &PhysicalPlan,
+    requires_write_path: bool,
+    pmap: &BTreeMap<String, gleaph_gql::Value>,
+    params: &[u8],
+    mode: GqlExecutionMode,
+    client_mutation_key: Option<&str>,
+) -> Result<GqlQueryResult, RouterError> {
+    if requires_write_path {
+        return Err(RouterError::InvalidArgument(
+            "DML in multi-graph USE GRAPH is not supported".into(),
+        ));
+    }
+    let mut merged = empty_execute_plan_result();
+    for segment in segments {
+        let seg_plan = crate::use_graph::defocused_plan_from_ops(output_plan.clone(), segment.ops);
+        let stats = graph_stats_for(segment.graph_id);
+        let plan_blob = encode_block_plans(std::slice::from_ref(&seg_plan), requires_write_path)
+            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        let result = dispatch_plan_blob(
+            segment.graph_id,
+            &plan_blob,
+            std::slice::from_ref(&seg_plan),
+            pmap,
+            params,
+            mode,
+            client_mutation_key,
+            &stats,
+        )
+        .await?;
+        merge_execute_plan_result(
+            &mut merged,
+            ExecutePlanResult {
+                row_count: result.row_count,
+                label_telemetry_events: Vec::new(),
+                rows_blob: result.rows_blob,
+            },
+            FederatedMergeMode::UnionRows,
+        )
+        .map_err(RouterError::InvalidArgument)?;
+    }
+    Ok(GqlQueryResult::from_merged(&merged))
 }
 
 /// Route and execute a plan blob (single- or multi-shard).

@@ -60,9 +60,27 @@ pub fn prepared_register(name: String, query: String) -> Result<(), RouterError>
             "planner DML content does not match program classification".into(),
         ));
     }
+    let session_current = graph_context::session_current_after_activity(&store, &program, caller)?;
+    let (graph_id, plan) = match crate::use_graph::analyze_use_graph_v2_dispatch(
+        plan,
+        &store,
+        caller,
+        session_current,
+        resolved.graph_id,
+    )? {
+        crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
+            (dispatch.dispatch_graph_id, plan)
+        }
+        crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => (graph_id, plan),
+        crate::use_graph::UseGraphV2Dispatch::Multi { .. } => {
+            return Err(RouterError::InvalidArgument(
+                "prepared queries with multi-graph USE GRAPH merge are not supported".into(),
+            ));
+        }
+    };
     let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let key = prepared_key(dispatch.dispatch_graph_id, &name);
+    let key = prepared_key(graph_id, &name);
     ROUTER_PREPARED_PLANS.with_borrow_mut(|m| {
         m.insert(
             key,

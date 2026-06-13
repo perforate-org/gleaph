@@ -1,11 +1,13 @@
-//! UseGraph ingress routing (ADR 0011 U1a/U1b).
+//! UseGraph ingress routing (ADR 0011 U1a/U1b/U2).
 
 use candid::Principal;
 use gleaph_gql::ast::{
     CompositeQueryExpr, GqlProgram, ObjectName, SimpleQueryStatement, Statement, StatementBlock,
 };
 use gleaph_gql::type_check::NoSchema;
-use gleaph_gql_planner::{PlanOp, analyze_remote_use_graph_pushdown, build_block_plan_with_schema};
+use gleaph_gql_planner::{
+    PhysicalPlan, PlanOp, analyze_remote_use_graph_pushdown, build_block_plan_with_schema,
+};
 use gleaph_graph_kernel::entry::GraphId;
 
 use crate::facade::store::RouterStore;
@@ -18,6 +20,30 @@ use crate::state::RouterError;
 pub struct IngressDispatch {
     pub dispatch_graph_id: GraphId,
     pub plan_block: StatementBlock,
+}
+
+/// One graph-local fragment after v2 `USE GRAPH` analysis.
+#[derive(Clone, Debug)]
+pub struct UseGraphSegment {
+    pub graph_id: GraphId,
+    pub ops: Vec<PlanOp>,
+}
+
+/// Router-side routing decision for multi-graph `USE GRAPH` (ADR 0011 U2).
+#[derive(Clone, Debug)]
+pub enum UseGraphV2Dispatch {
+    /// Plan executes on the ingress dispatch graph (no remote focused graphs).
+    EffectiveGraph { plan: PhysicalPlan },
+    /// Nested or single remote `USE GRAPH` peeled to one target graph.
+    Single {
+        graph_id: GraphId,
+        plan: PhysicalPlan,
+    },
+    /// Sequential top-level `UseGraph` segments merged at router (union rows).
+    Multi {
+        segments: Vec<UseGraphSegment>,
+        plan: PhysicalPlan,
+    },
 }
 
 /// Resolve which graph and statement block to plan/dispatch.
@@ -46,11 +72,6 @@ pub fn resolve_ingress_dispatch(
                 "DML in remote USE GRAPH is not supported".into(),
             ));
         }
-        if !collect_use_graph_names(&plan.ops).is_empty() {
-            return Err(RouterError::InvalidArgument(
-                "nested USE GRAPH is not supported".into(),
-            ));
-        }
         if focused_id != session_effective {
             let pushdown =
                 analyze_remote_use_graph_pushdown(&graph_name.parts.join("."), &plan.ops);
@@ -68,11 +89,78 @@ pub fn resolve_ingress_dispatch(
         });
     }
 
-    ensure_no_mismatched_use_graph(store, program, block, caller, session_effective)?;
     Ok(IngressDispatch {
         dispatch_graph_id: session_effective,
         plan_block: block.clone(),
     })
+}
+
+/// Analyze a built physical plan for multi-graph `USE GRAPH` routing (U2).
+pub fn analyze_use_graph_v2_dispatch(
+    plan: PhysicalPlan,
+    store: &RouterStore,
+    caller: Principal,
+    session_current: Option<GraphId>,
+    session_effective: GraphId,
+) -> Result<UseGraphV2Dispatch, RouterError> {
+    if collect_use_graph_names(&plan.ops).is_empty() {
+        return Ok(UseGraphV2Dispatch::EffectiveGraph { plan });
+    }
+
+    if let Some((chain, inner_ops)) = try_peel_use_graph_chain(&plan.ops) {
+        if collect_use_graph_names(&inner_ops).is_empty() {
+            let graph_id = resolve_use_graph_chain_target(
+                store,
+                caller,
+                session_current,
+                session_effective,
+                &chain,
+                &inner_ops,
+            )?;
+            let defocused = defocused_plan_from_ops(plan, inner_ops);
+            return Ok(UseGraphV2Dispatch::Single {
+                graph_id,
+                plan: defocused,
+            });
+        }
+    }
+
+    if let Some(segments) = try_split_sequential_use_graph_segments(&plan.ops) {
+        let mut resolved = Vec::with_capacity(segments.len());
+        for (graph_name, ops) in segments {
+            let name = object_name_from_parts(&graph_name);
+            let graph_id = graph_context::resolve_graph_reference_for_plan(
+                store,
+                &name,
+                caller,
+                session_current,
+                session_effective,
+            )?;
+            validate_remote_use_graph_segment(
+                store,
+                caller,
+                session_current,
+                session_effective,
+                graph_id,
+                &graph_name,
+                &ops,
+            )?;
+            resolved.push(UseGraphSegment { graph_id, ops });
+        }
+        return Ok(UseGraphV2Dispatch::Multi {
+            segments: resolved,
+            plan,
+        });
+    }
+
+    if all_use_graphs_match_effective(store, caller, session_current, session_effective, &plan.ops)?
+    {
+        return Ok(UseGraphV2Dispatch::EffectiveGraph { plan });
+    }
+
+    Err(RouterError::InvalidArgument(
+        "multi-graph USE GRAPH is not supported for this plan shape".into(),
+    ))
 }
 
 fn try_defocus_top_level_use_graph(block: &StatementBlock) -> Option<(ObjectName, StatementBlock)> {
@@ -113,19 +201,96 @@ fn try_defocus_top_level_use_graph(block: &StatementBlock) -> Option<(ObjectName
     ))
 }
 
-fn ensure_no_mismatched_use_graph(
+fn object_name_from_parts(parts: &[String]) -> ObjectName {
+    ObjectName {
+        parts: parts.to_vec(),
+    }
+}
+
+pub(crate) fn defocused_plan_from_ops(plan: PhysicalPlan, ops: Vec<PlanOp>) -> PhysicalPlan {
+    let mut defocused = PhysicalPlan::from_ops(ops);
+    defocused.diagnostics = plan.diagnostics;
+    defocused
+}
+
+fn resolve_use_graph_chain_target(
     store: &RouterStore,
-    program: &GqlProgram,
-    block: &StatementBlock,
     caller: Principal,
+    session_current: Option<GraphId>,
     session_effective: GraphId,
+    chain: &[Vec<String>],
+    inner_ops: &[PlanOp],
+) -> Result<GraphId, RouterError> {
+    let inner_name = chain
+        .last()
+        .ok_or_else(|| RouterError::InvalidArgument("empty USE GRAPH chain".into()))?;
+    let name = object_name_from_parts(inner_name);
+    let graph_id = graph_context::resolve_graph_reference_for_plan(
+        store,
+        &name,
+        caller,
+        session_current,
+        session_effective,
+    )?;
+    validate_remote_use_graph_segment(
+        store,
+        caller,
+        session_current,
+        session_effective,
+        graph_id,
+        inner_name,
+        inner_ops,
+    )?;
+    Ok(graph_id)
+}
+
+fn validate_remote_use_graph_segment(
+    store: &RouterStore,
+    caller: Principal,
+    session_current: Option<GraphId>,
+    session_effective: GraphId,
+    graph_id: GraphId,
+    graph_name_parts: &[String],
+    ops: &[PlanOp],
 ) -> Result<(), RouterError> {
-    let session_current = graph_context::session_current_after_activity(store, program, caller)?;
-    let stats = graph_stats_for(session_effective);
-    let plan = build_block_plan_with_schema(block, Some(&stats), &NoSchema)
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    for parts in collect_use_graph_names(&plan.ops) {
-        let name = ObjectName { parts };
+    let _ = (store, caller, session_current);
+    if ops.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "empty USE GRAPH sub-plan".into(),
+        ));
+    }
+    if plan_has_dml_ops(ops) {
+        return Err(RouterError::InvalidArgument(
+            "DML in remote USE GRAPH is not supported".into(),
+        ));
+    }
+    if graph_id != session_effective {
+        let graph_name = graph_name_parts.join(".");
+        let pushdown = analyze_remote_use_graph_pushdown(&graph_name, ops);
+        if !pushdown.supported {
+            return Err(RouterError::InvalidArgument(
+                pushdown
+                    .reason
+                    .unwrap_or_else(|| "remote USE GRAPH is not supported".into()),
+            ));
+        }
+    }
+    Ok(())
+}
+
+fn plan_has_dml_ops(ops: &[PlanOp]) -> bool {
+    PhysicalPlan::from_ops(ops.to_vec()).has_dml()
+}
+
+fn all_use_graphs_match_effective(
+    store: &RouterStore,
+    caller: Principal,
+    session_current: Option<GraphId>,
+    session_effective: GraphId,
+    ops: &[PlanOp],
+) -> Result<bool, RouterError> {
+    for parts in collect_use_graph_names(ops) {
+        let name = object_name_from_parts(&parts);
         let focused = graph_context::resolve_graph_reference_for_plan(
             store,
             &name,
@@ -134,13 +299,62 @@ fn ensure_no_mismatched_use_graph(
             session_effective,
         )?;
         if focused != session_effective {
-            return Err(RouterError::InvalidArgument(format!(
-                "multi-graph USE GRAPH is not supported (focused graph `{}` differs from effective graph)",
-                name.parts.join(".")
-            )));
+            return Ok(false);
         }
     }
-    Ok(())
+    Ok(true)
+}
+
+fn try_peel_use_graph_chain(ops: &[PlanOp]) -> Option<(Vec<Vec<String>>, Vec<PlanOp>)> {
+    let mut chain = Vec::new();
+    let mut current = ops;
+    loop {
+        if current.len() != 1 {
+            break;
+        }
+        match &current[0] {
+            PlanOp::InlineProcedureCall { sub_plan, .. } => current = &sub_plan.ops,
+            PlanOp::UseGraph {
+                graph_name,
+                sub_plan: Some(sub),
+            } => {
+                chain.push(graph_name.iter().map(|s| s.to_string()).collect());
+                current = sub;
+            }
+            _ => break,
+        }
+    }
+    if chain.is_empty() {
+        None
+    } else {
+        Some((chain, current.to_vec()))
+    }
+}
+
+fn try_split_sequential_use_graph_segments(
+    ops: &[PlanOp],
+) -> Option<Vec<(Vec<String>, Vec<PlanOp>)>> {
+    if ops.len() < 2 {
+        return None;
+    }
+    let mut segments = Vec::with_capacity(ops.len());
+    for op in ops {
+        let PlanOp::UseGraph {
+            graph_name,
+            sub_plan: Some(sub),
+        } = op
+        else {
+            return None;
+        };
+        if !collect_use_graph_names(sub).is_empty() {
+            return None;
+        }
+        segments.push((
+            graph_name.iter().map(|s| s.to_string()).collect(),
+            sub.clone(),
+        ));
+    }
+    Some(segments)
 }
 
 fn collect_use_graph_names(ops: &[PlanOp]) -> Vec<Vec<String>> {
@@ -253,7 +467,7 @@ mod tests {
     }
 
     #[test]
-    fn nested_use_graph_in_inline_call_rejected() {
+    fn nested_use_graph_in_inline_call_defocuses_to_innermost() {
         let store = RouterStore::new();
         register_graph(&store, "tenant_a", true);
         register_graph(&store, "tenant_b", false);
@@ -263,12 +477,27 @@ mod tests {
         let effective = graph_context::resolve_graph_context(&store, &program, caller)
             .expect("resolve")
             .graph_id;
-        let err = resolve_ingress_dispatch(&store, &program, &block, caller, effective)
-            .expect_err("expected nested USE rejection");
+        let dispatch = resolve_ingress_dispatch(&store, &program, &block, caller, effective)
+            .expect("dispatch");
+        assert_eq!(dispatch.dispatch_graph_id, effective);
+        let stats = graph_stats_for(dispatch.dispatch_graph_id);
+        let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), &NoSchema)
+            .expect("plan");
+        let session_current =
+            graph_context::session_current_after_activity(&store, &program, caller).expect("sess");
+        let v2 = analyze_use_graph_v2_dispatch(plan, &store, caller, session_current, effective)
+            .expect("v2");
+        let UseGraphV2Dispatch::Single { graph_id, plan } = v2 else {
+            panic!("expected single-graph v2 dispatch, got {v2:?}");
+        };
+        assert_eq!(graph_catalog::lookup_graph_id("tenant_b"), Some(graph_id));
         assert!(
-            err.to_string().contains("multi-graph USE GRAPH")
-                || err.to_string().contains("nested USE GRAPH"),
-            "unexpected error: {err}"
+            !plan
+                .ops
+                .iter()
+                .any(|op| matches!(op, PlanOp::UseGraph { .. })),
+            "defocused plan should not contain UseGraph: {:?}",
+            plan.ops
         );
     }
 

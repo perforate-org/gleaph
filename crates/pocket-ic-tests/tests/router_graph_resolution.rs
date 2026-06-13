@@ -36,3 +36,15 @@ fn gql_query_remote_use_graph_defocuses_to_focused_graph() {
 
     assert_eq!(result.row_count, 1);
 }
+
+#[test]
+fn gql_query_nested_use_graph_defocuses_to_innermost() {
+    let env = install_two_graph_federation();
+    let _ = e2e_insert_vertex(&env, env.graph_dest);
+
+    let query =
+        format!("USE {GRAPH_HOME_NAME} {{ USE {GRAPH_REMOTE_NAME} {{ MATCH (n) RETURN n }} }}");
+    let result = gql_query_as_admin(&env, &query);
+
+    assert_eq!(result.row_count, 1);
+}
