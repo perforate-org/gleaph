@@ -2,6 +2,7 @@
 
 use gleaph_gql::ast::{Statement, StatementBlock};
 use gleaph_gql::type_check::{GraphTypePropertySchema, NoSchema, PropertySchema};
+use gleaph_gql::validate::SessionGraphSeed;
 use gleaph_graph_catalog::{CatalogError, GraphNameLookup};
 use gleaph_graph_kernel::entry::GraphId;
 
@@ -77,4 +78,17 @@ pub(crate) fn property_schema_for_planning<'a>(
     } else {
         open as &dyn PropertySchema
     })
+}
+
+/// Schema-aware validation for the defocused ingress block (ADR 0013 §4).
+pub(crate) fn validate_block_schema_for_graph(
+    block: &StatementBlock,
+    seed: &SessionGraphSeed,
+    graph_id: GraphId,
+) -> Result<(), RouterError> {
+    let open = NoSchema;
+    let mut typed = None;
+    let schema = property_schema_for_planning(graph_id, &open, &mut typed)?;
+    gleaph_gql::validate::validate_block_schema_with_seed(block, Some(seed), schema)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))
 }

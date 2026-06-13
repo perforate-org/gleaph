@@ -479,6 +479,11 @@ async fn run_gql(
         caller,
         resolved.graph_id,
     )?;
+    crate::facade::stable::graph_type_catalog::validate_block_schema_for_graph(
+        &dispatch.plan_block,
+        &seed,
+        dispatch.dispatch_graph_id,
+    )?;
     let stats = graph_stats_for(dispatch.dispatch_graph_id);
     let open = NoSchema;
     let mut typed = None;

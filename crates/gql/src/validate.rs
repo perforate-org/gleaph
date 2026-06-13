@@ -32,13 +32,12 @@ use ddl::{
 };
 use dml::{validate_delete, validate_insert, validate_remove_items, validate_set_items};
 
+use crate::type_check::{self, PropertySchema, WarningKind};
+
 /// Result alias for validation.
 type VResult = Result<(), GqlError>;
 
 /// Validates a parsed [`GqlProgram`].
-///
-/// Returns `Ok(())` if the program passes all semantic checks, or a
-/// [`GqlError::Validation`] describing the first violation found.
 pub fn validate(program: &GqlProgram) -> VResult {
     validate_with_seed(program, None)
 }
@@ -50,6 +49,33 @@ pub fn validate(program: &GqlProgram) -> VResult {
 /// opaque catalog names (library / test default).
 pub fn validate_with_seed(program: &GqlProgram, seed: Option<&SessionGraphSeed>) -> VResult {
     session_graph::with_validation_seed(seed, || validate_program(program))
+}
+
+/// Schema-aware validation for the transaction block routed to one logical graph (ADR 0013 §4).
+///
+/// Promotes graph-type constraint violations from [`type_check`] (edge direction, endpoint
+/// constraints) to validation errors. Open-world [`NoSchema`] produces no schema failures.
+pub fn validate_block_schema_with_seed(
+    block: &StatementBlock,
+    seed: Option<&SessionGraphSeed>,
+    schema: &dyn PropertySchema,
+) -> VResult {
+    session_graph::with_validation_seed(seed, || validate_block_schema_constraints(block, schema))
+}
+
+fn validate_block_schema_constraints(
+    block: &StatementBlock,
+    schema: &dyn PropertySchema,
+) -> VResult {
+    for warning in type_check::type_check_statement_block_with_schema(block, schema) {
+        match warning.kind {
+            WarningKind::SchemaEdgeDirectionMismatch | WarningKind::ImpossiblePattern => {
+                return Err(GqlError::Validation(warning.message));
+            }
+            _ => {}
+        }
+    }
+    Ok(())
 }
 
 fn validate_program(program: &GqlProgram) -> VResult {

@@ -2375,3 +2375,49 @@ fn ingress_seed_seeds_graph_scope_for_bound_graph_variable() {
     };
     assert!(parse_and_validate_with_seed("USE g MATCH (n) RETURN n", Some(&seed)).is_ok());
 }
+
+// ── Graph type schema bridge (ADR 0013 §4) ──
+
+use crate::ast::ValueType;
+use crate::type_check::schema::{NoSchema, PropertySchema};
+
+struct DirectedKnowsSchema;
+
+impl PropertySchema for DirectedKnowsSchema {
+    fn node_property_types(&self, _labels: &[String]) -> Vec<(String, ValueType, bool)> {
+        vec![]
+    }
+
+    fn edge_property_types(&self, _label: &str) -> Vec<(String, ValueType, bool)> {
+        vec![]
+    }
+
+    fn edge_is_undirected(&self, label: &str) -> Option<bool> {
+        (label == "KNOWS").then_some(false)
+    }
+}
+
+fn statement_block_from(input: &str) -> StatementBlock {
+    parser::parse(input)
+        .expect("parse")
+        .transaction_activity
+        .expect("tx")
+        .body
+        .expect("body")
+}
+
+#[test]
+fn validate_block_schema_rejects_undirected_match_on_directed_edge() {
+    let block = statement_block_from("MATCH ()~[:KNOWS]~() RETURN 1");
+    let err = validate_block_schema_with_seed(&block, None, &DirectedKnowsSchema).unwrap_err();
+    assert!(
+        err.to_string().contains("DIRECTED"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn validate_block_schema_is_noop_with_open_world_schema() {
+    let block = statement_block_from("MATCH ()~[:KNOWS]~() RETURN 1");
+    validate_block_schema_with_seed(&block, None, &NoSchema).expect("open schema");
+}

@@ -37,7 +37,7 @@ Policy: **`AGENT.md`** — Gleaph/IC-specific behavior stays out of `gql` and `g
 
 1. **Parse** — `gleaph_gql::parser::parse`
 2. **Resolve graph** — router `resolve_graph_context` from `session_activity` + HOME / sole-graph default ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)); query APIs do **not** take a separate Candid graph name
-3. **Validate** — `gleaph_gql::validate_with_seed` with router `SessionGraphSeed` (`CURRENT_GRAPH` / `HOME_GRAPH` vs session effective graph)
+3. **Validate** — `gleaph_gql::validate_with_seed` with router `SessionGraphSeed`; after ingress dispatch, **`validate_block_schema_with_seed`** on the defocused block with catalog-resolved `PropertySchema` when a binding exists ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md) §4)
 4. **Classify** — `classify_program` → read vs write flags
 5. **Authorize** — `router::rbac::authorize_adhoc_gql` (or prepared path)
 6. **Ingress dispatch** — `resolve_ingress_dispatch` + `analyze_use_graph_v2_dispatch`: defocus top-level or nested `USE GRAPH`, resolve focused `GraphId`, replan with target graph stats ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md) U1b/U2)

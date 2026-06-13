@@ -261,7 +261,7 @@ stats load per `GraphId` in ADR 0011 U2).
 | **S0a** | Refactor `gleaph-graph-catalog`: `binding_map` **`GraphId` keys**; `try_property_schema_for_graph_id`; `GraphNotRegistered`; update unit tests | **Implemented** |
 | **S0b** | Router MemoryId 30–31; thread-local `GraphCatalog`; layout registry + inventory | **Implemented** |
 | **S1** | Catalog DDL on `gql_execute*`; name→`GraphId` via `ROUTER_GRAPH_CATALOG`; map `CatalogError` → `RouterError` | **Implemented** |
-| **S2** | Inject resolved schema at **plan** by **`GraphId`** (replace `NoSchema` when binding exists) | **Implemented** |
+| **S2** | Inject resolved schema at **plan + validate** by **`GraphId`** (replace `NoSchema` when binding exists) | **Implemented** |
 | **S3** | PocketIC e2e: register graph → `CREATE GRAPH TYPE` + `TYPED` binding → query | **Implemented** (`router_graph_type_catalog`) |
 
 ---
