@@ -12,10 +12,12 @@ use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult};
 
 use crate::execution_path::check_prepared_execution_path;
 use crate::facade::stable::ROUTER_PREPARED_PLANS;
+use crate::facade::stable::graph_catalog::lookup_graph_id;
 use crate::gql::dispatch_plan_blob;
 use crate::index_catalog::graph_stats_for;
 use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute};
 use crate::state::RouterError;
+use gleaph_graph_kernel::entry::GraphId;
 
 #[derive(Clone, Debug)]
 pub struct PreparedPlanRecord {
@@ -38,7 +40,9 @@ pub fn prepared_register(
         .body
         .as_ref()
         .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
-    let stats = graph_stats_for(&logical_graph_name);
+    let graph_id = lookup_graph_id(&logical_graph_name)
+        .ok_or_else(|| RouterError::NotFound(logical_graph_name.clone()))?;
+    let stats = graph_stats_for(graph_id);
     let plan = build_block_plan_with_schema(block, Some(&stats), &NoSchema)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let requires_write_path = plan.has_dml();
@@ -50,7 +54,7 @@ pub fn prepared_register(
     }
     let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let key = prepared_key(&logical_graph_name, &name);
+    let key = prepared_key(graph_id, &name);
     ROUTER_PREPARED_PLANS.with_borrow_mut(|m| {
         m.insert(
             key,
@@ -65,7 +69,9 @@ pub fn prepared_register(
 
 pub fn prepared_drop(logical_graph_name: &str, name: &str) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
-    let key = prepared_key(logical_graph_name, name);
+    let graph_id = lookup_graph_id(logical_graph_name)
+        .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
+    let key = prepared_key(graph_id, name);
     ROUTER_PREPARED_PLANS.with_borrow_mut(|m| {
         m.remove(&key);
     });
@@ -155,7 +161,9 @@ async fn prepared_execute(
     client_mutation_key: Option<&str>,
 ) -> Result<GqlQueryResult, RouterError> {
     authorize_prepared_execute(&msg_caller())?;
-    let key = prepared_key(&logical_graph_name, &name);
+    let graph_id = lookup_graph_id(&logical_graph_name)
+        .ok_or_else(|| RouterError::NotFound(logical_graph_name.clone()))?;
+    let key = prepared_key(graph_id, &name);
     let record = ROUTER_PREPARED_PLANS
         .with_borrow(|m| m.get(&key).cloned())
         .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
@@ -164,7 +172,7 @@ async fn prepared_execute(
         decode_gql_params_blob(&params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let (_, plans) = gleaph_gql_planner::wire::decode_plan_bundle(&record.plan_blob)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let stats = graph_stats_for(&logical_graph_name);
+    let stats = graph_stats_for(graph_id);
     dispatch_plan_blob(
         &logical_graph_name,
         &record.plan_blob,
@@ -178,17 +186,19 @@ async fn prepared_execute(
     .await
 }
 
-pub(crate) fn prepared_key(logical_graph_name: &str, name: &str) -> String {
-    format!("{logical_graph_name}\0{name}")
+pub(crate) fn prepared_key(graph_id: GraphId, name: &str) -> String {
+    format!("{}\0{name}", graph_id.raw())
 }
 
 #[cfg(test)]
 mod tests {
     use super::prepared_key;
+    use gleaph_graph_kernel::entry::GraphId;
 
     #[test]
     fn prepared_key_uses_nul_separator() {
-        assert_eq!(prepared_key("graph", "q1"), "graph\0q1");
-        assert_ne!(prepared_key("graph", "q1"), prepared_key("graph", "q2"));
+        let graph = GraphId::from_raw(7);
+        assert_eq!(prepared_key(graph, "q1"), "7\0q1");
+        assert_ne!(prepared_key(graph, "q1"), prepared_key(graph, "q2"));
     }
 }

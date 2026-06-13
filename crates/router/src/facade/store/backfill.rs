@@ -7,6 +7,8 @@ use gleaph_graph_kernel::federation::{
     BackfillShardState, PostingBackfillArgs, PostingBackfillResult, ShardId, ShardRegistryEntry,
 };
 
+use super::super::stable::graph_catalog::lookup_graph_id;
+
 use super::super::stable::ROUTER_LABEL_BACKFILL_STATE;
 use super::super::stable::ROUTER_PROPERTY_BACKFILL_STATE;
 use super::RouterStore;
@@ -194,11 +196,13 @@ impl RouterStore {
         logical_graph_name: &str,
         shard_id: ShardId,
     ) -> Result<ShardRegistryEntry, RouterError> {
+        let graph_id = lookup_graph_id(logical_graph_name)
+            .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
         let entry = self.resolve_shard(shard_id)?;
-        if entry.logical_graph_name != logical_graph_name {
+        if entry.graph_id != graph_id {
             return Err(RouterError::InvalidArgument(format!(
                 "shard {shard_id} is registered for graph {}, not {logical_graph_name}",
-                entry.logical_graph_name
+                entry.graph_id
             )));
         }
         Ok(entry)
@@ -209,7 +213,11 @@ impl RouterStore {
 mod tests {
     use super::*;
     use crate::init::RouterInitArgs;
-    use crate::types::AdminRegisterShardArgs;
+    use crate::types::{
+        AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ProvisioningState,
+    };
+    use gleaph_graph_kernel::entry::GraphId;
+    use std::collections::BTreeSet;
 
     fn test_init_args() -> RouterInitArgs {
         RouterInitArgs {
@@ -221,6 +229,25 @@ mod tests {
 
     fn graph_principal(n: u8) -> Principal {
         Principal::from_slice(&[n])
+    }
+
+    fn register_test_graph(store: &RouterStore, admin: Principal, name: &str) {
+        store
+            .admin_register_graph(
+                admin,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    graph_name: name.to_owned(),
+                    canister_id: Principal::management_canister(),
+                    owner: admin,
+                    admins: BTreeSet::new(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                },
+            )
+            .expect("register graph");
     }
 
     #[test]
@@ -240,6 +267,7 @@ mod tests {
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
 
         let graph = graph_principal(1);
         let index = graph_principal(2);
@@ -291,6 +319,8 @@ mod tests {
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
+        register_test_graph(&store, admin, "other.graph");
 
         futures::executor::block_on(store.admin_register_shard(
             admin,
@@ -323,6 +353,7 @@ mod tests {
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
 
         futures::executor::block_on(store.admin_register_shard(
             admin,
@@ -367,6 +398,7 @@ mod tests {
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
 
         let graph = graph_principal(1);
         let index = graph_principal(2);

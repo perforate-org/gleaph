@@ -1,5 +1,6 @@
 //! Mutation idempotency and client mutation journal.
 
+use super::super::stable::graph_catalog::lookup_graph_id;
 use super::super::stable::label_telemetry::{
     ClientMutationKey, RouterMutationRecord, RouterMutationShard,
 };
@@ -54,8 +55,9 @@ impl RouterStore {
         now: u64,
     ) -> Result<ClientMutationReservation, RouterError> {
         validate_client_mutation_key(client_key)?;
-        let key =
-            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        let graph_id = lookup_graph_id(logical_graph_name)
+            .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
+        let key = ClientMutationKey::new(caller, graph_id, client_key.to_owned());
         if let Some(mut record) = ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key)) {
             if now.saturating_sub(record.created_at_ns) > CLIENT_MUTATION_KEY_TTL_NS {
                 return Err(RouterError::InvalidArgument(
@@ -107,8 +109,7 @@ impl RouterStore {
         logical_graph_name: &str,
         client_key: &str,
     ) -> Option<RouterMutationRecord> {
-        let key =
-            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        let key = client_mutation_key(caller, logical_graph_name, client_key).ok()?;
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key))
     }
 
@@ -121,8 +122,7 @@ impl RouterStore {
         resolved_properties: ResolvedPropertyTable,
         shards: Vec<RouterMutationShard>,
     ) -> Result<(), RouterError> {
-        let key =
-            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        let key = client_mutation_key(caller, logical_graph_name, client_key)?;
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -147,8 +147,7 @@ impl RouterStore {
         resolved_properties: ResolvedPropertyTable,
         row_count: u64,
     ) -> Result<(), RouterError> {
-        let key =
-            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        let key = client_mutation_key(caller, logical_graph_name, client_key)?;
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -170,8 +169,7 @@ impl RouterStore {
         logical_graph_name: &str,
         client_key: &str,
     ) -> Result<(), RouterError> {
-        let key =
-            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        let key = client_mutation_key(caller, logical_graph_name, client_key)?;
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -191,8 +189,7 @@ impl RouterStore {
         row_count: u64,
         events: Vec<LabelTelemetryEventWire>,
     ) -> Result<(), RouterError> {
-        let key =
-            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        let key = client_mutation_key(caller, logical_graph_name, client_key)?;
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -218,8 +215,7 @@ impl RouterStore {
         client_key: &str,
         shard_id: ShardId,
     ) -> Result<(), RouterError> {
-        let key =
-            ClientMutationKey::new(caller, logical_graph_name.to_owned(), client_key.to_owned());
+        let key = client_mutation_key(caller, logical_graph_name, client_key)?;
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -261,4 +257,18 @@ impl RouterStore {
                 .fold(0u64, |total, shard| total.saturating_add(shard.row_count)),
         )
     }
+}
+
+fn client_mutation_key(
+    caller: Principal,
+    logical_graph_name: &str,
+    client_key: &str,
+) -> Result<ClientMutationKey, RouterError> {
+    let graph_id = lookup_graph_id(logical_graph_name)
+        .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
+    Ok(ClientMutationKey::new(
+        caller,
+        graph_id,
+        client_key.to_owned(),
+    ))
 }

@@ -1,6 +1,7 @@
 //! Router-owned label telemetry records.
 
 use candid::{CandidType, Decode, Encode, Principal};
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
     LabelTelemetryEventWire, MutationId, ResolvedLabelTable, ResolvedPropertyTable,
@@ -140,15 +141,15 @@ impl Storable for AppliedLabelTelemetryKey {
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub struct ClientMutationKey {
     pub caller: Principal,
-    pub logical_graph_name: String,
+    pub graph_id: GraphId,
     pub client_key: String,
 }
 
 impl ClientMutationKey {
-    pub fn new(caller: Principal, logical_graph_name: String, client_key: String) -> Self {
+    pub fn new(caller: Principal, graph_id: GraphId, client_key: String) -> Self {
         Self {
             caller,
-            logical_graph_name,
+            graph_id,
             client_key,
         }
     }

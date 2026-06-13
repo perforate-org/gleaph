@@ -5,6 +5,7 @@ use std::future::Future;
 use candid::Principal;
 use gleaph_graph_kernel::plan_exec::{LabelTelemetryEventWire, ShardEventSeq};
 
+use super::super::stable::graph_catalog::lookup_graph_id;
 use super::RouterStore;
 use crate::state::RouterError;
 use crate::types::{AdminLabelTelemetryReplayStepArgs, AdminLabelTelemetryReplayStepResult};
@@ -71,11 +72,13 @@ impl RouterStore {
         logical_graph_name: &str,
         shard_id: gleaph_graph_kernel::federation::ShardId,
     ) -> Result<gleaph_graph_kernel::federation::ShardRegistryEntry, RouterError> {
+        let graph_id = lookup_graph_id(logical_graph_name)
+            .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
         let entry = self.resolve_shard(shard_id)?;
-        if entry.logical_graph_name != logical_graph_name {
+        if entry.graph_id != graph_id {
             return Err(RouterError::InvalidArgument(format!(
                 "shard {shard_id} is registered for graph {}, not {logical_graph_name}",
-                entry.logical_graph_name
+                entry.graph_id
             )));
         }
         Ok(entry)
@@ -86,10 +89,13 @@ impl RouterStore {
 mod tests {
     use super::*;
     use crate::init::RouterInitArgs;
-    use crate::types::AdminRegisterShardArgs;
-    use gleaph_graph_kernel::entry::VertexLabelId;
+    use crate::types::{
+        AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ProvisioningState,
+    };
+    use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::plan_exec::LabelUsageDelta;
+    use std::collections::BTreeSet;
 
     fn test_init_args() -> RouterInitArgs {
         RouterInitArgs {
@@ -103,12 +109,32 @@ mod tests {
         Principal::from_slice(&[n])
     }
 
+    fn register_test_graph(store: &RouterStore, admin: Principal, name: &str) {
+        store
+            .admin_register_graph(
+                admin,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    graph_name: name.to_owned(),
+                    canister_id: Principal::management_canister(),
+                    owner: admin,
+                    admins: BTreeSet::new(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                },
+            )
+            .expect("register graph");
+    }
+
     #[test]
     fn admin_label_telemetry_replay_step_drains_outbox() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
         let label = VertexLabelId::from_raw(3);
 
         futures::executor::block_on(store.admin_register_shard(
@@ -195,6 +221,7 @@ mod tests {
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
         let label = VertexLabelId::from_raw(5);
 
         futures::executor::block_on(store.admin_register_shard(

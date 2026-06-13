@@ -9,6 +9,7 @@ pub mod facade;
 mod federation;
 mod gql;
 mod graph_client;
+mod graph_context;
 mod index_catalog;
 #[cfg_attr(
     not(target_family = "wasm"),
@@ -75,6 +76,11 @@ fn resolve_graph(
 #[query]
 fn resolve_shard(shard_id: types::ShardId) -> Result<types::ShardRegistryEntry, RouterError> {
     canister::resolve_shard(shard_id)
+}
+
+#[query]
+fn lookup_graph_id(graph_name: String) -> Result<gleaph_graph_kernel::entry::GraphId, RouterError> {
+    canister::lookup_graph_id(graph_name)
 }
 
 #[query]

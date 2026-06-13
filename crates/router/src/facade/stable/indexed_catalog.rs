@@ -1,12 +1,12 @@
-//! Row-oriented index catalog in stable memory (ADR 0009 §4).
+//! Row-oriented index catalog in stable memory (ADR 0009 §4, ADR 0011 id keys).
 //!
-//! - `ROUTER_NAMED_INDEXES`: `(graph, index_name) → IndexDefRecord`
-//! - `ROUTER_INDEXED_PROPERTY_SET`: `(graph, kind, property_id)` membership for planner + fan-out
+//! - `ROUTER_NAMED_INDEXES`: `(graph_id, index_name_id) → IndexDefRecord`
+//! - `ROUTER_INDEXED_PROPERTY_SET`: `(graph_id, kind, property_id)` membership for planner + fan-out
 
 use std::borrow::Cow;
 use std::ops::Bound;
 
-use gleaph_graph_kernel::entry::PropertyId;
+use gleaph_graph_kernel::entry::{GraphId, IndexNameId, PropertyId};
 use gleaph_graph_kernel::index::IndexedPropertyKind;
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 
@@ -17,36 +17,36 @@ use crate::state::RouterError;
 const KIND_VERTEX: u8 = 0;
 const KIND_EDGE: u8 = 1;
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct NamedIndexKey {
-    pub graph: String,
-    pub index_name: String,
+    pub graph_id: GraphId,
+    pub index_name_id: IndexNameId,
 }
 
 impl NamedIndexKey {
-    pub fn new(graph: impl Into<String>, index_name: impl Into<String>) -> Self {
+    pub const fn new(graph_id: GraphId, index_name_id: IndexNameId) -> Self {
         Self {
-            graph: graph.into(),
-            index_name: index_name.into(),
+            graph_id,
+            index_name_id,
         }
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct IndexedPropertyKey {
-    pub graph: String,
+    pub graph_id: GraphId,
     kind_tag: u8,
     pub property_id: PropertyId,
 }
 
 impl IndexedPropertyKey {
-    pub fn new(
-        graph: impl Into<String>,
+    pub const fn new(
+        graph_id: GraphId,
         kind: IndexedPropertyKind,
         property_id: PropertyId,
     ) -> Self {
         Self {
-            graph: graph.into(),
+            graph_id,
             kind_tag: kind_to_byte(kind),
             property_id,
         }
@@ -65,43 +65,61 @@ pub(crate) struct IndexDefRecord {
 }
 
 impl Storable for NamedIndexKey {
-    const BOUND: StorableBound = StorableBound::Unbounded;
+    const BOUND: StorableBound = StorableBound::Bounded {
+        max_size: 6,
+        is_fixed_size: true,
+    };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(encode_two_strings(&self.graph, &self.index_name))
+        Cow::Owned(self.into_bytes())
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        encode_two_strings(&self.graph, &self.index_name)
+        let mut out = Vec::with_capacity(6);
+        out.extend_from_slice(&self.graph_id.to_le_bytes());
+        out.extend_from_slice(&self.index_name_id.to_le_bytes());
+        out
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        let (graph, index_name) = decode_two_strings(bytes.as_ref());
-        Self { graph, index_name }
+        let bytes = bytes.as_ref();
+        let mut graph = [0; 4];
+        let mut index = [0; 2];
+        graph.copy_from_slice(&bytes[0..4]);
+        index.copy_from_slice(&bytes[4..6]);
+        Self {
+            graph_id: GraphId::from_le_bytes(graph),
+            index_name_id: IndexNameId::from_le_bytes(index),
+        }
     }
 }
 
 impl Storable for IndexedPropertyKey {
-    const BOUND: StorableBound = StorableBound::Unbounded;
+    const BOUND: StorableBound = StorableBound::Bounded {
+        max_size: 9,
+        is_fixed_size: true,
+    };
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(encode_membership_key_tagged(
-            &self.graph,
-            self.kind_tag,
-            self.property_id,
-        ))
+        Cow::Owned(self.into_bytes())
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        encode_membership_key_tagged(&self.graph, self.kind_tag, self.property_id)
+        let mut out = Vec::with_capacity(9);
+        out.extend_from_slice(&self.graph_id.to_le_bytes());
+        out.push(self.kind_tag);
+        out.extend_from_slice(&self.property_id.to_le_bytes());
+        out
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        let (graph, kind_tag, property_id) = decode_membership_key_tagged(bytes.as_ref());
+        let bytes = bytes.as_ref();
+        let mut graph = [0; 4];
+        graph.copy_from_slice(&bytes[0..4]);
         Self {
-            graph,
-            kind_tag,
-            property_id,
+            graph_id: GraphId::from_le_bytes(graph),
+            kind_tag: bytes[4],
+            property_id: PropertyId::from_le_bytes(bytes[5..9].try_into().expect("property_id")),
         }
     }
 }
@@ -134,12 +152,12 @@ impl Storable for IndexDefRecord {
     }
 }
 
-pub(crate) fn load_graph_stats(logical_graph_name: &str) -> RouterGraphStats {
+pub(crate) fn load_graph_stats(graph_id: GraphId) -> RouterGraphStats {
     let mut vertex = std::collections::BTreeSet::new();
     let mut edge = std::collections::BTreeSet::new();
 
     ROUTER_INDEXED_PROPERTY_SET.with_borrow(|set| {
-        for key in membership_range(logical_graph_name, set) {
+        for key in membership_range(graph_id, set) {
             match key.kind() {
                 IndexedPropertyKind::Vertex => {
                     vertex.insert(key.property_id);
@@ -155,21 +173,21 @@ pub(crate) fn load_graph_stats(logical_graph_name: &str) -> RouterGraphStats {
 }
 
 pub(crate) fn create_named_index(
-    logical_graph_name: &str,
-    index_name: &str,
+    graph_id: GraphId,
+    index_name_id: IndexNameId,
     entry: IndexCatalogEntry,
     property_id: PropertyId,
     label_id: u16,
     if_not_exists: bool,
 ) -> Result<bool, RouterError> {
-    let named_key = NamedIndexKey::new(logical_graph_name, index_name);
+    let named_key = NamedIndexKey::new(graph_id, index_name_id);
     let exists = ROUTER_NAMED_INDEXES.with_borrow(|map| map.contains_key(&named_key));
     if exists {
         if if_not_exists {
             return Ok(false);
         }
         return Err(RouterError::Conflict(format!(
-            "index already exists: {index_name}"
+            "index already exists: {index_name_id}"
         )));
     }
 
@@ -182,7 +200,7 @@ pub(crate) fn create_named_index(
         map.insert(named_key, def);
     });
 
-    let membership = IndexedPropertyKey::new(logical_graph_name, entry.kind, property_id);
+    let membership = IndexedPropertyKey::new(graph_id, entry.kind, property_id);
     let newly_registered = ROUTER_INDEXED_PROPERTY_SET.with_borrow_mut(|set| {
         if set.contains(&membership) {
             false
@@ -196,25 +214,24 @@ pub(crate) fn create_named_index(
 }
 
 pub(crate) fn drop_named_index(
-    logical_graph_name: &str,
-    index_name: &str,
+    graph_id: GraphId,
+    index_name_id: IndexNameId,
     if_exists: bool,
 ) -> Result<Option<(IndexedPropertyKind, PropertyId)>, RouterError> {
-    let named_key = NamedIndexKey::new(logical_graph_name, index_name);
+    let named_key = NamedIndexKey::new(graph_id, index_name_id);
     let removed = ROUTER_NAMED_INDEXES.with_borrow_mut(|map| map.remove(&named_key));
     let Some(def) = removed else {
         if if_exists {
             return Ok(None);
         }
-        return Err(RouterError::NotFound(index_name.to_string()));
+        return Err(RouterError::NotFound(index_name_id.to_string()));
     };
 
-    let still_named = ROUTER_NAMED_INDEXES.with_borrow(|map| {
-        named_index_uses_property(map, logical_graph_name, def.kind, def.property_id)
-    });
+    let still_named = ROUTER_NAMED_INDEXES
+        .with_borrow(|map| named_index_uses_property(map, graph_id, def.kind, def.property_id));
 
     if !still_named {
-        let membership = IndexedPropertyKey::new(logical_graph_name, def.kind, def.property_id);
+        let membership = IndexedPropertyKey::new(graph_id, def.kind, def.property_id);
         ROUTER_INDEXED_PROPERTY_SET.with_borrow_mut(|set| {
             set.remove(&membership);
         });
@@ -224,20 +241,20 @@ pub(crate) fn drop_named_index(
 }
 
 pub(crate) fn is_property_registered(
-    logical_graph_name: &str,
+    graph_id: GraphId,
     kind: IndexedPropertyKind,
     property_id: PropertyId,
 ) -> bool {
-    let key = IndexedPropertyKey::new(logical_graph_name, kind, property_id);
+    let key = IndexedPropertyKey::new(graph_id, kind, property_id);
     ROUTER_INDEXED_PROPERTY_SET.with_borrow(|set| set.contains(&key))
 }
 
 pub(crate) fn register_property_membership(
-    logical_graph_name: &str,
+    graph_id: GraphId,
     kind: IndexedPropertyKind,
     property_id: PropertyId,
 ) -> bool {
-    let key = IndexedPropertyKey::new(logical_graph_name, kind, property_id);
+    let key = IndexedPropertyKey::new(graph_id, kind, property_id);
     ROUTER_INDEXED_PROPERTY_SET.with_borrow_mut(|set| {
         if set.contains(&key) {
             false
@@ -248,18 +265,18 @@ pub(crate) fn register_property_membership(
     })
 }
 
-fn graph_upper_bound(graph: &str) -> String {
-    format!("{graph}\0")
+fn graph_id_upper_bound(graph_id: GraphId) -> GraphId {
+    GraphId::from_raw(graph_id.raw().saturating_add(1))
 }
 
 fn named_index_uses_property(
     map: &super::memory::StableNamedIndexMap,
-    graph: &str,
+    graph_id: GraphId,
     kind: IndexedPropertyKind,
     property_id: PropertyId,
 ) -> bool {
-    let start = NamedIndexKey::new(graph, "");
-    let end = NamedIndexKey::new(graph_upper_bound(graph), "");
+    let start = NamedIndexKey::new(graph_id, IndexNameId::from_raw(0));
+    let end = NamedIndexKey::new(graph_id_upper_bound(graph_id), IndexNameId::from_raw(0));
     map.range((Bound::Included(start), Bound::Excluded(end)))
         .any(|entry| {
             let def = entry.value();
@@ -268,69 +285,20 @@ fn named_index_uses_property(
 }
 
 fn membership_range<'a>(
-    graph: &str,
+    graph_id: GraphId,
     set: &'a super::memory::StableIndexedPropertySet,
 ) -> impl Iterator<Item = IndexedPropertyKey> + 'a {
-    let start =
-        IndexedPropertyKey::new(graph, IndexedPropertyKind::Vertex, PropertyId::from_raw(0));
+    let start = IndexedPropertyKey::new(
+        graph_id,
+        IndexedPropertyKind::Vertex,
+        PropertyId::from_raw(0),
+    );
     let end = IndexedPropertyKey::new(
-        graph_upper_bound(graph),
+        graph_id_upper_bound(graph_id),
         IndexedPropertyKind::Vertex,
         PropertyId::from_raw(0),
     );
     set.range((Bound::Included(start), Bound::Excluded(end)))
-}
-
-fn encode_two_strings(first: &str, second: &str) -> Vec<u8> {
-    let first_bytes = first.as_bytes();
-    let second_bytes = second.as_bytes();
-    debug_assert!(first_bytes.len() <= u16::MAX as usize);
-    debug_assert!(second_bytes.len() <= u16::MAX as usize);
-    let mut out = Vec::with_capacity(4 + first_bytes.len() + second_bytes.len());
-    out.extend_from_slice(&(first_bytes.len() as u16).to_le_bytes());
-    out.extend_from_slice(first_bytes);
-    out.extend_from_slice(&(second_bytes.len() as u16).to_le_bytes());
-    out.extend_from_slice(second_bytes);
-    out
-}
-
-fn decode_two_strings(bytes: &[u8]) -> (String, String) {
-    let first_len = u16::from_le_bytes(bytes[0..2].try_into().expect("first_len")) as usize;
-    let first_end = 2 + first_len;
-    let second_len = u16::from_le_bytes(
-        bytes[first_end..first_end + 2]
-            .try_into()
-            .expect("second_len"),
-    ) as usize;
-    let second_start = first_end + 2;
-    let second_end = second_start + second_len;
-    let first = String::from_utf8(bytes[2..first_end].to_vec()).expect("graph utf8");
-    let second = String::from_utf8(bytes[second_start..second_end].to_vec()).expect("name utf8");
-    (first, second)
-}
-
-fn encode_membership_key_tagged(graph: &str, kind_tag: u8, property_id: PropertyId) -> Vec<u8> {
-    let graph_bytes = graph.as_bytes();
-    debug_assert!(graph_bytes.len() <= u16::MAX as usize);
-    let mut out = Vec::with_capacity(2 + graph_bytes.len() + 1 + 4);
-    out.extend_from_slice(&(graph_bytes.len() as u16).to_le_bytes());
-    out.extend_from_slice(graph_bytes);
-    out.push(kind_tag);
-    out.extend_from_slice(&property_id.to_le_bytes());
-    out
-}
-
-fn decode_membership_key_tagged(bytes: &[u8]) -> (String, u8, PropertyId) {
-    let graph_len = u16::from_le_bytes(bytes[0..2].try_into().expect("graph_len")) as usize;
-    let graph_end = 2 + graph_len;
-    let kind_tag = bytes[graph_end];
-    let property_id = PropertyId::from_le_bytes(
-        bytes[graph_end + 1..graph_end + 5]
-            .try_into()
-            .expect("property_id"),
-    );
-    let graph = String::from_utf8(bytes[2..graph_end].to_vec()).expect("graph utf8");
-    (graph, kind_tag, property_id)
 }
 
 const fn kind_to_byte(kind: IndexedPropertyKind) -> u8 {
@@ -350,32 +318,23 @@ fn kind_from_byte(byte: u8) -> IndexedPropertyKind {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use gleaph_graph_kernel::entry::PropertyId;
-    use std::cmp::Ordering;
 
     #[test]
     fn named_index_key_storable_roundtrip() {
-        let key = NamedIndexKey::new("tenant.main", "person_age");
-        let decoded = NamedIndexKey::from_bytes(Cow::Owned(key.clone().into_bytes()));
+        let key = NamedIndexKey::new(GraphId::from_raw(1), IndexNameId::from_raw(2));
+        let decoded = NamedIndexKey::from_bytes(Cow::Owned(key.into_bytes()));
         assert_eq!(decoded, key);
     }
 
     #[test]
     fn membership_key_storable_roundtrip() {
         let key = IndexedPropertyKey::new(
-            "tenant.main",
+            GraphId::from_raw(1),
             IndexedPropertyKind::Vertex,
             PropertyId::from_raw(7),
         );
         let decoded = IndexedPropertyKey::from_bytes(Cow::Owned(key.into_bytes()));
-        assert_eq!(
-            decoded,
-            IndexedPropertyKey::new(
-                "tenant.main",
-                IndexedPropertyKind::Vertex,
-                PropertyId::from_raw(7),
-            )
-        );
+        assert_eq!(decoded, key);
     }
 
     #[test]
@@ -387,16 +346,5 @@ mod tests {
         };
         let decoded = IndexDefRecord::from_bytes(Cow::Owned(record.into_bytes()));
         assert_eq!(decoded, record);
-    }
-
-    #[test]
-    fn graph_upper_bound_orders_after_graph_prefix() {
-        assert!(graph_upper_bound("tenant.main").as_str().cmp("tenant.main") == Ordering::Greater);
-        assert!(
-            graph_upper_bound("tenant.main")
-                .as_str()
-                .cmp("tenant.mainx")
-                == Ordering::Less
-        );
     }
 }

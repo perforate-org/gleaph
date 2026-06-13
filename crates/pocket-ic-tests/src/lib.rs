@@ -2,6 +2,7 @@
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId, VertexPlacement};
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::AdminRegisterShardArgs;
@@ -353,6 +354,7 @@ pub fn register_graph_single_shard(
     shard_id: ShardId,
 ) {
     let entry = GraphRegistryEntry {
+        graph_id: GraphId::from_raw(0),
         graph_name: GRAPH_NAME.into(),
         canister_id: graph,
         owner: admin,
@@ -395,6 +397,7 @@ pub fn register_graph_and_shards(
     graph_dest: Principal,
 ) {
     let entry = GraphRegistryEntry {
+        graph_id: GraphId::from_raw(0),
         graph_name: GRAPH_NAME.into(),
         canister_id: graph_source,
         owner: admin,

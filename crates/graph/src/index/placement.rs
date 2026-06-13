@@ -1,6 +1,8 @@
 //! Router placement protocol for federated graph shards.
 
 use candid::Principal;
+#[cfg(any(not(target_family = "wasm"), test))]
+use gleaph_graph_kernel::entry::GraphId;
 #[cfg(not(target_family = "wasm"))]
 use gleaph_graph_kernel::federation::PhysicalVertexLocation;
 use gleaph_graph_kernel::federation::{
@@ -89,13 +91,33 @@ pub async fn list_shards_for_graph(
     {
         let _ = router_canister;
         Ok(NATIVE_TEST_SHARDS.with_borrow(|shards| {
+            let graph_id = native_test_graph_id(logical_graph_name);
             shards
                 .iter()
-                .filter(|entry| entry.logical_graph_name == logical_graph_name)
+                .filter(|entry| Some(entry.graph_id) == graph_id)
                 .cloned()
                 .collect()
         }))
     }
+}
+
+#[cfg(not(target_family = "wasm"))]
+fn native_test_graph_id(logical_graph_name: &str) -> Option<GraphId> {
+    NATIVE_TEST_GRAPH_NAMES.with_borrow(|names| names.get(logical_graph_name).copied())
+}
+
+/// Registers a logical graph name for native shard listing (unit tests only).
+#[cfg(test)]
+pub fn native_test_register_graph_name(name: &str, graph_id: GraphId) {
+    NATIVE_TEST_GRAPH_NAMES.with_borrow_mut(|names| {
+        names.insert(name.to_owned(), graph_id);
+    });
+}
+
+#[cfg(not(target_family = "wasm"))]
+thread_local! {
+    static NATIVE_TEST_GRAPH_NAMES: RefCell<std::collections::BTreeMap<String, GraphId>> =
+        const { RefCell::new(std::collections::BTreeMap::new()) };
 }
 
 /// Registers a shard in the native test registry (unit tests only).
@@ -232,18 +254,20 @@ mod tests {
 
     #[test]
     fn list_shards_for_graph_uses_native_registry() {
+        let graph_id = GraphId::from_raw(1);
+        native_test_register_graph_name("tenant.main", graph_id);
         native_test_register_shard(ShardRegistryEntry {
             shard_id: ShardId::new(0),
             graph_canister: Principal::management_canister(),
             index_canister: Principal::management_canister(),
-            logical_graph_name: "tenant.main".into(),
+            graph_id,
             registered_at_ns: 0,
         });
         native_test_register_shard(ShardRegistryEntry {
             shard_id: ShardId::new(1),
             graph_canister: Principal::management_canister(),
             index_canister: Principal::management_canister(),
-            logical_graph_name: "tenant.main".into(),
+            graph_id,
             registered_at_ns: 0,
         });
 

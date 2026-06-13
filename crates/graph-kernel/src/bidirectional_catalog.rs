@@ -202,8 +202,27 @@ macro_rules! impl_catalog_id {
 }
 
 impl_catalog_id!(crate::entry::PropertyId, u32);
+impl_catalog_id!(crate::entry::GraphId, u32);
 impl_catalog_id!(crate::entry::VertexLabelId, u16);
 impl_catalog_id!(crate::entry::EdgeLabelId, u16);
+impl_catalog_id!(crate::entry::IndexNameId, u16);
+
+/// Index-name allocation capped at [`crate::entry::INDEX_NAME_CATALOG_MAX`].
+pub struct DenseIndexNamePolicy;
+
+impl<Id: CatalogId> CatalogAllocationPolicy<Id> for DenseIndexNamePolicy {
+    fn reserved_id() -> Id {
+        Id::default()
+    }
+
+    fn max_id() -> Option<Id> {
+        Id::from_raw_u32(crate::entry::INDEX_NAME_CATALOG_MAX as u32)
+    }
+
+    fn next_raw_id(existing: impl Iterator<Item = u32>) -> Result<u32, CatalogError<Id>> {
+        DenseMaxPlusOnePolicy::next_raw_id(existing)
+    }
+}
 
 /// Dense edge-label allocation capped at [`crate::entry::EDGE_LABEL_CATALOG_MAX`].
 pub struct DenseEdgeLabelPolicy;

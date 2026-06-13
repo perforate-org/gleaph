@@ -1,5 +1,9 @@
 //! Graph and shard registry plus router controller principals.
 
+use super::super::stable::graph_catalog::{
+    self, intern_graph_name, list_shards_for_graph_id, lookup_graph_id, register_shard_index,
+    unregister_shard_index,
+};
 use super::super::stable::{
     ROUTER_CONTROLLERS, ROUTER_GRAPHS, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
 };
@@ -8,6 +12,7 @@ use crate::index_sync;
 use crate::state::RouterError;
 use crate::types::{AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ShardId};
 use candid::Principal;
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardRegistryEntry;
 
 use super::{RouterStore, ic_time_ns, validate_metadata_name};
@@ -39,8 +44,10 @@ impl RouterStore {
         graph_name: &str,
         caller: Principal,
     ) -> Result<GraphRegistryEntry, RouterError> {
+        let graph_id = lookup_graph_id(graph_name)
+            .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
         let entry = ROUTER_GRAPHS
-            .with_borrow(|graphs| graphs.get(&graph_name.to_string()))
+            .with_borrow(|graphs| graphs.get(&graph_id))
             .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
         if caller != entry.owner && !entry.admins.contains(&caller) {
             return Err(RouterError::Forbidden);
@@ -49,6 +56,26 @@ impl RouterStore {
             return Err(RouterError::GraphUnavailable);
         }
         Ok(entry)
+    }
+
+    pub fn resolve_graph_id(&self, graph_name: &str) -> Result<GraphId, RouterError> {
+        lookup_graph_id(graph_name).ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))
+    }
+
+    pub fn list_visible_graph_ids(&self, caller: Principal) -> Result<Vec<GraphId>, RouterError> {
+        let mut out = Vec::new();
+        ROUTER_GRAPHS.with_borrow(|graphs| {
+            for lazy in graphs.iter() {
+                let entry = lazy.value();
+                if caller != entry.owner && !entry.admins.contains(&caller) {
+                    continue;
+                }
+                if matches!(entry.status, GraphStatus::Active | GraphStatus::ReadOnly) {
+                    out.push(entry.graph_id);
+                }
+            }
+        });
+        Ok(out)
     }
 
     pub fn resolve_shard(&self, shard_id: ShardId) -> Result<ShardRegistryEntry, RouterError> {
@@ -63,31 +90,27 @@ impl RouterStore {
         logical_graph_name: &str,
     ) -> Result<Vec<ShardRegistryEntry>, RouterError> {
         validate_metadata_name(logical_graph_name)?;
-        let mut out = Vec::new();
-        ROUTER_SHARDS.with_borrow(|shards| {
-            for lazy in shards.iter() {
-                let entry = lazy.value();
-                if entry.logical_graph_name == logical_graph_name {
-                    out.push(entry);
-                }
-            }
-        });
-        Ok(out)
+        let graph_id = lookup_graph_id(logical_graph_name)
+            .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
+        Ok(list_shards_for_graph_id(graph_id))
     }
 
     pub fn admin_register_graph(
         &self,
         caller: Principal,
-        entry: GraphRegistryEntry,
+        mut entry: GraphRegistryEntry,
     ) -> Result<(), RouterError> {
         if !self.is_controller(caller) {
             return Err(RouterError::NotAuthorized);
         }
-        if ROUTER_GRAPHS.with_borrow(|g| g.contains_key(&entry.graph_name.clone())) {
+        validate_metadata_name(&entry.graph_name)?;
+        if lookup_graph_id(&entry.graph_name).is_some() {
             return Err(RouterError::Conflict(entry.graph_name.clone()));
         }
+        let graph_id = intern_graph_name(&entry.graph_name)?;
+        entry.graph_id = graph_id;
         ROUTER_GRAPHS.with_borrow_mut(|g| {
-            g.insert(entry.graph_name.clone(), entry);
+            g.insert(graph_id, entry);
         });
         Ok(())
     }
@@ -102,8 +125,10 @@ impl RouterStore {
         if !self.is_controller(caller) {
             return Err(RouterError::NotAuthorized);
         }
+        let graph_id = lookup_graph_id(graph_name)
+            .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
         let mut entry = ROUTER_GRAPHS
-            .with_borrow(|g| g.get(&graph_name.to_string()))
+            .with_borrow(|g| g.get(&graph_id))
             .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
         if entry.version != version {
             return Err(RouterError::Conflict(format!(
@@ -114,7 +139,7 @@ impl RouterStore {
         entry.status = status;
         entry.version = version.saturating_add(1);
         ROUTER_GRAPHS.with_borrow_mut(|g| {
-            g.insert(graph_name.to_string(), entry);
+            g.insert(graph_id, entry);
         });
         Ok(())
     }
@@ -135,6 +160,8 @@ impl RouterStore {
             ));
         }
         validate_metadata_name(&args.logical_graph_name)?;
+        let graph_id = lookup_graph_id(&args.logical_graph_name)
+            .ok_or_else(|| RouterError::NotFound(args.logical_graph_name.clone()))?;
 
         let existing = ROUTER_SHARDS.with_borrow(|s| s.get(&args.shard_id));
         if let Some(entry) = existing {
@@ -159,7 +186,7 @@ impl RouterStore {
             shard_id: args.shard_id,
             graph_canister: args.graph_canister,
             index_canister: args.index_canister,
-            logical_graph_name: args.logical_graph_name.clone(),
+            graph_id,
             registered_at_ns,
         };
 
@@ -180,6 +207,7 @@ impl RouterStore {
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| {
             m.insert(args.graph_canister, args.shard_id);
         });
+        register_shard_index(graph_id, args.shard_id);
 
         #[cfg(target_family = "wasm")]
         crate::peer_sync::sync_peers_after_shard_register(
@@ -204,8 +232,9 @@ impl RouterStore {
             .with_borrow(|s| s.get(&shard_id))
             .ok_or(RouterError::ShardNotRegistered)?;
 
+        let graph_name = graph_catalog::graph_name(entry.graph_id).unwrap_or_default();
         let _siblings: Vec<Principal> = self
-            .list_shards_for_graph(&entry.logical_graph_name)?
+            .list_shards_for_graph(&graph_name)?
             .into_iter()
             .map(|shard| shard.graph_canister)
             .filter(|graph| *graph != entry.graph_canister)
@@ -229,6 +258,7 @@ impl RouterStore {
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| {
             m.remove(&entry.graph_canister);
         });
+        unregister_shard_index(entry.graph_id, shard_id);
         Ok(())
     }
 }

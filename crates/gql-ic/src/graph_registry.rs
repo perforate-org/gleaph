@@ -1,5 +1,6 @@
 use candid::Principal;
 use candid::{CandidType, Decode, Encode};
+use gleaph_graph_kernel::entry::GraphId;
 use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -22,6 +23,7 @@ pub enum ProvisioningState {
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct GraphRegistryEntry {
+    pub graph_id: GraphId,
     pub graph_name: String,
     pub canister_id: Principal,
     pub owner: Principal,
@@ -124,6 +126,7 @@ mod tests {
         let mut registry = InMemoryGraphRegistry::new();
         registry
             .register_graph(GraphRegistryEntry {
+                graph_id: GraphId::from_raw(1),
                 graph_name: "tenant.main".to_owned(),
                 canister_id: graph_canister,
                 owner,

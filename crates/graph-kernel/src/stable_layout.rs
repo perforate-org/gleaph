@@ -548,7 +548,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             1,
             StableMemoryClass::Canonical,
             "registry",
-            "Registered graph name → registry entry",
+            "GraphId → registry entry",
             None,
         ),
         region(
@@ -716,7 +716,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             22,
             StableMemoryClass::Catalog,
             "index planner catalog",
-            "(graph, index_name) → IndexDefRecord (ADR 0009 DDL metadata)",
+            "(graph_id, index_name_id) → IndexDefRecord (ADR 0009 DDL metadata)",
             None,
         ),
         region(
@@ -724,7 +724,47 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             23,
             StableMemoryClass::Catalog,
             "index planner catalog",
-            "(graph, kind, property_id) membership for planner + shard fan-out",
+            "(graph_id, kind, property_id) membership for planner + shard fan-out",
+            None,
+        ),
+        region(
+            "ROUTER_GRAPH_BY_NAME",
+            24,
+            StableMemoryClass::Catalog,
+            "resolution",
+            "Graph name → GraphId (ADR 0011)",
+            None,
+        ),
+        region(
+            "ROUTER_GRAPH_BY_ID",
+            25,
+            StableMemoryClass::Catalog,
+            "resolution",
+            "GraphId → graph name (ADR 0011)",
+            None,
+        ),
+        region(
+            "ROUTER_INDEX_NAME_BY_NAME",
+            26,
+            StableMemoryClass::Catalog,
+            "resolution",
+            "Graph-scoped index name → IndexNameId (ADR 0011)",
+            None,
+        ),
+        region(
+            "ROUTER_INDEX_NAME_BY_ID",
+            27,
+            StableMemoryClass::Catalog,
+            "resolution",
+            "Graph-scoped IndexNameId → index name (ADR 0011)",
+            None,
+        ),
+        region(
+            "ROUTER_SHARDS_BY_GRAPH_ID",
+            28,
+            StableMemoryClass::Canonical,
+            "registry",
+            "GraphId → shard id list (ADR 0011)",
             None,
         ),
     ],
@@ -938,8 +978,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 24);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(23));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 29);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(28));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[17].class,
             StableMemoryClass::Telemetry

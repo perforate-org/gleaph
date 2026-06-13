@@ -2,6 +2,8 @@
 
 use candid::Principal;
 #[cfg(target_family = "wasm")]
+use gleaph_graph_kernel::entry::GraphId;
+#[cfg(target_family = "wasm")]
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
 
@@ -45,13 +47,21 @@ pub async fn verify_shard_attachment(
         )));
     }
 
-    if let Some(expected) = expected_graph_name
-        && entry.logical_graph_name != expected
-    {
-        return Err(RouterInitError::Rejected(format!(
-            "logical_graph_name mismatch: expected `{expected}`, got `{}`",
-            entry.logical_graph_name
-        )));
+    if let Some(expected) = expected_graph_name {
+        let expected_id: Result<GraphId, RouterError> = crate::index::router_call::call_router1(
+            router_canister,
+            "lookup_graph_id",
+            expected.to_string(),
+        )
+        .await
+        .map_err(RouterInitError::Call)?;
+        let expected_id = expected_id.map_err(|e| RouterInitError::Rejected(format!("{e:?}")))?;
+        if entry.graph_id != expected_id {
+            return Err(RouterInitError::Rejected(format!(
+                "graph_id mismatch for `{expected}`: expected `{expected_id}`, got `{}`",
+                entry.graph_id
+            )));
+        }
     }
 
     Ok(entry)

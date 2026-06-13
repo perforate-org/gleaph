@@ -375,6 +375,8 @@ mod tests {
     use super::*;
     use crate::index_route::{resolve_index_lookup_targets, shard_index_canisters};
 
+    use gleaph_graph_kernel::entry::GraphId;
+
     fn graph_principal(byte: u8) -> Principal {
         Principal::self_authenticating([byte; 32])
     }
@@ -386,14 +388,14 @@ mod tests {
                 shard_id: ShardId::new(0),
                 graph_canister: graph_principal(1),
                 index_canister: graph_principal(2),
-                logical_graph_name: "g".into(),
+                graph_id: GraphId::from_raw(1),
                 registered_at_ns: 0,
             },
             ShardRegistryEntry {
                 shard_id: ShardId::new(1),
                 graph_canister: graph_principal(3),
                 index_canister: graph_principal(2),
-                logical_graph_name: "g".into(),
+                graph_id: GraphId::from_raw(1),
                 registered_at_ns: 0,
             },
         ];

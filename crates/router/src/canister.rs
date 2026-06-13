@@ -48,6 +48,12 @@ pub(crate) fn resolve_shard(shard_id: ShardId) -> Result<ShardRegistryEntry, Rou
     RouterStore::new().resolve_shard(shard_id)
 }
 
+pub(crate) fn lookup_graph_id(
+    graph_name: String,
+) -> Result<gleaph_graph_kernel::entry::GraphId, RouterError> {
+    RouterStore::new().resolve_graph_id(&graph_name)
+}
+
 pub(crate) fn list_shards_for_graph(
     logical_graph_name: String,
 ) -> Result<Vec<ShardRegistryEntry>, RouterError> {
@@ -189,9 +195,10 @@ pub(crate) async fn admin_set_indexed_vertex_property(
     use gleaph_graph_kernel::index::IndexedPropertyKind;
 
     let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id(&logical_graph_name)?;
     let property_id = store.lookup_property_id(&property)?;
     let newly_registered = crate::index_catalog::register_property_membership_if_absent(
-        &logical_graph_name,
+        graph_id,
         IndexedPropertyKind::Vertex,
         property_id,
     );
@@ -199,7 +206,7 @@ pub(crate) async fn admin_set_indexed_vertex_property(
         return Ok(());
     }
     crate::index_catalog::register_indexed_property_on_shards(
-        &logical_graph_name,
+        graph_id,
         IndexedPropertyKind::Vertex,
         property_id,
     )
@@ -213,9 +220,10 @@ pub(crate) async fn admin_set_indexed_edge_property(
     use gleaph_graph_kernel::index::IndexedPropertyKind;
 
     let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id(&logical_graph_name)?;
     let property_id = store.lookup_property_id(&property)?;
     let newly_registered = crate::index_catalog::register_property_membership_if_absent(
-        &logical_graph_name,
+        graph_id,
         IndexedPropertyKind::Edge,
         property_id,
     );
@@ -223,7 +231,7 @@ pub(crate) async fn admin_set_indexed_edge_property(
         return Ok(());
     }
     crate::index_catalog::register_indexed_property_on_shards(
-        &logical_graph_name,
+        graph_id,
         IndexedPropertyKind::Edge,
         property_id,
     )

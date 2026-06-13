@@ -1,5 +1,7 @@
 pub mod edge;
 pub mod edge_payload;
+pub mod graph;
+pub mod index_name;
 pub mod label;
 pub mod property;
 pub mod property_entity;
@@ -14,6 +16,8 @@ pub use edge_payload::{
     EdgePayloadProfileError, MAX_EDGE_PAYLOAD_BYTES, PreparedEdgePayloadDecoder,
     decode_edge_payload, decode_edge_weight,
 };
+pub use graph::GraphId;
+pub use index_name::{INDEX_NAME_CATALOG_MAX, IndexNameId};
 pub use label::{
     EDGE_LABEL_CATALOG_MAX, EDGE_LABEL_DIRECTED_BIT, EdgeDirectedness, EdgeLabelId,
     TaggedEdgeLabelId, VertexLabelId,

@@ -15,6 +15,7 @@ use gleaph_gql_planner::plan::PhysicalPlan;
 use gleaph_gql_planner::{
     PlanBuildOptions, build_plan_with_schema_and_options, build_statement_plan_with_schema,
 };
+use gleaph_graph_kernel::entry::GraphId;
 
 use super::super::GLEAPH_PATH_EXTENSION_HANDLER;
 use super::context::QueryExprEvaluator;
@@ -440,11 +441,13 @@ pub fn configure_test_federation(store: &GraphStore) {
     store
         .set_logical_graph_name(Some("tenant.main".into()))
         .expect("graph name");
+    let graph_id = GraphId::from_raw(1);
+    placement::native_test_register_graph_name("tenant.main", graph_id);
     placement::native_test_register_shard(gleaph_graph_kernel::federation::ShardRegistryEntry {
         shard_id: ShardId::new(0),
         graph_canister: Principal::management_canister(),
         index_canister: Principal::management_canister(),
-        logical_graph_name: "tenant.main".into(),
+        graph_id,
         registered_at_ns: 0,
     });
 }

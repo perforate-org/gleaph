@@ -435,6 +435,14 @@ async fn run_gql(
     authorize_adhoc_gql(&caller, flags)?;
     check_adhoc_execution_path(entrypoint, mode, flags, force)?;
 
+    let store = RouterStore::new();
+    let resolved = crate::graph_context::resolve_graph_context(&store, &program, caller)?;
+    crate::graph_context::ensure_candid_graph_matches(
+        &store,
+        logical_graph_name,
+        resolved.graph_id,
+    )?;
+
     let tx = program
         .transaction_activity
         .as_ref()
@@ -444,7 +452,7 @@ async fn run_gql(
         .as_ref()
         .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
 
-    let stats = graph_stats_for(logical_graph_name);
+    let stats = graph_stats_for(resolved.graph_id);
     let plan = build_block_plan_with_schema(block, Some(&stats), &NoSchema)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let requires_write_path = plan.has_dml();
@@ -1056,11 +1064,34 @@ mod tests {
     use crate::seed::SeedAnchorSet;
     use crate::seed::{IndexAnchor, SeedProbe, seeds_for_local_shard};
     use crate::state::RouterError;
-    use crate::types::AdminRegisterShardArgs;
+    use crate::types::{
+        AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ProvisioningState,
+    };
+    use gleaph_graph_kernel::entry::GraphId;
     use gleaph_graph_kernel::federation::ShardId;
+    use std::collections::BTreeSet;
 
     fn graph_principal(byte: u8) -> Principal {
         Principal::self_authenticating([byte; 32])
+    }
+
+    fn register_test_graph(store: &RouterStore, admin: Principal, name: &str) {
+        store
+            .admin_register_graph(
+                admin,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    graph_name: name.to_owned(),
+                    canister_id: Principal::management_canister(),
+                    owner: admin,
+                    admins: BTreeSet::new(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                },
+            )
+            .expect("register graph");
     }
 
     fn store_with_shards() -> RouterStore {
@@ -1072,6 +1103,7 @@ mod tests {
         });
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
         for (shard_id, graph_byte) in [(ShardId::new(0), 1u8), (ShardId::new(1), 4)] {
             futures::executor::block_on(store.admin_register_shard(
                 admin,

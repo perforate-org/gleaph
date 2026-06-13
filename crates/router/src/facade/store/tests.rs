@@ -11,6 +11,7 @@ use crate::types::{
 use candid::Principal;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
 use gleaph_graph_kernel::federation::PhysicalVertexLocation;
 use gleaph_graph_kernel::federation::ShardId;
@@ -31,12 +32,32 @@ fn test_init_args() -> RouterInitArgs {
     }
 }
 
+fn register_test_graph(store: &RouterStore, admin: Principal, name: &str) {
+    store
+        .admin_register_graph(
+            admin,
+            GraphRegistryEntry {
+                graph_id: GraphId::from_raw(0),
+                graph_name: name.to_owned(),
+                canister_id: Principal::management_canister(),
+                owner: admin,
+                admins: BTreeSet::new(),
+                status: GraphStatus::Active,
+                version: 1,
+                updated_at_ns: 0,
+                provisioning_state: ProvisioningState::None,
+            },
+        )
+        .expect("register graph");
+}
+
 #[test]
 fn register_shard_and_commit_placement() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
     store.bootstrap_controllers(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
 
     let graph = graph_principal(1);
     let index = graph_principal(2);
@@ -82,6 +103,8 @@ fn list_shards_for_graph_returns_matching_registrations() {
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
     store.bootstrap_controllers(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    register_test_graph(&store, admin, "other.graph");
 
     let graph_a = graph_principal(1);
     let graph_b = graph_principal(4);
@@ -121,6 +144,7 @@ fn unregister_shard_removes_registry_and_leaves_siblings() {
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
     store.bootstrap_controllers(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
 
     let graph_a = graph_principal(1);
     let graph_b = graph_principal(4);
@@ -156,6 +180,7 @@ fn release_vertex_placement_clears_registry() {
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
     store.bootstrap_controllers(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
 
     let graph = graph_principal(1);
     let index = graph_principal(2);
@@ -207,6 +232,7 @@ fn resolve_graph_checks_permissions() {
         .admin_register_graph(
             admin,
             GraphRegistryEntry {
+                graph_id: GraphId::from_raw(0),
                 graph_name: "g".into(),
                 canister_id: owner,
                 owner,
@@ -532,6 +558,9 @@ fn mutation_id_is_monotonic_and_rejects_exhaustion() {
 fn client_mutation_key_reuses_router_mutation_id() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    store.bootstrap_controllers(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
     let request = b"request-a".to_vec();
 
@@ -596,6 +625,9 @@ fn client_mutation_key_reuses_router_mutation_id() {
 fn client_mutation_key_rejects_different_request() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    store.bootstrap_controllers(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
 
     assert_eq!(
@@ -627,8 +659,13 @@ fn client_mutation_key_rejects_different_request() {
 fn client_mutation_key_rejects_expired_key() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    store.bootstrap_controllers(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
-    let key = ClientMutationKey::new(caller, "tenant.main".into(), "client-key-1".into());
+    let graph_id =
+        crate::facade::stable::graph_catalog::lookup_graph_id("tenant.main").expect("graph id");
+    let key = ClientMutationKey::new(caller, graph_id, "client-key-1".into());
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
         m.insert(
             key,
@@ -658,6 +695,9 @@ fn client_mutation_key_rejects_expired_key() {
 fn client_mutation_key_blocks_concurrent_routing_owner() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    store.bootstrap_controllers(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
 
     let first = store
@@ -703,6 +743,9 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
 fn abandoned_routing_reservation_preserves_id_and_allows_new_owner() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    store.bootstrap_controllers(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
 
     let first = store
@@ -732,6 +775,9 @@ fn abandoned_routing_reservation_preserves_id_and_allows_new_owner() {
 fn router_mutation_journal_tracks_shard_completion() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    store.bootstrap_controllers(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
     store
         .reserve_mutation_id_for_client_key(caller, "tenant.main", "client-key-1", b"a".to_vec())
@@ -809,6 +855,9 @@ fn router_mutation_journal_tracks_shard_completion() {
 fn router_mutation_journal_records_zero_shard_completion() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    store.bootstrap_controllers(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
     store
         .reserve_mutation_id_for_client_key(caller, "tenant.main", "client-key-1", b"a".to_vec())

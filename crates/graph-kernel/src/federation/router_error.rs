@@ -27,6 +27,13 @@ pub enum RouterError {
     },
     #[error("graph unavailable")]
     GraphUnavailable,
+    #[error(
+        "graph context mismatch: API `{api_graph}` does not match GQL-resolved graph `{resolved_graph}`"
+    )]
+    GraphContextMismatch {
+        api_graph: String,
+        resolved_graph: String,
+    },
     #[error("shard not registered")]
     ShardNotRegistered,
     #[error("shard already registered")]

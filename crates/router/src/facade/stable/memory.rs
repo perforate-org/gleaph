@@ -6,7 +6,7 @@ use candid::Principal;
 use gleaph_graph_kernel::bidirectional_catalog::{
     BidirectionalCatalog, DenseEdgeLabelPolicy, DenseMaxPlusOnePolicy,
 };
-use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::{
     BackfillShardState, GlobalVertexId, ShardId, ShardRegistryEntry, VertexPlacement,
 };
@@ -15,8 +15,12 @@ use gleaph_auth::AuthState;
 use gleaph_gql_ic::graph_registry::GraphRegistryEntry;
 
 use super::indexed_catalog::{IndexDefRecord, IndexedPropertyKey, NamedIndexKey};
+use super::scoped_name_catalog::GraphScopedNameCatalog;
+use candid::CandidType;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::cell::RefCell;
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
@@ -45,9 +49,58 @@ const ROUTER_PROPERTY_BACKFILL_STATE: MemoryId = MemoryId::new(20);
 const ROUTER_EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(21);
 const ROUTER_NAMED_INDEXES: MemoryId = MemoryId::new(22);
 const ROUTER_INDEXED_PROPERTY_SET: MemoryId = MemoryId::new(23);
+const ROUTER_GRAPH_BY_NAME: MemoryId = MemoryId::new(24);
+const ROUTER_GRAPH_BY_ID: MemoryId = MemoryId::new(25);
+const ROUTER_INDEX_NAME_BY_NAME: MemoryId = MemoryId::new(26);
+const ROUTER_INDEX_NAME_BY_ID: MemoryId = MemoryId::new(27);
+const ROUTER_SHARDS_BY_GRAPH_ID: MemoryId = MemoryId::new(28);
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct GraphShardList {
+    pub shard_ids: Vec<ShardId>,
+}
+
+impl ic_stable_structures::Storable for GraphShardList {
+    const BOUND: ic_stable_structures::storable::Bound =
+        ic_stable_structures::storable::Bound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        let mut out = Vec::with_capacity(4 + self.shard_ids.len() * 4);
+        out.extend_from_slice(&(self.shard_ids.len() as u32).to_le_bytes());
+        for shard_id in &self.shard_ids {
+            out.extend_from_slice(&shard_id.to_le_bytes());
+        }
+        Cow::Owned(out)
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(4 + self.shard_ids.len() * 4);
+        out.extend_from_slice(&(self.shard_ids.len() as u32).to_le_bytes());
+        for shard_id in self.shard_ids {
+            out.extend_from_slice(&shard_id.to_le_bytes());
+        }
+        out
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let bytes = bytes.as_ref();
+        let len = u32::from_le_bytes(bytes[0..4].try_into().expect("shard list length")) as usize;
+        let mut shard_ids = Vec::with_capacity(len);
+        for i in 0..len {
+            let start = 4 + i * 4;
+            let raw = bytes[start..start + 4].try_into().expect("shard id bytes");
+            shard_ids.push(ShardId::from_le_bytes(raw));
+        }
+        Self { shard_ids }
+    }
+}
 
 pub(crate) type StableControllerSet = BTreeSet<Principal, Memory>;
-pub(crate) type StableGraphRegistry = BTreeMap<String, GraphRegistryEntry, Memory>;
+pub(crate) type StableGraphRegistry = BTreeMap<GraphId, GraphRegistryEntry, Memory>;
+pub(crate) type StableGraphCatalog =
+    BidirectionalCatalog<GraphId, Memory, Memory, DenseMaxPlusOnePolicy>;
+pub(crate) type StableIndexNameCatalog = GraphScopedNameCatalog<Memory, Memory>;
+pub(crate) type StableShardsByGraphId = BTreeMap<GraphId, GraphShardList, Memory>;
 pub(crate) type StableShardRegistry = BTreeMap<ShardId, ShardRegistryEntry, Memory>;
 pub(crate) type StableShardByGraph = BTreeMap<Principal, ShardId, Memory>;
 pub(crate) type StablePlacementMap = BTreeMap<GlobalVertexId, VertexPlacement, Memory>;
@@ -176,4 +229,22 @@ pub(crate) fn init_named_indexes() -> StableNamedIndexMap {
 
 pub(crate) fn init_indexed_property_set() -> StableIndexedPropertySet {
     BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_INDEXED_PROPERTY_SET)))
+}
+
+pub(crate) fn init_graph_catalog() -> StableGraphCatalog {
+    BidirectionalCatalog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_GRAPH_BY_NAME)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_GRAPH_BY_ID)),
+    )
+}
+
+pub(crate) fn init_index_name_catalog() -> StableIndexNameCatalog {
+    GraphScopedNameCatalog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_INDEX_NAME_BY_NAME)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_INDEX_NAME_BY_ID)),
+    )
+}
+
+pub(crate) fn init_shards_by_graph_id() -> StableShardsByGraphId {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_SHARDS_BY_GRAPH_ID)))
 }

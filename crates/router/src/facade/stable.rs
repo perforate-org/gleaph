@@ -3,10 +3,13 @@
 use std::cell::RefCell;
 
 pub(crate) mod edge_payload_profiles;
+pub(crate) mod graph_catalog;
+pub(crate) mod index_name_catalog;
 pub(crate) mod indexed_catalog;
 pub(crate) mod label_telemetry;
 pub(crate) mod layout;
 pub(crate) mod memory;
+pub(crate) mod scoped_name_catalog;
 
 thread_local! {
     pub(crate) static ROUTER_CONTROLLERS: RefCell<memory::StableControllerSet> =
@@ -14,6 +17,15 @@ thread_local! {
 
     pub(crate) static ROUTER_GRAPHS: RefCell<memory::StableGraphRegistry> =
         RefCell::new(memory::init_graphs());
+
+    pub(crate) static ROUTER_GRAPH_CATALOG: RefCell<memory::StableGraphCatalog> =
+        RefCell::new(memory::init_graph_catalog());
+
+    pub(crate) static ROUTER_INDEX_NAME_CATALOG: RefCell<memory::StableIndexNameCatalog> =
+        RefCell::new(memory::init_index_name_catalog());
+
+    pub(crate) static ROUTER_SHARDS_BY_GRAPH_ID: RefCell<memory::StableShardsByGraphId> =
+        RefCell::new(memory::init_shards_by_graph_id());
 
     pub(crate) static ROUTER_SHARDS: RefCell<memory::StableShardRegistry> =
         RefCell::new(memory::init_shards());

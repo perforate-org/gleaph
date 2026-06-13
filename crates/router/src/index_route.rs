@@ -49,6 +49,8 @@ pub fn shard_index_canisters(shards: &[ShardRegistryEntry]) -> BTreeMap<ShardId,
 mod tests {
     use super::*;
 
+    use gleaph_graph_kernel::entry::GraphId;
+
     fn graph_principal(byte: u8) -> Principal {
         Principal::self_authenticating([byte; 32])
     }
@@ -58,7 +60,7 @@ mod tests {
             shard_id: ShardId::new(shard),
             graph_canister: graph_principal(graph),
             index_canister: graph_principal(index),
-            logical_graph_name: "g".into(),
+            graph_id: GraphId::from_raw(1),
             registered_at_ns: 0,
         }
     }

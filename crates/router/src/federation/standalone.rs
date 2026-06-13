@@ -76,10 +76,33 @@ mod tests {
     use super::*;
     use crate::federation::ShardingPolicy;
     use crate::init::RouterInitArgs;
-    use crate::types::AdminRegisterShardArgs;
+    use crate::types::{
+        AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ProvisioningState,
+    };
+    use gleaph_graph_kernel::entry::GraphId;
+    use std::collections::BTreeSet;
 
     fn graph_principal(byte: u8) -> Principal {
         Principal::self_authenticating([byte; 32])
+    }
+
+    fn register_test_graph(store: &RouterStore, admin: Principal, name: &str) {
+        store
+            .admin_register_graph(
+                admin,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    graph_name: name.to_owned(),
+                    canister_id: Principal::management_canister(),
+                    owner: admin,
+                    admins: BTreeSet::new(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                },
+            )
+            .expect("register graph");
     }
 
     fn store_with_single_shard() -> (RouterStore, ShardRegistryEntry) {
@@ -91,6 +114,7 @@ mod tests {
         });
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
         let entry = AdminRegisterShardArgs {
             shard_id: ShardId::new(0),
             graph_canister: graph_principal(1),
@@ -116,6 +140,7 @@ mod tests {
         });
         let admin = Principal::anonymous();
         store.bootstrap_controllers(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
         for (shard_id, graph_byte) in [(ShardId::new(0), 1u8), (ShardId::new(1), 4)] {
             futures::executor::block_on(store.admin_register_shard(
                 admin,

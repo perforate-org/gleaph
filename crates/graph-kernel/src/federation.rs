@@ -27,6 +27,8 @@ pub use posting_backfill::{PostingBackfillArgs, PostingBackfillResult};
 pub use router_error::RouterError;
 pub use shard_id::ShardId;
 
+use crate::entry::GraphId;
+
 use candid::{CandidType, Decode, Encode, Principal};
 use ic_stable_lara::VertexId;
 use ic_stable_structures::storable::{Bound, Storable};
@@ -147,7 +149,7 @@ pub struct ShardRegistryEntry {
     pub shard_id: ShardId,
     pub graph_canister: Principal,
     pub index_canister: Principal,
-    pub logical_graph_name: String,
+    pub graph_id: GraphId,
     pub registered_at_ns: u64,
 }
 
@@ -219,7 +221,7 @@ mod tests {
             shard_id: ShardId::new(1),
             graph_canister: Principal::anonymous(),
             index_canister: Principal::management_canister(),
-            logical_graph_name: "g.main".into(),
+            graph_id: GraphId::from_raw(1),
             registered_at_ns: 123,
         };
         let bytes = entry.to_bytes();

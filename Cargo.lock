@@ -961,6 +961,7 @@ version = "0.1.0"
 dependencies = [
  "candid",
  "gleaph-gql",
+ "gleaph-graph-kernel",
  "ic-stable-structures",
  "rkyv 0.8.16",
  "serde",
