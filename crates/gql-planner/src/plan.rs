@@ -773,6 +773,18 @@ fn collect_property_names_from_expr(expr: &Expr, uses: &mut PlanPropertyUses) {
     }
 }
 
+fn collect_read_properties_from_expr(expr: &Expr, uses: &mut PlanPropertyUses) {
+    if let ExprKind::PropertyAccess { property, .. } = &expr.kind {
+        uses.add_property(
+            &Str::from(property.as_str()),
+            PropertyUseIntent::ReadExisting,
+        );
+    }
+    crate::expr_children::for_each_immediate_child_expr(expr, |child| {
+        collect_read_properties_from_expr(child, uses);
+    });
+}
+
 fn add_property_projection(uses: &mut PlanPropertyUses, projection: Option<&[Str]>) {
     if let Some(properties) = projection {
         for name in properties {
@@ -900,6 +912,14 @@ fn collect_property_uses_in_ops(ops: &[PlanOp], uses: &mut PlanPropertyUses) {
                         uses.add_property(property, PropertyUseIntent::ReadExisting);
                     }
                 }
+            }
+            PlanOp::PropertyFilter { predicates, .. } => {
+                for predicate in predicates {
+                    collect_read_properties_from_expr(predicate, uses);
+                }
+            }
+            PlanOp::Filter { condition, .. } => {
+                collect_read_properties_from_expr(condition, uses);
             }
             _ => {}
         }
@@ -1201,4 +1221,38 @@ pub enum AnchorSource {
     SchemaEndpoint,
     /// Full scan fallback.
     FullScan,
+}
+
+#[cfg(test)]
+mod property_uses_tests {
+    use super::*;
+    use gleaph_gql::Value;
+    use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
+
+    #[test]
+    fn property_filter_contributes_read_property_uses() {
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "n".into(),
+                label: None,
+                property_projection: None,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![Expr::new(ExprKind::Compare {
+                    left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(Expr::new(ExprKind::Variable("n".into()))),
+                        property: "age".into(),
+                    })),
+                    op: CmpOp::Eq,
+                    right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(5)))),
+                })],
+                stage: 0,
+            },
+        ]);
+        let uses = plan.property_uses();
+        assert_eq!(
+            uses.properties.get("age" as &str),
+            Some(&PropertyUseIntent::ReadExisting)
+        );
+    }
 }

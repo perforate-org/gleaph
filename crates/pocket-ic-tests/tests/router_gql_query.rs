@@ -9,8 +9,9 @@ use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, Vert
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_pocket_ic_tests::{
     DEST_SHARD, SOURCE_SHARD, admin_intern_property, create_vertex_property_index,
-    e2e_insert_vertex, e2e_insert_vertex_with_property, gql_query_as_admin, install_federation,
-    install_single_shard_federation, resolve_placement,
+    drop_vertex_property_index, e2e_insert_vertex, e2e_insert_vertex_with_property,
+    gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin, gql_query_as_admin_expect_err,
+    install_federation, install_single_shard_federation, resolve_placement,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -138,4 +139,92 @@ fn federated_gql_query_index_seeded_merges_across_shards() {
     let result = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
 
     assert_eq!(result.row_count, 2);
+}
+
+#[test]
+fn standalone_drop_index_property_eq_still_queries_via_scan() {
+    let env = install_single_shard_federation();
+    let age = admin_intern_property(&env, "age");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "standalone_drop_index_create",
+    );
+    let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
+
+    let indexed = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
+    assert_eq!(indexed.row_count, 1);
+
+    drop_vertex_property_index(&env, INDEX_AGE_NAME, true, "standalone_drop_index_drop");
+
+    let all_nodes = gql_query_as_admin(&env, "MATCH (n) RETURN n");
+    assert_eq!(
+        all_nodes.row_count, 1,
+        "vertex should still exist after DROP INDEX"
+    );
+
+    let after_drop = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
+    assert_eq!(
+        after_drop.row_count, 1,
+        "single-shard scan path should still match after DROP INDEX"
+    );
+}
+
+#[test]
+fn federated_drop_index_property_eq_loses_federated_anchor() {
+    let env = install_federation();
+    let age = admin_intern_property(&env, "age");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "federated_drop_index_create",
+    );
+    let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
+    let _ = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 5);
+
+    let indexed = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
+    assert_eq!(indexed.row_count, 2);
+
+    drop_vertex_property_index(&env, INDEX_AGE_NAME, true, "federated_drop_index_drop");
+
+    let err = gql_query_as_admin_expect_err(&env, "MATCH (n {age: 5}) RETURN n");
+    assert!(
+        err.to_string().contains("no index anchor"),
+        "expected federated dispatch without index anchor to fail, got: {err:?}"
+    );
+}
+
+#[test]
+fn drop_index_if_exists_is_idempotent() {
+    let env = install_single_shard_federation();
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "drop_index_if_exists_create",
+    );
+    drop_vertex_property_index(&env, INDEX_AGE_NAME, true, "drop_index_if_exists_first");
+    drop_vertex_property_index(&env, INDEX_AGE_NAME, true, "drop_index_if_exists_second");
+}
+
+#[test]
+fn drop_index_without_if_exists_errors_when_missing() {
+    let env = install_single_shard_federation();
+    let err = gql_execute_idempotent_as_admin_expect_err(
+        &env,
+        &format!("DROP INDEX {INDEX_AGE_NAME}"),
+        "drop_index_missing",
+    );
+    assert!(
+        matches!(
+            err,
+            gleaph_graph_kernel::federation::RouterError::NotFound(_)
+        ),
+        "expected NotFound for missing index, got: {err:?}"
+    );
 }

@@ -19,6 +19,7 @@ Anchor timestamp: 2026-06-13 06:18:40 UTC +0000
 | 2026-06-12 | Phase E implemented: router `CREATE INDEX` / `DROP INDEX` extension DDL via `gql_execute*`; named index catalog; shard `unregister_indexed_property`. |
 | 2026-06-12 | Index catalog stable layout: row-oriented `ROUTER_NAMED_INDEXES` + `ROUTER_INDEXED_PROPERTY_SET` with `PropertyId` / label ids (replaces per-graph Candid blob). |
 | 2026-06-13 | Planner stats: `RouterGraphStats` loads `PropertyId` membership; `GraphStats` adapter resolves names via property catalog; one stats load per GQL execution. |
+| 2026-06-13 | Phase E PocketIC e2e: `DROP INDEX` standalone scan fallback + federated anchor loss; planner `PropertyFilter`/`Filter` contribute to `property_uses` for shard `resolved_properties`. |
 
 ## Context
 
@@ -242,7 +243,7 @@ entry as `CREATE INDEX … ON (n.prop)` or is removed after DDL lands.
 | **B — Edge postings on graph-index** | `EdgePostingKey` store; `posting_insert`/`remove` edge API; backfill from `EDGE_PROPERTIES` | graph-index tests; parity with vertex posting tests |
 | **C — Lookup + mixed intersection** | `lookup_edge_equal`, extended `lookup_intersection`; `graph-kernel` types | graph-index + router client tests |
 | **D — Router seeds + graph retire local** | Remove `EDGE_EQUALITY_POSTINGS`; expand/edge scan use seeds; MemoryId repack | pocket-ic; reopen; canbench delta |
-| **E — Index DDL** | Parse/execute `CREATE INDEX` / `DROP INDEX`; RBAC; docs sync | planner fusion tests with DDL setup; e2e query |
+| **E — Index DDL** | Parse/execute `CREATE INDEX` / `DROP INDEX`; RBAC; docs sync | planner fusion tests with DDL setup; PocketIC e2e (`router_gql_query`: CREATE/DROP, standalone scan fallback, federated anchor loss, idempotent/missing DROP) |
 
 Phases A–B may land before D; **main** should not maintain two edge posting SSOTs beyond one merge window.
 

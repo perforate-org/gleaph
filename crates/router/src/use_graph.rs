@@ -5,9 +5,7 @@ use gleaph_gql::ast::{
     CompositeQueryExpr, GqlProgram, ObjectName, SimpleQueryStatement, Statement, StatementBlock,
 };
 use gleaph_gql::type_check::NoSchema;
-use gleaph_gql_planner::{
-    PlanOp, analyze_remote_use_graph_pushdown, build_block_plan_with_schema,
-};
+use gleaph_gql_planner::{PlanOp, analyze_remote_use_graph_pushdown, build_block_plan_with_schema};
 use gleaph_graph_kernel::entry::GraphId;
 
 use crate::facade::store::RouterStore;

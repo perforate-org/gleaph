@@ -585,6 +585,25 @@ pub fn create_vertex_property_index(
     );
 }
 
+/// Drop a named index via `DROP INDEX` (ADR 0009 phase E).
+pub fn drop_vertex_property_index(
+    env: &FederationEnv,
+    index_name: &str,
+    if_exists: bool,
+    client_mutation_key: &str,
+) {
+    let ddl = if if_exists {
+        format!("DROP INDEX {index_name} IF EXISTS")
+    } else {
+        format!("DROP INDEX {index_name}")
+    };
+    let row_count = gql_execute_idempotent_as_admin(env, &ddl, client_mutation_key);
+    assert_eq!(
+        row_count, 0,
+        "DROP INDEX DDL should return row_count 0, got {row_count}"
+    );
+}
+
 fn update_as_admin<T: CandidType, R: CandidType + serde::de::DeserializeOwned>(
     env: &FederationEnv,
     canister: Principal,
@@ -646,6 +665,59 @@ pub fn gql_query_as_admin(
         Ok(Ok(result)) => result,
         Ok(Err(err)) => panic!("gql_query rejected: {err:?}"),
         Err(err) => panic!("decode gql_query: {err}"),
+    }
+}
+
+/// Router composite `gql_query` expected to fail (e.g. after DROP INDEX removes federated anchor).
+pub fn gql_query_as_admin_expect_err(
+    env: &FederationEnv,
+    query: &str,
+) -> gleaph_graph_kernel::federation::RouterError {
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "gql_query",
+            Encode!(&query.to_string(), &Vec::<u8>::new()).expect("encode gql_query"),
+        )
+        .unwrap_or_else(|e| panic!("gql_query on router: {e:?}"));
+    match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
+        Ok(Err(err)) => err,
+        Ok(Ok(result)) => panic!("gql_query should fail, got {result:?}"),
+        Err(err) => panic!("decode gql_query: {err}"),
+    }
+}
+
+/// Gleaph extension DDL on the update path, expected to fail.
+pub fn gql_execute_idempotent_as_admin_expect_err(
+    env: &FederationEnv,
+    query: &str,
+    client_mutation_key: &str,
+) -> gleaph_graph_kernel::federation::RouterError {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let query = query.to_string();
+    let params: Vec<u8> = Vec::new();
+    let mutation_key = client_mutation_key.to_string();
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "gql_execute_idempotent",
+            Encode!(&query, &params, &mutation_key).expect("encode gql_execute_idempotent"),
+        )
+        .unwrap_or_else(|e| panic!("gql_execute_idempotent on router: {e:?}"));
+    match Decode!(&bytes, Result<u64, RouterError>) {
+        Ok(Err(err)) => err,
+        Ok(Ok(row_count)) => {
+            panic!("gql_execute_idempotent should fail, got row_count {row_count}")
+        }
+        Err(err) => panic!("decode gql_execute_idempotent: {err}"),
     }
 }
 
