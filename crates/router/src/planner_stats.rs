@@ -54,6 +54,7 @@ impl RouterGraphStats {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn from_property_ids(
         vertex_property_ids: BTreeSet<PropertyId>,
         edge_property_ids: BTreeSet<PropertyId>,

@@ -1,14 +1,15 @@
 # 0012. Edge index direction in CREATE INDEX (GQL-aligned FOR patterns)
 
 Date: 2026-06-13  
-Status: proposed  
+Status: accepted  
 Last revised: 2026-06-13  
-Anchor timestamp: 2026-06-13 10:55:17 UTC +0000
+Anchor timestamp: 2026-06-13 11:04:14 UTC +0000
 
 ## Revision history
 
 | Date | Change |
 |------|--------|
+| 2026-06-13 | Accepted; F1–F6 implemented (wire keys, direction registry, planner subset, PocketIC e2e, slash rejected). |
 | 2026-06-13 | Reject slash edge patterns in CREATE INDEX FOR (no edge variable for ON clause). |
 | 2026-06-13 | Proposed; GQL `EdgeDirection` in edge `CREATE INDEX FOR`; wire label in graph-index keys; planner subset rule. |
 
@@ -22,13 +23,14 @@ FOR ()-[e:KNOWS]-() ON (e.weight);
 ```
 
 Phase E implementation and PocketIC e2e cover **directed** leading `EdgeIndexScan` queries such as
-`MATCH ()-[e:KNOWS {weight: 5}]->(b)`. Three gaps remain:
+`MATCH ()-[e:KNOWS {weight: 5}]->(b)`. The gaps below drove this ADR and are **resolved** in F1–F6
+(2026-06-13):
 
-| Gap | Detail |
-|-----|--------|
-| **Direction omitted in registry** | `IndexDefRecord` stores `(kind, label_id, property_id)` only. Directed and undirected edges with the same catalog label collapse to one index entry. |
-| **graph-index key uses ambiguous `label_id`** | ADR 0009 §1 defines `label_id` as `EdgeLabelId` catalog raw. Graph DML enqueues postings using **LARA wire** keys (`BucketLabelKey`: directed MSB + label index). Router `lookup_edge_equal(..., Some(catalog))` can miss postings or bind the wrong CSR bucket. |
-| **Planner stats are direction-blind** | `GraphStats::is_edge_property_indexed(property)` ignores query `EdgeDirection`. An index registered for `->` must not satisfy `~ ~` queries and vice versa. |
+| Gap | Detail | Resolution |
+|-----|--------|------------|
+| **Direction omitted in registry** | `IndexDefRecord` stored `(kind, label_id, property_id)` only. | `edge_direction_tag` in `IndexDefRecord`; shard `register_indexed_edge_index`. |
+| **graph-index key uses ambiguous `label_id`** | Catalog vs LARA wire mismatch on postings / lookup. | Wire-native `wire_label_id` in graph-index keys and seeds. |
+| **Planner stats are direction-blind** | Property-only `is_edge_property_indexed`. | `is_edge_property_indexed_for` + storage-class subset rule. |
 
 Gleaph GQL ([`EdgeDirection`](../../crates/gql/src/types.rs)) defines **seven** edge directions
 (full bracket and simplified slash forms normalize to the same enum). Administrators expect

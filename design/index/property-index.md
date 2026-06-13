@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-06-12  
-Anchor timestamp: 2026-06-12 13:30:00 UTC +0000
+Last updated: 2026-06-13  
+Anchor timestamp: 2026-06-13 11:04:14 UTC +0000
 
 ## Status
 
@@ -17,7 +17,7 @@ Anchor timestamp: 2026-06-12 13:30:00 UTC +0000
 
 **Phase E (ADR 0009) — Implemented:** router extension DDL `CREATE INDEX` / `DROP INDEX` (parsed in `router/index_ddl.rs`, executed on `gql_execute*`); named index catalog per logical graph; controller or Manager+ auth; `admin_set_indexed_*` unchanged (property-level register without index name).
 
-**ADR 0012 (proposed):** edge `FOR` patterns carry Gleaph GQL `EdgeDirection`; graph-index edge keys use LARA `wire_label_id`; planner applies storage-class subset rule. See [0012-edge-index-direction-in-ddl.md](../adr/0012-edge-index-direction-in-ddl.md).
+**ADR 0012 — Implemented:** edge `FOR` patterns carry Gleaph GQL `EdgeDirection` (bracket form only; slash rejected); graph-index edge keys use LARA `wire_label_id`; planner applies storage-class subset rule via `is_edge_property_indexed_for`. PocketIC e2e covers `AnyDirection` and `PointingRight` indexes. See [0012-edge-index-direction-in-ddl.md](../adr/0012-edge-index-direction-in-ddl.md).
 
 Property **name → `property_id`** assignment is **router SSOT** ([ADR 0006](../adr/0006-pre-federation-foundation.md) §2). Graph shards no longer maintain `PROPERTY_CATALOG` stable; DML and plan execution use router-resolved `PropertyId` on the wire (`ResolvedPropertyTable`).
 

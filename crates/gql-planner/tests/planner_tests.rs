@@ -5,7 +5,7 @@ use gleaph_gql::type_check::{
     DiagnosticSeverity, DmlDiagnosticSeverity, PropertySchema, TypeDiagnostic,
     dml_target_unknown_message, dml_target_value_message,
 };
-use gleaph_gql::types::LabelExpr;
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::*;
 use gleaph_gql_planner::semantic;
 use gleaph_gql_planner::stats::TableStats;
@@ -810,6 +810,37 @@ fn test_leading_edge_index_scan_unlabeled_start_node() {
             .take(2)
             .any(|op| matches!(op, PlanOp::NodeScan { .. })),
         "first two ops should not be NodeScan when leading edge index applies"
+    );
+}
+
+#[test]
+fn leading_edge_index_scan_respects_direction_subset_rule() {
+    let query = "MATCH ()-[e:REL {weight: 7}]->(b:User) RETURN e, b";
+
+    let mut pointing_right = TableStats::default();
+    pointing_right.directional_edge_indexes.push((
+        "REL".to_owned(),
+        "weight".to_owned(),
+        EdgeDirection::PointingRight,
+    ));
+    let indexed = plan_query_with_stats(query, &pointing_right);
+    assert!(
+        matches!(indexed.ops.first(), Some(PlanOp::EdgeIndexScan { .. })),
+        "PointingRight index should allow leading EdgeIndexScan, ops={:?}",
+        indexed.ops
+    );
+
+    let mut undirected_only = TableStats::default();
+    undirected_only.directional_edge_indexes.push((
+        "REL".to_owned(),
+        "weight".to_owned(),
+        EdgeDirection::Undirected,
+    ));
+    let not_indexed = plan_query_with_stats(query, &undirected_only);
+    assert!(
+        !matches!(not_indexed.ops.first(), Some(PlanOp::EdgeIndexScan { .. })),
+        "Undirected-only index must not satisfy PointingRight query, ops={:?}",
+        not_indexed.ops
     );
 }
 

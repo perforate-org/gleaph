@@ -116,6 +116,11 @@ pub fn wire_labels_for_query(catalog: EdgeLabelId, query_direction: EdgeDirectio
         .collect()
 }
 
+/// Whether a federated edge posting should be maintained for a registered index entry.
+#[allow(
+    dead_code,
+    reason = "graph shard registry duplicates this rule; tested here as SSOT reference"
+)]
 pub fn edge_posting_matches_registration(
     catalog: EdgeLabelId,
     wire_label_id: u16,
@@ -164,5 +169,22 @@ mod tests {
         let mut wires = wire_labels_for_query(catalog, EdgeDirection::AnyDirection);
         wires.sort_unstable();
         assert_eq!(wires, vec![0x0001, 0x8001]);
+    }
+
+    #[test]
+    fn edge_posting_matches_registration_respects_storage_class() {
+        let catalog = EdgeLabelId::from_raw(1);
+        assert!(edge_posting_matches_registration(
+            catalog,
+            0x8001,
+            1,
+            EdgeDirection::PointingRight,
+        ));
+        assert!(!edge_posting_matches_registration(
+            catalog,
+            0x0001,
+            1,
+            EdgeDirection::PointingRight,
+        ));
     }
 }

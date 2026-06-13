@@ -4,6 +4,7 @@
 //! the planner uses for cost-based anchor selection and join ordering.
 //! When no statistics are available, the planner falls back to heuristics.
 
+use gleaph_gql::types::EdgeDirection;
 use std::collections::{BTreeMap, BTreeSet};
 
 // ════════════════════════════════════════════════════════════════════════════════
@@ -130,7 +131,7 @@ impl PropertyHistogram {
 }
 
 /// Concrete statistics struct, compatible with gleaph-old's `TableStats`.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct TableStats {
     pub label_cardinality: BTreeMap<String, u64>,
     pub avg_degree: f64,
@@ -142,6 +143,45 @@ pub struct TableStats {
     pub edge_endpoint_labels: BTreeMap<String, (Vec<String>, Vec<String>)>,
     /// Property histograms for selectivity estimation.
     pub property_histograms: BTreeMap<String, PropertyHistogram>,
+    /// Direction-aware edge indexes: `(edge_label, property, registered_index_direction)`.
+    /// When empty, `is_edge_property_indexed_for` falls back to `indexed_edge_properties`.
+    pub directional_edge_indexes: Vec<(String, String, EdgeDirection)>,
+}
+
+impl Default for TableStats {
+    fn default() -> Self {
+        Self {
+            label_cardinality: BTreeMap::new(),
+            avg_degree: 0.0,
+            property_selectivity: BTreeMap::new(),
+            indexed_vertex_properties: BTreeSet::new(),
+            range_indexed_vertex_properties: BTreeSet::new(),
+            indexed_edge_properties: BTreeSet::new(),
+            edge_endpoint_labels: BTreeMap::new(),
+            property_histograms: BTreeMap::new(),
+            directional_edge_indexes: Vec::new(),
+        }
+    }
+}
+
+fn edge_index_applies_to_query(
+    index_direction: EdgeDirection,
+    query_direction: EdgeDirection,
+) -> bool {
+    fn classes(direction: EdgeDirection) -> &'static [u8] {
+        match direction {
+            EdgeDirection::PointingRight
+            | EdgeDirection::PointingLeft
+            | EdgeDirection::LeftOrRight => &[0],
+            EdgeDirection::Undirected => &[1],
+            EdgeDirection::AnyDirection
+            | EdgeDirection::LeftOrUndirected
+            | EdgeDirection::UndirectedOrRight => &[0, 1],
+        }
+    }
+    classes(query_direction)
+        .iter()
+        .all(|class| classes(index_direction).contains(class))
 }
 
 impl GraphStats for TableStats {
@@ -175,6 +215,27 @@ impl GraphStats for TableStats {
 
     fn is_edge_property_indexed(&self, property: &str) -> bool {
         self.indexed_edge_properties.contains(property)
+    }
+
+    fn is_edge_property_indexed_for(
+        &self,
+        label: Option<&str>,
+        property: &str,
+        direction: EdgeDirection,
+    ) -> bool {
+        if self.directional_edge_indexes.is_empty() {
+            return self.is_edge_property_indexed(property);
+        }
+        let Some(label) = label else {
+            return false;
+        };
+        self.directional_edge_indexes
+            .iter()
+            .any(|(edge_label, edge_property, index_direction)| {
+                edge_label == label
+                    && edge_property == property
+                    && edge_index_applies_to_query(*index_direction, direction)
+            })
     }
 
     fn edge_endpoint_labels(&self, edge_label: &str) -> Option<(Vec<String>, Vec<String>)> {

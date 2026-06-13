@@ -21,7 +21,7 @@ Anchor timestamp: 2026-06-13 06:18:40 UTC +0000
 | 2026-06-13 | Planner stats: `RouterGraphStats` loads `PropertyId` membership; `GraphStats` adapter resolves names via property catalog; one stats load per GQL execution. |
 | 2026-06-13 | Phase E PocketIC e2e: `DROP INDEX` standalone scan fallback + federated anchor loss; planner `PropertyFilter`/`Filter` contribute to `property_uses` for shard `resolved_properties`. |
 | 2026-06-13 | Phase E PocketIC e2e: edge `CREATE INDEX` / `DROP INDEX` via `e2e_insert_directed_edge_with_property`; standalone scan fallback and federated anchor loss for `()-[e:L {p: v}]->` queries. |
-| 2026-06-13 | [ADR 0012](0012-edge-index-direction-in-ddl.md) proposed: GQL `EdgeDirection` in edge `FOR`; graph-index `wire_label_id` keys; planner storage-class subset rule (amends §1 `label_id`, §4 edge DDL). |
+| 2026-06-13 | [ADR 0012](0012-edge-index-direction-in-ddl.md) accepted: GQL `EdgeDirection` in edge `FOR`; graph-index `wire_label_id` keys; planner storage-class subset rule; slash `FOR` rejected (amends §1 `label_id`, §4 edge DDL). |
 
 ## Context
 

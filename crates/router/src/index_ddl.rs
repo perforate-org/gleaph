@@ -425,6 +425,48 @@ mod tests {
     }
 
     #[test]
+    fn create_edge_index_all_bracket_directions() {
+        let cases = [
+            (
+                "CREATE INDEX w FOR () <-[e:KNOWS]- () ON (e.weight)",
+                EdgeDirection::PointingLeft,
+            ),
+            (
+                "CREATE INDEX w FOR () <-[e:KNOWS]-> () ON (e.weight)",
+                EdgeDirection::LeftOrRight,
+            ),
+            (
+                "CREATE INDEX w FOR () ~[e:KNOWS]~ () ON (e.weight)",
+                EdgeDirection::Undirected,
+            ),
+            (
+                "CREATE INDEX w FOR () ~[e:KNOWS]~> () ON (e.weight)",
+                EdgeDirection::UndirectedOrRight,
+            ),
+            (
+                "CREATE INDEX w FOR () <~[e:KNOWS]~ () ON (e.weight)",
+                EdgeDirection::LeftOrUndirected,
+            ),
+        ];
+        for (ddl, direction) in cases {
+            assert_eq!(
+                parse_ok(ddl),
+                IndexDdlStatement::Create {
+                    index_name: "w".into(),
+                    if_not_exists: false,
+                    target: IndexTarget {
+                        kind: IndexedPropertyKind::Edge,
+                        label: "KNOWS".into(),
+                        property: "weight".into(),
+                        edge_direction: Some(direction),
+                    },
+                },
+                "ddl: {ddl}"
+            );
+        }
+    }
+
+    #[test]
     fn create_edge_index_rejects_slash_form() {
         let err = parse("CREATE INDEX w FOR ()-/KNOWS/->() ON (e.weight)").unwrap_err();
         assert_eq!(err, IndexDdlParseError::SlashEdgePatternNotSupported);

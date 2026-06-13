@@ -46,6 +46,6 @@ Last revised: YYYY-MM-DD
 | [0009](0009-edge-property-index-and-index-ddl.md) | Edge property index on graph-index; mixed intersection; opt-in `CREATE INDEX` / `DROP INDEX` DDL | accepted |
 | [0010](0010-index-sharding-extensibility.md) | Index sharding: defer split strategy; stable posting wire; router index resolution | accepted |
 | [0011](0011-gql-graph-resolution-and-catalog-scoping.md) | GQL graph resolution; `BidirectionalCatalog` for graph/index names; migrate stable keys to `GraphId` / `IndexNameId` | accepted |
-| [0012](0012-edge-index-direction-in-ddl.md) | Edge index direction in `CREATE INDEX FOR` (GQL patterns); wire label in graph-index keys; planner subset rule | proposed |
+| [0012](0012-edge-index-direction-in-ddl.md) | Edge index direction in `CREATE INDEX FOR` (GQL patterns); wire label in graph-index keys; planner subset rule | accepted |
 
 When adding an ADR, link it from the relevant design doc and update this table.
