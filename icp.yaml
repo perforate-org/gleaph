@@ -1,0 +1,33 @@
+canisters:
+  - name: gleaph-router
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: gleaph-router
+
+  - name: gleaph-graph-index
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: gleaph-graph-index
+
+  - name: gleaph-graph-shard-0
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: gleaph-graph
+
+  - name: knowledge-map
+    recipe:
+      type: "@dfinity/asset-canister@v2.2.1"
+      configuration:
+        dir: frontend/apps/knowledge-map/dist
+        build:
+          - env HOME="$PWD/.icp/home" COREPACK_HOME="$PWD/.icp/corepack-home" XDG_CACHE_HOME="$PWD/.icp/xdg-cache" XDG_DATA_HOME="$PWD/.icp/xdg-data" CI=1 corepack pnpm install --frozen-lockfile
+          - env HOME="$PWD/.icp/home" COREPACK_HOME="$PWD/.icp/corepack-home" XDG_CACHE_HOME="$PWD/.icp/xdg-cache" XDG_DATA_HOME="$PWD/.icp/xdg-data" CI=1 corepack pnpm knowledge-map:build
+
+networks:
+  - name: local
+    mode: managed
+    gateway:
+      port: 0

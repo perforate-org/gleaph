@@ -7,6 +7,11 @@ target/
 
 node_modules/
 .pnpm-store/
+.icp/cache/
+.icp/corepack-home/
+.icp/home/
+.icp/xdg-cache/
+.icp/xdg-data/
 
 .canbench/
 .pocket-ic/
