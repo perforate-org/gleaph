@@ -12,7 +12,7 @@ Anchor timestamp: 2026-06-13 06:46:07 UTC +0000
 | 2026-06-13 | Proposed: GQL graph resolution at router ingress; deprecate Candid `logical_graph_name`. |
 | 2026-06-13 | Clarified catalog scope: **`BidirectionalCatalog` for graph and index names**; migrate all stable/router keys and stored values from `String` names to **`GraphId` / `IndexNameId`**. |
 | 2026-06-13 | Accepted. |
-| 2026-06-13 | U1b remote USE GRAPH defocus dispatch implemented; HOME B (`is_home`) implemented. |
+| 2026-06-13 | Design docs synced (`layers.md`, `operations.md`, `glossary.md`, `overview.md`, `operators.md`). |
 
 ## Context
 
@@ -94,12 +94,12 @@ a future session store is added (non-goal here).
 
 | Issue | Impact |
 |-------|--------|
-| **Dual graph source of truth** | Candid `logical_graph_name` vs `SESSION SET GRAPH` / `USE` can disagree |
-| **Validator gap** | Transaction validation starts with empty `graph_scope`; session commands do not seed it |
-| **Planner / executor gap** | Plain `MATCH` has no `UseGraph`; router must infer default graph from program, not API |
-| **String keys in stable maps** | Graph / index names duplicated in keys and values; no rename-safe ids |
-| **Catalog coupling** | Index DDL and stats keyed by API string, not by GQL-resolved `GraphId` |
-| **HOME_GRAPH undefined** | Parser accepts `HOME_GRAPH`; router has no resolution rule |
+| **Dual graph source of truth** | ~~Candid `logical_graph_name` vs `SESSION SET GRAPH` / `USE`~~ — **resolved** (R2): ingress uses program only |
+| **Validator gap** | ~~Empty `graph_scope`~~ — **resolved** (R1): `SessionGraphSeed` at ingress |
+| **Planner / executor gap** | Plain `MATCH` has no `UseGraph`; router infers default graph from program — **implemented** (R0) |
+| **String keys in stable maps** | ~~Graph / index names in keys~~ — **resolved** (G1/I1): `GraphId` / `IndexNameId` catalogs |
+| **Catalog coupling** | ~~Index DDL keyed by API string~~ — **resolved**: keyed by `GraphId` |
+| **HOME_GRAPH undefined** | ~~No resolution rule~~ — **resolved** (HOME B): `is_home` + sole-graph fallback |
 
 ---
 
@@ -112,9 +112,8 @@ a future session store is added (non-goal here).
 | `gleaph-router` | Already owns registry, dispatch, index catalog, RBAC — **correct owner for resolution** |
 | `gleaph-graph` | Executes against one shard’s store per invocation; receives graph context via dispatch, not parse |
 
-Keeping `logical_graph_name` on query APIs is a pre-federation shortcut
-([operations.md](../federation/operations.md)). It is not fit for GQL-native ingress once
-multi-graph and index DDL are product-facing.
+Keeping `logical_graph_name` on query APIs was a pre-federation shortcut
+([operations.md](../federation/operations.md)). It has been **removed** from query / prepared execute paths (R2).
 
 ---
 
@@ -339,7 +338,7 @@ flowchart TB
 | Graph / shard registry stable keys | **`GraphId`**, not string |
 | Index DDL metadata stable keys | **`GraphId` + `IndexNameId`**, not string |
 | Shard list per graph | `ROUTER_SHARDS_BY_GRAPH_ID` (new); not `ROUTER_SHARD_BY_GRAPH` (canister map) |
-| **`UseGraph` sub-plan routing** | Router dispatch (multi-graph milestone) |
+| **`UseGraph` sub-plan routing** | Router `resolve_ingress_dispatch` (top-level remote `USE`, read path) |
 | Plan execution | Graph shard(s) |
 
 ---
@@ -356,9 +355,9 @@ flowchart TB
 
 ### Trade-offs
 
-- Router ingress complexity (session evaluation, HOME rules, mismatch checks)
-- Breaking Candid change for SDKs and PocketIC tests
-- Multi-graph plans with several `UseGraph` targets require dispatch work not done today
+- Router ingress complexity (session evaluation, HOME rules, validator seed sync)
+- Breaking Candid change for SDKs and PocketIC tests (**done** in R2)
+- Nested or multi-target `USE GRAPH` in one plan — still rejected; sequential multi-graph merge not implemented
 - Validator + router must stay in sync for session graph seeding
 
 ---
@@ -407,13 +406,15 @@ catalogs; rewrite regions 1–3, 22–23 as needed). Dev snapshot discard accept
 
 ## Design documentation impact
 
-| Document | Update |
-|----------|--------|
-| [gql/layers.md](../gql/layers.md) | Graph resolution at router ingress; USE GRAPH + federation unification |
-| [federation/operations.md](../federation/operations.md) | Replace “Candid logical_graph_name” with resolved graph |
-| [glossary.md](../glossary.md) | `effective graph`, `HOME_GRAPH` (router) |
-| [storage/stable-memory-inventory.md](../storage/stable-memory-inventory.md) | GraphId regions; index key shapes (when implemented) |
-| [adr/README.md](README.md) | Index this ADR |
+| Document | Update | Status |
+|----------|--------|--------|
+| [gql/layers.md](../gql/layers.md) | Graph resolution, validate seed, USE GRAPH + federation | **Updated** 2026-06-13 |
+| [federation/operations.md](../federation/operations.md) | Program-based graph resolution; remote USE dispatch | **Updated** 2026-06-13 |
+| [glossary.md](../glossary.md) | `effective graph`, `HOME_GRAPH`, `SessionGraphSeed`, `is_home` | **Updated** 2026-06-13 |
+| [architecture/overview.md](../architecture/overview.md) | Ingress validate + USE dispatch | **Updated** 2026-06-13 |
+| [execution/operators.md](../execution/operators.md) | `UseGraph` router vs graph executor | **Updated** 2026-06-13 |
+| [storage/stable-memory-inventory.md](../storage/stable-memory-inventory.md) | GraphId regions; index key shapes | **Updated** 2026-06-13 (G1/I1) |
+| [adr/README.md](README.md) | Index this ADR | **Updated** |
 
 ---
 

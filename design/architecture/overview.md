@@ -47,16 +47,17 @@ flowchart LR
 
 1. **Ingress** — `router::gql_query` / `prepared_execute` (see `crates/router/src/gql.rs`, `prepared.rs`).
 2. **Parse & classify** — `gleaph_gql::parser`, `program_modification::classify_program`.
-3. **Resolve graph** — effective graph from `session_activity` + HOME / sole-graph default; index catalog and shard list keyed by resolved graph ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)). *Legacy:* Candid `logical_graph_name` until R2.
-4. **Plan** — `gleaph_gql_planner::build_block_plan_with_schema` → `PhysicalPlan`.
-5. **Encode** — `encode_block_plans` → plan blob + write-path flag.
-6. **Route** — `dispatch_plan_blob` (see [sharding/federation-target.md](../sharding/federation-target.md) for target; [sharding/standalone-mode.md](../sharding/standalone-mode.md) for current standalone focus):
+3. **Resolve graph** — effective graph from `session_activity` + HOME (`is_home` or sole visible) / default; index catalog and shard list keyed by resolved `GraphId` ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)).
+4. **Validate & ingress dispatch** — `validate_with_seed(SessionGraphSeed)`; defocus remote top-level `USE GRAPH` when applicable (`resolve_ingress_dispatch`).
+5. **Plan** — `gleaph_gql_planner::build_block_plan_with_schema` → `PhysicalPlan`.
+6. **Encode** — `encode_block_plans` → plan blob + write-path flag.
+7. **Route** — `dispatch_plan_blob` (see [sharding/federation-target.md](../sharding/federation-target.md) for target; [sharding/standalone-mode.md](../sharding/standalone-mode.md) for current standalone focus):
    - **Target:** Router calls index (`lookup_equal` / `lookup_intersection`), slices `PostingHit` by shard, dispatches with seeds.
    - **Current:** If plan has an **index anchor** (`SeedProbe` on `IndexScan` only), lookup postings and fan out to shards.
    - If **no anchor** and multiple shards → error (`no index anchor: single-shard graph required`).
    - If single shard → execute locally with optional empty seed.
-7. **Execute** — `execute_plan_on_graph` with `ExecutePlanArgs { target_shard_id, plan_blob, seed_bindings_blob, mode }` (`crates/graph-kernel/src/plan_exec.rs`).
-8. **Return** — Row count (values materialized on graph; router aggregates counts for multi-shard).
+8. **Execute** — `execute_plan_on_graph` with `ExecutePlanArgs { target_shard_id, plan_blob, seed_bindings_blob, mode }` (`crates/graph-kernel/src/plan_exec.rs`).
+9. **Return** — Row count (values materialized on graph; router aggregates counts for multi-shard).
 
 Update path uses `GqlExecutionMode::Update` and DML operators; graph performs posting maintenance where configured.
 

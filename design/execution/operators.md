@@ -54,7 +54,7 @@ Catalog `PlanOp` variants and note **executor support** and **federation relevan
 | `Let` | Exec | |
 | `For` | Exec | `WITH ORDINALITY` (1-based) and `WITH OFFSET` (0-based) |
 | `CallProcedure` / `InlineProcedureCall` | Partial | Inline `CALL { ... }` exec; named `CallProcedure` not implemented |
-| `UseGraph` | Partial | Remote graph; distinct from shard federation |
+| `UseGraph` | Partial | Router: top-level remote `USE` defocus + dispatch **Implemented** (read, pushdown-eligible). Graph executor: single-store pass-through of sub-plan when `UseGraph` remains on wire. Nested / multi-target `USE` rejected at ingress. |
 
 ## Output
 

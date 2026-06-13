@@ -1,7 +1,7 @@
 # Glossary
 
-Last updated: 2026-06-11  
-Anchor timestamp: 2026-06-11 16:02:17 UTC +0000
+Last updated: 2026-06-13  
+Anchor timestamp: 2026-06-13 08:51:44 UTC +0000
 
 Terms used across Gleaph design documents. Canonical types live in **`gleaph-graph-kernel`** unless noted.
 
@@ -59,10 +59,13 @@ See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md) and [adr/0006-pre
 | **Prepared query** | Pre-registered GQL program; executors may run it without ad-hoc parse rights. |
 | **Program modification flags** | `gleaph_gql::program_modification` — static read vs write classification. |
 | **IC extensions** | `IC.PRINCIPAL`, `IC.MSG_CALLER()` — Gleaph-specific GQL surface (not in ISO core). |
-| **USE GRAPH** | GQL focused graph scope; planner emits `PlanOp::UseGraph`; router resolves to shard list + index catalog ([ADR 0011](adr/0011-gql-graph-resolution-and-catalog-scoping.md)). |
-| **Effective graph** | Session current graph after applying `session_activity`, or HOME / sole-graph default when unset; keys shard dispatch and index catalog for plain queries. |
-| **HOME_GRAPH** | GQL special reference; router resolves to caller home graph (sole visible graph in standalone; explicit config when multi-graph). |
+| **USE GRAPH** | GQL focused graph scope; planner emits `PlanOp::UseGraph`; router defocuses top-level `USE`, resolves name → `GraphId`, replans with target stats, and dispatches to that graph’s shards ([ADR 0011](adr/0011-gql-graph-resolution-and-catalog-scoping.md)). |
+| **Effective graph** | Session current graph after applying `session_activity`, or HOME / sole-graph default when unset; keys shard dispatch and index catalog for plain queries without `USE`. |
+| **HOME graph** | Router default when session current is unset: exactly one visible `GraphRegistryEntry` with `is_home: true`, else sole visible graph (standalone), else error when ambiguous ([ADR 0011](adr/0011-gql-graph-resolution-and-catalog-scoping.md)). |
+| **HOME_GRAPH** | GQL special reference resolved to the caller’s HOME graph (same rules as router HOME resolution). |
+| **SessionGraphSeed** | Optional ingress input to `gleaph_gql::validate_with_seed`: effective and HOME catalog names so validator `graph_scope` matches router `resolve_graph_context`. |
 | **GraphId** | Router-issued `GraphId(u32)` via `BidirectionalCatalog`; stable keys for registry, shards, index rows, idempotency — **not** embedded graph name strings (ADR 0011). |
+| **is_home** | `GraphRegistryEntry.is_home`: marks the HOME graph when multiple graphs are visible; at most one may be registered. |
 | **IndexNameId** | Router-issued `IndexNameId(u16)` via graph-scoped `BidirectionalCatalog`; stable key component for `ROUTER_NAMED_INDEXES` — **not** index name strings (ADR 0011). |
 
 ## Canisters

@@ -20,9 +20,11 @@ Document **operational flows**: shard registration, vertex lifecycle, and cross-
 
 **Removed:** peer graph ACL stable and `bootstrap_graph_peers` / `federated_expand` canister endpoints. Router `peer_sync` is a no-op until cross-shard expand returns in a follow-up ADR.
 
-**Router** resolves **effective graph** from the GQL program (session graph, HOME, sole-graph default) → shard list for dispatch ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)).
+**Router** resolves **effective graph** from the GQL program (session graph, `HOME_GRAPH` / `is_home`, sole-graph default) → shard list for dispatch ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)). Ad-hoc and prepared **execute** APIs take `(query, params)` only — no Candid `logical_graph_name`.
 
-**Legacy (today):** query APIs still pass `logical_graph_name` as a Candid argument; this bypasses `SESSION SET GRAPH` and will be removed.
+### Remote USE GRAPH (read path)
+
+**Implemented (2026-06-13):** top-level `USE <graph> { … }` / `USE <graph> MATCH … RETURN …` is **defocused** at router ingress: plan is rebuilt with the focused graph’s stats and dispatched to that graph’s shards without a `PlanOp::UseGraph` wrapper. Nested `USE`, inline-procedure `USE`, unsupported pushdown patterns, and remote DML are rejected.
 
 ## Vertex create (federated)
 

@@ -136,7 +136,7 @@ Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores va
 
 ## Router canister — stable regions
 
-Repacked 2026-06-13 (ADR 0011 graph/index name catalogs). Prior repack 2026-06-11 (ADR 0006 slice D). **Removed:** `ROUTER_LOGICAL_COUNTER` (5), `ROUTER_PENDING_LOGICAL` (6), `ROUTER_PLACEMENT_BY_PHYSICAL` (13). `ROUTER_PLACEMENTS` keyed by `GlobalVertexId`. `ROUTER_GRAPHS` keyed by **`GraphId`** (not graph name string). `ShardRegistryEntry` stores **`graph_id: GraphId`**. `ROUTER_SHARD_BY_GRAPH` remains **`Principal → ShardId`** (canister uniqueness); shard listing per logical graph uses **`ROUTER_SHARDS_BY_GRAPH_ID`**.
+Repacked 2026-06-13 (ADR 0011 graph/index name catalogs). Prior repack 2026-06-11 (ADR 0006 slice D). **Removed:** `ROUTER_LOGICAL_COUNTER` (5), `ROUTER_PENDING_LOGICAL` (6), `ROUTER_PLACEMENT_BY_PHYSICAL` (13). `ROUTER_PLACEMENTS` keyed by `GlobalVertexId`. `ROUTER_GRAPHS` keyed by **`GraphId`** (not graph name string); values are **`GraphRegistryEntry`** including **`is_home: bool`** for HOME resolution (ADR 0011 §1.3 B). `ShardRegistryEntry` stores **`graph_id: GraphId`**. `ROUTER_SHARD_BY_GRAPH` remains **`Principal → ShardId`** (canister uniqueness); shard listing per logical graph uses **`ROUTER_SHARDS_BY_GRAPH_ID`**.
 
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|

@@ -36,14 +36,16 @@ Policy: **`AGENT.md`** — Gleaph/IC-specific behavior stays out of `gql` and `g
 ## End-to-end read path
 
 1. **Parse** — `gleaph_gql::parser::parse`
-2. **Resolve graph** — router `resolve_graph_context` from `session_activity` + HOME / sole-graph default ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)); **not** a separate Candid graph argument (target)
-3. **Classify** — `classify_program` → read vs write flags
-4. **Authorize** — `router::rbac::authorize_adhoc_gql` (or prepared path)
-5. **Plan** — `build_block_plan_with_schema(block, stats, schema)` with stats for resolved `GraphId`
-6. **Encode** — `encode_block_plans` → bytes for `ExecutePlanArgs`
-7. **Dispatch** — router seed routing per resolved graph (optional multi-shard; multi-`UseGraph` planned)
-8. **Execute** — graph `execute_plan_query_bindings`
-9. **Materialize** — bindings → GQL values for response
+2. **Resolve graph** — router `resolve_graph_context` from `session_activity` + HOME / sole-graph default ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)); query APIs do **not** take a separate Candid graph name
+3. **Validate** — `gleaph_gql::validate_with_seed` with router `SessionGraphSeed` (`CURRENT_GRAPH` / `HOME_GRAPH` vs session effective graph)
+4. **Classify** — `classify_program` → read vs write flags
+5. **Authorize** — `router::rbac::authorize_adhoc_gql` (or prepared path)
+6. **Ingress dispatch** — `resolve_ingress_dispatch`: defocus top-level `USE GRAPH`, resolve focused `GraphId`, replan with that graph’s stats ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md) U1b)
+7. **Plan** — `build_block_plan_with_schema(block, stats, schema)` with stats for dispatch `GraphId`
+8. **Encode** — `encode_block_plans` → bytes for `ExecutePlanArgs`
+9. **Dispatch** — router seed routing per dispatch `GraphId` (multi-shard federation merge on one logical graph)
+10. **Execute** — graph `execute_plan_query_bindings` (single store per shard; `UseGraph` stripped on remote ingress path)
+11. **Materialize** — bindings → GQL values for response
 
 Prepared queries skip parse on hot path where a cached plan blob is stored.
 
@@ -67,12 +69,13 @@ Proposed mutation-only procedures (`GLEAPH.FINALIZE_BULK_INGEST`, `GLEAPH.VERTEX
 | Feature | Meaning |
 |---------|---------|
 | **Session current graph** | `SESSION SET GRAPH` in `session_activity`; default for plain `MATCH` when no `USE` ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)) |
-| **USE GRAPH** (planner) | Focused sub-plan scope; router resolves name → shard list + index catalog for that graph |
-| **Federation** (router/graph) | Shards of one logical graph; `GlobalVertexId`, placement, encoded element ids |
+| **HOME graph** | `HOME_GRAPH` or sole visible graph; optional `GraphRegistryEntry.is_home` when multiple graphs are visible |
+| **USE GRAPH** (planner) | Focused sub-plan scope; router **defocuses** top-level `USE`, replans with target graph stats, dispatches to that graph’s shard list + index catalog (read path; pushdown rules in planner) |
+| **Federation** (router/graph) | Shards of **one** logical graph; `GlobalVertexId`, placement, encoded element ids |
 
-**Status:** Today router still takes Candid `logical_graph_name` and ignores session graph — **legacy**; ADR 0011 replaces that with program-based resolution.
+**Implemented (2026-06-13):** program-based graph resolution (R0–R2), validator session seed (R1), remote top-level `USE GRAPH` dispatch (U1b). **Not implemented:** nested or multi-target `USE GRAPH` in one plan, remote `USE` DML, cross-call session persistence.
 
-Planner pushdown tests (`analyze_remote_use_graph_pushdown`) remain planner-local; shard routing tests belong on router ingress once U1 is implemented.
+Planner pushdown analysis (`analyze_remote_use_graph_pushdown`) runs at router ingress for remote `USE`; shard routing tests live in `crates/router/src/use_graph.rs` and PocketIC.
 
 ## Program modification (security input)
 
