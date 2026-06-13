@@ -1,6 +1,5 @@
 //! Mutation idempotency and client mutation journal.
 
-use super::super::stable::graph_catalog::lookup_graph_id;
 use super::super::stable::label_telemetry::{
     ClientMutationKey, RouterMutationRecord, RouterMutationShard,
 };
@@ -12,6 +11,7 @@ use super::{
 use crate::state::RouterError;
 use crate::types::ShardId;
 use candid::Principal;
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::plan_exec::LabelTelemetryEventWire;
 use gleaph_graph_kernel::plan_exec::{MutationId, ResolvedLabelTable, ResolvedPropertyTable};
 
@@ -33,13 +33,13 @@ impl RouterStore {
     pub fn reserve_mutation_id_for_client_key(
         &self,
         caller: Principal,
-        logical_graph_name: &str,
+        graph_id: GraphId,
         client_key: &str,
         request_fingerprint: Vec<u8>,
     ) -> Result<ClientMutationReservation, RouterError> {
         self.reserve_mutation_id_for_client_key_at(
             caller,
-            logical_graph_name,
+            graph_id,
             client_key,
             request_fingerprint,
             ic_time_ns(),
@@ -49,15 +49,13 @@ impl RouterStore {
     pub(crate) fn reserve_mutation_id_for_client_key_at(
         &self,
         caller: Principal,
-        logical_graph_name: &str,
+        graph_id: GraphId,
         client_key: &str,
         request_fingerprint: Vec<u8>,
         now: u64,
     ) -> Result<ClientMutationReservation, RouterError> {
         validate_client_mutation_key(client_key)?;
-        let graph_id = lookup_graph_id(logical_graph_name)
-            .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
-        let key = ClientMutationKey::new(caller, graph_id, client_key.to_owned());
+        let key = client_mutation_key(caller, graph_id, client_key);
         if let Some(mut record) = ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key)) {
             if now.saturating_sub(record.created_at_ns) > CLIENT_MUTATION_KEY_TTL_NS {
                 return Err(RouterError::InvalidArgument(
@@ -106,23 +104,23 @@ impl RouterStore {
     pub fn router_mutation_record(
         &self,
         caller: Principal,
-        logical_graph_name: &str,
+        graph_id: GraphId,
         client_key: &str,
     ) -> Option<RouterMutationRecord> {
-        let key = client_mutation_key(caller, logical_graph_name, client_key).ok()?;
+        let key = client_mutation_key(caller, graph_id, client_key);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key))
     }
 
     pub fn record_router_mutation_shards(
         &self,
         caller: Principal,
-        logical_graph_name: &str,
+        graph_id: GraphId,
         client_key: &str,
         resolved_labels: ResolvedLabelTable,
         resolved_properties: ResolvedPropertyTable,
         shards: Vec<RouterMutationShard>,
     ) -> Result<(), RouterError> {
-        let key = client_mutation_key(caller, logical_graph_name, client_key)?;
+        let key = client_mutation_key(caller, graph_id, client_key);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -141,13 +139,13 @@ impl RouterStore {
     pub fn record_router_mutation_completed_without_shards(
         &self,
         caller: Principal,
-        logical_graph_name: &str,
+        graph_id: GraphId,
         client_key: &str,
         resolved_labels: ResolvedLabelTable,
         resolved_properties: ResolvedPropertyTable,
         row_count: u64,
     ) -> Result<(), RouterError> {
-        let key = client_mutation_key(caller, logical_graph_name, client_key)?;
+        let key = client_mutation_key(caller, graph_id, client_key);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -166,10 +164,10 @@ impl RouterStore {
     pub fn abandon_router_mutation_routing_reservation(
         &self,
         caller: Principal,
-        logical_graph_name: &str,
+        graph_id: GraphId,
         client_key: &str,
     ) -> Result<(), RouterError> {
-        let key = client_mutation_key(caller, logical_graph_name, client_key)?;
+        let key = client_mutation_key(caller, graph_id, client_key);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -183,13 +181,13 @@ impl RouterStore {
     pub fn record_router_mutation_shard_completed(
         &self,
         caller: Principal,
-        logical_graph_name: &str,
+        graph_id: GraphId,
         client_key: &str,
         shard_id: ShardId,
         row_count: u64,
         events: Vec<LabelTelemetryEventWire>,
     ) -> Result<(), RouterError> {
-        let key = client_mutation_key(caller, logical_graph_name, client_key)?;
+        let key = client_mutation_key(caller, graph_id, client_key);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -211,11 +209,11 @@ impl RouterStore {
     pub fn record_router_mutation_shard_telemetry_acked(
         &self,
         caller: Principal,
-        logical_graph_name: &str,
+        graph_id: GraphId,
         client_key: &str,
         shard_id: ShardId,
     ) -> Result<(), RouterError> {
-        let key = client_mutation_key(caller, logical_graph_name, client_key)?;
+        let key = client_mutation_key(caller, graph_id, client_key);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
             let mut record = m
                 .get(&key)
@@ -235,10 +233,10 @@ impl RouterStore {
     pub fn router_mutation_completed_row_count(
         &self,
         caller: Principal,
-        logical_graph_name: &str,
+        graph_id: GraphId,
         client_key: &str,
     ) -> Option<u64> {
-        let record = self.router_mutation_record(caller, logical_graph_name, client_key)?;
+        let record = self.router_mutation_record(caller, graph_id, client_key)?;
         if let Some(row_count) = record.completed_row_count {
             return Some(row_count);
         }
@@ -261,14 +259,8 @@ impl RouterStore {
 
 fn client_mutation_key(
     caller: Principal,
-    logical_graph_name: &str,
+    graph_id: GraphId,
     client_key: &str,
-) -> Result<ClientMutationKey, RouterError> {
-    let graph_id = lookup_graph_id(logical_graph_name)
-        .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
-    Ok(ClientMutationKey::new(
-        caller,
-        graph_id,
-        client_key.to_owned(),
-    ))
+) -> ClientMutationKey {
+    ClientMutationKey::new(caller, graph_id, client_key.to_owned())
 }

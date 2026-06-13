@@ -23,14 +23,20 @@ pub(crate) fn intern_graph_name(name: &str) -> Result<GraphId, RouterError> {
         .map_err(|e| catalog_error_to_router(e, "graph"))
 }
 
-#[allow(dead_code, reason = "catalog migration and admin paths pending ADR 0011 rollout")]
+#[allow(
+    dead_code,
+    reason = "catalog migration and admin paths pending ADR 0011 rollout"
+)]
 pub(crate) fn insert_graph_name(name: &str, graph_id: GraphId) -> Result<(), RouterError> {
     ROUTER_GRAPH_CATALOG
         .with_borrow_mut(|catalog| catalog.insert_with_id(name, graph_id))
         .map_err(|e| catalog_error_to_router(e, "graph"))
 }
 
-#[allow(dead_code, reason = "catalog migration and admin paths pending ADR 0011 rollout")]
+#[allow(
+    dead_code,
+    reason = "catalog migration and admin paths pending ADR 0011 rollout"
+)]
 pub(crate) fn graph_entry(
     graph_id: GraphId,
 ) -> Option<gleaph_gql_ic::graph_registry::GraphRegistryEntry> {

@@ -36,6 +36,7 @@ pub use merge::{
 pub use standalone::StandaloneSharding;
 
 use candid::Principal;
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
 
 use crate::facade::store::RouterStore;
@@ -60,7 +61,7 @@ pub trait ShardingPolicy {
     fn resolve_with_hits(
         &self,
         store: &RouterStore,
-        logical_graph_name: &str,
+        graph_id: GraphId,
         shards: &[ShardRegistryEntry],
         anchor: IndexAnchor,
         hits: SeedHits,
@@ -94,18 +95,16 @@ impl ShardingPolicy for ActiveShardingPolicy {
     fn resolve_with_hits(
         &self,
         store: &RouterStore,
-        logical_graph_name: &str,
+        graph_id: GraphId,
         shards: &[ShardRegistryEntry],
         anchor: IndexAnchor,
         hits: SeedHits,
     ) -> Result<Vec<SeedRouting>, RouterError> {
         match self {
             Self::Standalone(policy) => {
-                policy.resolve_with_hits(store, logical_graph_name, shards, anchor, hits)
+                policy.resolve_with_hits(store, graph_id, shards, anchor, hits)
             }
-            Self::Multi(policy) => {
-                policy.resolve_with_hits(store, logical_graph_name, shards, anchor, hits)
-            }
+            Self::Multi(policy) => policy.resolve_with_hits(store, graph_id, shards, anchor, hits),
         }
     }
 }

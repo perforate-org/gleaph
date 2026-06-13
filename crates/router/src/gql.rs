@@ -10,6 +10,7 @@ use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::build_block_plan_with_schema;
 use gleaph_gql_planner::wire::encode_block_plans;
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, PostingHit, ValuePostingCount,
@@ -331,13 +332,8 @@ async fn execute_grouped_aggregate_fast_path<I: IndexLookup + ?Sized>(
     Ok(Some(counts))
 }
 
-pub async fn gql_query(
-    logical_graph_name: String,
-    query: String,
-    params: Vec<u8>,
-) -> Result<GqlQueryResult, RouterError> {
+pub async fn gql_query(query: String, params: Vec<u8>) -> Result<GqlQueryResult, RouterError> {
     run_gql(
-        &logical_graph_name,
         &query,
         &params,
         GqlExecutionMode::Query,
@@ -348,13 +344,8 @@ pub async fn gql_query(
     .await
 }
 
-pub async fn gql_execute(
-    logical_graph_name: String,
-    query: String,
-    params: Vec<u8>,
-) -> Result<u64, RouterError> {
+pub async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterError> {
     Ok(run_gql(
-        &logical_graph_name,
         &query,
         &params,
         GqlExecutionMode::Update,
@@ -367,13 +358,11 @@ pub async fn gql_execute(
 }
 
 pub async fn gql_execute_idempotent(
-    logical_graph_name: String,
     query: String,
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<u64, RouterError> {
     Ok(run_gql(
-        &logical_graph_name,
         &query,
         &params,
         GqlExecutionMode::Update,
@@ -386,13 +375,8 @@ pub async fn gql_execute_idempotent(
 }
 
 /// Run a read-only program on the **update** path (higher cost; escape hatch only).
-pub async fn force_gql_execute(
-    logical_graph_name: String,
-    query: String,
-    params: Vec<u8>,
-) -> Result<u64, RouterError> {
+pub async fn force_gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterError> {
     Ok(run_gql(
-        &logical_graph_name,
         &query,
         &params,
         GqlExecutionMode::Update,
@@ -405,7 +389,6 @@ pub async fn force_gql_execute(
 }
 
 async fn run_gql(
-    logical_graph_name: &str,
     query: &str,
     params: &[u8],
     mode: GqlExecutionMode,
@@ -425,7 +408,9 @@ async fn run_gql(
             });
         }
         let stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-        crate::canister::execute_index_ddl(logical_graph_name, stmt).await?;
+        let store = RouterStore::new();
+        let graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
+        crate::index_catalog::execute_index_ddl_for_graph(graph_id, stmt).await?;
         return Ok(GqlQueryResult::row_count_only(0));
     }
 
@@ -437,11 +422,6 @@ async fn run_gql(
 
     let store = RouterStore::new();
     let resolved = crate::graph_context::resolve_graph_context(&store, &program, caller)?;
-    crate::graph_context::ensure_candid_graph_matches(
-        &store,
-        logical_graph_name,
-        resolved.graph_id,
-    )?;
 
     let tx = program
         .transaction_activity
@@ -467,7 +447,7 @@ async fn run_gql(
     let pmap =
         decode_gql_params_blob(params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     dispatch_plan_blob(
-        logical_graph_name,
+        resolved.graph_id,
         &plan_blob,
         std::slice::from_ref(&plan),
         &pmap,
@@ -481,7 +461,7 @@ async fn run_gql(
 
 /// Route and execute a plan blob (single- or multi-shard).
 pub async fn dispatch_plan_blob(
-    logical_graph_name: &str,
+    graph_id: GraphId,
     plan_blob: &[u8],
     plans: &[PhysicalPlan],
     pmap: &BTreeMap<String, gleaph_gql::Value>,
@@ -491,13 +471,13 @@ pub async fn dispatch_plan_blob(
     stats: &RouterGraphStats,
 ) -> Result<GqlQueryResult, RouterError> {
     let store = RouterStore::new();
-    let shards = store.list_shards_for_graph(logical_graph_name)?;
+    let shards = store.list_shards_for_graph_id(graph_id);
     if shards.is_empty() {
         return Err(RouterError::ShardNotRegistered);
     }
     let index = RouterIndexLookup::from_shards(&shards);
     dispatch_plan_blob_with_index(
-        logical_graph_name,
+        graph_id,
         plan_blob,
         plans,
         pmap,
@@ -515,7 +495,7 @@ pub async fn dispatch_plan_blob(
 
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
-    logical_graph_name: &str,
+    graph_id: GraphId,
     plan_blob: &[u8],
     plans: &[PhysicalPlan],
     pmap: &BTreeMap<String, gleaph_gql::Value>,
@@ -556,7 +536,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         })?;
         Some(store.reserve_mutation_id_for_client_key(
             caller,
-            logical_graph_name,
+            graph_id,
             key,
             request_fingerprint(plan_blob, params, mode),
         )?)
@@ -566,21 +546,17 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     let mutation_id = mutation_reservation.map(|reservation| reservation.mutation_id);
 
     if has_dml && let Some(key) = client_mutation_key {
-        if let Some(row_count) =
-            store.router_mutation_completed_row_count(caller, logical_graph_name, key)
-        {
+        if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
             return Ok(GqlQueryResult::row_count_only(row_count));
         }
-        reconcile_router_mutation_telemetry(store, caller, logical_graph_name, key).await?;
-        if let Some(row_count) =
-            store.router_mutation_completed_row_count(caller, logical_graph_name, key)
-        {
+        reconcile_router_mutation_telemetry(store, caller, graph_id, key).await?;
+        if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
             return Ok(GqlQueryResult::row_count_only(row_count));
         }
     }
 
-    let saved_record = client_mutation_key
-        .and_then(|key| store.router_mutation_record(caller, logical_graph_name, key));
+    let saved_record =
+        client_mutation_key.and_then(|key| store.router_mutation_record(caller, graph_id, key));
     let mut resolved_labels = match saved_record
         .as_ref()
         .and_then(|record| record.resolved_labels.clone())
@@ -592,7 +568,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 release_routing_if_owner(
                     store,
                     caller,
-                    logical_graph_name,
+                    graph_id,
                     client_mutation_key,
                     mutation_reservation,
                 )?;
@@ -611,7 +587,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 release_routing_if_owner(
                     store,
                     caller,
-                    logical_graph_name,
+                    graph_id,
                     client_mutation_key,
                     mutation_reservation,
                 )?;
@@ -639,7 +615,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 release_routing_if_owner(
                     store,
                     caller,
-                    logical_graph_name,
+                    graph_id,
                     client_mutation_key,
                     mutation_reservation,
                 )?;
@@ -659,7 +635,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                         release_routing_if_owner(
                             store,
                             caller,
-                            logical_graph_name,
+                            graph_id,
                             client_mutation_key,
                             mutation_reservation,
                         )?;
@@ -670,7 +646,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     if let Some(key) = client_mutation_key {
                         store.record_router_mutation_completed_without_shards(
                             caller,
-                            logical_graph_name,
+                            graph_id,
                             key,
                             resolved_labels.clone(),
                             resolved_properties.clone(),
@@ -679,19 +655,14 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     }
                     return Ok(GqlQueryResult::row_count_only(0));
                 }
-                match policy.resolve_with_hits(
-                    store,
-                    logical_graph_name,
-                    &shards,
-                    set.routing_anchor(),
-                    hits,
-                ) {
+                match policy.resolve_with_hits(store, graph_id, &shards, set.routing_anchor(), hits)
+                {
                     Ok(routings) => routings,
                     Err(err) => {
                         release_routing_if_owner(
                             store,
                             caller,
-                            logical_graph_name,
+                            graph_id,
                             client_mutation_key,
                             mutation_reservation,
                         )?;
@@ -705,7 +676,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     release_routing_if_owner(
                         store,
                         caller,
-                        logical_graph_name,
+                        graph_id,
                         client_mutation_key,
                         mutation_reservation,
                     )?;
@@ -731,13 +702,13 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             .collect();
         store.record_router_mutation_shards(
             caller,
-            logical_graph_name,
+            graph_id,
             key,
             resolved_labels.clone(),
             resolved_properties.clone(),
             envelope_shards,
         )?;
-        if let Some(record) = store.router_mutation_record(caller, logical_graph_name, key) {
+        if let Some(record) = store.router_mutation_record(caller, graph_id, key) {
             if let Some(saved_resolved_labels) = record.resolved_labels {
                 resolved_labels = saved_resolved_labels;
             }
@@ -799,7 +770,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     if let Some(key) = client_mutation_key {
                         store.record_router_mutation_shard_completed(
                             caller,
-                            logical_graph_name,
+                            graph_id,
                             key,
                             dispatch.shard_id,
                             outcome.row_count,
@@ -807,7 +778,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                         )?;
                         store.record_router_mutation_shard_telemetry_acked(
                             caller,
-                            logical_graph_name,
+                            graph_id,
                             key,
                             dispatch.shard_id,
                         )?;
@@ -829,7 +800,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         if let Some(key) = client_mutation_key {
             store.record_router_mutation_shard_completed(
                 caller,
-                logical_graph_name,
+                graph_id,
                 key,
                 dispatch.shard_id,
                 result.row_count,
@@ -838,7 +809,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             if telemetry_acked {
                 store.record_router_mutation_shard_telemetry_acked(
                     caller,
-                    logical_graph_name,
+                    graph_id,
                     key,
                     dispatch.shard_id,
                 )?;
@@ -852,8 +823,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             .map_err(RouterError::InvalidArgument)?;
     }
     if let Some(key) = client_mutation_key
-        && let Some(row_count) =
-            store.router_mutation_completed_row_count(caller, logical_graph_name, key)
+        && let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key)
     {
         return Ok(GqlQueryResult::row_count_only(row_count));
     }
@@ -863,14 +833,14 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
 fn release_routing_if_owner(
     store: &RouterStore,
     caller: Principal,
-    logical_graph_name: &str,
+    graph_id: GraphId,
     client_mutation_key: Option<&str>,
     mutation_reservation: Option<crate::facade::store::ClientMutationReservation>,
 ) -> Result<(), RouterError> {
     if let (Some(key), Some(reservation)) = (client_mutation_key, mutation_reservation)
         && reservation.routing_owner
     {
-        store.abandon_router_mutation_routing_reservation(caller, logical_graph_name, key)?;
+        store.abandon_router_mutation_routing_reservation(caller, graph_id, key)?;
     }
     Ok(())
 }
@@ -931,10 +901,10 @@ async fn apply_and_ack_label_telemetry_events(
 async fn reconcile_router_mutation_telemetry(
     store: &RouterStore,
     caller: Principal,
-    logical_graph_name: &str,
+    graph_id: GraphId,
     client_key: &str,
 ) -> Result<(), RouterError> {
-    let Some(record) = store.router_mutation_record(caller, logical_graph_name, client_key) else {
+    let Some(record) = store.router_mutation_record(caller, graph_id, client_key) else {
         return Ok(());
     };
     for shard in record
@@ -952,7 +922,7 @@ async fn reconcile_router_mutation_telemetry(
         .await?;
         store.record_router_mutation_shard_telemetry_acked(
             caller,
-            logical_graph_name,
+            graph_id,
             client_key,
             shard.shard_id,
         )?;
@@ -1050,6 +1020,7 @@ mod tests {
         LabelUsageDelta, SeedBindingsWire,
     };
 
+    use crate::facade::stable::graph_catalog::lookup_graph_id;
     use crate::facade::stable::label_telemetry::LabelStats;
     use crate::facade::store::RouterStore;
     use crate::federation::{
@@ -1092,6 +1063,10 @@ mod tests {
                 },
             )
             .expect("register graph");
+    }
+
+    fn tenant_main_graph_id() -> GraphId {
+        lookup_graph_id("tenant.main").expect("tenant.main")
     }
 
     fn store_with_shards() -> RouterStore {
@@ -1659,11 +1634,10 @@ mod tests {
         plan_blob: &[u8],
         client_key: &str,
     ) -> Result<GqlQueryResult, RouterError> {
-        let shards = store
-            .list_shards_for_graph("tenant.main")
-            .expect("registered shards");
+        let graph_id = tenant_main_graph_id();
+        let shards = store.list_shards_for_graph_id(graph_id);
         dispatch_plan_blob_with_index(
-            "tenant.main",
+            graph_id,
             plan_blob,
             std::slice::from_ref(plan),
             &BTreeMap::new(),
@@ -1701,7 +1675,11 @@ mod tests {
         assert_eq!(fake_index.calls(), 1);
 
         let record = store
-            .router_mutation_record(Principal::anonymous(), "tenant.main", "client-key-1")
+            .router_mutation_record(
+                Principal::anonymous(),
+                tenant_main_graph_id(),
+                "client-key-1",
+            )
             .expect("mutation record");
         assert_eq!(record.mutation_id, 1);
         assert_eq!(
@@ -1715,7 +1693,7 @@ mod tests {
         let retry = store
             .reserve_mutation_id_for_client_key(
                 Principal::anonymous(),
-                "tenant.main",
+                tenant_main_graph_id(),
                 "client-key-1",
                 request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update),
             )
@@ -1725,7 +1703,7 @@ mod tests {
         assert_eq!(
             store.reserve_mutation_id_for_client_key(
                 Principal::anonymous(),
-                "tenant.main",
+                tenant_main_graph_id(),
                 "client-key-1",
                 b"different request".to_vec(),
             ),
@@ -1774,7 +1752,11 @@ mod tests {
         assert_eq!(fake_index.calls(), 1);
 
         let record = store
-            .router_mutation_record(Principal::anonymous(), "tenant.main", "client-key-1")
+            .router_mutation_record(
+                Principal::anonymous(),
+                tenant_main_graph_id(),
+                "client-key-1",
+            )
             .expect("mutation record");
         assert_eq!(record.completed_row_count, Some(0));
         assert!(!record.routing_in_progress);
@@ -1814,7 +1796,11 @@ mod tests {
         assert_eq!(fake_index.calls(), 1);
 
         let record = store
-            .router_mutation_record(Principal::anonymous(), "tenant.main", "client-key-1")
+            .router_mutation_record(
+                Principal::anonymous(),
+                tenant_main_graph_id(),
+                "client-key-1",
+            )
             .expect("mutation record");
         assert_eq!(record.mutation_id, 1);
         assert!(!record.routing_in_progress);
@@ -1862,7 +1848,7 @@ mod tests {
         let routings = resolve_seed_routings_multi(
             &store,
             SeedHits::Vertices(hits),
-            "tenant.main",
+            tenant_main_graph_id(),
             IndexAnchor::Equal(probe),
         )
         .expect("route");
@@ -1895,9 +1881,13 @@ mod tests {
                 vertex_id: 20,
             },
         ];
-        let routings =
-            resolve_seed_routings_multi(&store, SeedHits::Vertices(hits), "tenant.main", anchor)
-                .expect("route");
+        let routings = resolve_seed_routings_multi(
+            &store,
+            SeedHits::Vertices(hits),
+            tenant_main_graph_id(),
+            anchor,
+        )
+        .expect("route");
         assert_eq!(routings.len(), 2);
         let blob7 = routings[0]
             .anchor
@@ -1930,7 +1920,7 @@ mod tests {
         let err = resolve_seed_routings_multi(
             &store,
             SeedHits::Vertices(hits),
-            "tenant.main",
+            tenant_main_graph_id(),
             IndexAnchor::Equal(probe),
         )
         .expect_err("unknown shard");
@@ -1968,7 +1958,7 @@ mod tests {
         );
 
         let routings =
-            resolve_seed_routings_multi(&store, hits, "tenant.main", set.routing_anchor())
+            resolve_seed_routings_multi(&store, hits, tenant_main_graph_id(), set.routing_anchor())
                 .expect("route");
         let dispatches = routings_to_dispatches(routings);
         assert_eq!(dispatches.len(), 1);
@@ -1987,13 +1977,11 @@ mod tests {
         let plan = compound_label_property_read_plan();
         let plan_blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
         let fake = compound_seed_fake_index();
-        let shards = store
-            .list_shards_for_graph("tenant.main")
-            .expect("registered shards");
+        let shards = store.list_shards_for_graph_id(tenant_main_graph_id());
         let stats = RouterGraphStats::test_vertex_indexed(&store, &["region"]);
 
         let err = futures::executor::block_on(dispatch_plan_blob_with_index(
-            "tenant.main",
+            tenant_main_graph_id(),
             &plan_blob,
             std::slice::from_ref(&plan),
             &BTreeMap::new(),
@@ -2055,7 +2043,7 @@ mod tests {
         let routings = resolve_seed_routings_multi(
             &store,
             SeedHits::Vertices(hits),
-            "tenant.main",
+            tenant_main_graph_id(),
             set.routing_anchor(),
         )
         .expect("route");
@@ -2086,12 +2074,10 @@ mod tests {
         let plan = label_intersection_read_plan();
         let plan_blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
         let fake = label_intersection_fake_index();
-        let shards = store
-            .list_shards_for_graph("tenant.main")
-            .expect("registered shards");
+        let shards = store.list_shards_for_graph_id(tenant_main_graph_id());
 
         let err = futures::executor::block_on(dispatch_plan_blob_with_index(
-            "tenant.main",
+            tenant_main_graph_id(),
             &plan_blob,
             std::slice::from_ref(&plan),
             &BTreeMap::new(),

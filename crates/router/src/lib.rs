@@ -189,99 +189,69 @@ fn release_vertex_placement(args: types::ReleaseVertexPlacementArgs) -> Result<(
 /// Read-only GQL: composite query (calls index + graph query endpoints).
 #[query(composite = true)]
 async fn gql_query(
-    logical_graph_name: String,
     query: String,
     params: Vec<u8>,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    gql::gql_query(logical_graph_name, query, params).await
+    gql::gql_query(query, params).await
 }
 
 /// Update-path GQL entrypoint for non-DML escape hatches; DML requires `gql_execute_idempotent`.
 #[update]
-async fn gql_execute(
-    logical_graph_name: String,
-    query: String,
-    params: Vec<u8>,
-) -> Result<u64, RouterError> {
-    gql::gql_execute(logical_graph_name, query, params).await
+async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterError> {
+    gql::gql_execute(query, params).await
 }
 
 /// Idempotent GQL update. Reuse `client_mutation_key` only for retries of the same mutation.
 #[update]
 async fn gql_execute_idempotent(
-    logical_graph_name: String,
     query: String,
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<u64, RouterError> {
-    gql::gql_execute_idempotent(logical_graph_name, query, params, client_mutation_key).await
+    gql::gql_execute_idempotent(query, params, client_mutation_key).await
 }
 
 /// Read-only GQL on the update path only (no composite-query savings; bypasses path check).
 #[update]
-async fn force_gql_execute(
-    logical_graph_name: String,
-    query: String,
-    params: Vec<u8>,
-) -> Result<u64, RouterError> {
-    gql::force_gql_execute(logical_graph_name, query, params).await
+async fn force_gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterError> {
+    gql::force_gql_execute(query, params).await
 }
 
 #[update]
-fn prepared_register(
-    logical_graph_name: String,
-    name: String,
-    query: String,
-) -> Result<(), RouterError> {
-    prepared::prepared_register(logical_graph_name, name, query)
+fn prepared_register(name: String, query: String) -> Result<(), RouterError> {
+    prepared::prepared_register(name, query)
 }
 
 #[update]
-fn prepared_drop(logical_graph_name: String, name: String) -> Result<(), RouterError> {
-    prepared::prepared_drop(&logical_graph_name, &name)
+fn prepared_drop(name: String) -> Result<(), RouterError> {
+    prepared::prepared_drop(&name)
 }
 
 #[query(composite = true)]
 async fn prepared_execute_query(
-    logical_graph_name: String,
     name: String,
     params: Vec<u8>,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
-    prepared::prepared_execute_query(logical_graph_name, name, params).await
+    prepared::prepared_execute_query(name, params).await
 }
 
 #[update]
-async fn prepared_execute_update(
-    logical_graph_name: String,
-    name: String,
-    params: Vec<u8>,
-) -> Result<u64, RouterError> {
-    prepared::prepared_execute_update(logical_graph_name, name, params).await
+async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
+    prepared::prepared_execute_update(name, params).await
 }
 
 #[update]
 async fn prepared_execute_update_idempotent(
-    logical_graph_name: String,
     name: String,
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<u64, RouterError> {
-    prepared::prepared_execute_update_idempotent(
-        logical_graph_name,
-        name,
-        params,
-        client_mutation_key,
-    )
-    .await
+    prepared::prepared_execute_update_idempotent(name, params, client_mutation_key).await
 }
 
 #[update]
-async fn force_prepared_execute_update(
-    logical_graph_name: String,
-    name: String,
-    params: Vec<u8>,
-) -> Result<u64, RouterError> {
-    prepared::force_prepared_execute_update(logical_graph_name, name, params).await
+async fn force_prepared_execute_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
+    prepared::force_prepared_execute_update(name, params).await
 }
 
 #[update]

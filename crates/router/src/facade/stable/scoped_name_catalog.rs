@@ -97,7 +97,10 @@ impl<MName: Memory, MId: Memory> GraphScopedNameCatalog<MName, MId> {
         })
     }
 
-    #[allow(dead_code, reason = "reverse lookup for index DDL and admin tooling pending")]
+    #[allow(
+        dead_code,
+        reason = "reverse lookup for index DDL and admin tooling pending"
+    )]
     pub fn get_name(&self, graph_id: GraphId, id: IndexNameId) -> Option<String> {
         self.id_to_name.get(&GraphScopedIdKey { graph_id, id })
     }

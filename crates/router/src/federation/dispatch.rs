@@ -1,6 +1,7 @@
 //! Multi-shard fan-out from index hits (federation target path).
 
 use candid::Principal;
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{EdgePostingHit, PostingHit};
 
@@ -59,12 +60,12 @@ impl ShardingPolicy for MultiShardDispatch {
     fn resolve_with_hits(
         &self,
         store: &RouterStore,
-        logical_graph_name: &str,
+        graph_id: GraphId,
         _shards: &[ShardRegistryEntry],
         anchor: IndexAnchor,
         hits: SeedHits,
     ) -> Result<Vec<SeedRouting>, RouterError> {
-        resolve_seed_routings_multi(store, hits, logical_graph_name, anchor)
+        resolve_seed_routings_multi(store, hits, graph_id, anchor)
     }
 }
 
@@ -72,13 +73,13 @@ impl ShardingPolicy for MultiShardDispatch {
 pub fn resolve_seed_routings_multi(
     store: &RouterStore,
     hits: SeedHits,
-    logical_graph_name: &str,
+    graph_id: GraphId,
     anchor: IndexAnchor,
 ) -> Result<Vec<SeedRouting>, RouterError> {
     if hits.is_empty() {
         return Ok(Vec::new());
     }
-    let shards = store.list_shards_for_graph(logical_graph_name)?;
+    let shards = store.list_shards_for_graph_id(graph_id);
     let shard_ids = match &hits {
         SeedHits::Vertices(hits) => {
             let mut shard_ids: Vec<ShardId> = hits.iter().map(|h| h.shard_id).collect();

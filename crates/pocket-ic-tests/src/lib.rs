@@ -545,7 +545,6 @@ pub fn gql_execute_idempotent_as_admin(
 ) -> u64 {
     use gleaph_graph_kernel::federation::RouterError;
 
-    let graph_name = GRAPH_NAME.to_string();
     let query = query.to_string();
     let params: Vec<u8> = Vec::new();
     let mutation_key = client_mutation_key.to_string();
@@ -555,8 +554,7 @@ pub fn gql_execute_idempotent_as_admin(
             env.router,
             env.admin,
             "gql_execute_idempotent",
-            Encode!(&graph_name, &query, &params, &mutation_key)
-                .expect("encode gql_execute_idempotent"),
+            Encode!(&query, &params, &mutation_key).expect("encode gql_execute_idempotent"),
         )
         .unwrap_or_else(|e| panic!("gql_execute_idempotent on router: {e:?}"));
     match Decode!(&bytes, Result<u64, RouterError>) {
@@ -639,12 +637,7 @@ pub fn gql_query_as_admin(
             env.router,
             env.admin,
             "gql_query",
-            Encode!(
-                &GRAPH_NAME.to_string(),
-                &query.to_string(),
-                &Vec::<u8>::new()
-            )
-            .expect("encode gql_query"),
+            Encode!(&query.to_string(), &Vec::<u8>::new()).expect("encode gql_query"),
         )
         .unwrap_or_else(|e| panic!("gql_query on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {

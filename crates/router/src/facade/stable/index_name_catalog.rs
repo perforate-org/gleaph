@@ -9,7 +9,10 @@ pub(crate) fn lookup_index_name_id(graph_id: GraphId, name: &str) -> Option<Inde
     ROUTER_INDEX_NAME_CATALOG.with_borrow(|catalog| catalog.get_id(graph_id, name))
 }
 
-#[allow(dead_code, reason = "reverse lookup for index DDL and admin tooling pending")]
+#[allow(
+    dead_code,
+    reason = "reverse lookup for index DDL and admin tooling pending"
+)]
 pub(crate) fn index_name(graph_id: GraphId, id: IndexNameId) -> Option<String> {
     ROUTER_INDEX_NAME_CATALOG.with_borrow(|catalog| catalog.get_name(graph_id, id))
 }

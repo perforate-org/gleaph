@@ -238,13 +238,6 @@ pub(crate) async fn admin_set_indexed_edge_property(
     .await
 }
 
-pub(crate) async fn execute_index_ddl(
-    logical_graph_name: &str,
-    stmt: crate::index_ddl::IndexDdlStatement,
-) -> Result<(), RouterError> {
-    crate::index_catalog::execute_index_ddl(logical_graph_name, stmt).await
-}
-
 pub(crate) fn commit_vertex_placement(args: CommitVertexPlacementArgs) -> Result<(), RouterError> {
     RouterStore::new().commit_vertex_placement(msg_caller(), args)
 }

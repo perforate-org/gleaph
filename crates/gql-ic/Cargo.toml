@@ -14,8 +14,8 @@ gleaph-gql = { path = "../gql", features = [
 ] }
 gleaph-graph-kernel.workspace = true
 ic-stable-structures.workspace = true
-thiserror.workspace = true
 serde.workspace = true
+thiserror.workspace = true
 
 [dev-dependencies]
 rkyv.workspace = true

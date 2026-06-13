@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-06-12  
-Status: Implemented (sequential LARA MemoryIds 0–31; facade 32–42)  
-Anchor timestamp: 2026-06-12 04:35:53 UTC +0000
+Last updated: 2026-06-13  
+Status: Implemented (sequential LARA MemoryIds 0–31; facade 32–42; router repack ADR 0011)  
+Anchor timestamp: 2026-06-13 07:36:35 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -32,7 +32,7 @@ Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layo
 | `canonical` | Authoritative facts; system meaning does not depend on derived stores | Forward LARA CSR/payloads; vertex/edge properties; router placement and catalogs; mutation idempotency |
 | `derived` | Projection or mirror rebuildable from canonical state | Reverse LARA; edge aliases/equality postings; graph-index postings |
 | `maintenance` | Physical or admin bookkeeping; not query truth | LARA free spans; maintenance queue; router backfill cursors |
-| `catalog` | Bidirectional name ↔ id maps (`BidirectionalCatalog`) | Router label/property resolution pairs |
+| `catalog` | Bidirectional name ↔ id maps (`BidirectionalCatalog`) | Router label/property/graph/index-name resolution pairs |
 | `telemetry` | Event-sourced label stats and dedup/outbox adjuncts | Graph label outbox; router label stats and `ROUTER_APPLIED_LABEL_TELEMETRY` |
 | `compatibility` | Legacy read view; another store owns new writes | *(none — P1 `EDGE_WEIGHT_PROFILES` retired 2026-06-12)* |
 | `ephemeral` | Heap-only; no `MemoryId` — **not in layout registry** | Graph `PENDING` queues; router planner catalog |
@@ -136,14 +136,14 @@ Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores va
 
 ## Router canister — stable regions
 
-Repacked 2026-06-11 (ADR 0006 slice D). **Removed:** `ROUTER_LOGICAL_COUNTER` (5), `ROUTER_PENDING_LOGICAL` (6), `ROUTER_PLACEMENT_BY_PHYSICAL` (13). `ROUTER_PLACEMENTS` keyed by `GlobalVertexId`.
+Repacked 2026-06-13 (ADR 0011 graph/index name catalogs). Prior repack 2026-06-11 (ADR 0006 slice D). **Removed:** `ROUTER_LOGICAL_COUNTER` (5), `ROUTER_PENDING_LOGICAL` (6), `ROUTER_PLACEMENT_BY_PHYSICAL` (13). `ROUTER_PLACEMENTS` keyed by `GlobalVertexId`. `ROUTER_GRAPHS` keyed by **`GraphId`** (not graph name string). `ShardRegistryEntry` stores **`graph_id: GraphId`**. `ROUTER_SHARD_BY_GRAPH` remains **`Principal → ShardId`** (canister uniqueness); shard listing per logical graph uses **`ROUTER_SHARDS_BY_GRAPH_ID`**.
 
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
 | 0 | `ROUTER_CONTROLLERS` | `ROUTER_CONTROLLERS` | `init_controllers` | canonical | auth | — |
-| 1 | `ROUTER_GRAPHS` | `ROUTER_GRAPHS` | `init_graphs` | canonical | registry | — |
-| 2 | `ROUTER_SHARDS` | `ROUTER_SHARDS` | `init_shards` | canonical | registry | — |
-| 3 | `ROUTER_SHARD_BY_GRAPH` | `ROUTER_SHARD_BY_GRAPH` | `init_shard_by_graph` | canonical | registry | — |
+| 1 | `ROUTER_GRAPHS` | `ROUTER_GRAPHS` | `init_graphs` | canonical | registry | **`BTreeMap<GraphId, GraphRegistryEntry>`** |
+| 2 | `ROUTER_SHARDS` | `ROUTER_SHARDS` | `init_shards` | canonical | registry | values include `graph_id: GraphId` |
+| 3 | `ROUTER_SHARD_BY_GRAPH` | `ROUTER_SHARD_BY_GRAPH` | `init_shard_by_graph` | canonical | registry | **`Principal → ShardId`** (not logical graph name) |
 | 4 | `ROUTER_PLACEMENTS` | `ROUTER_PLACEMENTS` | `init_placements` | canonical | placement (`GlobalVertexId`) | — |
 | 5–6 | `ROUTER_VERTEX_LABEL_BY_NAME` / `ROUTER_VERTEX_LABEL_BY_ID` | `ROUTER_VERTEX_LABEL_CATALOG` | `init_vertex_label_catalog` | catalog | resolution | `BidirectionalCatalog` (dense) |
 | 7–8 | `ROUTER_EDGE_LABEL_BY_NAME` / `ROUTER_EDGE_LABEL_BY_ID` | `ROUTER_EDGE_LABEL_CATALOG` | `init_edge_label_catalog` | catalog | resolution | `BidirectionalCatalog` (dense, capped) |
@@ -155,20 +155,23 @@ Repacked 2026-06-11 (ADR 0006 slice D). **Removed:** `ROUTER_LOGICAL_COUNTER` (5
 | 15 | `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `init_edge_label_live_by_shard` | telemetry | label telemetry | Event replay |
 | 16 | `ROUTER_MUTATION_COUNTER` | `ROUTER_MUTATION_COUNTER` | `init_mutation_counter` | canonical | idempotency | — |
 | 17 | `ROUTER_APPLIED_LABEL_TELEMETRY` | `ROUTER_APPLIED_LABEL_TELEMETRY` | `init_applied_label_telemetry` | telemetry | label telemetry | Dedup set for replay |
-| 18 | `ROUTER_MUTATION_BY_CLIENT_KEY` | `ROUTER_MUTATION_BY_CLIENT_KEY` | `init_mutation_by_client_key` | canonical | idempotency | — |
+| 18 | `ROUTER_MUTATION_BY_CLIENT_KEY` | `ROUTER_MUTATION_BY_CLIENT_KEY` | `init_mutation_by_client_key` | canonical | idempotency | keys use **`graph_id: GraphId`** |
 | 19 | `ROUTER_LABEL_BACKFILL_STATE` | `ROUTER_LABEL_BACKFILL_STATE` | `init_label_backfill_state` | maintenance | label backfill | Cursor for `admin_label_backfill_step` |
 | 20 | `ROUTER_PROPERTY_BACKFILL_STATE` | `ROUTER_PROPERTY_BACKFILL_STATE` | `init_property_backfill_state` | maintenance | property backfill | Cursor for `admin_property_backfill_step` |
 | 21 | `ROUTER_EDGE_PAYLOAD_PROFILES` | `ROUTER_EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | catalog | edge payload schema | — ([ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md)) |
-| 22 | `ROUTER_NAMED_INDEXES` | `ROUTER_NAMED_INDEXES` | `init_named_indexes` | catalog | index DDL metadata | `(graph, index_name) → kind, property_id, label_id` |
-| 23 | `ROUTER_INDEXED_PROPERTY_SET` | `ROUTER_INDEXED_PROPERTY_SET` | `init_indexed_property_set` | catalog | index membership | `(graph, kind, property_id)` for planner + fan-out |
+| 22 | `ROUTER_NAMED_INDEXES` | `ROUTER_NAMED_INDEXES` | `init_named_indexes` | catalog | index DDL metadata | **`(GraphId, IndexNameId) → kind, property_id, label_id`** |
+| 23 | `ROUTER_INDEXED_PROPERTY_SET` | `ROUTER_INDEXED_PROPERTY_SET` | `init_indexed_property_set` | catalog | index membership | **`(GraphId, kind, property_id)`** for planner + fan-out |
+| 24–25 | `ROUTER_GRAPH_BY_NAME` / `ROUTER_GRAPH_BY_ID` | `ROUTER_GRAPH_CATALOG` | `init_graph_catalog` | catalog | resolution | Logical graph name ↔ **`GraphId`** ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)) |
+| 26–27 | `ROUTER_INDEX_NAME_BY_NAME` / `ROUTER_INDEX_NAME_BY_ID` | `ROUTER_INDEX_NAME_CATALOG` | `init_index_name_catalog` | catalog | resolution | Graph-scoped index name ↔ **`IndexNameId`** per `GraphId` |
+| 28 | `ROUTER_SHARDS_BY_GRAPH_ID` | `ROUTER_SHARDS_BY_GRAPH_ID` | `init_shards_by_graph_id` | canonical | registry | **`GraphId → Vec<ShardId>`** shard index |
 
-Router **24 regions** total (0–23).
+Router **29 regions** total (0–28).
 
 ### Router ephemeral
 
 | Symbol | Location | Role | Reopen behavior |
 |--------|----------|------|-----------------|
-| `ROUTER_PREPARED_PLANS` | `router/src/facade/stable.rs` | Cached prepared plan blobs | Lost on upgrade; re-prepare on demand |
+| `ROUTER_PREPARED_PLANS` | `router/src/facade/stable.rs` | Cached prepared plan blobs | Keys **`(GraphId, prepared_name)`**; lost on upgrade; re-prepare on demand |
 
 ---
 

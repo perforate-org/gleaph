@@ -20,6 +20,8 @@ use gleaph_graph_kernel::plan_exec::{
 };
 use std::collections::BTreeSet;
 
+use crate::facade::stable::graph_catalog::lookup_graph_id;
+
 fn graph_principal(byte: u8) -> Principal {
     Principal::self_authenticating([byte; 32])
 }
@@ -49,6 +51,10 @@ fn register_test_graph(store: &RouterStore, admin: Principal, name: &str) {
             },
         )
         .expect("register graph");
+}
+
+fn tenant_main_graph_id() -> GraphId {
+    lookup_graph_id("tenant.main").expect("tenant.main")
 }
 
 #[test]
@@ -565,14 +571,19 @@ fn client_mutation_key_reuses_router_mutation_id() {
     let request = b"request-a".to_vec();
 
     let first = store
-        .reserve_mutation_id_for_client_key(caller, "tenant.main", "client-key-1", request.clone())
+        .reserve_mutation_id_for_client_key(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            request.clone(),
+        )
         .expect("first mutation id")
         .mutation_id;
     assert_eq!(first, 1);
     store
         .record_router_mutation_shards(
             caller,
-            "tenant.main",
+            tenant_main_graph_id(),
             "client-key-1",
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
@@ -587,7 +598,7 @@ fn client_mutation_key_reuses_router_mutation_id() {
         store
             .reserve_mutation_id_for_client_key(
                 caller,
-                "tenant.main",
+                tenant_main_graph_id(),
                 "client-key-1",
                 request.clone()
             )
@@ -599,7 +610,7 @@ fn client_mutation_key_reuses_router_mutation_id() {
         store
             .reserve_mutation_id_for_client_key(
                 caller,
-                "tenant.main",
+                tenant_main_graph_id(),
                 "client-key-2",
                 request.clone()
             )
@@ -611,7 +622,7 @@ fn client_mutation_key_reuses_router_mutation_id() {
         store
             .reserve_mutation_id_for_client_key(
                 graph_principal(43),
-                "tenant.main",
+                tenant_main_graph_id(),
                 "client-key-1",
                 request
             )
@@ -634,7 +645,7 @@ fn client_mutation_key_rejects_different_request() {
         store
             .reserve_mutation_id_for_client_key(
                 caller,
-                "tenant.main",
+                tenant_main_graph_id(),
                 "client-key-1",
                 b"a".to_vec()
             )
@@ -645,7 +656,7 @@ fn client_mutation_key_rejects_different_request() {
     assert_eq!(
         store.reserve_mutation_id_for_client_key(
             caller,
-            "tenant.main",
+            tenant_main_graph_id(),
             "client-key-1",
             b"b".to_vec()
         ),
@@ -680,7 +691,7 @@ fn client_mutation_key_rejects_expired_key() {
     assert_eq!(
         store.reserve_mutation_id_for_client_key_at(
             caller,
-            "tenant.main",
+            tenant_main_graph_id(),
             "client-key-1",
             b"a".to_vec(),
             CLIENT_MUTATION_KEY_TTL_NS + 1
@@ -701,7 +712,12 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
     let caller = graph_principal(42);
 
     let first = store
-        .reserve_mutation_id_for_client_key(caller, "tenant.main", "client-key-1", b"a".to_vec())
+        .reserve_mutation_id_for_client_key(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            b"a".to_vec(),
+        )
         .expect("first owner");
     assert_eq!(first.mutation_id, 1);
     assert!(first.routing_owner);
@@ -709,7 +725,7 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
     assert_eq!(
         store.reserve_mutation_id_for_client_key(
             caller,
-            "tenant.main",
+            tenant_main_graph_id(),
             "client-key-1",
             b"a".to_vec(),
         ),
@@ -721,7 +737,7 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
     store
         .record_router_mutation_shards(
             caller,
-            "tenant.main",
+            tenant_main_graph_id(),
             "client-key-1",
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
@@ -733,7 +749,12 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
         )
         .expect("record envelope");
     let retry = store
-        .reserve_mutation_id_for_client_key(caller, "tenant.main", "client-key-1", b"a".to_vec())
+        .reserve_mutation_id_for_client_key(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            b"a".to_vec(),
+        )
         .expect("retry after envelope");
     assert_eq!(retry.mutation_id, first.mutation_id);
     assert!(!retry.routing_owner);
@@ -749,23 +770,33 @@ fn abandoned_routing_reservation_preserves_id_and_allows_new_owner() {
     let caller = graph_principal(42);
 
     let first = store
-        .reserve_mutation_id_for_client_key(caller, "tenant.main", "client-key-1", b"a".to_vec())
+        .reserve_mutation_id_for_client_key(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            b"a".to_vec(),
+        )
         .expect("first owner");
     assert_eq!(first.mutation_id, 1);
     assert!(first.routing_owner);
 
     store
-        .abandon_router_mutation_routing_reservation(caller, "tenant.main", "client-key-1")
+        .abandon_router_mutation_routing_reservation(caller, tenant_main_graph_id(), "client-key-1")
         .expect("abandon reservation");
     let record = store
-        .router_mutation_record(caller, "tenant.main", "client-key-1")
+        .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
         .expect("record");
     assert_eq!(record.mutation_id, first.mutation_id);
     assert_eq!(record.request_fingerprint, b"a".to_vec());
     assert!(!record.routing_in_progress);
 
     let retry = store
-        .reserve_mutation_id_for_client_key(caller, "tenant.main", "client-key-1", b"a".to_vec())
+        .reserve_mutation_id_for_client_key(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            b"a".to_vec(),
+        )
         .expect("retry owner");
     assert_eq!(retry.mutation_id, first.mutation_id);
     assert!(retry.routing_owner);
@@ -780,12 +811,17 @@ fn router_mutation_journal_tracks_shard_completion() {
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
     store
-        .reserve_mutation_id_for_client_key(caller, "tenant.main", "client-key-1", b"a".to_vec())
+        .reserve_mutation_id_for_client_key(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            b"a".to_vec(),
+        )
         .expect("mutation id");
     store
         .record_router_mutation_shards(
             caller,
-            "tenant.main",
+            tenant_main_graph_id(),
             "client-key-1",
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
@@ -796,18 +832,18 @@ fn router_mutation_journal_tracks_shard_completion() {
         )
         .expect("record shards");
     let record = store
-        .router_mutation_record(caller, "tenant.main", "client-key-1")
+        .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
         .expect("record");
     assert_eq!(record.resolved_labels, Some(ResolvedLabelTable::default()));
     assert_eq!(
-        store.router_mutation_completed_row_count(caller, "tenant.main", "client-key-1"),
+        store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
         None
     );
 
     store
         .record_router_mutation_shard_completed(
             caller,
-            "tenant.main",
+            tenant_main_graph_id(),
             "client-key-1",
             ShardId::new(0),
             2,
@@ -817,20 +853,20 @@ fn router_mutation_journal_tracks_shard_completion() {
     store
         .record_router_mutation_shard_telemetry_acked(
             caller,
-            "tenant.main",
+            tenant_main_graph_id(),
             "client-key-1",
             ShardId::new(0),
         )
         .expect("ack shard 0");
     assert_eq!(
-        store.router_mutation_completed_row_count(caller, "tenant.main", "client-key-1"),
+        store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
         None
     );
 
     store
         .record_router_mutation_shard_completed(
             caller,
-            "tenant.main",
+            tenant_main_graph_id(),
             "client-key-1",
             ShardId::new(1),
             3,
@@ -840,13 +876,13 @@ fn router_mutation_journal_tracks_shard_completion() {
     store
         .record_router_mutation_shard_telemetry_acked(
             caller,
-            "tenant.main",
+            tenant_main_graph_id(),
             "client-key-1",
             ShardId::new(1),
         )
         .expect("ack shard 1");
     assert_eq!(
-        store.router_mutation_completed_row_count(caller, "tenant.main", "client-key-1"),
+        store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
         Some(5)
     );
 }
@@ -860,12 +896,17 @@ fn router_mutation_journal_records_zero_shard_completion() {
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
     store
-        .reserve_mutation_id_for_client_key(caller, "tenant.main", "client-key-1", b"a".to_vec())
+        .reserve_mutation_id_for_client_key(
+            caller,
+            tenant_main_graph_id(),
+            "client-key-1",
+            b"a".to_vec(),
+        )
         .expect("mutation id");
     store
         .record_router_mutation_completed_without_shards(
             caller,
-            "tenant.main",
+            tenant_main_graph_id(),
             "client-key-1",
             ResolvedLabelTable::default(),
             ResolvedPropertyTable::default(),
@@ -874,12 +915,12 @@ fn router_mutation_journal_records_zero_shard_completion() {
         .expect("record zero-shard completion");
 
     let record = store
-        .router_mutation_record(caller, "tenant.main", "client-key-1")
+        .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
         .expect("record");
     assert_eq!(record.completed_row_count, Some(0));
     assert!(record.shards.is_empty());
     assert_eq!(
-        store.router_mutation_completed_row_count(caller, "tenant.main", "client-key-1"),
+        store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
         Some(0)
     );
 }

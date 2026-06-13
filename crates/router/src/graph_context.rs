@@ -31,7 +31,10 @@ pub fn resolve_graph_context(
 }
 
 /// Parse and resolve graph context from a query string.
-#[cfg_attr(not(test), allow(dead_code, reason = "used by integration tests and future ingress"))]
+#[cfg_attr(
+    not(test),
+    allow(dead_code, reason = "used by integration tests and future ingress")
+)]
 pub fn resolve_graph_context_from_query(
     store: &RouterStore,
     query: &str,
@@ -39,25 +42,6 @@ pub fn resolve_graph_context_from_query(
 ) -> Result<ResolvedGraphContext, RouterError> {
     let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     resolve_graph_context(store, &program, caller)
-}
-
-pub fn ensure_candid_graph_matches(
-    _store: &RouterStore,
-    candid_graph_name: &str,
-    resolved: GraphId,
-) -> Result<(), RouterError> {
-    let Some(expected) = graph_catalog::lookup_graph_id(candid_graph_name) else {
-        return Err(RouterError::NotFound(candid_graph_name.to_owned()));
-    };
-    if expected != resolved {
-        let resolved_graph =
-            graph_catalog::graph_name(resolved).unwrap_or_else(|| resolved.to_string());
-        return Err(RouterError::GraphContextMismatch {
-            api_graph: candid_graph_name.to_owned(),
-            resolved_graph,
-        });
-    }
-    Ok(())
 }
 
 fn apply_session_command(
@@ -129,6 +113,14 @@ fn resolve_default_graph(
     caller: candid::Principal,
 ) -> Result<GraphId, RouterError> {
     resolve_home_graph(store, caller)
+}
+
+/// Default graph for ingress without `SESSION SET GRAPH` (HOME = sole visible graph).
+pub fn resolve_default_graph_id(
+    store: &RouterStore,
+    caller: candid::Principal,
+) -> Result<GraphId, RouterError> {
+    resolve_default_graph(store, caller)
 }
 
 fn resolve_home_graph(

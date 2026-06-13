@@ -95,6 +95,10 @@ impl RouterStore {
         Ok(list_shards_for_graph_id(graph_id))
     }
 
+    pub fn list_shards_for_graph_id(&self, graph_id: GraphId) -> Vec<ShardRegistryEntry> {
+        list_shards_for_graph_id(graph_id)
+    }
+
     pub fn admin_register_graph(
         &self,
         caller: Principal,

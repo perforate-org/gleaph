@@ -8,16 +8,17 @@ use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_gql_planner::build_block_plan_with_schema;
 use gleaph_gql_planner::wire::encode_block_plans;
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult};
 
 use crate::execution_path::check_prepared_execution_path;
 use crate::facade::stable::ROUTER_PREPARED_PLANS;
-use crate::facade::stable::graph_catalog::lookup_graph_id;
+use crate::facade::store::RouterStore;
 use crate::gql::dispatch_plan_blob;
+use crate::graph_context;
 use crate::index_catalog::graph_stats_for;
 use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute};
 use crate::state::RouterError;
-use gleaph_graph_kernel::entry::GraphId;
 
 #[derive(Clone, Debug)]
 pub struct PreparedPlanRecord {
@@ -25,13 +26,12 @@ pub struct PreparedPlanRecord {
     pub requires_write_path: bool,
 }
 
-pub fn prepared_register(
-    logical_graph_name: String,
-    name: String,
-    query: String,
-) -> Result<(), RouterError> {
+pub fn prepared_register(name: String, query: String) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
     let program = parser::parse(&query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let caller = msg_caller();
+    let store = RouterStore::new();
+    let resolved = graph_context::resolve_graph_context(&store, &program, caller)?;
     let tx = program
         .transaction_activity
         .as_ref()
@@ -40,9 +40,7 @@ pub fn prepared_register(
         .body
         .as_ref()
         .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
-    let graph_id = lookup_graph_id(&logical_graph_name)
-        .ok_or_else(|| RouterError::NotFound(logical_graph_name.clone()))?;
-    let stats = graph_stats_for(graph_id);
+    let stats = graph_stats_for(resolved.graph_id);
     let plan = build_block_plan_with_schema(block, Some(&stats), &NoSchema)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let requires_write_path = plan.has_dml();
@@ -54,7 +52,7 @@ pub fn prepared_register(
     }
     let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let key = prepared_key(graph_id, &name);
+    let key = prepared_key(resolved.graph_id, &name);
     ROUTER_PREPARED_PLANS.with_borrow_mut(|m| {
         m.insert(
             key,
@@ -67,10 +65,10 @@ pub fn prepared_register(
     Ok(())
 }
 
-pub fn prepared_drop(logical_graph_name: &str, name: &str) -> Result<(), RouterError> {
+pub fn prepared_drop(name: &str) -> Result<(), RouterError> {
     authorize_prepared_catalog_change(&msg_caller())?;
-    let graph_id = lookup_graph_id(logical_graph_name)
-        .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
+    let store = RouterStore::new();
+    let graph_id = resolve_prepared_graph_id(&store, msg_caller(), name)?;
     let key = prepared_key(graph_id, name);
     ROUTER_PREPARED_PLANS.with_borrow_mut(|m| {
         m.remove(&key);
@@ -79,12 +77,10 @@ pub fn prepared_drop(logical_graph_name: &str, name: &str) -> Result<(), RouterE
 }
 
 pub async fn prepared_execute_query(
-    logical_graph_name: String,
     name: String,
     params: Vec<u8>,
 ) -> Result<GqlQueryResult, RouterError> {
     prepared_execute(
-        logical_graph_name,
         name,
         params,
         GqlExecutionMode::Query,
@@ -95,13 +91,8 @@ pub async fn prepared_execute_query(
     .await
 }
 
-pub async fn prepared_execute_update(
-    logical_graph_name: String,
-    name: String,
-    params: Vec<u8>,
-) -> Result<u64, RouterError> {
+pub async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u64, RouterError> {
     Ok(prepared_execute(
-        logical_graph_name,
         name,
         params,
         GqlExecutionMode::Update,
@@ -114,13 +105,11 @@ pub async fn prepared_execute_update(
 }
 
 pub async fn prepared_execute_update_idempotent(
-    logical_graph_name: String,
     name: String,
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<u64, RouterError> {
     Ok(prepared_execute(
-        logical_graph_name,
         name,
         params,
         GqlExecutionMode::Update,
@@ -134,12 +123,10 @@ pub async fn prepared_execute_update_idempotent(
 
 /// Run a read-only prepared plan on the **update** path (escape hatch only).
 pub async fn force_prepared_execute_update(
-    logical_graph_name: String,
     name: String,
     params: Vec<u8>,
 ) -> Result<u64, RouterError> {
     Ok(prepared_execute(
-        logical_graph_name,
         name,
         params,
         GqlExecutionMode::Update,
@@ -152,7 +139,6 @@ pub async fn force_prepared_execute_update(
 }
 
 async fn prepared_execute(
-    logical_graph_name: String,
     name: String,
     params: Vec<u8>,
     mode: GqlExecutionMode,
@@ -161,8 +147,9 @@ async fn prepared_execute(
     client_mutation_key: Option<&str>,
 ) -> Result<GqlQueryResult, RouterError> {
     authorize_prepared_execute(&msg_caller())?;
-    let graph_id = lookup_graph_id(&logical_graph_name)
-        .ok_or_else(|| RouterError::NotFound(logical_graph_name.clone()))?;
+    let caller = msg_caller();
+    let store = RouterStore::new();
+    let graph_id = resolve_prepared_graph_id(&store, caller, &name)?;
     let key = prepared_key(graph_id, &name);
     let record = ROUTER_PREPARED_PLANS
         .with_borrow(|m| m.get(&key).cloned())
@@ -174,7 +161,7 @@ async fn prepared_execute(
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let stats = graph_stats_for(graph_id);
     dispatch_plan_blob(
-        &logical_graph_name,
+        graph_id,
         &record.plan_blob,
         &plans,
         &pmap,
@@ -184,6 +171,28 @@ async fn prepared_execute(
         &stats,
     )
     .await
+}
+
+fn resolve_prepared_graph_id(
+    store: &RouterStore,
+    caller: candid::Principal,
+    name: &str,
+) -> Result<GraphId, RouterError> {
+    let visible = store.list_visible_graph_ids(caller)?;
+    let mut matches = Vec::new();
+    for graph_id in visible {
+        let key = prepared_key(graph_id, name);
+        if ROUTER_PREPARED_PLANS.with_borrow(|m| m.contains_key(&key)) {
+            matches.push(graph_id);
+        }
+    }
+    match matches.as_slice() {
+        [only] => Ok(*only),
+        [] => Err(RouterError::NotFound(format!("prepared query {name:?}"))),
+        _ => Err(RouterError::InvalidArgument(format!(
+            "prepared query {name:?} is ambiguous across visible graphs"
+        ))),
+    }
 }
 
 pub(crate) fn prepared_key(graph_id: GraphId, name: &str) -> String {

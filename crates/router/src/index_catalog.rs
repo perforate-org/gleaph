@@ -19,19 +19,10 @@ pub fn graph_stats_for(graph_id: GraphId) -> RouterGraphStats {
     load_graph_stats(graph_id)
 }
 
-#[allow(dead_code, reason = "Candid ingress still passes logical_graph_name during ADR 0011 R0")]
-pub fn graph_stats_for_name(logical_graph_name: &str) -> Result<RouterGraphStats, RouterError> {
-    let graph_id = lookup_graph_id(logical_graph_name)
-        .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
-    Ok(graph_stats_for(graph_id))
-}
-
-pub(crate) async fn execute_index_ddl(
-    logical_graph_name: &str,
+pub(crate) async fn execute_index_ddl_for_graph(
+    graph_id: GraphId,
     stmt: IndexDdlStatement,
 ) -> Result<(), RouterError> {
-    let graph_id = lookup_graph_id(logical_graph_name)
-        .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
     match stmt {
         IndexDdlStatement::Create {
             index_name,

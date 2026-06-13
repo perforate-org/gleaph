@@ -12,6 +12,7 @@ Anchor timestamp: 2026-06-13 06:46:07 UTC +0000
 | 2026-06-13 | Proposed: GQL graph resolution at router ingress; deprecate Candid `logical_graph_name`. |
 | 2026-06-13 | Clarified catalog scope: **`BidirectionalCatalog` for graph and index names**; migrate all stable/router keys and stored values from `String` names to **`GraphId` / `IndexNameId`**. |
 | 2026-06-13 | Accepted. |
+| 2026-06-13 | R0/R2/G1/G2/I1 implemented; stable-memory-inventory updated; R1 validator seed and U1 multi-UseGraph remain planned. |
 
 ## Context
 
@@ -376,12 +377,12 @@ flowchart TB
 
 | Phase | Scope | Status |
 |-------|--------|--------|
-| **R0** | `resolve_graph_context`; resolve to `GraphId`; deprecate Candid graph arg with mismatch check | Planned |
-| **R1** | Session seed in validator; HOME rule (sole graph) | Planned |
-| **R2** | Remove `logical_graph_name` from query / prepared execute APIs | Planned |
-| **G1** | `BidirectionalCatalog<GraphId>`; `ROUTER_GRAPHS` keyed by `GraphId` | Planned |
-| **G2** | `ShardRegistryEntry.graph_id`; `ROUTER_SHARDS_BY_GRAPH_ID`; prepared + idempotency keys use `GraphId` | Planned |
-| **I1** | `BidirectionalCatalog<IndexNameId>` per graph; `ROUTER_NAMED_INDEXES` / `ROUTER_INDEXED_PROPERTY_SET` keys use `GraphId` + `IndexNameId` | Planned |
+| **R0** | `resolve_graph_context`; resolve to `GraphId`; GQL ingress uses program session graph | **Implemented** |
+| **R1** | Session seed in validator; HOME rule (sole graph) | Partial — router HOME rule implemented; validator seed pending |
+| **R2** | Remove `logical_graph_name` from query / prepared execute APIs | **Implemented** |
+| **G1** | `BidirectionalCatalog<GraphId>`; `ROUTER_GRAPHS` keyed by `GraphId` | **Implemented** |
+| **G2** | `ShardRegistryEntry.graph_id`; `ROUTER_SHARDS_BY_GRAPH_ID`; prepared + idempotency keys use `GraphId` | **Implemented** |
+| **I1** | `BidirectionalCatalog<IndexNameId>` per graph; `ROUTER_NAMED_INDEXES` / `ROUTER_INDEXED_PROPERTY_SET` keys use `GraphId` + `IndexNameId` | **Implemented** |
 | **U1** | Multi-`UseGraph` dispatch + merge | Planned (depends on federation-target) |
 
 **Stable repack:** G1 + I1 share one ADR 0007 gate (new MemoryId pairs for graph + index name

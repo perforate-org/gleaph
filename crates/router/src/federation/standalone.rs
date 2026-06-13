@@ -7,6 +7,7 @@ use crate::federation::dispatch::SeedHits;
 use crate::federation::{SeedRouting, ShardingPolicy};
 use crate::seed::IndexAnchor;
 use crate::state::RouterError;
+use gleaph_graph_kernel::entry::GraphId;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub struct StandaloneSharding;
@@ -23,7 +24,7 @@ impl ShardingPolicy for StandaloneSharding {
     fn resolve_with_hits(
         &self,
         _store: &RouterStore,
-        _logical_graph_name: &str,
+        _graph_id: GraphId,
         shards: &[ShardRegistryEntry],
         anchor: IndexAnchor,
         hits: SeedHits,
@@ -74,6 +75,7 @@ mod tests {
     use gleaph_graph_kernel::index::PostingHit;
 
     use super::*;
+    use crate::facade::stable::graph_catalog::lookup_graph_id;
     use crate::federation::ShardingPolicy;
     use crate::init::RouterInitArgs;
     use crate::types::{
@@ -200,7 +202,7 @@ mod tests {
         let routings = StandaloneSharding
             .resolve_with_hits(
                 &store,
-                "tenant.main",
+                lookup_graph_id("tenant.main").expect("tenant.main"),
                 &shards,
                 anchor,
                 SeedHits::Vertices(hits),
