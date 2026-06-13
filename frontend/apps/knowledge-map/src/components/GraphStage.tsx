@@ -1,9 +1,15 @@
-import { For, Show, createMemo } from "solid-js";
+import { For, Show, createEffect, createMemo, createSignal, onCleanup } from "solid-js";
 
+import {
+  type QueryRunState,
+  elapsedMs,
+  formatDurationMs,
+} from "~/api/queryTiming";
 import type { DemoEdge, DemoNode, KnowledgeMapViewModel, NodeKind, PlaybackStatus } from "~/types";
 
 type GraphStageProps = {
   viewModel?: KnowledgeMapViewModel;
+  queryRun: QueryRunState;
   activeStepIndex: number;
   playbackStatus: PlaybackStatus;
 };
@@ -146,12 +152,18 @@ export function GraphStage(props: GraphStageProps) {
           </svg>
         )}
       </Show>
+      <QueryLoadingOverlay queryRun={props.queryRun} />
       <div class="pointer-events-none absolute left-4 top-4 max-w-[280px] rounded-md border border-slate-200 bg-white/74 px-3 py-2 shadow-[0_12px_34px_rgba(15,23,42,0.08)] backdrop-blur">
         <p class="text-xs font-semibold uppercase tracking-[0.16em] text-sky-700">
           Relationship path
         </p>
         <p class="mt-1 text-sm text-slate-600">
-          Graph-shaped view model, animated as a relationship trail.
+          <Show
+            when={props.queryRun.status === "ready"}
+            fallback="Run a query to load relationship rows from Gleaph."
+          >
+            Graph-shaped view model, animated after the query returns.
+          </Show>
         </p>
       </div>
     </section>
@@ -310,4 +322,67 @@ function nodeColor(kind: NodeKind) {
     case "document":
       return "#2563eb";
   }
+}
+
+type QueryLoadingOverlayProps = {
+  queryRun: QueryRunState;
+};
+
+function QueryLoadingOverlay(props: QueryLoadingOverlayProps) {
+  const [liveElapsedMs, setLiveElapsedMs] = createSignal(0);
+
+  createEffect(() => {
+    const run = props.queryRun;
+    if (run.status !== "loading") {
+      setLiveElapsedMs(0);
+      return;
+    }
+
+    const tick = () => setLiveElapsedMs(elapsedMs(run.startedAt));
+    tick();
+    const timer = window.setInterval(tick, 32);
+    onCleanup(() => window.clearInterval(timer));
+  });
+
+  return (
+    <Show when={props.queryRun.status === "loading" || props.queryRun.status === "error"}>
+      <div class="absolute inset-0 z-10 flex items-center justify-center bg-white/72 backdrop-blur-sm">
+        <Show
+          when={props.queryRun.status === "loading"}
+          fallback={
+            <div class="max-w-sm rounded-md border border-rose-200 bg-white px-5 py-4 text-center shadow-[0_18px_50px_rgba(15,23,42,0.08)]">
+              <p class="text-sm font-semibold text-rose-800">Query failed</p>
+              <p class="mt-2 text-sm leading-6 text-slate-600">
+                <Show
+                  when={
+                    props.queryRun.status === "error"
+                      ? props.queryRun
+                      : undefined
+                  }
+                >
+                  {(run) => run().message}
+                </Show>
+              </p>
+            </div>
+          }
+        >
+          <div class="max-w-sm rounded-md border border-sky-200 bg-white px-6 py-5 text-center shadow-[0_18px_50px_rgba(15,23,42,0.08)]">
+            <div class="mx-auto flex size-12 items-center justify-center rounded-full border border-sky-200 bg-sky-50">
+              <span class="inline-block size-5 animate-spin rounded-full border-2 border-sky-200 border-t-sky-600" />
+            </div>
+            <p class="mt-4 text-sm font-semibold text-slate-950">
+              Querying Gleaph Router
+            </p>
+            <p class="mt-2 text-4xl font-semibold tabular-nums tracking-tight text-sky-700">
+              {formatDurationMs(liveElapsedMs())}
+            </p>
+            <p class="mt-2 text-sm leading-6 text-slate-600">
+              The graph stays empty until the real round trip completes, so you can feel
+              query latency before the path animation starts.
+            </p>
+          </div>
+        </Show>
+      </div>
+    </Show>
+  );
 }

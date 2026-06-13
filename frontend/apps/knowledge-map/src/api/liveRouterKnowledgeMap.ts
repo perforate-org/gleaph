@@ -3,10 +3,11 @@ import { safeGetCanisterEnv } from "@icp-sdk/core/agent/canister-env";
 import { IDL } from "@icp-sdk/core/candid";
 import { Principal } from "@icp-sdk/core/principal";
 
+import { type QueryTiming } from "~/api/queryTiming";
 import { IcWirePlanQueryResult, routerIdlFactory } from "~/api/routerIdl";
 import type { RouterKnowledgeMapResponse, RouterKnowledgeMapRow } from "~/api/viewModelAdapter";
 
-const KNOWLEDGE_MAP_QUERY =
+export const KNOWLEDGE_MAP_QUERY =
   "MATCH (a)-[e:KNOWS {weight: 5}]->(b) " +
   "RETURN ELEMENT_ID(a) AS source_id, ELEMENT_ID(e) AS edge_id, " +
   "ELEMENT_ID(b) AS target_id, e.weight AS edge_weight";
@@ -71,10 +72,17 @@ export const getLiveRouterKnowledgeMapOptions = ():
   };
 };
 
+export type LiveKnowledgeMapQueryResult = {
+  response: RouterKnowledgeMapResponse;
+  timing: QueryTiming;
+  queryText: string;
+};
+
 export const fetchKnowledgeMapFromRouter = async (
   scenarioId: string,
   options: LiveRouterKnowledgeMapOptions,
-): Promise<RouterKnowledgeMapResponse> => {
+): Promise<LiveKnowledgeMapQueryResult> => {
+  const startedAt = performance.now();
   const actor = await createRouterActor(options);
   const result = await actor.gql_query(KNOWLEDGE_MAP_QUERY, []);
   if ("Err" in result) {
@@ -92,7 +100,17 @@ export const fetchKnowledgeMapFromRouter = async (
     throw new Error("Router gql_query returned no relationship rows for knowledge-map query.");
   }
 
-  return relationshipRowToKnowledgeMapResponse(scenarioId, row);
+  const finishedAt = performance.now();
+  return {
+    response: relationshipRowToKnowledgeMapResponse(scenarioId, row),
+    timing: {
+      startedAt,
+      finishedAt,
+      durationMs: finishedAt - startedAt,
+      rowCount: Number(result.Ok.row_count),
+    },
+    queryText: KNOWLEDGE_MAP_QUERY,
+  };
 };
 
 const createRouterActor = async (

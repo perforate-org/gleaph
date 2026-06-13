@@ -16,7 +16,7 @@ export function QuestionPanel(props: QuestionPanelProps) {
           Demo paths
         </h2>
         <p class="mt-2 text-sm leading-6 text-slate-600">
-          Natural-language entries for the same graph-shaped contract.
+          Choose a path, then watch the real Router round trip before the graph animates.
         </p>
       </div>
       <div class="space-y-2">

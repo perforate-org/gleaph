@@ -1,33 +1,84 @@
 import { createEffect, createMemo, createResource, createSignal, onCleanup } from "solid-js";
 
-import { createKnowledgeMapClient } from "~/api/knowledgeMapClient";
+import {
+  createKnowledgeMapClient,
+  defaultScenarioId,
+} from "~/api/knowledgeMapClient";
+import { type QueryRunState } from "~/api/queryTiming";
 import { DemoHeader } from "~/components/DemoHeader";
 import { GraphStage } from "~/components/GraphStage";
 import { InsightPanel } from "~/components/InsightPanel";
 import { QuestionPanel } from "~/components/QuestionPanel";
-import type { PlaybackStatus } from "~/types";
+import type { KnowledgeMapViewModel, PlaybackStatus } from "~/types";
 
 const STEP_MS = 1400;
+const MAX_RECENT_TIMINGS = 8;
 
 export function KnowledgeMapDemo() {
   const client = createKnowledgeMapClient();
   const [scenarios] = createResource(() => client.listScenarios());
-  const [selectedScenarioId, setSelectedScenarioId] = createSignal("alice-projects");
-  const [scenario] = createResource(selectedScenarioId, (id) => client.getScenario(id));
-  const [playbackStatus, setPlaybackStatus] = createSignal<PlaybackStatus>("playing");
+  const [selectedScenarioId, setSelectedScenarioId] = createSignal(defaultScenarioId());
+  const [viewModel, setViewModel] = createSignal<KnowledgeMapViewModel | undefined>();
+  const [queryRun, setQueryRun] = createSignal<QueryRunState>({ status: "idle" });
+  const [queryText, setQueryText] = createSignal<string | undefined>();
+  const [recentTimingsMs, setRecentTimingsMs] = createSignal<number[]>([]);
+  const [playbackStatus, setPlaybackStatus] = createSignal<PlaybackStatus>("idle");
   const [activeStepIndex, setActiveStepIndex] = createSignal(0);
   const [technicalMode, setTechnicalMode] = createSignal(false);
+  const [runNonce, setRunNonce] = createSignal(0);
 
-  const maxStepIndex = createMemo(() => Math.max(0, (scenario()?.storySteps.length ?? 1) - 1));
+  const maxStepIndex = createMemo(() => Math.max(0, (viewModel()?.storySteps.length ?? 1) - 1));
+
+  const runQuery = async (scenarioId: string) => {
+    const startedAt = performance.now();
+    const liveSource = scenarioId === "live-router-relationship";
+    setQueryRun({
+      status: "loading",
+      startedAt,
+      source: liveSource ? "live" : "preview",
+    });
+    setViewModel(undefined);
+    setQueryText(undefined);
+    setActiveStepIndex(0);
+    setPlaybackStatus("idle");
+
+    try {
+      const result = await client.runScenario(scenarioId);
+      setViewModel(result.viewModel);
+      setQueryText(result.queryText);
+      setQueryRun({
+        status: "ready",
+        timing: result.timing,
+        source: result.source,
+      });
+      setRecentTimingsMs((current) =>
+        [result.timing.durationMs, ...current].slice(0, MAX_RECENT_TIMINGS),
+      );
+      setPlaybackStatus("playing");
+    } catch (error) {
+      const finishedAt = performance.now();
+      setQueryRun({
+        status: "error",
+        message: error instanceof Error ? error.message : String(error),
+        source: liveSource ? "live" : "preview",
+        timing: {
+          startedAt,
+          finishedAt,
+          durationMs: finishedAt - startedAt,
+        },
+      });
+      setPlaybackStatus("idle");
+    }
+  };
 
   createEffect(() => {
     selectedScenarioId();
-    setActiveStepIndex(0);
-    setPlaybackStatus("playing");
+    runNonce();
+    void runQuery(selectedScenarioId());
   });
 
   createEffect(() => {
-    if (playbackStatus() !== "playing") {
+    if (playbackStatus() !== "playing" || queryRun().status !== "ready") {
       return;
     }
 
@@ -51,7 +102,15 @@ export function KnowledgeMapDemo() {
 
   const reset = () => {
     setActiveStepIndex(0);
-    setPlaybackStatus("playing");
+    if (queryRun().status === "ready") {
+      setPlaybackStatus("playing");
+      return;
+    }
+    setRunNonce((value) => value + 1);
+  };
+
+  const runAgain = () => {
+    setRunNonce((value) => value + 1);
   };
 
   return (
@@ -59,10 +118,12 @@ export function KnowledgeMapDemo() {
       <div class="mx-auto flex max-w-[1480px] flex-col gap-4">
         <DemoHeader
           playbackStatus={playbackStatus()}
+          queryRun={queryRun()}
           technicalMode={technicalMode()}
           onPlay={() => setPlaybackStatus("playing")}
           onPause={() => setPlaybackStatus("paused")}
           onReset={reset}
+          onRunAgain={runAgain}
           onToggleTechnical={() => setTechnicalMode((value) => !value)}
         />
 
@@ -73,15 +134,20 @@ export function KnowledgeMapDemo() {
             onSelect={selectScenario}
           />
           <GraphStage
-            viewModel={scenario()}
+            viewModel={viewModel()}
+            queryRun={queryRun()}
             activeStepIndex={activeStepIndex()}
             playbackStatus={playbackStatus()}
           />
           <InsightPanel
-            viewModel={scenario()}
+            viewModel={viewModel()}
+            queryRun={queryRun()}
+            queryText={queryText()}
+            recentTimingsMs={recentTimingsMs()}
             activeStepIndex={activeStepIndex()}
             playbackStatus={playbackStatus()}
             technicalMode={technicalMode()}
+            onRunAgain={runAgain}
           />
         </section>
       </div>
