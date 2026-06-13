@@ -31,7 +31,7 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | [gql/plan-format.md](gql/plan-format.md) | draft | `PhysicalPlan` contract |
 | [execution/pipeline.md](execution/pipeline.md) | draft | `PlanRow`, arena, materialize |
 | [execution/operators.md](execution/operators.md) | draft | `PlanOp` catalog (planner vs executor) |
-| [demo/knowledge-map.md](demo/knowledge-map.md) | planned | PocketIC-backed visual knowledge-map demo |
+| [demo/knowledge-map.md](demo/knowledge-map.md) | partially implemented | PocketIC-backed visual knowledge-map demo |
 | [storage/lara.md](storage/lara.md) | accepted | **LARA consensus:** four contracts, DGAP vs LARA, FreeSpanStore |
 | [storage/lara-and-facade.md](storage/lara-and-facade.md) | draft | LARA vs graph stable stores |
 | [storage/lara-dgap-contract.md](storage/lara-dgap-contract.md) | partially implemented | DGAP mapping detail and labeled gaps |

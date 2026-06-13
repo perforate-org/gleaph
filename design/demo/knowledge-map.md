@@ -1,11 +1,11 @@
 # Gleaph Knowledge Map Demo
 
 Last updated: 2026-06-13  
-Anchor timestamp: 2026-06-13 14:20:35 UTC +0000
+Anchor timestamp: 2026-06-13 23:02:20 UTC +0000
 
 ## Status
 
-**Planned** — this document defines the demo architecture before implementation. It is not an implemented runtime contract yet.
+**Partially implemented** — the frontend MVP exists under `frontend/apps/knowledge-map` with a lightweight SVG renderer, a Router-row adapter, and an optional live Router `gql_query` source. A PocketIC test proves Router `gql_execute_idempotent` can seed the demo relationship and Router `gql_query` can return relationship row material through `rows_blob`. The broader named scenario dataset is still planned.
 
 ## Purpose
 
@@ -31,7 +31,7 @@ The demo should be able to truthfully say:
 
 ## Product experience
 
-The user sees a 3D knowledge map. They choose a natural-language question such as:
+The user sees an animated knowledge map. They choose a natural-language question such as:
 
 ```text
 Show Alice's related projects.
@@ -52,13 +52,26 @@ The visible story is:
 
 Technical labels such as Router, graph-index, shard, seed binding, and GQL should be hidden by default. A technical mode may reveal the backend flow for reviewers.
 
+## Visual direction
+
+Use a light, Internet Computer-inspired product style:
+
+- white or near-white page background;
+- fine slate borders and restrained shadows;
+- black-to-slate typography;
+- blue, cyan, violet, and teal accents;
+- light gradient washes instead of dark space or heavy glow;
+- SVG animation over WebGL for the MVP.
+
+The graph should feel like a precise product diagram that comes alive, not like a game scene.
+
 ## Runtime topology
 
 For this demo, "local IC network" means the repository's PocketIC-backed local/e2e environment.
 
 ```mermaid
 flowchart LR
-    F["frontend asset canister<br/>Three.js demo"] --> R["gleaph-router<br/>public demo entry"]
+    F["frontend asset canister<br/>SVG demo"] --> R["gleaph-router<br/>public demo entry"]
     R --> I["gleaph-graph-index<br/>postings"]
     R --> G0["gleaph-graph-shard-0<br/>local CSR execution"]
     R --> G1["gleaph-graph-shard-1<br/>optional"]
@@ -72,24 +85,58 @@ This preserves the existing architecture:
 
 | Domain | Demo responsibility |
 |--------|---------------------|
-| Frontend asset canister | Render the 3D map and story panels. |
+| Frontend asset canister | Render the animated map and story panels. |
 | Router | Own authentication, query entry, label/property resolution, index lookup, shard dispatch, and result merge. |
 | graph-index | Own posting lookup and intersection. |
 | Graph shard | Own local graph storage and local plan execution. |
+
+### ICP CLI manifest
+
+The repository root contains `icp.yaml` with these canisters:
+
+| Canister | Recipe | Purpose |
+|----------|--------|---------|
+| `gleaph-router` | `@dfinity/rust@v3.2.0` | Public Router entrypoint for query/demo calls. |
+| `gleaph-graph-index` | `@dfinity/rust@v3.2.0` | Posting lookup canister. |
+| `gleaph-graph-shard-0` | `@dfinity/rust@v3.2.0` | First graph shard canister. |
+| `knowledge-map` | `@dfinity/asset-canister@v2.2.1` | Solid/Vite frontend asset canister. |
+
+The local network uses `mode: managed` with `gateway.port: 0`, so parallel worktrees can start local IC gateways without hard-coded port collisions.
+
+Current status: `icp build` succeeds for all configured canisters, and `scripts/deploy-knowledge-map-local.sh` deploys the local IC demo stack. The asset build commands run `corepack pnpm` with `HOME`, `COREPACK_HOME`, `XDG_CACHE_HOME`, and `XDG_DATA_HOME` under `.icp/`, so local CLI builds do not depend on global package-manager cache paths. The script wires local deployment order, init args, and a small Router-owned seed:
+
+- `RouterInitArgs`: installer/admin/controller principals;
+- `IndexInitArgs`: Router canister id and controllers;
+- `GraphInitArgs`: logical graph name, Router canister id, shard id, and index canister id;
+- `gql_execute_idempotent`: `INSERT (:Person)-[:KNOWS {weight: 5}]->(:Project)` with a configurable `GLEAPH_DEMO_SEED_MUTATION_KEY`.
+
+The verified local deployment used:
+
+- Router: `a2cb4-hh777-77775-aaaba-cai`;
+- graph-index: `a5dhi-k7777-77775-aaabq-cai`;
+- graph shard 0: `aiewf-lx777-77775-aaaca-cai`;
+- frontend asset canister: `apfqr-gp777-77775-aaacq-cai`;
+- gateway: `http://localhost:53916/`.
+
+The frontend asset canister responded with `200 OK`, and its `ic_env` cookie included the Router, graph-index, graph-shard, and frontend canister ids. The browser-rendered app loaded the live Router relationship. Script-level Router query verification is optional through `GLEAPH_DEMO_VERIFY_QUERY=1`; the default path keeps deployment from depending on local CLI query behavior.
 
 ## Source of truth
 
 The source of truth for demo state is the Gleaph query result returned through the Router.
 
-The frontend must not treat hard-coded Three.js scenarios as canonical data. A scenario is presentation configuration only: question text, optional preferred camera path, and viewer-friendly copy.
+The frontend must not treat hard-coded visual scenarios as canonical data. A scenario is presentation configuration only: question text, optional preferred layout hints, and viewer-friendly copy.
 
 ```text
-Router result
+Router row result
   -> KnowledgeMapViewModel
-    -> Three.js scene
+    -> SVG graph
     -> story steps
     -> result cards
 ```
+
+The current frontend fixture intentionally uses Router-shaped rows before adaptation. This keeps mocked data on the same presentation path that a future Router response will use.
+
+The frontend also includes an optional live source. When a Router canister id is available, the demo can call Router `gql_query`, decode `rows_blob`, map `source_id`, `edge_id`, `target_id`, and `edge_weight` into Router-shaped rows, and then reuse the same `KnowledgeMapViewModel` adapter.
 
 ## Demo data model
 
@@ -118,7 +165,7 @@ The first implementation should use one shard unless the specific demo story nee
 
 The frontend should request a named demo scenario from the Router, or call a prepared query registered on the Router.
 
-The preferred frontend-facing shape is a demo view model, not raw GQL rows:
+The preferred rendering shape is a demo view model, not raw GQL rows:
 
 ```ts
 type KnowledgeMapViewModel = {
@@ -158,12 +205,34 @@ type ResultCard = {
 };
 ```
 
+### Router-row adapter
+
+The implemented MVP uses a frontend adapter that consumes Router-shaped rows and returns `KnowledgeMapViewModel`.
+
+```ts
+type RouterKnowledgeMapResponse = {
+  id: string;
+  title: string;
+  question: string;
+  rows: RouterKnowledgeMapRow[];
+};
+
+type RouterKnowledgeMapRow =
+  | RouterNodeRow
+  | RouterEdgeRow
+  | RouterPathRow
+  | RouterResultRow
+  | RouterTechnicalFlowRow;
+```
+
+This row contract is still a frontend-side integration contract, not a committed Router canister API. The backend phase should either make Router return this shape directly for demo scenarios or map prepared-query rows into the same adapter input.
+
 ### API placement
 
 There are two acceptable implementation options:
 
-1. **Preferred long-term:** use prepared queries plus a frontend adapter that maps rows into `KnowledgeMapViewModel`.
-2. **Preferred MVP:** expose a small Router-owned demo endpoint that returns `KnowledgeMapViewModel` for a fixed scenario.
+1. **Preferred long-term:** use prepared queries plus the frontend adapter that maps rows into `KnowledgeMapViewModel`.
+2. **Acceptable MVP backend:** expose a small Router-owned demo endpoint that returns Router-shaped rows for a fixed scenario.
 
 The MVP endpoint is acceptable only if it stays in Router-owned demo/integration code and does not leak demo concepts into `gleaph-gql` or `gleaph-gql-planner`.
 
@@ -195,12 +264,8 @@ frontend/apps/knowledge-map/src/
     TechnicalFlow.tsx
     DemoControls.tsx
   graph/
-    GraphScene.ts
-    graphObjects.ts
-    graphMaterials.ts
+    graphLayout.ts
     playback.ts
-    camera.ts
-    labels.ts
 ```
 
 ### Component responsibilities
@@ -209,15 +274,14 @@ frontend/apps/knowledge-map/src/
 |-----------|----------------|
 | `KnowledgeMapDemo` | Own selected scenario, playback state, active step, and technical mode. |
 | `QuestionPanel` | Show natural-language demo questions. |
-| `GraphStage` | Mount and resize the Three.js canvas. |
-| `GraphScene` | Own Three.js renderer, scene, camera, meshes, and animation loop. |
+| `GraphStage` | Render the responsive SVG graph and relationship trail. |
 | `StorySteps` | Show plain-language traversal narration. |
 | `ResultCards` | Show found items and why they were found. |
 | `TechnicalFlow` | Reveal Router / index / shard execution steps when enabled. |
 
-### Three.js rule
+### Visualization rule
 
-Three.js must be a rendering layer. It consumes `KnowledgeMapViewModel` and playback state; it does not own query semantics, graph truth, or canister state.
+The SVG graph must be a rendering layer. It consumes `KnowledgeMapViewModel` and playback state; it does not own query semantics, graph truth, or canister state.
 
 ## Playback model
 
@@ -237,7 +301,7 @@ type PlaybackFrame = {
 
 The same playback frame drives:
 
-- node glow and edge trail in Three.js;
+- node glow and edge trail in the SVG graph;
 - highlighted story step;
 - delayed result-card reveal;
 - optional technical-flow progress.
@@ -271,6 +335,8 @@ Seed data should be inserted through the same Router-controlled path the fronten
 - Define the view model and scenario list.
 - Decide whether the MVP uses a Router demo endpoint or prepared query plus frontend adapter.
 
+Status: complete for the frontend contract; backend API placement remains open.
+
 ### Phase 2: PocketIC backend loop
 
 - Start Router, graph-index, and one graph shard in PocketIC.
@@ -278,11 +344,15 @@ Seed data should be inserted through the same Router-controlled path the fronten
 - Query through Router and assert the returned data can produce `KnowledgeMapViewModel`.
 - Keep graph-index and graph shard hidden behind Router.
 
+Status: partially implemented. `router_gql_query::standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter` verifies the Router can return source vertex id, edge id, target vertex id, and edge metadata through `gql_query` / `rows_blob`. A full named scenario API or prepared-query mapping is still planned.
+
 ### Phase 3: Frontend shell
 
 - Create `frontend/apps/knowledge-map`.
-- Add Solid, Vite, Tailwind, and Three.js.
+- Add Solid, Vite, Tailwind, and a lightweight SVG graph renderer.
 - Render the UI shell with a mocked `KnowledgeMapViewModel` that matches the backend contract.
+
+Status: implemented with Router-row fixtures adapted into `KnowledgeMapViewModel`.
 
 ### Phase 4: Frontend-to-Router connection
 
@@ -290,27 +360,42 @@ Seed data should be inserted through the same Router-controlled path the fronten
 - Read canister ids from the IC asset-canister environment for deployed local/demo builds.
 - Replace mocked data with Router results.
 
-### Phase 5: Three.js polish
+Status: partially implemented. The frontend has a hand-wired Router `gql_query` client that reads `PUBLIC_CANISTER_ID:gleaph-router` or `PUBLIC_CANISTER_ID:router` from the asset canister `ic_env` cookie, with `VITE_ROUTER_CANISTER_ID` as a local Vite fallback. It currently maps one live relationship row, not the full named knowledge-map scenario.
+
+### Phase 5: ICP CLI deploy wiring
+
+- Keep `icp.yaml` as the shared build/deploy manifest.
+- Add a script that creates canisters, resolves canister ids, encodes init args, deploys Router, graph-index, graph shard, and asset canister, then seeds the demo graph.
+- Keep all seed/query calls Router-owned unless a PocketIC-only setup helper is explicitly documented for test speed.
+
+Status: partially implemented. The manifest exists; `icp build` validates all configured canisters; `scripts/deploy-knowledge-map-local.sh` handles local network startup, canister id resolution, Router/Index/Graph init args, Router graph/shard registration, and asset canister deployment. Sandbox-external execution starts the local network successfully and deploys the stack. The deploy path surfaced and fixed two wiring issues: Router now sends raw `nat32` shard ids to graph-index calls, and graph shard install receives the index canister id directly because canister init cannot perform inter-canister calls. Demo seed data and full live browser-to-Router validation are still planned.
+
+### Phase 6: Graph polish
 
 - Add node category materials, active route glow, camera follow, and result reveal.
 - Keep labels sparse and readable.
 - Keep non-technical copy visible by default; keep technical flow optional.
 
-### Phase 6: Validation
+### Phase 7: Validation
 
 - PocketIC e2e: canisters start, seed data loads, Router query returns expected path.
 - Frontend build: app compiles and can be deployed as an asset canister.
-- Browser validation: 3D canvas is nonblank, route playback completes, result cards match the Router result.
+- Browser validation: SVG graph is visible, route playback completes, result cards match the Router result.
+
+Current validation includes a targeted PocketIC test for Router relationship rows and frontend type/build checks. It does not yet deploy the frontend as an asset canister or validate a live browser-to-Router call.
 
 ## Validation commands
 
-Exact commands will depend on the final `icp.yaml`, PocketIC test target, and frontend package name. The intended validation classes are:
+Current validation commands:
 
 ```text
-cargo fmt --check
-cargo test -p gleaph-router <knowledge-map/pocketic target>
+cargo fmt --all
+cargo check -p gleaph-pocket-ic-tests --tests
+cargo clippy -p gleaph-pocket-ic-tests --tests -- -D warnings
+cargo test -p gleaph-pocket-ic-tests --test router_gql_query standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter
+pnpm knowledge-map:check
 pnpm --filter @gleaph/knowledge-map build
-icp deploy <local/PocketIC environment>
+icp build knowledge-map
 ```
 
 Do not add broad benchmarks for the first visual demo unless the implementation changes graph traversal, storage layout, index routing, serialization, or canister-facing execution paths.
@@ -330,6 +415,7 @@ Do not add broad benchmarks for the first visual demo unless the implementation 
 2. Should the first demo use one shard only, or include a second shard to visualize Router fan-out?
 3. Should the seed dataset use repository concepts, a generic knowledge workspace, or both?
 4. Should the asset canister be part of the first PocketIC e2e test, or validated separately through `icp deploy`?
+5. Should the initial `icp-cli` wiring script live under a root `scripts/` directory or inside `frontend/apps/knowledge-map` as a demo-specific tool?
 
 ## Related documents
 
