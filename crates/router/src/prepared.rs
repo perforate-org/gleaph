@@ -48,7 +48,14 @@ pub fn prepared_register(name: String, query: String) -> Result<(), RouterError>
         resolved.graph_id,
     )?;
     let stats = graph_stats_for(dispatch.dispatch_graph_id);
-    let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), &NoSchema)
+    let open = NoSchema;
+    let mut typed = None;
+    let schema = crate::facade::stable::graph_type_catalog::property_schema_for_planning(
+        dispatch.dispatch_graph_id,
+        &open,
+        &mut typed,
+    )?;
+    let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), schema)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let requires_write_path = plan.has_dml();
     let classified = classify_program(&program).requires_write_path();

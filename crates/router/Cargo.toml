@@ -18,6 +18,7 @@ gleaph-auth.workspace = true
 gleaph-gql = { workspace = true, features = ["f128", "f256"] }
 gleaph-gql-ic.workspace = true
 gleaph-gql-planner = { workspace = true, features = ["plan-wire"] }
+gleaph-graph-catalog.workspace = true
 gleaph-graph-kernel.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true

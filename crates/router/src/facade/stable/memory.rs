@@ -13,6 +13,7 @@ use gleaph_graph_kernel::federation::{
 
 use gleaph_auth::AuthState;
 use gleaph_gql_ic::graph_registry::GraphRegistryEntry;
+use gleaph_graph_catalog::GraphCatalog;
 
 use super::indexed_catalog::{IndexDefRecord, IndexedPropertyKey, NamedIndexKey};
 use super::scoped_name_catalog::GraphScopedNameCatalog;
@@ -55,6 +56,8 @@ const ROUTER_INDEX_NAME_BY_NAME: MemoryId = MemoryId::new(26);
 const ROUTER_INDEX_NAME_BY_ID: MemoryId = MemoryId::new(27);
 const ROUTER_SHARDS_BY_GRAPH_ID: MemoryId = MemoryId::new(28);
 const ROUTER_PREPARED_PLANS: MemoryId = MemoryId::new(29);
+const ROUTER_GRAPH_TYPE_DEFINITIONS: MemoryId = MemoryId::new(30);
+const ROUTER_GRAPH_SCHEMA_BINDINGS: MemoryId = MemoryId::new(31);
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
@@ -133,6 +136,7 @@ pub(crate) type StablePreparedPlanMap = BTreeMap<
     super::prepared_catalog::PreparedPlanRecord,
     Memory,
 >;
+pub(crate) type StableGqlGraphCatalog = GraphCatalog<Memory, Memory>;
 
 thread_local! {
     pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -257,4 +261,11 @@ pub(crate) fn init_shards_by_graph_id() -> StableShardsByGraphId {
 
 pub(crate) fn init_prepared_plans() -> StablePreparedPlanMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PREPARED_PLANS)))
+}
+
+pub(crate) fn init_gql_graph_catalog() -> StableGqlGraphCatalog {
+    GraphCatalog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_GRAPH_TYPE_DEFINITIONS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_GRAPH_SCHEMA_BINDINGS)),
+    )
 }

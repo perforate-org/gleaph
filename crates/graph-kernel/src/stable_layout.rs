@@ -775,6 +775,22 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "PreparedPlanKey → versioned plan wire blob",
             None,
         ),
+        region(
+            "ROUTER_GRAPH_TYPE_DEFINITIONS",
+            30,
+            StableMemoryClass::Catalog,
+            "graph type catalog",
+            "Named graph type definitions (CREATE GRAPH TYPE)",
+            None,
+        ),
+        region(
+            "ROUTER_GRAPH_SCHEMA_BINDINGS",
+            31,
+            StableMemoryClass::Catalog,
+            "graph type catalog",
+            "GraphId → property graph schema binding (ADR 0013)",
+            None,
+        ),
     ],
 };
 
@@ -986,8 +1002,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 30);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(29));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 32);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(31));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[17].class,
             StableMemoryClass::Telemetry

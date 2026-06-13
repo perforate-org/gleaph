@@ -20,6 +20,7 @@ gleaph-gql = { workspace = true, features = [
     "f128",
     "f256",
 ] }
+gleaph-graph-kernel.workspace = true
 rkyv.workspace = true
 thiserror.workspace = true
 

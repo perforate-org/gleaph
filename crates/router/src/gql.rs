@@ -465,6 +465,13 @@ async fn run_gql(
         .as_ref()
         .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
 
+    if crate::facade::stable::graph_type_catalog::block_has_catalog_ddl(block) {
+        crate::facade::stable::graph_type_catalog::apply_catalog_statement_block(block)?;
+        if crate::facade::stable::graph_type_catalog::block_is_catalog_ddl_only(block) {
+            return Ok(GqlQueryResult::row_count_only(0));
+        }
+    }
+
     let dispatch = crate::use_graph::resolve_ingress_dispatch(
         &store,
         &program,
@@ -473,7 +480,14 @@ async fn run_gql(
         resolved.graph_id,
     )?;
     let stats = graph_stats_for(dispatch.dispatch_graph_id);
-    let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), &NoSchema)
+    let open = NoSchema;
+    let mut typed = None;
+    let schema = crate::facade::stable::graph_type_catalog::property_schema_for_planning(
+        dispatch.dispatch_graph_id,
+        &open,
+        &mut typed,
+    )?;
+    let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), schema)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let requires_write_path = plan.has_dml();
     if requires_write_path != flags.requires_write_path() {

@@ -81,7 +81,12 @@ pub fn resolve_ingress_dispatch(
             session_effective,
         )?;
         let stats = graph_stats_for(focused_id);
-        let plan = build_block_plan_with_schema(&defocused_block, Some(&stats), &NoSchema)
+        let open = NoSchema;
+        let mut typed = None;
+        let schema = crate::facade::stable::graph_type_catalog::property_schema_for_planning(
+            focused_id, &open, &mut typed,
+        )?;
+        let plan = build_block_plan_with_schema(&defocused_block, Some(&stats), schema)
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
         if plan.has_dml() {
             return Err(RouterError::InvalidArgument(

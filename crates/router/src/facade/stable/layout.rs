@@ -20,6 +20,6 @@ mod tests {
     #[test]
     fn router_canister_layout_registry() {
         validate_layout(&ROUTER_STABLE_LAYOUT).expect("router layout invariants");
-        assert_eq!(STABLE_REGION_COUNT, 30);
+        assert_eq!(STABLE_REGION_COUNT, 32);
     }
 }
