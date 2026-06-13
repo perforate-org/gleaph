@@ -307,6 +307,33 @@ fn standalone_gql_query_edge_index_undirected_ddl() {
     assert_eq!(result.row_count, 1);
 }
 
+/// Anonymous endpoints on both sides of an undirected edge match once per endpoint
+/// when the planner expands from each vertex (no leading edge index anchor).
+#[test]
+fn standalone_gql_query_undirected_symmetric_anonymous_endpoints() {
+    let env = install_single_shard_federation();
+    let weight = admin_intern_property(&env, "weight");
+    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
+    let source = e2e_insert_vertex(&env, env.graph_source);
+    let target = e2e_insert_vertex(&env, env.graph_source);
+    e2e_insert_undirected_edge_with_property(
+        &env,
+        env.graph_source,
+        source.local_vertex_id,
+        target.local_vertex_id,
+        knows.raw(),
+        weight.raw(),
+        5,
+    );
+
+    let result = gql_query_as_admin(
+        &env,
+        "MATCH ()~[e:KNOWS]~() WHERE e.weight = 5 RETURN e",
+    );
+
+    assert_eq!(result.row_count, 2);
+}
+
 #[test]
 fn federated_gql_query_edge_index_pointing_right_ddl() {
     let env = install_federation();
