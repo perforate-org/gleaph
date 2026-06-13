@@ -49,6 +49,17 @@ pub struct E2eInsertDirectedEdgeWithPropertyArgs {
     pub value: i64,
 }
 
+/// Arguments for [`super::handlers::e2e_insert_undirected_edge_with_property`] (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eInsertUndirectedEdgeWithPropertyArgs {
+    pub source_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    pub target_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    pub edge_label_id: u16,
+    pub property_id: u32,
+    pub value: i64,
+}
+
 /// Arguments supplied by the registry (or installer) on first `init`.
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct GraphInitArgs {

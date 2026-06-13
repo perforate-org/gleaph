@@ -136,6 +136,15 @@ pub struct E2eInsertDirectedEdgeWithPropertyArgs {
     pub value: i64,
 }
 
+#[derive(CandidType, Clone, Debug)]
+pub struct E2eInsertUndirectedEdgeWithPropertyArgs {
+    pub source_local_vertex_id: u32,
+    pub target_local_vertex_id: u32,
+    pub edge_label_id: u16,
+    pub property_id: u32,
+    pub value: i64,
+}
+
 pub fn wasm_bytes(env_var: &str) -> Vec<u8> {
     let path = PathBuf::from(std::env::var(env_var).unwrap_or_else(|_| {
         panic!("build.rs must set {env_var} (run `cargo test -p gleaph-pocket-ic-tests` from workspace)")
@@ -622,6 +631,26 @@ pub fn create_directed_edge_property_index(
     );
 }
 
+/// Register an undirected-only edge property index (`FOR () ~[e:L]~ ()`, ADR 0012).
+pub fn create_undirected_edge_property_index(
+    env: &FederationEnv,
+    index_name: &str,
+    edge_label: &str,
+    property: &str,
+    client_mutation_key: &str,
+) {
+    admin_intern_edge_label(env, edge_label);
+    let _ = admin_intern_property(env, property);
+    let ddl = format!(
+        "CREATE INDEX {index_name} IF NOT EXISTS FOR () ~[e:{edge_label}]~ () ON (e.{property})"
+    );
+    let row_count = gql_execute_idempotent_as_admin(env, &ddl, client_mutation_key);
+    assert_eq!(
+        row_count, 0,
+        "CREATE INDEX DDL should return row_count 0, got {row_count}"
+    );
+}
+
 /// Register a vertex property index via `CREATE INDEX` (ADR 0009 phase E).
 pub fn create_vertex_property_index(
     env: &FederationEnv,
@@ -710,6 +739,29 @@ pub fn e2e_insert_directed_edge_with_property(
         graph,
         "e2e_insert_directed_edge_with_property",
         E2eInsertDirectedEdgeWithPropertyArgs {
+            source_local_vertex_id: source_local,
+            target_local_vertex_id: target_local,
+            edge_label_id,
+            property_id,
+            value,
+        },
+    );
+}
+
+pub fn e2e_insert_undirected_edge_with_property(
+    env: &FederationEnv,
+    graph: Principal,
+    source_local: u32,
+    target_local: u32,
+    edge_label_id: u16,
+    property_id: u32,
+    value: i64,
+) {
+    let _: () = update_as_router(
+        env,
+        graph,
+        "e2e_insert_undirected_edge_with_property",
+        E2eInsertUndirectedEdgeWithPropertyArgs {
             source_local_vertex_id: source_local,
             target_local_vertex_id: target_local,
             edge_label_id,
