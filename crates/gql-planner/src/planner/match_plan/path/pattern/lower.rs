@@ -384,7 +384,7 @@ pub(super) fn first_hop_supports_leading_edge_index(
     }
     if !matches!(
         edge.direction,
-        EdgeDirection::PointingRight | EdgeDirection::PointingLeft
+        EdgeDirection::PointingRight | EdgeDirection::PointingLeft | EdgeDirection::Undirected
     ) {
         return false;
     }

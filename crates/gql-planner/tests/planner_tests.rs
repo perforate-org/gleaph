@@ -845,6 +845,43 @@ fn leading_edge_index_scan_respects_direction_subset_rule() {
 }
 
 #[test]
+fn leading_edge_index_scan_supports_undirected_pattern() {
+    let mut stats = TableStats::default();
+    stats.directional_edge_indexes.push((
+        "REL".to_owned(),
+        "weight".to_owned(),
+        EdgeDirection::Undirected,
+    ));
+
+    let plan = plan_query_with_stats("MATCH ()~[e:REL {weight: 7}]~(b:User) RETURN e, b", &stats);
+
+    assert!(
+        matches!(
+            plan.ops.first(),
+            Some(PlanOp::EdgeIndexScan {
+                property,
+                value,
+                ..
+            }) if &**property == "weight"
+                && matches!(value, ScanValue::Literal(gleaph_gql::Value::Int64(7)))
+        ),
+        "expected leading EdgeIndexScan for undirected pattern, ops={:?}",
+        plan.ops
+    );
+    assert!(
+        matches!(
+            plan.ops.get(1),
+            Some(PlanOp::EdgeBindEndpoints {
+                direction: EdgeDirection::Undirected,
+                ..
+            })
+        ),
+        "expected Undirected EdgeBindEndpoints, ops={:?}",
+        plan.ops
+    );
+}
+
+#[test]
 fn test_leading_edge_bind_hop_aux_none_when_not_referenced() {
     let mut stats = TableStats::default();
     stats.indexed_edge_properties.insert("weight".to_owned());

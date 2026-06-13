@@ -25,6 +25,7 @@ const INDEX_WEIGHT_RIGHT_NAME: &str = "pocket_ic_edge_weight_right";
 const INDEX_WEIGHT_UNDIR_NAME: &str = "pocket_ic_edge_weight_undir";
 const EDGE_WEIGHT_QUERY: &str = "MATCH ()-[e:KNOWS {weight: 5}]->(b) RETURN e, b";
 const EDGE_WEIGHT_UNDIR_QUERY: &str = "MATCH ()~[e:KNOWS {weight: 5}]~() RETURN e";
+const EDGE_WEIGHT_UNDIR_BOUND_QUERY: &str = "MATCH ()~[e:KNOWS {weight: 5}]~(b) RETURN e, b";
 
 #[test]
 fn router_gql_query_node_scan_on_single_shard() {
@@ -326,10 +327,47 @@ fn standalone_gql_query_undirected_symmetric_anonymous_endpoints() {
         5,
     );
 
-    let result = gql_query_as_admin(
+    let result = gql_query_as_admin(&env, "MATCH ()~[e:KNOWS]~() WHERE e.weight = 5 RETURN e");
+
+    assert_eq!(result.row_count, 2);
+}
+
+#[test]
+fn federated_gql_query_edge_index_undirected_ddl() {
+    let env = install_federation();
+    let weight = admin_intern_property(&env, "weight");
+    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
+    create_undirected_edge_property_index(
         &env,
-        "MATCH ()~[e:KNOWS]~() WHERE e.weight = 5 RETURN e",
+        INDEX_WEIGHT_UNDIR_NAME,
+        INDEX_EDGE_LABEL,
+        "weight",
+        "federated_gql_query_edge_index_undirected_ddl",
     );
+    let source_a = e2e_insert_vertex(&env, env.graph_source);
+    let target_a = e2e_insert_vertex(&env, env.graph_source);
+    e2e_insert_undirected_edge_with_property(
+        &env,
+        env.graph_source,
+        source_a.local_vertex_id,
+        target_a.local_vertex_id,
+        knows.raw(),
+        weight.raw(),
+        5,
+    );
+    let source_b = e2e_insert_vertex(&env, env.graph_dest);
+    let target_b = e2e_insert_vertex(&env, env.graph_dest);
+    e2e_insert_undirected_edge_with_property(
+        &env,
+        env.graph_dest,
+        source_b.local_vertex_id,
+        target_b.local_vertex_id,
+        knows.raw(),
+        weight.raw(),
+        5,
+    );
+
+    let result = gql_query_as_admin(&env, EDGE_WEIGHT_UNDIR_BOUND_QUERY);
 
     assert_eq!(result.row_count, 2);
 }

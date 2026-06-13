@@ -61,7 +61,7 @@ fn expand_endpoints_for_direction(
         return Ok(None);
     };
     Ok(Some(match direction {
-        EdgeDirection::PointingRight => (owner, neighbor),
+        EdgeDirection::PointingRight | EdgeDirection::Undirected => (owner, neighbor),
         EdgeDirection::PointingLeft => (neighbor, owner),
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
     }))

@@ -56,7 +56,9 @@ fn check_op(op: &PlanOp) -> Option<&'static str> {
         PlanOp::SetOperation { right, .. } => first_executor_unsupported_op(right),
         PlanOp::SetProperties { .. } => None,
         PlanOp::EdgeBindEndpoints { direction, .. } => match direction {
-            EdgeDirection::PointingRight | EdgeDirection::PointingLeft => None,
+            EdgeDirection::PointingRight
+            | EdgeDirection::PointingLeft
+            | EdgeDirection::Undirected => None,
             _ => Some("EdgeBindEndpoints.direction"),
         },
         PlanOp::Aggregate { aggregates, .. } => check_aggregate_specs(aggregates),
