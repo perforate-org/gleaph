@@ -155,6 +155,20 @@ pub async fn unregister_indexed_property(
     call_graph_result(graph, "unregister_indexed_property", args).await
 }
 
+pub async fn register_indexed_edge_index(
+    graph: Principal,
+    args: gleaph_graph_kernel::index::RegisterIndexedEdgeIndexArgs,
+) -> Result<(), String> {
+    call_graph_result(graph, "register_indexed_edge_index", args).await
+}
+
+pub async fn unregister_indexed_edge_index(
+    graph: Principal,
+    args: gleaph_graph_kernel::index::RegisterIndexedEdgeIndexArgs,
+) -> Result<(), String> {
+    call_graph_result(graph, "unregister_indexed_edge_index", args).await
+}
+
 #[expect(
     dead_code,
     reason = "wired in router admin edge backfill step (ADR 0009 phase C follow-up)"

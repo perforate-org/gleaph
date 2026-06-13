@@ -325,6 +325,20 @@ pub fn unregister_indexed_property(
     Ok(())
 }
 
+pub fn register_indexed_edge_index(
+    args: gleaph_graph_kernel::index::RegisterIndexedEdgeIndexArgs,
+) -> Result<(), String> {
+    crate::index::registry::apply_register_edge_index(args);
+    Ok(())
+}
+
+pub fn unregister_indexed_edge_index(
+    args: gleaph_graph_kernel::index::RegisterIndexedEdgeIndexArgs,
+) -> Result<(), String> {
+    crate::index::registry::apply_unregister_edge_index(args);
+    Ok(())
+}
+
 pub async fn backfill_edge_property_postings(
     args: gleaph_graph_kernel::federation::EdgePostingBackfillArgs,
 ) -> Result<gleaph_graph_kernel::federation::EdgePostingBackfillResult, String> {

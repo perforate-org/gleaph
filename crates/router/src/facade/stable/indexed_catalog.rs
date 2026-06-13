@@ -10,8 +10,9 @@ use gleaph_graph_kernel::entry::{GraphId, IndexNameId, PropertyId};
 use gleaph_graph_kernel::index::IndexedPropertyKind;
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 
+use crate::edge_index_direction::{EdgeIndexDirectionTag, tag_from_byte};
 use crate::facade::stable::{ROUTER_INDEXED_PROPERTY_SET, ROUTER_NAMED_INDEXES};
-use crate::planner_stats::{IndexCatalogEntry, RouterGraphStats};
+use crate::planner_stats::{EdgeIndexMembership, RouterGraphStats};
 use crate::state::RouterError;
 
 const KIND_VERTEX: u8 = 0;
@@ -62,6 +63,8 @@ pub(crate) struct IndexDefRecord {
     pub kind: IndexedPropertyKind,
     pub property_id: PropertyId,
     pub label_id: u16,
+    /// Edge index direction tag (ADR 0012); `0` for vertex indexes.
+    pub edge_direction_tag: u8,
 }
 
 impl Storable for NamedIndexKey {
@@ -126,7 +129,7 @@ impl Storable for IndexedPropertyKey {
 
 impl Storable for IndexDefRecord {
     const BOUND: StorableBound = StorableBound::Bounded {
-        max_size: 7,
+        max_size: 8,
         is_fixed_size: true,
     };
 
@@ -135,10 +138,11 @@ impl Storable for IndexDefRecord {
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(7);
+        let mut out = Vec::with_capacity(8);
         out.push(kind_to_byte(self.kind));
         out.extend_from_slice(&self.property_id.to_le_bytes());
         out.extend_from_slice(&self.label_id.to_le_bytes());
+        out.push(self.edge_direction_tag);
         out
     }
 
@@ -148,6 +152,7 @@ impl Storable for IndexDefRecord {
             kind: kind_from_byte(bytes[0]),
             property_id: PropertyId::from_le_bytes(bytes[1..5].try_into().expect("property_id")),
             label_id: u16::from_le_bytes(bytes[5..7].try_into().expect("label_id")),
+            edge_direction_tag: bytes.get(7).copied().unwrap_or(0),
         }
     }
 }
@@ -155,6 +160,7 @@ impl Storable for IndexDefRecord {
 pub(crate) fn load_graph_stats(graph_id: GraphId) -> RouterGraphStats {
     let mut vertex = std::collections::BTreeSet::new();
     let mut edge = std::collections::BTreeSet::new();
+    let mut edge_indexes = std::collections::BTreeSet::new();
 
     ROUTER_INDEXED_PROPERTY_SET.with_borrow(|set| {
         for key in membership_range(graph_id, set) {
@@ -169,25 +175,53 @@ pub(crate) fn load_graph_stats(graph_id: GraphId) -> RouterGraphStats {
         }
     });
 
-    RouterGraphStats::from_property_ids(vertex, edge)
+    ROUTER_NAMED_INDEXES.with_borrow(|map| {
+        let start = NamedIndexKey::new(graph_id, IndexNameId::from_raw(0));
+        let end = NamedIndexKey::new(graph_id_upper_bound(graph_id), IndexNameId::from_raw(0));
+        for entry in map.range((Bound::Included(start), Bound::Excluded(end))) {
+            let def = entry.value();
+            if def.kind != IndexedPropertyKind::Edge {
+                continue;
+            }
+            let Some(tag) = tag_from_byte(def.edge_direction_tag) else {
+                continue;
+            };
+            edge_indexes.insert(EdgeIndexMembership {
+                property_id: def.property_id,
+                label_id: def.label_id,
+                direction: tag,
+            });
+        }
+    });
+
+    RouterGraphStats::from_catalog(vertex, edge, edge_indexes)
 }
 
 pub(crate) fn create_named_index(
     graph_id: GraphId,
     index_name_id: IndexNameId,
-    entry: IndexCatalogEntry,
+    entry: crate::planner_stats::IndexCatalogEntry,
     property_id: PropertyId,
     label_id: u16,
+    edge_direction_tag: u8,
     if_not_exists: bool,
-) -> Result<bool, RouterError> {
+) -> Result<(bool, bool), RouterError> {
     let named_key = NamedIndexKey::new(graph_id, index_name_id);
     let exists = ROUTER_NAMED_INDEXES.with_borrow(|map| map.contains_key(&named_key));
     if exists {
         if if_not_exists {
-            return Ok(false);
+            return Ok((false, false));
         }
         return Err(RouterError::Conflict(format!(
             "index already exists: {index_name_id}"
+        )));
+    }
+
+    if entry.kind == IndexedPropertyKind::Edge
+        && edge_index_identity_exists(graph_id, label_id, property_id, edge_direction_tag)
+    {
+        return Err(RouterError::Conflict(format!(
+            "edge index already exists for label {label_id}, property {property_id}, direction {edge_direction_tag}"
         )));
     }
 
@@ -195,6 +229,7 @@ pub(crate) fn create_named_index(
         kind: entry.kind,
         property_id,
         label_id,
+        edge_direction_tag,
     };
     ROUTER_NAMED_INDEXES.with_borrow_mut(|map| {
         map.insert(named_key, def);
@@ -210,14 +245,14 @@ pub(crate) fn create_named_index(
         }
     });
 
-    Ok(newly_registered)
+    Ok((true, newly_registered))
 }
 
 pub(crate) fn drop_named_index(
     graph_id: GraphId,
     index_name_id: IndexNameId,
     if_exists: bool,
-) -> Result<Option<(IndexedPropertyKind, PropertyId)>, RouterError> {
+) -> Result<Option<IndexDefRecord>, RouterError> {
     let named_key = NamedIndexKey::new(graph_id, index_name_id);
     let removed = ROUTER_NAMED_INDEXES.with_borrow_mut(|map| map.remove(&named_key));
     let Some(def) = removed else {
@@ -237,7 +272,7 @@ pub(crate) fn drop_named_index(
         });
     }
 
-    Ok(Some((def.kind, def.property_id)))
+    Ok(Some(def))
 }
 
 pub(crate) fn is_property_registered(
@@ -267,6 +302,26 @@ pub(crate) fn register_property_membership(
 
 fn graph_id_upper_bound(graph_id: GraphId) -> GraphId {
     GraphId::from_raw(graph_id.raw().saturating_add(1))
+}
+
+fn edge_index_identity_exists(
+    graph_id: GraphId,
+    label_id: u16,
+    property_id: PropertyId,
+    edge_direction_tag: u8,
+) -> bool {
+    ROUTER_NAMED_INDEXES.with_borrow(|map| {
+        let start = NamedIndexKey::new(graph_id, IndexNameId::from_raw(0));
+        let end = NamedIndexKey::new(graph_id_upper_bound(graph_id), IndexNameId::from_raw(0));
+        map.range((Bound::Included(start), Bound::Excluded(end)))
+            .any(|entry| {
+                let def = entry.value();
+                def.kind == IndexedPropertyKind::Edge
+                    && def.label_id == label_id
+                    && def.property_id == property_id
+                    && def.edge_direction_tag == edge_direction_tag
+            })
+    })
 }
 
 fn named_index_uses_property(
@@ -343,6 +398,7 @@ mod tests {
             kind: IndexedPropertyKind::Edge,
             property_id: PropertyId::from_raw(42),
             label_id: 3,
+            edge_direction_tag: EdgeIndexDirectionTag::AnyDirection as u8,
         };
         let decoded = IndexDefRecord::from_bytes(Cow::Owned(record.into_bytes()));
         assert_eq!(decoded, record);

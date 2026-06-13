@@ -140,6 +140,16 @@ pub struct RegisterIndexedPropertyArgs {
     pub property_id: u32,
 }
 
+/// Router → graph shard: register one edge index `(label, property, direction)` (ADR 0012).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
+)]
+pub struct RegisterIndexedEdgeIndexArgs {
+    pub label_id: u16,
+    pub property_id: u32,
+    pub direction_tag: u8,
+}
+
 /// One edge equality posting hit from graph-index (ADR 0009 §1).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,

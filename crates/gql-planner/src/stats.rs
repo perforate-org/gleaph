@@ -55,6 +55,17 @@ pub trait GraphStats {
         false
     }
 
+    /// Whether an edge property has an index for the given label and query direction (ADR 0012).
+    fn is_edge_property_indexed_for(
+        &self,
+        label: Option<&str>,
+        property: &str,
+        direction: gleaph_gql::types::EdgeDirection,
+    ) -> bool {
+        let _ = (label, direction);
+        self.is_edge_property_indexed(property)
+    }
+
     /// Whether an edge property has an index.
     fn is_edge_property_indexed(&self, property: &str) -> bool {
         let _ = property;

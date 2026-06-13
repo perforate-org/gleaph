@@ -4,6 +4,7 @@
 mod bench;
 
 mod canister;
+mod edge_index_direction;
 mod execution_path;
 pub mod facade;
 mod federation;

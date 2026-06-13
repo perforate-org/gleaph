@@ -1,8 +1,11 @@
-//! Router index catalog mutations and shard fan-out (ADR 0009 §4).
+//! Router index catalog mutations and shard fan-out (ADR 0009 §4, ADR 0012).
 
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::index::{IndexedPropertyKind, RegisterIndexedPropertyArgs};
+use gleaph_graph_kernel::index::{
+    IndexedPropertyKind, RegisterIndexedEdgeIndexArgs, RegisterIndexedPropertyArgs,
+};
 
+use crate::edge_index_direction::direction_tag;
 use crate::facade::stable::index_name_catalog::{intern_index_name, lookup_index_name_id};
 use crate::facade::stable::indexed_catalog::{
     create_named_index, drop_named_index, is_property_registered, load_graph_stats,
@@ -48,29 +51,46 @@ async fn create_index(
         IndexedPropertyKind::Vertex => store.lookup_vertex_label_id(&target.label)?.raw(),
         IndexedPropertyKind::Edge => store.lookup_edge_label_id(&target.label)?.raw(),
     };
+    let edge_direction_tag = match target.kind {
+        IndexedPropertyKind::Vertex => 0,
+        IndexedPropertyKind::Edge => direction_tag(
+            target
+                .edge_direction
+                .expect("edge CREATE INDEX requires direction"),
+        ) as u8,
+    };
 
     let entry = IndexCatalogEntry {
         kind: target.kind,
         vertex_label: (target.kind == IndexedPropertyKind::Vertex).then(|| target.label.clone()),
         edge_label: (target.kind == IndexedPropertyKind::Edge).then(|| target.label.clone()),
         property: target.property.clone(),
+        edge_direction: target.edge_direction,
     };
 
     let index_name_id = intern_index_name(graph_id, index_name)?;
-    let newly_registered = create_named_index(
+    let (index_inserted, property_newly_registered) = create_named_index(
         graph_id,
         index_name_id,
         entry,
         property_id,
         label_id,
+        edge_direction_tag,
         if_not_exists,
     )?;
 
-    if !newly_registered {
+    if !index_inserted {
         return Ok(());
     }
 
-    fan_out_register(graph_id, target.kind, property_id).await
+    if target.kind == IndexedPropertyKind::Edge {
+        fan_out_register_edge_index(graph_id, label_id, property_id, edge_direction_tag).await?;
+    }
+
+    if property_newly_registered {
+        fan_out_register(graph_id, target.kind, property_id).await?;
+    }
+    Ok(())
 }
 
 async fn drop_index(
@@ -86,12 +106,22 @@ async fn drop_index(
     };
     let removed = drop_named_index(graph_id, index_name_id, if_exists)?;
 
-    let Some((kind, property_id)) = removed else {
+    let Some(def) = removed else {
         return Ok(());
     };
 
-    if !is_property_registered(graph_id, kind, property_id) {
-        fan_out_unregister(graph_id, kind, property_id).await?;
+    if def.kind == IndexedPropertyKind::Edge {
+        fan_out_unregister_edge_index(
+            graph_id,
+            def.label_id,
+            def.property_id,
+            def.edge_direction_tag,
+        )
+        .await?;
+    }
+
+    if !is_property_registered(graph_id, def.kind, def.property_id) {
+        fan_out_unregister(graph_id, def.kind, def.property_id).await?;
     }
     Ok(())
 }
@@ -144,6 +174,52 @@ async fn fan_out_unregister(
     };
     for shard in shards {
         crate::graph_client::unregister_indexed_property(shard.graph_canister, args)
+            .await
+            .map_err(RouterError::Internal)?;
+    }
+    Ok(())
+}
+
+async fn fan_out_register_edge_index(
+    graph_id: GraphId,
+    label_id: u16,
+    property_id: gleaph_graph_kernel::entry::PropertyId,
+    direction_tag: u8,
+) -> Result<(), RouterError> {
+    let store = RouterStore::new();
+    let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
+        .ok_or_else(|| RouterError::NotFound(graph_id.to_string()))?;
+    let shards = store.list_shards_for_graph(&graph_name)?;
+    let args = RegisterIndexedEdgeIndexArgs {
+        label_id,
+        property_id: property_id.raw(),
+        direction_tag,
+    };
+    for shard in shards {
+        crate::graph_client::register_indexed_edge_index(shard.graph_canister, args)
+            .await
+            .map_err(RouterError::Internal)?;
+    }
+    Ok(())
+}
+
+async fn fan_out_unregister_edge_index(
+    graph_id: GraphId,
+    label_id: u16,
+    property_id: gleaph_graph_kernel::entry::PropertyId,
+    direction_tag: u8,
+) -> Result<(), RouterError> {
+    let store = RouterStore::new();
+    let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
+        .ok_or_else(|| RouterError::NotFound(graph_id.to_string()))?;
+    let shards = store.list_shards_for_graph(&graph_name)?;
+    let args = RegisterIndexedEdgeIndexArgs {
+        label_id,
+        property_id: property_id.raw(),
+        direction_tag,
+    };
+    for shard in shards {
+        crate::graph_client::unregister_indexed_edge_index(shard.graph_canister, args)
             .await
             .map_err(RouterError::Internal)?;
     }

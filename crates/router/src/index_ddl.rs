@@ -1,5 +1,6 @@
-//! Gleaph extension DDL: `CREATE INDEX` / `DROP INDEX` (ADR 0009 §4).
+//! Gleaph extension DDL: `CREATE INDEX` / `DROP INDEX` (ADR 0009 §4, ADR 0012).
 
+use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::index::IndexedPropertyKind;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -20,6 +21,7 @@ pub(crate) struct IndexTarget {
     pub kind: IndexedPropertyKind,
     pub label: String,
     pub property: String,
+    pub edge_direction: Option<EdgeDirection>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
@@ -53,7 +55,7 @@ fn parse(query: &str) -> Result<IndexDdlStatement, IndexDdlParseError> {
             cur.skip_ws();
         }
         cur.expect_ascii_ci("FOR")?;
-        let (kind, label) = parse_for_pattern(&mut cur)?;
+        let (kind, label, edge_direction) = parse_for_pattern(&mut cur)?;
         cur.skip_ws();
         cur.expect_ascii_ci("ON")?;
         let property = parse_on_property(&mut cur)?;
@@ -70,6 +72,7 @@ fn parse(query: &str) -> Result<IndexDdlStatement, IndexDdlParseError> {
                 kind,
                 label,
                 property,
+                edge_direction,
             },
         })
     } else if cur.consume_ascii_ci("DROP") {
@@ -96,32 +99,86 @@ fn parse(query: &str) -> Result<IndexDdlStatement, IndexDdlParseError> {
 
 fn parse_for_pattern(
     cur: &mut Cursor<'_>,
-) -> Result<(IndexedPropertyKind, String), IndexDdlParseError> {
+) -> Result<(IndexedPropertyKind, String, Option<EdgeDirection>), IndexDdlParseError> {
     cur.expect('(')?;
     cur.skip_ws();
     if cur.peek() == Some(')') {
         cur.expect(')')?;
         cur.skip_ws();
-        cur.expect('-')?;
-        cur.expect('[')?;
-        let _var = cur.parse_ident()?;
-        cur.expect(':')?;
-        let label = cur.parse_ident()?;
-        cur.expect(']')?;
+        let (label, direction) = parse_for_edge_pattern(cur)?;
         cur.skip_ws();
-        cur.expect('-')?;
         cur.expect('(')?;
         cur.skip_ws();
         cur.expect(')')?;
-        Ok((IndexedPropertyKind::Edge, label))
+        Ok((IndexedPropertyKind::Edge, label, Some(direction)))
     } else {
         let _var = cur.parse_ident()?;
         cur.expect(':')?;
         let label = cur.parse_ident()?;
         cur.skip_ws();
         cur.expect(')')?;
-        Ok((IndexedPropertyKind::Vertex, label))
+        Ok((IndexedPropertyKind::Vertex, label, None))
     }
+}
+
+fn parse_for_edge_pattern(
+    cur: &mut Cursor<'_>,
+) -> Result<(String, EdgeDirection), IndexDdlParseError> {
+    if cur.try_consume('<') {
+        if cur.try_consume('~') {
+            cur.expect('[')?;
+            let label = parse_edge_pattern_filler(cur)?;
+            cur.skip_ws();
+            cur.expect(']')?;
+            cur.skip_ws();
+            cur.expect('~')?;
+            return Ok((label, EdgeDirection::LeftOrUndirected));
+        }
+        cur.expect('-')?;
+        cur.expect('[')?;
+        let label = parse_edge_pattern_filler(cur)?;
+        cur.skip_ws();
+        cur.expect(']')?;
+        cur.skip_ws();
+        if cur.try_consume('-') {
+            if cur.try_consume('>') {
+                return Ok((label, EdgeDirection::LeftOrRight));
+            }
+            return Ok((label, EdgeDirection::PointingLeft));
+        }
+        return Err(IndexDdlParseError::Expected("]- or ]->".into()));
+    }
+    if cur.try_consume('~') {
+        cur.expect('[')?;
+        let label = parse_edge_pattern_filler(cur)?;
+        cur.skip_ws();
+        cur.expect(']')?;
+        cur.skip_ws();
+        cur.expect('~')?;
+        if cur.try_consume('>') {
+            return Ok((label, EdgeDirection::UndirectedOrRight));
+        }
+        return Ok((label, EdgeDirection::Undirected));
+    }
+    cur.expect('-')?;
+    cur.expect('[')?;
+    let label = parse_edge_pattern_filler(cur)?;
+    cur.skip_ws();
+    cur.expect(']')?;
+    cur.skip_ws();
+    if cur.try_consume('-') {
+        if cur.try_consume('>') {
+            return Ok((label, EdgeDirection::PointingRight));
+        }
+        return Ok((label, EdgeDirection::AnyDirection));
+    }
+    Err(IndexDdlParseError::Expected("edge closing token".into()))
+}
+
+fn parse_edge_pattern_filler(cur: &mut Cursor<'_>) -> Result<String, IndexDdlParseError> {
+    let _var = cur.parse_ident()?;
+    cur.expect(':')?;
+    cur.parse_ident()
 }
 
 fn parse_on_property(cur: &mut Cursor<'_>) -> Result<String, IndexDdlParseError> {
@@ -285,6 +342,7 @@ mod tests {
                     kind: IndexedPropertyKind::Vertex,
                     label: "Person".into(),
                     property: "age".into(),
+                    edge_direction: None,
                 },
             }
         );
@@ -301,6 +359,24 @@ mod tests {
                     kind: IndexedPropertyKind::Edge,
                     label: "KNOWS".into(),
                     property: "weight".into(),
+                    edge_direction: Some(EdgeDirection::AnyDirection),
+                },
+            }
+        );
+    }
+
+    #[test]
+    fn create_edge_index_pointing_right() {
+        assert_eq!(
+            parse_ok("CREATE INDEX w FOR ()-[e:KNOWS]->() ON (e.weight)"),
+            IndexDdlStatement::Create {
+                index_name: "w".into(),
+                if_not_exists: false,
+                target: IndexTarget {
+                    kind: IndexedPropertyKind::Edge,
+                    label: "KNOWS".into(),
+                    property: "weight".into(),
+                    edge_direction: Some(EdgeDirection::PointingRight),
                 },
             }
         );

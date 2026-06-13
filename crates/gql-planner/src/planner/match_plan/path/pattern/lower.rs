@@ -312,8 +312,11 @@ fn edge_has_indexed_scannable_equality(
         return false;
     };
     for p in &edge.properties {
-        if stats.is_edge_property_indexed(&p.name)
-            && anchor::scan_value_from_expr(&p.value).is_some()
+        if stats.is_edge_property_indexed_for(
+            extract_simple_label(&edge.label).as_deref(),
+            &p.name,
+            edge.direction,
+        ) && anchor::scan_value_from_expr(&p.value).is_some()
         {
             return true;
         }
@@ -321,7 +324,11 @@ fn edge_has_indexed_scannable_equality(
     for c in where_conjuncts {
         if let Some((v, prop, _)) = parse_edge_var_property_equality(c)
             && v == edge_var
-            && stats.is_edge_property_indexed(&prop)
+            && stats.is_edge_property_indexed_for(
+                extract_simple_label(&edge.label).as_deref(),
+                &prop,
+                edge.direction,
+            )
         {
             return true;
         }
@@ -330,7 +337,11 @@ fn edge_has_indexed_scannable_equality(
         for c in flatten_conjunction(w) {
             if let Some((v, prop, _)) = parse_edge_var_property_equality(&c)
                 && v == edge_var
-                && stats.is_edge_property_indexed(&prop)
+                && stats.is_edge_property_indexed_for(
+                    extract_simple_label(&edge.label).as_deref(),
+                    &prop,
+                    edge.direction,
+                )
             {
                 return true;
             }

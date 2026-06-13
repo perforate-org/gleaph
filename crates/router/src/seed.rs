@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use candid::Encode;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
-use gleaph_gql::types::LabelExpr;
+use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::value_to_index_key_bytes;
 use gleaph_gql_planner::GraphStats;
 use gleaph_gql_planner::PhysicalPlan;
@@ -19,6 +19,7 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{EdgePostingHit, IndexEqualSpec, PostingHit};
 use gleaph_graph_kernel::plan_exec::{LocalEdgePosting, SeedBindingEntry, SeedBindingsWire};
 
+use crate::edge_index_direction::wire_labels_for_query;
 use crate::facade::store::RouterStore;
 use crate::planner_stats::RouterGraphStats;
 use crate::state::RouterError;
@@ -134,7 +135,8 @@ pub struct EdgeSeedProbe {
     pub property: String,
     pub property_id: u32,
     pub payload_bytes: Vec<u8>,
-    pub label_id: Option<u16>,
+    /// Wire label ids to scan in graph-index (ADR 0012); empty means unfiltered.
+    pub wire_label_ids: Vec<u16>,
 }
 
 impl SeedProbe {
@@ -172,7 +174,9 @@ pub(crate) fn index_anchor_from_prefix_ops(
                 value,
                 ..
             },
-            PlanOp::EdgeBindEndpoints { label, .. },
+            PlanOp::EdgeBindEndpoints {
+                label, direction, ..
+            },
         ] => Ok(Some(edge_equal_anchor(
             store,
             parameters,
@@ -180,6 +184,7 @@ pub(crate) fn index_anchor_from_prefix_ops(
             property.as_ref(),
             value,
             label.as_ref().map(|l| l.as_ref()),
+            Some(*direction),
         )?)),
         _ => Ok(None),
     }
@@ -194,16 +199,6 @@ fn resolve_vertex_label_id(store: &RouterStore, label: &str) -> Result<u32, Rout
     ))
 }
 
-fn resolve_edge_label_id(store: &RouterStore, label: &str) -> Result<u16, RouterError> {
-    let raw = store
-        .lookup_edge_label_id(label)
-        .map_err(|_| RouterError::NotFound(format!("edge label {label}")))?
-        .raw();
-    u16::try_from(u32::from(raw)).map_err(|_| {
-        RouterError::InvalidArgument(format!("edge label id does not fit u16: {label}"))
-    })
-}
-
 fn edge_equal_anchor(
     store: &RouterStore,
     params: &BTreeMap<String, Value>,
@@ -211,6 +206,7 @@ fn edge_equal_anchor(
     property: impl AsRef<str>,
     value: &ScanValue,
     edge_label: Option<&str>,
+    query_direction: Option<EdgeDirection>,
 ) -> Result<IndexAnchor, RouterError> {
     let payload_bytes = resolve_scan_value(value, params)
         .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
@@ -218,16 +214,21 @@ fn edge_equal_anchor(
         .lookup_property_id(property.as_ref())
         .map_err(|_| RouterError::NotFound(format!("property {}", property.as_ref())))?
         .raw();
-    let label_id = match edge_label {
-        Some(label) => Some(resolve_edge_label_id(store, label)?),
-        None => None,
+    let wire_label_ids = match (edge_label, query_direction) {
+        (Some(label), Some(direction)) => {
+            let catalog = store
+                .lookup_edge_label_id(label)
+                .map_err(|_| RouterError::NotFound(format!("edge label {label}")))?;
+            wire_labels_for_query(catalog, direction)
+        }
+        _ => Vec::new(),
     };
     Ok(IndexAnchor::EdgeEqual(EdgeSeedProbe {
         variable: variable.as_ref().to_string(),
         property: property.as_ref().to_string(),
         property_id,
         payload_bytes,
-        label_id,
+        wire_label_ids,
     }))
 }
 
@@ -325,8 +326,10 @@ pub(crate) fn parse_seed_anchor_prefix(
                 record_bound_var(&mut bound_var, variable)?;
                 let edge_label = ops.get(i + 1).and_then(|next| match next {
                     PlanOp::EdgeBindEndpoints {
-                        label: Some(label), ..
-                    } => Some(label.as_ref()),
+                        label: Some(label),
+                        direction,
+                        ..
+                    } => Some((label.as_ref(), *direction)),
                     _ => None,
                 });
                 push_unique_anchor(
@@ -337,7 +340,8 @@ pub(crate) fn parse_seed_anchor_prefix(
                         variable,
                         property.as_ref(),
                         value,
-                        edge_label,
+                        edge_label.map(|(label, _)| label),
+                        edge_label.map(|(_, direction)| direction),
                     )?,
                 );
                 break;
@@ -659,6 +663,7 @@ fn extract_from_op(
             variable,
             property.as_ref(),
             value,
+            None,
             None,
         )?)),
         PlanOp::HashJoin { left, right, .. } => {
@@ -1070,19 +1075,19 @@ mod tests {
             panic!("expected EdgeEqual anchor");
         };
         assert_eq!(probe.variable, "e");
-        assert_eq!(probe.label_id, Some(1));
+        assert_eq!(probe.wire_label_ids, vec![0x8001]);
 
         let hits = vec![
             EdgePostingHit {
                 shard_id: ShardId::new(0),
                 owner_vertex_id: 3,
-                label_id: 1,
+                label_id: 0x8001,
                 slot_index: 2,
             },
             EdgePostingHit {
                 shard_id: ShardId::new(1),
                 owner_vertex_id: 9,
-                label_id: 1,
+                label_id: 0x8001,
                 slot_index: 0,
             },
         ];

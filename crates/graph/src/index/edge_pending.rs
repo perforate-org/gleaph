@@ -73,7 +73,7 @@ pub(crate) fn push_edge_index_op(
         } => PendingEdgePostingOp::Insert {
             property_id: property_id.raw(),
             payload_bytes,
-            label_id: crate::index::edge_lookup::catalog_label_id_for_index_posting(label_id),
+            label_id,
             owner_vertex_id: owner_raw,
             slot_index,
         },
@@ -83,7 +83,7 @@ pub(crate) fn push_edge_index_op(
         } => PendingEdgePostingOp::Remove {
             property_id: property_id.raw(),
             payload_bytes,
-            label_id: crate::index::edge_lookup::catalog_label_id_for_index_posting(label_id),
+            label_id,
             owner_vertex_id: owner_raw,
             slot_index,
         },

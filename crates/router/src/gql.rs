@@ -94,6 +94,38 @@ fn intersect_posting_hits(mut hit_sets: Vec<Vec<PostingHit>>) -> Vec<PostingHit>
         .collect()
 }
 
+async fn lookup_edge_equal_wires<I: IndexLookup + ?Sized>(
+    index: &I,
+    property_id: u32,
+    payload_bytes: Vec<u8>,
+    wire_label_ids: &[u16],
+) -> Result<Vec<gleaph_graph_kernel::index::EdgePostingHit>, String> {
+    if wire_label_ids.is_empty() {
+        return index
+            .lookup_edge_equal(property_id, payload_bytes, None)
+            .await;
+    }
+    let mut merged = Vec::new();
+    let mut seen = std::collections::BTreeSet::new();
+    for &wire in wire_label_ids {
+        for hit in index
+            .lookup_edge_equal(property_id, payload_bytes.clone(), Some(wire))
+            .await?
+        {
+            let key = (
+                hit.shard_id,
+                hit.owner_vertex_id,
+                hit.label_id,
+                hit.slot_index,
+            );
+            if seen.insert(key) {
+                merged.push(hit);
+            }
+        }
+    }
+    Ok(merged)
+}
+
 async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
     index: &I,
     anchor: &IndexAnchor,
@@ -112,11 +144,10 @@ async fn lookup_anchor_hits<I: IndexLookup + ?Sized>(
         IndexAnchor::EdgeEqual(crate::seed::EdgeSeedProbe {
             property_id,
             payload_bytes,
-            label_id,
+            wire_label_ids,
             ..
         }) => Ok(SeedHits::Edges(
-            index
-                .lookup_edge_equal(*property_id, payload_bytes.clone(), *label_id)
+            lookup_edge_equal_wires(index, *property_id, payload_bytes.clone(), wire_label_ids)
                 .await?,
         )),
         IndexAnchor::Intersection { specs, .. } => {

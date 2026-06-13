@@ -412,9 +412,7 @@ fn seed_initial_rows(
         for posting in &entry.local_edge_postings {
             let handle = EdgeHandle {
                 owner_vertex_id: VertexId::from(posting.owner_vertex_id),
-                label_id: LaraLabelId::from_raw(
-                    crate::index::edge_lookup::wire_label_id_for_local_edge(posting.label_id),
-                ),
+                label_id: LaraLabelId::from_raw(posting.label_id),
                 slot_index: posting.slot_index,
             };
             let Some(edge) = store

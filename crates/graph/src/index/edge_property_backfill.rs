@@ -26,7 +26,8 @@ pub async fn backfill_edge_property_postings(
     let mut postings_synced = 0u32;
 
     for (key, value) in batch {
-        if !crate::index::registry::is_edge_property_indexed(key.property_id()) {
+        if !crate::index::registry::should_maintain_edge_posting(key.label_id(), key.property_id())
+        {
             continue;
         }
         let Some(payload_bytes) = sortable_index_key(&value) else {
@@ -38,7 +39,7 @@ pub async fn backfill_edge_property_postings(
                 shard_id,
                 key.property_id().raw(),
                 payload_bytes,
-                crate::index::edge_lookup::catalog_label_id_for_index_posting(key.label_id()),
+                key.label_id(),
                 owner_raw,
                 key.slot_index(),
             )

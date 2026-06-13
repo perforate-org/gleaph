@@ -1,7 +1,7 @@
 use gleaph_gql::ast::*;
 
 use super::super::result::flatten_conjunction;
-use crate::anchor::{self};
+use crate::anchor::{self, extract_simple_label};
 use crate::plan::*;
 use crate::stats::GraphStats;
 
@@ -165,8 +165,11 @@ pub(super) fn plan_edge_filter_fusion(
     };
 
     for p in &edge.properties {
-        if stats.is_edge_property_indexed(&p.name)
-            && let Some(sv) = anchor::scan_value_from_expr(&p.value)
+        if stats.is_edge_property_indexed_for(
+            extract_simple_label(&edge.label).as_deref(),
+            &p.name,
+            edge.direction,
+        ) && let Some(sv) = anchor::scan_value_from_expr(&p.value)
         {
             out.indexed_equality = Some((p.name.clone().into(), sv));
             out.skip_inline_prop = Some(p.name.clone());
@@ -176,9 +179,13 @@ pub(super) fn plan_edge_filter_fusion(
         }
     }
 
-    if let Some((idx, prop, sv)) =
-        find_first_indexed_edge_eq_in_conjunctions(where_conjuncts, edge_var, stats)
-    {
+    if let Some((idx, prop, sv)) = find_first_indexed_edge_eq_in_conjunctions(
+        where_conjuncts,
+        edge_var,
+        extract_simple_label(&edge.label).as_deref(),
+        edge.direction,
+        stats,
+    ) {
         where_conjuncts.remove(idx);
         out.indexed_equality = Some((prop.into(), sv));
         return out;
@@ -186,9 +193,13 @@ pub(super) fn plan_edge_filter_fusion(
 
     if let Some(where_clause) = edge.where_clause.as_ref() {
         let mut conj = flatten_conjunction(where_clause);
-        if let Some((idx, prop, sv)) =
-            find_first_indexed_edge_eq_in_conjunctions(&conj, edge_var, stats)
-        {
+        if let Some((idx, prop, sv)) = find_first_indexed_edge_eq_in_conjunctions(
+            &conj,
+            edge_var,
+            extract_simple_label(&edge.label).as_deref(),
+            edge.direction,
+            stats,
+        ) {
             conj.remove(idx);
             out.indexed_equality = Some((prop.into(), sv));
             out.edge_where_override = Some(conj);
@@ -364,12 +375,14 @@ fn gleaph_weight_edge_var(expr: &Expr) -> Option<String> {
 fn find_first_indexed_edge_eq_in_conjunctions(
     conjuncts: &[Expr],
     edge_var: &str,
+    edge_label: Option<&str>,
+    edge_direction: gleaph_gql::types::EdgeDirection,
     stats: &dyn GraphStats,
 ) -> Option<(usize, String, ScanValue)> {
     for (i, c) in conjuncts.iter().enumerate() {
         if let Some((v, p, sv)) = parse_edge_var_property_equality(c)
             && v == edge_var
-            && stats.is_edge_property_indexed(&p)
+            && stats.is_edge_property_indexed_for(edge_label, &p, edge_direction)
         {
             return Some((i, p, sv));
         }
