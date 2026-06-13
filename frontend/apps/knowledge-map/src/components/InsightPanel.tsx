@@ -20,7 +20,7 @@ type InsightPanelProps = {
 
 export function InsightPanel(props: InsightPanelProps) {
   return (
-    <aside class="flex flex-col gap-3 rounded-md border border-slate-200/80 bg-white/78 p-3 shadow-[0_18px_50px_rgba(15,23,42,0.06)] backdrop-blur">
+    <aside class="flex flex-col gap-3 rounded-md border border-slate-200/80 bg-white/92 p-3 shadow-[0_18px_50px_rgba(15,23,42,0.06)]">
       <QueryLatencyPanel
         queryRun={props.queryRun}
         queryText={props.queryText}

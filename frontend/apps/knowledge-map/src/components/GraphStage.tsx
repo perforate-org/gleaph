@@ -91,13 +91,6 @@ export function GraphStage(props: GraphStageProps) {
             preserveAspectRatio="xMidYMid meet"
           >
             <defs>
-              <filter id="knowledge-map-glow" x="-50%" y="-50%" width="200%" height="200%">
-                <feGaussianBlur stdDeviation="1.6" result="blur" />
-                <feMerge>
-                  <feMergeNode in="blur" />
-                  <feMergeNode in="SourceGraphic" />
-                </feMerge>
-              </filter>
               <marker
                 id="knowledge-map-arrow"
                 viewBox="0 0 10 10"
@@ -167,7 +160,7 @@ export function GraphStage(props: GraphStageProps) {
         )}
       </Show>
       <QueryLoadingOverlay queryRun={props.queryRun} />
-      <div class="pointer-events-none absolute left-4 top-4 max-w-[280px] rounded-md border border-slate-200 bg-white/74 px-3 py-2 shadow-[0_12px_34px_rgba(15,23,42,0.08)] backdrop-blur">
+      <div class="pointer-events-none absolute left-4 top-4 max-w-[280px] rounded-md border border-slate-200 bg-white/88 px-3 py-2 shadow-[0_12px_34px_rgba(15,23,42,0.08)]">
         <p class="text-xs font-semibold uppercase tracking-[0.16em] text-sky-700">
           Relationship path
         </p>
@@ -205,6 +198,7 @@ function GraphEdge(props: GraphEdgeProps) {
     <Show when={source() && target()}>
       <g>
         <line
+          class="knowledge-map-edge"
           x1={source()?.x}
           y1={source()?.y}
           x2={target()?.x}
@@ -213,7 +207,6 @@ function GraphEdge(props: GraphEdgeProps) {
           stroke-width={props.active ? 0.62 : props.visited ? 0.38 : props.contextual ? 0.22 : 0.16}
           stroke-opacity={props.active ? 0.92 : props.visited ? 0.72 : props.contextual ? 0.34 : 0.18}
           marker-end={props.active || props.visited ? "url(#knowledge-map-arrow)" : undefined}
-          filter={props.active ? "url(#knowledge-map-glow)" : undefined}
         />
         <Show when={props.active || props.visited}>
           <text
@@ -246,16 +239,16 @@ function ActiveTrail(props: ActiveTrailProps) {
   return (
     <Show when={props.edge && source() && target() && props.playbackStatus !== "complete"}>
       <line
+        class="knowledge-map-trail"
         x1={source()?.x}
         y1={source()?.y}
         x2={target()?.x}
         y2={target()?.y}
-        stroke="#2563eb"
-        stroke-width="1.08"
+        stroke="#38bdf8"
+        stroke-width="0.72"
         stroke-linecap="round"
-        stroke-dasharray="1.2 6"
-        filter="url(#knowledge-map-glow)"
-        class="animate-[dashTravel_1.2s_linear_infinite]"
+        stroke-dasharray="1.2 4.8"
+        stroke-opacity="0.92"
       />
     </Show>
   );
@@ -298,22 +291,22 @@ function GraphNode(props: GraphNodeProps) {
     <Show when={props.position}>
       {(position) => (
         <g
+          class="knowledge-map-node-group"
           transform={`translate(${position().x} ${position().y})`}
           opacity={props.active || props.visited || props.result ? 1 : props.contextual ? 0.72 : 0.38}
         >
           <circle
-            r={radius() + (props.active ? 2.4 : props.result ? 1.6 : 0.9)}
+            class="knowledge-map-node-halo"
+            r={radius() + (props.active ? 1.8 : props.result ? 1.2 : 0.6)}
             fill={color()}
-            opacity={props.active ? 0.22 : props.result ? 0.18 : props.visited ? 0.11 : 0.05}
-            filter={props.active || props.result ? "url(#knowledge-map-glow)" : undefined}
-            class={props.active ? "animate-pulse" : undefined}
+            opacity={props.active ? 0.18 : props.result ? 0.14 : props.visited ? 0.09 : 0.04}
           />
           <circle
+            class="knowledge-map-node-core"
             r={radius()}
             fill={color()}
             stroke={props.active ? "#0f172a" : "rgba(255,255,255,0.92)"}
             stroke-width={props.active ? 0.55 : 0.25}
-            filter={props.active ? "url(#knowledge-map-glow)" : undefined}
           />
           <text
             y={radius() + 4.2}
@@ -380,7 +373,7 @@ function QueryLoadingOverlay(props: QueryLoadingOverlayProps) {
 
   return (
     <Show when={props.queryRun.status === "loading" || props.queryRun.status === "error"}>
-      <div class="absolute inset-0 z-10 flex items-center justify-center bg-white/72 backdrop-blur-sm">
+      <div class="absolute inset-0 z-10 flex items-center justify-center bg-white/45">
         <Show
           when={props.queryRun.status === "loading"}
           fallback={
@@ -411,8 +404,7 @@ function QueryLoadingOverlay(props: QueryLoadingOverlayProps) {
               {formatDurationMs(liveElapsedMs())}
             </p>
             <p class="mt-2 text-sm leading-6 text-slate-600">
-              The graph stays empty until the real round trip completes, so you can feel
-              query latency before the path animation starts.
+              Query round trip in progress. The graph stays visible underneath.
             </p>
           </div>
         </Show>

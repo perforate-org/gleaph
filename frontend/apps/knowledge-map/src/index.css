@@ -8,6 +8,35 @@
   }
 }
 
+@layer components {
+  .knowledge-map-edge {
+    transition:
+      stroke 160ms ease,
+      stroke-opacity 160ms ease,
+      stroke-width 160ms ease;
+  }
+
+  .knowledge-map-node-group {
+    transition: opacity 180ms ease;
+  }
+
+  .knowledge-map-node-core {
+    transition:
+      r 180ms ease,
+      stroke-width 180ms ease;
+  }
+
+  .knowledge-map-node-halo {
+    transition:
+      r 180ms ease,
+      opacity 180ms ease;
+  }
+
+  .knowledge-map-trail {
+    animation: dashTravel 0.55s linear infinite;
+  }
+}
+
 @layer base {
   * {
     box-sizing: border-box;

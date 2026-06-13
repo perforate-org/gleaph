@@ -4,21 +4,27 @@ import {
   createKnowledgeMapClient,
   defaultScenarioId,
 } from "~/api/knowledgeMapClient";
+import { adaptRouterKnowledgeMapResponse } from "~/api/viewModelAdapter";
 import { type QueryRunState } from "~/api/queryTiming";
+import { buildScenarioResponse } from "~/data/knowledgeMapGraph";
 import { DemoHeader } from "~/components/DemoHeader";
 import { GraphStage } from "~/components/GraphStage";
 import { InsightPanel } from "~/components/InsightPanel";
 import { QuestionPanel } from "~/components/QuestionPanel";
 import type { KnowledgeMapViewModel, PlaybackStatus } from "~/types";
 
-const STEP_MS = 1400;
+const STEP_MS = 520;
+const PLAYBACK_START_DELAY_MS = 120;
+
+const initialViewModel = (): KnowledgeMapViewModel =>
+  adaptRouterKnowledgeMapResponse(buildScenarioResponse("alice-fan-out"));
 const MAX_RECENT_TIMINGS = 8;
 
 export function KnowledgeMapDemo() {
   const client = createKnowledgeMapClient();
   const [scenarios] = createResource(() => client.listScenarios());
   const [selectedScenarioId, setSelectedScenarioId] = createSignal(defaultScenarioId());
-  const [viewModel, setViewModel] = createSignal<KnowledgeMapViewModel | undefined>();
+  const [viewModel, setViewModel] = createSignal<KnowledgeMapViewModel | undefined>(initialViewModel());
   const [queryRun, setQueryRun] = createSignal<QueryRunState>({ status: "idle" });
   const [queryText, setQueryText] = createSignal<string | undefined>();
   const [recentTimingsMs, setRecentTimingsMs] = createSignal<number[]>([]);
@@ -37,7 +43,6 @@ export function KnowledgeMapDemo() {
       startedAt,
       source: liveSource ? "live" : "preview",
     });
-    setViewModel(undefined);
     setQueryText(undefined);
     setActiveStepIndex(0);
     setPlaybackStatus("idle");
@@ -54,7 +59,7 @@ export function KnowledgeMapDemo() {
       setRecentTimingsMs((current) =>
         [result.timing.durationMs, ...current].slice(0, MAX_RECENT_TIMINGS),
       );
-      setPlaybackStatus("playing");
+      window.setTimeout(() => setPlaybackStatus("playing"), PLAYBACK_START_DELAY_MS);
     } catch (error) {
       const finishedAt = performance.now();
       setQueryRun({

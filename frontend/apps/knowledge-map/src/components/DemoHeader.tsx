@@ -16,7 +16,7 @@ type DemoHeaderProps = {
 
 export function DemoHeader(props: DemoHeaderProps) {
   return (
-    <header class="flex flex-col gap-3 rounded-md border border-slate-200/80 bg-white/80 px-4 py-3 shadow-[0_24px_70px_rgba(15,23,42,0.08)] backdrop-blur md:flex-row md:items-center md:justify-between">
+    <header class="flex flex-col gap-3 rounded-md border border-slate-200/80 bg-white/92 px-4 py-3 shadow-[0_24px_70px_rgba(15,23,42,0.08)] md:flex-row md:items-center md:justify-between">
       <div>
         <p class="text-xs font-semibold uppercase tracking-[0.18em] text-sky-700">
           Gleaph demo
