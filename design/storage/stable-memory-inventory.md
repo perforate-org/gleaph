@@ -168,6 +168,10 @@ Repacked 2026-06-13 (ADR 0011 graph/index name catalogs). Prior repack 2026-06-1
 
 Router **30 regions** total (0–29).
 
+**Planned ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)):** regions **30–31** for
+`gleaph-graph-catalog` — `ROUTER_GRAPH_TYPE_DEFINITIONS` (type name → definition),
+`ROUTER_GRAPH_SCHEMA_BINDINGS` (**`GraphId` → schema binding**).
+
 ### Router ephemeral
 
 | Symbol | Location | Role | Reopen behavior |
