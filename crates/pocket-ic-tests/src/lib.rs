@@ -602,6 +602,26 @@ pub fn create_edge_property_index(
     );
 }
 
+/// Register a directed-only edge property index (`FOR ()-[e:L]->()`, ADR 0012 F6).
+pub fn create_directed_edge_property_index(
+    env: &FederationEnv,
+    index_name: &str,
+    edge_label: &str,
+    property: &str,
+    client_mutation_key: &str,
+) {
+    admin_intern_edge_label(env, edge_label);
+    let _ = admin_intern_property(env, property);
+    let ddl = format!(
+        "CREATE INDEX {index_name} IF NOT EXISTS FOR ()-[e:{edge_label}]->() ON (e.{property})"
+    );
+    let row_count = gql_execute_idempotent_as_admin(env, &ddl, client_mutation_key);
+    assert_eq!(
+        row_count, 0,
+        "CREATE INDEX DDL should return row_count 0, got {row_count}"
+    );
+}
+
 /// Register a vertex property index via `CREATE INDEX` (ADR 0009 phase E).
 pub fn create_vertex_property_index(
     env: &FederationEnv,

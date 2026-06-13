@@ -9,16 +9,18 @@ use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, Vert
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_pocket_ic_tests::{
     DEST_SHARD, SOURCE_SHARD, admin_intern_edge_label, admin_intern_property,
-    create_edge_property_index, create_vertex_property_index, drop_vertex_property_index,
-    e2e_insert_directed_edge_with_property, e2e_insert_vertex, e2e_insert_vertex_with_property,
-    gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin, gql_query_as_admin_expect_err,
-    install_federation, install_single_shard_federation, resolve_placement,
+    create_directed_edge_property_index, create_edge_property_index, create_vertex_property_index,
+    drop_vertex_property_index, e2e_insert_directed_edge_with_property, e2e_insert_vertex,
+    e2e_insert_vertex_with_property, gql_execute_idempotent_as_admin_expect_err,
+    gql_query_as_admin, gql_query_as_admin_expect_err, install_federation,
+    install_single_shard_federation, resolve_placement,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
 const INDEX_AGE_NAME: &str = "pocket_ic_vertex_age";
 const INDEX_EDGE_LABEL: &str = "KNOWS";
 const INDEX_WEIGHT_NAME: &str = "pocket_ic_edge_weight";
+const INDEX_WEIGHT_RIGHT_NAME: &str = "pocket_ic_edge_weight_right";
 const EDGE_WEIGHT_QUERY: &str = "MATCH ()-[e:KNOWS {weight: 5}]->(b) RETURN e, b";
 
 #[test]
@@ -243,6 +245,75 @@ fn standalone_gql_query_edge_index_seeded_property_eq() {
     let result = gql_query_as_admin(&env, EDGE_WEIGHT_QUERY);
 
     assert_eq!(result.row_count, 1);
+}
+
+#[test]
+fn standalone_gql_query_edge_index_pointing_right_ddl() {
+    let env = install_single_shard_federation();
+    let weight = admin_intern_property(&env, "weight");
+    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
+    create_directed_edge_property_index(
+        &env,
+        INDEX_WEIGHT_RIGHT_NAME,
+        INDEX_EDGE_LABEL,
+        "weight",
+        "standalone_gql_query_edge_index_pointing_right_ddl",
+    );
+    let source = e2e_insert_vertex(&env, env.graph_source);
+    let target = e2e_insert_vertex(&env, env.graph_source);
+    e2e_insert_directed_edge_with_property(
+        &env,
+        env.graph_source,
+        source.local_vertex_id,
+        target.local_vertex_id,
+        knows.raw(),
+        weight.raw(),
+        5,
+    );
+
+    let result = gql_query_as_admin(&env, EDGE_WEIGHT_QUERY);
+
+    assert_eq!(result.row_count, 1);
+}
+
+#[test]
+fn federated_gql_query_edge_index_pointing_right_ddl() {
+    let env = install_federation();
+    let weight = admin_intern_property(&env, "weight");
+    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
+    create_directed_edge_property_index(
+        &env,
+        INDEX_WEIGHT_RIGHT_NAME,
+        INDEX_EDGE_LABEL,
+        "weight",
+        "federated_gql_query_edge_index_pointing_right_ddl",
+    );
+    let source_a = e2e_insert_vertex(&env, env.graph_source);
+    let target_a = e2e_insert_vertex(&env, env.graph_source);
+    e2e_insert_directed_edge_with_property(
+        &env,
+        env.graph_source,
+        source_a.local_vertex_id,
+        target_a.local_vertex_id,
+        knows.raw(),
+        weight.raw(),
+        5,
+    );
+    let source_b = e2e_insert_vertex(&env, env.graph_dest);
+    let target_b = e2e_insert_vertex(&env, env.graph_dest);
+    e2e_insert_directed_edge_with_property(
+        &env,
+        env.graph_dest,
+        source_b.local_vertex_id,
+        target_b.local_vertex_id,
+        knows.raw(),
+        weight.raw(),
+        5,
+    );
+
+    let result = gql_query_as_admin(&env, EDGE_WEIGHT_QUERY);
+
+    assert_eq!(result.row_count, 2);
 }
 
 #[test]
