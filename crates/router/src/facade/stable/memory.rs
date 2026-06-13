@@ -4,9 +4,9 @@
 use super::edge_payload_profiles::EdgePayloadProfileStore;
 use candid::Principal;
 use gleaph_graph_kernel::bidirectional_catalog::{
-    BidirectionalCatalog, DenseEdgeLabelPolicy, DenseMaxPlusOnePolicy,
+    BidirectionalCatalog, DenseEdgeLabelPolicy, DenseMaxPlusOnePolicy, SparseFromOnePolicy,
 };
-use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, GraphTypeId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::{
     BackfillShardState, GlobalVertexId, ShardId, ShardRegistryEntry, VertexPlacement,
 };
@@ -58,6 +58,8 @@ const ROUTER_SHARDS_BY_GRAPH_ID: MemoryId = MemoryId::new(28);
 const ROUTER_PREPARED_PLANS: MemoryId = MemoryId::new(29);
 const ROUTER_GRAPH_TYPE_DEFINITIONS: MemoryId = MemoryId::new(30);
 const ROUTER_GRAPH_SCHEMA_BINDINGS: MemoryId = MemoryId::new(31);
+const ROUTER_GRAPH_TYPE_BY_NAME: MemoryId = MemoryId::new(32);
+const ROUTER_GRAPH_TYPE_BY_ID: MemoryId = MemoryId::new(33);
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
@@ -103,6 +105,8 @@ pub(crate) type StableControllerSet = BTreeSet<Principal, Memory>;
 pub(crate) type StableGraphRegistry = BTreeMap<GraphId, GraphRegistryEntry, Memory>;
 pub(crate) type StableGraphCatalog =
     BidirectionalCatalog<GraphId, Memory, Memory, DenseMaxPlusOnePolicy>;
+pub(crate) type StableGraphTypeNameCatalog =
+    BidirectionalCatalog<GraphTypeId, Memory, Memory, SparseFromOnePolicy>;
 pub(crate) type StableIndexNameCatalog = GraphScopedNameCatalog<Memory, Memory>;
 pub(crate) type StableShardsByGraphId = BTreeMap<GraphId, GraphShardList, Memory>;
 pub(crate) type StableShardRegistry = BTreeMap<ShardId, ShardRegistryEntry, Memory>;
@@ -267,5 +271,12 @@ pub(crate) fn init_gql_graph_catalog() -> StableGqlGraphCatalog {
     GraphCatalog::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_GRAPH_TYPE_DEFINITIONS)),
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_GRAPH_SCHEMA_BINDINGS)),
+    )
+}
+
+pub(crate) fn init_graph_type_name_catalog() -> StableGraphTypeNameCatalog {
+    BidirectionalCatalog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_GRAPH_TYPE_BY_NAME)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_GRAPH_TYPE_BY_ID)),
     )
 }

@@ -127,6 +127,13 @@ where
         self.id_to_name.clear_new();
     }
 
+    /// Removes `name` and its id from both maps. Returns the removed id when present.
+    pub fn remove_by_name(&mut self, name: &str) -> Option<Id> {
+        let id = self.name_to_id.remove(&name.to_owned())?;
+        self.id_to_name.remove(&id);
+        Some(id)
+    }
+
     pub fn into_memories(self) -> (MName, MId) {
         (self.name_to_id.into_memory(), self.id_to_name.into_memory())
     }
@@ -203,6 +210,7 @@ macro_rules! impl_catalog_id {
 
 impl_catalog_id!(crate::entry::PropertyId, u32);
 impl_catalog_id!(crate::entry::GraphId, u32);
+impl_catalog_id!(crate::entry::GraphTypeId, u32);
 impl_catalog_id!(crate::entry::VertexLabelId, u16);
 impl_catalog_id!(crate::entry::EdgeLabelId, u16);
 impl_catalog_id!(crate::entry::IndexNameId, u16);

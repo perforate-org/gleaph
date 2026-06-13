@@ -780,7 +780,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             30,
             StableMemoryClass::Catalog,
             "graph type catalog",
-            "Named graph type definitions (CREATE GRAPH TYPE)",
+            "GraphTypeId → graph type definition (ADR 0014)",
             None,
         ),
         region(
@@ -789,6 +789,22 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "graph type catalog",
             "GraphId → property graph schema binding (ADR 0013)",
+            None,
+        ),
+        region(
+            "ROUTER_GRAPH_TYPE_BY_NAME",
+            32,
+            StableMemoryClass::Catalog,
+            "graph type name catalog",
+            "Graph type name → GraphTypeId (ADR 0014)",
+            None,
+        ),
+        region(
+            "ROUTER_GRAPH_TYPE_BY_ID",
+            33,
+            StableMemoryClass::Catalog,
+            "graph type name catalog",
+            "GraphTypeId → graph type name (ADR 0014)",
             None,
         ),
     ],
@@ -1002,8 +1018,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 32);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(31));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 34);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(33));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[17].class,
             StableMemoryClass::Telemetry

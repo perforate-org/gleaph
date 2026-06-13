@@ -5,6 +5,7 @@ use std::cell::RefCell;
 pub(crate) mod edge_payload_profiles;
 pub(crate) mod graph_catalog;
 pub(crate) mod graph_type_catalog;
+pub(crate) mod graph_type_name_catalog;
 pub(crate) mod index_name_catalog;
 pub(crate) mod indexed_catalog;
 pub(crate) mod label_telemetry;
@@ -81,6 +82,9 @@ thread_local! {
 
     pub(crate) static ROUTER_GQL_GRAPH_CATALOG: RefCell<memory::StableGqlGraphCatalog> =
         RefCell::new(memory::init_gql_graph_catalog());
+
+    pub(crate) static ROUTER_GRAPH_TYPE_CATALOG: RefCell<memory::StableGraphTypeNameCatalog> =
+        RefCell::new(memory::init_graph_type_name_catalog());
 
     pub(crate) static ROUTER_LABEL_BACKFILL_STATE: RefCell<memory::StableLabelBackfillStateMap> =
         RefCell::new(memory::init_label_backfill_state());

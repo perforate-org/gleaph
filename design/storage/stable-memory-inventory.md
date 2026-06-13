@@ -165,13 +165,12 @@ Repacked 2026-06-13 (ADR 0011 graph/index name catalogs). Prior repack 2026-06-1
 | 26–27 | `ROUTER_INDEX_NAME_BY_NAME` / `ROUTER_INDEX_NAME_BY_ID` | `ROUTER_INDEX_NAME_CATALOG` | `init_index_name_catalog` | catalog | resolution | Graph-scoped index name ↔ **`IndexNameId`** per `GraphId` |
 | 28 | `ROUTER_SHARDS_BY_GRAPH_ID` | `ROUTER_SHARDS_BY_GRAPH_ID` | `init_shards_by_graph_id` | canonical | registry | **`GraphId → Vec<ShardId>`** shard index |
 | 29 | `ROUTER_PREPARED_PLANS` | `ROUTER_PREPARED_PLANS` | `init_prepared_plans` | canonical | prepared queries | **`PreparedPlanKey → PreparedPlanRecord::V1`**; survives upgrade |
-| 30 | `ROUTER_GRAPH_TYPE_DEFINITIONS` | `ROUTER_GQL_GRAPH_CATALOG` (type arm) | `init_gql_graph_catalog` | catalog | graph type catalog | Type name → definition today; **`GraphTypeId` → definition** after [ADR 0014](../adr/0014-graph-type-id-catalog-on-router.md) |
-| 31 | `ROUTER_GRAPH_SCHEMA_BINDINGS` | `ROUTER_GQL_GRAPH_CATALOG` (binding arm) | `init_gql_graph_catalog` | catalog | graph type catalog | **`GraphId` → schema binding** ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)) |
+| 30 | `ROUTER_GRAPH_TYPE_DEFINITIONS` | `ROUTER_GQL_GRAPH_CATALOG` (type arm) | `init_gql_graph_catalog` | catalog | graph type catalog | **`GraphTypeId` → definition** ([ADR 0014](../adr/0014-graph-type-id-catalog-on-router.md)) |
+| 31 | `ROUTER_GRAPH_SCHEMA_BINDINGS` | `ROUTER_GQL_GRAPH_CATALOG` (binding arm) | `init_gql_graph_catalog` | catalog | graph type catalog | **`GraphId` → schema binding** ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)); `TypeRef` stores **`GraphTypeId` raw** (V2) |
+| 32 | `ROUTER_GRAPH_TYPE_BY_NAME` | `ROUTER_GRAPH_TYPE_CATALOG` | `init_graph_type_name_catalog` | catalog | resolution | Graph type name ↔ **`GraphTypeId`** ([ADR 0014](../adr/0014-graph-type-id-catalog-on-router.md)) |
+| 33 | `ROUTER_GRAPH_TYPE_BY_ID` | `ROUTER_GRAPH_TYPE_CATALOG` | `init_graph_type_name_catalog` | catalog | resolution | Reverse lookup for graph type names |
 
-Router **32 regions** total (0–31).
-
-**Planned ([ADR 0014](../adr/0014-graph-type-id-catalog-on-router.md)):** regions **32–33** —
-`ROUTER_GRAPH_TYPE_BY_NAME` / `ROUTER_GRAPH_TYPE_BY_ID` (graph type name ↔ **`GraphTypeId`**, router-global).
+Router **34 regions** total (0–33).
 
 ### Router ephemeral
 

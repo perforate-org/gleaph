@@ -7,7 +7,9 @@ use gleaph_graph_catalog::{CatalogError, GraphNameLookup};
 use gleaph_graph_kernel::entry::GraphId;
 
 use super::ROUTER_GQL_GRAPH_CATALOG;
+use super::ROUTER_GRAPH_TYPE_CATALOG;
 use super::graph_catalog::lookup_graph_id;
+use super::graph_type_name_catalog::RouterGraphTypeLookup;
 use crate::state::RouterError;
 
 struct RouterGraphNameLookup;
@@ -49,10 +51,13 @@ fn is_catalog_ddl_statement(stmt: &Statement) -> bool {
 }
 
 pub(crate) fn apply_catalog_statement_block(block: &StatementBlock) -> Result<(), RouterError> {
-    ROUTER_GQL_GRAPH_CATALOG.with_borrow_mut(|catalog| {
-        catalog
-            .apply_statement_block(block, &RouterGraphNameLookup)
-            .map_err(catalog_error_to_router)
+    ROUTER_GRAPH_TYPE_CATALOG.with_borrow_mut(|type_catalog| {
+        ROUTER_GQL_GRAPH_CATALOG.with_borrow_mut(|catalog| {
+            let mut type_lookup = RouterGraphTypeLookup::new(type_catalog);
+            catalog
+                .apply_statement_block(block, &RouterGraphNameLookup, &mut type_lookup)
+                .map_err(catalog_error_to_router)
+        })
     })
 }
 
