@@ -3,12 +3,13 @@
 Date: 2026-06-13  
 Status: proposed  
 Last revised: 2026-06-13  
-Anchor timestamp: 2026-06-13 10:15:54 UTC +0000
+Anchor timestamp: 2026-06-13 10:55:17 UTC +0000
 
 ## Revision history
 
 | Date | Change |
 |------|--------|
+| 2026-06-13 | Reject slash edge patterns in CREATE INDEX FOR (no edge variable for ON clause). |
 | 2026-06-13 | Proposed; GQL `EdgeDirection` in edge `CREATE INDEX FOR`; wire label in graph-index keys; planner subset rule. |
 
 ## Context
@@ -31,7 +32,8 @@ Phase E implementation and PocketIC e2e cover **directed** leading `EdgeIndexSca
 
 Gleaph GQL ([`EdgeDirection`](../../crates/gql/src/types.rs)) defines **seven** edge directions
 (full bracket and simplified slash forms normalize to the same enum). Administrators expect
-`CREATE INDEX` `FOR` patterns to use the **same surface** as `MATCH` / `INSERT` edge patterns.
+`CREATE INDEX` `FOR` patterns use the **same bracket edge syntax** as `MATCH` / `INSERT` (slash
+forms are query/DML-only; see §1).
 
 ### Prerequisites (met)
 
@@ -67,34 +69,37 @@ CREATE INDEX <index_name> [IF NOT EXISTS]
 |------------|------|
 | Endpoints | `()` or `(var:Label)`; v1 MAY require `()` on both sides (no endpoint labels in DDL) |
 | Edge count | Exactly one edge element |
-| Edge pattern | Full bracket **or** simplified slash form accepted by `gleaph-gql` |
+| Edge pattern | Full **bracket** form with edge variable (`-[e:L]-`, …); slash form is rejected (no edge binding for `ON (e.prop)`) |
 | Label | Single catalog name (`:KNOWS`); no label expressions |
 | `ON` | Property access on the edge variable declared in `FOR` |
 
 **Examples** (all seven `EdgeDirection` values):
 
 ```gql
--- PointingRight          -[e:L]->     or  -/L/->
+-- PointingRight          -[e:L]->
 CREATE INDEX w_right  FOR () -[e:KNOWS]-> ()  ON (e.weight);
 
--- PointingLeft           <-[e:L]-     or  -/<L/-
+-- PointingLeft           <-[e:L]-
 CREATE INDEX w_left   FOR () <-[e:KNOWS]- ()  ON (e.weight);
 
--- LeftOrRight            <-[e:L]->    or  -/<L/->
+-- LeftOrRight            <-[e:L]->
 CREATE INDEX w_lr     FOR () <-[e:KNOWS]-> () ON (e.weight);
 
--- Undirected             ~[e:L]~      or  ~/L/~
+-- Undirected             ~[e:L]~
 CREATE INDEX w_undir  FOR () ~[e:KNOWS]~ ()   ON (e.weight);
 
--- UndirectedOrRight      ~[e:L]~>     or  ~/L/~>
+-- UndirectedOrRight      ~[e:L]~>
 CREATE INDEX w_uor    FOR () ~[e:KNOWS]~> ()  ON (e.weight);
 
--- LeftOrUndirected       <~[e:L]~     or  <~/L/~
+-- LeftOrUndirected       <~[e:L]~
 CREATE INDEX w_lou    FOR () <~[e:KNOWS]~ ()  ON (e.weight);
 
--- AnyDirection           -[e:L]-      or  -/L/-
+-- AnyDirection           -[e:L]-
 CREATE INDEX w_any    FOR () -[e:KNOWS]- ()   ON (e.weight);
 ```
+
+Slash edge patterns (`-/L/->`, `~/L/~`, …) are valid in `MATCH` / `INSERT` but **rejected** in
+`CREATE INDEX FOR` because they do not declare the edge variable referenced by `ON (e.<property>)`.
 
 **Parsing:** replace the ad-hoc edge branch in [`index_ddl.rs`](../../crates/router/src/index_ddl.rs)
 with a thin wrapper around `gleaph-gql` pattern parsing that produces
@@ -226,7 +231,7 @@ fallback per existing planner rules.
 | Phase | Deliverable | Verification |
 |-------|-------------|--------------|
 | **F1 — ADR + key layout** | graph-index `wire_label_id` key; stable layout bump / dev discard | graph-index unit tests; key ordering tests |
-| **F2 — Registry + DDL** | GQL-aligned `FOR` parser; `IndexDefRecord.direction`; uniqueness | router `index_ddl` tests for 7 directions + slash forms |
+| **F2 — Registry + DDL** | Bracket `FOR` parser; `IndexDefRecord.direction`; uniqueness; slash rejected | router `index_ddl` tests for 7 bracket directions + slash errors |
 | **F3 — DML postings** | Direction-aware enqueue; remove catalog-only conversion | graph unit tests; posting records wire labels |
 | **F4 — Lookup + seeds** | Wire-aware `lookup_edge_equal`; router anchor carries direction | router seed tests; graph seed apply |
 | **F5 — Planner stats** | Subset rule in `GraphStats`; direction-aware edge index fusion | gql-planner tests |

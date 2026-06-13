@@ -30,6 +30,10 @@ pub(crate) enum IndexDdlParseError {
     Expected(String),
     #[error("unexpected trailing input")]
     TrailingInput,
+    #[error(
+        "edge FOR pattern must use bracket form -[var:Label]-; slash form is not supported in CREATE INDEX"
+    )]
+    SlashEdgePatternNotSupported,
 }
 
 /// Returns `None` when the query is not index DDL (caller should use standard GQL parse).
@@ -105,6 +109,7 @@ fn parse_for_pattern(
     if cur.peek() == Some(')') {
         cur.expect(')')?;
         cur.skip_ws();
+        reject_slash_edge_pattern(cur)?;
         let (label, direction) = parse_for_edge_pattern(cur)?;
         cur.skip_ws();
         cur.expect('(')?;
@@ -118,6 +123,43 @@ fn parse_for_pattern(
         cur.skip_ws();
         cur.expect(')')?;
         Ok((IndexedPropertyKind::Vertex, label, None))
+    }
+}
+
+/// Slash edge patterns (`-/L/->`, `~/L/~`, …) bind no edge variable; `ON (e.prop)` requires bracket form.
+fn reject_slash_edge_pattern(cur: &mut Cursor<'_>) -> Result<(), IndexDdlParseError> {
+    let saved = cur.pos;
+    cur.skip_ws();
+    let slash = match cur.peek() {
+        Some('-') => {
+            cur.pos += 1;
+            cur.skip_ws();
+            cur.peek() == Some('/')
+        }
+        Some('~') => {
+            cur.pos += 1;
+            cur.skip_ws();
+            cur.peek() == Some('/')
+        }
+        Some('<') => {
+            cur.pos += 1;
+            cur.skip_ws();
+            match cur.peek() {
+                Some('~') | Some('-') => {
+                    cur.pos += 1;
+                    cur.skip_ws();
+                    cur.peek() == Some('/')
+                }
+                _ => false,
+            }
+        }
+        _ => false,
+    };
+    cur.pos = saved;
+    if slash {
+        Err(IndexDdlParseError::SlashEdgePatternNotSupported)
+    } else {
+        Ok(())
     }
 }
 
@@ -380,6 +422,18 @@ mod tests {
                 },
             }
         );
+    }
+
+    #[test]
+    fn create_edge_index_rejects_slash_form() {
+        let err = parse("CREATE INDEX w FOR ()-/KNOWS/->() ON (e.weight)").unwrap_err();
+        assert_eq!(err, IndexDdlParseError::SlashEdgePatternNotSupported);
+
+        let err = parse("CREATE INDEX w FOR () ~/KNOWS/~ () ON (e.weight)").unwrap_err();
+        assert_eq!(err, IndexDdlParseError::SlashEdgePatternNotSupported);
+
+        let err = parse("CREATE INDEX w FOR () <~/KNOWS/~ () ON (e.weight)").unwrap_err();
+        assert_eq!(err, IndexDdlParseError::SlashEdgePatternNotSupported);
     }
 
     #[test]
