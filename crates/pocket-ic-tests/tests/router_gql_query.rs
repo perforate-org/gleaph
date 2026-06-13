@@ -6,15 +6,16 @@
 use gleaph_gql::Value;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, VertexPlacement};
-use gleaph_graph_kernel::path::GraphPathVertexId;
+use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use gleaph_pocket_ic_tests::{
     DEST_SHARD, SOURCE_SHARD, admin_intern_edge_label, admin_intern_property,
     create_directed_edge_property_index, create_edge_property_index,
     create_undirected_edge_property_index, create_vertex_property_index,
     drop_vertex_property_index, e2e_insert_directed_edge_with_property,
     e2e_insert_undirected_edge_with_property, e2e_insert_vertex, e2e_insert_vertex_with_property,
-    gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin, gql_query_as_admin_expect_err,
-    install_federation, install_single_shard_federation, resolve_placement,
+    gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
+    gql_query_as_admin, gql_query_as_admin_expect_err, install_federation,
+    install_single_shard_federation, resolve_placement,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -111,6 +112,88 @@ fn standalone_gql_query_returns_element_id_bytes() {
 }
 
 #[test]
+fn standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter() {
+    let env = install_single_shard_federation();
+    let weight = admin_intern_property(&env, "weight");
+    let edge_label = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
+    let source = e2e_insert_vertex(&env, env.graph_source);
+    let target = e2e_insert_vertex(&env, env.graph_source);
+    e2e_insert_directed_edge_with_property(
+        &env,
+        env.graph_source,
+        source.local_vertex_id,
+        target.local_vertex_id,
+        edge_label.raw(),
+        weight.raw(),
+        5,
+    );
+
+    let result = gql_query_as_admin(
+        &env,
+        "MATCH (a)-[e:KNOWS {weight: 5}]->(b) \
+         RETURN ELEMENT_ID(a) AS source_id, ELEMENT_ID(e) AS edge_id, \
+                ELEMENT_ID(b) AS target_id, e.weight AS edge_weight",
+    );
+
+    assert_eq!(result.row_count, 1);
+    let row = decode_single_value_row(&result);
+    assert_eq!(
+        vertex_id_column(&row, "source_id"),
+        source.global_vertex_id,
+        "source ELEMENT_ID should identify the seeded source vertex"
+    );
+    assert_eq!(
+        vertex_id_column(&row, "target_id"),
+        target.global_vertex_id,
+        "target ELEMENT_ID should identify the seeded target vertex"
+    );
+    let Value::Bytes(edge_id) = row.get("edge_id").expect("edge_id column") else {
+        panic!("expected edge_id bytes, got {:?}", row.get("edge_id"));
+    };
+    GraphPathEdgeId::try_from_slice(edge_id.as_ref()).expect("edge ELEMENT_ID bytes");
+    assert_eq!(
+        row.get("edge_weight"),
+        Some(&Value::Int64(5)),
+        "edge property should be projected for adapter row metadata"
+    );
+}
+
+#[test]
+fn router_gql_insert_seeds_relationship_rows_for_knowledge_map_adapter() {
+    let env = install_single_shard_federation();
+
+    let row_count = gql_execute_idempotent_as_admin(
+        &env,
+        "INSERT (:Person)-[:KNOWS {weight: 5}]->(:Project)",
+        "router_gql_insert_seeds_relationship_rows_for_knowledge_map_adapter",
+    );
+    assert_eq!(row_count, 0);
+
+    let result = gql_query_as_admin(
+        &env,
+        "MATCH (a)-[e:KNOWS {weight: 5}]->(b) \
+         RETURN ELEMENT_ID(a) AS source_id, ELEMENT_ID(e) AS edge_id, \
+                ELEMENT_ID(b) AS target_id, e.weight AS edge_weight",
+    );
+
+    assert_eq!(result.row_count, 1);
+    let row = decode_single_value_row(&result);
+    let Value::Bytes(source_id) = row.get("source_id").expect("source_id column") else {
+        panic!("expected source_id bytes, got {:?}", row.get("source_id"));
+    };
+    GraphPathVertexId::try_from_slice(source_id.as_ref()).expect("decode source ELEMENT_ID bytes");
+    let Value::Bytes(target_id) = row.get("target_id").expect("target_id column") else {
+        panic!("expected target_id bytes, got {:?}", row.get("target_id"));
+    };
+    GraphPathVertexId::try_from_slice(target_id.as_ref()).expect("decode target ELEMENT_ID bytes");
+    let Value::Bytes(edge_id) = row.get("edge_id").expect("edge_id column") else {
+        panic!("expected edge_id bytes, got {:?}", row.get("edge_id"));
+    };
+    GraphPathEdgeId::try_from_slice(edge_id.as_ref()).expect("decode edge ELEMENT_ID bytes");
+    assert_eq!(row.get("edge_weight"), Some(&Value::Int64(5)));
+}
+
+#[test]
 fn federated_gql_query_index_seeded_routes_to_hit_shard_only() {
     let env = install_federation();
     let age = admin_intern_property(&env, "age");
@@ -127,6 +210,36 @@ fn federated_gql_query_index_seeded_routes_to_hit_shard_only() {
     let result = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
 
     assert_eq!(result.row_count, 1);
+}
+
+fn decode_single_value_row(
+    result: &gleaph_graph_kernel::plan_exec::GqlQueryResult,
+) -> std::collections::BTreeMap<String, Value> {
+    let rows_blob = result
+        .rows_blob
+        .as_ref()
+        .expect("router gql_query should return rows_blob");
+    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
+    assert_eq!(wire.rows.len(), 1);
+    wire.rows
+        .into_iter()
+        .next()
+        .expect("one row")
+        .try_into_value_row()
+        .expect("wire row to value row")
+}
+
+fn vertex_id_column(
+    row: &std::collections::BTreeMap<String, Value>,
+    column: &str,
+) -> GlobalVertexId {
+    let Value::Bytes(id_bytes) = row.get(column).unwrap_or_else(|| panic!("{column} column"))
+    else {
+        panic!("expected {column} bytes, got {:?}", row.get(column));
+    };
+    GraphPathVertexId::try_from_slice(id_bytes.as_ref())
+        .expect("decode vertex id")
+        .decode_global(&ElementIdEncodingKey::standalone())
 }
 
 #[test]

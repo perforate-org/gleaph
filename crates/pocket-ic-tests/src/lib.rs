@@ -95,6 +95,7 @@ pub struct GraphInitArgs {
     pub logical_graph_name: Option<String>,
     pub router_canister: Option<Principal>,
     pub shard_id: Option<ShardId>,
+    pub index_canister: Option<Principal>,
 }
 
 #[derive(CandidType, serde::Deserialize)]
@@ -242,6 +243,7 @@ pub fn install_federation() -> FederationEnv {
                 logical_graph_name: Some(GRAPH_NAME.into()),
                 router_canister: None,
                 shard_id: None,
+                index_canister: None,
             })
             .expect("encode graph init"),
             None,
@@ -320,6 +322,7 @@ pub fn install_two_graph_federation() -> FederationEnv {
                 logical_graph_name: Some(graph_name.into()),
                 router_canister: None,
                 shard_id: None,
+                index_canister: None,
             })
             .expect("encode graph init"),
             None,
@@ -395,6 +398,7 @@ pub fn install_single_shard_federation() -> FederationEnv {
             logical_graph_name: Some(GRAPH_NAME.into()),
             router_canister: None,
             shard_id: None,
+            index_canister: None,
         })
         .expect("encode graph init"),
         None,
