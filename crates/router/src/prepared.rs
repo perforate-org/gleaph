@@ -43,10 +43,16 @@ pub fn prepared_register(name: String, query: String) -> Result<(), RouterError>
         .body
         .as_ref()
         .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
-    let stats = graph_stats_for(resolved.graph_id);
-    let plan = build_block_plan_with_schema(block, Some(&stats), &NoSchema)
+    let dispatch = crate::use_graph::resolve_ingress_dispatch(
+        &store,
+        &program,
+        block,
+        caller,
+        resolved.graph_id,
+    )?;
+    let stats = graph_stats_for(dispatch.dispatch_graph_id);
+    let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), &NoSchema)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    crate::use_graph::ensure_single_graph_plan(&store, &program, &plan, resolved.graph_id, caller)?;
     let requires_write_path = plan.has_dml();
     let classified = classify_program(&program).requires_write_path();
     if requires_write_path != classified {
@@ -56,7 +62,7 @@ pub fn prepared_register(name: String, query: String) -> Result<(), RouterError>
     }
     let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let key = prepared_key(resolved.graph_id, &name);
+    let key = prepared_key(dispatch.dispatch_graph_id, &name);
     ROUTER_PREPARED_PLANS.with_borrow_mut(|m| {
         m.insert(
             key,
