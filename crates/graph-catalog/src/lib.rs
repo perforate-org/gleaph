@@ -12,7 +12,6 @@
 #[macro_use(concat_string)]
 extern crate concat_string;
 
-use derive_more::{AsRef, From, Into};
 use gleaph_gql::ast::{
     CreateGraphStatement, CreateGraphTypeStatement, DropGraphStatement, DropGraphTypeStatement,
     GraphTypeDefinition, GraphTypeSpec, ObjectName, Statement, StatementBlock,
@@ -159,9 +158,9 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
                 if self.type_map.get(&key).is_none() {
                     return Err(CatalogError::GraphTypeNotFound(key.to_string()));
                 }
-                Some(GraphSchemaBinding::TypeRef(key.to_string()))
+                Some(GraphSchemaBinding::type_ref(key.to_string()))
             }
-            Some(GraphTypeSpec::Inline(def)) => Some(GraphSchemaBinding::Inline(def.clone())),
+            Some(GraphTypeSpec::Inline(def)) => Some(GraphSchemaBinding::inline(def.clone())),
         };
 
         if self.binding_map.contains_key(&key) {
@@ -189,15 +188,15 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
         Ok(())
     }
 
-    /// Removes a graph type and any property graphs that referenced it by `TYPED` ([`GraphSchemaBinding::TypeRef`]).
+    /// Removes a graph type and any property graphs that referenced it by `TYPED` ([`GraphSchemaBindingV1::TypeRef`]).
     fn apply_drop_graph_type(&mut self, d: &DropGraphTypeStatement) -> Result<(), CatalogError> {
         let key: CatalogTypeKey = object_name_key(&d.name);
         self.type_map.remove(&key);
 
         let mut binding_keys_to_remove = Vec::new();
         for entry in self.binding_map.iter() {
-            if let GraphSchemaBinding::TypeRef(t) = entry.value()
-                && t == key
+            if let GraphSchemaBindingV1::TypeRef(t) = entry.value().as_v1()
+                && *t == key
             {
                 binding_keys_to_remove.push(entry.key().clone());
             }
@@ -230,14 +229,14 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
         let Some(binding) = self.binding_map.get(&g.into()) else {
             return Ok(None);
         };
-        let def = match binding {
-            GraphSchemaBinding::TypeRef(k) => {
+        let def = match binding.as_v1() {
+            GraphSchemaBindingV1::TypeRef(k) => {
                 let Some(value) = self.type_map.get(&k) else {
-                    return Err(CatalogError::GraphTypeNotFound(k));
+                    return Err(CatalogError::GraphTypeNotFound(k.clone()));
                 };
                 value.into()
             }
-            GraphSchemaBinding::Inline(def) => def,
+            GraphSchemaBindingV1::Inline(def) => def.clone(),
         };
         GraphTypePropertySchema::try_from_definition(&def)
             .map(Some)
@@ -245,52 +244,79 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
     }
 }
 
-/// rkyv’s checked [`rkyv::from_bytes`] places the archived root at [`rkyv::api::root_position`]
-/// (aligned); buffers read back from stable memory are plain [`Vec<u8>`] and may not satisfy
-/// that alignment on wasm32, so we copy into [`rkyv::util::AlignedVec`] before decoding.
-fn rkyv_from_bytes_aligned_graph_def(
-    bytes: &[u8],
-) -> Result<GraphTypeDefinition, rkyv::rancor::Error> {
-    let mut aligned = rkyv::util::AlignedVec::<16>::new();
-    aligned.extend_from_slice(bytes);
-    rkyv::from_bytes::<GraphTypeDefinition, rkyv::rancor::Error>(&aligned)
+/// Version 1 graph schema binding payload.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+enum GraphSchemaBindingV1 {
+    /// `CREATE GRAPH ... TYPED <name>` — key matches [`object_name_key`] of the graph type.
+    TypeRef(String),
+    /// `CREATE GRAPH ... { ... }` — graph-specific inline body.
+    Inline(GraphTypeDefinition),
 }
 
-/// Newtype for [`GraphTypeDefinition`] stored in [`StableBTreeMap`] (rkyv [`Storable`] payload).
-#[derive(Clone, Debug, PartialEq, AsRef, From, Into)]
-struct StorableGraphTypeDefinition(GraphTypeDefinition);
+/// Versioned graph schema binding for stable storage and upgrade-safe evolution.
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+enum GraphSchemaBinding {
+    V1(GraphSchemaBindingV1),
+}
+
+impl GraphSchemaBinding {
+    fn type_ref(name: String) -> Self {
+        Self::V1(GraphSchemaBindingV1::TypeRef(name))
+    }
+
+    fn inline(def: GraphTypeDefinition) -> Self {
+        Self::V1(GraphSchemaBindingV1::Inline(def))
+    }
+
+    fn as_v1(&self) -> &GraphSchemaBindingV1 {
+        match self {
+            GraphSchemaBinding::V1(v1) => v1,
+        }
+    }
+}
+
+/// Versioned graph type definition stored in [`StableBTreeMap`] (rkyv [`Storable`] payload).
+#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+enum StorableGraphTypeDefinition {
+    V1(GraphTypeDefinition),
+}
+
+impl From<GraphTypeDefinition> for StorableGraphTypeDefinition {
+    fn from(def: GraphTypeDefinition) -> Self {
+        Self::V1(def)
+    }
+}
+
+impl From<StorableGraphTypeDefinition> for GraphTypeDefinition {
+    fn from(value: StorableGraphTypeDefinition) -> Self {
+        match value {
+            StorableGraphTypeDefinition::V1(def) => def,
+        }
+    }
+}
 
 /// Encodes [`GraphTypeDefinition`] with rkyv (archived AST without spans).
 impl Storable for StorableGraphTypeDefinition {
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(&self.0)
+        let bytes = rkyv::to_bytes::<rkyv::rancor::Error>(self)
             .expect("graph type definition rkyv encode should not fail");
         Cow::Owned(bytes.to_vec())
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        rkyv::to_bytes::<rkyv::rancor::Error>(&self.0)
+        rkyv::to_bytes::<rkyv::rancor::Error>(&self)
             .expect("graph type definition rkyv encode should not fail")
             .to_vec()
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Self(
-            rkyv_from_bytes_aligned_graph_def(&bytes[..])
-                .expect("graph type definition rkyv decode should not fail"),
-        )
+        let mut aligned = rkyv::util::AlignedVec::<16>::new();
+        aligned.extend_from_slice(&bytes);
+        rkyv::from_bytes::<Self, rkyv::rancor::Error>(&aligned)
+            .expect("graph type definition rkyv decode should not fail")
     }
 
     const BOUND: Bound = Bound::Unbounded;
-}
-
-/// How a property graph name resolves: either a shared named type or an inline definition.
-#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-enum GraphSchemaBinding {
-    /// `CREATE GRAPH ... TYPED <name>` — key matches [`object_name_key`] of the graph type.
-    TypeRef(String),
-    /// `CREATE GRAPH ... { ... }` — graph-specific inline body.
-    Inline(GraphTypeDefinition),
 }
 
 /// Encodes [`GraphSchemaBinding`] with rkyv for stable storage.
@@ -588,5 +614,32 @@ mod tests {
             .try_property_schema_for_graph(Some("g"))
             .expect_err("invalid schema");
         assert!(matches!(err, CatalogError::InvalidDefinition(_)));
+    }
+
+    #[test]
+    fn versioned_catalog_records_round_trip_through_storable() {
+        let block = block_from("CREATE GRAPH TYPE gt { NODE Person LABEL Person }");
+        let stmt = block.iter_statements().next().expect("stmt");
+        let Statement::CreateGraphType(c) = stmt else {
+            panic!("expected create graph type");
+        };
+        let def = c.definition.clone();
+
+        let type_record = StorableGraphTypeDefinition::from(def.clone());
+        let decoded_def: GraphTypeDefinition =
+            StorableGraphTypeDefinition::from_bytes(Cow::Owned(type_record.into_bytes())).into();
+        GraphTypePropertySchema::try_from_definition(&def).expect("original schema");
+        GraphTypePropertySchema::try_from_definition(&decoded_def).expect("decoded schema");
+
+        let binding = GraphSchemaBinding::inline(def);
+        let decoded_binding =
+            GraphSchemaBinding::from_bytes(Cow::Owned(binding.clone().into_bytes()));
+        match decoded_binding.as_v1() {
+            GraphSchemaBindingV1::Inline(decoded_def) => {
+                GraphTypePropertySchema::try_from_definition(decoded_def)
+                    .expect("decoded binding schema");
+            }
+            GraphSchemaBindingV1::TypeRef(_) => panic!("expected inline binding"),
+        }
     }
 }

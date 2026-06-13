@@ -153,17 +153,29 @@ pub struct ShardRegistryEntry {
     pub registered_at_ns: u64,
 }
 
+/// Stable-memory wire envelope for [`ShardRegistryEntry`].
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+enum ShardRegistryStableRecord {
+    V1(ShardRegistryEntry),
+}
+
 impl Storable for ShardRegistryEntry {
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode ShardRegistryEntry"))
+        Cow::Owned(
+            Encode!(&ShardRegistryStableRecord::V1(self.clone()))
+                .expect("encode ShardRegistryEntry"),
+        )
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode ShardRegistryEntry")
+        Encode!(&ShardRegistryStableRecord::V1(self)).expect("encode ShardRegistryEntry")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), ShardRegistryEntry).expect("decode ShardRegistryEntry")
+        match Decode!(bytes.as_ref(), ShardRegistryStableRecord).expect("decode ShardRegistryEntry")
+        {
+            ShardRegistryStableRecord::V1(v1) => v1,
+        }
     }
 
     const BOUND: Bound = Bound::Unbounded;

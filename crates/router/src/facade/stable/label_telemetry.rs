@@ -198,19 +198,32 @@ impl RouterMutationRecord {
     }
 }
 
+/// Stable-memory wire envelope for [`RouterMutationRecord`].
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+enum RouterMutationStableRecord {
+    V1(RouterMutationRecord),
+}
+
 impl Storable for RouterMutationRecord {
     const BOUND: Bound = Bound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode RouterMutationRecord"))
+        Cow::Owned(
+            Encode!(&RouterMutationStableRecord::V1(self.clone()))
+                .expect("encode RouterMutationRecord"),
+        )
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode RouterMutationRecord")
+        Encode!(&RouterMutationStableRecord::V1(self)).expect("encode RouterMutationRecord")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), Self).expect("decode RouterMutationRecord")
+        match Decode!(bytes.as_ref(), RouterMutationStableRecord)
+            .expect("decode RouterMutationRecord")
+        {
+            RouterMutationStableRecord::V1(v1) => v1,
+        }
     }
 }
 
@@ -240,5 +253,20 @@ impl RouterMutationShard {
             row_count: 0,
             label_telemetry_events: Vec::new(),
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ic_stable_structures::Storable;
+
+    #[test]
+    fn router_mutation_record_v1_round_trips_through_storable() {
+        let record = RouterMutationRecord::new(1, 42, vec![9, 8]);
+        let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
+        assert_eq!(decoded, record);
+        assert_eq!(decoded.mutation_id, 1);
+        assert!(decoded.routing_in_progress);
     }
 }

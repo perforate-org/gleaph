@@ -36,17 +36,29 @@ pub struct GraphRegistryEntry {
     pub is_home: bool,
 }
 
+/// Stable-memory wire envelope for [`GraphRegistryEntry`].
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+enum GraphRegistryStableRecord {
+    V1(GraphRegistryEntry),
+}
+
 impl Storable for GraphRegistryEntry {
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode GraphRegistryEntry"))
+        Cow::Owned(
+            Encode!(&GraphRegistryStableRecord::V1(self.clone()))
+                .expect("encode GraphRegistryEntry"),
+        )
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode GraphRegistryEntry")
+        Encode!(&GraphRegistryStableRecord::V1(self)).expect("encode GraphRegistryEntry")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), GraphRegistryEntry).expect("decode GraphRegistryEntry")
+        match Decode!(bytes.as_ref(), GraphRegistryStableRecord).expect("decode GraphRegistryEntry")
+        {
+            GraphRegistryStableRecord::V1(v1) => v1,
+        }
     }
 
     const BOUND: Bound = Bound::Unbounded;
@@ -150,5 +162,28 @@ mod tests {
             .resolve_graph("tenant.main", other)
             .expect_err("non-owner should fail");
         assert_eq!(err, GraphRegistryError::Forbidden);
+    }
+
+    #[test]
+    fn graph_registry_entry_v1_round_trips_through_storable() {
+        let owner = Principal::from_text("2vxsx-fae").expect("owner");
+        let graph_canister =
+            Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").expect("graph canister");
+        let entry = GraphRegistryEntry {
+            graph_id: GraphId::from_raw(1),
+            graph_name: "tenant.main".to_owned(),
+            canister_id: graph_canister,
+            owner,
+            admins: BTreeSet::new(),
+            status: GraphStatus::Active,
+            version: 1,
+            updated_at_ns: 0,
+            provisioning_state: ProvisioningState::None,
+            is_home: true,
+        };
+        let bytes = entry.clone().into_bytes();
+        let decoded = GraphRegistryEntry::from_bytes(Cow::Owned(bytes));
+        assert_eq!(decoded, entry);
+        assert!(decoded.is_home);
     }
 }
