@@ -3,7 +3,6 @@
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::index::{IndexedPropertyKind, RegisterIndexedPropertyArgs};
 
-use crate::facade::stable::graph_catalog::lookup_graph_id;
 use crate::facade::stable::index_name_catalog::{intern_index_name, lookup_index_name_id};
 use crate::facade::stable::indexed_catalog::{
     create_named_index, drop_named_index, is_property_registered, load_graph_stats,

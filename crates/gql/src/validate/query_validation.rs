@@ -998,6 +998,19 @@ pub(super) fn validate_graph_reference(
             "'{ident}' is bound in value/table scope and cannot be used as a graph reference"
         )));
     }
+    if super::session_graph::ingress_seed_active()
+        && let Some(seed) = super::session_graph::active_seed()
+    {
+        match ident.as_str() {
+            "CURRENT_GRAPH" if seed.current_graph.is_none() => {
+                return Err(verr("CURRENT_GRAPH is unset in this program"));
+            }
+            "HOME_GRAPH" if seed.home_graph.is_none() => {
+                return Err(verr("HOME_GRAPH is unset in this program"));
+            }
+            _ => {}
+        }
+    }
     Ok(())
 }
 

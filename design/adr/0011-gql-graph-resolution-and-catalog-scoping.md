@@ -12,7 +12,7 @@ Anchor timestamp: 2026-06-13 06:46:07 UTC +0000
 | 2026-06-13 | Proposed: GQL graph resolution at router ingress; deprecate Candid `logical_graph_name`. |
 | 2026-06-13 | Clarified catalog scope: **`BidirectionalCatalog` for graph and index names**; migrate all stable/router keys and stored values from `String` names to **`GraphId` / `IndexNameId`**. |
 | 2026-06-13 | Accepted. |
-| 2026-06-13 | R0/R2/G1/G2/I1 implemented; stable-memory-inventory updated; R1 validator seed and U1 multi-UseGraph remain planned. |
+| 2026-06-13 | R0/R2/G1/G2/I1/R1 implemented; stable-memory-inventory updated; U1 multi-UseGraph remains planned. |
 
 ## Context
 
@@ -378,7 +378,7 @@ flowchart TB
 | Phase | Scope | Status |
 |-------|--------|--------|
 | **R0** | `resolve_graph_context`; resolve to `GraphId`; GQL ingress uses program session graph | **Implemented** |
-| **R1** | Session seed in validator; HOME rule (sole graph) | Partial — router HOME rule implemented; validator seed pending |
+| **R1** | Session seed in validator; HOME rule (sole graph) | Implemented — `SessionGraphSeed` + router ingress validate |
 | **R2** | Remove `logical_graph_name` from query / prepared execute APIs | **Implemented** |
 | **G1** | `BidirectionalCatalog<GraphId>`; `ROUTER_GRAPHS` keyed by `GraphId` | **Implemented** |
 | **G2** | `ShardRegistryEntry.graph_id`; `ROUTER_SHARDS_BY_GRAPH_ID`; prepared + idempotency keys use `GraphId` | **Implemented** |

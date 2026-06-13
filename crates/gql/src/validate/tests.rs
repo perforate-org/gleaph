@@ -2318,3 +2318,60 @@ fn valid_same_expr() {
             || parse_and_validate("MATCH (n) LET x = [1] LET y = [1] RETURN SAME(x, y)").is_ok()
     );
 }
+
+// ── Session graph seed (ADR 0011 §2) ──
+
+fn parse_and_validate_with_seed(input: &str, seed: Option<&SessionGraphSeed>) -> VResult {
+    let program = parser::parse(input).expect("parse should succeed");
+    validate_with_seed(&program, seed)
+}
+
+#[test]
+fn current_graph_allowed_without_ingress_seed() {
+    assert!(parse_and_validate("USE CURRENT_GRAPH MATCH (n) RETURN n").is_ok());
+}
+
+#[test]
+fn current_graph_rejected_when_ingress_seed_has_no_current() {
+    let seed = SessionGraphSeed::default();
+    let err = parse_and_validate_with_seed("USE CURRENT_GRAPH MATCH (n) RETURN n", Some(&seed))
+        .expect_err("expected CURRENT_GRAPH rejection");
+    assert!(
+        err.to_string().contains("CURRENT_GRAPH"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn current_graph_ok_with_ingress_seed() {
+    let seed = SessionGraphSeed {
+        current_graph: Some("tenant_a".into()),
+        home_graph: Some("tenant_a".into()),
+    };
+    assert!(
+        parse_and_validate_with_seed("USE CURRENT_GRAPH MATCH (n) RETURN n", Some(&seed)).is_ok()
+    );
+}
+
+#[test]
+fn home_graph_rejected_when_ingress_seed_has_no_home() {
+    let seed = SessionGraphSeed {
+        current_graph: Some("tenant_a".into()),
+        home_graph: None,
+    };
+    let err = parse_and_validate_with_seed("USE HOME_GRAPH MATCH (n) RETURN n", Some(&seed))
+        .expect_err("expected HOME_GRAPH rejection");
+    assert!(
+        err.to_string().contains("HOME_GRAPH"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn ingress_seed_seeds_graph_scope_for_bound_graph_variable() {
+    let seed = SessionGraphSeed {
+        current_graph: Some("g".into()),
+        home_graph: Some("g".into()),
+    };
+    assert!(parse_and_validate_with_seed("USE g MATCH (n) RETURN n", Some(&seed)).is_ok());
+}

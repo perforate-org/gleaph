@@ -137,6 +137,22 @@ fn resolve_home_graph(
     }
 }
 
+/// Build validator session seed after router graph resolution (ADR 0011 §2).
+pub fn session_graph_seed(
+    store: &RouterStore,
+    resolved: ResolvedGraphContext,
+    caller: candid::Principal,
+) -> gleaph_gql::validate::SessionGraphSeed {
+    let current_graph = graph_catalog::graph_name(resolved.graph_id);
+    let home_graph = resolve_home_graph(store, caller)
+        .ok()
+        .and_then(graph_catalog::graph_name);
+    gleaph_gql::validate::SessionGraphSeed {
+        current_graph,
+        home_graph,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -193,5 +209,17 @@ mod tests {
             graph_catalog::lookup_graph_id("tenant_b"),
             Some(ctx.graph_id)
         );
+    }
+
+    #[test]
+    fn session_graph_seed_matches_effective_and_home() {
+        let store = RouterStore::new();
+        register_graph(&store, "gleaph.pocket_ic");
+        let caller = Principal::anonymous();
+        let ctx = resolve_graph_context_from_query(&store, "MATCH (n) RETURN n", caller)
+            .expect("resolve");
+        let seed = session_graph_seed(&store, ctx, caller);
+        assert_eq!(seed.current_graph.as_deref(), Some("gleaph.pocket_ic"));
+        assert_eq!(seed.home_graph.as_deref(), Some("gleaph.pocket_ic"));
     }
 }

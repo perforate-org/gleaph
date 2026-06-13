@@ -15,7 +15,10 @@ mod graph_type;
 mod procedure;
 mod query_validation;
 mod session;
+mod session_graph;
 mod transaction;
+
+pub use session_graph::SessionGraphSeed;
 
 use procedure::{
     validate_call_procedure, validate_inline_scope_vars, validate_yield_alias_uniqueness,
@@ -37,12 +40,23 @@ type VResult = Result<(), GqlError>;
 /// Returns `Ok(())` if the program passes all semantic checks, or a
 /// [`GqlError::Validation`] describing the first violation found.
 pub fn validate(program: &GqlProgram) -> VResult {
-    // Validate session commands.
+    validate_with_seed(program, None)
+}
+
+/// Validates `program` with optional router session graph seed (ADR 0011 §2).
+///
+/// When `seed` is `Some`, `CURRENT_GRAPH` / `HOME_GRAPH` references must resolve
+/// against the supplied names; when `None`, those identifiers are treated as
+/// opaque catalog names (library / test default).
+pub fn validate_with_seed(program: &GqlProgram, seed: Option<&SessionGraphSeed>) -> VResult {
+    session_graph::with_validation_seed(seed, || validate_program(program))
+}
+
+fn validate_program(program: &GqlProgram) -> VResult {
     for cmd in &program.session_activity {
         validate_session_command(cmd)?;
     }
 
-    // Validate transaction activity.
     if let Some(ref ta) = program.transaction_activity {
         validate_transaction_activity(ta)?;
     }

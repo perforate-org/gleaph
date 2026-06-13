@@ -32,6 +32,9 @@ pub fn prepared_register(name: String, query: String) -> Result<(), RouterError>
     let caller = msg_caller();
     let store = RouterStore::new();
     let resolved = graph_context::resolve_graph_context(&store, &program, caller)?;
+    let seed = graph_context::session_graph_seed(&store, resolved, caller);
+    gleaph_gql::validate::validate_with_seed(&program, Some(&seed))
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let tx = program
         .transaction_activity
         .as_ref()

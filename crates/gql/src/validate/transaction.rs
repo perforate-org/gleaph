@@ -3,7 +3,7 @@ use rapidhash::RapidHashSet;
 use crate::ast::*;
 
 use super::{
-    VResult, statement_result_scopes, validate_statement_with_scope,
+    VResult, session_graph, statement_result_scopes, validate_statement_with_scope,
     validate_yield_alias_uniqueness, verr,
 };
 
@@ -14,7 +14,7 @@ pub(super) fn validate_transaction_activity(ta: &TransactionActivity) -> VResult
 
     if let Some(ref body) = ta.body {
         let mut scope = RapidHashSet::default();
-        let mut graph_scope = RapidHashSet::default();
+        let mut graph_scope = session_graph::initial_graph_scope();
         validate_statement_with_scope(&body.first, &scope, &graph_scope)?;
         let (mut prev_result_scope, mut prev_result_graph_scope) =
             statement_result_scopes(&body.first, &scope, &graph_scope)?;
