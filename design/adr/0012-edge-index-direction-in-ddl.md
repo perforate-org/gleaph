@@ -3,13 +3,14 @@
 Date: 2026-06-13  
 Status: accepted  
 Last revised: 2026-06-13  
-Anchor timestamp: 2026-06-13 11:04:14 UTC +0000
+Anchor timestamp: 2026-06-13 11:35:08 UTC +0000
 
 ## Revision history
 
 | Date | Change |
 |------|--------|
 | 2026-06-13 | Accepted; F1–F6 implemented (wire keys, direction registry, planner subset, PocketIC e2e, slash rejected). |
+| 2026-06-13 | §5: leading `EdgeIndexScan` includes `Undirected`; PocketIC subset negative e2e. |
 | 2026-06-13 | Reject slash edge patterns in CREATE INDEX FOR (no edge variable for ON clause). |
 | 2026-06-13 | Proposed; GQL `EdgeDirection` in edge `CREATE INDEX FOR`; wire label in graph-index keys; planner subset rule. |
 
@@ -215,8 +216,9 @@ per ADR 0009 §1.1; edge DDL still requires a catalog label in `FOR`.
 | **Graph executor** | Seed bind + local edge-index scan unchanged except wire-native labels |
 | **Expand scan fallback** | After `DROP INDEX`, inline edge property filters still resolve properties via `property_uses` (ADR 0009 Phase E) |
 
-Leading `EdgeIndexScan` eligibility ([`first_hop_supports_leading_edge_index`](../../crates/gql-planner/src/planner/match_plan/path/pattern/lower.rs)) remains limited to
-`PointingRight` and `PointingLeft` hops; other directions use expand-path index fusion or scan
+Leading `EdgeIndexScan` eligibility ([`first_hop_supports_leading_edge_index`](../../crates/gql-planner/src/planner/match_plan/path/pattern/lower.rs)) is limited to
+`PointingRight`, `PointingLeft`, and `Undirected` hops (federated anchor on undirected-only indexes).
+`UndirectedOrRight`, `LeftOrUndirected`, `LeftOrRight`, and `AnyDirection` use expand-path index fusion or scan
 fallback per existing planner rules.
 
 ### 6. `DROP INDEX` and backfill

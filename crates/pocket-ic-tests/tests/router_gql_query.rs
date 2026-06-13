@@ -308,6 +308,37 @@ fn standalone_gql_query_edge_index_undirected_ddl() {
     assert_eq!(result.row_count, 1);
 }
 
+/// Undirected-only index maintains undirected wire postings; directed inserts must not seed
+/// an undirected leading `EdgeIndexScan` (ADR 0012 subset rule).
+#[test]
+fn standalone_gql_query_undirected_index_does_not_seed_directed_edge() {
+    let env = install_single_shard_federation();
+    let weight = admin_intern_property(&env, "weight");
+    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
+    create_undirected_edge_property_index(
+        &env,
+        INDEX_WEIGHT_UNDIR_NAME,
+        INDEX_EDGE_LABEL,
+        "weight",
+        "standalone_gql_query_undirected_index_does_not_seed_directed_edge",
+    );
+    let source = e2e_insert_vertex(&env, env.graph_source);
+    let target = e2e_insert_vertex(&env, env.graph_source);
+    e2e_insert_directed_edge_with_property(
+        &env,
+        env.graph_source,
+        source.local_vertex_id,
+        target.local_vertex_id,
+        knows.raw(),
+        weight.raw(),
+        5,
+    );
+
+    let result = gql_query_as_admin(&env, EDGE_WEIGHT_UNDIR_BOUND_QUERY);
+
+    assert_eq!(result.row_count, 0);
+}
+
 /// Anonymous endpoints on both sides of an undirected edge match once per endpoint
 /// when the planner expands from each vertex (no leading edge index anchor).
 #[test]
