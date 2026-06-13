@@ -19,7 +19,7 @@ Five levels (each includes lower):
 |------|------------|----------|-----------------|
 | **Executor** | Prepared only | Yes | No |
 | **Read** | Read-only programs | Yes | No |
-| **Write** | + data modification, DDL, `CALL` (conservative) | Yes | No |
+| **Write** | + data modification, GQL catalog DDL (`CREATE`/`DROP` graph type, graph), `CALL` (conservative) | Yes | No |
 | **Manager** | Same as Write | Yes | Capability bits (e.g. `PREPARE_REGISTER`) |
 | **Admin** | Full | Yes | Grant roles |
 
@@ -37,6 +37,21 @@ flowchart LR
 ```
 
 Write detection must agree between static classification and planner DML detection (`router/src/gql.rs`).
+
+## Catalog DDL authorization
+
+GQL catalog statements set `has_catalog_modification` in [`ProgramModificationFlags`](../../crates/gql/src/program_modification.rs) (`CREATE`/`DROP` graph, graph type, schema). Router enforcement:
+
+| DDL surface | Entry | Minimum role / gate |
+|-------------|-------|---------------------|
+| **Graph type catalog** (`CREATE`/`DROP GRAPH TYPE`, `CREATE`/`DROP GRAPH` in `gql_execute*`) | `authorize_adhoc_gql` after `classify_program` | **Write** (includes `has_catalog_modification`) |
+| **Index DDL** (`CREATE INDEX` / `DROP INDEX` standalone parse path) | `authorize_index_ddl` | **Controller** or Manager with **`PREPARE_REGISTER`** |
+| **Prepared plan registry** | `authorize_prepared_catalog_change` | Admin or Manager with **`PREPARE_REGISTER`** |
+| **Federation graph registration** | `admin_register_graph` | Admin (Candid admin API; separate from GQL catalog DDL) |
+
+Graph type catalog DDL runs on the main GQL path **before** ingress dispatch when the transaction block contains catalog statements ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)). Catalog-only blocks return zero rows without dispatching DML/query ops.
+
+**Note:** Index DDL is **stricter** than graph type catalog DDL — Write alone is insufficient for index create/drop.
 
 ## Graph shard exposure
 

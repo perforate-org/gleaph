@@ -1,7 +1,7 @@
 # Glossary
 
 Last updated: 2026-06-13  
-Anchor timestamp: 2026-06-13 08:51:44 UTC +0000
+Anchor timestamp: 2026-06-13 14:17:35 UTC +0000
 
 Terms used across Gleaph design documents. Canonical types live in **`gleaph-graph-kernel`** unless noted.
 
@@ -32,6 +32,19 @@ See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md) and [adr/0006-pre
 | **Property id** | Router `ROUTER_PROPERTY_CATALOG` | Name ↔ `PropertyId` SSOT for federated graphs. Graph stores values only. |
 | **Vertex / edge label id** | Router label catalogs | Name ↔ label id SSOT; graph stores label sets by id. |
 | **Resolved property table** | Plan wire (`ResolvedPropertyTable`) | Router-supplied name→id map attached to `ExecutePlanArgs` for graph DML/scan. |
+
+## GQL graph type catalog (router)
+
+Distinct from federation **property graph** registration ([ADR 0011](adr/0011-gql-graph-resolution-and-catalog-scoping.md)) and from label/property id catalogs above.
+
+| Term | Owner / region | Meaning |
+|------|----------------|---------|
+| **`GraphCatalog`** | Router regions **30–31** (`ROUTER_GQL_GRAPH_CATALOG`) | SSOT for GQL **graph type definitions** and **per-graph schema bindings** ([ADR 0013](adr/0013-gql-graph-type-catalog-on-router.md)). |
+| **`ROUTER_GRAPH_CATALOG`** | Regions **24–25** | Federation **property graph name ↔ `GraphId`** — prerequisite for `CREATE GRAPH g …` ([ADR 0011](adr/0011-gql-graph-resolution-and-catalog-scoping.md)). |
+| **`ROUTER_GRAPH_TYPE_CATALOG`** | Regions **32–33** | GQL **graph type name ↔ `GraphTypeId`**; intern at `CREATE GRAPH TYPE` ([ADR 0014](adr/0014-graph-type-id-catalog-on-router.md)). |
+| **`GraphTypeId`** | `ROUTER_GRAPH_TYPE_CATALOG` | Router-issued `GraphTypeId(u32)` for named graph types (`CREATE GRAPH TYPE gt { … }`); **`0` reserved**. Keys `type_map` and `TYPED` binding refs. |
+| **Graph schema binding** | `GraphCatalog.binding_map` | Row at federation **`GraphId`**: inline graph type definition or `TYPED` ref to **`GraphTypeId`**. Open graph (`ANY`) = no row. |
+| **`object_name_key`** | DDL ingress | Joins qualified GQL object name segments with `.` for lookup at the GQL surface (before intern). |
 
 ## Graph storage
 
@@ -64,7 +77,8 @@ See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md) and [adr/0006-pre
 | **HOME graph** | Router default when session current is unset: exactly one visible `GraphRegistryEntry` with `is_home: true`, else sole visible graph (standalone), else error when ambiguous ([ADR 0011](adr/0011-gql-graph-resolution-and-catalog-scoping.md)). |
 | **HOME_GRAPH** | GQL special reference resolved to the caller’s HOME graph (same rules as router HOME resolution). |
 | **SessionGraphSeed** | Optional ingress input to `gleaph_gql::validate_with_seed`: effective and HOME catalog names so validator `graph_scope` matches router `resolve_graph_context`. |
-| **GraphId** | Router-issued `GraphId(u32)` via `BidirectionalCatalog`; stable keys for registry, shards, index rows, idempotency — **not** embedded graph name strings (ADR 0011). |
+| **GraphId** | Router-issued `GraphId(u32)` via `BidirectionalCatalog`; stable keys for registry, shards, index rows, idempotency, **graph schema bindings** — **not** embedded graph name strings (ADR 0011). |
+| **GraphTypeId** | Router-issued `GraphTypeId(u32)` via `ROUTER_GRAPH_TYPE_CATALOG`; stable keys for GQL graph **type** definitions and `TYPED` refs — separate id space from `GraphId` (ADR 0014). |
 | **is_home** | `GraphRegistryEntry.is_home`: marks the HOME graph when multiple graphs are visible; at most one may be registered. |
 | **IndexNameId** | Router-issued `IndexNameId(u16)` via graph-scoped `BidirectionalCatalog`; stable key component for `ROUTER_NAMED_INDEXES` — **not** index name strings (ADR 0011). |
 

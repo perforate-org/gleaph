@@ -81,8 +81,11 @@ Planner pushdown analysis (`analyze_remote_use_graph_pushdown`) runs at router i
 
 `gleaph_gql::program_modification::classify_program` drives:
 
-- Whether ad-hoc execution needs Write/Manager/Admin
+- Whether ad-hoc execution needs Write/Manager/Admin (`requires_write_path`: DML, **catalog DDL**, or `CALL`)
 - Consistency check vs planner `has_dml()` in router
+
+Catalog DDL (`CREATE`/`DROP GRAPH TYPE`, `CREATE`/`DROP GRAPH`, …) sets `has_catalog_modification`.
+Router applies graph type catalog statements before dispatch when present; catalog-only blocks short-circuit ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)).
 
 **Source:** `crates/gql/src/program_modification.rs`
 
