@@ -17,6 +17,7 @@ mod index_catalog;
 mod index_client;
 mod index_ddl;
 mod index_lookup;
+mod index_route;
 mod index_sync;
 pub mod init;
 mod label_backfill;

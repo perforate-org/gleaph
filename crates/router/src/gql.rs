@@ -37,8 +37,7 @@ use crate::graph_client::{
     ack_label_telemetry_event, execute_plan_on_graph, get_mutation_outcome,
     list_pending_label_telemetry_events,
 };
-use crate::index_client::RouterIndexClient;
-use crate::index_lookup::IndexLookup;
+use crate::index_lookup::{IndexLookup, RouterIndexLookup};
 use crate::planner_stats::RouterGraphStats;
 use crate::rbac::{authorize_adhoc_gql, authorize_index_ddl};
 use crate::seed::{IndexAnchor, SeedAnchorSet, SeedProbe};
@@ -485,7 +484,7 @@ pub async fn dispatch_plan_blob(
     if shards.is_empty() {
         return Err(RouterError::ShardNotRegistered);
     }
-    let index = RouterIndexClient::new(shards[0].index_canister);
+    let index = RouterIndexLookup::from_shards(&shards);
     dispatch_plan_blob_with_index(
         logical_graph_name,
         plan_blob,

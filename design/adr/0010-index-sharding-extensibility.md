@@ -204,12 +204,12 @@ canister ([ADR 0007](0007-stable-memory-layout.md)), not a posting-key sharding 
 
 ## Implementation checklist (graph multi-shard milestone)
 
-1. **`resolve_index_lookup_targets`** in router (dedupe shard index Principals).
-2. Replace **`shards[0].index_canister`** call sites in `gql.rs` / index client wiring.
-3. Registration validation: document **single-index intersection** invariant for operators.
-4. Tests: two graph shards, **same** index Principal (PocketIC) — parity with today.
-5. Tests (optional): two shards, two index Principals, **equality** lookup merge only.
-6. Update [federation-target.md](../sharding/federation-target.md) and [property-index.md](../index/property-index.md) — status **Partially Implemented** for routing.
+1. **`resolve_index_lookup_targets`** in router (dedupe shard index Principals) — **Implemented** (`index_route.rs`).
+2. Replace **`shards[0].index_canister`** call sites — **Implemented** (`RouterIndexLookup`, `gql.rs`).
+3. Registration validation: document **single-index intersection** invariant — **Implemented** (`lookup_intersection` / `lookup_label_intersection` error when `|targets| > 1`).
+4. Tests: two graph shards, **same** index Principal — **Implemented** (`index_route`, `index_lookup` tests; existing multi-shard gql tests).
+5. Tests: two shards, two index Principals, **equality** lookup merge — **Partially Implemented** (merge helpers unit-tested; IC fan-out exercised at wasm runtime only).
+6. Update federation-target / property-index — see linked design docs.
 
 Follow-up ADR (when needed): **index split strategy** — selects among capacity-planning axes,
 defines intersection merge across Principals, may fix `GROUP_SIZE` or explicit ranges.
