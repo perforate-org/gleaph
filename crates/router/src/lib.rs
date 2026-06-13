@@ -40,6 +40,7 @@ mod seed;
 pub mod state;
 pub mod types;
 mod use_graph;
+mod use_graph_wire;
 
 pub use facade::store::RouterStore;
 pub use init::RouterInitArgs;

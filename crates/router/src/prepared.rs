@@ -72,7 +72,8 @@ pub fn prepared_register(name: String, query: String) -> Result<(), RouterError>
             (dispatch.dispatch_graph_id, plan)
         }
         crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => (graph_id, plan),
-        crate::use_graph::UseGraphV2Dispatch::Multi { .. } => {
+        crate::use_graph::UseGraphV2Dispatch::Multi { .. }
+        | crate::use_graph::UseGraphV2Dispatch::Join { .. } => {
             return Err(RouterError::InvalidArgument(
                 "prepared queries with multi-graph USE GRAPH merge are not supported".into(),
             ));

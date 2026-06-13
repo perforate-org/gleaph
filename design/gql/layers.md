@@ -73,7 +73,7 @@ Proposed mutation-only procedures (`GLEAPH.FINALIZE_BULK_INGEST`, `GLEAPH.VERTEX
 | **USE GRAPH** (planner) | Focused sub-plan scope; router **defocuses** or **peels** nested chains, replans with target graph stats, dispatches per graph (read path; pushdown rules in planner). Sequential top-level segments merge with row union at router (U2). |
 | **Federation** (router/graph) | Shards of **one** logical graph; `GlobalVertexId`, placement, encoded element ids |
 
-**Implemented (2026-06-13):** program-based graph resolution (R0–R2), validator session seed (R1), remote top-level `USE GRAPH` dispatch (U1b), nested `USE GRAPH` chain peel + sequential multi-graph union merge (U2 partial). **Not implemented:** HashJoin / CartesianProduct multi-graph merge, remote `USE` DML, prepared multi-graph plans, cross-call session persistence.
+**Implemented (2026-06-13):** program-based graph resolution (R0–R2), validator session seed (R1), remote top-level `USE GRAPH` dispatch (U1b), multi-graph USE v2 (nested peel, NEXT union, cross-graph cartesian/hash join at router). **Not implemented:** remote `USE` DML, prepared multi-graph plans, cross-call session persistence.
 
 Planner pushdown analysis (`analyze_remote_use_graph_pushdown`) runs at router ingress for remote `USE`; shard routing tests live in `crates/router/src/use_graph.rs` and PocketIC.
 

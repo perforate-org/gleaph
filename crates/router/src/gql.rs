@@ -6,10 +6,9 @@ use candid::Principal;
 use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
-use gleaph_gql_ic::decode_gql_params_blob;
-use gleaph_gql_planner::PhysicalPlan;
-use gleaph_gql_planner::build_block_plan_with_schema;
+use gleaph_gql_ic::{IcWirePlanQueryResult, decode_gql_params_blob};
 use gleaph_gql_planner::wire::encode_block_plans;
+use gleaph_gql_planner::{PhysicalPlan, PlanOp, build_block_plan_with_schema};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{
@@ -540,6 +539,27 @@ async fn run_gql(
             )
             .await
         }
+        crate::use_graph::UseGraphV2Dispatch::Join {
+            left,
+            right,
+            join,
+            tail_ops,
+            plan,
+        } => {
+            dispatch_use_graph_join(
+                left,
+                right,
+                join,
+                tail_ops,
+                &plan,
+                requires_write_path,
+                &pmap,
+                params,
+                mode,
+                client_mutation_key,
+            )
+            .await
+        }
     }
 }
 
@@ -587,6 +607,83 @@ async fn dispatch_multi_graph_use_segments(
         .map_err(RouterError::InvalidArgument)?;
     }
     Ok(GqlQueryResult::from_merged(&merged))
+}
+
+#[allow(clippy::too_many_arguments)]
+async fn dispatch_use_graph_join(
+    left: crate::use_graph::UseGraphSegment,
+    right: crate::use_graph::UseGraphSegment,
+    join: crate::use_graph::MultiGraphJoinKind,
+    tail_ops: Vec<PlanOp>,
+    output_plan: &PhysicalPlan,
+    requires_write_path: bool,
+    pmap: &BTreeMap<String, gleaph_gql::Value>,
+    params: &[u8],
+    mode: GqlExecutionMode,
+    client_mutation_key: Option<&str>,
+) -> Result<GqlQueryResult, RouterError> {
+    if requires_write_path {
+        return Err(RouterError::InvalidArgument(
+            "DML in multi-graph USE GRAPH is not supported".into(),
+        ));
+    }
+    let left_plan = crate::use_graph::defocused_plan_from_ops(output_plan.clone(), left.ops);
+    let right_plan = crate::use_graph::defocused_plan_from_ops(output_plan.clone(), right.ops);
+    let left_stats = graph_stats_for(left.graph_id);
+    let right_stats = graph_stats_for(right.graph_id);
+    let left_blob = encode_block_plans(std::slice::from_ref(&left_plan), requires_write_path)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let right_blob = encode_block_plans(std::slice::from_ref(&right_plan), requires_write_path)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let left_result = dispatch_plan_blob(
+        left.graph_id,
+        &left_blob,
+        std::slice::from_ref(&left_plan),
+        pmap,
+        params,
+        mode,
+        client_mutation_key,
+        &left_stats,
+    )
+    .await?;
+    let right_result = dispatch_plan_blob(
+        right.graph_id,
+        &right_blob,
+        std::slice::from_ref(&right_plan),
+        pmap,
+        params,
+        mode,
+        client_mutation_key,
+        &right_stats,
+    )
+    .await?;
+    let left_wire = decode_wire_result(left_result)?;
+    let right_wire = decode_wire_result(right_result)?;
+    let merged = match join {
+        crate::use_graph::MultiGraphJoinKind::Cartesian => {
+            crate::use_graph_wire::cartesian_merge_wire_results(&left_wire, &right_wire)?
+        }
+        crate::use_graph::MultiGraphJoinKind::HashJoin { join_keys } => {
+            crate::use_graph_wire::hash_join_wire_results(&left_wire, &right_wire, &join_keys)?
+        }
+    };
+    let projected = crate::use_graph_wire::apply_tail_ops_wire(&merged, &tail_ops)?;
+    Ok(GqlQueryResult {
+        row_count: projected.rows.len() as u64,
+        rows_blob: Some(
+            projected
+                .encode_blob()
+                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?,
+        ),
+    })
+}
+
+fn decode_wire_result(result: GqlQueryResult) -> Result<IcWirePlanQueryResult, RouterError> {
+    let blob = result.rows_blob.ok_or_else(|| {
+        RouterError::InvalidArgument("multi-graph branch returned no rows_blob".into())
+    })?;
+    IcWirePlanQueryResult::decode_blob(&blob)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))
 }
 
 /// Route and execute a plan blob (single- or multi-shard).
