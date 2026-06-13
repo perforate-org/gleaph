@@ -70,7 +70,7 @@ fn edge_posting_matches_registration(wire_label_id: u16, label_id: u16, directio
         "undirected"
     };
     let maintains_directed = matches!(direction_tag, 1 | 2 | 3 | 7 | 6 | 5);
-    let maintains_undirected = matches!(direction_tag, 4 | 7 | 6 | 5);
+    let maintains_undirected = matches!(direction_tag, 4..=7);
     match edge_class {
         "directed" => maintains_directed,
         "undirected" => maintains_undirected,

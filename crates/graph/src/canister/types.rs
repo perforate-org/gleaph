@@ -69,6 +69,12 @@ pub struct GraphInitArgs {
     pub router_canister: Option<Principal>,
     #[serde(default)]
     pub shard_id: Option<ShardId>,
+    /// Index canister for install-time federation wiring.
+    ///
+    /// Canister init cannot perform inter-canister calls, so deployments pass this after the
+    /// Router registry has been configured.
+    #[serde(default)]
+    pub index_canister: Option<Principal>,
 }
 
 #[cfg(test)]
@@ -81,6 +87,7 @@ mod tests {
             logical_graph_name: None,
             router_canister: None,
             shard_id: None,
+            index_canister: None,
         };
         let bytes = candid::encode_one(args).expect("encode GraphInitArgs");
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();

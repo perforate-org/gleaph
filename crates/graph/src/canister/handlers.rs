@@ -7,6 +7,7 @@ use crate::gql_execution_context::GqlExecutionContext;
 use crate::gql_run::{kernel_execution_mode, run_wire_plans_last_read_row_count};
 use crate::index::ic::IcPropertyIndexClient;
 use crate::index::lookup::PropertyIndexLookup;
+#[cfg(not(target_family = "wasm"))]
 use crate::index::router::verify_shard_attachment;
 use crate::plan_wire_guard::ensure_federated_seeds_for_index_anchors;
 use candid::Decode;
@@ -20,17 +21,18 @@ use gleaph_graph_kernel::plan_exec::{
 use super::types::GraphInitArgs;
 
 pub async fn init(args: GraphInitArgs) {
-    let federation_routing = match (args.router_canister, args.shard_id) {
-        (Some(router_canister), Some(shard_id)) => {
-            #[cfg(target_family = "wasm")]
-            let entry = verify_shard_attachment(
-                router_canister,
-                shard_id,
-                args.logical_graph_name.as_deref(),
-            )
-            .await
-            .unwrap_or_else(|e| ic_cdk::trap(e.to_string()));
-            #[cfg(not(target_family = "wasm"))]
+    let federation_routing = match (args.router_canister, args.shard_id, args.index_canister) {
+        (Some(router_canister), Some(shard_id), Some(index_canister)) => Some(FederationRouting {
+            router_canister,
+            shard_id,
+            index_canister,
+        }),
+        #[cfg(target_family = "wasm")]
+        (Some(_), Some(_), None) => ic_cdk::trap(
+            "GraphInitArgs: index_canister is required with router_canister and shard_id during wasm init",
+        ),
+        #[cfg(not(target_family = "wasm"))]
+        (Some(router_canister), Some(shard_id), None) => {
             let entry = verify_shard_attachment(
                 router_canister,
                 shard_id,
@@ -43,9 +45,12 @@ pub async fn init(args: GraphInitArgs) {
                 index_canister: entry.index_canister,
             })
         }
-        (None, None) => None,
+        (None, None, None) => None,
+        (None, None, Some(_)) => {
+            ic_cdk::trap("GraphInitArgs: index_canister requires router_canister and shard_id")
+        }
         _ => ic_cdk::trap(
-            "GraphInitArgs: router_canister and shard_id must both be set or both omitted",
+            "GraphInitArgs: router_canister, shard_id, and index_canister must be set together or omitted",
         ),
     };
 
@@ -128,11 +133,12 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
     )
     .map_err(|e| e.0)?;
     // Router-owned index anchors: federated graph shards must not call index on read path.
+    // Update plans still need the index client to flush mutation postings after local writes.
     #[cfg(target_family = "wasm")]
-    let index_holder = if seeds.is_some() || store.federation_routing().is_some() {
-        None
-    } else {
-        wasm_index_client_holder()
+    let index_holder = match args.mode {
+        GqlExecutionMode::Update => wasm_index_client_holder(),
+        GqlExecutionMode::Query if seeds.is_some() || store.federation_routing().is_some() => None,
+        GqlExecutionMode::Query => wasm_index_client_holder(),
     };
     #[cfg(target_family = "wasm")]
     let ix = index_holder.as_ref().map(|c| c as &dyn PropertyIndexLookup);

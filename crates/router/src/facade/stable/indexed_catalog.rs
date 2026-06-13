@@ -10,7 +10,7 @@ use gleaph_graph_kernel::entry::{GraphId, IndexNameId, PropertyId};
 use gleaph_graph_kernel::index::IndexedPropertyKind;
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 
-use crate::edge_index_direction::{EdgeIndexDirectionTag, tag_from_byte};
+use crate::edge_index_direction::tag_from_byte;
 use crate::facade::stable::{ROUTER_INDEXED_PROPERTY_SET, ROUTER_NAMED_INDEXES};
 use crate::planner_stats::{EdgeIndexMembership, RouterGraphStats};
 use crate::state::RouterError;

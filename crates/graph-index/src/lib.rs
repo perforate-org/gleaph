@@ -181,3 +181,5 @@ fn count_postings_by_value_for_label(
 ) -> Vec<ValuePostingCount> {
     canister::count_postings_by_value_for_label(property_id, vertex_label_id, min_count)
 }
+
+ic_cdk::export_candid!();

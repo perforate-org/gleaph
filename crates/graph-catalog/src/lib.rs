@@ -248,7 +248,7 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
         let mut binding_keys_to_remove = Vec::new();
         for entry in self.binding_map.iter() {
             if binding_type_ref_id(&entry.value()) == Some(type_id) {
-                binding_keys_to_remove.push(entry.key().clone());
+                binding_keys_to_remove.push(*entry.key());
             }
         }
         for binding_key in binding_keys_to_remove {

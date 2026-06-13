@@ -18,14 +18,12 @@ pub async fn admin_set_shard_owner(
 ) -> Result<(), String> {
     use ic_cdk::call::Call;
 
-    let result: (Result<(), String>,) =
-        Call::unbounded_wait(index_canister, "admin_set_shard_owner")
-            .with_arg((shard_id, owner_principal))
-            .await
-            .map_err(|e| format!("index admin_set_shard_owner call failed: {e}"))?
-            .candid()
-            .map_err(|e| format!("index admin_set_shard_owner decode failed: {e}"))?;
-    result.0
+    Call::unbounded_wait(index_canister, "admin_set_shard_owner")
+        .with_args(&(shard_id.raw(), owner_principal))
+        .await
+        .map_err(|e| format!("index admin_set_shard_owner call failed: {e}"))?
+        .candid()
+        .map_err(|e| format!("index admin_set_shard_owner decode failed: {e}"))?
 }
 
 #[cfg_attr(
@@ -58,14 +56,12 @@ pub async fn admin_clear_shard_owner(
 ) -> Result<(), String> {
     use ic_cdk::call::Call;
 
-    let result: (Result<(), String>,) =
-        Call::unbounded_wait(index_canister, "admin_clear_shard_owner")
-            .with_arg((shard_id,))
-            .await
-            .map_err(|e| format!("index admin_clear_shard_owner call failed: {e}"))?
-            .candid()
-            .map_err(|e| format!("index admin_clear_shard_owner decode failed: {e}"))?;
-    result.0
+    Call::unbounded_wait(index_canister, "admin_clear_shard_owner")
+        .with_args(&(shard_id.raw(),))
+        .await
+        .map_err(|e| format!("index admin_clear_shard_owner call failed: {e}"))?
+        .candid()
+        .map_err(|e| format!("index admin_clear_shard_owner decode failed: {e}"))?
 }
 
 #[cfg_attr(

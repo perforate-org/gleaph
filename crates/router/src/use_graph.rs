@@ -128,22 +128,22 @@ pub fn analyze_use_graph_v2_dispatch(
         return Ok(UseGraphV2Dispatch::EffectiveGraph { plan });
     }
 
-    if let Some((chain, inner_ops)) = try_peel_use_graph_chain(&plan.ops) {
-        if collect_use_graph_names(&inner_ops).is_empty() {
-            let graph_id = resolve_use_graph_chain_target(
-                store,
-                caller,
-                session_current,
-                session_effective,
-                &chain,
-                &inner_ops,
-            )?;
-            let defocused = defocused_plan_from_ops(plan, inner_ops);
-            return Ok(UseGraphV2Dispatch::Single {
-                graph_id,
-                plan: defocused,
-            });
-        }
+    if let Some((chain, inner_ops)) = try_peel_use_graph_chain(&plan.ops)
+        && collect_use_graph_names(&inner_ops).is_empty()
+    {
+        let graph_id = resolve_use_graph_chain_target(
+            store,
+            caller,
+            session_current,
+            session_effective,
+            &chain,
+            &inner_ops,
+        )?;
+        let defocused = defocused_plan_from_ops(plan, inner_ops);
+        return Ok(UseGraphV2Dispatch::Single {
+            graph_id,
+            plan: defocused,
+        });
     }
 
     if let Some((segments, tail_ops)) = try_split_use_graph_segments(&plan.ops) {

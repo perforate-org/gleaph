@@ -90,7 +90,7 @@ pub fn index_applies_to_query(
     )
 }
 
-pub fn wire_label_for_storage(catalog: EdgeLabelId, class: StorageClass) -> u16 {
+fn wire_label_for_storage(catalog: EdgeLabelId, class: StorageClass) -> u16 {
     let directedness = match class {
         StorageClass::Directed => EdgeDirectedness::Directed,
         StorageClass::Undirected => EdgeDirectedness::Undirected,
@@ -98,7 +98,7 @@ pub fn wire_label_for_storage(catalog: EdgeLabelId, class: StorageClass) -> u16 
     catalog.pack(directedness).raw()
 }
 
-pub fn storage_class_from_wire(wire_label_id: u16) -> Option<StorageClass> {
+fn storage_class_from_wire(wire_label_id: u16) -> Option<StorageClass> {
     const BUCKET_LABEL_DIRECTED_BIT: u16 = 0x8000;
     if wire_label_id & BUCKET_LABEL_DIRECTED_BIT != 0 {
         Some(StorageClass::Directed)

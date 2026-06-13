@@ -103,7 +103,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
         let (): () = Call::bounded_wait(self.index_principal, "posting_insert")
-            .with_args(&(shard_id, property_id, value, vertex_id))
+            .with_args(&(shard_id.raw(), property_id, value, vertex_id))
             .await
             .map_err(|e| ic_wait_err("posting_insert", e))?
             .candid()
@@ -119,7 +119,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
         let (): () = Call::bounded_wait(self.index_principal, "posting_remove")
-            .with_args(&(shard_id, property_id, value, vertex_id))
+            .with_args(&(shard_id.raw(), property_id, value, vertex_id))
             .await
             .map_err(|e| ic_wait_err("posting_remove", e))?
             .candid()
@@ -134,7 +134,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
         let (): () = Call::bounded_wait(self.index_principal, "label_posting_insert")
-            .with_args(&(shard_id, label_id, vertex_id))
+            .with_args(&(shard_id.raw(), label_id, vertex_id))
             .await
             .map_err(|e| ic_wait_err("label_posting_insert", e))?
             .candid()
@@ -149,7 +149,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         vertex_id: u32,
     ) -> Result<(), PlanQueryError> {
         let (): () = Call::bounded_wait(self.index_principal, "label_posting_remove")
-            .with_args(&(shard_id, label_id, vertex_id))
+            .with_args(&(shard_id.raw(), label_id, vertex_id))
             .await
             .map_err(|e| ic_wait_err("label_posting_remove", e))?
             .candid()
@@ -168,7 +168,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
     ) -> Result<(), PlanQueryError> {
         let (): () = Call::bounded_wait(self.index_principal, "edge_posting_insert")
             .with_args(&(
-                shard_id,
+                shard_id.raw(),
                 property_id,
                 value,
                 label_id,
@@ -193,7 +193,7 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
     ) -> Result<(), PlanQueryError> {
         let (): () = Call::bounded_wait(self.index_principal, "edge_posting_remove")
             .with_args(&(
-                shard_id,
+                shard_id.raw(),
                 property_id,
                 value,
                 label_id,

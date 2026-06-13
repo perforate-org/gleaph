@@ -15,13 +15,12 @@ async fn call_graph<T: candid::CandidType, R: candid::CandidType + serde::de::De
 ) -> Result<R, String> {
     use ic_cdk::call::Call;
 
-    let result: (R,) = Call::bounded_wait(graph, method)
+    Call::bounded_wait(graph, method)
         .with_arg(&args)
         .await
         .map_err(|e| format!("graph {method} call failed: {e}"))?
         .candid()
-        .map_err(|e| format!("graph {method} decode failed: {e}"))?;
-    Ok(result.0)
+        .map_err(|e| format!("graph {method} decode failed: {e}"))
 }
 
 /// Graph canister methods that return `Result<R, text>` on the wire (not a bare `R` tuple).
@@ -65,13 +64,12 @@ async fn call_graph_args<
 ) -> Result<R, String> {
     use ic_cdk::call::Call;
 
-    let result: (R,) = Call::bounded_wait(graph, method)
+    Call::bounded_wait(graph, method)
         .with_args(args)
         .await
         .map_err(|e| format!("graph {method} call failed: {e}"))?
         .candid()
-        .map_err(|e| format!("graph {method} decode failed: {e}"))?;
-    Ok(result.0)
+        .map_err(|e| format!("graph {method} decode failed: {e}"))
 }
 
 #[cfg(not(target_family = "wasm"))]

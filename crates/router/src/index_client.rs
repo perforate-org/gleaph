@@ -157,7 +157,7 @@ impl RouterIndexClient {
 
             let hits: Vec<PostingHit> =
                 Call::bounded_wait(self.index_canister, "lookup_label_for_shard")
-                    .with_args(&(vertex_label_id, shard_id))
+                    .with_args(&(vertex_label_id, shard_id.raw()))
                     .await
                     .map_err(|e| format!("lookup_label_for_shard: {e}"))?
                     .candid()
