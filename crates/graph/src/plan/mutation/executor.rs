@@ -1,6 +1,6 @@
 use super::error::PlanMutationError;
 use super::expr_evaluator::{MutationPropertyExprEvaluation, MutationPropertyExprEvaluator};
-use crate::facade::mutation_executor::GraphMutationExecutor;
+use crate::facade::mutation_executor::{GraphMutationExecutor, insert_vertex_with_async};
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::gql_execution_context::GqlExecutionContext;
 use gleaph_gql::Value;
@@ -19,6 +19,14 @@ pub trait PlanMutationExecutor {
         plan: &PhysicalPlan,
         execution: GqlExecutionContext,
     ) -> Result<PlanMutationBindings, PlanMutationError>;
+}
+
+pub async fn execute_plan_mutations_async(
+    store: &GraphStore,
+    plan: &PhysicalPlan,
+    execution: GqlExecutionContext,
+) -> Result<PlanMutationBindings, PlanMutationError> {
+    execute_ops_async(store, &plan.ops, &BTreeMap::new(), execution).await
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -56,6 +64,24 @@ pub fn execute_ops(
 ) -> Result<PlanMutationBindings, PlanMutationError> {
     let mut bindings = PlanMutationBindings::default();
     execute_ops_with_bindings(store, ops, parameters, execution, &mut bindings)?;
+    Ok(bindings)
+}
+
+pub async fn execute_ops_async(
+    store: &GraphStore,
+    ops: &[PlanOp],
+    parameters: &BTreeMap<String, gleaph_gql::Value>,
+    execution: GqlExecutionContext,
+) -> Result<PlanMutationBindings, PlanMutationError> {
+    let mut bindings = PlanMutationBindings::default();
+    Box::pin(execute_ops_with_bindings_async(
+        store,
+        ops,
+        parameters,
+        execution,
+        &mut bindings,
+    ))
+    .await?;
     Ok(bindings)
 }
 
@@ -140,6 +166,145 @@ fn execute_ops_with_bindings(
                 ..
             } => {
                 execute_ops_with_bindings(store, sub_plan, parameters, execution.clone(), bindings)?
+            }
+            PlanOp::SetProperties { items } => {
+                for item in items {
+                    execute_set_item(store, item, &execution, &evaluator, bindings)?;
+                }
+            }
+            PlanOp::RemoveProperties { items } => {
+                for item in items {
+                    execute_remove_item(store, item, &execution, bindings)?;
+                }
+            }
+            PlanOp::DeleteVertex { variable } => {
+                let vertex_id = *bindings.vertices.get(variable.as_ref()).ok_or_else(|| {
+                    PlanMutationError::MissingVertexBinding {
+                        variable: variable.to_string(),
+                    }
+                })?;
+                collect_vertex_delete_label_deltas(store, vertex_id, false, bindings)?;
+                store.delete_vertex(vertex_id)?;
+                bindings.vertices.remove(variable.as_ref());
+            }
+            PlanOp::DetachDeleteVertex { variable } => {
+                let vertex_id = *bindings.vertices.get(variable.as_ref()).ok_or_else(|| {
+                    PlanMutationError::MissingVertexBinding {
+                        variable: variable.to_string(),
+                    }
+                })?;
+                collect_vertex_delete_label_deltas(store, vertex_id, true, bindings)?;
+                store.detach_delete_vertex(vertex_id)?;
+                bindings.vertices.remove(variable.as_ref());
+            }
+            PlanOp::DeleteEdge { variable } => {
+                let handle = *bindings.edges.get(variable.as_ref()).ok_or_else(|| {
+                    PlanMutationError::MissingElementBinding {
+                        variable: variable.to_string(),
+                    }
+                })?;
+                if let Some(label_id) = edge_label_delta_for_handle(store, handle) {
+                    bindings.add_edge_label_delta(label_id, -1);
+                }
+                store.delete_edge_by_handle(handle)?;
+                bindings.edges.remove(variable.as_ref());
+            }
+            PlanOp::Materialize { .. } => {}
+            other if !is_mutation_op(other) => {}
+            other => return Err(PlanMutationError::UnsupportedOp(plan_op_name(other))),
+        }
+    }
+    Ok(())
+}
+
+async fn execute_ops_with_bindings_async(
+    store: &GraphStore,
+    ops: &[PlanOp],
+    parameters: &BTreeMap<String, gleaph_gql::Value>,
+    execution: GqlExecutionContext,
+    bindings: &mut PlanMutationBindings,
+) -> Result<(), PlanMutationError> {
+    let evaluator = MutationPropertyExprEvaluator::new(parameters, execution.caller);
+    for op in ops {
+        match op {
+            PlanOp::InsertVertex {
+                variable,
+                labels,
+                properties,
+            } => {
+                let properties = evaluator.resolve_assignments(properties)?;
+                let label_ids = resolve_vertex_labels(&execution, labels)?;
+                let property_ids = resolve_mutation_properties(&execution, properties)?;
+                let unique_labels = label_ids.iter().copied().collect::<BTreeSet<_>>();
+                let vertex_id = insert_vertex_with_async(store, label_ids, property_ids).await?;
+                for label_id in unique_labels {
+                    bindings.add_vertex_label_delta(label_id, 1);
+                }
+                if let Some(variable) = variable {
+                    bindings.vertices.insert(variable.to_string(), vertex_id);
+                }
+            }
+            PlanOp::InsertEdge {
+                variable,
+                src,
+                dst,
+                direction,
+                labels,
+                properties,
+            } => {
+                let src_id = *bindings.vertices.get(src.as_ref()).ok_or_else(|| {
+                    PlanMutationError::MissingVertexBinding {
+                        variable: src.to_string(),
+                    }
+                })?;
+                let dst_id = *bindings.vertices.get(dst.as_ref()).ok_or_else(|| {
+                    PlanMutationError::MissingVertexBinding {
+                        variable: dst.to_string(),
+                    }
+                })?;
+                let properties = evaluator.resolve_assignments(properties)?;
+                let resolved_label = resolve_edge_label(&execution, labels.first())?;
+                let property_ids = resolve_mutation_properties(&execution, properties)?;
+                let handle = match direction {
+                    EdgeDirection::PointingRight => store.insert_directed_edge_with(
+                        src_id,
+                        dst_id,
+                        resolved_label,
+                        property_ids,
+                    )?,
+                    EdgeDirection::PointingLeft => store.insert_directed_edge_with(
+                        dst_id,
+                        src_id,
+                        resolved_label,
+                        property_ids,
+                    )?,
+                    EdgeDirection::Undirected => store.insert_undirected_edge_with(
+                        src_id,
+                        dst_id,
+                        resolved_label,
+                        property_ids,
+                    )?,
+                    other => return Err(PlanMutationError::UnsupportedDirection(*other)),
+                };
+                if let Some(label_id) = resolved_label {
+                    bindings.add_edge_label_delta(label_id, 1);
+                }
+                if let Some(variable) = variable {
+                    bindings.edges.insert(variable.to_string(), handle);
+                }
+            }
+            PlanOp::UseGraph {
+                sub_plan: Some(sub_plan),
+                ..
+            } => {
+                Box::pin(execute_ops_with_bindings_async(
+                    store,
+                    sub_plan,
+                    parameters,
+                    execution.clone(),
+                    bindings,
+                ))
+                .await?
             }
             PlanOp::SetProperties { items } => {
                 for item in items {

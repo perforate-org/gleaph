@@ -1,6 +1,6 @@
 use super::store::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, Vertex, VertexLabelId};
 use ic_stable_lara::VertexId;
 
 pub trait GraphMutationExecutor {
@@ -27,25 +27,33 @@ pub trait GraphMutationExecutor {
     ) -> Result<EdgeHandle, GraphStoreError>;
 }
 
+pub async fn insert_vertex_with_async(
+    store: &GraphStore,
+    labels: impl IntoIterator<Item = VertexLabelId>,
+    properties: impl IntoIterator<Item = (PropertyId, Value)>,
+) -> Result<VertexId, GraphStoreError> {
+    let vertex_id = store.insert_vertex_row(Vertex::default()).await?;
+    let vertex = store
+        .vertex(vertex_id)
+        .expect("newly inserted vertex must be readable");
+    let vertex = store.set_vertex_labels(vertex_id, vertex, labels)?;
+    store.set_vertex(vertex_id, vertex)?;
+
+    for (property_id, value) in properties {
+        store.assert_local_vertex_writable(vertex_id)?;
+        store.set_vertex_property(vertex_id, property_id, value)?;
+    }
+
+    Ok(vertex_id)
+}
+
 impl GraphMutationExecutor for GraphStore {
     fn insert_vertex_with(
         &self,
         labels: impl IntoIterator<Item = VertexLabelId>,
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
     ) -> Result<VertexId, GraphStoreError> {
-        let vertex_id = self.insert_vertex()?;
-        let vertex = self
-            .vertex(vertex_id)
-            .expect("newly inserted vertex must be readable");
-        let vertex = self.set_vertex_labels(vertex_id, vertex, labels)?;
-        self.set_vertex(vertex_id, vertex)?;
-
-        for (property_id, value) in properties {
-            self.assert_local_vertex_writable(vertex_id)?;
-            self.set_vertex_property(vertex_id, property_id, value)?;
-        }
-
-        Ok(vertex_id)
+        pollster::block_on(insert_vertex_with_async(self, labels, properties))
     }
 
     fn insert_directed_edge_with(

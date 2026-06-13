@@ -5,7 +5,7 @@ use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::{label_pending, pending};
 use crate::plan::{
-    PlanBinding, PlanMutationExecutor, PlanQueryResult, PlanQueryRow, execute_plan_query,
+    PlanBinding, PlanQueryResult, PlanQueryRow, execute_plan_mutations_async, execute_plan_query,
     execute_plan_query_bindings, execute_plan_query_bindings_with_initial_rows,
 };
 use gleaph_gql::Value;
@@ -186,7 +186,7 @@ async fn run_transaction_block(
         }
         let plan = plan_statement(stmt).map_err(|e| GqlRunError::Plan(e.to_string()))?;
         if plan.has_dml() {
-            let mutation = store.execute_plan_mutations(&plan, execution.clone())?;
+            let mutation = execute_plan_mutations_async(store, &plan, execution.clone()).await?;
             merge_label_usage_delta(&mut label_usage_delta, mutation.label_usage_delta);
             pending::flush_pending(index).await?;
             crate::index::edge_pending::flush_pending(index).await?;
@@ -525,7 +525,8 @@ async fn run_wire_plans_inner(
 
     for plan in plans {
         if plan.has_dml() {
-            let mutation = match store.execute_plan_mutations(plan, execution.clone()) {
+            let mutation = match execute_plan_mutations_async(store, plan, execution.clone()).await
+            {
                 Ok(mutation) => mutation,
                 Err(error) => trap_wire_mutation_failure(error),
             };
