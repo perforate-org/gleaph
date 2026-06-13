@@ -649,7 +649,7 @@ mod tests {
     #[test]
     fn detects_grouped_count_star_on_indexed_property() {
         let store = store_with_country_and_region();
-        let stats = RouterGraphStats::test_vertex_indexed(&["country"]);
+        let stats = RouterGraphStats::test_vertex_indexed(&store, &["country"]);
         let plan = grouped_count_plan("country", None);
         let fast = try_aggregate_index_fast_path(&[plan], &stats, &store, &BTreeMap::new())
             .expect("fast path");
@@ -662,7 +662,7 @@ mod tests {
     #[test]
     fn detects_index_scan_prefix_with_seed_anchor() {
         let store = store_with_country_and_region();
-        let stats = RouterGraphStats::test_vertex_indexed(&["country"]);
+        let stats = RouterGraphStats::test_vertex_indexed(&store, &["country"]);
         let mut ops = vec![PlanOp::IndexScan {
             variable: Rc::from("n"),
             property: Rc::from("region"),
@@ -691,7 +691,7 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, "Person")
             .expect("intern Person");
-        let stats = RouterGraphStats::test_vertex_indexed(&["country"]);
+        let stats = RouterGraphStats::test_vertex_indexed(&store, &["country"]);
         let group = Expr::new(ExprKind::PropertyAccess {
             expr: Box::new(Expr::var("n")),
             property: "country".into(),
@@ -743,7 +743,7 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, "Person")
             .expect("intern Person");
-        let stats = RouterGraphStats::test_vertex_indexed(&["country", "region"]);
+        let stats = RouterGraphStats::test_vertex_indexed(&store, &["country", "region"]);
         let mut ops = vec![
             PlanOp::NodeScan {
                 variable: Rc::from("n"),
@@ -786,7 +786,7 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, "Person")
             .expect("intern Person");
-        let stats = RouterGraphStats::test_vertex_indexed(&["country", "region"]);
+        let stats = RouterGraphStats::test_vertex_indexed(&store, &["country", "region"]);
         let mut ops = vec![
             PlanOp::IndexScan {
                 variable: Rc::from("n"),

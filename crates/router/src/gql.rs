@@ -39,6 +39,7 @@ use crate::graph_client::{
 };
 use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
+use crate::planner_stats::RouterGraphStats;
 use crate::rbac::{authorize_adhoc_gql, authorize_index_ddl};
 use crate::seed::{IndexAnchor, SeedAnchorSet, SeedProbe};
 use crate::state::RouterError;
@@ -465,6 +466,7 @@ async fn run_gql(
         params,
         mode,
         client_mutation_key,
+        &stats,
     )
     .await
 }
@@ -478,6 +480,7 @@ pub async fn dispatch_plan_blob(
     params: &[u8],
     mode: GqlExecutionMode,
     client_mutation_key: Option<&str>,
+    stats: &RouterGraphStats,
 ) -> Result<GqlQueryResult, RouterError> {
     let store = RouterStore::new();
     let shards = store.list_shards_for_graph(logical_graph_name)?;
@@ -497,6 +500,7 @@ pub async fn dispatch_plan_blob(
         shards,
         &index,
         msg_caller(),
+        stats,
     )
     .await
 }
@@ -514,16 +518,16 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     shards: Vec<ShardRegistryEntry>,
     index: &I,
     caller: Principal,
+    stats: &RouterGraphStats,
 ) -> Result<GqlQueryResult, RouterError> {
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
     if mode == GqlExecutionMode::Query && !has_dml {
-        let stats = graph_stats_for(logical_graph_name);
-        if let Some(label_path) = try_label_count_telemetry_fast_path(plans, &stats, store, pmap) {
+        if let Some(label_path) = try_label_count_telemetry_fast_path(plans, stats, store, pmap) {
             let live_count = vertex_label_live_count(store, label_path.vertex_label_id);
             return gql_query_result_from_label_live_count(&label_path, live_count)
                 .map_err(RouterError::InvalidArgument);
         }
-        if let Some(fast_path) = try_aggregate_index_fast_path(plans, &stats, store, pmap)
+        if let Some(fast_path) = try_aggregate_index_fast_path(plans, stats, store, pmap)
             && let Some(counts) = execute_grouped_aggregate_fast_path(index, &fast_path)
                 .await
                 .map_err(RouterError::InvalidArgument)?
@@ -621,8 +625,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             })
             .collect()
     } else {
-        let stats = graph_stats_for(logical_graph_name);
-        let seed_anchors = match SeedAnchorSet::from_plans(plans, pmap, store, &stats) {
+        let seed_anchors = match SeedAnchorSet::from_plans(plans, pmap, store, stats) {
             Ok(seed_anchors) => seed_anchors,
             Err(err) => {
                 release_routing_if_owner(
@@ -1639,6 +1642,7 @@ mod tests {
             shards,
             fake_index,
             Principal::anonymous(),
+            &RouterGraphStats::default(),
         )
         .await
     }
@@ -1905,7 +1909,7 @@ mod tests {
     fn compound_label_and_property_seed_routing_intersects_hits() {
         let store = store_with_person_and_region_property();
         let plan = compound_label_property_read_plan();
-        let stats = RouterGraphStats::test_vertex_indexed(&["region"]);
+        let stats = RouterGraphStats::test_vertex_indexed(&store, &["region"]);
         let set = SeedAnchorSet::from_plans(
             std::slice::from_ref(&plan),
             &BTreeMap::new(),
@@ -1954,6 +1958,7 @@ mod tests {
         let shards = store
             .list_shards_for_graph("tenant.main")
             .expect("registered shards");
+        let stats = RouterGraphStats::test_vertex_indexed(&store, &["region"]);
 
         let err = futures::executor::block_on(dispatch_plan_blob_with_index(
             "tenant.main",
@@ -1967,6 +1972,7 @@ mod tests {
             shards,
             &fake,
             Principal::anonymous(),
+            &stats,
         ))
         .expect_err("native graph dispatch should fail after compound seeding");
 
@@ -2064,6 +2070,7 @@ mod tests {
             shards,
             &fake,
             Principal::anonymous(),
+            &RouterGraphStats::default(),
         ))
         .expect_err("native graph dispatch should fail after index seeding");
 

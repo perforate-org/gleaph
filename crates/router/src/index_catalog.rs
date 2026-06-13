@@ -3,7 +3,7 @@
 use gleaph_graph_kernel::index::{IndexedPropertyKind, RegisterIndexedPropertyArgs};
 
 use crate::facade::stable::indexed_catalog::{
-    build_graph_stats, create_named_index, drop_named_index, is_property_registered,
+    create_named_index, drop_named_index, is_property_registered, load_graph_stats,
     register_property_membership,
 };
 use crate::facade::store::RouterStore;
@@ -13,7 +13,7 @@ use crate::state::RouterError;
 
 /// Per-graph indexed property catalog for query planning and DDL.
 pub fn graph_stats_for(logical_graph_name: &str) -> RouterGraphStats {
-    build_graph_stats(logical_graph_name, &RouterStore::new())
+    load_graph_stats(logical_graph_name)
 }
 
 pub(crate) async fn execute_index_ddl(

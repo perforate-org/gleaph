@@ -11,7 +11,6 @@ use gleaph_graph_kernel::index::IndexedPropertyKind;
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 
 use crate::facade::stable::{ROUTER_INDEXED_PROPERTY_SET, ROUTER_NAMED_INDEXES};
-use crate::facade::store::RouterStore;
 use crate::planner_stats::{IndexCatalogEntry, RouterGraphStats};
 use crate::state::RouterError;
 
@@ -135,27 +134,24 @@ impl Storable for IndexDefRecord {
     }
 }
 
-pub(crate) fn build_graph_stats(logical_graph_name: &str, store: &RouterStore) -> RouterGraphStats {
+pub(crate) fn load_graph_stats(logical_graph_name: &str) -> RouterGraphStats {
     let mut vertex = std::collections::BTreeSet::new();
     let mut edge = std::collections::BTreeSet::new();
 
     ROUTER_INDEXED_PROPERTY_SET.with_borrow(|set| {
         for key in membership_range(logical_graph_name, set) {
-            let Ok(name) = store.reverse_property_name(key.property_id) else {
-                continue;
-            };
             match key.kind() {
                 IndexedPropertyKind::Vertex => {
-                    vertex.insert(name);
+                    vertex.insert(key.property_id);
                 }
                 IndexedPropertyKind::Edge => {
-                    edge.insert(name);
+                    edge.insert(key.property_id);
                 }
             }
         }
     });
 
-    RouterGraphStats::from_indexed_properties(vertex, edge)
+    RouterGraphStats::from_property_ids(vertex, edge)
 }
 
 pub(crate) fn create_named_index(

@@ -164,6 +164,7 @@ async fn prepared_execute(
         decode_gql_params_blob(&params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let (_, plans) = gleaph_gql_planner::wire::decode_plan_bundle(&record.plan_blob)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let stats = graph_stats_for(&logical_graph_name);
     dispatch_plan_blob(
         &logical_graph_name,
         &record.plan_blob,
@@ -172,6 +173,7 @@ async fn prepared_execute(
         &params,
         mode,
         client_mutation_key,
+        &stats,
     )
     .await
 }

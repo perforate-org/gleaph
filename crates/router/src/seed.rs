@@ -931,7 +931,7 @@ mod tests {
         store
             .admin_intern_property(admin, "region")
             .expect("intern region");
-        let stats = RouterGraphStats::test_vertex_indexed(&["region"]);
+        let stats = RouterGraphStats::test_vertex_indexed(&store, &["region"]);
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::NodeScan {
                 variable: Rc::from("n"),
