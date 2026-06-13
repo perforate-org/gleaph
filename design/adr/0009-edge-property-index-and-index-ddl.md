@@ -17,6 +17,7 @@ Anchor timestamp: 2026-06-12 13:30:00 UTC +0000
 | 2026-06-12 | Phase D (partial): router `EdgeIndexScan` / all-edge intersection seeds; `LocalEdgePosting` wire; graph edge seed apply + skip leading `EdgeIndexScan`. `EDGE_EQUALITY_POSTINGS` retire pending. |
 | 2026-06-12 | Phase D implemented: retired graph `EDGE_EQUALITY_POSTINGS`; MemoryId repack (40 regions); expand/edge scan via graph-index client, router seeds, or `EDGE_PROPERTIES` scan fallback. |
 | 2026-06-12 | Phase E implemented: router `CREATE INDEX` / `DROP INDEX` extension DDL via `gql_execute*`; named index catalog; shard `unregister_indexed_property`. |
+| 2026-06-12 | Index catalog stable layout: row-oriented `ROUTER_NAMED_INDEXES` + `ROUTER_INDEXED_PROPERTY_SET` with `PropertyId` / label ids (replaces per-graph Candid blob). |
 
 ## Context
 

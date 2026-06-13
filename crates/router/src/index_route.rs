@@ -18,7 +18,13 @@ pub fn resolve_index_lookup_targets(shards: &[ShardRegistryEntry]) -> Vec<Princi
 }
 
 /// Index canister that holds postings for `shard_id` (write/read routing).
-#[cfg_attr(not(test), expect(dead_code, reason = "ADR 0010 routing helper for future registry and ops tooling"))]
+#[cfg_attr(
+    not(test),
+    expect(
+        dead_code,
+        reason = "ADR 0010 routing helper for future registry and ops tooling"
+    )
+)]
 pub fn index_canister_for_shard(
     shard_id: ShardId,
     shards: &[ShardRegistryEntry],

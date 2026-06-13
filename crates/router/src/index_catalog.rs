@@ -2,11 +2,19 @@
 
 use gleaph_graph_kernel::index::{IndexedPropertyKind, RegisterIndexedPropertyArgs};
 
-use crate::facade::stable::ROUTER_INDEXED_PROPERTIES;
+use crate::facade::stable::indexed_catalog::{
+    build_graph_stats, create_named_index, drop_named_index, is_property_registered,
+    register_property_membership,
+};
 use crate::facade::store::RouterStore;
 use crate::index_ddl::{IndexDdlStatement, IndexTarget};
 use crate::planner_stats::{IndexCatalogEntry, RouterGraphStats};
 use crate::state::RouterError;
+
+/// Per-graph indexed property catalog for query planning and DDL.
+pub fn graph_stats_for(logical_graph_name: &str) -> RouterGraphStats {
+    build_graph_stats(logical_graph_name, &RouterStore::new())
+}
 
 pub(crate) async fn execute_index_ddl(
     logical_graph_name: &str,
@@ -34,6 +42,10 @@ async fn create_index(
     let store = RouterStore::new();
     validate_target_labels(&store, target)?;
     let property_id = store.lookup_property_id(&target.property)?;
+    let label_id = match target.kind {
+        IndexedPropertyKind::Vertex => store.lookup_vertex_label_id(&target.label)?.raw(),
+        IndexedPropertyKind::Edge => store.lookup_edge_label_id(&target.label)?.raw(),
+    };
 
     let entry = IndexCatalogEntry {
         kind: target.kind,
@@ -42,12 +54,14 @@ async fn create_index(
         property: target.property.clone(),
     };
 
-    let newly_registered = ROUTER_INDEXED_PROPERTIES.with_borrow_mut(|m| {
-        let stats = m
-            .entry(logical_graph_name.to_string())
-            .or_insert_with(RouterGraphStats::default);
-        stats.create_named_index(index_name, entry, if_not_exists)
-    })?;
+    let newly_registered = create_named_index(
+        logical_graph_name,
+        index_name,
+        entry,
+        property_id,
+        label_id,
+        if_not_exists,
+    )?;
 
     if !newly_registered {
         return Ok(());
@@ -61,28 +75,13 @@ async fn drop_index(
     index_name: &str,
     if_exists: bool,
 ) -> Result<(), RouterError> {
-    let removed = ROUTER_INDEXED_PROPERTIES.with_borrow_mut(|m| {
-        let Some(stats) = m.get_mut(logical_graph_name) else {
-            if if_exists {
-                return Ok(None);
-            }
-            return Err(RouterError::NotFound(index_name.to_string()));
-        };
-        stats.drop_named_index(index_name, if_exists)
-    })?;
+    let removed = drop_named_index(logical_graph_name, index_name, if_exists)?;
 
-    let Some((kind, property)) = removed else {
+    let Some((kind, property_id)) = removed else {
         return Ok(());
     };
 
-    let store = RouterStore::new();
-    let property_id = store.lookup_property_id(&property)?;
-    let still_indexed = ROUTER_INDEXED_PROPERTIES.with_borrow(|m| {
-        m.get(logical_graph_name)
-            .is_some_and(|stats| stats.is_property_registered(kind, &property))
-    });
-
-    if !still_indexed {
+    if !is_property_registered(logical_graph_name, kind, property_id) {
         fan_out_unregister(logical_graph_name, kind, property_id).await?;
     }
     Ok(())
@@ -144,4 +143,12 @@ pub(crate) async fn register_indexed_property_on_shards(
     property_id: gleaph_graph_kernel::entry::PropertyId,
 ) -> Result<(), RouterError> {
     fan_out_register(logical_graph_name, kind, property_id).await
+}
+
+pub(crate) fn register_property_membership_if_absent(
+    logical_graph_name: &str,
+    kind: IndexedPropertyKind,
+    property_id: gleaph_graph_kernel::entry::PropertyId,
+) -> bool {
+    register_property_membership(logical_graph_name, kind, property_id)
 }

@@ -398,7 +398,10 @@ mod tests {
             },
         ];
         RouterIndexLookup::from_shards(&shards);
-        assert_eq!(resolve_index_lookup_targets(&shards), vec![graph_principal(2)]);
+        assert_eq!(
+            resolve_index_lookup_targets(&shards),
+            vec![graph_principal(2)]
+        );
         assert_eq!(shard_index_canisters(&shards).len(), 2);
     }
 

@@ -13,7 +13,7 @@ use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult};
 use crate::execution_path::check_prepared_execution_path;
 use crate::facade::stable::ROUTER_PREPARED_PLANS;
 use crate::gql::dispatch_plan_blob;
-use crate::planner_stats::RouterGraphStats;
+use crate::index_catalog::graph_stats_for;
 use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute};
 use crate::state::RouterError;
 
@@ -38,7 +38,7 @@ pub fn prepared_register(
         .body
         .as_ref()
         .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
-    let stats = RouterGraphStats::for_graph(&logical_graph_name);
+    let stats = graph_stats_for(&logical_graph_name);
     let plan = build_block_plan_with_schema(block, Some(&stats), &NoSchema)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let requires_write_path = plan.has_dml();

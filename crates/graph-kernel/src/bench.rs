@@ -65,7 +65,7 @@ fn bench_layout_memory_manager_cold_touch_5() -> canbench_rs::BenchResult {
     })
 }
 
-/// Same as [`bench_layout_memory_manager_cold_touch_5`] for router layout (22 regions).
+/// Same as [`bench_layout_memory_manager_cold_touch_5`] for router layout (24 regions).
 #[bench(raw)]
 fn bench_layout_memory_manager_cold_touch_21() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {

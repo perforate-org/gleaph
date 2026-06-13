@@ -13,6 +13,8 @@ use gleaph_graph_kernel::federation::{
 
 use gleaph_auth::AuthState;
 use gleaph_gql_ic::graph_registry::GraphRegistryEntry;
+
+use super::indexed_catalog::{IndexDefRecord, IndexedPropertyKey, NamedIndexKey};
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
 use std::cell::RefCell;
@@ -41,6 +43,8 @@ const ROUTER_MUTATION_BY_CLIENT_KEY: MemoryId = MemoryId::new(18);
 const ROUTER_LABEL_BACKFILL_STATE: MemoryId = MemoryId::new(19);
 const ROUTER_PROPERTY_BACKFILL_STATE: MemoryId = MemoryId::new(20);
 const ROUTER_EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(21);
+const ROUTER_NAMED_INDEXES: MemoryId = MemoryId::new(22);
+const ROUTER_INDEXED_PROPERTY_SET: MemoryId = MemoryId::new(23);
 
 pub(crate) type StableControllerSet = BTreeSet<Principal, Memory>;
 pub(crate) type StableGraphRegistry = BTreeMap<String, GraphRegistryEntry, Memory>;
@@ -54,6 +58,8 @@ pub(crate) type StableEdgeLabelCatalog =
 pub(crate) type StablePropertyCatalog =
     BidirectionalCatalog<PropertyId, Memory, Memory, DenseMaxPlusOnePolicy>;
 pub(crate) type StableEdgePayloadProfileStore = EdgePayloadProfileStore<Memory>;
+pub(crate) type StableNamedIndexMap = BTreeMap<NamedIndexKey, IndexDefRecord, Memory>;
+pub(crate) type StableIndexedPropertySet = BTreeSet<IndexedPropertyKey, Memory>;
 pub(crate) type StableLabelStatsMap = BTreeMap<u16, super::label_telemetry::LabelStats, Memory>;
 pub(crate) type StableLabelShardLiveMap =
     BTreeMap<super::label_telemetry::LabelShardKey, u64, Memory>;
@@ -162,4 +168,12 @@ pub(crate) fn init_edge_payload_profiles() -> StableEdgePayloadProfileStore {
     EdgePayloadProfileStore::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_PAYLOAD_PROFILES)),
     )
+}
+
+pub(crate) fn init_named_indexes() -> StableNamedIndexMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_NAMED_INDEXES)))
+}
+
+pub(crate) fn init_indexed_property_set() -> StableIndexedPropertySet {
+    BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_INDEXED_PROPERTY_SET)))
 }

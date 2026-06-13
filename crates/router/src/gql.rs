@@ -37,8 +37,8 @@ use crate::graph_client::{
     ack_label_telemetry_event, execute_plan_on_graph, get_mutation_outcome,
     list_pending_label_telemetry_events,
 };
+use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
-use crate::planner_stats::RouterGraphStats;
 use crate::rbac::{authorize_adhoc_gql, authorize_index_ddl};
 use crate::seed::{IndexAnchor, SeedAnchorSet, SeedProbe};
 use crate::state::RouterError;
@@ -443,7 +443,7 @@ async fn run_gql(
         .as_ref()
         .ok_or_else(|| RouterError::InvalidArgument("missing statement block".into()))?;
 
-    let stats = RouterGraphStats::for_graph(logical_graph_name);
+    let stats = graph_stats_for(logical_graph_name);
     let plan = build_block_plan_with_schema(block, Some(&stats), &NoSchema)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let requires_write_path = plan.has_dml();
@@ -517,7 +517,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
 ) -> Result<GqlQueryResult, RouterError> {
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
     if mode == GqlExecutionMode::Query && !has_dml {
-        let stats = RouterGraphStats::for_graph(logical_graph_name);
+        let stats = graph_stats_for(logical_graph_name);
         if let Some(label_path) = try_label_count_telemetry_fast_path(plans, &stats, store, pmap) {
             let live_count = vertex_label_live_count(store, label_path.vertex_label_id);
             return gql_query_result_from_label_live_count(&label_path, live_count)
@@ -621,7 +621,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             })
             .collect()
     } else {
-        let stats = RouterGraphStats::for_graph(logical_graph_name);
+        let stats = graph_stats_for(logical_graph_name);
         let seed_anchors = match SeedAnchorSet::from_plans(plans, pmap, store, &stats) {
             Ok(seed_anchors) => seed_anchors,
             Err(err) => {
@@ -1905,8 +1905,7 @@ mod tests {
     fn compound_label_and_property_seed_routing_intersects_hits() {
         let store = store_with_person_and_region_property();
         let plan = compound_label_property_read_plan();
-        let stats =
-            RouterGraphStats::for_graph("tenant.main").with_indexed_vertex_property("region");
+        let stats = RouterGraphStats::test_vertex_indexed(&["region"]);
         let set = SeedAnchorSet::from_plans(
             std::slice::from_ref(&plan),
             &BTreeMap::new(),
@@ -1980,7 +1979,7 @@ mod tests {
     fn label_intersection_seed_routing_fans_out_with_bindings() {
         let store = store_with_person_employee_labels();
         let plan = label_intersection_read_plan();
-        let stats = RouterGraphStats::for_graph("tenant.main");
+        let stats = RouterGraphStats::default();
         let set = SeedAnchorSet::from_plans(
             std::slice::from_ref(&plan),
             &BTreeMap::new(),

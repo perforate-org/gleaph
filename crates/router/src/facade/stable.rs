@@ -3,6 +3,7 @@
 use std::cell::RefCell;
 
 pub(crate) mod edge_payload_profiles;
+pub(crate) mod indexed_catalog;
 pub(crate) mod label_telemetry;
 pub(crate) mod layout;
 pub(crate) mod memory;
@@ -53,10 +54,13 @@ thread_local! {
     pub(crate) static ROUTER_PROPERTY_CATALOG: RefCell<memory::StablePropertyCatalog> =
         RefCell::new(memory::init_property_catalog());
 
-    /// Per logical graph: which vertex/edge properties are indexed (planner catalog).
-    pub(crate) static ROUTER_INDEXED_PROPERTIES: RefCell<
-        std::collections::BTreeMap<String, crate::planner_stats::RouterGraphStats>,
-    > = const { RefCell::new(std::collections::BTreeMap::new()) };
+    /// `(graph, index_name) → index definition` (ADR 0009 DDL metadata).
+    pub(crate) static ROUTER_NAMED_INDEXES: RefCell<memory::StableNamedIndexMap> =
+        RefCell::new(memory::init_named_indexes());
+
+    /// `(graph, kind, property_id)` membership for planner + shard registry fan-out.
+    pub(crate) static ROUTER_INDEXED_PROPERTY_SET: RefCell<memory::StableIndexedPropertySet> =
+        RefCell::new(memory::init_indexed_property_set());
 
     pub(crate) static ROUTER_PREPARED_PLANS: RefCell<
         std::collections::BTreeMap<String, crate::prepared::PreparedPlanRecord>,

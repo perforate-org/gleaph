@@ -186,18 +186,18 @@ pub(crate) async fn admin_set_indexed_vertex_property(
     logical_graph_name: String,
     property: String,
 ) -> Result<(), RouterError> {
-    use crate::facade::stable::ROUTER_INDEXED_PROPERTIES;
-    use crate::planner_stats::RouterGraphStats;
     use gleaph_graph_kernel::index::IndexedPropertyKind;
 
     let store = RouterStore::new();
     let property_id = store.lookup_property_id(&property)?;
-    ROUTER_INDEXED_PROPERTIES.with_borrow_mut(|m| {
-        let entry = m
-            .entry(logical_graph_name.clone())
-            .or_insert_with(RouterGraphStats::default);
-        *entry = entry.clone().with_indexed_vertex_property(property);
-    });
+    let newly_registered = crate::index_catalog::register_property_membership_if_absent(
+        &logical_graph_name,
+        IndexedPropertyKind::Vertex,
+        property_id,
+    );
+    if !newly_registered {
+        return Ok(());
+    }
     crate::index_catalog::register_indexed_property_on_shards(
         &logical_graph_name,
         IndexedPropertyKind::Vertex,
@@ -210,18 +210,18 @@ pub(crate) async fn admin_set_indexed_edge_property(
     logical_graph_name: String,
     property: String,
 ) -> Result<(), RouterError> {
-    use crate::facade::stable::ROUTER_INDEXED_PROPERTIES;
-    use crate::planner_stats::RouterGraphStats;
     use gleaph_graph_kernel::index::IndexedPropertyKind;
 
     let store = RouterStore::new();
     let property_id = store.lookup_property_id(&property)?;
-    ROUTER_INDEXED_PROPERTIES.with_borrow_mut(|m| {
-        let entry = m
-            .entry(logical_graph_name.clone())
-            .or_insert_with(RouterGraphStats::default);
-        *entry = entry.clone().with_indexed_edge_property(property);
-    });
+    let newly_registered = crate::index_catalog::register_property_membership_if_absent(
+        &logical_graph_name,
+        IndexedPropertyKind::Edge,
+        property_id,
+    );
+    if !newly_registered {
+        return Ok(());
+    }
     crate::index_catalog::register_indexed_property_on_shards(
         &logical_graph_name,
         IndexedPropertyKind::Edge,

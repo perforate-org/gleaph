@@ -51,7 +51,7 @@ Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layo
 | Property postings (graph-index) | Vertex properties (indexable) | DML + `pending.rs` flush | **Implemented:** `backfill_property_postings` + router `admin_property_backfill_step` |
 | Label postings (graph-index) | `VertexLabelStore` | DML + `label_pending` flush | **Implemented:** `backfill_label_postings` + router `admin_label_backfill_step` ([label-index.md](../index/label-index.md)) |
 | Router label telemetry | Graph `LabelUsageDelta` | Event apply + `ROUTER_APPLIED_LABEL_TELEMETRY` dedup | **Implemented:** graph outbox replay via `admin_label_telemetry_replay_step`; no full historical scan |
-| Router indexed-property catalog | Property catalog + planner stats | Planner registration | **Ephemeral** — rebuilt after upgrade |
+| Router indexed-property catalog | Property catalog + planner stats | Planner registration | **Stable** — row layout MemoryId 22–23 |
 
 ---
 
@@ -159,14 +159,15 @@ Repacked 2026-06-11 (ADR 0006 slice D). **Removed:** `ROUTER_LOGICAL_COUNTER` (5
 | 19 | `ROUTER_LABEL_BACKFILL_STATE` | `ROUTER_LABEL_BACKFILL_STATE` | `init_label_backfill_state` | maintenance | label backfill | Cursor for `admin_label_backfill_step` |
 | 20 | `ROUTER_PROPERTY_BACKFILL_STATE` | `ROUTER_PROPERTY_BACKFILL_STATE` | `init_property_backfill_state` | maintenance | property backfill | Cursor for `admin_property_backfill_step` |
 | 21 | `ROUTER_EDGE_PAYLOAD_PROFILES` | `ROUTER_EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | catalog | edge payload schema | — ([ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md)) |
+| 22 | `ROUTER_NAMED_INDEXES` | `ROUTER_NAMED_INDEXES` | `init_named_indexes` | catalog | index DDL metadata | `(graph, index_name) → kind, property_id, label_id` |
+| 23 | `ROUTER_INDEXED_PROPERTY_SET` | `ROUTER_INDEXED_PROPERTY_SET` | `init_indexed_property_set` | catalog | index membership | `(graph, kind, property_id)` for planner + fan-out |
 
-Router **22 regions** total (0–21).
+Router **24 regions** total (0–23).
 
 ### Router ephemeral
 
 | Symbol | Location | Role | Reopen behavior |
 |--------|----------|------|-----------------|
-| `ROUTER_INDEXED_PROPERTIES` | `router/src/facade/stable.rs` | Per-graph indexed-property planner catalog | Lost on upgrade; re-register via planner |
 | `ROUTER_PREPARED_PLANS` | `router/src/facade/stable.rs` | Cached prepared plan blobs | Lost on upgrade; re-prepare on demand |
 
 ---

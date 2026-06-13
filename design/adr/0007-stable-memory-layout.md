@@ -18,6 +18,7 @@ Anchor timestamp: 2026-06-12 07:45:56 UTC +0000
 | 2026-06-12 | ADR 0008 executed: retired graph `EDGE_PAYLOAD_PROFILES`; graph 41 regions (facade 32–40); router 22 regions (0–21). |
 | 2026-06-12 | ADR 0009 phase D: retired graph `EDGE_EQUALITY_POSTINGS`; graph 40 regions (facade 32–39). |
 | 2026-06-12 | canbench: `cold_touch_40` 574.83 K / 5,121 pages; graph stable reopen 487.30 K / 5,760 pages (post-0009). |
+| 2026-06-12 | ADR 0009 follow-up: index catalog row layout — `ROUTER_NAMED_INDEXES` (22) + `ROUTER_INDEXED_PROPERTY_SET` (23); router **24** regions (0–23). |
 
 ## Context
 
@@ -27,7 +28,7 @@ repacked graph, router, and graph-index `MemoryId` assignments into consecutive 
 federation-only stable regions from the single-shard footprint.
 
 The graph canister allocates **41** `VirtualMemory<DefaultMemoryImpl>` regions (32 LARA + 9
-facade). The router allocates **22**; graph-index allocates **5**. Each region carries
+facade). The router allocates **24**; graph-index allocates **5**. Each region carries
 `MemoryManager` bookkeeping and encodes an ownership or recovery boundary.
 
 That separation is intentional: canonical adjacency, derived reverse orientation, maintenance free
@@ -98,10 +99,10 @@ Code source of truth:
 |----------|-------------|----------|-------|
 | Graph — LARA bundle | 32 | 0–31 | Forward canonical + reverse derived + maintenance; wired into one `DeferredBidirectionalLabeledLaraGraph` |
 | Graph — facade | 9 | 32–40 | Properties, labels, aliases, local indexes, telemetry, idempotency |
-| Router | 22 | 0–21 | Registry, placement, catalogs (3 pairs + edge payload schema), auth, telemetry (4), idempotency (2), backfill cursors (2) |
+| Router | 24 | 0–23 | Registry, placement, catalogs (3 pairs + edge payload schema + index rows), auth, telemetry (4), idempotency (2), backfill cursors (2) |
 | Graph-index | 5 | 0–4 | Admins, shard owners, property postings, router auth, label postings |
 
-Ephemeral heap state (pending posting queues, router planner catalog, prepared plans) is **not**
+Ephemeral heap state (pending posting queues, router prepared plans) is **not**
 part of this layout; see inventory § ephemeral.
 
 ### 3. Regions that must stay separated
@@ -144,7 +145,7 @@ label posting merge on graph-index, router telemetry merge into placement.
 | Production migration | Not in scope until a product migration ADR exists |
 | Reopen tests | Required for any id reassignment or region merge; use existing facade reopen tests per canister |
 | Partial corruption | Separate regions limit blast radius; merged regions must document shared fate |
-| Upgrade | Ephemeral queues (pending postings, planner catalog) lost on upgrade by design; backfill covers historical derived state |
+| Upgrade | Ephemeral queues (pending postings, prepared plans) lost on upgrade by design; backfill covers historical derived state; indexed catalog survives upgrade |
 
 ### 6. Benchmark plan (Phase 8 deliverable)
 

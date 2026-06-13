@@ -711,6 +711,22 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "EdgeLabelId → EdgePayloadProfile (ADR 0008 SSOT)",
             None,
         ),
+        region(
+            "ROUTER_NAMED_INDEXES",
+            22,
+            StableMemoryClass::Catalog,
+            "index planner catalog",
+            "(graph, index_name) → IndexDefRecord (ADR 0009 DDL metadata)",
+            None,
+        ),
+        region(
+            "ROUTER_INDEXED_PROPERTY_SET",
+            23,
+            StableMemoryClass::Catalog,
+            "index planner catalog",
+            "(graph, kind, property_id) membership for planner + shard fan-out",
+            None,
+        ),
     ],
 };
 
@@ -922,8 +938,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 22);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(21));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 24);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(23));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[17].class,
             StableMemoryClass::Telemetry
