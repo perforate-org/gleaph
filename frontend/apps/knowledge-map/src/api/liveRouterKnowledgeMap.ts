@@ -5,12 +5,16 @@ import { Principal } from "@icp-sdk/core/principal";
 
 import { type QueryTiming } from "~/api/queryTiming";
 import { IcWirePlanQueryResult, routerIdlFactory } from "~/api/routerIdl";
-import type { RouterKnowledgeMapResponse, RouterKnowledgeMapRow } from "~/api/viewModelAdapter";
+import {
+  KNOWLEDGE_MAP_LIVE_QUERY,
+  buildLiveScenarioResponse,
+  parseLiveGraphEdgeRow,
+} from "~/data/knowledgeMapGraph";
+import type { RouterKnowledgeMapResponse } from "~/api/viewModelAdapter";
 
-export const KNOWLEDGE_MAP_QUERY =
-  "MATCH (a)-[e:KNOWS {weight: 5}]->(b) " +
-  "RETURN ELEMENT_ID(a) AS source_id, ELEMENT_ID(e) AS edge_id, " +
-  "ELEMENT_ID(b) AS target_id, e.weight AS edge_weight";
+export const KNOWLEDGE_MAP_QUERY = KNOWLEDGE_MAP_LIVE_QUERY;
+
+const LIVE_SCENARIO_ID = "alice-fan-out";
 
 type Result<T, E> = { Ok: T; Err?: never } | { Ok?: never; Err: E };
 type ActorInterfaceFactory = Parameters<typeof Actor.createActor>[0];
@@ -82,9 +86,13 @@ export const fetchKnowledgeMapFromRouter = async (
   scenarioId: string,
   options: LiveRouterKnowledgeMapOptions,
 ): Promise<LiveKnowledgeMapQueryResult> => {
+  if (scenarioId !== "live-router-relationship") {
+    throw new Error(`Live Router source does not support scenario: ${scenarioId}`);
+  }
+
   const startedAt = performance.now();
   const actor = await createRouterActor(options);
-  const result = await actor.gql_query(KNOWLEDGE_MAP_QUERY, []);
+  const result = await actor.gql_query(KNOWLEDGE_MAP_LIVE_QUERY, []);
   if ("Err" in result) {
     throw new Error(`Router gql_query failed: ${formatRouterError(result.Err)}`);
   }
@@ -95,21 +103,21 @@ export const fetchKnowledgeMapFromRouter = async (
   }
 
   const wire = decodeWireRows(toUint8Array(rowsBlob));
-  const row = wire.rows[0];
-  if (!row) {
-    throw new Error("Router gql_query returned no relationship rows for knowledge-map query.");
+  if (wire.rows.length === 0) {
+    throw new Error("Router gql_query returned no demo graph rows for knowledge-map query.");
   }
 
+  const liveEdges = wire.rows.map((row) => parseLiveGraphEdgeRow(wireRowToColumnMap(row)));
   const finishedAt = performance.now();
   return {
-    response: relationshipRowToKnowledgeMapResponse(scenarioId, row),
+    response: buildLiveScenarioResponse(LIVE_SCENARIO_ID, liveEdges),
     timing: {
       startedAt,
       finishedAt,
       durationMs: finishedAt - startedAt,
       rowCount: Number(result.Ok.row_count),
     },
-    queryText: KNOWLEDGE_MAP_QUERY,
+    queryText: KNOWLEDGE_MAP_LIVE_QUERY,
   };
 };
 
@@ -135,123 +143,23 @@ const decodeWireRows = (bytes: Uint8Array): WireResult => {
   return decoded as WireResult;
 };
 
-const relationshipRowToKnowledgeMapResponse = (
-  scenarioId: string,
-  row: WireRow,
-): RouterKnowledgeMapResponse => {
-  const sourceId = bytesColumn(row, "source_id");
-  const edgeId = bytesColumn(row, "edge_id");
-  const targetId = bytesColumn(row, "target_id");
-  const edgeWeight = numberColumn(row, "edge_weight");
-  const sourceNodeId = `vertex-${sourceId}`;
-  const targetNodeId = `vertex-${targetId}`;
-  const edgeRowId = `edge-${edgeId}`;
-
-  const rows: RouterKnowledgeMapRow[] = [
-    {
-      kind: "node",
-      node_id: sourceNodeId,
-      node_label: "Source vertex",
-      node_kind: "person",
-      node_x: -2.2,
-      node_y: 0.3,
-      node_z: 0,
-    },
-    {
-      kind: "node",
-      node_id: targetNodeId,
-      node_label: "Related vertex",
-      node_kind: "document",
-      node_x: 2.2,
-      node_y: 0.3,
-      node_z: 0,
-    },
-    {
-      kind: "edge",
-      edge_id: edgeRowId,
-      edge_source: sourceNodeId,
-      edge_target: targetNodeId,
-      edge_label: `KNOWS / weight ${edgeWeight}`,
-    },
-    {
-      kind: "path",
-      path_index: 0,
-      path_node_id: sourceNodeId,
-      story_text: "Router returned the starting vertex id from Gleaph.",
-    },
-    {
-      kind: "path",
-      path_index: 1,
-      path_node_id: targetNodeId,
-      path_edge_id: edgeRowId,
-      story_text: "Follow the relationship row returned through Router gql_query.",
-    },
-    {
-      kind: "result",
-      result_title: "Router relationship row",
-      result_kind: "Live Gleaph result",
-      result_reason: `Decoded from rows_blob with edge weight ${edgeWeight}.`,
-      result_node_id: targetNodeId,
-    },
-    {
-      kind: "technical",
-      technical_index: 0,
-      technical_title: "Router gql_query",
-      technical_detail: "The frontend calls only the Router canister.",
-    },
-    {
-      kind: "technical",
-      technical_index: 1,
-      technical_title: "Rows blob",
-      technical_detail: "The Router returns Candid-encoded graph rows.",
-    },
-    {
-      kind: "technical",
-      technical_index: 2,
-      technical_title: "View model",
-      technical_detail: "The frontend maps source, edge, and target ids into the demo graph.",
-    },
-  ];
-
-  return {
-    id: scenarioId,
-    title: "Live Router relationship",
-    question: "Show one relationship returned by Gleaph Router.",
-    rows,
-  };
-};
-
-const bytesColumn = (row: WireRow, column: string): string => {
-  const value = columnValue(row, column);
-  if (!("Bytes" in value)) {
-    throw new Error(`Expected ${column} to be bytes.`);
+const wireRowToColumnMap = (row: WireRow): Map<string, string> => {
+  const columns = new Map<string, string>();
+  for (const [name, value] of row.columns) {
+    if ("Text" in value) {
+      columns.set(name, value.Text);
+      continue;
+    }
+    if ("Int64" in value) {
+      columns.set(name, value.Int64.toString());
+      continue;
+    }
+    if ("Uint64" in value) {
+      columns.set(name, value.Uint64.toString());
+    }
   }
-  return bytesToHex(value.Bytes);
+  return columns;
 };
-
-const numberColumn = (row: WireRow, column: string): number => {
-  const value = columnValue(row, column);
-  if ("Int64" in value) {
-    return Number(value.Int64);
-  }
-  if ("Uint64" in value) {
-    return Number(value.Uint64);
-  }
-  throw new Error(`Expected ${column} to be an integer.`);
-};
-
-const columnValue = (row: WireRow, column: string): WireValue => {
-  const entry = row.columns.find(([name]) => name === column);
-  if (!entry) {
-    throw new Error(`Missing Router row column: ${column}`);
-  }
-  return entry[1];
-};
-
-const bytesToHex = (bytes: number[] | Uint8Array): string =>
-  Array.from(bytes)
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
 
 const toUint8Array = (bytes: number[] | Uint8Array): Uint8Array =>
   bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);

@@ -1093,6 +1093,7 @@ dependencies = [
  "gleaph-router",
  "pocket-ic",
  "serde",
+ "serde_json",
  "ureq",
 ]
 

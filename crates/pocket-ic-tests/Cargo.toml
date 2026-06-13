@@ -37,6 +37,7 @@ gleaph-graph-kernel.workspace = true
 gleaph-router = { path = "../router" }
 pocket-ic = "14.0.0"
 serde.workspace = true
+serde_json = "1"
 
 [build-dependencies]
 cargo_metadata = "0.23"

@@ -7,7 +7,6 @@ ORIGINAL_HOME="${HOME:-}"
 GRAPH_NAME="${GLEAPH_DEMO_GRAPH_NAME:-gleaph.pocket_ic}"
 SHARD_ID="${GLEAPH_DEMO_SHARD_ID:-0}"
 INSTALL_MODE="${GLEAPH_DEMO_INSTALL_MODE:-auto}"
-SEED_MUTATION_KEY="${GLEAPH_DEMO_SEED_MUTATION_KEY:-knowledge-map-seed-person-knows-project-weight5-v1}"
 
 ICP_CLI_HOME="${ICP_CLI_HOME:-$ROOT/.icp/home}"
 ICP_COREPACK_HOME="${ICP_COREPACK_HOME:-$ROOT/.icp/corepack-home}"
@@ -94,6 +93,14 @@ icp_call_expect_ok() {
   fi
 }
 
+seed_knowledge_map_graph() {
+  log "Generating knowledge-map seed manifest"
+  node "$ROOT/frontend/apps/knowledge-map/scripts/generate-seeds.mjs"
+
+  log "Seeding knowledge-map fan-out graph through Router GQL"
+  node "$ROOT/frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs"
+}
+
 main() {
   cd "$ROOT"
 
@@ -167,14 +174,12 @@ main() {
     }
   )"
 
-  log "Seeding knowledge-map relationship through Router GQL"
-  icp_call_expect_ok "Seeding knowledge-map relationship through Router GQL" "" -e local gleaph-router gql_execute_idempotent \
-    "(\"INSERT (:Person)-[:KNOWS {weight: 5}]->(:Project)\", vec {}, \"$SEED_MUTATION_KEY\")"
+  seed_knowledge_map_graph
 
   if [[ "${GLEAPH_DEMO_VERIFY_QUERY:-0}" == "1" ]]; then
-    log "Verifying knowledge-map relationship query through Router GQL"
-    icp_call_expect_ok "Verifying knowledge-map relationship query through Router GQL" "" -e local gleaph-router gql_query \
-      '("MATCH (a)-[e:KNOWS {weight: 5}]->(b) RETURN ELEMENT_ID(a) AS source_id, ELEMENT_ID(e) AS edge_id, ELEMENT_ID(b) AS target_id, e.weight AS edge_weight", vec {})' \
+    log "Verifying knowledge-map fan-out query through Router GQL"
+    icp_call_expect_ok "Verifying knowledge-map fan-out query through Router GQL" "" -e local gleaph-router gql_query \
+      '("MATCH ()-[e]->() WHERE e.demo_edge_id IS NOT NULL RETURN e.demo_edge_id AS edge_id, e.demo_kind AS edge_kind ORDER BY edge_id", vec {})' \
       --query
   else
     log "Skipping Router GQL query verification; set GLEAPH_DEMO_VERIFY_QUERY=1 to enable it"

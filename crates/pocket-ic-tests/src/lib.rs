@@ -993,6 +993,30 @@ pub fn gql_execute_idempotent_as_admin_expect_err(
     }
 }
 
+const KNOWLEDGE_MAP_SEEDS_JSON: &str =
+    include_str!("../../../frontend/apps/knowledge-map/seeds/knowledge-map-seeds.json");
+
+const KNOWLEDGE_MAP_LIVE_QUERY: &str = "\
+MATCH ()-[e]->() WHERE e.demo_edge_id IS NOT NULL \
+RETURN e.demo_edge_id AS edge_id, e.demo_kind AS edge_kind \
+ORDER BY edge_id";
+
+/// Seed the knowledge-map demo graph through Router `gql_execute_idempotent`.
+pub fn seed_knowledge_map_graph(env: &FederationEnv) {
+    let parsed: serde_json::Value =
+        serde_json::from_str(KNOWLEDGE_MAP_SEEDS_JSON).expect("parse knowledge-map seeds");
+    for seed in parsed["seeds"].as_array().expect("knowledge-map seed array") {
+        let gql = seed["gql"].as_str().expect("knowledge-map seed gql");
+        let key = seed["key"].as_str().expect("knowledge-map seed key");
+        let row_count = gql_execute_idempotent_as_admin(env, gql, key);
+        assert_eq!(row_count, 0, "seed {key} should not return rows");
+    }
+}
+
+pub fn knowledge_map_live_query() -> &'static str {
+    KNOWLEDGE_MAP_LIVE_QUERY
+}
+
 #[cfg(test)]
 mod pocket_ic_server_binary_tests {
     use super::validate_pocket_ic_server_binary;

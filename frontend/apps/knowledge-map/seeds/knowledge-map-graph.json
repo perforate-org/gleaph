@@ -1,0 +1,658 @@
+{
+  "nodes": [
+    {
+      "id": "alice",
+      "label": "Alice",
+      "kind": "person",
+      "gqlLabel": "Person",
+      "layer": 0,
+      "index": 0,
+      "count": 2,
+      "property": "name"
+    },
+    {
+      "id": "bob",
+      "label": "Bob",
+      "kind": "person",
+      "gqlLabel": "Person",
+      "layer": 0,
+      "index": 1,
+      "count": 2,
+      "property": "name"
+    },
+    {
+      "id": "post-storage",
+      "label": "Storage notes",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "index": 0,
+      "count": 7,
+      "property": "title"
+    },
+    {
+      "id": "post-routing",
+      "label": "Routing note",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "index": 1,
+      "count": 7,
+      "property": "title"
+    },
+    {
+      "id": "post-index",
+      "label": "Index design",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "index": 2,
+      "count": 7,
+      "property": "title"
+    },
+    {
+      "id": "post-gql",
+      "label": "GQL planning",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "index": 3,
+      "count": 7,
+      "property": "title"
+    },
+    {
+      "id": "post-demo",
+      "label": "Demo walkthrough",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "index": 4,
+      "count": 7,
+      "property": "title"
+    },
+    {
+      "id": "post-ops",
+      "label": "Ops journal",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "index": 5,
+      "count": 7,
+      "property": "title"
+    },
+    {
+      "id": "post-rbac",
+      "label": "Security note",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "index": 6,
+      "count": 7,
+      "property": "title"
+    },
+    {
+      "id": "topic-storage",
+      "label": "Storage",
+      "kind": "topic",
+      "gqlLabel": "Topic",
+      "layer": 2,
+      "index": 0,
+      "count": 5,
+      "property": "name"
+    },
+    {
+      "id": "topic-routing",
+      "label": "Routing",
+      "kind": "topic",
+      "gqlLabel": "Topic",
+      "layer": 2,
+      "index": 1,
+      "count": 5,
+      "property": "name"
+    },
+    {
+      "id": "topic-index",
+      "label": "Indexing",
+      "kind": "topic",
+      "gqlLabel": "Topic",
+      "layer": 2,
+      "index": 2,
+      "count": 5,
+      "property": "name"
+    },
+    {
+      "id": "topic-gql",
+      "label": "GQL",
+      "kind": "topic",
+      "gqlLabel": "Topic",
+      "layer": 2,
+      "index": 3,
+      "count": 5,
+      "property": "name"
+    },
+    {
+      "id": "topic-ops",
+      "label": "Operations",
+      "kind": "topic",
+      "gqlLabel": "Topic",
+      "layer": 2,
+      "index": 4,
+      "count": 5,
+      "property": "name"
+    },
+    {
+      "id": "project-gleaph",
+      "label": "Gleaph",
+      "kind": "project",
+      "gqlLabel": "Project",
+      "layer": 3,
+      "index": 0,
+      "count": 3,
+      "property": "name"
+    },
+    {
+      "id": "project-dashboard",
+      "label": "Dashboard",
+      "kind": "project",
+      "gqlLabel": "Project",
+      "layer": 3,
+      "index": 1,
+      "count": 3,
+      "property": "name"
+    },
+    {
+      "id": "project-ops",
+      "label": "Ops tooling",
+      "kind": "project",
+      "gqlLabel": "Project",
+      "layer": 3,
+      "index": 2,
+      "count": 3,
+      "property": "name"
+    },
+    {
+      "id": "doc-lara",
+      "label": "LARA overview",
+      "kind": "document",
+      "gqlLabel": "Document",
+      "layer": 4,
+      "index": 0,
+      "count": 7,
+      "property": "name"
+    },
+    {
+      "id": "doc-federation",
+      "label": "Federation semantics",
+      "kind": "document",
+      "gqlLabel": "Document",
+      "layer": 4,
+      "index": 1,
+      "count": 7,
+      "property": "name"
+    },
+    {
+      "id": "doc-router",
+      "label": "Router dispatch",
+      "kind": "document",
+      "gqlLabel": "Document",
+      "layer": 4,
+      "index": 2,
+      "count": 7,
+      "property": "name"
+    },
+    {
+      "id": "doc-gql-plan",
+      "label": "GQL plan format",
+      "kind": "document",
+      "gqlLabel": "Document",
+      "layer": 4,
+      "index": 3,
+      "count": 7,
+      "property": "name"
+    },
+    {
+      "id": "doc-knowledge-map",
+      "label": "Knowledge map demo",
+      "kind": "document",
+      "gqlLabel": "Document",
+      "layer": 4,
+      "index": 4,
+      "count": 7,
+      "property": "name"
+    },
+    {
+      "id": "doc-rbac",
+      "label": "RBAC prepared queries",
+      "kind": "document",
+      "gqlLabel": "Document",
+      "layer": 4,
+      "index": 5,
+      "count": 7,
+      "property": "name"
+    },
+    {
+      "id": "doc-index",
+      "label": "Property index ADR",
+      "kind": "document",
+      "gqlLabel": "Document",
+      "layer": 4,
+      "index": 6,
+      "count": 7,
+      "property": "name"
+    }
+  ],
+  "edges": [
+    {
+      "id": "alice-storage",
+      "source": "alice",
+      "target": "post-storage",
+      "gqlLabel": "WROTE",
+      "displayLabel": "wrote"
+    },
+    {
+      "id": "alice-routing",
+      "source": "alice",
+      "target": "post-routing",
+      "gqlLabel": "WROTE",
+      "displayLabel": "wrote"
+    },
+    {
+      "id": "alice-index",
+      "source": "alice",
+      "target": "post-index",
+      "gqlLabel": "WROTE",
+      "displayLabel": "wrote"
+    },
+    {
+      "id": "alice-gql",
+      "source": "alice",
+      "target": "post-gql",
+      "gqlLabel": "WROTE",
+      "displayLabel": "wrote"
+    },
+    {
+      "id": "alice-demo",
+      "source": "alice",
+      "target": "post-demo",
+      "gqlLabel": "WROTE",
+      "displayLabel": "wrote"
+    },
+    {
+      "id": "bob-ops",
+      "source": "bob",
+      "target": "post-ops",
+      "gqlLabel": "WROTE",
+      "displayLabel": "wrote"
+    },
+    {
+      "id": "bob-rbac",
+      "source": "bob",
+      "target": "post-rbac",
+      "gqlLabel": "WROTE",
+      "displayLabel": "wrote"
+    },
+    {
+      "id": "storage-topic",
+      "source": "post-storage",
+      "target": "topic-storage",
+      "gqlLabel": "TAGGED",
+      "displayLabel": "tagged"
+    },
+    {
+      "id": "routing-topic",
+      "source": "post-routing",
+      "target": "topic-routing",
+      "gqlLabel": "TAGGED",
+      "displayLabel": "tagged"
+    },
+    {
+      "id": "index-topic",
+      "source": "post-index",
+      "target": "topic-index",
+      "gqlLabel": "TAGGED",
+      "displayLabel": "tagged"
+    },
+    {
+      "id": "gql-topic",
+      "source": "post-gql",
+      "target": "topic-gql",
+      "gqlLabel": "TAGGED",
+      "displayLabel": "tagged"
+    },
+    {
+      "id": "demo-topic",
+      "source": "post-demo",
+      "target": "topic-gql",
+      "gqlLabel": "TAGGED",
+      "displayLabel": "tagged"
+    },
+    {
+      "id": "ops-topic",
+      "source": "post-ops",
+      "target": "topic-ops",
+      "gqlLabel": "TAGGED",
+      "displayLabel": "tagged"
+    },
+    {
+      "id": "rbac-topic",
+      "source": "post-rbac",
+      "target": "topic-routing",
+      "gqlLabel": "TAGGED",
+      "displayLabel": "tagged"
+    },
+    {
+      "id": "topic-storage-project",
+      "source": "topic-storage",
+      "target": "project-gleaph",
+      "gqlLabel": "USED_BY",
+      "displayLabel": "used by"
+    },
+    {
+      "id": "topic-routing-project",
+      "source": "topic-routing",
+      "target": "project-gleaph",
+      "gqlLabel": "USED_BY",
+      "displayLabel": "used by"
+    },
+    {
+      "id": "topic-index-project",
+      "source": "topic-index",
+      "target": "project-gleaph",
+      "gqlLabel": "USED_BY",
+      "displayLabel": "used by"
+    },
+    {
+      "id": "topic-gql-dashboard",
+      "source": "topic-gql",
+      "target": "project-dashboard",
+      "gqlLabel": "USED_BY",
+      "displayLabel": "used by"
+    },
+    {
+      "id": "topic-ops-project",
+      "source": "topic-ops",
+      "target": "project-ops",
+      "gqlLabel": "USED_BY",
+      "displayLabel": "used by"
+    },
+    {
+      "id": "project-lara",
+      "source": "project-gleaph",
+      "target": "doc-lara",
+      "gqlLabel": "DOCUMENTED_BY",
+      "displayLabel": "documented by"
+    },
+    {
+      "id": "project-federation",
+      "source": "project-gleaph",
+      "target": "doc-federation",
+      "gqlLabel": "DOCUMENTED_BY",
+      "displayLabel": "documented by"
+    },
+    {
+      "id": "project-router-doc",
+      "source": "project-gleaph",
+      "target": "doc-router",
+      "gqlLabel": "DOCUMENTED_BY",
+      "displayLabel": "documented by"
+    },
+    {
+      "id": "dashboard-gql-plan",
+      "source": "project-dashboard",
+      "target": "doc-gql-plan",
+      "gqlLabel": "DOCUMENTED_BY",
+      "displayLabel": "documented by"
+    },
+    {
+      "id": "dashboard-knowledge-map",
+      "source": "project-dashboard",
+      "target": "doc-knowledge-map",
+      "gqlLabel": "DOCUMENTED_BY",
+      "displayLabel": "documented by"
+    },
+    {
+      "id": "ops-rbac",
+      "source": "project-ops",
+      "target": "doc-rbac",
+      "gqlLabel": "SECURED_BY",
+      "displayLabel": "secured by"
+    },
+    {
+      "id": "ops-index",
+      "source": "project-ops",
+      "target": "doc-index",
+      "gqlLabel": "SECURED_BY",
+      "displayLabel": "secured by"
+    }
+  ],
+  "scenarios": [
+    {
+      "id": "alice-fan-out",
+      "title": "Alice fan-out map",
+      "question": "Show how Alice's connections fan out across Gleaph.",
+      "path": [
+        {
+          "nodeId": "alice",
+          "text": "Alice is the hub where the query starts."
+        },
+        {
+          "nodeId": "post-storage",
+          "edgeId": "alice-storage",
+          "text": "Five posts fan out from Alice; follow the storage branch first."
+        },
+        {
+          "nodeId": "topic-storage",
+          "edgeId": "storage-topic",
+          "text": "Each post carries a topic bridge."
+        },
+        {
+          "nodeId": "project-gleaph",
+          "edgeId": "topic-storage-project",
+          "text": "Multiple topics converge, then Gleaph fans out again."
+        },
+        {
+          "nodeId": "doc-lara",
+          "edgeId": "project-lara",
+          "text": "Three documents fan out from the Gleaph project node."
+        }
+      ],
+      "results": [
+        {
+          "title": "LARA overview",
+          "kind": "Document",
+          "reason": "Primary document in the Gleaph fan-out cluster.",
+          "nodeId": "doc-lara"
+        },
+        {
+          "title": "Federation semantics",
+          "kind": "Document",
+          "reason": "Sibling result reached through the same project fan-out.",
+          "nodeId": "doc-federation"
+        },
+        {
+          "title": "Router dispatch",
+          "kind": "Document",
+          "reason": "Third sibling document returned from the same fan-out.",
+          "nodeId": "doc-router"
+        }
+      ],
+      "technical": [
+        {
+          "title": "Fan-out query",
+          "detail": "Router resolves one anchor, then fans across related rows."
+        },
+        {
+          "title": "Shard dispatch",
+          "detail": "Each relationship arm can route to the owning graph shard."
+        },
+        {
+          "title": "Merged rows",
+          "detail": "Router merges graph-shaped rows into one presentation model."
+        },
+        {
+          "title": "View model",
+          "detail": "The frontend renders the full fan-out graph, not just one edge."
+        }
+      ]
+    },
+    {
+      "id": "alice-projects",
+      "title": "Alice's project trail",
+      "question": "Show Alice's related projects.",
+      "path": [
+        {
+          "nodeId": "alice",
+          "text": "Alice is the starting point."
+        },
+        {
+          "nodeId": "post-storage",
+          "edgeId": "alice-storage",
+          "text": "Follow the post Alice wrote."
+        },
+        {
+          "nodeId": "topic-storage",
+          "edgeId": "storage-topic",
+          "text": "Read the topic attached to that post."
+        },
+        {
+          "nodeId": "project-gleaph",
+          "edgeId": "topic-storage-project",
+          "text": "Use the topic to reach the related project."
+        },
+        {
+          "nodeId": "doc-lara",
+          "edgeId": "project-lara",
+          "text": "Reveal the document that explains the project area."
+        }
+      ],
+      "results": [
+        {
+          "title": "LARA overview",
+          "kind": "Document",
+          "reason": "Found through Alice's storage post and the Gleaph project node.",
+          "nodeId": "doc-lara"
+        }
+      ],
+      "technical": [
+        {
+          "title": "Question selected",
+          "detail": "The frontend asks the Router for the selected demo scenario."
+        },
+        {
+          "title": "Router query",
+          "detail": "Router remains the only public Gleaph entrypoint for the demo."
+        },
+        {
+          "title": "Graph execution",
+          "detail": "Graph shards execute local plans and return graph-shaped rows."
+        },
+        {
+          "title": "View model",
+          "detail": "Rows are adapted into nodes, edges, path, story, and result cards."
+        }
+      ]
+    },
+    {
+      "id": "routing-docs",
+      "title": "Routing explanation",
+      "question": "Find documents that explain query routing.",
+      "path": [
+        {
+          "nodeId": "bob",
+          "text": "Bob is connected to a routing note."
+        },
+        {
+          "nodeId": "post-rbac",
+          "edgeId": "bob-rbac",
+          "text": "Follow Bob's security note into the routing topic."
+        },
+        {
+          "nodeId": "topic-routing",
+          "edgeId": "rbac-topic",
+          "text": "Use the routing topic as the bridge."
+        },
+        {
+          "nodeId": "project-gleaph",
+          "edgeId": "topic-routing-project",
+          "text": "Connect that topic to the Gleaph project."
+        },
+        {
+          "nodeId": "doc-federation",
+          "edgeId": "project-federation",
+          "text": "Reveal the federation semantics document."
+        }
+      ],
+      "results": [
+        {
+          "title": "Federation semantics",
+          "kind": "Document",
+          "reason": "Found by following the routing topic through the Gleaph project.",
+          "nodeId": "doc-federation"
+        }
+      ],
+      "technical": [
+        {
+          "title": "Scenario request",
+          "detail": "A future Router endpoint or prepared query supplies this path."
+        },
+        {
+          "title": "Index-aware route",
+          "detail": "Router can resolve candidate starts before shard dispatch."
+        },
+        {
+          "title": "Shard-local execute",
+          "detail": "Graph execution stays behind Router-owned orchestration."
+        },
+        {
+          "title": "Merged story",
+          "detail": "The frontend receives a presentation-safe graph view model."
+        }
+      ]
+    },
+    {
+      "id": "access-control",
+      "title": "Access control trail",
+      "question": "Show how access control relates to Gleaph.",
+      "path": [
+        {
+          "nodeId": "project-ops",
+          "text": "Start at the ops tooling project."
+        },
+        {
+          "nodeId": "doc-rbac",
+          "edgeId": "ops-rbac",
+          "text": "Follow the security relationship to prepared-query access control."
+        },
+        {
+          "nodeId": "doc-index",
+          "edgeId": "ops-index",
+          "text": "A second document fans out from the same project node."
+        }
+      ],
+      "results": [
+        {
+          "title": "RBAC prepared queries",
+          "kind": "Document",
+          "reason": "Connected directly to the ops tooling security model.",
+          "nodeId": "doc-rbac"
+        },
+        {
+          "title": "Property index ADR",
+          "kind": "Document",
+          "reason": "Sibling ops document returned from the same fan-out.",
+          "nodeId": "doc-index"
+        }
+      ],
+      "technical": [
+        {
+          "title": "Router boundary",
+          "detail": "User-facing permissions are enforced at the Router boundary."
+        },
+        {
+          "title": "Prepared execution",
+          "detail": "Future demo copy can distinguish prepared calls from ad-hoc GQL."
+        }
+      ]
+    }
+  ]
+}

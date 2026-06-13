@@ -15,7 +15,8 @@ use gleaph_pocket_ic_tests::{
     e2e_insert_undirected_edge_with_property, e2e_insert_vertex, e2e_insert_vertex_with_property,
     gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
     gql_query_as_admin, gql_query_as_admin_expect_err, install_federation,
-    install_single_shard_federation, resolve_placement,
+    install_single_shard_federation, knowledge_map_live_query, resolve_placement,
+    seed_knowledge_map_graph,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -155,6 +156,43 @@ fn standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter() {
         row.get("edge_weight"),
         Some(&Value::Int64(5)),
         "edge property should be projected for adapter row metadata"
+    );
+}
+
+#[test]
+fn router_gql_insert_seeds_knowledge_map_fan_out_graph() {
+    let env = install_single_shard_federation();
+    seed_knowledge_map_graph(&env);
+
+    let result = gql_query_as_admin(&env, knowledge_map_live_query());
+    assert_eq!(
+        result.row_count, 26,
+        "knowledge-map live query should return one row per seeded demo edge"
+    );
+
+    let rows_blob = result
+        .rows_blob
+        .as_ref()
+        .expect("router gql_query should return rows_blob");
+    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
+    assert_eq!(wire.rows.len(), 26);
+
+    let mut edge_ids = std::collections::BTreeSet::new();
+    for row in wire.rows {
+        let value_row = row.try_into_value_row().expect("wire row to value row");
+        let Value::Text(edge_id) = value_row.get("edge_id").expect("edge_id column") else {
+            panic!("expected edge_id text, got {:?}", value_row.get("edge_id"));
+        };
+        edge_ids.insert(edge_id.clone());
+    }
+
+    assert!(
+        edge_ids.contains("alice-storage"),
+        "expected alice-storage edge, got {edge_ids:?}"
+    );
+    assert!(
+        edge_ids.contains("project-lara"),
+        "expected project-lara edge, got {edge_ids:?}"
     );
 }
 

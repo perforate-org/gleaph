@@ -1,11 +1,11 @@
 # Gleaph Knowledge Map Demo
 
 Last updated: 2026-06-13  
-Anchor timestamp: 2026-06-13 23:02:20 UTC +0000
+Anchor timestamp: 2026-06-13 23:46:50 UTC +0000
 
 ## Status
 
-**Partially implemented** — the frontend MVP exists under `frontend/apps/knowledge-map` with a lightweight SVG renderer, a Router-row adapter, and an optional live Router `gql_query` source. A PocketIC test proves Router `gql_execute_idempotent` can seed the demo relationship and Router `gql_query` can return relationship row material through `rows_blob`. The broader named scenario dataset is still planned.
+**Partially implemented** — the frontend MVP exists under `frontend/apps/knowledge-map` with a lightweight SVG renderer, a Router-row adapter, and an optional live Router `gql_query` source. Preview and live modes share one canonical graph definition in `frontend/apps/knowledge-map/seeds/knowledge-map-graph.json` (24 nodes, 26 edges, default scenario `alice-fan-out`). Local deploy and PocketIC tests seed the same graph through Router `gql_execute_idempotent` and verify Router `gql_query` returns all demo edges through `rows_blob`.
 
 ## Purpose
 
@@ -103,12 +103,23 @@ The repository root contains `icp.yaml` with these canisters:
 
 The local network uses `mode: managed` with `gateway.port: 0`, so parallel worktrees can start local IC gateways without hard-coded port collisions.
 
-Current status: `icp build` succeeds for all configured canisters, and `scripts/deploy-knowledge-map-local.sh` deploys the local IC demo stack. The asset build commands run `corepack pnpm` with `HOME`, `COREPACK_HOME`, `XDG_CACHE_HOME`, and `XDG_DATA_HOME` under `.icp/`, so local CLI builds do not depend on global package-manager cache paths. The script wires local deployment order, init args, and a small Router-owned seed:
+Current status: `icp build` succeeds for all configured canisters, and `scripts/deploy-knowledge-map-local.sh` deploys the local IC demo stack. The asset build commands run `corepack pnpm` with `HOME`, `COREPACK_HOME`, `XDG_CACHE_HOME`, and `XDG_DATA_HOME` under `.icp/`, so local CLI builds do not depend on global package-manager cache paths. The script wires local deployment order, init args, and the Alice fan-out demo graph:
 
 - `RouterInitArgs`: installer/admin/controller principals;
 - `IndexInitArgs`: Router canister id and controllers;
 - `GraphInitArgs`: logical graph name, Router canister id, shard id, and index canister id;
-- `gql_execute_idempotent`: `INSERT (:Person)-[:KNOWS {weight: 5}]->(:Project)` with a configurable `GLEAPH_DEMO_SEED_MUTATION_KEY`.
+- `gql_execute_idempotent`: 28 idempotent mutations generated from `knowledge-map-graph.json` (node inserts plus `MATCH ... RETURN ... NEXT INSERT ...` edge inserts).
+
+Seed generation and application:
+
+```text
+frontend/apps/knowledge-map/scripts/generate-seeds.mjs
+  -> seeds/knowledge-map-seeds.json
+frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs
+  -> Router gql_execute_idempotent (local icp)
+crates/pocket-ic-tests::seed_knowledge_map_graph
+  -> same seeds JSON for PocketIC e2e
+```
 
 The verified local deployment used:
 
@@ -136,7 +147,15 @@ Router row result
 
 The current frontend fixture intentionally uses Router-shaped rows before adaptation. This keeps mocked data on the same presentation path that a future Router response will use.
 
-The frontend also includes an optional live source. When a Router canister id is available, the demo can call Router `gql_query`, decode `rows_blob`, map `source_id`, `edge_id`, `target_id`, and `edge_weight` into Router-shaped rows, and then reuse the same `KnowledgeMapViewModel` adapter.
+The frontend also includes an optional live source. When a Router canister id is available, the demo calls Router `gql_query`, decodes `rows_blob`, maps `edge_id` and `edge_kind` into the canonical graph fixture, and then reuses the same `KnowledgeMapViewModel` adapter. The live query intentionally projects edge properties only:
+
+```gql
+MATCH ()-[e]->() WHERE e.demo_edge_id IS NOT NULL
+RETURN e.demo_edge_id AS edge_id, e.demo_kind AS edge_kind
+ORDER BY edge_id
+```
+
+Node `demo_id` projection on multi-label traversals is omitted because the current planner rejects `a.demo_id` bindings on the full fan-out graph query.
 
 ## Demo data model
 
@@ -360,7 +379,7 @@ Status: implemented with Router-row fixtures adapted into `KnowledgeMapViewModel
 - Read canister ids from the IC asset-canister environment for deployed local/demo builds.
 - Replace mocked data with Router results.
 
-Status: partially implemented. The frontend has a hand-wired Router `gql_query` client that reads `PUBLIC_CANISTER_ID:gleaph-router` or `PUBLIC_CANISTER_ID:router` from the asset canister `ic_env` cookie, with `VITE_ROUTER_CANISTER_ID` as a local Vite fallback. It currently maps one live relationship row, not the full named knowledge-map scenario.
+Status: partially implemented. The frontend has a hand-wired Router `gql_query` client that reads `PUBLIC_CANISTER_ID:gleaph-router` or `PUBLIC_CANISTER_ID:router` from the asset canister `ic_env` cookie, with `VITE_ROUTER_CANISTER_ID` as a local Vite fallback. Live mode validates all 26 seeded demo edges against the `alice-fan-out` scenario from `knowledge-map-graph.json`.
 
 ### Phase 5: ICP CLI deploy wiring
 
@@ -368,7 +387,7 @@ Status: partially implemented. The frontend has a hand-wired Router `gql_query` 
 - Add a script that creates canisters, resolves canister ids, encodes init args, deploys Router, graph-index, graph shard, and asset canister, then seeds the demo graph.
 - Keep all seed/query calls Router-owned unless a PocketIC-only setup helper is explicitly documented for test speed.
 
-Status: partially implemented. The manifest exists; `icp build` validates all configured canisters; `scripts/deploy-knowledge-map-local.sh` handles local network startup, canister id resolution, Router/Index/Graph init args, Router graph/shard registration, and asset canister deployment. Sandbox-external execution starts the local network successfully and deploys the stack. The deploy path surfaced and fixed two wiring issues: Router now sends raw `nat32` shard ids to graph-index calls, and graph shard install receives the index canister id directly because canister init cannot perform inter-canister calls. Demo seed data and full live browser-to-Router validation are still planned.
+Status: partially implemented. The manifest exists; `icp build` validates all configured canisters; `scripts/deploy-knowledge-map-local.sh` handles local network startup, canister id resolution, Router/Index/Graph init args, Router graph/shard registration, full fan-out graph seeding, and asset canister deployment. Sandbox-external execution starts the local network successfully and deploys the stack. Full live browser-to-Router validation is still planned.
 
 ### Phase 6: Graph polish
 
@@ -382,7 +401,7 @@ Status: partially implemented. The manifest exists; `icp build` validates all co
 - Frontend build: app compiles and can be deployed as an asset canister.
 - Browser validation: SVG graph is visible, route playback completes, result cards match the Router result.
 
-Current validation includes a targeted PocketIC test for Router relationship rows and frontend type/build checks. It does not yet deploy the frontend as an asset canister or validate a live browser-to-Router call.
+Current validation includes PocketIC tests for Router relationship rows and the full knowledge-map fan-out seed/query path, plus frontend type/build checks. It does not yet deploy the frontend as an asset canister or validate a live browser-to-Router call.
 
 ## Validation commands
 
@@ -392,7 +411,7 @@ Current validation commands:
 cargo fmt --all
 cargo check -p gleaph-pocket-ic-tests --tests
 cargo clippy -p gleaph-pocket-ic-tests --tests -- -D warnings
-cargo test -p gleaph-pocket-ic-tests --test router_gql_query standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter
+cargo test -p gleaph-pocket-ic-tests --test router_gql_query router_gql_insert_seeds_knowledge_map_fan_out_graph
 pnpm knowledge-map:check
 pnpm --filter @gleaph/knowledge-map build
 icp build knowledge-map

@@ -24,10 +24,20 @@ export function GraphStage(props: GraphStageProps) {
     return new Map(
       viewModel.nodes.map((node) => {
         const [sourceX, sourceY] = node.positionHint ?? [0, 0, 0];
-        const x = 50 + sourceX * 10.5;
-        const y = 50 - sourceY * 18;
+        const x = 50 + sourceX * 8.2;
+        const y = 50 - sourceY * 14.5;
         return [node.id, { x, y }];
       }),
+    );
+  });
+
+  const resultNodeIds = createMemo(() => {
+    const viewModel = props.viewModel;
+    if (!viewModel || props.playbackStatus !== "complete") {
+      return new Set<string>();
+    }
+    return new Set(
+      viewModel.results.flatMap((result) => (result.nodeId ? [result.nodeId] : [])),
     );
   });
 
@@ -122,6 +132,7 @@ export function GraphStage(props: GraphStageProps) {
                     positions={nodePositions()}
                     active={activeStep()?.edgeId === edge.id}
                     visited={visitedEdgeIds().has(edge.id)}
+                    contextual={visitedNodeIds().has(edge.source) || visitedNodeIds().has(edge.target)}
                   />
                 )}
               </For>
@@ -141,10 +152,13 @@ export function GraphStage(props: GraphStageProps) {
                     position={nodePositions().get(node.id)}
                     active={activeStep()?.nodeId === node.id}
                     visited={visitedNodeIds().has(node.id)}
-                    result={viewModel().results.some(
-                      (result) =>
-                        result.nodeId === node.id && props.playbackStatus === "complete",
-                    )}
+                    result={resultNodeIds().has(node.id)}
+                    contextual={
+                      visitedNodeIds().has(node.id) ||
+                      resultNodeIds().has(node.id) ||
+                      node.kind === "person" ||
+                      node.kind === "project"
+                    }
                   />
                 )}
               </For>
@@ -160,9 +174,9 @@ export function GraphStage(props: GraphStageProps) {
         <p class="mt-1 text-sm text-slate-600">
           <Show
             when={props.queryRun.status === "ready"}
-            fallback="Run a query to load relationship rows from Gleaph."
+            fallback="Run a query to load the fan-out graph from Gleaph."
           >
-            Graph-shaped view model, animated after the query returns.
+            Full graph context with the active path and result fan-out highlighted.
           </Show>
         </p>
       </div>
@@ -175,6 +189,7 @@ type GraphEdgeProps = {
   positions: Map<string, { x: number; y: number }>;
   active: boolean;
   visited: boolean;
+  contextual: boolean;
 };
 
 function GraphEdge(props: GraphEdgeProps) {
@@ -195,9 +210,9 @@ function GraphEdge(props: GraphEdgeProps) {
           x2={target()?.x}
           y2={target()?.y}
           stroke={props.active ? "#2563eb" : props.visited ? "#06b6d4" : "#94a3b8"}
-          stroke-width={props.active ? 0.7 : props.visited ? 0.42 : 0.24}
-          stroke-opacity={props.active ? 0.9 : props.visited ? 0.7 : 0.36}
-          marker-end="url(#knowledge-map-arrow)"
+          stroke-width={props.active ? 0.62 : props.visited ? 0.38 : props.contextual ? 0.22 : 0.16}
+          stroke-opacity={props.active ? 0.92 : props.visited ? 0.72 : props.contextual ? 0.34 : 0.18}
+          marker-end={props.active || props.visited ? "url(#knowledge-map-arrow)" : undefined}
           filter={props.active ? "url(#knowledge-map-glow)" : undefined}
         />
         <Show when={props.active || props.visited}>
@@ -252,20 +267,39 @@ type GraphNodeProps = {
   active: boolean;
   visited: boolean;
   result: boolean;
+  contextual: boolean;
 };
 
 function GraphNode(props: GraphNodeProps) {
   const color = () => nodeColor(props.node.kind);
-  const radius = () =>
-    props.node.kind === "project" ? 3.2 : props.node.kind === "document" ? 2.6 : 2.35;
-  const shown = () => props.active || props.visited || props.result || props.node.kind === "project";
+  const radius = () => {
+    if (props.node.kind === "person") {
+      return 2.85;
+    }
+    if (props.node.kind === "project") {
+      return 2.55;
+    }
+    if (props.node.kind === "document") {
+      return 2.15;
+    }
+    return 1.95;
+  };
+  const labelOpacity = () => {
+    if (props.active || props.result) {
+      return 1;
+    }
+    if (props.visited || props.contextual) {
+      return 0.82;
+    }
+    return 0.34;
+  };
 
   return (
     <Show when={props.position}>
       {(position) => (
         <g
           transform={`translate(${position().x} ${position().y})`}
-          opacity={props.active || props.visited || props.result ? 1 : 0.48}
+          opacity={props.active || props.visited || props.result ? 1 : props.contextual ? 0.72 : 0.38}
         >
           <circle
             r={radius() + (props.active ? 2.4 : props.result ? 1.6 : 0.9)}
@@ -288,18 +322,18 @@ function GraphNode(props: GraphNodeProps) {
             paint-order="stroke"
             stroke="rgba(255,255,255,0.94)"
             stroke-width="0.92"
-            opacity={shown() ? 1 : 0}
+            opacity={labelOpacity()}
           >
             {props.node.label}
           </text>
           <text
             y={radius() + 7}
             text-anchor="middle"
-            class="select-none fill-slate-500 text-[1.85px] font-medium uppercase"
+            class="select-none fill-slate-500 text-[1.75px] font-medium uppercase"
             paint-order="stroke"
             stroke="rgba(255,255,255,0.92)"
             stroke-width="0.74"
-            opacity={shown() ? 0.86 : 0}
+            opacity={labelOpacity() * 0.86}
           >
             {props.node.kind}
           </text>

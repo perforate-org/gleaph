@@ -1,0 +1,116 @@
+{
+  "seeds": [
+    {
+      "key": "km-seed-node-alice",
+      "gql": "INSERT (n:Person {demo_id: 'alice', demo_graph: 'knowledge-map', name: 'Alice'})"
+    },
+    {
+      "key": "km-seed-node-bob",
+      "gql": "INSERT (n:Person {demo_id: 'bob', demo_graph: 'knowledge-map', name: 'Bob'})"
+    },
+    {
+      "key": "km-seed-edge-alice-storage",
+      "gql": "MATCH (a:Person {demo_id: 'alice', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:WROTE {demo_edge_id: 'alice-storage', demo_kind: 'wrote'}]->(b:Post {demo_id: 'post-storage', demo_graph: 'knowledge-map', title: 'Storage notes'})"
+    },
+    {
+      "key": "km-seed-edge-alice-routing",
+      "gql": "MATCH (a:Person {demo_id: 'alice', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:WROTE {demo_edge_id: 'alice-routing', demo_kind: 'wrote'}]->(b:Post {demo_id: 'post-routing', demo_graph: 'knowledge-map', title: 'Routing note'})"
+    },
+    {
+      "key": "km-seed-edge-alice-index",
+      "gql": "MATCH (a:Person {demo_id: 'alice', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:WROTE {demo_edge_id: 'alice-index', demo_kind: 'wrote'}]->(b:Post {demo_id: 'post-index', demo_graph: 'knowledge-map', title: 'Index design'})"
+    },
+    {
+      "key": "km-seed-edge-alice-gql",
+      "gql": "MATCH (a:Person {demo_id: 'alice', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:WROTE {demo_edge_id: 'alice-gql', demo_kind: 'wrote'}]->(b:Post {demo_id: 'post-gql', demo_graph: 'knowledge-map', title: 'GQL planning'})"
+    },
+    {
+      "key": "km-seed-edge-alice-demo",
+      "gql": "MATCH (a:Person {demo_id: 'alice', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:WROTE {demo_edge_id: 'alice-demo', demo_kind: 'wrote'}]->(b:Post {demo_id: 'post-demo', demo_graph: 'knowledge-map', title: 'Demo walkthrough'})"
+    },
+    {
+      "key": "km-seed-edge-bob-ops",
+      "gql": "MATCH (a:Person {demo_id: 'bob', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:WROTE {demo_edge_id: 'bob-ops', demo_kind: 'wrote'}]->(b:Post {demo_id: 'post-ops', demo_graph: 'knowledge-map', title: 'Ops journal'})"
+    },
+    {
+      "key": "km-seed-edge-bob-rbac",
+      "gql": "MATCH (a:Person {demo_id: 'bob', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:WROTE {demo_edge_id: 'bob-rbac', demo_kind: 'wrote'}]->(b:Post {demo_id: 'post-rbac', demo_graph: 'knowledge-map', title: 'Security note'})"
+    },
+    {
+      "key": "km-seed-edge-storage-topic",
+      "gql": "MATCH (a:Post {demo_id: 'post-storage', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:TAGGED {demo_edge_id: 'storage-topic', demo_kind: 'tagged'}]->(b:Topic {demo_id: 'topic-storage', demo_graph: 'knowledge-map', name: 'Storage'})"
+    },
+    {
+      "key": "km-seed-edge-routing-topic",
+      "gql": "MATCH (a:Post {demo_id: 'post-routing', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:TAGGED {demo_edge_id: 'routing-topic', demo_kind: 'tagged'}]->(b:Topic {demo_id: 'topic-routing', demo_graph: 'knowledge-map', name: 'Routing'})"
+    },
+    {
+      "key": "km-seed-edge-index-topic",
+      "gql": "MATCH (a:Post {demo_id: 'post-index', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:TAGGED {demo_edge_id: 'index-topic', demo_kind: 'tagged'}]->(b:Topic {demo_id: 'topic-index', demo_graph: 'knowledge-map', name: 'Indexing'})"
+    },
+    {
+      "key": "km-seed-edge-gql-topic",
+      "gql": "MATCH (a:Post {demo_id: 'post-gql', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:TAGGED {demo_edge_id: 'gql-topic', demo_kind: 'tagged'}]->(b:Topic {demo_id: 'topic-gql', demo_graph: 'knowledge-map', name: 'GQL'})"
+    },
+    {
+      "key": "km-seed-edge-demo-topic",
+      "gql": "MATCH (a:Post {demo_id: 'post-demo', demo_graph: 'knowledge-map'}), (b:Topic {demo_id: 'topic-gql', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:TAGGED {demo_edge_id: 'demo-topic', demo_kind: 'tagged'}]->(b)"
+    },
+    {
+      "key": "km-seed-edge-ops-topic",
+      "gql": "MATCH (a:Post {demo_id: 'post-ops', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:TAGGED {demo_edge_id: 'ops-topic', demo_kind: 'tagged'}]->(b:Topic {demo_id: 'topic-ops', demo_graph: 'knowledge-map', name: 'Operations'})"
+    },
+    {
+      "key": "km-seed-edge-rbac-topic",
+      "gql": "MATCH (a:Post {demo_id: 'post-rbac', demo_graph: 'knowledge-map'}), (b:Topic {demo_id: 'topic-routing', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:TAGGED {demo_edge_id: 'rbac-topic', demo_kind: 'tagged'}]->(b)"
+    },
+    {
+      "key": "km-seed-edge-topic-storage-project",
+      "gql": "MATCH (a:Topic {demo_id: 'topic-storage', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:USED_BY {demo_edge_id: 'topic-storage-project', demo_kind: 'used by'}]->(b:Project {demo_id: 'project-gleaph', demo_graph: 'knowledge-map', name: 'Gleaph'})"
+    },
+    {
+      "key": "km-seed-edge-topic-routing-project",
+      "gql": "MATCH (a:Topic {demo_id: 'topic-routing', demo_graph: 'knowledge-map'}), (b:Project {demo_id: 'project-gleaph', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:USED_BY {demo_edge_id: 'topic-routing-project', demo_kind: 'used by'}]->(b)"
+    },
+    {
+      "key": "km-seed-edge-topic-index-project",
+      "gql": "MATCH (a:Topic {demo_id: 'topic-index', demo_graph: 'knowledge-map'}), (b:Project {demo_id: 'project-gleaph', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:USED_BY {demo_edge_id: 'topic-index-project', demo_kind: 'used by'}]->(b)"
+    },
+    {
+      "key": "km-seed-edge-topic-gql-dashboard",
+      "gql": "MATCH (a:Topic {demo_id: 'topic-gql', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:USED_BY {demo_edge_id: 'topic-gql-dashboard', demo_kind: 'used by'}]->(b:Project {demo_id: 'project-dashboard', demo_graph: 'knowledge-map', name: 'Dashboard'})"
+    },
+    {
+      "key": "km-seed-edge-topic-ops-project",
+      "gql": "MATCH (a:Topic {demo_id: 'topic-ops', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:USED_BY {demo_edge_id: 'topic-ops-project', demo_kind: 'used by'}]->(b:Project {demo_id: 'project-ops', demo_graph: 'knowledge-map', name: 'Ops tooling'})"
+    },
+    {
+      "key": "km-seed-edge-project-lara",
+      "gql": "MATCH (a:Project {demo_id: 'project-gleaph', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:DOCUMENTED_BY {demo_edge_id: 'project-lara', demo_kind: 'documented by'}]->(b:Document {demo_id: 'doc-lara', demo_graph: 'knowledge-map', name: 'LARA overview'})"
+    },
+    {
+      "key": "km-seed-edge-project-federation",
+      "gql": "MATCH (a:Project {demo_id: 'project-gleaph', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:DOCUMENTED_BY {demo_edge_id: 'project-federation', demo_kind: 'documented by'}]->(b:Document {demo_id: 'doc-federation', demo_graph: 'knowledge-map', name: 'Federation semantics'})"
+    },
+    {
+      "key": "km-seed-edge-project-router-doc",
+      "gql": "MATCH (a:Project {demo_id: 'project-gleaph', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:DOCUMENTED_BY {demo_edge_id: 'project-router-doc', demo_kind: 'documented by'}]->(b:Document {demo_id: 'doc-router', demo_graph: 'knowledge-map', name: 'Router dispatch'})"
+    },
+    {
+      "key": "km-seed-edge-dashboard-gql-plan",
+      "gql": "MATCH (a:Project {demo_id: 'project-dashboard', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:DOCUMENTED_BY {demo_edge_id: 'dashboard-gql-plan', demo_kind: 'documented by'}]->(b:Document {demo_id: 'doc-gql-plan', demo_graph: 'knowledge-map', name: 'GQL plan format'})"
+    },
+    {
+      "key": "km-seed-edge-dashboard-knowledge-map",
+      "gql": "MATCH (a:Project {demo_id: 'project-dashboard', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:DOCUMENTED_BY {demo_edge_id: 'dashboard-knowledge-map', demo_kind: 'documented by'}]->(b:Document {demo_id: 'doc-knowledge-map', demo_graph: 'knowledge-map', name: 'Knowledge map demo'})"
+    },
+    {
+      "key": "km-seed-edge-ops-rbac",
+      "gql": "MATCH (a:Project {demo_id: 'project-ops', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:SECURED_BY {demo_edge_id: 'ops-rbac', demo_kind: 'secured by'}]->(b:Document {demo_id: 'doc-rbac', demo_graph: 'knowledge-map', name: 'RBAC prepared queries'})"
+    },
+    {
+      "key": "km-seed-edge-ops-index",
+      "gql": "MATCH (a:Project {demo_id: 'project-ops', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:SECURED_BY {demo_edge_id: 'ops-index', demo_kind: 'secured by'}]->(b:Document {demo_id: 'doc-index', demo_graph: 'knowledge-map', name: 'Property index ADR'})"
+    }
+  ]
+}

@@ -1,11 +1,14 @@
 import { adaptRouterKnowledgeMapResponse } from "~/api/viewModelAdapter";
 import {
-  KNOWLEDGE_MAP_QUERY,
   fetchKnowledgeMapFromRouter,
   getLiveRouterKnowledgeMapOptions,
 } from "~/api/liveRouterKnowledgeMap";
 import { type QueryDataSource, type QueryTiming } from "~/api/queryTiming";
-import { routerKnowledgeMapResponses } from "~/data/routerRowFixtures";
+import {
+  KNOWLEDGE_MAP_LIVE_QUERY,
+  KNOWLEDGE_MAP_SCENARIOS,
+  buildScenarioResponse,
+} from "~/data/knowledgeMapGraph";
 import type { KnowledgeMapViewModel, ScenarioSummary } from "~/types";
 
 export type ScenarioQueryResult = {
@@ -22,7 +25,7 @@ export type KnowledgeMapClient = {
 
 export const createKnowledgeMapClient = (): KnowledgeMapClient => ({
   async listScenarios() {
-    const scenarios = routerKnowledgeMapResponses.map((scenario) => ({
+    const scenarios = KNOWLEDGE_MAP_SCENARIOS.map((scenario) => ({
       id: scenario.id,
       title: scenario.title,
       question: scenario.question,
@@ -33,8 +36,8 @@ export const createKnowledgeMapClient = (): KnowledgeMapClient => ({
     return [
       {
         id: "live-router-relationship",
-        title: "Live Router relationship",
-        question: "Show one relationship returned by Gleaph Router.",
+        title: "Live Alice fan-out",
+        question: "Show how Alice's connections fan out across Gleaph.",
       },
       ...scenarios,
     ];
@@ -52,12 +55,12 @@ export const createKnowledgeMapClient = (): KnowledgeMapClient => ({
       };
     }
 
-    const scenario = routerKnowledgeMapResponses.find((item) => item.id === id);
+    const scenario = KNOWLEDGE_MAP_SCENARIOS.find((item) => item.id === id);
     if (!scenario) {
       throw new Error(`Unknown knowledge-map scenario: ${id}`);
     }
 
-    const viewModel = adaptRouterKnowledgeMapResponse(scenario);
+    const viewModel = adaptRouterKnowledgeMapResponse(buildScenarioResponse(id));
     const finishedAt = performance.now();
     return {
       viewModel,
@@ -67,10 +70,10 @@ export const createKnowledgeMapClient = (): KnowledgeMapClient => ({
         durationMs: finishedAt - startedAt,
       },
       source: "preview",
-      queryText: KNOWLEDGE_MAP_QUERY,
+      queryText: KNOWLEDGE_MAP_LIVE_QUERY,
     };
   },
 });
 
 export const defaultScenarioId = (): string =>
-  getLiveRouterKnowledgeMapOptions() ? "live-router-relationship" : "alice-projects";
+  getLiveRouterKnowledgeMapOptions() ? "live-router-relationship" : "alice-fan-out";
