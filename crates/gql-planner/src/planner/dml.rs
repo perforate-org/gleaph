@@ -9,74 +9,84 @@ pub(super) fn plan_insert(
     _annotations: &mut PlanAnnotations,
 ) {
     for pattern in &insert_stmt.patterns {
-        let mut prev_node_var: Option<String> = None;
+        let node_vars = pattern
+            .elements
+            .iter()
+            .enumerate()
+            .filter_map(|(i, element)| match element {
+                InsertElement::Node(node) => Some((
+                    i,
+                    node.variable
+                        .clone()
+                        .unwrap_or_else(|| format!("__insert_n{}", i)),
+                )),
+                InsertElement::Edge(_) => None,
+            })
+            .collect::<Vec<_>>();
 
         for (i, element) in pattern.elements.iter().enumerate() {
-            match element {
-                InsertElement::Node(node) => {
-                    let var = node
-                        .variable
-                        .clone()
-                        .unwrap_or_else(|| format!("__insert_n{}", i));
-                    let props: Vec<PropertyAssignment> = node
-                        .properties
+            if let InsertElement::Node(node) = element {
+                let var = node
+                    .variable
+                    .clone()
+                    .unwrap_or_else(|| format!("__insert_n{}", i));
+                let props: Vec<PropertyAssignment> = node
+                    .properties
+                    .iter()
+                    .map(|p| PropertyAssignment {
+                        name: p.name.clone().into(),
+                        value: p.value.clone(),
+                    })
+                    .collect();
+                ops.push(PlanOp::InsertVertex {
+                    variable: Some(Str::from(var.as_str())),
+                    labels: node
+                        .labels
                         .iter()
-                        .map(|p| PropertyAssignment {
-                            name: p.name.clone().into(),
-                            value: p.value.clone(),
-                        })
-                        .collect();
-                    ops.push(PlanOp::InsertVertex {
-                        variable: Some(Str::from(var.as_str())),
-                        labels: node
-                            .labels
-                            .iter()
-                            .map(|s| NodeLabelRef::from(s.as_str()))
-                            .collect(),
-                        properties: props,
-                    });
-                    prev_node_var = Some(var);
-                }
-                InsertElement::Edge(edge) => {
-                    let var = edge
-                        .variable
-                        .clone()
-                        .unwrap_or_else(|| format!("__insert_e{}", i));
-                    let src = prev_node_var.clone().unwrap_or_default();
-                    // Lookahead for destination node.
-                    let dst = pattern.elements[i + 1..]
+                        .map(|s| NodeLabelRef::from(s.as_str()))
+                        .collect(),
+                    properties: props,
+                });
+            }
+        }
+
+        for (i, element) in pattern.elements.iter().enumerate() {
+            if let InsertElement::Edge(edge) = element {
+                let var = edge
+                    .variable
+                    .clone()
+                    .unwrap_or_else(|| format!("__insert_e{}", i));
+                let src = node_vars
+                    .iter()
+                    .rev()
+                    .find_map(|(node_index, node_var)| (*node_index < i).then_some(node_var))
+                    .cloned()
+                    .unwrap_or_default();
+                let dst = node_vars
+                    .iter()
+                    .find_map(|(node_index, node_var)| (*node_index > i).then_some(node_var))
+                    .cloned()
+                    .unwrap_or_else(|| format!("__insert_dst_{}", i));
+                let props: Vec<PropertyAssignment> = edge
+                    .properties
+                    .iter()
+                    .map(|p| PropertyAssignment {
+                        name: p.name.clone().into(),
+                        value: p.value.clone(),
+                    })
+                    .collect();
+                ops.push(PlanOp::InsertEdge {
+                    variable: Some(Str::from(var.as_str())),
+                    src: Str::from(src.as_str()),
+                    dst: Str::from(dst.as_str()),
+                    direction: edge.direction,
+                    labels: edge
+                        .labels
                         .iter()
-                        .find_map(|e| match e {
-                            InsertElement::Node(n) => Some(
-                                n.variable
-                                    .clone()
-                                    .unwrap_or_else(|| format!("__insert_n{}", i + 1)),
-                            ),
-                            _ => None,
-                        })
-                        .unwrap_or_else(|| format!("__insert_dst_{}", i));
-                    let props: Vec<PropertyAssignment> = edge
-                        .properties
-                        .iter()
-                        .map(|p| PropertyAssignment {
-                            name: p.name.clone().into(),
-                            value: p.value.clone(),
-                        })
-                        .collect();
-                    ops.push(PlanOp::InsertEdge {
-                        variable: Some(Str::from(var.as_str())),
-                        src: Str::from(src.as_str()),
-                        dst: Str::from(dst.as_str()),
-                        direction: edge.direction,
-                        labels: edge
-                            .labels
-                            .iter()
-                            .map(|s| EdgeLabelRef::from(s.as_str()))
-                            .collect(),
-                        properties: props,
-                    });
-                    prev_node_var = None;
-                }
+                        .map(|s| EdgeLabelRef::from(s.as_str()))
+                        .collect(),
+                    properties: props,
+                });
             }
         }
     }
