@@ -25,10 +25,13 @@ cargo test -p gleaph-pocket-ic-tests -- --nocapture
 | `router_gql_query::router_gql_query_node_scan_on_single_shard` | Router `gql_query` composite dispatch on a single registered shard |
 | `router_gql_query::standalone_e2e_insert_commits_placement_and_global_id` | Standalone `e2e_insert_vertex` → `GlobalVertexId` + router `resolve_placement` |
 | `router_gql_query::standalone_gql_query_index_seeded_property_eq` | Single-shard router `gql_query` with `CREATE INDEX` DDL + indexed property equality anchor |
+| `router_gql_query::standalone_gql_query_edge_index_seeded_property_eq` | Single-shard router `gql_query` with edge `CREATE INDEX` DDL + indexed edge property equality anchor |
 | `router_gql_query::standalone_gql_query_returns_element_id_bytes` | Router `gql_query` returns encoded `ELEMENT_ID` bytes via `rows_blob` |
 | `router_gql_query::federated_gql_query_index_seeded_routes_to_hit_shard_only` | Multi-shard `gql_query` with `CREATE INDEX` DDL; slices index hits to the matching shard |
 | `router_gql_query::federated_gql_query_index_seeded_merges_across_shards` | Multi-shard `gql_query` with `CREATE INDEX` DDL; merges rows when both shards match the anchor |
-| `router_gql_query::standalone_drop_index_property_eq_still_queries_via_scan` | `DROP INDEX` on single shard; property equality still works via scan |
-| `router_gql_query::federated_drop_index_property_eq_loses_federated_anchor` | `DROP INDEX` on multi-shard; indexed equality query fails without anchor |
+| `router_gql_query::standalone_drop_index_property_eq_still_queries_via_scan` | `DROP INDEX` on single shard; vertex property equality still works via scan |
+| `router_gql_query::standalone_drop_edge_index_property_eq_still_queries_via_scan` | `DROP INDEX` on single shard; edge property equality still works via scan |
+| `router_gql_query::federated_drop_index_property_eq_loses_federated_anchor` | `DROP INDEX` on multi-shard; indexed vertex equality query fails without anchor |
+| `router_gql_query::federated_drop_edge_index_property_eq_loses_federated_anchor` | `DROP INDEX` on multi-shard; indexed edge equality query fails without anchor |
 | `router_gql_query::drop_index_if_exists_is_idempotent` | `DROP INDEX … IF EXISTS` twice succeeds |
 | `router_gql_query::drop_index_without_if_exists_errors_when_missing` | Bare `DROP INDEX` on missing name returns `NotFound` |

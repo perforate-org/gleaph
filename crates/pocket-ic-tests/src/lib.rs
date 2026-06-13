@@ -127,6 +127,15 @@ pub struct E2eInsertVertexWithPropertyArgs {
     pub value: i64,
 }
 
+#[derive(CandidType, Clone, Debug)]
+pub struct E2eInsertDirectedEdgeWithPropertyArgs {
+    pub source_local_vertex_id: u32,
+    pub target_local_vertex_id: u32,
+    pub edge_label_id: u16,
+    pub property_id: u32,
+    pub value: i64,
+}
+
 pub fn wasm_bytes(env_var: &str) -> Vec<u8> {
     let path = PathBuf::from(std::env::var(env_var).unwrap_or_else(|_| {
         panic!("build.rs must set {env_var} (run `cargo test -p gleaph-pocket-ic-tests` from workspace)")
@@ -539,6 +548,13 @@ pub fn admin_intern_vertex_label(
     )
 }
 
+pub fn admin_intern_edge_label(
+    env: &FederationEnv,
+    name: &str,
+) -> gleaph_graph_kernel::entry::EdgeLabelId {
+    update_as_admin(env, env.router, "admin_intern_edge_label", name.to_string())
+}
+
 /// Gleaph extension DDL on the router update path (`gql_execute_idempotent`).
 pub fn gql_execute_idempotent_as_admin(
     env: &FederationEnv,
@@ -564,6 +580,26 @@ pub fn gql_execute_idempotent_as_admin(
         Ok(Err(err)) => panic!("gql_execute_idempotent rejected: {err:?}"),
         Err(err) => panic!("decode gql_execute_idempotent: {err}"),
     }
+}
+
+/// Register an edge property index via `CREATE INDEX` (ADR 0009 phase E).
+pub fn create_edge_property_index(
+    env: &FederationEnv,
+    index_name: &str,
+    edge_label: &str,
+    property: &str,
+    client_mutation_key: &str,
+) {
+    admin_intern_edge_label(env, edge_label);
+    let _ = admin_intern_property(env, property);
+    let ddl = format!(
+        "CREATE INDEX {index_name} IF NOT EXISTS FOR ()-[e:{edge_label}]-() ON (e.{property})"
+    );
+    let row_count = gql_execute_idempotent_as_admin(env, &ddl, client_mutation_key);
+    assert_eq!(
+        row_count, 0,
+        "CREATE INDEX DDL should return row_count 0, got {row_count}"
+    );
 }
 
 /// Register a vertex property index via `CREATE INDEX` (ADR 0009 phase E).
@@ -636,6 +672,29 @@ pub fn e2e_insert_edge(
         E2eInsertDirectedEdgeArgs {
             source_local_vertex_id: source_local,
             target_local_vertex_id: target_local,
+        },
+    );
+}
+
+pub fn e2e_insert_directed_edge_with_property(
+    env: &FederationEnv,
+    graph: Principal,
+    source_local: u32,
+    target_local: u32,
+    edge_label_id: u16,
+    property_id: u32,
+    value: i64,
+) {
+    let _: () = update_as_router(
+        env,
+        graph,
+        "e2e_insert_directed_edge_with_property",
+        E2eInsertDirectedEdgeWithPropertyArgs {
+            source_local_vertex_id: source_local,
+            target_local_vertex_id: target_local,
+            edge_label_id,
+            property_id,
+            value,
         },
     );
 }

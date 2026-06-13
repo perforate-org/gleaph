@@ -114,6 +114,14 @@ fn e2e_insert_directed_edge(
     canister::handlers::e2e_insert_directed_edge(args)
 }
 
+#[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
+async fn e2e_insert_directed_edge_with_property(
+    args: canister::types::E2eInsertDirectedEdgeWithPropertyArgs,
+) -> Result<(), String> {
+    canister::handlers::e2e_insert_directed_edge_with_property(args).await
+}
+
 #[update(guard = "guard_router_canister")]
 async fn backfill_label_postings(
     args: gleaph_graph_kernel::federation::PostingBackfillArgs,

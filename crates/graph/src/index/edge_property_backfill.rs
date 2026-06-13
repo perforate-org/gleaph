@@ -38,7 +38,7 @@ pub async fn backfill_edge_property_postings(
                 shard_id,
                 key.property_id().raw(),
                 payload_bytes,
-                key.label_id(),
+                crate::index::edge_lookup::catalog_label_id_for_index_posting(key.label_id()),
                 owner_raw,
                 key.slot_index(),
             )

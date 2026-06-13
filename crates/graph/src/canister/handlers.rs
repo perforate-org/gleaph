@@ -259,6 +259,38 @@ pub fn e2e_insert_directed_edge(
     Ok(())
 }
 
+#[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_insert_directed_edge_with_property(
+    args: super::types::E2eInsertDirectedEdgeWithPropertyArgs,
+) -> Result<(), String> {
+    use crate::index::edge_pending;
+    use crate::index::pending;
+    use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId};
+
+    let store = GraphStore::new();
+    let source = ic_stable_lara::VertexId::from(args.source_local_vertex_id);
+    let target = ic_stable_lara::VertexId::from(args.target_local_vertex_id);
+    let label = EdgeLabelId::from_raw(args.edge_label_id);
+    let handle = store
+        .insert_directed_edge(source, target, Some(label))
+        .map_err(|e| e.to_string())?;
+    let canonical = store.canonical_edge_handle(handle);
+    let property_id = PropertyId::from_raw(args.property_id);
+    store
+        .set_edge_property(canonical, property_id, Value::Int64(args.value))
+        .map_err(|e| e.to_string())?;
+    let index = wasm_index_client_holder().ok_or("federation not configured")?;
+    let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
+    pending::flush_pending(Some(ix))
+        .await
+        .map_err(|e| e.to_string())?;
+    edge_pending::flush_pending(Some(ix))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 pub async fn backfill_label_postings(
     args: gleaph_graph_kernel::federation::PostingBackfillArgs,
 ) -> Result<gleaph_graph_kernel::federation::PostingBackfillResult, String> {

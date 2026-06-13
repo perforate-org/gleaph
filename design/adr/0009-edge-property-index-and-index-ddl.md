@@ -20,6 +20,8 @@ Anchor timestamp: 2026-06-13 06:18:40 UTC +0000
 | 2026-06-12 | Index catalog stable layout: row-oriented `ROUTER_NAMED_INDEXES` + `ROUTER_INDEXED_PROPERTY_SET` with `PropertyId` / label ids (replaces per-graph Candid blob). |
 | 2026-06-13 | Planner stats: `RouterGraphStats` loads `PropertyId` membership; `GraphStats` adapter resolves names via property catalog; one stats load per GQL execution. |
 | 2026-06-13 | Phase E PocketIC e2e: `DROP INDEX` standalone scan fallback + federated anchor loss; planner `PropertyFilter`/`Filter` contribute to `property_uses` for shard `resolved_properties`. |
+| 2026-06-13 | Phase E PocketIC e2e: edge `CREATE INDEX` / `DROP INDEX` via `e2e_insert_directed_edge_with_property`; standalone scan fallback and federated anchor loss for `()-[e:L {p: v}]->` queries. |
+| 2026-06-13 | [ADR 0012](0012-edge-index-direction-in-ddl.md) proposed: GQL `EdgeDirection` in edge `FOR`; graph-index `wire_label_id` keys; planner storage-class subset rule (amends §1 `label_id`, §4 edge DDL). |
 
 ## Context
 
@@ -75,7 +77,7 @@ entity kinds in one key space without an explicit tag).
 |-------|------|
 | `property_id` | Router-issued `PropertyId` (same as vertex postings) |
 | `value` | Sortable index key bytes (`value_to_index_key_bytes`) |
-| `label_id` | `EdgeLabelId` raw; sentinel for unlabeled edges (see §1.1) |
+| `label_id` | `EdgeLabelId` raw; sentinel for unlabeled edges (see §1.1). **Amended by [ADR 0012](0012-edge-index-direction-in-ddl.md):** store LARA **`wire_label_id`** (`BucketLabelKey` raw, directed MSB included) in graph-index keys; catalog id remains in router registry together with `EdgeDirection`. |
 | `shard_id` | Owning graph shard |
 | `owner_vertex_id` | Forward CSR owner (`VertexId` on that shard) |
 | `slot_index` | Edge slot within labeled adjacency |
@@ -203,6 +205,7 @@ CREATE INDEX person_age IF NOT EXISTS
   FOR (n:Person) ON (n.age);
 
 -- Edge property (graph-index edge postings); label required in pattern
+-- Direction follows GQL EdgeDirection (see ADR 0012 for all seven forms).
 CREATE INDEX knows_weight IF NOT EXISTS
   FOR ()-[e:KNOWS]-() ON (e.weight);
 
@@ -216,7 +219,7 @@ DROP INDEX knows_weight IF EXISTS;
 |------|--------|
 | **Authorization** | Router controller / Manager+ role per [rbac-and-prepared.md](../security/rbac-and-prepared.md) |
 | **Name resolution** | `Person`, `KNOWS`, property names interned via existing router catalogs → ids stored in index registry |
-| **Index identity** | `index_name` unique per logical graph; maps to `(entity, label_id?, property_id)` |
+| **Index identity** | `index_name` unique per logical graph; maps to `(entity, label_id?, property_id)`; edge indexes also store **`EdgeDirection`** per [ADR 0012](0012-edge-index-direction-in-ddl.md) |
 | **No side effects on CREATE GRAPH** | Creating a graph or graph type does **not** create indexes |
 | **DROP** | Removes registry entry; optional async posting purge job or synchronous `posting_remove` scan per property (implementation phase; must complete before returning OK or document eventual consistency) |
 
@@ -243,7 +246,7 @@ entry as `CREATE INDEX … ON (n.prop)` or is removed after DDL lands.
 | **B — Edge postings on graph-index** | `EdgePostingKey` store; `posting_insert`/`remove` edge API; backfill from `EDGE_PROPERTIES` | graph-index tests; parity with vertex posting tests |
 | **C — Lookup + mixed intersection** | `lookup_edge_equal`, extended `lookup_intersection`; `graph-kernel` types | graph-index + router client tests |
 | **D — Router seeds + graph retire local** | Remove `EDGE_EQUALITY_POSTINGS`; expand/edge scan use seeds; MemoryId repack | pocket-ic; reopen; canbench delta |
-| **E — Index DDL** | Parse/execute `CREATE INDEX` / `DROP INDEX`; RBAC; docs sync | planner fusion tests with DDL setup; PocketIC e2e (`router_gql_query`: CREATE/DROP, standalone scan fallback, federated anchor loss, idempotent/missing DROP) |
+| **E — Index DDL** | Parse/execute `CREATE INDEX` / `DROP INDEX`; RBAC; docs sync | planner fusion tests with DDL setup; PocketIC e2e (`router_gql_query`: vertex + edge CREATE/DROP, standalone scan fallback, federated anchor loss, idempotent/missing DROP) |
 
 Phases A–B may land before D; **main** should not maintain two edge posting SSOTs beyond one merge window.
 
