@@ -7,6 +7,7 @@ import type {
   StoryStep,
   TechnicalFlowStep,
 } from "~/types";
+import { isShortestPathScenario } from "~/data/knowledgeMapGraph";
 
 const nodeKinds = new Set<NodeKind>(["person", "post", "topic", "project", "document"]);
 
@@ -117,12 +118,19 @@ export const adaptRouterKnowledgeMapResponse = (
     id: response.id,
     title: response.title,
     question: response.question,
+    playbackMode: isShortestPathScenario(response.id) ? "shortest-path" : "exploration",
     nodes,
     edges,
     activePath: storySteps.flatMap((step) => (step.nodeId ? [step.nodeId] : [])),
     storySteps,
     results,
     technicalFlow,
+    shortestPath: isShortestPathScenario(response.id)
+      ? {
+          sourceId: storySteps[0]?.nodeId ?? "",
+          targetId: storySteps.at(-1)?.nodeId ?? "",
+        }
+      : undefined,
   };
 };
 

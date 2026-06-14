@@ -1,4 +1,9 @@
 import { layerPosition } from "~/graph/fanOutLayout";
+import {
+  buildShortestPathGqlQuery,
+  buildShortestPathStorySteps,
+  computeShortestPath,
+} from "~/graph/shortestPath";
 import type { RouterKnowledgeMapResponse, RouterKnowledgeMapRow } from "~/api/viewModelAdapter";
 import type { NodeKind } from "~/types";
 import knowledgeMapGraphData from "../../seeds/knowledge-map-graph.json";
@@ -28,11 +33,16 @@ export type ScenarioSpec = {
   id: string;
   title: string;
   question: string;
-  path: Array<{
+  path?: Array<{
     nodeId: string;
     edgeId?: string;
     text: string;
   }>;
+  shortestPath?: {
+    source: string;
+    target: string;
+    maxHops?: number;
+  };
   results: Array<{
     title: string;
     kind: string;
@@ -53,6 +63,50 @@ export const KNOWLEDGE_MAP_LIVE_QUERY =
   "MATCH ()-[e]->() WHERE e.demo_edge_id IS NOT NULL " +
   "RETURN e.demo_edge_id AS edge_id, e.demo_kind AS edge_kind " +
   "ORDER BY edge_id";
+
+export const resolveScenarioPath = (
+  scenario: ScenarioSpec,
+): Array<{ nodeId: string; edgeId?: string; text: string }> => {
+  if (scenario.path) {
+    return scenario.path;
+  }
+
+  const shortestPath = scenario.shortestPath;
+  if (!shortestPath) {
+    throw new Error(`Knowledge-map scenario ${scenario.id} has no path or shortestPath config.`);
+  }
+
+  const source = KNOWLEDGE_MAP_NODES.find((node) => node.id === shortestPath.source);
+  const target = KNOWLEDGE_MAP_NODES.find((node) => node.id === shortestPath.target);
+  if (!source || !target) {
+    throw new Error(`Knowledge-map scenario ${scenario.id} has invalid shortestPath endpoints.`);
+  }
+
+  const path = computeShortestPath(shortestPath.source, shortestPath.target, KNOWLEDGE_MAP_EDGES);
+  if (!path) {
+    throw new Error(`Knowledge-map scenario ${scenario.id} has no shortest path in the demo graph.`);
+  }
+
+  return buildShortestPathStorySteps(path, KNOWLEDGE_MAP_NODES, KNOWLEDGE_MAP_EDGES);
+};
+
+export const resolveScenarioQueryText = (scenario: ScenarioSpec): string | undefined => {
+  const shortestPath = scenario.shortestPath;
+  if (!shortestPath) {
+    return undefined;
+  }
+
+  const source = KNOWLEDGE_MAP_NODES.find((node) => node.id === shortestPath.source);
+  const target = KNOWLEDGE_MAP_NODES.find((node) => node.id === shortestPath.target);
+  if (!source || !target) {
+    throw new Error(`Knowledge-map scenario ${scenario.id} has invalid shortestPath endpoints.`);
+  }
+
+  return buildShortestPathGqlQuery(source, target, shortestPath.maxHops ?? 8);
+};
+
+export const isShortestPathScenario = (scenarioId: string): boolean =>
+  scenarioId.startsWith("shortest-path");
 
 export type LiveGraphEdgeRow = {
   sourceDemoId: string;
@@ -103,9 +157,11 @@ export const buildScenarioResponse = (scenarioId: string): RouterKnowledgeMapRes
     throw new Error(`Unknown knowledge-map scenario: ${scenarioId}`);
   }
 
+  const path = resolveScenarioPath(scenario);
+
   const rows: RouterKnowledgeMapRow[] = [
     ...buildKnowledgeMapGraphRows(),
-    ...scenario.path.map((step, path_index) => ({
+    ...path.map((step, path_index) => ({
       kind: "path" as const,
       path_index,
       path_node_id: step.nodeId,

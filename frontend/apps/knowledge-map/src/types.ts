@@ -36,12 +36,17 @@ export type KnowledgeMapViewModel = {
   id: string;
   title: string;
   question: string;
+  playbackMode: "exploration" | "shortest-path";
   nodes: DemoNode[];
   edges: DemoEdge[];
   activePath: string[];
   storySteps: StoryStep[];
   results: ResultCard[];
   technicalFlow: TechnicalFlowStep[];
+  shortestPath?: {
+    sourceId: string;
+    targetId: string;
+  };
 };
 
 export type ScenarioSummary = {

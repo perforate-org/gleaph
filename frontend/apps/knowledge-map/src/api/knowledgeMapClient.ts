@@ -8,6 +8,7 @@ import {
   KNOWLEDGE_MAP_LIVE_QUERY,
   KNOWLEDGE_MAP_SCENARIOS,
   buildScenarioResponse,
+  resolveScenarioQueryText,
 } from "~/data/knowledgeMapGraph";
 import type { KnowledgeMapViewModel, ScenarioSummary } from "~/types";
 
@@ -70,7 +71,7 @@ export const createKnowledgeMapClient = (): KnowledgeMapClient => ({
         durationMs: finishedAt - startedAt,
       },
       source: "preview",
-      queryText: KNOWLEDGE_MAP_LIVE_QUERY,
+      queryText: resolveScenarioQueryText(scenario) ?? KNOWLEDGE_MAP_LIVE_QUERY,
     };
   },
 });

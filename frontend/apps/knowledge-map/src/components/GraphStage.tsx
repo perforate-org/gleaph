@@ -5,6 +5,8 @@ import {
   elapsedMs,
   formatDurationMs,
 } from "~/api/queryTiming";
+import { KNOWLEDGE_MAP_EDGES } from "~/data/knowledgeMapGraph";
+import { computeBfsFrontiers } from "~/graph/shortestPath";
 import type { DemoEdge, DemoNode, KnowledgeMapViewModel, NodeKind, PlaybackStatus } from "~/types";
 
 type GraphStageProps = {
@@ -78,6 +80,30 @@ export function GraphStage(props: GraphStageProps) {
     return visited;
   });
 
+  const exploredNodeIds = createMemo(() => {
+    const viewModel = props.viewModel;
+    const explored = new Set<string>();
+    if (!viewModel || viewModel.playbackMode !== "shortest-path" || !viewModel.shortestPath) {
+      return explored;
+    }
+
+    const frontiers = computeBfsFrontiers(
+      viewModel.shortestPath.sourceId,
+      viewModel.shortestPath.targetId,
+      KNOWLEDGE_MAP_EDGES,
+    );
+
+    for (let hop = 0; hop <= props.activeStepIndex && hop < frontiers.length; hop += 1) {
+      for (const nodeId of frontiers[hop] ?? []) {
+        explored.add(nodeId);
+      }
+    }
+
+    return explored;
+  });
+
+  const isShortestPathMode = () => props.viewModel?.playbackMode === "shortest-path";
+
   return (
     <section class="relative min-h-[520px] overflow-hidden rounded-md border border-slate-200/80 bg-white shadow-[0_24px_80px_rgba(15,23,42,0.08)]">
       <div class="absolute inset-0 bg-[radial-gradient(circle_at_18%_18%,rgba(14,165,233,0.16),transparent_28%),radial-gradient(circle_at_80%_18%,rgba(124,58,237,0.13),transparent_26%),linear-gradient(180deg,rgba(255,255,255,0.96),rgba(241,247,255,0.88))]" />
@@ -125,7 +151,12 @@ export function GraphStage(props: GraphStageProps) {
                     positions={nodePositions()}
                     active={activeStep()?.edgeId === edge.id}
                     visited={visitedEdgeIds().has(edge.id)}
-                    contextual={visitedNodeIds().has(edge.source) || visitedNodeIds().has(edge.target)}
+                    contextual={
+                      visitedNodeIds().has(edge.source) ||
+                      visitedNodeIds().has(edge.target) ||
+                      exploredNodeIds().has(edge.source) ||
+                      exploredNodeIds().has(edge.target)
+                    }
                   />
                 )}
               </For>
@@ -145,9 +176,11 @@ export function GraphStage(props: GraphStageProps) {
                     position={nodePositions().get(node.id)}
                     active={activeStep()?.nodeId === node.id}
                     visited={visitedNodeIds().has(node.id)}
+                    explored={exploredNodeIds().has(node.id)}
                     result={resultNodeIds().has(node.id)}
                     contextual={
                       visitedNodeIds().has(node.id) ||
+                      exploredNodeIds().has(node.id) ||
                       resultNodeIds().has(node.id) ||
                       node.kind === "person" ||
                       node.kind === "project"
@@ -162,14 +195,20 @@ export function GraphStage(props: GraphStageProps) {
       <QueryLoadingOverlay queryRun={props.queryRun} />
       <div class="pointer-events-none absolute left-4 top-4 max-w-[280px] rounded-md border border-slate-200 bg-white/88 px-3 py-2 shadow-[0_12px_34px_rgba(15,23,42,0.08)]">
         <p class="text-xs font-semibold uppercase tracking-[0.16em] text-sky-700">
-          Relationship path
+          {isShortestPathMode() ? "Shortest path search" : "Relationship path"}
         </p>
         <p class="mt-1 text-sm text-slate-600">
           <Show
             when={props.queryRun.status === "ready"}
-            fallback="Run a query to load the fan-out graph from Gleaph."
+            fallback={
+              isShortestPathMode()
+                ? "Run the shortest-path scenario to animate breadth-first search."
+                : "Run a query to load the fan-out graph from Gleaph."
+            }
           >
-            Full graph context with the active path and result fan-out highlighted.
+            {isShortestPathMode()
+              ? "BFS frontier expands hop by hop until the shortest route to the document is found."
+              : "Full graph context with the active path and result fan-out highlighted."}
           </Show>
         </p>
       </div>
@@ -259,6 +298,7 @@ type GraphNodeProps = {
   position?: { x: number; y: number };
   active: boolean;
   visited: boolean;
+  explored: boolean;
   result: boolean;
   contextual: boolean;
 };
@@ -281,7 +321,10 @@ function GraphNode(props: GraphNodeProps) {
     if (props.active || props.result) {
       return 1;
     }
-    if (props.visited || props.contextual) {
+    if (props.visited || props.explored) {
+      return 0.88;
+    }
+    if (props.contextual) {
       return 0.82;
     }
     return 0.34;
@@ -293,13 +336,23 @@ function GraphNode(props: GraphNodeProps) {
         <g
           class="knowledge-map-node-group"
           transform={`translate(${position().x} ${position().y})`}
-          opacity={props.active || props.visited || props.result ? 1 : props.contextual ? 0.72 : 0.38}
+          opacity={
+            props.active || props.visited || props.result
+              ? 1
+              : props.explored
+                ? 0.84
+                : props.contextual
+                  ? 0.72
+                  : 0.38
+          }
         >
           <circle
             class="knowledge-map-node-halo"
-            r={radius() + (props.active ? 1.8 : props.result ? 1.2 : 0.6)}
-            fill={color()}
-            opacity={props.active ? 0.18 : props.result ? 0.14 : props.visited ? 0.09 : 0.04}
+            r={radius() + (props.active ? 1.8 : props.result ? 1.2 : props.explored ? 1.1 : 0.6)}
+            fill={props.explored && !props.visited && !props.active ? "#8b5cf6" : color()}
+            opacity={
+              props.active ? 0.18 : props.result ? 0.14 : props.explored ? 0.12 : props.visited ? 0.09 : 0.04
+            }
           />
           <circle
             class="knowledge-map-node-core"

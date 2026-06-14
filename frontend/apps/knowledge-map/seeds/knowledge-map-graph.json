@@ -496,6 +496,38 @@
       ]
     },
     {
+      "id": "shortest-path-alice-lara",
+      "title": "Shortest path search",
+      "question": "Find the shortest path from Alice to the LARA overview document.",
+      "shortestPath": {
+        "source": "alice",
+        "target": "doc-lara",
+        "maxHops": 8
+      },
+      "results": [
+        {
+          "title": "LARA overview",
+          "kind": "Document",
+          "reason": "Reached in the fewest relationship hops from Alice.",
+          "nodeId": "doc-lara"
+        }
+      ],
+      "technical": [
+        {
+          "title": "Breadth-first search",
+          "detail": "The demo expands one hop at a time until the destination is first reached."
+        },
+        {
+          "title": "GQL shortest path",
+          "detail": "Gleaph exposes ANY SHORTEST for hop-count path search once multi-hop Router queries are enabled for this graph."
+        },
+        {
+          "title": "Preview execution",
+          "detail": "This scenario computes the path from the canonical demo graph while the live query text shows the intended Router GQL."
+        }
+      ]
+    },
+    {
       "id": "alice-projects",
       "title": "Alice's project trail",
       "question": "Show Alice's related projects.",
