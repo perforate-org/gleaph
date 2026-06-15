@@ -3,6 +3,7 @@
 use super::GraphStore;
 use crate::facade::stable::label_stats_delta::GraphMutationJournalEntry;
 use crate::facade::stable::{GRAPH_MUTATION_JOURNAL, LABEL_STATS_DELTA_LOG, LABEL_STATS_DELTA_SEQ};
+use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::{
     GraphMutationJournalEntryWire, LabelStatsDelta, LabelStatsDeltaEventWire, MutationId,
     ShardEventSeq,
@@ -45,6 +46,7 @@ impl GraphStore {
         row_count: u64,
         emitted_delta_first_seq: Option<ShardEventSeq>,
         emitted_delta_last_seq: Option<ShardEventSeq>,
+        hot_forward_vertices: Vec<LocalVertexId>,
     ) {
         GRAPH_MUTATION_JOURNAL.with_borrow_mut(|m| {
             m.insert(GraphMutationJournalEntry::completed(
@@ -52,6 +54,7 @@ impl GraphStore {
                 row_count,
                 emitted_delta_first_seq,
                 emitted_delta_last_seq,
+                hot_forward_vertices,
             ));
         });
     }
@@ -178,6 +181,7 @@ mod tests {
             5,
             Some(event.shard_event_seq),
             Some(event.shard_event_seq),
+            vec![7, 42],
         );
 
         let journal = store.mutation_journal_entry(11).expect("journal entry");
@@ -185,9 +189,11 @@ mod tests {
         assert_eq!(journal.row_count, 5);
         assert_eq!(journal.emitted_delta_first_seq, Some(event.shard_event_seq));
         assert_eq!(journal.emitted_delta_last_seq, Some(event.shard_event_seq));
+        assert_eq!(journal.hot_forward_vertices, vec![7, 42]);
 
         let wire = store.get_mutation_journal_entry(11).expect("journal wire");
         assert_eq!(wire.emitted_delta_first_seq, Some(event.shard_event_seq));
         assert_eq!(wire.emitted_delta_last_seq, Some(event.shard_event_seq));
+        assert_eq!(wire.hot_forward_vertices, vec![7, 42]);
     }
 }

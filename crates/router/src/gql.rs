@@ -1003,12 +1003,21 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     .await?
                     && matches!(entry.state, MutationJournalState::Completed)
                 {
+                    if has_dml {
+                        crate::bulk_ingest_finalize::maybe_finalize_hot_vertices_after_dml(
+                            dispatch.graph_canister,
+                            dispatch.shard_id,
+                            plans,
+                            &entry.hot_forward_vertices,
+                        )
+                        .await?;
+                    }
                     merge_execute_plan_result(
                         &mut merged,
                         gleaph_graph_kernel::plan_exec::ExecutePlanResult {
                             row_count: entry.row_count,
                             rows_blob: None,
-                            hot_forward_vertices: Vec::new(),
+                            hot_forward_vertices: entry.hot_forward_vertices,
                         },
                         merge_mode.clone(),
                     )

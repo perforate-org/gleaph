@@ -1,6 +1,7 @@
 //! Stable label stats delta log and graph mutation journal (ADR 0015).
 
 use candid::{Decode, Encode};
+use gleaph_graph_kernel::federation::LocalVertexId;
 use gleaph_graph_kernel::plan_exec::{
     GraphMutationJournalEntryWire, LabelStatsDeltaEventWire, MutationId, MutationJournalState,
     ShardEventSeq,
@@ -15,6 +16,8 @@ pub struct GraphMutationJournalEntry {
     pub row_count: u64,
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
+    #[serde(default)]
+    pub hot_forward_vertices: Vec<LocalVertexId>,
 }
 
 impl GraphMutationJournalEntry {
@@ -29,6 +32,7 @@ impl GraphMutationJournalEntry {
             row_count: 0,
             emitted_delta_first_seq,
             emitted_delta_last_seq,
+            hot_forward_vertices: Vec::new(),
         }
     }
 
@@ -37,6 +41,7 @@ impl GraphMutationJournalEntry {
         row_count: u64,
         emitted_delta_first_seq: Option<ShardEventSeq>,
         emitted_delta_last_seq: Option<ShardEventSeq>,
+        hot_forward_vertices: Vec<LocalVertexId>,
     ) -> Self {
         Self {
             mutation_id,
@@ -44,6 +49,7 @@ impl GraphMutationJournalEntry {
             row_count,
             emitted_delta_first_seq,
             emitted_delta_last_seq,
+            hot_forward_vertices,
         }
     }
 
@@ -54,6 +60,7 @@ impl GraphMutationJournalEntry {
             row_count: self.row_count,
             emitted_delta_first_seq: self.emitted_delta_first_seq,
             emitted_delta_last_seq: self.emitted_delta_last_seq,
+            hot_forward_vertices: self.hot_forward_vertices.clone(),
         }
     }
 

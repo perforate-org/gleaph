@@ -108,6 +108,9 @@ pub struct GraphMutationJournalEntryWire {
     pub row_count: u64,
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
+    /// Forward hubs observed during DML, persisted so router recovery can still finalize.
+    #[serde(default)]
+    pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, CandidType, Serialize, Deserialize)]

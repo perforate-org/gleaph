@@ -129,7 +129,7 @@ type BulkIngestFinalizeResult = record {
 
 **Not implemented:** explicit application metadata hub lists.
 
-**Implemented (P3):** graph DML execution reports `ExecutePlanResult.hot_forward_vertices` (sources with `>= HOT_FORWARD_EDGE_INSERT_THRESHOLD` forward edge inserts in the batch). Router `bulk_ingest_finalize` calls `finalize_bulk_ingest` per shard after successful DML when the plan has no explicit `GLEAPH.FINALIZE_*` `CALL`.
+**Implemented (P3):** graph DML execution reports `ExecutePlanResult.hot_forward_vertices` (sources with `>= HOT_FORWARD_EDGE_INSERT_THRESHOLD` forward edge inserts in the batch). Graph persists the same hint in the mutation journal so router retry/recovery can still run post-DML finalize after a lost reply. Router `bulk_ingest_finalize` calls `finalize_bulk_ingest` per shard after successful DML when the plan has no explicit `GLEAPH.FINALIZE_*` `CALL`.
 
 **Implemented (P1):** `finalize_bulk_ingest` update endpoint with `BulkIngestFinalizeArgs` / `BulkIngestFinalizeResult` in `gleaph-graph-kernel`; handler in `crates/graph/src/canister/handlers.rs`; router client in `crates/router/src/graph_client.rs`.
 
@@ -171,6 +171,8 @@ COMMIT
 ```
 
 `GLEAPH.VERTEX_LIST(...)` is evaluated in the graph mutation executor: resolves bound node variables from [`PlanMutationBindings`] to internal `VertexId`s. Supports `GLEAPH.VERTEX_LIST()` (empty) and `GLEAPH.VERTEX_LIST(var, ...)`. A bare node variable is also accepted where a single-vertex list is required.
+
+`CALL ... YIELD` columns are scalar mutation outputs. The graph mutation executor projects them through `Project` / `Materialize`, so a transaction tail can `RETURN` finalize report columns without adding Gleaph-specific behavior to `gleaph-gql` or `gleaph-gql-planner`.
 
 ### YIELD columns
 

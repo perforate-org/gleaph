@@ -5,8 +5,11 @@ use crate::facade::mutation_executor::{GraphMutationExecutor, insert_vertex_with
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::gql_execution_context::GqlExecutionContext;
 use gleaph_gql::Value;
+use gleaph_gql::ast::ExprKind;
 use gleaph_gql::types::EdgeDirection;
-use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, RemovePlanItem, SetPlanItem, Str};
+use gleaph_gql_planner::plan::{
+    PhysicalPlan, PlanOp, ProjectColumn, RemovePlanItem, SetPlanItem, Str,
+};
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::plan_exec::LabelStatsDelta;
 use ic_stable_lara::VertexId;
@@ -37,6 +40,8 @@ pub struct PlanMutationBindings {
     pub label_stats_delta: LabelStatsDelta,
     /// `CALL ... YIELD` columns from Gleaph finalize procedures in this plan.
     pub procedure_yields: BTreeMap<String, Value>,
+    /// Last scalar rows produced by projecting procedure yields.
+    pub procedure_rows: Vec<BTreeMap<String, Value>>,
     forward_edge_insert_counts: BTreeMap<VertexId, u32>,
     /// Forward hubs from this DML batch (sources with enough edge inserts).
     pub hot_forward_vertices: Vec<VertexId>,
@@ -216,7 +221,9 @@ fn execute_ops_with_bindings(
                 store.delete_edge_by_handle(handle)?;
                 bindings.edges.remove(variable.as_ref());
             }
-            PlanOp::Materialize { .. } => {}
+            PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
+                project_procedure_yields(columns, bindings)?
+            }
             PlanOp::CallProcedure {
                 name,
                 args,
@@ -370,7 +377,9 @@ async fn execute_ops_with_bindings_async(
                 store.delete_edge_by_handle(handle)?;
                 bindings.edges.remove(variable.as_ref());
             }
-            PlanOp::Materialize { .. } => {}
+            PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
+                project_procedure_yields(columns, bindings)?
+            }
             PlanOp::CallProcedure {
                 name,
                 args,
@@ -597,6 +606,52 @@ fn finish_hot_forward_vertices(bindings: &mut PlanMutationBindings) {
         .hot_forward_vertices
         .sort_by_key(|vid| u32::from(*vid));
     bindings.hot_forward_vertices.dedup();
+}
+
+fn project_procedure_yields(
+    columns: &[ProjectColumn],
+    bindings: &mut PlanMutationBindings,
+) -> Result<(), PlanMutationError> {
+    if bindings.procedure_yields.is_empty() {
+        return Ok(());
+    }
+
+    let mut row = BTreeMap::new();
+    if columns.is_empty() {
+        row.extend(bindings.procedure_yields.clone());
+    } else {
+        for column in columns {
+            let (default_name, value) = procedure_yield_projection_value(&column.expr, bindings)?;
+            let name = column
+                .alias
+                .as_ref()
+                .map(Str::to_string)
+                .unwrap_or(default_name);
+            row.insert(name, value);
+        }
+    }
+    bindings.procedure_rows = vec![row];
+    Ok(())
+}
+
+fn procedure_yield_projection_value(
+    expr: &gleaph_gql::ast::Expr,
+    bindings: &PlanMutationBindings,
+) -> Result<(String, Value), PlanMutationError> {
+    match &expr.kind {
+        ExprKind::Variable(name) => bindings
+            .procedure_yields
+            .get(name)
+            .cloned()
+            .map(|value| (name.clone(), value))
+            .ok_or_else(|| PlanMutationError::MissingProcedureYield {
+                variable: name.clone(),
+            }),
+        ExprKind::Literal(value) => Ok(("expr".to_owned(), value.clone())),
+        _ => Err(PlanMutationError::UnsupportedExpression {
+            property: "CALL YIELD".to_owned(),
+        }),
+    }
 }
 
 fn is_mutation_op(op: &PlanOp) -> bool {
@@ -2119,19 +2174,28 @@ mod tests {
 
     #[test]
     fn call_drain_deferred_maintenance_records_yield_columns() {
-        use gleaph_gql_planner::plan::YieldColumn;
+        use gleaph_gql_planner::plan::{ProjectColumn, YieldColumn};
 
         let store = GraphStore::new();
         let plan = PhysicalPlan {
-            ops: vec![PlanOp::CallProcedure {
-                name: vec!["GLEAPH".into(), "DRAIN_DEFERRED_MAINTENANCE".into()],
-                args: vec![],
-                yield_columns: Some(vec![YieldColumn {
-                    name: "remaining_queue_len".into(),
-                    alias: None,
-                }]),
-                optional: false,
-            }],
+            ops: vec![
+                PlanOp::CallProcedure {
+                    name: vec!["GLEAPH".into(), "DRAIN_DEFERRED_MAINTENANCE".into()],
+                    args: vec![],
+                    yield_columns: Some(vec![YieldColumn {
+                        name: "remaining_queue_len".into(),
+                        alias: None,
+                    }]),
+                    optional: false,
+                },
+                PlanOp::Project {
+                    columns: vec![ProjectColumn {
+                        expr: Expr::var("remaining_queue_len"),
+                        alias: Some("remaining".into()),
+                    }],
+                    distinct: false,
+                },
+            ],
             diagnostics: PlanDiagnostics::default(),
             annotations: Default::default(),
             ..Default::default()
@@ -2143,6 +2207,10 @@ mod tests {
         assert_eq!(
             bindings.procedure_yields.get("remaining_queue_len"),
             Some(&Value::Int64(0))
+        );
+        assert_eq!(
+            bindings.procedure_rows,
+            vec![BTreeMap::from([("remaining".into(), Value::Int64(0))])]
         );
     }
 

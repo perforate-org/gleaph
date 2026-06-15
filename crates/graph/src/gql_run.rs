@@ -141,6 +141,44 @@ fn merge_hot_forward_vertices(target: &mut Vec<u32>, source: &[VertexId]) {
     target.dedup();
 }
 
+fn procedure_value_rows_to_plan_rows(rows: &[BTreeMap<String, Value>]) -> Vec<PlanQueryRow> {
+    rows.iter()
+        .map(|row| {
+            let mut out = PlanQueryRow::new();
+            for (name, value) in row {
+                out.insert(name.clone(), PlanBinding::Value(value.clone()));
+            }
+            out
+        })
+        .collect()
+}
+
+fn record_mutation_procedure_rows(
+    materialize: TransactionReadMaterialize,
+    rows: &[BTreeMap<String, Value>],
+    last_query_rows: &mut PlanQueryResult,
+    last_read_row_count: &mut usize,
+    last_read_plan_rows: &mut Vec<PlanQueryRow>,
+) {
+    if rows.is_empty() {
+        return;
+    }
+
+    *last_read_row_count = rows.len();
+    match materialize {
+        TransactionReadMaterialize::Full => {
+            last_query_rows.rows = rows.to_vec();
+            last_read_plan_rows.clear();
+        }
+        TransactionReadMaterialize::LastReadRowCountOnly => {
+            last_read_plan_rows.clear();
+        }
+        TransactionReadMaterialize::LastReadBindingsOnly => {
+            *last_read_plan_rows = procedure_value_rows_to_plan_rows(rows);
+        }
+    }
+}
+
 fn trap_wire_mutation_failure(error: crate::plan::PlanMutationError) -> ! {
     let message = format!("wire mutation failed inside DML atomic section: {error}");
     #[cfg(target_family = "wasm")]
@@ -214,6 +252,13 @@ async fn run_transaction_block(
             let mutation = execute_plan_mutations_async(store, &plan, execution.clone()).await?;
             merge_hot_forward_vertices(&mut hot_forward_vertices, &mutation.hot_forward_vertices);
             merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
+            record_mutation_procedure_rows(
+                materialize,
+                &mutation.procedure_rows,
+                &mut last_query_rows,
+                &mut last_read_row_count,
+                &mut last_read_plan_rows,
+            );
             pending::flush_pending(index).await?;
             crate::index::edge_pending::flush_pending(index).await?;
             label_pending::flush_pending(index).await?;
@@ -513,7 +558,7 @@ async fn run_wire_plans_inner(
                 label_stats_delta: LabelStatsDelta::default(),
                 emitted_delta_first_seq: journal.emitted_delta_first_seq,
                 emitted_delta_last_seq: journal.emitted_delta_last_seq,
-                hot_forward_vertices: Vec::new(),
+                hot_forward_vertices: journal.hot_forward_vertices.clone(),
             });
         }
         return Err(GqlRunError::Plan(format!(
@@ -588,6 +633,13 @@ async fn run_wire_plans_inner(
             }
             merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
             merge_hot_forward_vertices(&mut hot_forward_vertices, &mutation.hot_forward_vertices);
+            record_mutation_procedure_rows(
+                materialize,
+                &mutation.procedure_rows,
+                &mut last_query_rows,
+                &mut last_read_row_count,
+                &mut last_read_plan_rows,
+            );
             pending::flush_pending(index).await?;
             crate::index::edge_pending::flush_pending(index).await?;
             label_pending::flush_pending(index).await?;
@@ -710,6 +762,7 @@ pub async fn run_wire_plans_last_read_row_count(
             run.last_read_row_count as u64,
             run.emitted_delta_first_seq,
             run.emitted_delta_last_seq,
+            run.hot_forward_vertices.clone(),
         );
     }
     let rows_blob = if mode == GqlCanisterExecutionMode::CompositeQuery {
@@ -844,6 +897,26 @@ mod tests {
             TransactionReadMaterialize::LastReadRowCountOnly,
         ))
         .expect("gleaph drain transaction");
+    }
+
+    #[test]
+    fn transaction_gleaph_drain_deferred_maintenance_yield_is_returnable() {
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        let result = pollster::block_on(run_adhoc_gql(
+            store,
+            "START TRANSACTION READ WRITE CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE() YIELD remaining_queue_len RETURN remaining_queue_len AS remaining COMMIT",
+            &params,
+            None,
+            GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
+        ))
+        .expect("gleaph drain transaction");
+
+        assert_eq!(
+            result.rows,
+            vec![BTreeMap::from([("remaining".into(), Value::Int64(0))])]
+        );
     }
 
     #[test]
