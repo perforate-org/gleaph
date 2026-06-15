@@ -357,6 +357,7 @@ fn kind_from_byte(byte: u8) -> IndexedPropertyKind {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::edge_index_direction::EdgeIndexDirectionTag;
 
     #[test]
     fn named_index_key_storable_roundtrip() {
