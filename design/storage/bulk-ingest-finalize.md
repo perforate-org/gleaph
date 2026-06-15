@@ -1,6 +1,6 @@
 # Bulk ingest finalize (maintenance reclaim)
 
-**Status:** Partially implemented — P0–P2 (2026-06-15); P3 router auto-finalize after DML (2026-06-15). P4 (canbench WSP) optional.
+**Status:** Implemented — P0–P4 (2026-06-15).
 
 ## Purpose
 
@@ -243,21 +243,26 @@ explicit vertex-edge-span compaction.
 This is the same production gap finalize is meant to close: post-insert drain
 alone does not reproduce the aggressive reclaim that the WSP baseline assumed.
 
-### Bench baseline policy (until finalize exists)
+### Bench baseline policy (option C — implemented)
 
-| Option | Pros | Cons |
-|--------|------|------|
-| **A. Restore setup-only `mark_compact` + drain** in `setup_repeated_edge_cost_cache_graph` | Restores ~3.12M WSP baseline quickly; models “ingest then finalize” shape | Diverges setup from bare production insert path |
-| **B. Keep production-like setup; accept higher WSP baseline** | Bench setup matches production insert behavior | Regresses `canbench_results.yml` vs pre-`c16a247f` WSP row |
-| **C. Implement finalize (P0/P4); call from setup** | Aligns bench and production on one API | Requires implementation |
+Option **C** is active: `setup_repeated_edge_cost_cache_graph` calls
+`finalize_bulk_ingest(forward_vertices: [src])` after ingest, matching the
+production post-ingest finalize API (replaces the temporary bench-only
+`mark_compact_vertex_edge_span` hook from option A).
 
-**Recommendation:** treat **A** as a temporary bench-only hook until **C** lands;
-document in bench comments that it stands in for planned finalize, not for
-per-insert maintenance. Do not re-add `mark_compact` to the production insert
-hot path.
+**P4 canbench comparison (2026-06-15, wasm32 PocketIC):**
 
-`profile_setup_50kscan` regression is expected and should be reflected in
-baseline when persisting results after `c16a247f`; it measures real ingest cost.
+| Setup | WSP total instructions | `shortest_fixed_expand_forward_slices` calls | Notes |
+|-------|------------------------|----------------------------------------------|-------|
+| Post-insert drain only (finalize commented out) | ~3.27 M | 32 | Within noise of pre-P4 `canbench_results.yml` row (~3.28 M) |
+| `finalize_bulk_ingest(src)` in setup | **2.97 M** (−9.5%) | **28** | Persisted baseline in `canbench_results.yml` |
+
+Hop-count converging-hub bench (`bench_graph_hop_count_shortest_converging_hub_*`)
+shares the same setup; total instructions moved −0.9% (within noise) — expected
+because that path is not weighted payload-batch hot.
+
+`repeated_edge_cost_cache_payload_batch_path_on_hot_vertices` confirms
+`batch.dense == true` for `src` after finalize setup.
 
 ## Implementation phases (when resumed)
 
@@ -267,7 +272,7 @@ baseline when persisting results after `c16a247f`; it measures real ingest cost.
 | P1 | Canister wire + handler | **Implemented** — `finalize_bulk_ingest` update; PocketIC router call |
 | P2 | Mutation executor: `CallProcedure` for `GLEAPH.FINALIZE_*` + `GLEAPH.VERTEX_LIST` | **Implemented** — `plan/mutation/gleaph_finalize.rs`; executor + gql_run tests |
 | P3 | Router hot-vertex tracking after DML | **Implemented** — `hot_forward_vertices` wire hint + router `bulk_ingest_finalize` |
-| P4 | canbench WSP (optional) | Compare with/without explicit src finalize |
+| P4 | canbench WSP | **Implemented** — `finalize_bulk_ingest(src)` in setup; baseline **2.97 M** ix (−9.5% vs drain-only ~3.27 M); expand calls 28 vs 32 |
 
 ## Risks and open questions
 
