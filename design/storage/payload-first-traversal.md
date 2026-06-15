@@ -193,7 +193,9 @@ Options for later:
 
 | Bench | Expectation |
 |-------|-------------|
-| `expand_skewed_noise_50k` | Modest gain from predicate paths; topology-heavy noise unchanged |
+| `expand_payload_skewed_{200a,2k}` | Default `canbench`: single-label hub + `edge_payload_predicate`. |
+| `large_expand_payload_skewed_{10k,50k}` | `canbench_large`: heavier graph construction; payload-first vs combined neutral to ~2–4% faster at 50k scan. |
+| `expand_skewed_noise_*` | Two-label topology filter (not payload predicate); unchanged by payload-first routing. |
 | `weighted_shortest_edge_cost_cache` | **No** gain from payload-first alone; gain from prepared decoder + dense src path |
 | `hop_count_shortest_converging_hub` | Unchanged (topology-only) |
 | New: `labeled_visit_payload_value_batches` | Isolates phase-1 IO |

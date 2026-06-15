@@ -14,8 +14,8 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::{CmpOp, Expr, ExprKind, ObjectName};
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{
-    EdgeVectorMetric, EdgeVectorPredicate, PhysicalPlan, PlanOp, ProjectColumn, ScanValue,
-    ShortestMode, ShortestPathCost, VarLenSpec,
+    EdgePayloadPredicate, EdgeVectorMetric, EdgeVectorPredicate, PhysicalPlan, PlanOp,
+    ProjectColumn, ScanValue, ShortestMode, ShortestPathCost, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::{
     EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile, EdgeWeightProfile, Vertex, WeightEncoding,
@@ -743,6 +743,108 @@ fn setup_expand_single_label_hub(store: &GraphStore, hub_out: u32, edge_label: &
             .insert_directed_edge_named(hub, dst, Some(edge_label), Vec::<(&str, Value)>::new())
             .expect("hub->dst");
     }
+}
+
+const PAYLOAD_SKEW_EDGE_LABEL: &str = "BenchPayloadSkewRoad";
+const PAYLOAD_SKEW_MATCH_WEIGHT: u16 = 7;
+const PAYLOAD_SKEW_NOISE_WEIGHT: u16 = 1;
+
+/// Single-label hub with skewed payload values; expand filters by edge payload equality.
+fn setup_expand_payload_skewed_graph_scaled(store: &GraphStore, noise: u32, match_out: u32) {
+    let label_id = crate::test_labels::edge_label_id_for_name(PAYLOAD_SKEW_EDGE_LABEL);
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        EdgePayloadProfile {
+            byte_width: 2,
+            encoding: EdgePayloadEncoding::WeightRawU16,
+        },
+    );
+    let noise_dst = store
+        .insert_vertex_named(["BenchPayloadSkewNoiseDst"], Vec::<(&str, Value)>::new())
+        .expect("noise dst");
+    let target_dst = store
+        .insert_vertex_named(["BenchPayloadSkewTargetDst"], Vec::<(&str, Value)>::new())
+        .expect("target dst");
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    for i in 0..noise {
+        let _ = i;
+        store
+            .insert_directed_edge_with_payload_bytes(
+                hub,
+                noise_dst,
+                Some(label_id),
+                &PAYLOAD_SKEW_NOISE_WEIGHT.to_le_bytes(),
+            )
+            .expect("noise edge");
+    }
+    for i in 0..match_out {
+        let _ = i;
+        store
+            .insert_directed_edge_with_payload_bytes(
+                hub,
+                target_dst,
+                Some(label_id),
+                &PAYLOAD_SKEW_MATCH_WEIGHT.to_le_bytes(),
+            )
+            .expect("target edge");
+    }
+}
+
+fn expand_payload_predicate_eq_plan(match_weight: u16) -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "h".into(),
+            label: Some("BenchExpandHub".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "h".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some(PAYLOAD_SKEW_EDGE_LABEL.into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_payload_predicate: Some(EdgePayloadPredicate {
+                op: CmpOp::Eq,
+                value: ScanValue::Literal(Value::Uint16(match_weight)),
+            }),
+            edge_vector_predicate: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: false,
+            near_group_var: None,
+            far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ])
+}
+
+fn bench_expand_payload_skewed(
+    noise: u32,
+    match_out: u32,
+    scope: &'static str,
+) -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_payload_skewed_graph_scaled(&store, noise, match_out);
+    let plan = expand_payload_predicate_eq_plan(PAYLOAD_SKEW_MATCH_WEIGHT);
+    let expected = match_out as usize;
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope);
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), expected);
+        black_box(result.rows.len())
+    })
 }
 
 /// Parallel edges on a low-vertex skewed hub (shared noise/target dst); paired indexed vs CSR benches.
@@ -1481,6 +1583,26 @@ fn bench_graph_expand_skewed_noise_50k_a_1k_b() -> canbench_rs::BenchResult {
         EXPAND_SKEW_NOISE_XL,
         EXPAND_HUB_OUT_XL,
         "expand_skewed_noise_50k_a_1k_b",
+    )
+}
+
+/// 200 noise + 24 matching payload edges on one label; edge payload `Eq` predicate expand.
+#[bench(raw)]
+fn bench_graph_expand_payload_skewed_200a_24b() -> canbench_rs::BenchResult {
+    bench_expand_payload_skewed(
+        EXPAND_SKEW_NOISE,
+        EXPAND_HUB_OUT,
+        "expand_payload_skewed_200a_24b",
+    )
+}
+
+/// 2_000 noise + 100 matching payload edges; edge payload `Eq` predicate expand.
+#[bench(raw)]
+fn bench_graph_expand_payload_skewed_2k_a_100b() -> canbench_rs::BenchResult {
+    bench_expand_payload_skewed(
+        EXPAND_SKEW_NOISE_M,
+        EXPAND_HUB_OUT_M,
+        "expand_payload_skewed_2k_a_100b",
     )
 }
 

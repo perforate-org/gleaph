@@ -569,6 +569,26 @@ fn bench_graph_large_expand_vector_bindings_l2_16384scan_2048match() -> canbench
     )
 }
 
+/// 9_500 noise + 500 matching payload edges; edge payload `Eq` predicate expand.
+#[bench(raw)]
+fn bench_graph_large_expand_payload_skewed_10k_a_500b() -> canbench_rs::BenchResult {
+    bench_expand_payload_skewed(
+        EXPAND_SKEW_NOISE_L,
+        EXPAND_HUB_OUT_L,
+        "large_expand_payload_skewed_10k_a_500b",
+    )
+}
+
+/// 49_000 noise + 1_000 matching payload edges; edge payload `Eq` predicate expand.
+#[bench(raw)]
+fn bench_graph_large_expand_payload_skewed_50k_a_1k_b() -> canbench_rs::BenchResult {
+    bench_expand_payload_skewed(
+        EXPAND_SKEW_NOISE_XL,
+        EXPAND_HUB_OUT_XL,
+        "large_expand_payload_skewed_50k_a_1k_b",
+    )
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
