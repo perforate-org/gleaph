@@ -75,16 +75,16 @@ fn try_expand_matching_edge_payload_payload_first(
     predicate: &PreparedEdgePayloadPredicate,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<bool, PlanQueryError> {
-    let dense_payload_batch = match direction {
+    let payload_first_eligible = match direction {
         EdgeDirection::PointingRight => {
-            store.out_label_bucket_dense_payload_batch_eligible(src_id, storage_label)?
+            store.out_label_bucket_payload_first_predicate_eligible(src_id, storage_label)?
         }
         EdgeDirection::PointingLeft => {
-            store.in_label_bucket_dense_payload_batch_eligible(src_id, storage_label)?
+            store.in_label_bucket_payload_first_predicate_eligible(src_id, storage_label)?
         }
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
     };
-    if !dense_payload_batch {
+    if !payload_first_eligible {
         return Ok(false);
     }
 

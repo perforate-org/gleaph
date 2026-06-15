@@ -205,18 +205,17 @@ where
         Ok(out)
     }
 
-    pub(super) fn read_bucket_payload_for_edge(
+    pub(super) fn read_bucket_payload_for_slot(
         &self,
         src: VertexId,
         bucket: &LabelBucket,
-        edge: &E,
+        slot_index: u32,
         log_chains: Option<&(Vec<u32>, Vec<u32>)>,
     ) -> Result<Vec<u8>, LabeledOperationError> {
         let width = bucket.payload_byte_width();
         if width == 0 {
             return Ok(Vec::new());
         }
-        let slot_index = edge.edge_slot_index_raw();
         if bucket.payload_log_head() < 0 {
             let mut buf = vec![0u8; usize::from(width)];
             let offset = super::super::invariants::payload_byte_offset_at_slot(bucket, slot_index)?;
@@ -259,6 +258,16 @@ where
             )?;
         }
         Ok(buf)
+    }
+
+    pub(super) fn read_bucket_payload_for_edge(
+        &self,
+        src: VertexId,
+        bucket: &LabelBucket,
+        edge: &E,
+        log_chains: Option<&(Vec<u32>, Vec<u32>)>,
+    ) -> Result<Vec<u8>, LabeledOperationError> {
+        self.read_bucket_payload_for_slot(src, bucket, edge.edge_slot_index_raw(), log_chains)
     }
 
     pub(super) fn write_edge_payload_to_log(

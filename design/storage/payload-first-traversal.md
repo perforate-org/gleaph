@@ -117,7 +117,7 @@ Executor routing:
 |----------|-------------------|
 | Hop-count `ShortestPath` | Topology only (`load_payloads: false`) |
 | Weighted `ShortestPath` | Bulk payload + bulk edge for **all** live slots (can use phase 1 + phase 2 with full slot list; no filter between phases) |
-| `Expand` + payload predicate | Phase 1 → filter → phase 2 on **dense** buckets; overflow hubs use combined batch (M6c deferred) |
+| `Expand` + payload predicate | Phase 1 → filter → phase 2 on **dense** and **overflow** hubs (M6c) |
 | `Expand` + equality index | Index → slot set → phase 2 (payload optional if index key is not payload-derived) |
 | `Expand` + vector threshold | Combined batch + filter indices (payload-first deferred — canbench regression at all tested scan/match sizes) |
 
@@ -185,15 +185,15 @@ Options for later:
 | M0 | Document + bench scopes (`labeled_visit_payload_value_batches`, `labeled_read_edge_slots`) | canbench pattern runs |
 | M1 | Dense `visit_out_payload_value_batches_for_label` | **Implemented** — `values.rs` batch order + parity tests |
 | M2 | `read_out_edge_slots_for_label` (dense bulk + sparse/log) | **Implemented** — slot/order parity + phase-1/2 integration test |
-| M3 | Facade wrappers + predicate expand switched | **Implemented** — dense path uses phase 1+2; hybrid/sparse keep combined batch in executor |
+| M3 | Facade wrappers + predicate expand switched | **Implemented** — dense + overflow path uses phase 1+2; sparse keeps combined batch in executor |
 | M4 | Equality-index expand uses phase 2 only | **Implemented** — forward (`PointingRight`); reverse/undirected keep full-scan fallback |
 | M5 | Weighted shortest: prepared decoder on relax hot path | **Implemented** — `PreparedWeightDecoder::decode`; optional zip refactor deferred |
 | M6 | Sparse payload-first | **Implemented (LARA)** — overflow `visit_out_payload_value_batches`; edge-free hybrid slab prefix; cached payload log chains |
 | M6a | Executor probe removal | **Implemented** — dense-eligibility pre-check before phase 1 |
 | M6b | Edge-free hybrid slab + chain cache | **Implemented** — slab prefix skips edge slab IO; `read_payload_log_chain_entry`; phase-2 overflow chain cache |
-| M6c | Executor overflow routing | **Deferred** — enable when phase 1 avoids edge-log decode on overflow hubs (current +22% on `expand_payload_skewed_2k`) |
+| M6c | Executor overflow routing | **Implemented** — edge-free overflow log tag walk in phase 1; executor uses `payload_first_predicate_eligible` |
 
-**Backward compatibility:** combined `LabeledEdgePayloadBatch` API remains; dense buckets use single-pass bulk read. Phase 1+2 APIs are for selective slot reads (predicate/index expand). Hybrid/sparse paths unchanged.
+**Backward compatibility:** combined `LabeledEdgePayloadBatch` API remains; dense buckets use single-pass bulk read. Phase 1+2 APIs are for selective slot reads (predicate/index expand). Sparse-only paths unchanged.
 
 ## Benchmark expectations
 

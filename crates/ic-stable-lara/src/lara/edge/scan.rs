@@ -372,6 +372,24 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             inserted.into_iter().map(|(_, edge)| edge).collect(),
         ))
     }
+
+    pub(crate) fn prefetch_overflow_log_replay_tags_desc(
+        &self,
+        leaf: u32,
+        log_head: i32,
+    ) -> Result<(Vec<Option<()>>, Vec<u32>), LaraOperationError> {
+        let log_h = self.log.header();
+        self.prefetch_descending_log_replay_tags(&log_h, leaf, log_head)
+    }
+
+    pub(crate) fn prefetch_overflow_log_inserted_tags_asc(
+        &self,
+        leaf: u32,
+        log_head: i32,
+    ) -> Result<(Vec<Option<()>>, Vec<u32>), LaraOperationError> {
+        let log_h = self.log.header();
+        self.prefetch_ascending_log_inserted_tags(&log_h, leaf, log_head)
+    }
 }
 
 #[cfg(test)]
