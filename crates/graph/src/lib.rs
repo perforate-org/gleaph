@@ -179,4 +179,11 @@ async fn backfill_edge_property_postings(
     canister::handlers::backfill_edge_property_postings(args).await
 }
 
+#[update(guard = "guard_router_canister")]
+fn finalize_bulk_ingest(
+    args: gleaph_graph_kernel::federation::BulkIngestFinalizeArgs,
+) -> Result<gleaph_graph_kernel::federation::BulkIngestFinalizeResult, String> {
+    canister::handlers::finalize_bulk_ingest(args)
+}
+
 ic_cdk::export_candid!();

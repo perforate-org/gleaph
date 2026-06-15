@@ -1,7 +1,9 @@
 //! Inter-canister calls from router to graph shards.
 
 use candid::Principal;
-use gleaph_graph_kernel::federation::{PostingBackfillArgs, PostingBackfillResult};
+use gleaph_graph_kernel::federation::{
+    BulkIngestFinalizeArgs, BulkIngestFinalizeResult, PostingBackfillArgs, PostingBackfillResult,
+};
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, ExecutePlanResult, GraphMutationJournalEntryWire, LabelStatsDeltaEventWire,
     MutationId, ShardEventSeq,
@@ -174,6 +176,17 @@ pub async fn backfill_edge_property_postings(
     args: gleaph_graph_kernel::federation::EdgePostingBackfillArgs,
 ) -> Result<gleaph_graph_kernel::federation::EdgePostingBackfillResult, String> {
     call_graph_result(graph, "backfill_edge_property_postings", args).await
+}
+
+#[expect(
+    dead_code,
+    reason = "wired for router bulk-ingest finalize orchestration (P3 follow-up)"
+)]
+pub async fn finalize_bulk_ingest(
+    graph: Principal,
+    args: BulkIngestFinalizeArgs,
+) -> Result<BulkIngestFinalizeResult, String> {
+    call_graph_result(graph, "finalize_bulk_ingest", args).await
 }
 
 #[cfg(test)]

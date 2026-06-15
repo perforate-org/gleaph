@@ -1,6 +1,6 @@
 # Bulk ingest finalize (maintenance reclaim)
 
-**Status:** Partially implemented — P0 `GraphStore::finalize_bulk_ingest` (2026-06-15). P1+ (canister wire, GQL `CALL`, router) not implemented.
+**Status:** Partially implemented — P0 `GraphStore::finalize_bulk_ingest` (2026-06-15); P1 canister wire + handler (2026-06-15). P2+ (GQL `CALL`, router hot-vertex tracking) not implemented.
 
 ## Purpose
 
@@ -127,7 +127,9 @@ type BulkIngestFinalizeResult = record {
 
 **Limits:** `forward_vertices.len() + reverse_vertices.len() <= 256` per call (argument size and queue growth).
 
-**Not implemented:** wire types and `finalize_bulk_ingest` handler.
+**Not implemented:** router orchestration and GQL `CALL` execution.
+
+**Implemented (P1):** `finalize_bulk_ingest` update endpoint with `BulkIngestFinalizeArgs` / `BulkIngestFinalizeResult` in `gleaph-graph-kernel`; handler in `crates/graph/src/canister/handlers.rs`; router client in `crates/router/src/graph_client.rs`.
 
 ### Layer 3 — Router (optional)
 
@@ -260,7 +262,7 @@ baseline when persisting results after `c16a247f`; it measures real ingest cost.
 | Phase | Deliverable | Verification |
 |-------|-------------|--------------|
 | P0 | `GraphStore::finalize_bulk_ingest` + unit tests | **Implemented** — `facade/store/maintenance.rs`; WSP bench setup calls finalize on `src` |
-| P1 | Canister wire + handler | PocketIC router call |
+| P1 | Canister wire + handler | **Implemented** — `finalize_bulk_ingest` update; PocketIC router call |
 | P2 | Mutation executor: `CallProcedure` for `GLEAPH.FINALIZE_*` + `GLEAPH.VERTEX_LIST` | GQL transaction integration test |
 | P3 | Router hot-vertex tracking after DML | 50k ingest → query ix regression |
 | P4 | canbench WSP (optional) | Compare with/without explicit src finalize |

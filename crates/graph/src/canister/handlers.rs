@@ -387,6 +387,72 @@ pub async fn backfill_edge_property_postings(
         .await
 }
 
+/// Maximum vertices per finalize call (`forward` + `reverse` lists).
+const MAX_BULK_INGEST_FINALIZE_VERTICES: usize = 256;
+
+pub fn finalize_bulk_ingest(
+    args: gleaph_graph_kernel::federation::BulkIngestFinalizeArgs,
+) -> Result<gleaph_graph_kernel::federation::BulkIngestFinalizeResult, String> {
+    use crate::facade::{BulkIngestFinalizeReport, BulkIngestFinalizeSpec};
+    use ic_stable_lara::VertexId;
+
+    let store = GraphStore::new();
+    let routing = store
+        .federation_routing()
+        .ok_or("federation routing not configured")?;
+    if routing.shard_id != args.target_shard_id {
+        return Err(format!(
+            "target_shard_id {} does not match this graph shard {}",
+            args.target_shard_id, routing.shard_id
+        ));
+    }
+    let total_vertices = args.forward_vertices.len() + args.reverse_vertices.len();
+    if total_vertices > MAX_BULK_INGEST_FINALIZE_VERTICES {
+        return Err(format!(
+            "vertex list too long: {total_vertices} > {MAX_BULK_INGEST_FINALIZE_VERTICES}"
+        ));
+    }
+
+    let spec = BulkIngestFinalizeSpec {
+        forward_vertices: args
+            .forward_vertices
+            .iter()
+            .copied()
+            .map(VertexId::from)
+            .collect(),
+        reverse_vertices: args
+            .reverse_vertices
+            .iter()
+            .copied()
+            .map(VertexId::from)
+            .collect(),
+    };
+
+    let report = if args.enqueue {
+        store
+            .finalize_bulk_ingest(&spec)
+            .map_err(|e| e.to_string())?
+    } else {
+        let maintenance = store
+            .run_bulk_ingest_finalize_drain()
+            .map_err(|e| e.to_string())?;
+        BulkIngestFinalizeReport {
+            maintenance,
+            queued_forward: 0,
+            queued_reverse: 0,
+        }
+    };
+
+    Ok(gleaph_graph_kernel::federation::BulkIngestFinalizeResult {
+        queued_forward: report.queued_forward,
+        queued_reverse: report.queued_reverse,
+        processed_work_items: report.maintenance.work.processed_work_items,
+        remaining_queue_len: report.maintenance.remaining_queue_len(),
+        instruction_budget_exhausted: report.maintenance.instruction_budget_exhausted,
+        instructions_used: report.maintenance.instructions_used,
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -398,7 +464,7 @@ mod tests {
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn};
     use gleaph_gql_planner::wire::encode_block_plans;
-    use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::federation::{BulkIngestFinalizeArgs, ShardId};
     use gleaph_graph_kernel::plan_exec::{SeedBindingEntry, SeedBindingsWire};
 
     const TEST_SHARD_ID: ShardId = ShardId::new(0);
@@ -607,6 +673,38 @@ mod tests {
         let err = pollster::block_on(execute_plan_query(args)).expect_err("shard mismatch");
         assert!(
             err.contains("target_shard_id") && err.contains("does not match"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn finalize_bulk_ingest_rejects_shard_mismatch() {
+        attach_test_federation(TEST_SHARD_ID);
+        let args = BulkIngestFinalizeArgs {
+            target_shard_id: ShardId::new(1),
+            forward_vertices: vec![1],
+            reverse_vertices: vec![],
+            enqueue: true,
+        };
+        let err = finalize_bulk_ingest(args).expect_err("shard mismatch");
+        assert!(
+            err.contains("target_shard_id") && err.contains("does not match"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn finalize_bulk_ingest_rejects_vertex_list_over_limit() {
+        attach_test_federation(TEST_SHARD_ID);
+        let args = BulkIngestFinalizeArgs {
+            target_shard_id: TEST_SHARD_ID,
+            forward_vertices: vec![0; 200],
+            reverse_vertices: vec![0; 57],
+            enqueue: true,
+        };
+        let err = finalize_bulk_ingest(args).expect_err("vertex limit");
+        assert!(
+            err.contains("vertex list too long"),
             "unexpected error: {err}"
         );
     }

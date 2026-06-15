@@ -1,6 +1,7 @@
 //! Distributed graph federation identifiers and placement types.
 
 mod backfill_shard_state;
+mod bulk_ingest_finalize;
 mod edge_posting_backfill;
 mod encoded;
 mod expand;
@@ -11,6 +12,7 @@ mod router_error;
 mod shard_id;
 
 pub use backfill_shard_state::BackfillShardState;
+pub use bulk_ingest_finalize::{BulkIngestFinalizeArgs, BulkIngestFinalizeResult};
 pub use edge_posting_backfill::{EdgePostingBackfillArgs, EdgePostingBackfillResult};
 pub use encoded::{
     ENCODED_EDGE_ID_BYTES, ENCODED_VERTEX_ID_BYTES, ElementIdEncodingKey, EncodedEdgeId,
