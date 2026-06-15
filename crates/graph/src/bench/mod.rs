@@ -309,6 +309,13 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
             .expect("spoke->dst");
     }
 
+    store
+        .finalize_bulk_ingest(&crate::facade::BulkIngestFinalizeSpec {
+            forward_vertices: vec![src],
+            reverse_vertices: vec![],
+        })
+        .expect("finalize bulk ingest stands in for production post-ingest finalize");
+
     (src, dst)
 }
 

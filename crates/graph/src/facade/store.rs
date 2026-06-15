@@ -47,6 +47,7 @@ mod vertex_row;
 pub use error::GraphStoreError;
 pub use handle::EdgeHandle;
 pub use helpers::{canonical_undirected_owner, catalog_edge_label_from_wire};
+pub use maintenance::{BulkIngestFinalizeReport, BulkIngestFinalizeSpec};
 
 /// Stateless facade over graph storage thread-locals.
 #[derive(Clone, Copy, Debug, Default)]

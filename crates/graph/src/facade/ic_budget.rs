@@ -56,6 +56,22 @@ pub const fn unlimited_lara_maintenance_budget() -> MaintenanceBudget {
     }
 }
 
+/// Best-effort maintenance budget for explicit bulk-ingest finalize drain passes.
+///
+/// On canisters, uses the timer budget so finalize can share the same per-message
+/// instruction envelope as heartbeat maintenance. Native builds drain fully.
+#[cfg(target_family = "wasm")]
+#[inline]
+pub const fn bulk_ingest_finalize_maintenance_budget() -> MaintenanceBudget {
+    timer_lara_maintenance_budget()
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[inline]
+pub const fn bulk_ingest_finalize_maintenance_budget() -> MaintenanceBudget {
+    unlimited_lara_maintenance_budget()
+}
+
 /// Best-effort maintenance budget after a local edge insert.
 ///
 /// On canisters, uses the timer budget so bulk ingest in one update message does

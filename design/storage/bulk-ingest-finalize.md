@@ -1,6 +1,6 @@
 # Bulk ingest finalize (maintenance reclaim)
 
-**Status:** Planned — not implemented. Deferred until post-insert maintenance has been exercised in production workloads.
+**Status:** Partially implemented — P0 `GraphStore::finalize_bulk_ingest` (2026-06-15). P1+ (canister wire, GQL `CALL`, router) not implemented.
 
 ## Purpose
 
@@ -95,9 +95,9 @@ pub struct BulkIngestFinalizeReport {
 
 | Method | Behavior |
 |--------|----------|
-| `enqueue_bulk_ingest_finalize(spec)` | `mark_compact_vertex_edge_span(Forward\|Reverse, vid, 0)` for each listed vertex; dedupe via LARA `vertex_edge_span_maintenance_pending` |
-| `run_bulk_ingest_finalize_drain()` | `run_maintenance_best_effort(bulk_ingest_finalize_maintenance_budget())` |
-| `finalize_bulk_ingest(spec)` | enqueue + one drain pass |
+| `enqueue_bulk_ingest_finalize(spec)` | **Implemented** — `mark_compact_vertex_edge_span(Forward\|Reverse, vid, 0)` for each listed vertex; dedupe via LARA `vertex_edge_span_maintenance_pending` |
+| `run_bulk_ingest_finalize_drain()` | **Implemented** — `run_maintenance_best_effort(bulk_ingest_finalize_maintenance_budget())` |
+| `finalize_bulk_ingest(spec)` | **Implemented** — enqueue + one drain pass |
 
 **Budget:** `bulk_ingest_finalize_maintenance_budget()` — same as timer on wasm (~32B instructions), unlimited on native. Multi-call retry when `instruction_budget_exhausted && remaining_queue_len > 0`.
 
@@ -259,7 +259,7 @@ baseline when persisting results after `c16a247f`; it measures real ingest cost.
 
 | Phase | Deliverable | Verification |
 |-------|-------------|--------------|
-| P0 | `GraphStore::finalize_bulk_ingest` + unit tests | Hub 48-edge dense without tombstones; `valued_insert_after_delete_*` still pass without finalize |
+| P0 | `GraphStore::finalize_bulk_ingest` + unit tests | **Implemented** — `facade/store/maintenance.rs`; WSP bench setup calls finalize on `src` |
 | P1 | Canister wire + handler | PocketIC router call |
 | P2 | Mutation executor: `CallProcedure` for `GLEAPH.FINALIZE_*` + `GLEAPH.VERTEX_LIST` | GQL transaction integration test |
 | P3 | Router hot-vertex tracking after DML | 50k ingest → query ix regression |
