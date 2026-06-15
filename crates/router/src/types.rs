@@ -79,20 +79,20 @@ pub struct PropertyBackfillShardStatus {
     pub done: bool,
 }
 
-/// One router-orchestrated batch draining a graph shard label telemetry outbox.
+/// One router-orchestrated batch advancing label stats projection for a graph shard.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct AdminLabelTelemetryReplayStepArgs {
+pub struct AdminLabelStatsProjectionStepArgs {
     pub logical_graph_name: String,
     pub shard_id: ShardId,
-    /// Maximum pending events to drain from the shard outbox in this step (must be > 0).
-    pub max_events: u32,
+    /// Maximum pending deltas to apply from the shard log in this step (must be > 0).
+    pub max_deltas: u32,
 }
 
-/// Progress from one router label telemetry replay step.
+/// Progress from one router label stats projection step.
 #[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AdminLabelTelemetryReplayStepResult {
+pub struct AdminLabelStatsProjectionStepResult {
     pub shard_id: ShardId,
-    pub events_drained: u32,
-    pub events_applied: u32,
+    pub deltas_drained: u32,
+    pub deltas_applied: u32,
     pub done: bool,
 }

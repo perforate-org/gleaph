@@ -43,7 +43,7 @@ const ROUTER_EDGE_LABEL_STATS: MemoryId = MemoryId::new(13);
 const ROUTER_VERTEX_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(14);
 const ROUTER_EDGE_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(15);
 const ROUTER_MUTATION_COUNTER: MemoryId = MemoryId::new(16);
-const ROUTER_APPLIED_LABEL_TELEMETRY: MemoryId = MemoryId::new(17);
+const ROUTER_LABEL_STATS_PROJECTION: MemoryId = MemoryId::new(17);
 const ROUTER_MUTATION_BY_CLIENT_KEY: MemoryId = MemoryId::new(18);
 const ROUTER_LABEL_BACKFILL_STATE: MemoryId = MemoryId::new(19);
 const ROUTER_PROPERTY_BACKFILL_STATE: MemoryId = MemoryId::new(20);
@@ -121,14 +121,12 @@ pub(crate) type StablePropertyCatalog =
 pub(crate) type StableEdgePayloadProfileStore = EdgePayloadProfileStore<Memory>;
 pub(crate) type StableNamedIndexMap = BTreeMap<NamedIndexKey, IndexDefRecord, Memory>;
 pub(crate) type StableIndexedPropertySet = BTreeSet<IndexedPropertyKey, Memory>;
-pub(crate) type StableLabelStatsMap = BTreeMap<u16, super::label_telemetry::LabelStats, Memory>;
-pub(crate) type StableLabelShardLiveMap =
-    BTreeMap<super::label_telemetry::LabelShardKey, u64, Memory>;
-pub(crate) type StableAppliedLabelTelemetrySet =
-    BTreeSet<super::label_telemetry::AppliedLabelTelemetryKey, Memory>;
+pub(crate) type StableLabelStatsMap = BTreeMap<u16, super::label_stats::LabelStats, Memory>;
+pub(crate) type StableLabelShardLiveMap = BTreeMap<super::label_stats::LabelShardKey, u64, Memory>;
+pub(crate) type StableLabelStatsProjectionMap = BTreeMap<ShardId, u64, Memory>;
 pub(crate) type StableMutationByClientKey = BTreeMap<
-    super::label_telemetry::ClientMutationKey,
-    super::label_telemetry::RouterMutationRecord,
+    super::label_stats::ClientMutationKey,
+    super::label_stats::RouterMutationRecord,
     Memory,
 >;
 pub(crate) type StableLabelBackfillStateMap = BTreeMap<ShardId, BackfillShardState, Memory>;
@@ -204,8 +202,8 @@ pub(crate) fn init_mutation_counter() -> StableMutationCounter {
     )
 }
 
-pub(crate) fn init_applied_label_telemetry() -> StableAppliedLabelTelemetrySet {
-    BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_APPLIED_LABEL_TELEMETRY)))
+pub(crate) fn init_label_stats_projection() -> StableLabelStatsProjectionMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_LABEL_STATS_PROJECTION)))
 }
 
 pub(crate) fn init_mutation_by_client_key() -> StableMutationByClientKey {

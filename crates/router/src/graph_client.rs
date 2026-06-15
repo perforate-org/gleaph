@@ -3,8 +3,8 @@
 use candid::Principal;
 use gleaph_graph_kernel::federation::{PostingBackfillArgs, PostingBackfillResult};
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanResult, LabelTelemetryEventWire, MutationId, MutationOutcomeWire,
-    ShardEventSeq,
+    ExecutePlanArgs, ExecutePlanResult, GraphMutationJournalEntryWire, LabelStatsDeltaEventWire,
+    MutationId, ShardEventSeq,
 };
 
 #[cfg(target_family = "wasm")]
@@ -101,28 +101,26 @@ pub async fn execute_plan_on_graph(
     call_graph_result(graph, method, args).await
 }
 
-pub async fn ack_label_telemetry_event(graph: Principal, seq: ShardEventSeq) -> Result<(), String> {
-    call_graph(graph, "ack_label_telemetry_event", seq).await
+pub async fn ack_label_stats_deltas_through(
+    graph: Principal,
+    through_seq: ShardEventSeq,
+) -> Result<(), String> {
+    call_graph(graph, "ack_label_stats_deltas_through", through_seq).await
 }
 
-pub async fn list_pending_label_telemetry_events(
+pub async fn list_pending_label_stats_deltas(
     graph: Principal,
     from_seq: ShardEventSeq,
     limit: u32,
-) -> Result<Vec<LabelTelemetryEventWire>, String> {
-    call_graph_args(
-        graph,
-        "list_pending_label_telemetry_events",
-        &(from_seq, limit),
-    )
-    .await
+) -> Result<Vec<LabelStatsDeltaEventWire>, String> {
+    call_graph_args(graph, "list_pending_label_stats_deltas", &(from_seq, limit)).await
 }
 
-pub async fn get_mutation_outcome(
+pub async fn get_mutation_journal_entry(
     graph: Principal,
     mutation_id: MutationId,
-) -> Result<Option<MutationOutcomeWire>, String> {
-    call_graph(graph, "get_mutation_outcome", mutation_id).await
+) -> Result<Option<GraphMutationJournalEntryWire>, String> {
+    call_graph(graph, "get_mutation_journal_entry", mutation_id).await
 }
 
 pub async fn backfill_label_postings(
@@ -176,4 +174,28 @@ pub async fn backfill_edge_property_postings(
     args: gleaph_graph_kernel::federation::EdgePostingBackfillArgs,
 ) -> Result<gleaph_graph_kernel::federation::EdgePostingBackfillResult, String> {
     call_graph_result(graph, "backfill_edge_property_postings", args).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn native_build_graph_client_returns_unavailable() {
+        let fut = execute_plan_on_graph(
+            Principal::anonymous(),
+            ExecutePlanArgs {
+                target_shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                mutation_id: None,
+                plan_blob: vec![],
+                params_blob: vec![],
+                mode: gleaph_graph_kernel::plan_exec::GqlExecutionMode::Query,
+                seed_bindings_blob: None,
+                resolved_labels: None,
+                resolved_properties: None,
+            },
+        );
+        let err = futures::executor::block_on(fut).expect_err("native unavailable");
+        assert!(err.contains("unavailable"));
+    }
 }

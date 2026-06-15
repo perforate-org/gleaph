@@ -1,11 +1,9 @@
-//! Router-owned label telemetry records.
+//! Router-owned label stats aggregates and client mutation records (ADR 0015).
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::plan_exec::{
-    LabelTelemetryEventWire, MutationId, ResolvedLabelTable, ResolvedPropertyTable,
-};
+use gleaph_graph_kernel::plan_exec::{MutationId, ResolvedLabelTable, ResolvedPropertyTable};
 use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -89,51 +87,6 @@ impl Storable for LabelShardKey {
         Self {
             shard_id: ShardId::from_le_bytes(shard),
             label_id: u16::from_le_bytes(label),
-        }
-    }
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct AppliedLabelTelemetryKey {
-    pub shard_id: ShardId,
-    pub shard_event_seq: u64,
-}
-
-impl AppliedLabelTelemetryKey {
-    pub const fn new(shard_id: ShardId, shard_event_seq: u64) -> Self {
-        Self {
-            shard_id,
-            shard_event_seq,
-        }
-    }
-}
-
-impl Storable for AppliedLabelTelemetryKey {
-    const BOUND: Bound = Bound::Bounded {
-        max_size: 12,
-        is_fixed_size: true,
-    };
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(self.into_bytes())
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        let mut out = Vec::with_capacity(12);
-        out.extend_from_slice(&self.shard_id.to_le_bytes());
-        out.extend_from_slice(&self.shard_event_seq.to_le_bytes());
-        out
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        let bytes = bytes.as_ref();
-        let mut shard = [0; 4];
-        let mut seq = [0; 8];
-        shard.copy_from_slice(&bytes[0..4]);
-        seq.copy_from_slice(&bytes[4..12]);
-        Self {
-            shard_id: ShardId::from_le_bytes(shard),
-            shard_event_seq: u64::from_le_bytes(seq),
         }
     }
 }
@@ -233,9 +186,8 @@ pub struct RouterMutationShard {
     pub graph_canister: Principal,
     pub seed_bindings_blob: Option<Vec<u8>>,
     pub completed: bool,
-    pub telemetry_acked: bool,
+    pub projection_advanced: bool,
     pub row_count: u64,
-    pub label_telemetry_events: Vec<LabelTelemetryEventWire>,
 }
 
 impl RouterMutationShard {
@@ -249,9 +201,8 @@ impl RouterMutationShard {
             graph_canister,
             seed_bindings_blob,
             completed: false,
-            telemetry_acked: false,
+            projection_advanced: false,
             row_count: 0,
-            label_telemetry_events: Vec::new(),
         }
     }
 }

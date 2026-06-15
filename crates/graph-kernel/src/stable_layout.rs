@@ -21,7 +21,7 @@
 //!   co-updates with forward. Associated free-span regions stay `Maintenance` (physical PMA bookkeeping).
 //! - **Graph label telemetry (39–40):** `Telemetry` — event outbox toward router aggregates, not
 //!   canonical graph membership (that is `VERTEX_LABEL_SETS` + index label postings).
-//! - **`ROUTER_APPLIED_LABEL_TELEMETRY`:** `Telemetry` — dedup for idempotent event apply, not
+//! - **`ROUTER_LABEL_STATS_PROJECTION`:** `Telemetry` — per-shard projection cursor (ADR 0015), not
 //!   user mutation idempotency (`ROUTER_MUTATION_BY_CLIENT_KEY` is `Canonical`).
 
 /// How a stable region relates to authoritative graph/router/index state.
@@ -40,7 +40,7 @@ pub enum StableMemoryClass {
     /// - Forward LARA adjacency and payload bytes (`FWD_*` slabs, logs, blobs)
     /// - Vertex/edge property values, vertex label sets on the graph shard
     /// - Router shard registry, placement map, resolution catalogs (names ↔ ids)
-    /// - Graph/router mutation idempotency records (`APPLIED_MUTATION_REQUESTS`,
+    /// - Graph/router mutation idempotency records (`GRAPH_MUTATION_JOURNAL`,
     ///   `ROUTER_MUTATION_BY_CLIENT_KEY`)
     /// - Graph-index authorization and shard-owner maps
     ///
@@ -106,8 +106,8 @@ pub enum StableMemoryClass {
     /// the graph shard when the outbox is not yet replayed.
     ///
     /// **Gleaph examples:**
-    /// - Graph `LABEL_TELEMETRY_SEQ` / `LABEL_TELEMETRY_OUTBOX` — per-shard event source
-    /// - Router `ROUTER_VERTEX_LABEL_STATS`, live-by-shard maps, `ROUTER_APPLIED_LABEL_TELEMETRY`
+    /// - Graph `LABEL_STATS_DELTA_SEQ` / `LABEL_STATS_DELTA_LOG` — per-shard delta source
+    /// - Router `ROUTER_VERTEX_LABEL_STATS`, live-by-shard maps, `ROUTER_LABEL_STATS_PROJECTION`
     ///   (replay dedup)
     ///
     /// **Not telemetry:** `VERTEX_LABEL_SETS` (canonical membership), `INDEX_LABEL_POSTINGS`
@@ -505,27 +505,27 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             None,
         ),
         region(
-            "LABEL_TELEMETRY_SEQ",
+            "LABEL_STATS_DELTA_SEQ",
             37,
             StableMemoryClass::Telemetry,
-            "label telemetry",
-            "Monotonic seq for label usage outbox events",
+            "label stats projection",
+            "Monotonic seq for label stats delta log",
             None,
         ),
         region(
-            "LABEL_TELEMETRY_OUTBOX",
+            "LABEL_STATS_DELTA_LOG",
             38,
             StableMemoryClass::Telemetry,
-            "label telemetry",
-            "Stable outbox of LabelUsageDelta events for router",
+            "label stats projection",
+            "Stable log of LabelStatsDelta events for router projection",
             None,
         ),
         region(
-            "APPLIED_MUTATION_REQUESTS",
+            "GRAPH_MUTATION_JOURNAL",
             39,
             StableMemoryClass::Canonical,
             "idempotency",
-            "Graph mutation idempotency outcomes (incl. telemetry batch)",
+            "Graph mutation journal (outcome + emitted delta seq range)",
             None,
         ),
     ],
@@ -637,7 +637,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Aggregated vertex label usage stats",
-            Some("admin_label_telemetry_replay_step"),
+            Some("admin_label_stats_projection_step"),
         ),
         region(
             "ROUTER_EDGE_LABEL_STATS",
@@ -645,7 +645,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Aggregated edge label usage stats",
-            Some("admin_label_telemetry_replay_step"),
+            Some("admin_label_stats_projection_step"),
         ),
         region(
             "ROUTER_VERTEX_LABEL_LIVE_BY_SHARD",
@@ -653,7 +653,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Per-shard live vertex counts per label",
-            Some("admin_label_telemetry_replay_step"),
+            Some("admin_label_stats_projection_step"),
         ),
         region(
             "ROUTER_EDGE_LABEL_LIVE_BY_SHARD",
@@ -661,7 +661,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Per-shard live edge counts per label",
-            Some("admin_label_telemetry_replay_step"),
+            Some("admin_label_stats_projection_step"),
         ),
         region(
             "ROUTER_MUTATION_COUNTER",
@@ -672,11 +672,11 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             None,
         ),
         region(
-            "ROUTER_APPLIED_LABEL_TELEMETRY",
+            "ROUTER_LABEL_STATS_PROJECTION",
             17,
             StableMemoryClass::Telemetry,
-            "label telemetry",
-            "Dedup keys for idempotent label telemetry event apply",
+            "label stats projection",
+            "ShardId → applied_through_seq for graph label stats deltas (ADR 0015)",
             None,
         ),
         region(
@@ -1007,7 +1007,7 @@ mod tests {
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,
-            "APPLIED_MUTATION_REQUESTS"
+            "GRAPH_MUTATION_JOURNAL"
         );
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[35].class,
@@ -1026,7 +1026,7 @@ mod tests {
         );
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[17].symbol,
-            "ROUTER_APPLIED_LABEL_TELEMETRY"
+            "ROUTER_LABEL_STATS_PROJECTION"
         );
     }
 

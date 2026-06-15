@@ -15,7 +15,7 @@ use crate::federation::ShardId;
 /// Router-issued mutation id. `0` is reserved; ids are never reused.
 pub type MutationId = u64;
 
-/// Shard-local telemetry event sequence. `0` is reserved; ids are never reused.
+/// Shard-local label stats delta sequence. `0` is reserved; ids are never reused.
 pub type ShardEventSeq = u64;
 
 /// Selects the IC call kind for a wired program/plan (must match the canister entrypoint).
@@ -47,7 +47,6 @@ pub struct ExecutePlanArgs {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanResult {
     pub row_count: u64,
-    pub label_telemetry_events: Vec<LabelTelemetryEventWire>,
     /// Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
     pub rows_blob: Option<Vec<u8>>,
 }
@@ -76,19 +75,36 @@ impl GqlQueryResult {
     }
 }
 
+/// Ordered label stats delta appended by graph shard DML (ADR 0015).
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct LabelTelemetryEventWire {
+pub struct LabelStatsDeltaEventWire {
     pub mutation_id: MutationId,
     pub shard_event_seq: ShardEventSeq,
-    pub label_usage_delta: LabelUsageDelta,
+    pub label_stats_delta: LabelStatsDelta,
 }
 
+/// Per-label live count changes emitted by graph shard DML (ADR 0015).
+#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct LabelStatsDelta {
+    pub vertex: Vec<(VertexLabelId, i64)>,
+    pub edge: Vec<(EdgeLabelId, i64)>,
+}
+
+/// Graph-local mutation journal state (ADR 0015).
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum MutationJournalState {
+    Incomplete,
+    Completed,
+}
+
+/// Graph shard mutation idempotency journal entry (ADR 0015).
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct MutationOutcomeWire {
+pub struct GraphMutationJournalEntryWire {
     pub mutation_id: MutationId,
-    pub completed: bool,
+    pub state: MutationJournalState,
     pub row_count: u64,
-    pub label_telemetry_events: Vec<LabelTelemetryEventWire>,
+    pub emitted_delta_first_seq: Option<ShardEventSeq>,
+    pub emitted_delta_last_seq: Option<ShardEventSeq>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, CandidType, Serialize, Deserialize)]
@@ -153,12 +169,6 @@ pub struct ResolvedProperty {
     pub id: PropertyId,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct LabelUsageDelta {
-    pub vertex: Vec<(VertexLabelId, i64)>,
-    pub edge: Vec<(EdgeLabelId, i64)>,
-}
-
 /// Shard-local edge identity for router seed bindings (ADR 0009 phase D).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct LocalEdgePosting {
@@ -191,7 +201,6 @@ mod tests {
     fn execute_plan_result_roundtrip_with_rows_blob() {
         let result = ExecutePlanResult {
             row_count: 2,
-            label_telemetry_events: Vec::new(),
             rows_blob: Some(vec![1, 2, 3]),
         };
         let bytes = Encode!(&result).expect("encode");

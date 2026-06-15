@@ -67,23 +67,23 @@ async fn execute_plan_update(
 }
 
 #[query(guard = "guard_router_canister")]
-fn list_pending_label_telemetry_events(
+fn list_pending_label_stats_deltas(
     from_seq: gleaph_graph_kernel::plan_exec::ShardEventSeq,
     limit: u32,
-) -> Vec<gleaph_graph_kernel::plan_exec::LabelTelemetryEventWire> {
-    canister::handlers::list_pending_label_telemetry_events(from_seq, limit)
+) -> Vec<gleaph_graph_kernel::plan_exec::LabelStatsDeltaEventWire> {
+    canister::handlers::list_pending_label_stats_deltas(from_seq, limit)
 }
 
 #[query(guard = "guard_router_canister")]
-fn get_mutation_outcome(
+fn get_mutation_journal_entry(
     mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
-) -> Option<gleaph_graph_kernel::plan_exec::MutationOutcomeWire> {
-    canister::handlers::get_mutation_outcome(mutation_id)
+) -> Option<gleaph_graph_kernel::plan_exec::GraphMutationJournalEntryWire> {
+    canister::handlers::get_mutation_journal_entry(mutation_id)
 }
 
 #[update(guard = "guard_router_canister")]
-fn ack_label_telemetry_event(seq: gleaph_graph_kernel::plan_exec::ShardEventSeq) {
-    canister::handlers::ack_label_telemetry_event(seq);
+fn ack_label_stats_deltas_through(through_seq: gleaph_graph_kernel::plan_exec::ShardEventSeq) {
+    canister::handlers::ack_label_stats_deltas_through(through_seq);
 }
 
 #[cfg(feature = "pocket-ic-e2e")]

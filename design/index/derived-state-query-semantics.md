@@ -66,18 +66,20 @@ graph-index. Router `admin_*_backfill_step` advances per-shard cursors (`Backfil
 still flows through pending flush independently. Run backfill loops until `done` before relying on
 historical completeness.
 
-### Label telemetry replay in progress
+### Label stats projection lag
 
-`admin_label_telemetry_replay_step` drains graph `LABEL_TELEMETRY_OUTBOX` into router aggregates.
+`admin_label_stats_projection_step` drains graph `LABEL_STATS_DELTA_LOG` into router aggregates
+via `advance_label_stats_projection`. Per-shard `ROUTER_LABEL_STATS_PROJECTION` cursors must
+advance contiguously; a gap in the delta log fails the step until the graph catches up.
 
-**Query behavior:** Count-only labeled queries may under-count until replay completes. Label
-membership export and property+label compound seeds use **postings**, not telemetry.
+**Query behavior:** Count-only labeled queries may under-count until projection catches up. Label
+membership export and property+label compound seeds use **postings**, not router label stats.
 
 ### Upgrade / ephemeral loss
 
-Pending queues and router ephemeral planner catalogs are lost on upgrade ([stable-memory-inventory.md](../storage/stable-memory-inventory.md)). Stable backfill cursors and telemetry dedup sets survive on router; graph outbox survives on shard.
+Pending queues and router ephemeral planner catalogs are lost on upgrade ([stable-memory-inventory.md](../storage/stable-memory-inventory.md)). Stable backfill cursors and projection cursors survive on router; graph delta log survives on shard.
 
-**Query behavior:** Replay pending telemetry and run posting backfill after upgrade when index or
+**Query behavior:** Run label stats projection and posting backfill after upgrade when index or
 count completeness is required.
 
 ## Operator expectations
@@ -86,7 +88,7 @@ count completeness is required.
 |---------|--------------|-------------|
 | Index miss for known property value | Unindexable value, pending not flushed, or backfill incomplete | Check `property_indexability`; flush pending; run property backfill |
 | Extra index hit for deleted vertex | Remove posting not synced | Flush/retry pending; verify DML index path |
-| `COUNT(*)` wrong for label | Telemetry lag | `admin_label_telemetry_replay_step` per shard |
+| `COUNT(*)` wrong for label | Projection lag | `admin_label_stats_projection_step` per shard |
 | Expand equality wrong | graph-index edge posting lag or unregistered property | `backfill_edge_property_postings`; verify index registry |
 | Reverse expand wrong | Edge alias drift | `check_edge_aliases`; `rebuild_edge_aliases` |
 

@@ -16,8 +16,8 @@ use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_gql_planner::{PlanBuildOptions, build_statement_plan_with_options};
 use gleaph_graph_kernel::plan_exec::{
-    GqlExecutionMode as KernelGqlExecutionMode, LabelTelemetryEventWire, LabelUsageDelta,
-    MutationId, SeedBindingsWire,
+    GqlExecutionMode as KernelGqlExecutionMode, LabelStatsDelta, MutationId, SeedBindingsWire,
+    ShardEventSeq,
 };
 use gleaph_graph_prepared::PreparedQueryRecord;
 use ic_stable_lara::VertexId;
@@ -117,14 +117,14 @@ struct TransactionBlockRun {
     last_query_rows: PlanQueryResult,
     last_read_row_count: usize,
     last_read_plan_rows: Vec<PlanQueryRow>,
-    label_usage_delta: LabelUsageDelta,
-    label_telemetry_events: Vec<LabelTelemetryEventWire>,
+    label_stats_delta: LabelStatsDelta,
+    emitted_delta_first_seq: Option<ShardEventSeq>,
+    emitted_delta_last_seq: Option<ShardEventSeq>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WirePlanRunResult {
     pub row_count: usize,
-    pub label_telemetry_events: Vec<LabelTelemetryEventWire>,
     pub rows_blob: Option<Vec<u8>>,
 }
 
@@ -140,7 +140,18 @@ fn trap_wire_mutation_failure(error: crate::plan::PlanMutationError) -> ! {
     }
 }
 
-fn merge_label_usage_delta(target: &mut LabelUsageDelta, source: LabelUsageDelta) {
+fn extend_delta_seq_range(
+    first: &mut Option<ShardEventSeq>,
+    last: &mut Option<ShardEventSeq>,
+    seq: ShardEventSeq,
+) {
+    if first.is_none() {
+        *first = Some(seq);
+    }
+    *last = Some(seq);
+}
+
+fn merge_label_stats_delta(target: &mut LabelStatsDelta, source: LabelStatsDelta) {
     for (label, delta) in source.vertex {
         merge_delta(&mut target.vertex, label, delta);
     }
@@ -179,7 +190,7 @@ async fn run_transaction_block(
     let mut last_query_rows = PlanQueryResult::default();
     let mut last_read_row_count: usize = 0;
     let mut last_read_plan_rows: Vec<PlanQueryRow> = Vec::new();
-    let mut label_usage_delta = LabelUsageDelta::default();
+    let mut label_stats_delta = LabelStatsDelta::default();
     for stmt in block.iter_statements() {
         if matches!(stmt, Statement::Session(_)) {
             continue;
@@ -187,7 +198,7 @@ async fn run_transaction_block(
         let plan = plan_statement(stmt).map_err(|e| GqlRunError::Plan(e.to_string()))?;
         if plan.has_dml() {
             let mutation = execute_plan_mutations_async(store, &plan, execution.clone()).await?;
-            merge_label_usage_delta(&mut label_usage_delta, mutation.label_usage_delta);
+            merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
             pending::flush_pending(index).await?;
             crate::index::edge_pending::flush_pending(index).await?;
             label_pending::flush_pending(index).await?;
@@ -227,8 +238,9 @@ async fn run_transaction_block(
         last_query_rows,
         last_read_row_count,
         last_read_plan_rows,
-        label_usage_delta,
-        label_telemetry_events: Vec::new(),
+        label_stats_delta,
+        emitted_delta_first_seq: None,
+        emitted_delta_last_seq: None,
     })
 }
 
@@ -475,19 +487,20 @@ async fn run_wire_plans_inner(
     mutation_id: Option<MutationId>,
 ) -> Result<TransactionBlockRun, GqlRunError> {
     if let Some(mutation_id) = mutation_id
-        && let Some(applied) = store.applied_mutation_request(mutation_id)
+        && let Some(journal) = store.mutation_journal_entry(mutation_id)
     {
-        if applied.completed {
+        if journal.is_completed() {
             return Ok(TransactionBlockRun {
                 last_query_rows: PlanQueryResult::default(),
-                last_read_row_count: applied.row_count as usize,
+                last_read_row_count: journal.row_count as usize,
                 last_read_plan_rows: Vec::new(),
-                label_usage_delta: LabelUsageDelta::default(),
-                label_telemetry_events: applied.label_telemetry_events,
+                label_stats_delta: LabelStatsDelta::default(),
+                emitted_delta_first_seq: journal.emitted_delta_first_seq,
+                emitted_delta_last_seq: journal.emitted_delta_last_seq,
             });
         }
         return Err(GqlRunError::Plan(format!(
-            "mutation {mutation_id} was already applied locally but did not complete; replay pending label telemetry instead"
+            "mutation {mutation_id} was already applied locally but did not complete; advance label stats projection instead"
         )));
     }
 
@@ -514,8 +527,9 @@ async fn run_wire_plans_inner(
     let mut last_query_rows = PlanQueryResult::default();
     let mut last_read_row_count: usize = 0;
     let mut last_read_plan_rows: Vec<PlanQueryRow> = Vec::new();
-    let mut label_usage_delta = LabelUsageDelta::default();
-    let mut label_telemetry_events = Vec::new();
+    let mut label_stats_delta = LabelStatsDelta::default();
+    let mut emitted_delta_first_seq = None;
+    let mut emitted_delta_last_seq = None;
 
     let (mut seed_rows, mut skip_index) = if let Some(ref s) = seeds {
         seed_initial_rows(store, s)?
@@ -530,26 +544,31 @@ async fn run_wire_plans_inner(
                 Ok(mutation) => mutation,
                 Err(error) => trap_wire_mutation_failure(error),
             };
-            let has_delta = !mutation.label_usage_delta.vertex.is_empty()
-                || !mutation.label_usage_delta.edge.is_empty();
+            let has_delta = !mutation.label_stats_delta.vertex.is_empty()
+                || !mutation.label_stats_delta.edge.is_empty();
             if let Some(mutation_id) = mutation_id
                 && has_delta
             {
                 let event = store
-                    .commit_persist_label_telemetry_event(
+                    .commit_append_label_stats_delta(
                         mutation_id,
-                        mutation.label_usage_delta.clone(),
+                        mutation.label_stats_delta.clone(),
                     )
                     .map_err(GqlRunError::Plan)?;
-                label_telemetry_events.push(event);
-            }
-            if let Some(mutation_id) = mutation_id {
-                store.commit_record_incomplete_mutation_request(
-                    mutation_id,
-                    label_telemetry_events.clone(),
+                extend_delta_seq_range(
+                    &mut emitted_delta_first_seq,
+                    &mut emitted_delta_last_seq,
+                    event.shard_event_seq,
                 );
             }
-            merge_label_usage_delta(&mut label_usage_delta, mutation.label_usage_delta);
+            if let Some(mutation_id) = mutation_id {
+                store.commit_record_incomplete_mutation_journal(
+                    mutation_id,
+                    emitted_delta_first_seq,
+                    emitted_delta_last_seq,
+                );
+            }
+            merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
             pending::flush_pending(index).await?;
             crate::index::edge_pending::flush_pending(index).await?;
             label_pending::flush_pending(index).await?;
@@ -610,8 +629,9 @@ async fn run_wire_plans_inner(
         last_query_rows,
         last_read_row_count,
         last_read_plan_rows,
-        label_usage_delta,
-        label_telemetry_events,
+        label_stats_delta,
+        emitted_delta_first_seq,
+        emitted_delta_last_seq,
     })
 }
 
@@ -665,10 +685,11 @@ pub async fn run_wire_plans_last_read_row_count(
     )
     .await?;
     if let Some(mutation_id) = mutation_id {
-        store.commit_record_completed_mutation_request(
+        store.commit_record_completed_mutation_journal(
             mutation_id,
             run.last_read_row_count as u64,
-            run.label_telemetry_events.clone(),
+            run.emitted_delta_first_seq,
+            run.emitted_delta_last_seq,
         );
     }
     let rows_blob = if mode == GqlCanisterExecutionMode::CompositeQuery {
@@ -684,7 +705,6 @@ pub async fn run_wire_plans_last_read_row_count(
     };
     Ok(WirePlanRunResult {
         row_count: run.last_read_row_count,
-        label_telemetry_events: run.label_telemetry_events,
         rows_blob,
     })
 }
@@ -854,7 +874,7 @@ mod tests {
     }
 
     #[test]
-    fn wire_update_persists_label_telemetry_event_and_dedupes_retry() {
+    fn wire_update_persists_label_stats_delta_and_dedupes_retry() {
         let store = GraphStore::new();
         let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
             variable: Some("n".into()),
@@ -864,7 +884,7 @@ mod tests {
         let blob = encode_block_plans(&[plan], true).expect("encode plan");
         let params = BTreeMap::new();
 
-        let first = pollster::block_on(run_wire_plan_last_read_row_count(
+        pollster::block_on(run_wire_plan_last_read_row_count(
             store,
             &blob,
             &params,
@@ -876,18 +896,28 @@ mod tests {
         ))
         .expect("first wire update");
 
-        assert_eq!(first.label_telemetry_events.len(), 1);
-        let event = &first.label_telemetry_events[0];
-        assert_eq!(event.mutation_id, 42);
+        let journal = store
+            .get_mutation_journal_entry(42)
+            .expect("journal entry after first update");
+        assert!(journal.emitted_delta_first_seq.is_some());
         assert_eq!(
-            event.label_usage_delta.vertex,
+            journal.emitted_delta_first_seq,
+            journal.emitted_delta_last_seq
+        );
+        let delta = store
+            .pending_label_stats_deltas(journal.emitted_delta_first_seq.unwrap(), 10)
+            .pop()
+            .expect("pending delta");
+        assert_eq!(delta.mutation_id, 42);
+        assert_eq!(
+            delta.label_stats_delta.vertex,
             vec![(
                 crate::test_labels::vertex_label_id_for_name("WireTelemetryPerson"),
                 1
             )]
         );
 
-        let retry = pollster::block_on(run_wire_plan_last_read_row_count(
+        pollster::block_on(run_wire_plan_last_read_row_count(
             store,
             &blob,
             &params,
@@ -898,7 +928,7 @@ mod tests {
             Some(42),
         ))
         .expect("retry wire update");
-        assert_eq!(retry.label_telemetry_events, first.label_telemetry_events);
+        assert_eq!(store.get_mutation_journal_entry(42), Some(journal.clone()));
 
         let q = pollster::block_on(run_adhoc_gql(
             store,

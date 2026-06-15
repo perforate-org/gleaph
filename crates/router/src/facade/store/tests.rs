@@ -1,4 +1,4 @@
-use super::super::stable::label_telemetry::{
+use super::super::stable::label_stats::{
     ClientMutationKey, LabelStats, RouterMutationRecord, RouterMutationShard,
 };
 use super::*;
@@ -16,7 +16,7 @@ use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
 use gleaph_graph_kernel::federation::PhysicalVertexLocation;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
-    LabelTelemetryEventWire, LabelUsageDelta, ResolvedLabelTable, ResolvedPropertyTable,
+    LabelStatsDelta, LabelStatsDeltaEventWire, ResolvedLabelTable, ResolvedPropertyTable,
 };
 use std::collections::BTreeSet;
 
@@ -375,7 +375,7 @@ fn resolve_plan_attaches_edge_payload_profile() {
 }
 
 #[test]
-fn label_usage_delta_updates_namespace_separated_stats() {
+fn label_stats_delta_updates_namespace_separated_stats() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
@@ -388,9 +388,9 @@ fn label_usage_delta_updates_namespace_separated_stats() {
         .admin_intern_edge_label(admin, "Person")
         .expect("edge label");
 
-    store.apply_label_usage_delta(
+    store.apply_label_stats_delta_payload(
         ShardId::new(0),
-        &LabelUsageDelta {
+        &LabelStatsDelta {
             vertex: vec![(vertex_label, 2)],
             edge: vec![(edge_label, 3)],
         },
@@ -421,9 +421,9 @@ fn label_usage_delta_updates_namespace_separated_stats() {
         3
     );
 
-    store.apply_label_usage_delta(
+    store.apply_label_stats_delta_payload(
         ShardId::new(0),
-        &LabelUsageDelta {
+        &LabelStatsDelta {
             vertex: vec![(vertex_label, -1)],
             edge: vec![(edge_label, -2)],
         },
@@ -456,7 +456,7 @@ fn label_usage_delta_updates_namespace_separated_stats() {
 }
 
 #[test]
-fn label_usage_delta_tracks_per_shard_live_counts() {
+fn label_stats_delta_tracks_per_shard_live_counts() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
@@ -465,23 +465,23 @@ fn label_usage_delta_tracks_per_shard_live_counts() {
         .admin_intern_vertex_label(admin, "Person")
         .expect("vertex label");
 
-    store.apply_label_usage_delta(
+    store.apply_label_stats_delta_payload(
         ShardId::new(0),
-        &LabelUsageDelta {
+        &LabelStatsDelta {
             vertex: vec![(label, 2)],
             edge: vec![],
         },
     );
-    store.apply_label_usage_delta(
+    store.apply_label_stats_delta_payload(
         ShardId::new(1),
-        &LabelUsageDelta {
+        &LabelStatsDelta {
             vertex: vec![(label, 1)],
             edge: vec![],
         },
     );
-    store.apply_label_usage_delta(
+    store.apply_label_stats_delta_payload(
         ShardId::new(0),
-        &LabelUsageDelta {
+        &LabelStatsDelta {
             vertex: vec![(label, -1)],
             edge: vec![],
         },
@@ -506,7 +506,7 @@ fn label_usage_delta_tracks_per_shard_live_counts() {
 }
 
 #[test]
-fn label_telemetry_event_applies_once_by_shard_event_seq() {
+fn label_stats_projection_applies_delta_once_per_seq() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
@@ -514,17 +514,32 @@ fn label_telemetry_event_applies_once_by_shard_event_seq() {
     let label = store
         .admin_intern_vertex_label(admin, "Person")
         .expect("vertex label");
-    let event = LabelTelemetryEventWire {
+    let shard_id = ShardId::new(0);
+    let graph = graph_principal(1);
+    let deltas = vec![LabelStatsDeltaEventWire {
         mutation_id: 1,
-        shard_event_seq: 99,
-        label_usage_delta: LabelUsageDelta {
+        shard_event_seq: 1,
+        label_stats_delta: LabelStatsDelta {
             vertex: vec![(label, 2)],
             edge: vec![],
         },
-    };
+    }];
 
-    assert!(store.apply_label_telemetry_event(ShardId::new(0), &event));
-    assert!(!store.apply_label_telemetry_event(ShardId::new(0), &event));
+    futures::executor::block_on(store.advance_label_stats_projection(
+        graph,
+        shard_id,
+        10,
+        |_graph, from_seq, _limit| {
+            assert_eq!(from_seq, 1);
+            async { Ok(deltas.clone()) }
+        },
+        |_graph, through_seq| {
+            assert_eq!(through_seq, 1);
+            async { Ok(()) }
+        },
+    ))
+    .expect("first advance");
+
     assert_eq!(
         store.vertex_label_stats(label),
         LabelStats {
@@ -534,7 +549,42 @@ fn label_telemetry_event_applies_once_by_shard_event_seq() {
         }
     );
 
-    assert!(store.apply_label_telemetry_event(ShardId::new(1), &event));
+    futures::executor::block_on(store.advance_label_stats_projection(
+        graph,
+        shard_id,
+        10,
+        |_graph, from_seq, _limit| {
+            assert_eq!(from_seq, 2);
+            async { Ok(Vec::new()) }
+        },
+        |_graph, _through_seq| async { Ok(()) },
+    ))
+    .expect("second advance");
+
+    assert_eq!(
+        store.vertex_label_stats(label),
+        LabelStats {
+            live_count: 2,
+            total_adds: 2,
+            total_removes: 0
+        }
+    );
+
+    futures::executor::block_on(store.advance_label_stats_projection(
+        graph,
+        ShardId::new(1),
+        10,
+        |_graph, from_seq, _limit| {
+            assert_eq!(from_seq, 1);
+            async { Ok(deltas) }
+        },
+        |_graph, through_seq| {
+            assert_eq!(through_seq, 1);
+            async { Ok(()) }
+        },
+    ))
+    .expect("other shard advance");
+
     assert_eq!(
         store.vertex_label_stats(label),
         LabelStats {
@@ -849,17 +899,16 @@ fn router_mutation_journal_tracks_shard_completion() {
             "client-key-1",
             ShardId::new(0),
             2,
-            Vec::new(),
         )
         .expect("complete shard 0");
     store
-        .record_router_mutation_shard_telemetry_acked(
+        .record_router_mutation_shard_projection_advanced(
             caller,
             tenant_main_graph_id(),
             "client-key-1",
             ShardId::new(0),
         )
-        .expect("ack shard 0");
+        .expect("advance projection shard 0");
     assert_eq!(
         store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
         None
@@ -872,17 +921,16 @@ fn router_mutation_journal_tracks_shard_completion() {
             "client-key-1",
             ShardId::new(1),
             3,
-            Vec::new(),
         )
         .expect("complete shard 1");
     store
-        .record_router_mutation_shard_telemetry_acked(
+        .record_router_mutation_shard_projection_advanced(
             caller,
             tenant_main_graph_id(),
             "client-key-1",
             ShardId::new(1),
         )
-        .expect("ack shard 1");
+        .expect("advance projection shard 1");
     assert_eq!(
         store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
         Some(5)

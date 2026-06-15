@@ -7,7 +7,7 @@ use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, RemovePlanItem, SetPlanItem, Str};
 use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
-use gleaph_graph_kernel::plan_exec::LabelUsageDelta;
+use gleaph_graph_kernel::plan_exec::LabelStatsDelta;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::OutEdgeOrder;
 use ic_stable_lara::traits::CsrEdge;
@@ -33,16 +33,16 @@ pub async fn execute_plan_mutations_async(
 pub struct PlanMutationBindings {
     pub vertices: BTreeMap<String, VertexId>,
     pub edges: BTreeMap<String, EdgeHandle>,
-    pub label_usage_delta: LabelUsageDelta,
+    pub label_stats_delta: LabelStatsDelta,
 }
 
 impl PlanMutationBindings {
     fn add_vertex_label_delta(&mut self, label: VertexLabelId, delta: i64) {
-        add_label_delta(&mut self.label_usage_delta.vertex, label, delta);
+        add_label_delta(&mut self.label_stats_delta.vertex, label, delta);
     }
 
     fn add_edge_label_delta(&mut self, label: EdgeLabelId, delta: i64) {
-        add_label_delta(&mut self.label_usage_delta.edge, label, delta);
+        add_label_delta(&mut self.label_stats_delta.edge, label, delta);
     }
 }
 
@@ -1173,7 +1173,7 @@ mod tests {
     }
 
     #[test]
-    fn label_usage_delta_tracks_vertex_and_edge_inserts() {
+    fn label_stats_delta_tracks_vertex_and_edge_inserts() {
         let store = GraphStore::new();
         let plan = PhysicalPlan {
             ops: vec![
@@ -1205,14 +1205,14 @@ mod tests {
             .execute_plan_mutations(&plan, GqlExecutionContext::default())
             .expect("execute insert telemetry plan");
         assert_eq!(
-            bindings.label_usage_delta.vertex,
+            bindings.label_stats_delta.vertex,
             vec![(
                 crate::test_labels::vertex_label_id_for_name("TelemetryPerson"),
                 2
             )]
         );
         assert_eq!(
-            bindings.label_usage_delta.edge,
+            bindings.label_stats_delta.edge,
             vec![(
                 crate::test_labels::edge_label_id_for_name("TelemetryRel"),
                 1
@@ -1221,7 +1221,7 @@ mod tests {
     }
 
     #[test]
-    fn label_usage_delta_tracks_set_remove_and_noops() {
+    fn label_stats_delta_tracks_set_remove_and_noops() {
         let store = GraphStore::new();
         let vertex_id = store
             .insert_vertex_named(["TelemetryBase"], Vec::<(&str, Value)>::new())
@@ -1264,7 +1264,7 @@ mod tests {
         )
         .expect("execute set/remove telemetry ops");
         assert_eq!(
-            bindings.label_usage_delta.vertex,
+            bindings.label_stats_delta.vertex,
             vec![
                 (
                     crate::test_labels::vertex_label_id_for_name("TelemetryAdded"),
@@ -1276,11 +1276,11 @@ mod tests {
                 ),
             ]
         );
-        assert!(bindings.label_usage_delta.edge.is_empty());
+        assert!(bindings.label_stats_delta.edge.is_empty());
     }
 
     #[test]
-    fn label_usage_delta_tracks_delete_edge() {
+    fn label_stats_delta_tracks_delete_edge() {
         let store = GraphStore::new();
         let a = store
             .insert_vertex_named(["TelemetryDeleteA"], Vec::<(&str, Value)>::new())
@@ -1310,7 +1310,7 @@ mod tests {
         )
         .expect("delete edge telemetry");
         assert_eq!(
-            bindings.label_usage_delta.edge,
+            bindings.label_stats_delta.edge,
             vec![(
                 crate::test_labels::edge_label_id_for_name("TelemetryDeleteRel"),
                 -1
@@ -1319,7 +1319,7 @@ mod tests {
     }
 
     #[test]
-    fn label_usage_delta_tracks_detach_delete_vertex_and_incident_edges() {
+    fn label_stats_delta_tracks_detach_delete_vertex_and_incident_edges() {
         let store = GraphStore::new();
         let a = store
             .insert_vertex_named(["TelemetryDetachA"], Vec::<(&str, Value)>::new())
@@ -1349,14 +1349,14 @@ mod tests {
         )
         .expect("detach delete telemetry");
         assert_eq!(
-            bindings.label_usage_delta.vertex,
+            bindings.label_stats_delta.vertex,
             vec![(
                 crate::test_labels::vertex_label_id_for_name("TelemetryDetachA"),
                 -1
             )]
         );
         assert_eq!(
-            bindings.label_usage_delta.edge,
+            bindings.label_stats_delta.edge,
             vec![(
                 crate::test_labels::edge_label_id_for_name("TelemetryDetachRel"),
                 -1
@@ -1365,7 +1365,7 @@ mod tests {
     }
 
     #[test]
-    fn label_usage_delta_collects_all_incident_edges_before_detach_delete() {
+    fn label_stats_delta_collects_all_incident_edges_before_detach_delete() {
         let store = GraphStore::new();
         let a = store
             .insert_vertex_named(["TelemetryDetachCollectA"], Vec::<(&str, Value)>::new())
@@ -1403,14 +1403,14 @@ mod tests {
             .expect("collect detach delete telemetry");
 
         assert_eq!(
-            bindings.label_usage_delta.vertex,
+            bindings.label_stats_delta.vertex,
             vec![(
                 crate::test_labels::vertex_label_id_for_name("TelemetryDetachCollectA"),
                 -1
             )]
         );
         assert_eq!(
-            bindings.label_usage_delta.edge,
+            bindings.label_stats_delta.edge,
             vec![(
                 crate::test_labels::edge_label_id_for_name("TelemetryDetachCollectRel"),
                 -3

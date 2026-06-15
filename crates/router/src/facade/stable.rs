@@ -8,7 +8,7 @@ pub(crate) mod graph_type_catalog;
 pub(crate) mod graph_type_name_catalog;
 pub(crate) mod index_name_catalog;
 pub(crate) mod indexed_catalog;
-pub(crate) mod label_telemetry;
+pub(crate) mod label_stats;
 pub(crate) mod layout;
 pub(crate) mod memory;
 pub(crate) mod prepared_catalog;
@@ -60,8 +60,8 @@ thread_local! {
     pub(crate) static ROUTER_MUTATION_COUNTER: RefCell<memory::StableMutationCounter> =
         RefCell::new(memory::init_mutation_counter());
 
-    pub(crate) static ROUTER_APPLIED_LABEL_TELEMETRY: RefCell<memory::StableAppliedLabelTelemetrySet> =
-        RefCell::new(memory::init_applied_label_telemetry());
+    pub(crate) static ROUTER_LABEL_STATS_PROJECTION: RefCell<memory::StableLabelStatsProjectionMap> =
+        RefCell::new(memory::init_label_stats_projection());
 
     pub(crate) static ROUTER_MUTATION_BY_CLIENT_KEY: RefCell<memory::StableMutationByClientKey> =
         RefCell::new(memory::init_mutation_by_client_key());

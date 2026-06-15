@@ -1005,7 +1005,10 @@ ORDER BY edge_id";
 pub fn seed_knowledge_map_graph(env: &FederationEnv) {
     let parsed: serde_json::Value =
         serde_json::from_str(KNOWLEDGE_MAP_SEEDS_JSON).expect("parse knowledge-map seeds");
-    for seed in parsed["seeds"].as_array().expect("knowledge-map seed array") {
+    for seed in parsed["seeds"]
+        .as_array()
+        .expect("knowledge-map seed array")
+    {
         let gql = seed["gql"].as_str().expect("knowledge-map seed gql");
         let key = seed["key"].as_str().expect("knowledge-map seed key");
         let row_count = gql_execute_idempotent_as_admin(env, gql, key);

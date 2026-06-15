@@ -23,7 +23,7 @@ mod index_route;
 mod index_sync;
 pub mod init;
 mod label_backfill;
-mod label_telemetry_replay;
+mod label_stats_projection;
 #[cfg_attr(
     not(target_family = "wasm"),
     expect(
@@ -307,12 +307,12 @@ fn admin_list_property_backfill_status(
     canister::admin_list_property_backfill_status(logical_graph_name)
 }
 
-/// Drain pending label telemetry events from one graph shard (controller-only; call in a loop).
+/// Advance label stats projection for one graph shard (controller-only; call in a loop).
 #[update]
-async fn admin_label_telemetry_replay_step(
-    args: types::AdminLabelTelemetryReplayStepArgs,
-) -> Result<types::AdminLabelTelemetryReplayStepResult, RouterError> {
-    canister::admin_label_telemetry_replay_step(args).await
+async fn admin_label_stats_projection_step(
+    args: types::AdminLabelStatsProjectionStepArgs,
+) -> Result<types::AdminLabelStatsProjectionStepResult, RouterError> {
+    canister::admin_label_stats_projection_step(args).await
 }
 
 ic_cdk::export_candid!();

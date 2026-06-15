@@ -102,16 +102,15 @@ needs explicit ids for `:L1:L2:…` (`IndexAnchor::LabelIntersection` from `Node
 graph-index for pre-existing data. Router orchestrates per-shard cursors via
 `admin_label_backfill_step` / `admin_list_label_backfill_status` (controller-only).
 
-**Telemetry replay:** Graph shards persist unacked `LabelUsageDelta` events in
-`LABEL_TELEMETRY_OUTBOX`. Router aggregates land in `ROUTER_VERTEX_LABEL_STATS`,
-`ROUTER_EDGE_LABEL_STATS`, and per-shard live maps; `ROUTER_APPLIED_LABEL_TELEMETRY`
-dedupes by `(shard_id, shard_event_seq)`. Normal DML applies events inline and acks
-the outbox. After router downtime or partial apply, drain pending events per shard via
-`admin_label_telemetry_replay_step` (controller-only; call in a loop until `done`).
-Already-applied events are acked without changing aggregates. There is no full historical
-rebuild from vertex label scans — replay depends on the graph outbox retaining pending events.
-ADR 0015 proposes replacing this telemetry-centered mechanism with an explicit label stats
-projection log, graph mutation journal, and per-shard router projection cursor.
+**Label stats projection:** Graph shards persist unacked `LabelStatsDelta` events in
+`LABEL_STATS_DELTA_LOG` (seq in `LABEL_STATS_DELTA_SEQ`). Router aggregates land in
+`ROUTER_VERTEX_LABEL_STATS`, `ROUTER_EDGE_LABEL_STATS`, and per-shard live maps;
+`ROUTER_LABEL_STATS_PROJECTION` records the per-shard applied-through seq. Normal DML applies
+deltas inline via `advance_label_stats_projection` and acks the graph log. After router downtime
+or partial apply, drain pending deltas per shard via `admin_label_stats_projection_step`
+(controller-only; call in a loop until `done`). Already-applied seqs are skipped by cursor
+advance without changing aggregates. There is no full historical rebuild from vertex label scans —
+replay depends on the graph delta log retaining pending events. See [ADR 0015](../adr/0015-label-stats-projection-log.md).
 
 **Compound read seeds:** `MATCH (n:L) WHERE n.p = v RETURN n` uses `SeedAnchorSet` to
 intersect label and property index hits before per-shard `seed_bindings_blob` dispatch

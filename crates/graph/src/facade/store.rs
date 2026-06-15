@@ -12,7 +12,7 @@
 //! - **vertex delete** — `vertex_delete` (sidecar clear and detach delete commit)
 //! - **edge profiles** — `edge_profiles` (profile install/update commits), `edge_payload` (public update API)
 //! - **local indexes** — `local_indexes` (alias and equality posting commits), `edge_alias` (lookup)
-//! - **telemetry** — `telemetry`
+//! - **label stats projection** — `label_stats_delta`
 //! - **sidecars** — `sidecar` (coordinates property and local-index derived state)
 //! - **maintenance** — `maintenance`
 
@@ -28,6 +28,7 @@ mod edge_scan;
 mod error;
 mod handle;
 pub(crate) mod helpers;
+mod label_stats_delta;
 mod labels;
 mod local_indexes;
 mod lookup;
@@ -35,7 +36,6 @@ mod maintenance;
 mod metadata;
 mod properties;
 mod sidecar;
-mod telemetry;
 #[cfg(test)]
 mod tests;
 mod vertex;

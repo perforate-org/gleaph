@@ -15,12 +15,13 @@ use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, PostingHit, ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelTelemetryEventWire, MutationId,
+    ExecutePlanResult, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire, MutationId,
+    MutationJournalState, ShardEventSeq,
 };
 use ic_cdk::api::msg_caller;
 
 use crate::execution_path::check_adhoc_execution_path;
-use crate::facade::stable::label_telemetry::RouterMutationShard;
+use crate::facade::stable::label_stats::RouterMutationShard;
 use crate::facade::store::RouterStore;
 use crate::federation::{
     AggregateIndexFastPath, FederatedMergeMode, SeedHits, ShardDispatch, ShardingPolicy,
@@ -34,8 +35,8 @@ use crate::federation::{
     try_label_count_telemetry_fast_path, vertex_label_live_count,
 };
 use crate::graph_client::{
-    ack_label_telemetry_event, execute_plan_on_graph, get_mutation_outcome,
-    list_pending_label_telemetry_events,
+    ack_label_stats_deltas_through, execute_plan_on_graph, get_mutation_journal_entry,
+    list_pending_label_stats_deltas,
 };
 use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
@@ -618,7 +619,6 @@ async fn dispatch_multi_graph_use_segments(
             &mut merged,
             ExecutePlanResult {
                 row_count: result.row_count,
-                label_telemetry_events: Vec::new(),
                 rows_blob: result.rows_blob,
             },
             FederatedMergeMode::UnionRows,
@@ -795,7 +795,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
             return Ok(GqlQueryResult::row_count_only(row_count));
         }
-        reconcile_router_mutation_telemetry(store, caller, graph_id, key).await?;
+        reconcile_router_mutation_projection(store, caller, graph_id, key).await?;
         if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
             return Ok(GqlQueryResult::row_count_only(row_count));
         }
@@ -993,21 +993,19 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             Ok(result) => result,
             Err(err) => {
                 if let Some(mutation_id) = mutation_id
-                    && let Some(outcome) = recover_mutation_outcome(
+                    && let Some(entry) = recover_mutation_outcome(
                         store,
                         dispatch.graph_canister,
                         dispatch.shard_id,
                         mutation_id,
                     )
                     .await?
-                    && outcome.completed
+                    && matches!(entry.state, MutationJournalState::Completed)
                 {
-                    let events = outcome.label_telemetry_events.clone();
                     merge_execute_plan_result(
                         &mut merged,
                         gleaph_graph_kernel::plan_exec::ExecutePlanResult {
-                            row_count: outcome.row_count,
-                            label_telemetry_events: events.clone(),
+                            row_count: entry.row_count,
                             rows_blob: None,
                         },
                         merge_mode.clone(),
@@ -1019,10 +1017,9 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                             graph_id,
                             key,
                             dispatch.shard_id,
-                            outcome.row_count,
-                            events,
+                            entry.row_count,
                         )?;
-                        store.record_router_mutation_shard_telemetry_acked(
+                        store.record_router_mutation_shard_projection_advanced(
                             caller,
                             graph_id,
                             key,
@@ -1034,15 +1031,15 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 return Err(RouterError::InvalidArgument(err));
             }
         };
-        let telemetry_events = result.label_telemetry_events.clone();
-        let telemetry_acked = apply_and_ack_label_telemetry_events(
-            store,
-            dispatch.graph_canister,
-            dispatch.shard_id,
-            mutation_id,
-            &telemetry_events,
-        )
-        .await?;
+        if let Some(mutation_id) = mutation_id {
+            advance_mutation_label_stats_projection(
+                store,
+                dispatch.graph_canister,
+                dispatch.shard_id,
+                mutation_id,
+            )
+            .await?;
+        }
         if let Some(key) = client_mutation_key {
             store.record_router_mutation_shard_completed(
                 caller,
@@ -1050,16 +1047,13 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 key,
                 dispatch.shard_id,
                 result.row_count,
-                telemetry_events,
             )?;
-            if telemetry_acked {
-                store.record_router_mutation_shard_telemetry_acked(
-                    caller,
-                    graph_id,
-                    key,
-                    dispatch.shard_id,
-                )?;
-            }
+            store.record_router_mutation_shard_projection_advanced(
+                caller,
+                graph_id,
+                key,
+                dispatch.shard_id,
+            )?;
         }
         merge_execute_plan_result(&mut merged, result, merge_mode.clone())
             .map_err(RouterError::InvalidArgument)?;
@@ -1104,47 +1098,40 @@ fn request_fingerprint(plan_blob: &[u8], params: &[u8], mode: GqlExecutionMode) 
     out
 }
 
-async fn apply_dispatch_label_telemetry_event(
+const LABEL_STATS_PROJECTION_BATCH_LIMIT: u32 = 1_000;
+
+async fn advance_label_stats_projection_through(
     store: &RouterStore,
     graph_canister: Principal,
     shard_id: ShardId,
-    expected_mutation_id: Option<MutationId>,
-    event: &LabelTelemetryEventWire,
-) -> Result<bool, RouterError> {
-    if Some(event.mutation_id) != expected_mutation_id {
-        return Err(RouterError::InvalidArgument(format!(
-            "graph shard {shard_id} returned label telemetry event for mutation_id {}, expected {:?}",
-            event.mutation_id, expected_mutation_id
-        )));
+    target_seq: Option<ShardEventSeq>,
+) -> Result<(), RouterError> {
+    let Some(target) = target_seq else {
+        return Ok(());
+    };
+    loop {
+        let cursor = store.label_stats_projection_cursor(shard_id);
+        if cursor >= target {
+            return Ok(());
+        }
+        let result = store
+            .advance_label_stats_projection(
+                graph_canister,
+                shard_id,
+                LABEL_STATS_PROJECTION_BATCH_LIMIT,
+                list_pending_label_stats_deltas,
+                ack_label_stats_deltas_through,
+            )
+            .await?;
+        if result.deltas_applied == 0 {
+            return Err(RouterError::InvalidArgument(format!(
+                "label stats projection lag for shard {shard_id}: cursor {cursor}, need {target}"
+            )));
+        }
     }
-    let _ = store.apply_label_telemetry_event(shard_id, event);
-    ack_label_telemetry_event(graph_canister, event.shard_event_seq)
-        .await
-        .map_err(RouterError::InvalidArgument)?;
-    Ok(true)
 }
 
-async fn apply_and_ack_label_telemetry_events(
-    store: &RouterStore,
-    graph_canister: Principal,
-    shard_id: ShardId,
-    expected_mutation_id: Option<MutationId>,
-    events: &[LabelTelemetryEventWire],
-) -> Result<bool, RouterError> {
-    for event in events {
-        apply_dispatch_label_telemetry_event(
-            store,
-            graph_canister,
-            shard_id,
-            expected_mutation_id,
-            event,
-        )
-        .await?;
-    }
-    Ok(true)
-}
-
-async fn reconcile_router_mutation_telemetry(
+async fn reconcile_router_mutation_projection(
     store: &RouterStore,
     caller: Principal,
     graph_id: GraphId,
@@ -1156,17 +1143,28 @@ async fn reconcile_router_mutation_telemetry(
     for shard in record
         .shards
         .iter()
-        .filter(|shard| shard.completed && !shard.telemetry_acked)
+        .filter(|shard| shard.completed && !shard.projection_advanced)
     {
-        apply_and_ack_label_telemetry_events(
+        let Some(entry) = recover_mutation_outcome(
             store,
             shard.graph_canister,
             shard.shard_id,
-            Some(record.mutation_id),
-            &shard.label_telemetry_events,
+            record.mutation_id,
         )
-        .await?;
-        store.record_router_mutation_shard_telemetry_acked(
+        .await?
+        else {
+            return Err(RouterError::InvalidArgument(format!(
+                "mutation {} completed on router shard {} but graph journal is unavailable",
+                record.mutation_id, shard.shard_id
+            )));
+        };
+        if !matches!(entry.state, MutationJournalState::Completed) {
+            return Err(RouterError::InvalidArgument(format!(
+                "mutation {} completed on router shard {} but graph journal is not completed",
+                record.mutation_id, shard.shard_id
+            )));
+        }
+        store.record_router_mutation_shard_projection_advanced(
             caller,
             graph_id,
             client_key,
@@ -1176,68 +1174,58 @@ async fn reconcile_router_mutation_telemetry(
     Ok(())
 }
 
+async fn advance_mutation_label_stats_projection(
+    store: &RouterStore,
+    graph_canister: Principal,
+    shard_id: ShardId,
+    mutation_id: MutationId,
+) -> Result<GraphMutationJournalEntryWire, RouterError> {
+    let Some(entry) = get_mutation_journal_entry(graph_canister, mutation_id)
+        .await
+        .map_err(RouterError::InvalidArgument)?
+    else {
+        return Err(RouterError::InvalidArgument(format!(
+            "graph shard {shard_id} did not persist mutation journal entry for mutation {mutation_id}"
+        )));
+    };
+    if !matches!(entry.state, MutationJournalState::Completed) {
+        return Err(RouterError::InvalidArgument(format!(
+            "graph shard {shard_id} mutation {mutation_id} did not complete"
+        )));
+    }
+    advance_label_stats_projection_through(
+        store,
+        graph_canister,
+        shard_id,
+        entry.emitted_delta_last_seq,
+    )
+    .await?;
+    Ok(entry)
+}
+
 async fn recover_mutation_outcome(
     store: &RouterStore,
     graph_canister: Principal,
     shard_id: ShardId,
     mutation_id: MutationId,
-) -> Result<Option<gleaph_graph_kernel::plan_exec::MutationOutcomeWire>, RouterError> {
-    if let Some(outcome) = get_mutation_outcome(graph_canister, mutation_id)
+) -> Result<Option<GraphMutationJournalEntryWire>, RouterError> {
+    let Some(entry) = get_mutation_journal_entry(graph_canister, mutation_id)
         .await
         .map_err(RouterError::InvalidArgument)?
-    {
-        for event in &outcome.label_telemetry_events {
-            let _ = apply_dispatch_label_telemetry_event(
-                store,
-                graph_canister,
-                shard_id,
-                Some(mutation_id),
-                event,
-            )
-            .await?;
-        }
-        return Ok(Some(outcome));
+    else {
+        return Ok(None);
+    };
+    if !matches!(entry.state, MutationJournalState::Completed) {
+        return Ok(None);
     }
-    replay_pending_label_telemetry(store, graph_canister, shard_id, mutation_id).await?;
-    Ok(None)
-}
-
-async fn replay_pending_label_telemetry(
-    store: &RouterStore,
-    graph_canister: Principal,
-    shard_id: ShardId,
-    mutation_id: MutationId,
-) -> Result<(), RouterError> {
-    const PENDING_REPLAY_LIMIT: u32 = 1_000;
-    let mut from_seq = 0;
-    loop {
-        let events =
-            list_pending_label_telemetry_events(graph_canister, from_seq, PENDING_REPLAY_LIMIT)
-                .await
-                .map_err(RouterError::InvalidArgument)?;
-        if events.is_empty() {
-            return Ok(());
-        }
-        for event in events
-            .iter()
-            .filter(|event| event.mutation_id == mutation_id)
-        {
-            let _ = store.apply_label_telemetry_event(shard_id, event);
-            ack_label_telemetry_event(graph_canister, event.shard_event_seq)
-                .await
-                .map_err(RouterError::InvalidArgument)?;
-        }
-        let Some(next_seq) = events
-            .last()
-            .and_then(|event| event.shard_event_seq.checked_add(1))
-        else {
-            return Ok(());
-        };
-        if events.len() < PENDING_REPLAY_LIMIT as usize {
-            return Ok(());
-        }
-        from_seq = next_seq;
-    }
+    advance_label_stats_projection_through(
+        store,
+        graph_canister,
+        shard_id,
+        entry.emitted_delta_last_seq,
+    )
+    .await?;
+    Ok(Some(entry))
 }
 
 #[cfg(test)]
@@ -1262,20 +1250,17 @@ mod tests {
         ValuePostingCount,
     };
     use gleaph_graph_kernel::plan_exec::{
-        ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelTelemetryEventWire,
-        LabelUsageDelta, SeedBindingsWire,
+        ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelStatsDelta,
+        LabelStatsDeltaEventWire, SeedBindingsWire,
     };
 
     use crate::facade::stable::graph_catalog::lookup_graph_id;
-    use crate::facade::stable::label_telemetry::LabelStats;
     use crate::facade::store::RouterStore;
     use crate::federation::{
         collect_label_intersection_hits_for_shards, resolve_seed_routings_multi,
         routings_to_dispatches,
     };
-    use crate::gql::{
-        apply_dispatch_label_telemetry_event, dispatch_plan_blob_with_index, request_fingerprint,
-    };
+    use crate::gql::{dispatch_plan_blob_with_index, request_fingerprint};
     use crate::init::RouterInitArgs;
     use crate::planner_stats::RouterGraphStats;
     use crate::seed::SeedAnchorSet;
@@ -1971,7 +1956,6 @@ mod tests {
         .expect("encode");
         let merged = ExecutePlanResult {
             row_count: 1,
-            label_telemetry_events: Vec::new(),
             rows_blob: Some(rows_blob.clone()),
         };
         let out = GqlQueryResult::from_merged(&merged);
@@ -2383,37 +2367,31 @@ mod tests {
     }
 
     #[test]
-    fn mismatched_label_telemetry_mutation_id_is_rejected_before_apply() {
+    fn label_stats_projection_gap_is_rejected() {
         let store = RouterStore::new();
         store.init_from_args(&RouterInitArgs {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
             controllers: vec![],
         });
-        let admin = Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
-        let label = store
-            .admin_intern_vertex_label(admin, "Person")
-            .expect("label");
-        let event = LabelTelemetryEventWire {
-            mutation_id: 99,
-            shard_event_seq: 1,
-            label_usage_delta: LabelUsageDelta {
-                vertex: vec![(label, 1)],
-                edge: vec![],
-            },
-        };
+        let shard_id = ShardId::new(0);
+        let graph = graph_principal(1);
+        let deltas = vec![LabelStatsDeltaEventWire {
+            mutation_id: 1,
+            shard_event_seq: 2,
+            label_stats_delta: LabelStatsDelta::default(),
+        }];
 
-        let err = futures::executor::block_on(apply_dispatch_label_telemetry_event(
-            &store,
-            graph_principal(1),
-            ShardId::new(0),
-            Some(42),
-            &event,
+        let err = futures::executor::block_on(store.advance_label_stats_projection(
+            graph,
+            shard_id,
+            10,
+            |_graph, _from_seq, _limit| async { Ok(deltas) },
+            |_graph, _through_seq| async { Ok(()) },
         ))
-        .expect_err("mismatched event should fail");
+        .expect_err("gap should fail");
 
         assert!(matches!(err, RouterError::InvalidArgument(_)));
-        assert_eq!(store.vertex_label_stats(label), LabelStats::default());
+        assert_eq!(store.label_stats_projection_cursor(shard_id), 0);
     }
 }

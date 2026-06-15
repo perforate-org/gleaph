@@ -1,9 +1,9 @@
 # 0015. Label stats projection log and graph mutation journal
 
 Date: 2026-06-15  
-Status: proposed  
-Last revised: 2026-06-15  
-Anchor timestamp: 2026-06-15 09:35:20 UTC +0000
+Status: implemented  
+Last revised: 2026-06-15
+Anchor timestamp: 2026-06-15 10:38:29 UTC +0000
 
 ## Context
 
@@ -113,16 +113,37 @@ The missing concept is not a new domain. It is a sharper boundary inside existin
 
 ---
 
+## Implementation policy
+
+This repository is **pre-production**. ADR 0015 is implemented as a **single breaking change**
+with **no backward-compatibility layer**.
+
+| Policy | Requirement |
+|--------|-------------|
+| Stable layout | Repack regions in place; do not retain legacy storable encodings |
+| Wire types | Delete legacy telemetry names; one primary type per concept |
+| Canister APIs | Rename or remove old methods in the same patch; no deprecated wrappers |
+| Router apply paths | One path only: `advance_label_stats_projection` |
+| Local / CI state | Reset graph and router canisters (or wipe stable memory) after deploy |
+| In-flight mutations | Not preserved across the breaking deploy |
+| Phased dual-write | **Rejected** — no temporary coexistence of dedup set and cursor, no alias APIs |
+
+Rationale: a compatibility layer would duplicate projection invariants across old and new paths,
+leave misleading telemetry terminology in production code, and delay the cursor model that is the
+point of this ADR. Pre-production status makes a clean break cheaper than maintaining two models.
+
+---
+
 ## Decision
 
-Replace the telemetry-centered model with an explicit label stats projection model.
+Replace the telemetry-centered model with an explicit label stats projection model in one pass.
 
 ### 1. Rename the durable event stream to label stats deltas
 
-Graph stable regions should represent an ordered projection input stream:
+Graph stable regions represent an ordered projection input stream:
 
-| Current | Target |
-|---------|--------|
+| Remove | Introduce |
+|--------|-----------|
 | `LABEL_TELEMETRY_SEQ` | `LABEL_STATS_DELTA_SEQ` |
 | `LABEL_TELEMETRY_OUTBOX` | `LABEL_STATS_DELTA_LOG` |
 | `LabelTelemetryEventWire` | `LabelStatsDeltaEventWire` |
@@ -131,20 +152,23 @@ Graph stable regions should represent an ordered projection input stream:
 `LABEL_STATS_DELTA_LOG` is an append-only logical stream keyed by shard-local sequence. Physical
 retention may remove events only after the router projection has safely advanced past them.
 
+Memory ids for graph regions 37–39 are **reused** with new storable types. Existing encoded state
+for those regions is invalid after the change.
+
 ### 2. Replace per-event router dedup with per-shard projection cursors
 
-Router should own:
+Router owns:
 
-| Target region | Key | Value | Role |
-|---------------|-----|-------|------|
+| Region | Key | Value | Role |
+|--------|-----|-------|------|
 | `ROUTER_LABEL_STATS_PROJECTION` | `ShardId` | `applied_through_seq` | Cursor for graph shard label stats deltas |
-| `ROUTER_VERTEX_LABEL_STATS` | `VertexLabelId` | aggregate stats | Derived count store |
-| `ROUTER_EDGE_LABEL_STATS` | `EdgeLabelId` | aggregate stats | Derived count store |
-| `ROUTER_VERTEX_LABEL_LIVE_BY_SHARD` | `(ShardId, VertexLabelId)` | live count | Derived per-shard count |
-| `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `(ShardId, EdgeLabelId)` | live count | Derived per-shard count |
+| `ROUTER_VERTEX_LABEL_STATS` | `VertexLabelId` | aggregate stats | Derived count store (unchanged) |
+| `ROUTER_EDGE_LABEL_STATS` | `EdgeLabelId` | aggregate stats | Derived count store (unchanged) |
+| `ROUTER_VERTEX_LABEL_LIVE_BY_SHARD` | `(ShardId, VertexLabelId)` | live count | Derived per-shard count (unchanged) |
+| `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `(ShardId, EdgeLabelId)` | live count | Derived per-shard count (unchanged) |
 
-`ROUTER_APPLIED_LABEL_TELEMETRY` should be retired after migration. The cursor is the durable
-idempotency boundary for ordered replay.
+`ROUTER_APPLIED_LABEL_TELEMETRY` is **deleted**. Memory id 17 is repacked as
+`ROUTER_LABEL_STATS_PROJECTION`. The cursor is the durable idempotency boundary for ordered replay.
 
 Projection apply invariant:
 
@@ -157,31 +181,38 @@ The router must reject or stop on gaps. It must not advance the cursor past a mi
 
 ### 3. Make projection advance the only stats apply path
 
-Introduce one router-owned apply path:
+One router-owned apply path:
 
 ```text
 advance_label_stats_projection(graph_id, shard_id, limit)
   -> list deltas after current cursor
   -> apply each contiguous delta in sequence order
   -> advance cursor after each successful apply
-  -> ask graph shard to retain/ack deltas through the new cursor
+  -> ack graph shard deltas through the new cursor
 ```
 
-Normal DML dispatch may call this function after shard execution. Admin repair and replay should
-call the same function. Recovery from a partially completed mutation should not apply event payloads
-directly; it should advance the projection.
+All callers use this function:
+
+| Caller | Behavior |
+|--------|----------|
+| Normal DML dispatch | Advance after shard execution |
+| Admin repair | `admin_label_stats_projection_step` loops advance |
+| Mutation recovery | Read journal seq range; advance through `emitted_delta_last_seq` |
+
+Router dispatch **must not** apply delta payloads inline from `ExecutePlanResult` or
+`MutationOutcomeWire`. Those wire types no longer carry event vectors.
 
 ### 4. Split graph mutation journal from delta payload storage
 
 Replace `APPLIED_MUTATION_REQUESTS` with a graph-local mutation journal:
 
-| Current | Target |
-|---------|--------|
+| Remove | Introduce |
+|--------|-----------|
 | `APPLIED_MUTATION_REQUESTS` | `GRAPH_MUTATION_JOURNAL` |
 | `AppliedMutationRequest` | `GraphMutationJournalEntry` |
-| Stored event payload copies | `emitted_delta_seq_range` |
+| Stored `Vec<LabelTelemetryEventWire>` in journal | `emitted_delta_first_seq` / `emitted_delta_last_seq` |
 
-Suggested record shape:
+Record shape:
 
 ```text
 GraphMutationJournalEntry {
@@ -196,7 +227,37 @@ GraphMutationJournalEntry {
 The journal is the source of truth for graph-local idempotency and retry outcome. The delta log is
 the source of truth for label stats projection payloads.
 
-### 5. Keep query semantics unchanged
+Memory id 39 is **reused** with the new storable type.
+
+### 5. Slim cross-canister wire types
+
+`graph-kernel` wire types after this ADR:
+
+```text
+ExecutePlanResult {
+  row_count,
+  rows_blob,           // query path only; no label events
+}
+
+MutationOutcomeWire {
+  mutation_id,
+  completed,
+  row_count,
+  emitted_delta_first_seq,
+  emitted_delta_last_seq,
+}
+
+LabelStatsDeltaEventWire {
+  mutation_id,
+  shard_event_seq,
+  label_stats_delta,
+}
+```
+
+Router client mutation records drop cached `label_telemetry_events`. Shard completion tracks
+whether projection was advanced for that shard, not whether individual events were acked inline.
+
+### 6. Keep query semantics unchanged
 
 This ADR does not change the semantics of count-only label queries. It changes how the router keeps
 its derived label stats synchronized.
@@ -220,6 +281,33 @@ its derived label stats synchronized.
 | Cursor advances after aggregate maps are updated | Router | Projection transaction boundary |
 | Graph may drop retained deltas only through acknowledged cursor | Graph | Delta log retention / ack |
 | Graph-index postings remain the label membership read source | graph-index | Existing posting update/backfill paths |
+| Exactly one router code path mutates label stats from graph deltas | Router | `advance_label_stats_projection` |
+
+---
+
+## Public API surface (target)
+
+### Graph canister
+
+| Method | Role |
+|--------|------|
+| `list_pending_label_stats_deltas(from_seq, limit)` | Read deltas after cursor |
+| `ack_label_stats_deltas_through(through_seq)` | Retention: drop acknowledged prefix |
+| `get_mutation_journal_entry(mutation_id)` | Idempotency outcome + emitted seq range |
+
+Removed: `list_pending_label_telemetry_events`, `ack_label_telemetry_event`,
+`get_mutation_outcome` (superseded by journal entry when only seq range is needed, or journal
+entry replaces outcome for router recovery).
+
+### Router canister
+
+| Method | Role |
+|--------|------|
+| `admin_label_stats_projection_step` | Controller repair loop per shard |
+
+Removed: `admin_label_telemetry_replay_step`.
+
+Internal: `advance_label_stats_projection` is the sole stats apply implementation.
 
 ---
 
@@ -228,11 +316,12 @@ its derived label stats synchronized.
 | Alternative | Verdict |
 |-------------|---------|
 | Keep current design and only rename symbols | Rejected as incomplete; it improves readability but keeps per-event dedup and duplicated event payload ownership |
-| Keep telemetry outbox but rename `APPLIED_MUTATION_REQUESTS` only | Rejected; it fixes the most misleading name but not the distributed projection invariant |
+| Phased migration with legacy API wrappers | Rejected; duplicates invariants and prolongs misleading telemetry terminology |
 | Keep per-event dedup forever | Rejected; it is robust but grows with history and hides ordered stream progress |
 | Rebuild router label stats from graph label scans | Rejected for normal operation; too expensive and overlaps graph-index backfill concerns |
 | Use graph-index label postings for count-only queries | Rejected; postings are membership indexes, not aggregate stats, and count-only fast paths should not require export scans |
 | Introduce a separate projection canister | Rejected; Router already owns global derived aggregates and orchestration |
+| Online migration from dedup set to cursor | Rejected under pre-production policy; reset stable memory instead |
 
 ---
 
@@ -245,59 +334,40 @@ its derived label stats synchronized.
 - Mutation idempotency and projection payload storage have separate sources of truth.
 - Normal dispatch, recovery, and admin replay share the same projection advance path.
 - Query semantics become easier to document: count-only reads depend on projection freshness.
+- Implementation is smaller and reviewable as one coherent breaking change.
 
 ### Trade-offs
 
-- Requires stable layout changes on graph and router.
-- Requires migration from per-event dedup to per-shard projection cursors.
+- **Breaking deploy:** existing graph/router stable memory and Candid callers must reset or upgrade
+  in lockstep.
 - Requires careful handling of gaps, partial apply, and cursor/ack ordering.
 - A single cursor assumes each shard log is applied in sequence order. If future routing needs
   sparse event application, this ADR would need revision.
 - Debugging a single mutation requires journal range lookup plus delta log inspection instead of
   reading copied event payloads from the mutation record.
+- DML path may require an extra graph call to list/ack deltas after execute (acceptable; correctness
+  over inline convenience).
 
 ---
 
-## Migration
+## Deployment impact
 
-This repository is still pre-production, so the implementation may repack stable regions without a
-compatibility layer if the active development workflow permits it. If preserving existing local
-state becomes necessary, use the staged migration below.
+No migration from legacy telemetry state is supported.
 
-1. Add target types and APIs behind existing behavior:
-   - `LabelStatsDelta`
-   - `LabelStatsDeltaEventWire`
-   - `GraphMutationJournalEntry`
-   - `advance_label_stats_projection`
-2. Change graph mutation execution to append deltas to `LABEL_STATS_DELTA_LOG` and store emitted
-   delta sequence ranges in `GRAPH_MUTATION_JOURNAL`.
-3. Change router dispatch recovery and admin replay to call projection advance instead of applying
-   event payloads directly.
-4. Replace `ROUTER_APPLIED_LABEL_TELEMETRY` with `ROUTER_LABEL_STATS_PROJECTION`.
-5. Rename public/admin APIs after the internal invariant is stable:
-   - `admin_label_telemetry_replay_step` -> `admin_label_stats_projection_step`
-   - `pending_label_telemetry_events` -> `pending_label_stats_deltas`
-   - `ack_label_telemetry_event` -> `ack_label_stats_deltas_through`
-6. Update design docs and tests in the same patch.
+After the implementing patch lands:
 
-Migration from existing state, if required:
+1. **Reset** graph and router canisters used for local dev, PocketIC, and CI fixtures.
+2. **Re-seed** test graphs and replay label posting backfill if fixtures depend on persisted state.
+3. **Update** any external caller that invoked removed Candid methods or decoded removed wire fields.
 
-```text
-For each shard:
-  cursor = max applied shard_event_seq in ROUTER_APPLIED_LABEL_TELEMETRY for that shard
-  require the applied set to be contiguous from the initial sequence through cursor
-  write ROUTER_LABEL_STATS_PROJECTION[shard] = cursor
-  retain or replay pending graph deltas after cursor
-```
-
-If the applied set is not contiguous, stop migration and use graph/delta replay or a controlled
-stats rebuild before writing a cursor.
+Developers must not expect existing stable memory from before the patch to decode successfully.
+If a canister fails to decode stable regions after upgrade, wipe stable memory and re-init.
 
 ---
 
 ## Design documentation impact
 
-When this ADR is implemented, update at least:
+Update in the **same patch** as the implementation:
 
 | Document | Required update |
 |----------|-----------------|
@@ -305,17 +375,41 @@ When this ADR is implemented, update at least:
 | `design/index/derived-state-query-semantics.md` | Describe cursor lag, gap handling, and count-only query impact |
 | `design/storage/stable-memory-inventory.md` | Rename graph/router regions and classify projection cursor/log regions |
 | `design/adr/0004-label-index.md` | Mark telemetry terminology as superseded by this ADR for label stats maintenance |
-| `design/adr/0007-stable-memory-layout.md` | Record stable layout changes if region ids are repacked |
+| `design/adr/0007-stable-memory-layout.md` | Record stable layout repack for regions 17 and 37–39 |
 
 ---
 
-## Implementation phases
+## Implementation checklist
 
-| Phase | Scope | Status |
-|-------|-------|--------|
-| P0 | Add projection terminology and ADR references | Proposed |
-| P1 | Introduce delta log and mutation journal types; keep old API wrappers temporarily | Proposed |
-| P2 | Route normal dispatch, recovery, and admin replay through projection advance | Proposed |
-| P3 | Replace router event dedup with per-shard cursor | Proposed |
-| P4 | Remove telemetry names and stale wrappers; update design docs and tests | Proposed |
+Single patch (or at most two: kernel/graph/router code, then docs/tests if split for review size).
 
+| Step | Scope |
+|------|-------|
+| 1 | `graph-kernel`: replace wire types; remove `LabelTelemetryEventWire`, `LabelUsageDelta`, event vectors from `ExecutePlanResult` / `MutationOutcomeWire` |
+| 2 | Graph stable: rename regions 37–39; new storable types; rename modules to `label_stats_delta` / `mutation_journal` |
+| 3 | Graph DML: append to delta log; journal seq range on commit; no event copies in journal |
+| 4 | Graph canister: expose target APIs only |
+| 5 | Router stable: repack region 17 as `ROUTER_LABEL_STATS_PROJECTION`; delete dedup set |
+| 6 | Router: implement `advance_label_stats_projection`; route DML, recovery, and admin through it |
+| 7 | Router: slim `RouterMutationShard` and client mutation idempotency state |
+| 8 | Delete all `label_telemetry` / `telemetry_replay` naming in graph/router stats path |
+| 9 | Tests: projection advance, gap handling, mutation retry, admin step |
+| 10 | Design docs listed above |
+
+**Definition of done:**
+
+- No remaining references to `ROUTER_APPLIED_LABEL_TELEMETRY`, `LABEL_TELEMETRY_*`, or
+  `APPLIED_MUTATION_REQUESTS` in graph/router label-stats maintenance code.
+- `advance_label_stats_projection` is the only path that mutates router label stats from graph
+  deltas.
+- Count-only label query tests pass after canister reset.
+- ADR 0015 status set to `implemented`.
+
+---
+
+## Implementation status
+
+| Item | Status |
+|------|--------|
+| ADR accepted (no-compat policy) | Done — 2026-06-15 |
+| Implementation | Done — 2026-06-15 |

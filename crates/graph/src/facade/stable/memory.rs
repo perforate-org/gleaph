@@ -63,9 +63,9 @@ const VERTEX_PROPERTIES: MemoryId = MemoryId::new(33);
 const EDGE_PROPERTIES: MemoryId = MemoryId::new(34);
 const EDGE_ALIASES: MemoryId = MemoryId::new(35);
 const GRAPH_METADATA: MemoryId = MemoryId::new(36);
-const LABEL_TELEMETRY_SEQ: MemoryId = MemoryId::new(37);
-const LABEL_TELEMETRY_OUTBOX: MemoryId = MemoryId::new(38);
-const APPLIED_MUTATION_REQUESTS: MemoryId = MemoryId::new(39);
+const LABEL_STATS_DELTA_SEQ: MemoryId = MemoryId::new(37);
+const LABEL_STATS_DELTA_LOG: MemoryId = MemoryId::new(38);
+const GRAPH_MUTATION_JOURNAL: MemoryId = MemoryId::new(39);
 
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
@@ -80,10 +80,9 @@ pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
 pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
 pub(crate) type StableEdgeAliasIndex = EdgeAliasIndex<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
-pub(crate) type StableLabelTelemetrySeq = StableCell<u64, Memory>;
-pub(crate) type StableLabelTelemetryOutbox = super::label_telemetry::LabelTelemetryOutbox<Memory>;
-pub(crate) type StableAppliedMutationRequests =
-    super::label_telemetry::AppliedMutationRequests<Memory>;
+pub(crate) type StableLabelStatsDeltaSeq = StableCell<u64, Memory>;
+pub(crate) type StableLabelStatsDeltaLog = super::label_stats_delta::LabelStatsDeltaLog<Memory>;
+pub(crate) type StableGraphMutationJournal = super::label_stats_delta::GraphMutationJournal<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -158,21 +157,21 @@ pub(crate) fn init_metadata() -> StableMetadata {
     )
 }
 
-pub(crate) fn init_label_telemetry_seq() -> StableLabelTelemetrySeq {
+pub(crate) fn init_label_stats_delta_seq() -> StableLabelStatsDeltaSeq {
     StableCell::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(LABEL_TELEMETRY_SEQ)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(LABEL_STATS_DELTA_SEQ)),
         0u64,
     )
 }
 
-pub(crate) fn init_label_telemetry_outbox() -> StableLabelTelemetryOutbox {
-    super::label_telemetry::LabelTelemetryOutbox::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(LABEL_TELEMETRY_OUTBOX)),
+pub(crate) fn init_label_stats_delta_log() -> StableLabelStatsDeltaLog {
+    super::label_stats_delta::LabelStatsDeltaLog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(LABEL_STATS_DELTA_LOG)),
     )
 }
 
-pub(crate) fn init_applied_mutation_requests() -> StableAppliedMutationRequests {
-    super::label_telemetry::AppliedMutationRequests::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(APPLIED_MUTATION_REQUESTS)),
+pub(crate) fn init_graph_mutation_journal() -> StableGraphMutationJournal {
+    super::label_stats_delta::GraphMutationJournal::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(GRAPH_MUTATION_JOURNAL)),
     )
 }

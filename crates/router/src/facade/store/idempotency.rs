@@ -1,6 +1,6 @@
 //! Mutation idempotency and client mutation journal.
 
-use super::super::stable::label_telemetry::{
+use super::super::stable::label_stats::{
     ClientMutationKey, RouterMutationRecord, RouterMutationShard,
 };
 use super::super::stable::{ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER};
@@ -12,7 +12,6 @@ use crate::state::RouterError;
 use crate::types::ShardId;
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::plan_exec::LabelTelemetryEventWire;
 use gleaph_graph_kernel::plan_exec::{MutationId, ResolvedLabelTable, ResolvedPropertyTable};
 
 impl RouterStore {
@@ -185,7 +184,6 @@ impl RouterStore {
         client_key: &str,
         shard_id: ShardId,
         row_count: u64,
-        events: Vec<LabelTelemetryEventWire>,
     ) -> Result<(), RouterError> {
         let key = client_mutation_key(caller, graph_id, client_key);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
@@ -198,15 +196,14 @@ impl RouterStore {
                 .find(|shard| shard.shard_id == shard_id)
                 .ok_or(RouterError::ShardNotRegistered)?;
             shard.completed = true;
-            shard.telemetry_acked = false;
+            shard.projection_advanced = false;
             shard.row_count = row_count;
-            shard.label_telemetry_events = events;
             m.insert(key, record);
             Ok(())
         })
     }
 
-    pub fn record_router_mutation_shard_telemetry_acked(
+    pub fn record_router_mutation_shard_projection_advanced(
         &self,
         caller: Principal,
         graph_id: GraphId,
@@ -223,8 +220,7 @@ impl RouterStore {
                 .iter_mut()
                 .find(|shard| shard.shard_id == shard_id)
                 .ok_or(RouterError::ShardNotRegistered)?;
-            shard.telemetry_acked = true;
-            shard.label_telemetry_events.clear();
+            shard.projection_advanced = true;
             m.insert(key, record);
             Ok(())
         })
@@ -244,7 +240,7 @@ impl RouterStore {
             || record
                 .shards
                 .iter()
-                .any(|shard| !shard.completed || !shard.telemetry_acked)
+                .any(|shard| !shard.completed || !shard.projection_advanced)
         {
             return None;
         }

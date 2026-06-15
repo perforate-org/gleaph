@@ -2,7 +2,7 @@
 
 Date: 2026-06-09  
 Status: accepted  
-Last revised: 2026-06-10
+Last revised: 2026-06-15
 
 ## Revision history
 
@@ -10,8 +10,9 @@ Last revised: 2026-06-10
 |------|--------|
 | 2026-06-09 | Accepted; initial label postings model and graph-index APIs (`e6bafe3d`). |
 | 2026-06-09 | Implementation: DML sync, router seeds, interim aggregate fast path via `lookup_label`, scale guard (`9f5c661c`–`dc727b13`). |
-| 2026-06-10 | Read paths A/B/C/D: telemetry for count-only; property `range` + label `contains` sieve; narrow vertex export; deprecate unseeded fallback on hit size. |
+| 2026-06-10 | Read paths A/B/C/D: label stats aggregates for count-only; property `range` + label `contains` sieve; narrow vertex export; deprecate unseeded fallback on hit size. |
 | 2026-06-10 | Completed: router backfill orchestration; compound read seeds; paginated multi-label intersection; removed unseeded seed fallback. |
+| 2026-06-15 | **Superseded terminology:** router label stats maintenance renamed from “label telemetry” to label stats projection ([ADR 0015](0015-label-stats-projection-log.md)). Query shapes and read paths in this ADR are unchanged. |
 
 ## Context
 
@@ -19,9 +20,10 @@ Last revised: 2026-06-10
 `count_postings_by_value` on property buckets. Vertex **labels** (`MATCH (n:Person)`) are separate
 from indexed **properties** (`n.region`, `GROUP BY n.country`).
 
-Router **label telemetry** (`LabelUsageDelta`, `vertex_label_shard_live_count`,
-`vertex_label_stats`) already maintains **aggregate live counts per label per shard** on the
-router. It does not materialize `{ shard_id, vertex_id }` membership.
+Router **label stats projection** (`LabelStatsDelta`, `vertex_label_shard_live_count`,
+`vertex_label_stats`) maintains **aggregate live counts per label per shard** on the router.
+It does not materialize `{ shard_id, vertex_id }` membership. (Previously documented as “label
+telemetry”; see [ADR 0015](0015-label-stats-projection-log.md).)
 
 Label **postings** on graph-index materialize per-vertex membership for membership checks and,
 when unavoidable, **vertex-id export**. Bulk export is expensive for large labels; most query shapes
@@ -33,7 +35,7 @@ do not need it.
 |-------|-------------------|-----------------|
 | `MATCH (n) WHERE n.uid = $x` | Yes (few) | Property `lookup_equal` |
 | `MATCH (n:L) RETURN n` / traverse seeds | Yes (listed) | **A** paginated `lookup_label_page` → per-shard seeds |
-| `MATCH (n:L) RETURN count(*)` | **No** | **B** label telemetry (sum per shard) |
+| `MATCH (n:L) RETURN count(*)` | **No** | **B** label stats projection (sum per shard) |
 | `MATCH (n:L) GROUP BY n.p` | No (group counts) | **C2** property bucket walk + label sieve |
 | `MATCH (n:L) WHERE n.q = v GROUP BY n.p` | No | **C1** selective property hits + label sieve |
 
@@ -80,7 +82,7 @@ limits are handled by shard-scoped pagination, not silent downgrade to unseeded 
 
 **Not for:** `COUNT(*)` without returning vertices; `GROUP BY` on an indexed property (use C).
 
-#### B — Label telemetry (counts without vertex list) — Implemented
+#### B — Label stats projection (counts without vertex list) — Implemented
 
 **When:** Only **cardinality** or **per-shard totals** for a label are required — no vertex ids.
 
@@ -144,7 +146,7 @@ Router seed routing uses paginated walk + per-hit label sieve
 | Property anchor only | Existing property path |
 | Label + selective property | **C1** |
 | Label + `GROUP BY` property | **C2** |
-| Label + `COUNT(*)` only, no `GROUP BY` property | **B** telemetry |
+| Label + `COUNT(*)` only, no `GROUP BY` property | **B** label stats projection |
 
 **C1 packed-filter budget:** When property+label intersection exceeds 10_000 hits, the aggregate
 fast path returns `None` and falls back to generic federated execution — not unseeded shard scans.
@@ -175,10 +177,10 @@ ids are required.
 
 not as a silent switch to “no seeds / no fast path.”
 
-### Relationship to label telemetry
+### Relationship to label stats projection
 
-| Query / state need | Label postings | Label telemetry |
-|--------------------|----------------|-----------------|
+| Query / state need | Label postings | Label stats projection |
+|--------------------|----------------|------------------------|
 | Per-vertex membership | Yes | No |
 | Per-shard live count | Derivable (expensive) | Yes (O(1) read) |
 | Seed / RETURN vertex list | Yes (export) | No |
@@ -192,7 +194,7 @@ Both update on DML. Postings are not the default read API for count-only labeled
   and purposeful (path A only).
 - `GROUP BY` + label uses property machinery + sieve (C), aligning with “property partitions, label
   filters.”
-- Count-only labeled queries avoid graph-index hit storms via telemetry (B).
+- Count-only labeled queries avoid graph-index hit storms via label stats projection (B).
 - Router backfill orchestration (`admin_label_backfill_step`) replays historical label postings
   per shard with stable cursors.
 
@@ -202,12 +204,12 @@ Both update on DML. Postings are not the default read API for count-only labeled
   wrong for counts and `GROUP BY`; scale guard made it worse.
 - **Unified posting key** — rejected (see prior revision).
 - **Unseeded fallback for large labels** — rejected; heavier than large seed lists.
-- **Label telemetry for `GROUP BY`** — rejected; telemetry has no per-value dimension.
+- **Label telemetry for `GROUP BY`** — rejected; router label stats have no per-value dimension.
 
 ## Implementation order
 
 1. ~~Label postings + DML + `lookup_label`~~ (**done**)
-2. ~~**B** — Router/planner fast path for `MATCH (n:L) RETURN count(*)` via telemetry~~ (**done**)
+2. ~~**B** — Router/planner fast path for `MATCH (n:L) RETURN count(*)` via label stats projection~~ (**done**)
 3. ~~**C1** — `filter_hits_by_label` + aggregate/seed wiring for label + property~~ (**done**)
 4. ~~**C2** — `count_postings_by_value_for_label` for label + `GROUP BY` property~~ (**done**)
 5. ~~**Migrate** — drop unseeded fallback scale guard; stop aggregate fast path via bulk `lookup_label`~~ (**done**)

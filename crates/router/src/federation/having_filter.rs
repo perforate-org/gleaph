@@ -305,7 +305,6 @@ mod tests {
         .expect("encode");
         let mut result = ExecutePlanResult {
             row_count: 2,
-            label_telemetry_events: Vec::new(),
             rows_blob: Some(rows_blob),
         };
         apply_federated_aggregate_having(&mut result, &spec, &BTreeMap::new()).expect("apply");

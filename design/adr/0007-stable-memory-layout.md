@@ -2,8 +2,8 @@
 
 Date: 2026-06-12  
 Status: accepted  
-Last revised: 2026-06-12  
-Anchor timestamp: 2026-06-12 07:45:56 UTC +0000
+Last revised: 2026-06-15
+Anchor timestamp: 2026-06-15 10:38:29 UTC +0000
 
 ## Revision history
 
@@ -13,6 +13,7 @@ Anchor timestamp: 2026-06-12 07:45:56 UTC +0000
 | 2026-06-12 | Accepted; policy frozen at §2 pending §6 benchmarks and registry follow-up. |
 | 2026-06-12 | Layout registry in `graph-kernel::stable_layout` + per-canister `layout.rs`. |
 | 2026-06-12 | Initial canbench suite in `graph-kernel` (cold touch 5/21/43, router catalog intern). |
+| 2026-06-15 | Graph facade regions 37–39 and router region 17 repacked for label stats projection ([ADR 0015](0015-label-stats-projection-log.md)). |
 | 2026-06-12 | Extended canbench to graph/router/graph-index; §8b preliminary retain/defer judgments. |
 | 2026-06-12 | P1 executed: retired `EDGE_WEIGHT_PROFILES`; graph facade repacked to 42 regions (ids 37–41). |
 | 2026-06-12 | ADR 0008 executed: retired graph `EDGE_PAYLOAD_PROFILES`; graph 41 regions (facade 32–40); router 22 regions (0–21). |
@@ -98,8 +99,8 @@ Code source of truth:
 | Canister | Region count | Id range | Notes |
 |----------|-------------|----------|-------|
 | Graph — LARA bundle | 32 | 0–31 | Forward canonical + reverse derived + maintenance; wired into one `DeferredBidirectionalLabeledLaraGraph` |
-| Graph — facade | 9 | 32–40 | Properties, labels, aliases, local indexes, telemetry, idempotency |
-| Router | 24 | 0–23 | Registry, placement, catalogs (3 pairs + edge payload schema + index rows), auth, telemetry (4), idempotency (2), backfill cursors (2) |
+| Graph — facade | 8 | 32–39 | Properties, labels, aliases, label stats delta log, mutation journal |
+| Router | 34 | 0–33 | Registry, placement, catalogs, auth, label stats (4), projection cursor, idempotency (2), backfill cursors (2), prepared plans, graph type catalog |
 | Graph-index | 5 | 0–4 | Admins, shard owners, property postings, router auth, label postings |
 
 Ephemeral heap state (pending posting queues on graph canisters) is **not**
@@ -117,9 +118,9 @@ Do not merge across these boundaries without a new ADR and benchmark proof:
 | LARA adjacency vs graph facade (32+) | `ic-stable-lara` bundle vs Gleaph domain stores |
 | Vertex/edge property values vs graph-index postings | Separate canisters; postings are derived |
 | Graph-index property postings vs label postings | Different key shapes and backfill paths |
-| Router placement vs label telemetry | Canonical placement vs event-derived aggregates |
+| Router placement vs label stats projection | Canonical placement vs event-derived aggregates |
 | Canonical stores vs maintenance queues | Query scan paths must not depend on PMA maintenance |
-| Router catalog vs telemetry vs backfill cursors | Different lifecycles and admin surfaces |
+| Router catalog vs label stats / projection cursor vs backfill cursors | Different lifecycles and admin surfaces |
 
 Within LARA, **free-span store + by-start index pairs** (e.g. ids 2–3, 8–9) remain paired regions.
 Merging a pair into one region is **out of scope** unless `ic-stable-lara` publishes a layout ADR.
@@ -132,11 +133,11 @@ These are **allowed to prototype** after §6 benchmarks. None are approved by th
 |----------|-----------|-------------|------------|------|
 | P1 | Retire `EDGE_WEIGHT_PROFILES` | ~~Graph 37~~ | ~~Legacy read fallback~~ | **Done** (2026-06-12) — dev data discard; payload profiles only at id 37 |
 | P2 | Router catalog VM grouping | Router 5–10 (3 pairs) | Pair maps always updated together via `BidirectionalCatalog` | Measure intern + reopen vs 3 grouped metadata regions |
-| P3 | Label telemetry seq + outbox | Graph 39–40 | Same mutation pipeline | Measure DML + reopen; assess telemetry replay isolation |
+| P3 | Label stats delta seq + log | Graph 37–38 | Same mutation pipeline | **Done** (2026-06-15) — repacked per [ADR 0015](0015-label-stats-projection-log.md); router dedup set removed, projection cursor at router 17 |
 | P4 | Router backfill cursors | Router 19–20 | Same admin API surface | Low priority; measure admin step latency only |
 
 **Not candidates** without new evidence: LARA 0–31 repack, forward/reverse merge, property +
-label posting merge on graph-index, router telemetry merge into placement.
+label posting merge on graph-index, router label stats merge into placement.
 
 ### 5. Corruption isolation and reopen
 
@@ -200,7 +201,7 @@ Preliminary decisions from §6 canbench (wasm32). Final after grouped-catalog pr
 |----|----------|-----------|
 | P1 `EDGE_WEIGHT_PROFILES` | **Retired** | Backward compatibility not required (roadmap dev policy); separate stable region removed; facade ids 37–41 repacked |
 | P2 Router catalog grouping | **Retain** | Intern dominated by map work (~12 M ins); no grouped prototype bench yet |
-| P3 Label telemetry merge | **Retain** | Not measured; isolation outweighs unproven VM savings |
+| P3 Label stats delta log | **Done** | Repacked 2026-06-15 per ADR 0015 |
 | P4 Backfill cursors | **Retain** | Low priority; no hot-path evidence |
 
 **Phase 8 close (8d):** 8a complete except grouped-catalog prototype (optional). 8c consolidation

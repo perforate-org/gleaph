@@ -6,8 +6,8 @@ use crate::index_ddl::IndexTarget;
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
 use crate::types::{
-    AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminLabelTelemetryReplayStepArgs,
-    AdminLabelTelemetryReplayStepResult, AdminPropertyBackfillStepArgs,
+    AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminLabelStatsProjectionStepArgs,
+    AdminLabelStatsProjectionStepResult, AdminPropertyBackfillStepArgs,
     AdminPropertyBackfillStepResult, AdminRegisterShardArgs, CommitVertexPlacementArgs,
     EdgeLabelId, GlobalVertexId, GrantRoleArgs, GraphRegistryEntry, LabelBackfillShardStatus,
     PropertyBackfillShardStatus, PropertyId, ReleaseVertexPlacementArgs, ShardId,
@@ -176,15 +176,15 @@ pub(crate) fn admin_list_property_backfill_status(
     )
 }
 
-pub(crate) async fn admin_label_telemetry_replay_step(
-    args: AdminLabelTelemetryReplayStepArgs,
-) -> Result<AdminLabelTelemetryReplayStepResult, RouterError> {
-    crate::label_telemetry_replay::admin_label_telemetry_replay_step(
+pub(crate) async fn admin_label_stats_projection_step(
+    args: AdminLabelStatsProjectionStepArgs,
+) -> Result<AdminLabelStatsProjectionStepResult, RouterError> {
+    crate::label_stats_projection::admin_label_stats_projection_step(
         &RouterStore::new(),
         msg_caller(),
         args,
-        crate::graph_client::list_pending_label_telemetry_events,
-        crate::graph_client::ack_label_telemetry_event,
+        crate::graph_client::list_pending_label_stats_deltas,
+        crate::graph_client::ack_label_stats_deltas_through,
     )
     .await
 }

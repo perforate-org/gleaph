@@ -22,7 +22,7 @@ fn router_stable_reopen_round() {
     black_box(memory::init_vertex_label_live_by_shard());
     black_box(memory::init_edge_label_live_by_shard());
     black_box(memory::init_mutation_counter());
-    black_box(memory::init_applied_label_telemetry());
+    black_box(memory::init_label_stats_projection());
     black_box(memory::init_mutation_by_client_key());
     black_box(memory::init_label_backfill_state());
     black_box(memory::init_property_backfill_state());

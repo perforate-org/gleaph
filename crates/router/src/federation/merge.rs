@@ -5,7 +5,7 @@
 //! group-key merge instead (see `aggregate_merge.rs`).
 
 use gleaph_gql_ic::IcWirePlanQueryResult;
-use gleaph_graph_kernel::plan_exec::{ExecutePlanResult, LabelTelemetryEventWire};
+use gleaph_graph_kernel::plan_exec::ExecutePlanResult;
 
 use super::aggregate_merge::{FederatedMergeMode, merge_optional_aggregate_blobs};
 
@@ -35,8 +35,6 @@ pub fn merge_execute_plan_result(
     shard: ExecutePlanResult,
     mode: FederatedMergeMode,
 ) -> Result<(), String> {
-    acc.label_telemetry_events
-        .extend(shard.label_telemetry_events);
     acc.rows_blob = match &mode {
         FederatedMergeMode::UnionRows => {
             acc.row_count = merge_add_row_count(acc.row_count, shard.row_count);
@@ -65,7 +63,6 @@ pub fn merge_execute_plan_result(
 pub fn empty_execute_plan_result() -> ExecutePlanResult {
     ExecutePlanResult {
         row_count: 0,
-        label_telemetry_events: Vec::<LabelTelemetryEventWire>::new(),
         rows_blob: None,
     }
 }
@@ -118,7 +115,6 @@ mod tests {
             &mut acc,
             ExecutePlanResult {
                 row_count: 1,
-                label_telemetry_events: Vec::new(),
                 rows_blob: Some(sample_rows_blob(&[1])),
             },
             FederatedMergeMode::UnionRows,
@@ -128,7 +124,6 @@ mod tests {
             &mut acc,
             ExecutePlanResult {
                 row_count: 2,
-                label_telemetry_events: Vec::new(),
                 rows_blob: Some(sample_rows_blob(&[2, 3])),
             },
             FederatedMergeMode::UnionRows,
@@ -174,7 +169,6 @@ mod tests {
             &mut acc,
             ExecutePlanResult {
                 row_count: 1,
-                label_telemetry_events: Vec::new(),
                 rows_blob: Some(count_blob(5)),
             },
             FederatedMergeMode::Aggregate(spec.clone()),
@@ -184,7 +178,6 @@ mod tests {
             &mut acc,
             ExecutePlanResult {
                 row_count: 1,
-                label_telemetry_events: Vec::new(),
                 rows_blob: Some(count_blob(3)),
             },
             FederatedMergeMode::Aggregate(spec),

@@ -11,7 +11,7 @@ pub(crate) mod memory;
 
 pub(crate) mod edge_alias;
 pub(crate) mod edge_properties;
-pub(crate) mod label_telemetry;
+pub(crate) mod label_stats_delta;
 pub(crate) mod metadata;
 pub(crate) mod property_catalog;
 pub(crate) mod vertex_labels;
@@ -44,12 +44,12 @@ thread_local! {
         memory::init_metadata()
     );
 
-    pub(crate) static LABEL_TELEMETRY_SEQ: RefCell<memory::StableLabelTelemetrySeq> =
-        RefCell::new(memory::init_label_telemetry_seq());
+    pub(crate) static LABEL_STATS_DELTA_SEQ: RefCell<memory::StableLabelStatsDeltaSeq> =
+        RefCell::new(memory::init_label_stats_delta_seq());
 
-    pub(crate) static LABEL_TELEMETRY_OUTBOX: RefCell<memory::StableLabelTelemetryOutbox> =
-        RefCell::new(memory::init_label_telemetry_outbox());
+    pub(crate) static LABEL_STATS_DELTA_LOG: RefCell<memory::StableLabelStatsDeltaLog> =
+        RefCell::new(memory::init_label_stats_delta_log());
 
-    pub(crate) static APPLIED_MUTATION_REQUESTS: RefCell<memory::StableAppliedMutationRequests> =
-        RefCell::new(memory::init_applied_mutation_requests());
+    pub(crate) static GRAPH_MUTATION_JOURNAL: RefCell<memory::StableGraphMutationJournal> =
+        RefCell::new(memory::init_graph_mutation_journal());
 }

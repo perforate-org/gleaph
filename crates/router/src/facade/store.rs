@@ -4,26 +4,24 @@
 //! - [`registry`] — graph and shard registration
 //! - [`placement`] — logical vertex placement and reverse physical lookup
 //! - [`catalogs`] — federated label and property name resolution
-//! - [`telemetry`] — label usage aggregates from graph shard events
-//! - [`telemetry_replay`] — drain graph label telemetry outbox into router aggregates
+//! - [`label_stats_projection`] — label stats projection from graph shard deltas (ADR 0015)
 //! - [`idempotency`] — mutation ids and client mutation keys
 //! - [`backfill`] — label and property posting backfill cursors and shard orchestration
 
 mod backfill;
 mod catalogs;
 mod idempotency;
+mod label_stats_projection;
 mod placement;
 mod registry;
-mod telemetry;
-mod telemetry_replay;
 
 #[cfg(test)]
 mod tests;
 
 use super::stable::{
-    ROUTER_APPLIED_LABEL_TELEMETRY, ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_LABEL_LIVE_BY_SHARD,
-    ROUTER_EDGE_LABEL_STATS, ROUTER_GRAPH_CATALOG, ROUTER_GRAPH_TYPE_CATALOG, ROUTER_GRAPHS,
-    ROUTER_INDEX_NAME_CATALOG, ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER,
+    ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS,
+    ROUTER_GRAPH_CATALOG, ROUTER_GRAPH_TYPE_CATALOG, ROUTER_GRAPHS, ROUTER_INDEX_NAME_CATALOG,
+    ROUTER_LABEL_STATS_PROJECTION, ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER,
     ROUTER_PLACEMENTS, ROUTER_PROPERTY_CATALOG, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
     ROUTER_SHARDS_BY_GRAPH_ID, ROUTER_VERTEX_LABEL_CATALOG, ROUTER_VERTEX_LABEL_LIVE_BY_SHARD,
     ROUTER_VERTEX_LABEL_STATS,
@@ -71,7 +69,7 @@ impl RouterStore {
         ROUTER_MUTATION_COUNTER.with_borrow_mut(|c| {
             c.set(0);
         });
-        ROUTER_APPLIED_LABEL_TELEMETRY.with_borrow_mut(|m| m.clear());
+        ROUTER_LABEL_STATS_PROJECTION.replace(super::stable::memory::init_label_stats_projection());
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.clear_new());
         ROUTER_PROPERTY_CATALOG.with_borrow_mut(|m| m.clear_new());
     }
