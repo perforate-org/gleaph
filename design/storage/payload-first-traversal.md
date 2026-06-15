@@ -1,6 +1,6 @@
 # Payload-first labeled edge traversal
 
-**Status:** Partially Implemented (M1–M6 sparse/hybrid payload-first predicate expand)
+**Status:** Partially Implemented (M1–M6c payload-first predicate expand; sparse-only buckets still combined)
 
 ## Purpose
 
