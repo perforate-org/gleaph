@@ -211,13 +211,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
     }
 
-    /// Overflow-log replay tags for descending scan (`None` = dead placeholder slot).
+    /// Overflow-log replay for descending scan (`None` = dead placeholder slot).
     pub(super) fn prefetch_descending_log_replay_tags(
         &self,
         log_h: &LogHeaderV1,
         leaf: u32,
         log_head: i32,
-    ) -> Result<(Vec<Option<()>>, Vec<u32>), LaraOperationError> {
+    ) -> Result<(Vec<Option<u32>>, Vec<u32>, Vec<u8>), LaraOperationError> {
         let mut log_table_buf = Vec::new();
         self.log
             .read_segment_entry_table_into(log_h, leaf, &mut log_table_buf);
@@ -225,20 +225,20 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
         let mut deleted_log_indices: Vec<u32> = Vec::new();
         let mut deleted_slab_offsets: Vec<u32> = Vec::new();
-        let mut replay_tags: Vec<Option<()>> = Vec::new();
+        let mut replay_entries: Vec<Option<u32>> = Vec::new();
         let mut log_i = log_head;
         let mut budget = log_h.max_log_entries;
         while budget > 0 {
             budget -= 1;
             if log_i < 0 {
-                return Ok((replay_tags, deleted_slab_offsets));
+                return Ok((replay_entries, deleted_slab_offsets, log_table_buf));
             }
             let log_idx = log_i as u32;
             let (prev, src) = self.read_log_entry_src_tag(log_h, leaf, log_idx, log_table);
             log_i = prev;
             match decode_log_entry_kind(src) {
                 LogEntryKind::Dead => {
-                    replay_tags.push(None);
+                    replay_entries.push(None);
                     continue;
                 }
                 LogEntryKind::Delete(target) => match target {
@@ -251,21 +251,21 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 deleted_log_indices.swap_remove(pos);
                 continue;
             }
-            replay_tags.push(Some(()));
+            replay_entries.push(Some(log_idx));
         }
         if log_i >= 0 {
             return Err(LaraOperationError::LogChainShort);
         }
-        Ok((replay_tags, deleted_slab_offsets))
+        Ok((replay_entries, deleted_slab_offsets, log_table_buf))
     }
 
-    /// Overflow-log inserted-edge replay tags for ascending scan (`None` consumes a slot).
+    /// Overflow-log inserted-edge replay for ascending scan (`None` consumes a slot).
     pub(super) fn prefetch_ascending_log_inserted_tags(
         &self,
         log_h: &LogHeaderV1,
         leaf: u32,
         log_head: i32,
-    ) -> Result<(Vec<Option<()>>, Vec<u32>), LaraOperationError> {
+    ) -> Result<(Vec<Option<u32>>, Vec<u32>, Vec<u8>), LaraOperationError> {
         let mut log_table_buf = Vec::new();
         self.log
             .read_segment_entry_table_into(log_h, leaf, &mut log_table_buf);
@@ -287,7 +287,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         entries.reverse();
 
-        let mut inserted: Vec<(DeleteTarget, Option<()>)> = Vec::new();
+        let mut inserted: Vec<(DeleteTarget, Option<u32>)> = Vec::new();
         let mut deleted_slab_offsets = Vec::new();
         for (log_idx, src) in entries {
             match decode_log_entry_kind(src) {
@@ -303,14 +303,26 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                         }
                     }
                 },
-                LogEntryKind::Live => inserted.push((DeleteTarget::Log(log_idx), Some(()))),
+                LogEntryKind::Live => inserted.push((DeleteTarget::Log(log_idx), Some(log_idx))),
             }
         }
 
         Ok((
             inserted.into_iter().map(|(_, tag)| tag).collect(),
             deleted_slab_offsets,
+            log_table_buf,
         ))
+    }
+
+    pub(crate) fn decode_overflow_log_edge_from_table(
+        &self,
+        leaf: u32,
+        log_idx: u32,
+        log_table: Option<&[u8]>,
+    ) -> E {
+        let h = self.log.header();
+        let (_, _, edge) = self.read_log_edge_from_table_or_store(&h, leaf, log_idx, log_table);
+        edge
     }
 
     pub(super) fn insert_delete_into_log_with_layout<V, A>(

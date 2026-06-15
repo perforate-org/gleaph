@@ -1105,6 +1105,25 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Like [`Self::read_out_edge_slots_for_label`], reusing hybrid overflow replay from phase 1.
+    pub fn read_out_edge_slots_for_label_with_replay<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slots: &[u32],
+        order: OutEdgeOrder,
+        replay: Option<&crate::labeled::HybridOverflowEdgeReplay>,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(E),
+    {
+        self.forward
+            .read_out_edge_slots_for_label_with_replay(src, label_id, slots, order, replay, visit)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
     /// Visits forward outgoing edges and parallel value bytes for one label in `order`.
     pub fn visit_out_edge_payload_batches_for_label<Visit>(
         &self,

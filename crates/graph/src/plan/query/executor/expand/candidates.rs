@@ -75,20 +75,21 @@ fn try_expand_matching_edge_payload_payload_first(
     predicate: &PreparedEdgePayloadPredicate,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<bool, PlanQueryError> {
-    let dense_payload_batch = match direction {
+    let payload_first_eligible = match direction {
         EdgeDirection::PointingRight => {
-            store.out_label_bucket_dense_payload_batch_eligible(src_id, storage_label)?
+            store.out_label_bucket_payload_first_predicate_eligible(src_id, storage_label)?
         }
         EdgeDirection::PointingLeft => {
-            store.in_label_bucket_dense_payload_batch_eligible(src_id, storage_label)?
+            store.in_label_bucket_payload_first_predicate_eligible(src_id, storage_label)?
         }
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
     };
-    if !dense_payload_batch {
+    if !payload_first_eligible {
         return Ok(false);
     }
 
-    let mut pending = Vec::new();
+    let mut pending_slots = Vec::new();
+    let mut pending_payloads = Vec::new();
     let mut value_scratch = LabeledPayloadValueBatchScratch::default();
     let mut visit_values = |batch: ic_stable_lara::labeled::LabeledPayloadValueBatch<'_>| {
         let mut matches = Vec::new();
@@ -98,14 +99,15 @@ fn try_expand_matching_edge_payload_payload_first(
             &predicate.expected,
             &mut matches,
         );
-        let width = usize::from(batch.byte_width);
+        let batch_width = usize::from(batch.byte_width);
         for idx in matches {
             let Some(&slot) = batch.slot_indices.get(idx) else {
                 continue;
             };
-            let payload_start = idx * width;
-            let payload_end = payload_start + width;
-            pending.push((slot, batch.values[payload_start..payload_end].to_vec()));
+            let payload_start = idx * batch_width;
+            let payload_end = payload_start + batch_width;
+            pending_slots.push(slot);
+            pending_payloads.extend_from_slice(&batch.values[payload_start..payload_end]);
         }
     };
 
@@ -131,12 +133,20 @@ fn try_expand_matching_edge_payload_payload_first(
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
     }
 
-    if pending.is_empty() {
+    if pending_slots.is_empty() {
+        value_scratch.clear_all();
         return Ok(true);
     }
 
-    let payload_by_slot: BTreeMap<u32, Vec<u8>> = pending.into_iter().collect();
-    let slots: Vec<u32> = payload_by_slot.keys().copied().collect();
+    let width = usize::from(predicate.kernel.byte_width());
+    let payload_by_slot: BTreeMap<u32, &[u8]> = pending_slots
+        .iter()
+        .enumerate()
+        .map(|(idx, &slot)| {
+            let start = idx * width;
+            (slot, &pending_payloads[start..start + width])
+        })
+        .collect();
     let mut error = None;
     let mut visit_edge = |edge: Edge| {
         if error.is_some() {
@@ -159,13 +169,27 @@ fn try_expand_matching_edge_payload_payload_first(
 
     match direction {
         EdgeDirection::PointingRight => store
-            .read_out_edge_slots_for_label(src_id, storage_label, &slots, order, &mut visit_edge)
+            .read_out_edge_slots_for_label_reusing_payload_scratch(
+                src_id,
+                storage_label,
+                &pending_slots,
+                order,
+                &value_scratch,
+                &mut visit_edge,
+            )
             .map_err(GraphStoreError::from)?,
         EdgeDirection::PointingLeft => store
-            .read_in_edge_slots_for_label(src_id, storage_label, &slots, order, &mut visit_edge)
+            .read_in_edge_slots_for_label(
+                src_id,
+                storage_label,
+                &pending_slots,
+                order,
+                &mut visit_edge,
+            )
             .map_err(GraphStoreError::from)?,
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
     }
+    value_scratch.clear_all();
     if let Some(err) = error {
         return Err(err);
     }

@@ -71,6 +71,36 @@ impl<E> LabeledEdgePayloadBatchScratch<E> {
     }
 }
 
+/// Cached overflow-log replay from hybrid payload phase 1 for phase-2 topology reads.
+///
+/// When present, [`super::LabeledLaraGraph::read_out_edge_slots_for_label`] can decode
+/// matching overflow-log edges from the cached segment table instead of rebuilding the
+/// ascending log chain and re-reading stable memory.
+#[derive(Clone, Debug, Default)]
+pub struct HybridOverflowEdgeReplay {
+    pub(super) leaf: u32,
+    pub(super) label_id: BucketLabelKey,
+    pub(super) slab_slots: u32,
+    pub(super) deleted_slab_offsets: Vec<u32>,
+    pub(super) log_table: Vec<u8>,
+    pub(super) slot_to_log_idx: std::collections::BTreeMap<u32, u32>,
+}
+
+impl HybridOverflowEdgeReplay {
+    pub fn is_active(&self) -> bool {
+        self.slab_slots > 0 || !self.slot_to_log_idx.is_empty()
+    }
+
+    pub(super) fn clear(&mut self) {
+        self.leaf = 0;
+        self.label_id = BucketLabelKey::from_raw(0);
+        self.slab_slots = 0;
+        self.deleted_slab_offsets.clear();
+        self.log_table.clear();
+        self.slot_to_log_idx.clear();
+    }
+}
+
 /// Reusable buffers for payload-only batch traversal (phase 1).
 #[derive(Clone, Debug, Default)]
 pub struct LabeledPayloadValueBatchScratch {
@@ -78,13 +108,21 @@ pub struct LabeledPayloadValueBatchScratch {
     pub slot_indices: Vec<u32>,
     /// Flattened payload bytes: `slot_indices.len() * byte_width` when emitted.
     pub values: Vec<u8>,
+    /// Populated by hybrid overflow payload phase 1 for phase-2 slot reads.
+    pub hybrid_overflow_replay: HybridOverflowEdgeReplay,
 }
 
 impl LabeledPayloadValueBatchScratch {
-    /// Clears both reusable buffers while preserving allocation capacity.
+    /// Clears batch buffers while preserving hybrid overflow replay for phase 2.
     pub fn clear(&mut self) {
         self.slot_indices.clear();
         self.values.clear();
+    }
+
+    /// Clears batch buffers and any cached hybrid overflow replay.
+    pub fn clear_all(&mut self) {
+        self.clear();
+        self.hybrid_overflow_replay.clear();
     }
 }
 

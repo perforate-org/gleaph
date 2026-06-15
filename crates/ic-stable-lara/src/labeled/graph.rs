@@ -62,8 +62,8 @@ pub use error::{InitError, LabeledOperationError, OutEdgeOrder};
 pub use iter::LabeledOutEdgesIter;
 pub use iter::LabeledSpanIter;
 pub use iter::{
-    LabeledEdgePayloadBatch, LabeledEdgePayloadBatchScratch, LabeledPayloadValueBatch,
-    LabeledPayloadValueBatchScratch,
+    HybridOverflowEdgeReplay, LabeledEdgePayloadBatch, LabeledEdgePayloadBatchScratch,
+    LabeledPayloadValueBatch, LabeledPayloadValueBatchScratch,
 };
 
 /// Single-orientation multi-level labeled CSR graph.

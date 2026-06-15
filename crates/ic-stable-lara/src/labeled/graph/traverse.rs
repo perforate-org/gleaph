@@ -23,8 +23,8 @@ use ic_stable_structures::Memory;
 
 use super::error::LabeledOperationError;
 use super::iter::{
-    LabeledEdgePayloadBatch, LabeledEdgePayloadBatchScratch, LabeledOutEdgesIterKind,
-    LabeledPayloadValueBatch, LabeledPayloadValueBatchScratch,
+    HybridOverflowEdgeReplay, LabeledEdgePayloadBatch, LabeledEdgePayloadBatchScratch,
+    LabeledOutEdgesIterKind, LabeledPayloadValueBatch, LabeledPayloadValueBatchScratch,
 };
 use super::{BucketSearch, LabeledLaraGraph, LabeledOutEdgesIter, LabeledSpanIter, OutEdgeOrder};
 
@@ -1195,6 +1195,7 @@ where
         if bucket.degree() == 0 || bucket.payload_byte_width() == 0 {
             return Ok(());
         }
+        scratch.hybrid_overflow_replay.clear();
         if super::super::invariants::bucket_dense_payload_batch_eligible(&bucket) {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_visit_dense_out_payload_value_batches");
@@ -1334,6 +1335,24 @@ where
         label_id: BucketLabelKey,
         slots: &[u32],
         order: OutEdgeOrder,
+        visit: Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(E),
+    {
+        self.read_out_edge_slots_for_label_with_replay(src, label_id, slots, order, None, visit)
+    }
+
+    /// Like [`Self::read_out_edge_slots_for_label`], but may reuse hybrid overflow replay cached
+    /// on the payload phase-1 scratch to avoid rebuilding the overflow log chain.
+    pub fn read_out_edge_slots_for_label_with_replay<Visit>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        slots: &[u32],
+        order: OutEdgeOrder,
+        replay: Option<&HybridOverflowEdgeReplay>,
         mut visit: Visit,
     ) -> Result<(), LabeledOperationError>
     where
@@ -1370,6 +1389,21 @@ where
             return Ok(());
         }
 
+        if let Some(replay) = replay {
+            if replay.is_active() && bucket.overflow_log_head() >= 0 && replay.label_id == label_id
+            {
+                #[cfg(all(feature = "canbench", target_family = "wasm"))]
+                let _bench_scope = bench_scope("labeled_read_hybrid_replay_out_edge_slots");
+                return self.read_out_edge_slots_with_hybrid_replay(
+                    &bucket,
+                    label_id,
+                    &visit_order,
+                    replay,
+                    &mut visit,
+                );
+            }
+        }
+
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_read_sparse_out_edge_slots");
         let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
@@ -1390,6 +1424,53 @@ where
             )? {
                 visit(edge);
             }
+        }
+        Ok(())
+    }
+
+    fn read_out_edge_slots_with_hybrid_replay<Visit>(
+        &self,
+        bucket: &LabelBucket,
+        label_id: BucketLabelKey,
+        visit_order: &[u32],
+        replay: &HybridOverflowEdgeReplay,
+        visit: &mut Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(E),
+    {
+        let log_table = (!replay.log_table.is_empty()).then_some(replay.log_table.as_slice());
+        for &slot_index in visit_order {
+            if slot_index < replay.slab_slots {
+                if slab_slot_deleted(slot_index, &replay.deleted_slab_offsets) {
+                    continue;
+                }
+                let edge_slot = checked_add_slot_index(bucket.edge_start(), u64::from(slot_index))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                let edge = self
+                    .edges
+                    .read_slot(edge_slot)
+                    .with_slot_index(slot_index)
+                    .with_label_id(label_id.raw());
+                if edge.is_deleted_slot() || edge.is_tombstone_edge() {
+                    continue;
+                }
+                visit(edge);
+                continue;
+            }
+            let Some(&log_idx) = replay.slot_to_log_idx.get(&slot_index) else {
+                continue;
+            };
+            let edge = self
+                .edges
+                .decode_overflow_log_edge_from_table(replay.leaf, log_idx, log_table)
+                .with_slot_index(slot_index)
+                .with_label_id(label_id.raw());
+            if edge.is_tombstone_edge() {
+                continue;
+            }
+            visit(edge);
         }
         Ok(())
     }
@@ -1884,22 +1965,24 @@ where
         Visit: for<'b> FnMut(LabeledPayloadValueBatch<'b>),
     {
         let leaf = self.payload_log_leaf(src);
-        let (replay_tags, mut deleted_slab_offsets) = self
+        let (replay_entries, mut deleted_slab_offsets, log_table) = self
             .edges
-            .prefetch_overflow_log_replay_tags_desc(leaf, bucket.overflow_log_head())?;
+            .prefetch_overflow_log_replay_desc(leaf, bucket.overflow_log_head())?;
         deleted_slab_offsets.sort_unstable();
         let slab_slots = self.bucket_slab_prefix_slots(src, bucket);
         let label_id = bucket.bucket_label_key();
         let width = usize::from(bucket.payload_byte_width());
         let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width).max(1);
-        let reserved_log_slots =
-            u32::try_from(replay_tags.len()).map_err(|_| LaraOperationError::RowDegreeOverflow)?;
+        let reserved_log_slots = u32::try_from(replay_entries.len())
+            .map_err(|_| LaraOperationError::RowDegreeOverflow)?;
         let mut next_log_slot = slab_slots
             .saturating_add(reserved_log_slots)
             .saturating_sub(1);
 
+        let mut slot_to_log_idx = std::collections::BTreeMap::new();
+
         scratch.clear();
-        for tag in replay_tags {
+        for log_entry in replay_entries {
             if scratch.slot_indices.len() >= batch_edges {
                 emit_payload_value_batch(
                     scratch,
@@ -1911,12 +1994,14 @@ where
                 );
                 scratch.clear();
             }
-            if tag.is_none() {
+            if log_entry.is_none() {
                 next_log_slot = next_log_slot.saturating_sub(1);
                 continue;
             }
+            let log_idx = log_entry.expect("live replay entry must carry log index");
             let slot = next_log_slot;
             next_log_slot = next_log_slot.saturating_sub(1);
+            slot_to_log_idx.insert(slot, log_idx);
             let payload = self.read_bucket_payload_for_slot(src, bucket, slot, log_chains)?;
             scratch.slot_indices.push(slot);
             scratch.values.extend_from_slice(&payload);
@@ -1929,6 +2014,14 @@ where
             order,
             false,
         );
+        let replay = &mut scratch.hybrid_overflow_replay;
+        replay.clear();
+        replay.leaf = leaf;
+        replay.label_id = label_id;
+        replay.slab_slots = slab_slots;
+        replay.deleted_slab_offsets = deleted_slab_offsets.clone();
+        replay.log_table = log_table;
+        replay.slot_to_log_idx = slot_to_log_idx;
         Ok((slab_slots, deleted_slab_offsets))
     }
 
@@ -1945,7 +2038,7 @@ where
         Visit: for<'b> FnMut(LabeledPayloadValueBatch<'b>),
     {
         let leaf = self.payload_log_leaf(src);
-        let (inserted_tags, deleted_slab_offsets) = self
+        let (inserted_entries, deleted_slab_offsets, log_table) = self
             .edges
             .prefetch_overflow_log_inserted_tags_asc(leaf, bucket.overflow_log_head())?;
         let slab_slots = self.bucket_slab_prefix_slots(src, bucket);
@@ -1954,8 +2047,10 @@ where
         let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width).max(1);
         let mut next_inserted_log_slot = slab_slots;
 
+        let mut slot_to_log_idx = std::collections::BTreeMap::new();
+
         scratch.clear();
-        for tag in inserted_tags {
+        for log_entry in inserted_entries {
             if scratch.slot_indices.len() >= batch_edges {
                 emit_payload_value_batch(
                     scratch,
@@ -1967,12 +2062,14 @@ where
                 );
                 scratch.clear();
             }
-            if tag.is_none() {
+            if log_entry.is_none() {
                 next_inserted_log_slot = next_inserted_log_slot.saturating_add(1);
                 continue;
             }
+            let log_idx = log_entry.expect("live replay entry must carry log index");
             let slot = next_inserted_log_slot;
             next_inserted_log_slot = next_inserted_log_slot.saturating_add(1);
+            slot_to_log_idx.insert(slot, log_idx);
             let payload = self.read_bucket_payload_for_slot(src, bucket, slot, log_chains)?;
             scratch.slot_indices.push(slot);
             scratch.values.extend_from_slice(&payload);
@@ -1985,6 +2082,14 @@ where
             order,
             false,
         );
+        let replay = &mut scratch.hybrid_overflow_replay;
+        replay.clear();
+        replay.leaf = leaf;
+        replay.label_id = label_id;
+        replay.slab_slots = slab_slots;
+        replay.deleted_slab_offsets = deleted_slab_offsets.clone();
+        replay.log_table = log_table;
+        replay.slot_to_log_idx = slot_to_log_idx;
         Ok((slab_slots, deleted_slab_offsets))
     }
 

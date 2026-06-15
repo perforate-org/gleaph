@@ -151,6 +151,29 @@ impl GraphStore {
         })
     }
 
+    pub(crate) fn read_out_edge_slots_for_label_reusing_payload_scratch<Visit>(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+        slots: &[u32],
+        order: OutEdgeOrder,
+        scratch: &ic_stable_lara::labeled::LabeledPayloadValueBatchScratch,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        Visit: FnMut(Edge),
+    {
+        let replay = scratch
+            .hybrid_overflow_replay
+            .is_active()
+            .then_some(&scratch.hybrid_overflow_replay);
+        GRAPH.with_borrow(|graph| {
+            graph.read_out_edge_slots_for_label_with_replay(
+                vertex_id, label, slots, order, replay, visit,
+            )
+        })
+    }
+
     pub(crate) fn read_in_edge_slots_for_label<Visit>(
         &self,
         vertex_id: VertexId,

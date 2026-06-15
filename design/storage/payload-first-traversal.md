@@ -1,6 +1,6 @@
 # Payload-first labeled edge traversal
 
-**Status:** Partially Implemented (M1–M6b executor + LARA; M6c executor deferred after canbench)
+**Status:** Partially Implemented (M1–M6c payload-first predicate expand; sparse-only buckets still combined)
 
 ## Purpose
 
@@ -117,7 +117,7 @@ Executor routing:
 |----------|-------------------|
 | Hop-count `ShortestPath` | Topology only (`load_payloads: false`) |
 | Weighted `ShortestPath` | Bulk payload + bulk edge for **all** live slots (can use phase 1 + phase 2 with full slot list; no filter between phases) |
-| `Expand` + payload predicate | Phase 1 → filter → phase 2 on **dense** buckets; overflow hubs use combined batch (M6c executor deferred) |
+| `Expand` + payload predicate | Phase 1 → filter → phase 2 on **dense** and **overflow** hubs (M6c + hybrid replay cache) |
 | `Expand` + equality index | Index → slot set → phase 2 (payload optional if index key is not payload-derived) |
 | `Expand` + vector threshold | Combined batch + filter indices (payload-first deferred — canbench regression at all tested scan/match sizes) |
 
@@ -185,21 +185,25 @@ Options for later:
 | M0 | Document + bench scopes (`labeled_visit_payload_value_batches`, `labeled_read_edge_slots`) | canbench pattern runs |
 | M1 | Dense `visit_out_payload_value_batches_for_label` | **Implemented** — `values.rs` batch order + parity tests |
 | M2 | `read_out_edge_slots_for_label` (dense bulk + sparse/log) | **Implemented** — slot/order parity + phase-1/2 integration test |
-| M3 | Facade wrappers + predicate expand switched | **Implemented** — dense path uses phase 1+2; hybrid/sparse keep combined batch in executor |
+| M3 | Facade wrappers + predicate expand switched | **Implemented** — dense + overflow use phase 1+2; sparse keeps combined batch in executor |
 | M4 | Equality-index expand uses phase 2 only | **Implemented** — forward (`PointingRight`); reverse/undirected keep full-scan fallback |
 | M5 | Weighted shortest: prepared decoder on relax hot path | **Implemented** — `PreparedWeightDecoder::decode`; optional zip refactor deferred |
 | M6 | Sparse payload-first | **Implemented (LARA)** — overflow `visit_out_payload_value_batches`; edge-free hybrid slab prefix; cached payload log chains |
 | M6a | Executor probe removal | **Implemented** — dense-eligibility pre-check before phase 1 |
 | M6b | Edge-free hybrid slab + chain cache | **Implemented** — slab prefix skips edge slab IO; `read_payload_log_chain_entry`; phase-2 overflow chain cache |
-| M6c | Executor overflow routing | **LARA implemented** (edge-free overflow log tag walk in hybrid phase 1). **Executor deferred** — `expand_payload_skewed_2k_a_100b` +23.3% vs baseline (2026-06-15 canbench); overflow hubs stay on combined batch |
+| M6c | Executor overflow routing | **Implemented** — edge-free phase-1 tag walk; `HybridOverflowEdgeReplay` caches log table + slot→log_idx for phase 2 (avoids chain rebuild + stable re-read). Naive routing regressed +23% on `expand_payload_skewed_2k`; replay fix **−32%** vs baseline (2026-06-15 canbench) |
 
-**Backward compatibility:** combined `LabeledEdgePayloadBatch` API remains; dense buckets use single-pass bulk read. Phase 1+2 APIs are for selective slot reads (predicate/index expand). Hybrid/sparse paths unchanged in the executor.
+**Backward compatibility:** combined `LabeledEdgePayloadBatch` API remains; dense buckets use single-pass bulk read. Phase 1+2 APIs are for selective slot reads (predicate/index expand). Sparse-only paths unchanged in the executor.
+
+### M6c insight: why naive overflow routing regressed
+
+Overflow predicate expand must scan **all** payload bytes to filter (low match rate does not skip payload IO). Combined batch decodes each live edge once while attaching payload. Naive payload-first avoided edge decode in phase 1 but **phase 2 re-built the overflow log chain and re-read stable memory per match slot**, duplicating work. Caching phase-1 replay (`log_table`, `slot_to_log_idx`, slab delete set) makes phase 2 decode only the **m** matching edges from the cached table.
 
 ## Benchmark expectations
 
 | Bench | Expectation |
 |-------|-------------|
-| `expand_payload_skewed_{200a,2k}` | Default `canbench`: single-label hub + `edge_payload_predicate`. |
+| `expand_payload_skewed_{200a,2k}` | Default `canbench`: single-label hub + `edge_payload_predicate`. M6c replay: **−26%** / **−32%** vs pre-M6c baseline (2026-06-15). |
 | `large_expand_payload_skewed_{10k,50k}` | `canbench_large`: heavier graph construction; payload-first vs combined neutral to ~2–4% faster at 50k scan. |
 | `expand_skewed_noise_*` | Two-label topology filter (not payload predicate); unchanged by payload-first routing. |
 | `weighted_shortest_edge_cost_cache` | **No** gain from payload-first alone; gain from prepared decoder + dense src path |
