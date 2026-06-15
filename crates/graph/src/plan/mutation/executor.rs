@@ -1,5 +1,6 @@
 use super::error::PlanMutationError;
 use super::expr_evaluator::{MutationPropertyExprEvaluation, MutationPropertyExprEvaluator};
+use super::gleaph_finalize;
 use crate::facade::mutation_executor::{GraphMutationExecutor, insert_vertex_with_async};
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::gql_execution_context::GqlExecutionContext;
@@ -29,11 +30,13 @@ pub async fn execute_plan_mutations_async(
     execute_ops_async(store, &plan.ops, &BTreeMap::new(), execution).await
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlanMutationBindings {
     pub vertices: BTreeMap<String, VertexId>,
     pub edges: BTreeMap<String, EdgeHandle>,
     pub label_stats_delta: LabelStatsDelta,
+    /// `CALL ... YIELD` columns from Gleaph finalize procedures in this plan.
+    pub procedure_yields: BTreeMap<String, Value>,
 }
 
 impl PlanMutationBindings {
@@ -210,6 +213,19 @@ fn execute_ops_with_bindings(
                 bindings.edges.remove(variable.as_ref());
             }
             PlanOp::Materialize { .. } => {}
+            PlanOp::CallProcedure {
+                name,
+                args,
+                yield_columns,
+                optional,
+            } => gleaph_finalize::execute_call_procedure(
+                store,
+                name,
+                args,
+                yield_columns.as_deref(),
+                *optional,
+                bindings,
+            )?,
             other if !is_mutation_op(other) => {}
             other => return Err(PlanMutationError::UnsupportedOp(plan_op_name(other))),
         }
@@ -349,6 +365,19 @@ async fn execute_ops_with_bindings_async(
                 bindings.edges.remove(variable.as_ref());
             }
             PlanOp::Materialize { .. } => {}
+            PlanOp::CallProcedure {
+                name,
+                args,
+                yield_columns,
+                optional,
+            } => gleaph_finalize::execute_call_procedure(
+                store,
+                name,
+                args,
+                yield_columns.as_deref(),
+                *optional,
+                bindings,
+            )?,
             other if !is_mutation_op(other) => {}
             other => return Err(PlanMutationError::UnsupportedOp(plan_op_name(other))),
         }
@@ -561,6 +590,7 @@ fn plan_op_name(op: &PlanOp) -> &'static str {
         PlanOp::DeleteVertex { .. } => "DeleteVertex",
         PlanOp::DetachDeleteVertex { .. } => "DetachDeleteVertex",
         PlanOp::DeleteEdge { .. } => "DeleteEdge",
+        PlanOp::CallProcedure { .. } => "CallProcedure",
         _ => "PlanOp",
     }
 }
@@ -700,6 +730,7 @@ mod tests {
     use super::*;
     use crate::facade::canonical_undirected_owner;
     use crate::gql_execution_context::GqlExecutionContext;
+    use crate::test_labels::install_test_edge_payload_profile;
     use gleaph_gql::Value;
     use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, TruthValue, UnaryOp};
     use gleaph_gql::types::Decimal;
@@ -1900,5 +1931,164 @@ mod tests {
             }),
             Vec::<(PropertyId, Value)>::new()
         );
+    }
+
+    fn vertex_list_expr(var: &str) -> Expr {
+        Expr::new(ExprKind::FunctionCall {
+            name: gleaph_gql::ast::ObjectName {
+                parts: vec!["GLEAPH".into(), "VERTEX_LIST".into()],
+            },
+            args: vec![Expr::var(var)],
+            distinct: false,
+        })
+    }
+
+    fn empty_vertex_list_expr() -> Expr {
+        Expr::new(ExprKind::FunctionCall {
+            name: gleaph_gql::ast::ObjectName {
+                parts: vec!["GLEAPH".into(), "VERTEX_LIST".into()],
+            },
+            args: vec![],
+            distinct: false,
+        })
+    }
+
+    #[test]
+    fn call_finalize_bulk_ingest_makes_hot_forward_span_dense() {
+        use gleaph_gql_planner::plan::YieldColumn;
+        use ic_stable_lara::labeled::LabeledEdgePayloadBatchScratch;
+
+        let store = GraphStore::new();
+        let src = setup_finalize_call_hub_graph(&store);
+        let mut bindings = PlanMutationBindings::default();
+        bindings.vertices.insert("src".into(), src);
+
+        execute_ops_with_bindings(
+            &store,
+            &[PlanOp::CallProcedure {
+                name: vec!["GLEAPH".into(), "FINALIZE_BULK_INGEST".into()],
+                args: vec![vertex_list_expr("src"), empty_vertex_list_expr()],
+                yield_columns: Some(vec![YieldColumn {
+                    name: "queued_forward".into(),
+                    alias: None,
+                }]),
+                optional: false,
+            }],
+            &BTreeMap::new(),
+            GqlExecutionContext::default(),
+            &mut bindings,
+        )
+        .expect("finalize via CALL");
+        assert_eq!(
+            bindings.procedure_yields.get("queued_forward"),
+            Some(&Value::Int64(1))
+        );
+
+        let road = crate::test_labels::edge_label_id_for_name("GqlFinalizeRoad");
+        let mut scratch = LabeledEdgePayloadBatchScratch::default();
+        let mut dense = None;
+        store
+            .visit_directed_out_edge_payload_batches_for_label(
+                src,
+                road,
+                OutEdgeOrder::Descending,
+                &mut scratch,
+                |batch| dense = Some(batch.dense),
+            )
+            .expect("payload batches");
+        assert_eq!(dense, Some(true));
+    }
+
+    fn setup_finalize_call_hub_graph(store: &GraphStore) -> VertexId {
+        use gleaph_graph_kernel::entry::{EdgePayloadProfile, EdgeWeightProfile, WeightEncoding};
+
+        let src = store.insert_vertex().expect("src");
+        let hub = store.insert_vertex().expect("hub");
+        let label = crate::test_labels::edge_label_id_for_name("GqlFinalizeRoad");
+        install_test_edge_payload_profile(
+            label,
+            EdgePayloadProfile::from(EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            }),
+        );
+
+        let mut prefixes = Vec::new();
+        for _ in 0..48 {
+            prefixes.push(store.insert_vertex().expect("prefix"));
+        }
+        for &prefix in &prefixes {
+            store
+                .insert_directed_edge_with_payload_bytes(
+                    prefix,
+                    hub,
+                    Some(label),
+                    &1u16.to_le_bytes(),
+                )
+                .expect("prefix->hub");
+        }
+        for (i, &prefix) in prefixes.iter().enumerate() {
+            store
+                .insert_directed_edge_with_payload_bytes(
+                    src,
+                    prefix,
+                    Some(label),
+                    &((i % 10) as u16 + 1).to_le_bytes(),
+                )
+                .expect("src->prefix");
+        }
+        src
+    }
+
+    #[test]
+    fn call_drain_deferred_maintenance_records_yield_columns() {
+        use gleaph_gql_planner::plan::YieldColumn;
+
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![PlanOp::CallProcedure {
+                name: vec!["GLEAPH".into(), "DRAIN_DEFERRED_MAINTENANCE".into()],
+                args: vec![],
+                yield_columns: Some(vec![YieldColumn {
+                    name: "remaining_queue_len".into(),
+                    alias: None,
+                }]),
+                optional: false,
+            }],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("drain via CALL");
+        assert_eq!(
+            bindings.procedure_yields.get("remaining_queue_len"),
+            Some(&Value::Int64(0))
+        );
+    }
+
+    #[test]
+    fn call_procedure_rejects_unknown_gleaph_procedure() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![PlanOp::CallProcedure {
+                name: vec!["db".into(), "labels".into()],
+                args: vec![],
+                yield_columns: None,
+                optional: false,
+            }],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let err = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect_err("unknown procedure");
+        assert!(matches!(
+            err,
+            PlanMutationError::UnknownGleaphProcedure { name } if name == "db.labels"
+        ));
     }
 }

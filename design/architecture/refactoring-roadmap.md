@@ -499,7 +499,7 @@ Phases 0–8 are **complete**.
 | **Ongoing** | Phase 9 | Tests + canbench on every boundary PR |
 | **Optional** | Phase 8c follow-ups | P2 grouped-catalog prototype only if product revisits merge |
 | **Deferred** | Federation ADR | ADR 0006 step 6+ (`RemoteVertexId`, `GROUP_SIZE`, peer expand) — blocked on product |
-| **Independent** | Feature epics | bulk-ingest finalize (P0–P1 done), payload-first traversal, executor gaps — not Phase numbers |
+| **Independent** | Feature epics | bulk-ingest finalize (P0–P2 done), payload-first traversal, executor gaps — not Phase numbers |
 
 Phase 8 closed with **retain** on P2/P4 and executed repacks on P1/P3; that is the recorded outcome.
 

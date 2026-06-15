@@ -7,6 +7,7 @@ use crate::index::{label_pending, pending};
 use crate::plan::{
     PlanBinding, PlanQueryResult, PlanQueryRow, execute_plan_mutations_async, execute_plan_query,
     execute_plan_query_bindings, execute_plan_query_bindings_with_initial_rows,
+    plan_contains_gleaph_finalize_call,
 };
 use gleaph_gql::Value;
 use gleaph_gql::ast::{Statement, StatementBlock};
@@ -37,6 +38,10 @@ fn gleaph_plan_options() -> PlanBuildOptions<'static> {
         stats: None,
         path_extensions: &GLEAPH_PATH_EXTENSION_HANDLER,
     }
+}
+
+fn plan_needs_mutation_executor(plan: &gleaph_gql_planner::PhysicalPlan) -> bool {
+    plan.has_dml() || plan_contains_gleaph_finalize_call(&plan.ops)
 }
 
 fn plan_statement(
@@ -196,7 +201,7 @@ async fn run_transaction_block(
             continue;
         }
         let plan = plan_statement(stmt).map_err(|e| GqlRunError::Plan(e.to_string()))?;
-        if plan.has_dml() {
+        if plan_needs_mutation_executor(&plan) {
             let mutation = execute_plan_mutations_async(store, &plan, execution.clone()).await?;
             merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
             pending::flush_pending(index).await?;
@@ -538,7 +543,7 @@ async fn run_wire_plans_inner(
     };
 
     for plan in plans {
-        if plan.has_dml() {
+        if plan_needs_mutation_executor(plan) {
             let mutation = match execute_plan_mutations_async(store, plan, execution.clone()).await
             {
                 Ok(mutation) => mutation,
@@ -807,6 +812,22 @@ mod tests {
             program,
             requires_write_path,
         }
+    }
+
+    #[test]
+    fn transaction_gleaph_drain_deferred_maintenance_uses_mutation_path() {
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        pollster::block_on(run_adhoc_gql_transaction(
+            store,
+            "START TRANSACTION READ WRITE CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE() YIELD remaining_queue_len COMMIT",
+            &params,
+            None,
+            GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
+            TransactionReadMaterialize::LastReadRowCountOnly,
+        ))
+        .expect("gleaph drain transaction");
     }
 
     #[test]

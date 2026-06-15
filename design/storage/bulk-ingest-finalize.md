@@ -1,6 +1,6 @@
 # Bulk ingest finalize (maintenance reclaim)
 
-**Status:** Partially implemented — P0 `GraphStore::finalize_bulk_ingest` (2026-06-15); P1 canister wire + handler (2026-06-15). P2+ (GQL `CALL`, router hot-vertex tracking) not implemented.
+**Status:** Partially implemented — P0 `GraphStore::finalize_bulk_ingest` (2026-06-15); P1 canister wire + handler (2026-06-15); P2 mutation executor `CALL GLEAPH.FINALIZE_*` + `GLEAPH.VERTEX_LIST` (2026-06-15). P3+ (router hot-vertex tracking) not implemented.
 
 ## Purpose
 
@@ -135,9 +135,9 @@ type BulkIngestFinalizeResult = record {
 
 After DML commit on a shard, router may call graph finalize with a **hot-vertex set** collected during mutation execution (sources with high out-degree in the batch, explicit hub list from application metadata, etc.). Router orchestration is optional; Layer 1–2 suffice for ETL tools calling the graph canister directly.
 
-## GQL surface (planned, deferred)
+## GQL surface (mutation executor)
 
-Parser and planner already support generic `CALL name(args) YIELD ...` → `PlanOp::CallProcedure`. **Execution is not implemented** (`UnsupportedOp` in query executor). Gleaph-specific procedure names are resolved in **gleaph-graph** mutation executor only — not in `gleaph-gql` / `gleaph-gql-planner` (see [gql/layers.md](../gql/layers.md)).
+Parser and planner support generic `CALL name(args) YIELD ...` → `PlanOp::CallProcedure`. **Gleaph finalize procedures execute in the mutation executor** (`crates/graph/src/plan/mutation/gleaph_finalize.rs`). Query executor still returns `UnsupportedOp` for `CallProcedure` (including `db.labels`). Gleaph-specific procedure names are not added to portable `gleaph-gql` / `gleaph-gql-planner` (see [gql/layers.md](../gql/layers.md)).
 
 ### Recommended procedures
 
@@ -168,7 +168,7 @@ YIELD
 COMMIT
 ```
 
-`GLEAPH.VERTEX_LIST(...)` is a **planned** expression intrinsic: resolves bound node variables from mutation context to internal `VertexId`s. Not to be added to portable `gleaph-gql` crates as special syntax; evaluated in graph mutation executor.
+`GLEAPH.VERTEX_LIST(...)` is evaluated in the graph mutation executor: resolves bound node variables from [`PlanMutationBindings`] to internal `VertexId`s. Supports `GLEAPH.VERTEX_LIST()` (empty) and `GLEAPH.VERTEX_LIST(var, ...)`. A bare node variable is also accepted where a single-vertex list is required.
 
 ### YIELD columns
 
@@ -263,7 +263,7 @@ baseline when persisting results after `c16a247f`; it measures real ingest cost.
 |-------|-------------|--------------|
 | P0 | `GraphStore::finalize_bulk_ingest` + unit tests | **Implemented** — `facade/store/maintenance.rs`; WSP bench setup calls finalize on `src` |
 | P1 | Canister wire + handler | **Implemented** — `finalize_bulk_ingest` update; PocketIC router call |
-| P2 | Mutation executor: `CallProcedure` for `GLEAPH.FINALIZE_*` + `GLEAPH.VERTEX_LIST` | GQL transaction integration test |
+| P2 | Mutation executor: `CallProcedure` for `GLEAPH.FINALIZE_*` + `GLEAPH.VERTEX_LIST` | **Implemented** — `plan/mutation/gleaph_finalize.rs`; executor + gql_run tests |
 | P3 | Router hot-vertex tracking after DML | 50k ingest → query ix regression |
 | P4 | canbench WSP (optional) | Compare with/without explicit src finalize |
 
@@ -289,4 +289,5 @@ baseline when persisting results after `c16a247f`; it measures real ingest cost.
 | Insert hook | `crates/graph/src/facade/store/edge_insert.rs`, `edge_logical.rs` |
 | Budgets | `crates/graph/src/facade/ic_budget.rs` |
 | `mark_compact_vertex_edge_span` | `crates/ic-stable-lara/src/labeled/bidirectional/deferred.rs` |
-| `CallProcedure` unsupported | `crates/graph/src/plan/query/executor/ops.rs` |
+| `CallProcedure` (Gleaph finalize) | `crates/graph/src/plan/mutation/gleaph_finalize.rs` |
+| `CallProcedure` (other) unsupported on query path | `crates/graph/src/plan/query/executor/ops.rs` |

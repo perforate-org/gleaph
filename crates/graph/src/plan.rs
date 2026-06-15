@@ -12,6 +12,7 @@ pub use ic_wire::{
 pub use mutation::{
     MutationPropertyExprEvaluation, MutationPropertyExprEvaluator, PlanMutationBindings,
     PlanMutationError, PlanMutationExecutor, execute_ops, execute_plan_mutations_async,
+    plan_contains_gleaph_finalize_call,
 };
 pub use query::PlanQueryExecutor;
 pub use query::{

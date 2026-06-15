@@ -55,6 +55,18 @@ pub enum PlanMutationError {
         name: String,
     },
     RuntimeFunction(RuntimeFunctionError),
+    UnknownGleaphProcedure {
+        name: String,
+    },
+    InvalidFinalizeProcedureArgs {
+        procedure: &'static str,
+        expected: &'static str,
+    },
+    InvalidFinalizeVertexListArg,
+    TooManyFinalizeVertices {
+        count: usize,
+        max: usize,
+    },
 }
 
 impl fmt::Display for PlanMutationError {
@@ -126,6 +138,21 @@ impl fmt::Display for PlanMutationError {
                 write!(f, "missing router-resolved property '{name}'")
             }
             Self::RuntimeFunction(err) => write!(f, "{err}"),
+            Self::UnknownGleaphProcedure { name } => {
+                write!(f, "unknown Gleaph procedure: {name}")
+            }
+            Self::InvalidFinalizeProcedureArgs {
+                procedure,
+                expected,
+            } => {
+                write!(f, "{procedure} expects {expected}")
+            }
+            Self::InvalidFinalizeVertexListArg => {
+                write!(f, "GLEAPH.VERTEX_LIST expects bound node variables")
+            }
+            Self::TooManyFinalizeVertices { count, max } => {
+                write!(f, "finalize vertex list too long: {count} > {max}")
+            }
         }
     }
 }
