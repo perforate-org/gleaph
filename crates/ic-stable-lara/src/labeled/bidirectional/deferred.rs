@@ -1037,6 +1037,17 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
+    /// Returns whether forward predicate expand may use payload-first phase 1 + phase 2.
+    pub fn out_bucket_payload_first_predicate_eligible(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<bool, DeferredBidirectionalLabeledError> {
+        self.forward
+            .out_bucket_payload_first_predicate_eligible(src, label_id)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
     /// Returns whether reverse `(dst, label_id)` supports dense payload-only phase 1.
     pub fn in_bucket_dense_payload_batch_eligible(
         &self,
@@ -1045,6 +1056,17 @@ where
     ) -> Result<bool, DeferredBidirectionalLabeledError> {
         self.reverse
             .out_bucket_dense_payload_batch_eligible(dst, label_id)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
+    /// Returns whether reverse predicate expand may use payload-first phase 1 + phase 2.
+    pub fn in_bucket_payload_first_predicate_eligible(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<bool, DeferredBidirectionalLabeledError> {
+        self.reverse
+            .out_bucket_payload_first_predicate_eligible(dst, label_id)
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 

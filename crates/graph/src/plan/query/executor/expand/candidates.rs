@@ -84,7 +84,6 @@ fn try_expand_matching_edge_payload_payload_first(
         }
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
     };
-    // Hybrid/sparse overflow hubs use combined batch only; skip phase 1 probe (M6a).
     if !dense_payload_batch {
         return Ok(false);
     }

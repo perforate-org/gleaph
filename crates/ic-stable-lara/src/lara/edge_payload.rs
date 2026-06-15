@@ -598,6 +598,29 @@ impl<M: Memory> EdgePayloadStore<M> {
         chain
     }
 
+    /// Reads payload bytes using a precomputed oldest-to-newest chain (avoids rebuilding per call).
+    pub(crate) fn read_payload_log_chain_entry(
+        &self,
+        leaf_segment: u32,
+        payload_chain: &[u32],
+        asc_log_index: u32,
+        width: u16,
+        out: &mut [u8],
+    ) -> Result<(), PayloadLogReadError> {
+        let Some(&entry_idx) = payload_chain.get(asc_log_index as usize) else {
+            return Err(PayloadLogReadError::MissingAscLogIndex { asc_log_index });
+        };
+        let mut scratch = [0u8; PAYLOAD_BYTES];
+        let h = self.log.header();
+        let (_, src) = self
+            .log
+            .read_entry_with_header(&h, leaf_segment, entry_idx, &mut scratch);
+        if src == LOG_SRC_DEAD {
+            return Err(PayloadLogReadError::MissingAscLogIndex { asc_log_index });
+        }
+        self.read_payload_log_entry(leaf_segment, entry_idx, width, out)
+    }
+
     /// Reads the value stored at `asc_log_index` in oldest-to-newest log order.
     pub(crate) fn read_payload_log_asc_index(
         &self,
@@ -610,30 +633,8 @@ impl<M: Memory> EdgePayloadStore<M> {
         if log_head < 0 || width == 0 {
             return Err(PayloadLogReadError::MissingAscLogIndex { asc_log_index });
         }
-        let mut chain = Vec::new();
-        let mut cur = log_head;
-        while cur >= 0 {
-            chain.push(cur as u32);
-            let mut payload = [0u8; PAYLOAD_BYTES];
-            let h = self.log.header();
-            let (prev, _) =
-                self.log
-                    .read_entry_with_header(&h, leaf_segment, cur as u32, &mut payload);
-            cur = prev;
-        }
-        chain.reverse();
-        if let Some(&idx) = chain.get(asc_log_index as usize) {
-            let mut payload = [0u8; PAYLOAD_BYTES];
-            let h = self.log.header();
-            let (_, src) = self
-                .log
-                .read_entry_with_header(&h, leaf_segment, idx, &mut payload);
-            if src == LOG_SRC_DEAD {
-                return Err(PayloadLogReadError::MissingAscLogIndex { asc_log_index });
-            }
-            return self.read_payload_log_entry(leaf_segment, idx, width, out);
-        }
-        Err(PayloadLogReadError::MissingAscLogIndex { asc_log_index })
+        let chain = self.payload_log_chain_asc_indices(leaf_segment, log_head);
+        self.read_payload_log_chain_entry(leaf_segment, &chain, asc_log_index, width, out)
     }
 
     /// Returns the cached payload-slab header.

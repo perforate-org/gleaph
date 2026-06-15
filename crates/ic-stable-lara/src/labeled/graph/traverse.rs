@@ -1143,6 +1143,29 @@ where
         Ok(super::super::invariants::bucket_dense_payload_batch_eligible(&bucket))
     }
 
+    /// Returns whether predicate expand may use phase 1 (payload values) + phase 2 (topology).
+    pub fn out_bucket_payload_first_predicate_eligible(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<bool, LabeledOperationError> {
+        if self.out_bucket_dense_payload_batch_eligible(src, label_id)? {
+            return Ok(true);
+        }
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return Ok(false);
+        }
+        let bucket = match self.find_bucket(src, &vertex, label_id)? {
+            BucketSearch::Found { bucket, .. } => bucket,
+            BucketSearch::Missing { .. } => return Ok(false),
+        };
+        Ok(bucket.degree() > 0
+            && bucket.payload_byte_width() > 0
+            && bucket.overflow_log_head() >= 0)
+    }
+
     /// Visits outgoing payload bytes for one label as batches without materializing edge rows.
     ///
     /// Dense buckets bulk-read the payload slab; hybrid buckets combine slab bulk reads with
@@ -1180,7 +1203,7 @@ where
             );
         }
         let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
-        if bucket_hybrid_slab_payload_batch_eligible(self, src, &bucket) {
+        if bucket.overflow_log_head() >= 0 {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_visit_hybrid_out_payload_value_batches");
             return self.visit_hybrid_out_payload_value_batches_for_bucket(
@@ -1349,6 +1372,12 @@ where
 
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_read_sparse_out_edge_slots");
+        let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
+            self.edges.overflow_log_chain_asc_indices(
+                self.payload_log_leaf(src),
+                bucket.overflow_log_head(),
+            )
+        });
         for slot_index in visit_order {
             if let Some(edge) = self.read_out_edge_topology_at_slot(
                 src,
@@ -1357,6 +1386,7 @@ where
                 &bucket,
                 slot_index,
                 label_id,
+                overflow_chain.as_deref(),
             )? {
                 visit(edge);
             }
@@ -1411,6 +1441,7 @@ where
         bucket: &LabelBucket,
         slot_index: u32,
         label_id: BucketLabelKey,
+        overflow_chain: Option<&[u32]>,
     ) -> Result<Option<E>, LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -1454,9 +1485,16 @@ where
             .checked_sub(slab_prefix)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let leaf = self.payload_log_leaf(src);
-        let chain = self
-            .edges
-            .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
+        let chain_storage;
+        let chain = match overflow_chain {
+            Some(chain) => chain,
+            None => {
+                chain_storage = self
+                    .edges
+                    .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
+                &chain_storage
+            }
+        };
         let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
             return Ok(None);
         };
@@ -1734,6 +1772,7 @@ where
         scratch: &mut LabeledPayloadValueBatchScratch,
         visit: &mut Visit,
         dense: bool,
+        omit_edge_slab_reads: bool,
     ) -> Result<(), LabeledOperationError>
     where
         E: CsrEdgeTombstone,
@@ -1756,15 +1795,21 @@ where
             scratch.slot_indices.reserve(take as usize);
             scratch.values.reserve(take as usize * width);
 
-            let edge_bytes = take as usize * E::BYTES;
             let payload_bytes = take as usize * width;
-            let mut raw_edges = vec![0u8; edge_bytes];
-            self.edges
-                .read_slots_contiguous(bucket.edge_start() + u64::from(first_slot), &mut raw_edges);
             let payload_offset =
                 super::super::invariants::payload_byte_offset_at_slot(&bucket, first_slot)?;
             let mut raw_values = vec![0u8; payload_bytes];
             self.values.read_bytes(payload_offset, &mut raw_values);
+
+            let mut raw_edges = Vec::new();
+            if !omit_edge_slab_reads {
+                let edge_bytes = take as usize * E::BYTES;
+                raw_edges = vec![0u8; edge_bytes];
+                self.edges.read_slots_contiguous(
+                    bucket.edge_start() + u64::from(first_slot),
+                    &mut raw_edges,
+                );
+            }
 
             match order {
                 OutEdgeOrder::Ascending => {
@@ -1773,14 +1818,16 @@ where
                         if slab_slot_deleted(slot, deleted_slab_offsets) {
                             continue;
                         }
-                        let edge_off = i * E::BYTES;
-                        let value_off = i * width;
-                        let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES])
-                            .with_slot_index(slot)
-                            .with_label_id(label_id.raw());
-                        if edge.is_deleted_slot() {
-                            continue;
+                        if !omit_edge_slab_reads {
+                            let edge_off = i * E::BYTES;
+                            let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES])
+                                .with_slot_index(slot)
+                                .with_label_id(label_id.raw());
+                            if edge.is_deleted_slot() {
+                                continue;
+                            }
                         }
+                        let value_off = i * width;
                         scratch.slot_indices.push(slot);
                         scratch
                             .values
@@ -1793,14 +1840,16 @@ where
                         if slab_slot_deleted(slot, deleted_slab_offsets) {
                             continue;
                         }
-                        let edge_off = i * E::BYTES;
-                        let value_off = i * width;
-                        let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES])
-                            .with_slot_index(slot)
-                            .with_label_id(label_id.raw());
-                        if edge.is_deleted_slot() {
-                            continue;
+                        if !omit_edge_slab_reads {
+                            let edge_off = i * E::BYTES;
+                            let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES])
+                                .with_slot_index(slot)
+                                .with_label_id(label_id.raw());
+                            if edge.is_deleted_slot() {
+                                continue;
+                            }
                         }
+                        let value_off = i * width;
                         scratch.slot_indices.push(slot);
                         scratch
                             .values
@@ -1901,6 +1950,7 @@ where
                     scratch,
                     visit,
                     true,
+                    true,
                 )
             }
             OutEdgeOrder::Ascending => {
@@ -1920,6 +1970,7 @@ where
                     order,
                     scratch,
                     visit,
+                    true,
                     true,
                 )?;
                 scratch.clear();

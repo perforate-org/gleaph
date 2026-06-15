@@ -2669,7 +2669,12 @@ fn overflow_hub_edge_payload_predicate_skips_dense_payload_probe() {
     assert!(
         !store
             .out_label_bucket_dense_payload_batch_eligible(hub, storage_label)
-            .expect("eligibility")
+            .expect("dense eligibility")
+    );
+    assert!(
+        store
+            .out_label_bucket_payload_first_predicate_eligible(hub, storage_label)
+            .expect("payload-first eligibility")
     );
 
     let equality = PreparedEdgePayloadPredicate::prepare(

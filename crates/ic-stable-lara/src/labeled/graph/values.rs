@@ -239,14 +239,25 @@ where
             .checked_sub(slab_payload_slots)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         let mut buf = vec![0u8; usize::from(width)];
-        self.values.read_payload_log_asc_index(
-            self.payload_log_leaf(src),
-            bucket.payload_log_head(),
-            asc_log_index,
-            width,
-            &mut buf,
-        )?;
-        let _ = log_chains;
+        if let Some((_, payload_chain)) = log_chains {
+            self.values
+                .read_payload_log_chain_entry(
+                    self.payload_log_leaf(src),
+                    payload_chain,
+                    asc_log_index,
+                    width,
+                    &mut buf,
+                )
+                .map_err(LabeledOperationError::from)?;
+        } else {
+            self.values.read_payload_log_asc_index(
+                self.payload_log_leaf(src),
+                bucket.payload_log_head(),
+                asc_log_index,
+                width,
+                &mut buf,
+            )?;
+        }
         Ok(buf)
     }
 
