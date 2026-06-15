@@ -1688,7 +1688,7 @@ fn test_insert_edge() {
 #[test]
 fn test_insert_path() {
     let plan = plan_statement("INSERT (a:Person {name: 'A'})-[:KNOWS]->(b:Person {name: 'B'})");
-    // Should have InsertVertex, InsertEdge, InsertVertex in that order.
+    // Vertices are planned before edges so both endpoints exist when InsertEdge runs.
     let type_seq: Vec<&str> = plan
         .ops
         .iter()
@@ -1700,8 +1700,8 @@ fn test_insert_path() {
         .collect();
     assert_eq!(
         type_seq,
-        vec!["vertex", "edge", "vertex"],
-        "expected vertex-edge-vertex, got: {:?}",
+        vec!["vertex", "vertex", "edge"],
+        "expected vertex-vertex-edge, got: {:?}",
         type_seq
     );
 }

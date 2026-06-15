@@ -429,6 +429,7 @@ mod tests {
 
     const G: GraphId = GraphId::from_raw(1);
 
+    #[derive(Default)]
     struct TestGraphLookup(BTreeMap<String, GraphId>);
 
     impl TestGraphLookup {
@@ -439,12 +440,6 @@ mod tests {
                     .map(|(name, id)| (name.to_string(), GraphId::from_raw(*id)))
                     .collect(),
             )
-        }
-    }
-
-    impl Default for TestGraphLookup {
-        fn default() -> Self {
-            Self(BTreeMap::new())
         }
     }
 
