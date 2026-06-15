@@ -41,7 +41,10 @@ explicit `ResolvedLabelTable`.
 - Existing edge/bucket memories
 - `payload_slab` — byte CSR backing store (`EdgePayloadStore`)
 - `payload_free_spans` / `payload_free_span_by_start` — retired byte-span index
-- `payload_log` — per-PMA-leaf overflow log (`LVL`, **16 B** entries: `prev`, `src`, **8 B** `PayloadLogCell`)
+- `payload_log` — per-PMA-leaf overflow log (`LVL`). **Current implementation:** 17 B
+  entries: `prev`, `src`, 9 B tagged `PayloadLogCell`. **Target under review:** 16 B
+  entries with tag bits moved to `src_and_tag`; see
+  [ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md).
 - `payload_blobs` — `StableBTreeMap` for payloads wider than 8 bytes on overflow
 
 When an edge insert lands in the edge overflow log, the paired payload bytes are written to the payload log at the same entry index; `LabelBucket::payload_log_head` tracks the chain head (parallel to `overflow_log_head`).
@@ -50,12 +53,16 @@ When an edge insert lands in the edge overflow log, the paired payload bytes are
 
 Layout mirrors `EdgeStore` segment logs (`LLG`): one index word per leaf segment plus fixed-capacity entry slots. `push_vertex` grows the payload log segment tree in lockstep with the edge log. Span rewrites fold log-backed payloads back onto the byte slab and clear the segment log.
 
-### `PayloadLogCell` (8 bytes)
+### `PayloadLogCell`
+
+**Current implementation:** 9 bytes (`tag` + 8 payload/blob metadata bytes).
+**Target under review:** 8 bytes, with the tag moved to the payload log metadata word
+([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md)).
 
 | Tag    | When                    | Storage                                          |
 | ------ | ----------------------- | ------------------------------------------------ |
-| INLINE | `payload_byte_width <= 7` | Payload in cell bytes `1..`; width from bucket   |
-| BLOB   | `payload_byte_width > 7`  | Tag + `u16` width in cell; body in `payload_blobs` |
+| INLINE | Current: `payload_byte_width <= 8`; target: keep up to 8 B inline | Payload bytes in the cell; width from bucket |
+| BLOB   | `payload_byte_width > 8` | Current: tag + `u16` width in cell; target: tag in `src_and_tag`, width from bucket; body in `payload_blobs` |
 
 Blob identity is derived from `(leaf_segment, entry_idx)` via `EdgePayloadBlobId::from_log_site` (not stored in the cell).
 
@@ -75,4 +82,5 @@ Blob identity is derived from `(leaf_segment, entry_idx)` via `EdgePayloadBlobId
 
 - [payload-first-traversal.md](./payload-first-traversal.md)
 - [lara-and-facade.md](./lara-and-facade.md)
+- [ADR 0016: Overflow log tombstones and `src` field layout review](../adr/0016-overflow-log-tombstones-and-src-fields.md)
 - `crates/ic-stable-lara/src/lara/edge_payload/`
