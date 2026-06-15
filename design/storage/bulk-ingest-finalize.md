@@ -1,6 +1,6 @@
 # Bulk ingest finalize (maintenance reclaim)
 
-**Status:** Partially implemented — P0 `GraphStore::finalize_bulk_ingest` (2026-06-15); P1 canister wire + handler (2026-06-15); P2 mutation executor `CALL GLEAPH.FINALIZE_*` + `GLEAPH.VERTEX_LIST` (2026-06-15). P3+ (router hot-vertex tracking) not implemented.
+**Status:** Partially implemented — P0–P2 (2026-06-15); P3 router auto-finalize after DML (2026-06-15). P4 (canbench WSP) optional.
 
 ## Purpose
 
@@ -127,7 +127,9 @@ type BulkIngestFinalizeResult = record {
 
 **Limits:** `forward_vertices.len() + reverse_vertices.len() <= 256` per call (argument size and queue growth).
 
-**Not implemented:** router orchestration and GQL `CALL` execution.
+**Not implemented:** explicit application metadata hub lists.
+
+**Implemented (P3):** graph DML execution reports `ExecutePlanResult.hot_forward_vertices` (sources with `>= HOT_FORWARD_EDGE_INSERT_THRESHOLD` forward edge inserts in the batch). Router `bulk_ingest_finalize` calls `finalize_bulk_ingest` per shard after successful DML when the plan has no explicit `GLEAPH.FINALIZE_*` `CALL`.
 
 **Implemented (P1):** `finalize_bulk_ingest` update endpoint with `BulkIngestFinalizeArgs` / `BulkIngestFinalizeResult` in `gleaph-graph-kernel`; handler in `crates/graph/src/canister/handlers.rs`; router client in `crates/router/src/graph_client.rs`.
 
@@ -264,7 +266,7 @@ baseline when persisting results after `c16a247f`; it measures real ingest cost.
 | P0 | `GraphStore::finalize_bulk_ingest` + unit tests | **Implemented** — `facade/store/maintenance.rs`; WSP bench setup calls finalize on `src` |
 | P1 | Canister wire + handler | **Implemented** — `finalize_bulk_ingest` update; PocketIC router call |
 | P2 | Mutation executor: `CallProcedure` for `GLEAPH.FINALIZE_*` + `GLEAPH.VERTEX_LIST` | **Implemented** — `plan/mutation/gleaph_finalize.rs`; executor + gql_run tests |
-| P3 | Router hot-vertex tracking after DML | 50k ingest → query ix regression |
+| P3 | Router hot-vertex tracking after DML | **Implemented** — `hot_forward_vertices` wire hint + router `bulk_ingest_finalize` |
 | P4 | canbench WSP (optional) | Compare with/without explicit src finalize |
 
 ## Risks and open questions

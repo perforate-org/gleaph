@@ -178,10 +178,6 @@ pub async fn backfill_edge_property_postings(
     call_graph_result(graph, "backfill_edge_property_postings", args).await
 }
 
-#[expect(
-    dead_code,
-    reason = "wired for router bulk-ingest finalize orchestration (P3 follow-up)"
-)]
 pub async fn finalize_bulk_ingest(
     graph: Principal,
     args: BulkIngestFinalizeArgs,

@@ -37,6 +37,9 @@ pub struct PlanMutationBindings {
     pub label_stats_delta: LabelStatsDelta,
     /// `CALL ... YIELD` columns from Gleaph finalize procedures in this plan.
     pub procedure_yields: BTreeMap<String, Value>,
+    forward_edge_insert_counts: BTreeMap<VertexId, u32>,
+    /// Forward hubs from this DML batch (sources with enough edge inserts).
+    pub hot_forward_vertices: Vec<VertexId>,
 }
 
 impl PlanMutationBindings {
@@ -163,6 +166,7 @@ fn execute_ops_with_bindings(
                 if let Some(variable) = variable {
                     bindings.edges.insert(variable.to_string(), handle);
                 }
+                record_forward_edge_insert(bindings, src_id);
             }
             PlanOp::UseGraph {
                 sub_plan: Some(sub_plan),
@@ -230,6 +234,7 @@ fn execute_ops_with_bindings(
             other => return Err(PlanMutationError::UnsupportedOp(plan_op_name(other))),
         }
     }
+    finish_hot_forward_vertices(bindings);
     Ok(())
 }
 
@@ -308,6 +313,7 @@ async fn execute_ops_with_bindings_async(
                 if let Some(variable) = variable {
                     bindings.edges.insert(variable.to_string(), handle);
                 }
+                record_forward_edge_insert(bindings, src_id);
             }
             PlanOp::UseGraph {
                 sub_plan: Some(sub_plan),
@@ -382,6 +388,7 @@ async fn execute_ops_with_bindings_async(
             other => return Err(PlanMutationError::UnsupportedOp(plan_op_name(other))),
         }
     }
+    finish_hot_forward_vertices(bindings);
     Ok(())
 }
 
@@ -568,6 +575,28 @@ fn execute_remove_item(
             })
         }
     }
+}
+
+fn record_forward_edge_insert(bindings: &mut PlanMutationBindings, src_id: VertexId) {
+    *bindings
+        .forward_edge_insert_counts
+        .entry(src_id)
+        .or_insert(0) += 1;
+}
+
+fn finish_hot_forward_vertices(bindings: &mut PlanMutationBindings) {
+    use gleaph_graph_kernel::federation::HOT_FORWARD_EDGE_INSERT_THRESHOLD;
+
+    bindings.hot_forward_vertices = bindings
+        .forward_edge_insert_counts
+        .iter()
+        .filter(|(_, count)| **count >= HOT_FORWARD_EDGE_INSERT_THRESHOLD)
+        .map(|(vid, _)| *vid)
+        .collect();
+    bindings
+        .hot_forward_vertices
+        .sort_by_key(|vid| u32::from(*vid));
+    bindings.hot_forward_vertices.dedup();
 }
 
 fn is_mutation_op(op: &PlanOp) -> bool {
@@ -1931,6 +1960,55 @@ mod tests {
             }),
             Vec::<(PropertyId, Value)>::new()
         );
+    }
+
+    #[test]
+    fn tracks_hot_forward_vertices_from_repeated_edge_inserts() {
+        let store = GraphStore::new();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("src".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("dst1".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("dst2".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: None,
+                    src: "src".into(),
+                    dst: "dst1".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: None,
+                    src: "src".into(),
+                    dst: "dst2".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec![],
+                    properties: vec![],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("insert hub edges");
+        let src = bindings.vertices["src"];
+        assert_eq!(bindings.hot_forward_vertices, vec![src]);
     }
 
     fn vertex_list_expr(var: &str) -> Expr {

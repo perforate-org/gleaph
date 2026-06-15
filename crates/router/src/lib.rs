@@ -3,6 +3,7 @@
 #[cfg(feature = "canbench")]
 mod bench;
 
+mod bulk_ingest_finalize;
 mod canister;
 mod edge_index_direction;
 mod execution_path;

@@ -620,6 +620,7 @@ async fn dispatch_multi_graph_use_segments(
             ExecutePlanResult {
                 row_count: result.row_count,
                 rows_blob: result.rows_blob,
+                hot_forward_vertices: Vec::new(),
             },
             FederatedMergeMode::UnionRows,
         )
@@ -1007,6 +1008,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                         gleaph_graph_kernel::plan_exec::ExecutePlanResult {
                             row_count: entry.row_count,
                             rows_blob: None,
+                            hot_forward_vertices: Vec::new(),
                         },
                         merge_mode.clone(),
                     )
@@ -1037,6 +1039,15 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 dispatch.graph_canister,
                 dispatch.shard_id,
                 mutation_id,
+            )
+            .await?;
+        }
+        if has_dml {
+            crate::bulk_ingest_finalize::maybe_finalize_hot_vertices_after_dml(
+                dispatch.graph_canister,
+                dispatch.shard_id,
+                plans,
+                &result.hot_forward_vertices,
             )
             .await?;
         }
@@ -1957,6 +1968,7 @@ mod tests {
         let merged = ExecutePlanResult {
             row_count: 1,
             rows_blob: Some(rows_blob.clone()),
+            hot_forward_vertices: Vec::new(),
         };
         let out = GqlQueryResult::from_merged(&merged);
         assert_eq!(out.row_count, 1);

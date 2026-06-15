@@ -12,7 +12,10 @@ mod router_error;
 mod shard_id;
 
 pub use backfill_shard_state::BackfillShardState;
-pub use bulk_ingest_finalize::{BulkIngestFinalizeArgs, BulkIngestFinalizeResult};
+pub use bulk_ingest_finalize::{
+    BULK_INGEST_FINALIZE_MAX_DRAIN_RETRIES, BulkIngestFinalizeArgs, BulkIngestFinalizeResult,
+    HOT_FORWARD_EDGE_INSERT_THRESHOLD, is_gleaph_finalize_procedure_name,
+};
 pub use edge_posting_backfill::{EdgePostingBackfillArgs, EdgePostingBackfillResult};
 pub use encoded::{
     ENCODED_EDGE_ID_BYTES, ENCODED_VERTEX_ID_BYTES, ElementIdEncodingKey, EncodedEdgeId,

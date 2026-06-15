@@ -125,12 +125,20 @@ struct TransactionBlockRun {
     label_stats_delta: LabelStatsDelta,
     emitted_delta_first_seq: Option<ShardEventSeq>,
     emitted_delta_last_seq: Option<ShardEventSeq>,
+    hot_forward_vertices: Vec<u32>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct WirePlanRunResult {
     pub row_count: usize,
     pub rows_blob: Option<Vec<u8>>,
+    pub hot_forward_vertices: Vec<u32>,
+}
+
+fn merge_hot_forward_vertices(target: &mut Vec<u32>, source: &[VertexId]) {
+    target.extend(source.iter().map(|vid| u32::from(*vid)));
+    target.sort_unstable();
+    target.dedup();
 }
 
 fn trap_wire_mutation_failure(error: crate::plan::PlanMutationError) -> ! {
@@ -196,6 +204,7 @@ async fn run_transaction_block(
     let mut last_read_row_count: usize = 0;
     let mut last_read_plan_rows: Vec<PlanQueryRow> = Vec::new();
     let mut label_stats_delta = LabelStatsDelta::default();
+    let mut hot_forward_vertices = Vec::new();
     for stmt in block.iter_statements() {
         if matches!(stmt, Statement::Session(_)) {
             continue;
@@ -203,6 +212,7 @@ async fn run_transaction_block(
         let plan = plan_statement(stmt).map_err(|e| GqlRunError::Plan(e.to_string()))?;
         if plan_needs_mutation_executor(&plan) {
             let mutation = execute_plan_mutations_async(store, &plan, execution.clone()).await?;
+            merge_hot_forward_vertices(&mut hot_forward_vertices, &mutation.hot_forward_vertices);
             merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
             pending::flush_pending(index).await?;
             crate::index::edge_pending::flush_pending(index).await?;
@@ -246,6 +256,7 @@ async fn run_transaction_block(
         label_stats_delta,
         emitted_delta_first_seq: None,
         emitted_delta_last_seq: None,
+        hot_forward_vertices,
     })
 }
 
@@ -502,6 +513,7 @@ async fn run_wire_plans_inner(
                 label_stats_delta: LabelStatsDelta::default(),
                 emitted_delta_first_seq: journal.emitted_delta_first_seq,
                 emitted_delta_last_seq: journal.emitted_delta_last_seq,
+                hot_forward_vertices: Vec::new(),
             });
         }
         return Err(GqlRunError::Plan(format!(
@@ -535,6 +547,7 @@ async fn run_wire_plans_inner(
     let mut label_stats_delta = LabelStatsDelta::default();
     let mut emitted_delta_first_seq = None;
     let mut emitted_delta_last_seq = None;
+    let mut hot_forward_vertices = Vec::new();
 
     let (mut seed_rows, mut skip_index) = if let Some(ref s) = seeds {
         seed_initial_rows(store, s)?
@@ -574,6 +587,7 @@ async fn run_wire_plans_inner(
                 );
             }
             merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
+            merge_hot_forward_vertices(&mut hot_forward_vertices, &mutation.hot_forward_vertices);
             pending::flush_pending(index).await?;
             crate::index::edge_pending::flush_pending(index).await?;
             label_pending::flush_pending(index).await?;
@@ -637,6 +651,7 @@ async fn run_wire_plans_inner(
         label_stats_delta,
         emitted_delta_first_seq,
         emitted_delta_last_seq,
+        hot_forward_vertices,
     })
 }
 
@@ -711,6 +726,7 @@ pub async fn run_wire_plans_last_read_row_count(
     Ok(WirePlanRunResult {
         row_count: run.last_read_row_count,
         rows_blob,
+        hot_forward_vertices: run.hot_forward_vertices,
     })
 }
 

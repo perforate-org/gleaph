@@ -38,10 +38,12 @@ pub fn merge_execute_plan_result(
     acc.rows_blob = match &mode {
         FederatedMergeMode::UnionRows => {
             acc.row_count = merge_add_row_count(acc.row_count, shard.row_count);
+            merge_hot_forward_vertices(&mut acc.hot_forward_vertices, &shard.hot_forward_vertices);
             IcWirePlanQueryResult::merge_optional_batch_blobs(acc.rows_blob.take(), shard.rows_blob)
                 .map_err(|e| e.to_string())?
         }
         FederatedMergeMode::Aggregate(spec) => {
+            merge_hot_forward_vertices(&mut acc.hot_forward_vertices, &shard.hot_forward_vertices);
             let merged =
                 merge_optional_aggregate_blobs(acc.rows_blob.take(), shard.rows_blob, spec)?;
             acc.row_count = merged
@@ -64,7 +66,14 @@ pub fn empty_execute_plan_result() -> ExecutePlanResult {
     ExecutePlanResult {
         row_count: 0,
         rows_blob: None,
+        hot_forward_vertices: Vec::new(),
     }
+}
+
+fn merge_hot_forward_vertices(target: &mut Vec<u32>, source: &[u32]) {
+    target.extend_from_slice(source);
+    target.sort_unstable();
+    target.dedup();
 }
 
 #[cfg(test)]
@@ -116,6 +125,7 @@ mod tests {
             ExecutePlanResult {
                 row_count: 1,
                 rows_blob: Some(sample_rows_blob(&[1])),
+                hot_forward_vertices: vec![1],
             },
             FederatedMergeMode::UnionRows,
         )
@@ -125,6 +135,7 @@ mod tests {
             ExecutePlanResult {
                 row_count: 2,
                 rows_blob: Some(sample_rows_blob(&[2, 3])),
+                hot_forward_vertices: vec![2, 3],
             },
             FederatedMergeMode::UnionRows,
         )
@@ -143,6 +154,7 @@ mod tests {
             })
             .collect::<Vec<_>>();
         assert_eq!(values, vec![1, 2, 3]);
+        assert_eq!(acc.hot_forward_vertices, vec![1, 2, 3]);
     }
 
     #[test]
@@ -170,6 +182,7 @@ mod tests {
             ExecutePlanResult {
                 row_count: 1,
                 rows_blob: Some(count_blob(5)),
+                hot_forward_vertices: Vec::new(),
             },
             FederatedMergeMode::Aggregate(spec.clone()),
         )
@@ -179,6 +192,7 @@ mod tests {
             ExecutePlanResult {
                 row_count: 1,
                 rows_blob: Some(count_blob(3)),
+                hot_forward_vertices: Vec::new(),
             },
             FederatedMergeMode::Aggregate(spec),
         )

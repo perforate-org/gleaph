@@ -44,11 +44,14 @@ pub struct ExecutePlanArgs {
     pub resolved_properties: Option<ResolvedPropertyTable>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanResult {
     pub row_count: u64,
     /// Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
     pub rows_blob: Option<Vec<u8>>,
+    /// Forward out-adjacency hubs from a DML batch (router P3 auto-finalize hint).
+    #[serde(default)]
+    pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
 }
 
 /// Router read-path result: merged row count and optional materialized rows.
@@ -198,10 +201,23 @@ mod tests {
     use candid::{Decode, Encode};
 
     #[test]
+    fn execute_plan_result_roundtrip_with_hot_forward_vertices() {
+        let result = ExecutePlanResult {
+            row_count: 1,
+            rows_blob: None,
+            hot_forward_vertices: vec![7, 42],
+        };
+        let bytes = Encode!(&result).expect("encode");
+        let decoded: ExecutePlanResult = Decode!(&bytes, ExecutePlanResult).expect("decode");
+        assert_eq!(result, decoded);
+    }
+
+    #[test]
     fn execute_plan_result_roundtrip_with_rows_blob() {
         let result = ExecutePlanResult {
             row_count: 2,
             rows_blob: Some(vec![1, 2, 3]),
+            hot_forward_vertices: Vec::new(),
         };
         let bytes = Encode!(&result).expect("encode");
         let decoded: ExecutePlanResult = Decode!(&bytes, ExecutePlanResult).expect("decode");

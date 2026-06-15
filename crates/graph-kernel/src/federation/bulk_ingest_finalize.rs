@@ -4,6 +4,31 @@ use super::{LocalVertexId, ShardId};
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
 
+/// Minimum forward edge inserts on one source vertex in a DML batch to treat it as a hot hub.
+pub const HOT_FORWARD_EDGE_INSERT_THRESHOLD: u32 = 2;
+
+/// Maximum router-side finalize/drain retries when the wasm instruction budget stops early.
+pub const BULK_INGEST_FINALIZE_MAX_DRAIN_RETRIES: u32 = 8;
+
+const FINALIZE_BULK_INGEST: &[&str] = &["GLEAPH", "FINALIZE_BULK_INGEST"];
+const FINALIZE_FORWARD_EDGE_SPAN: &[&str] = &["GLEAPH", "FINALIZE_FORWARD_EDGE_SPAN"];
+const DRAIN_DEFERRED_MAINTENANCE: &[&str] = &["GLEAPH", "DRAIN_DEFERRED_MAINTENANCE"];
+
+/// True for Gleaph bulk-ingest finalize procedure names on the wire.
+pub fn is_gleaph_finalize_procedure_name(parts: &[impl AsRef<str>]) -> bool {
+    procedure_parts_match(parts, FINALIZE_BULK_INGEST)
+        || procedure_parts_match(parts, FINALIZE_FORWARD_EDGE_SPAN)
+        || procedure_parts_match(parts, DRAIN_DEFERRED_MAINTENANCE)
+}
+
+fn procedure_parts_match(parts: &[impl AsRef<str>], expected: &[&str]) -> bool {
+    parts.len() == expected.len()
+        && parts
+            .iter()
+            .zip(expected)
+            .all(|(part, exp)| part.as_ref() == *exp)
+}
+
 /// Router → graph: enqueue and/or drain deferred maintenance after bulk ingest.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct BulkIngestFinalizeArgs {

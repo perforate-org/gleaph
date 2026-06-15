@@ -165,6 +165,7 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
     Ok(ExecutePlanResult {
         row_count: run.row_count as u64,
         rows_blob: run.rows_blob,
+        hot_forward_vertices: run.hot_forward_vertices,
     })
 }
 
