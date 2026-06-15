@@ -2623,6 +2623,85 @@ fn reverse_fixed_label_edge_payload_predicate_uses_batch_kernel() {
     assert_eq!(out[0].1.payload_bytes_slice(), &7u16.to_le_bytes());
 }
 
+#[test]
+fn overflow_hub_edge_payload_predicate_skips_dense_payload_probe() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgePayloadEncoding, EdgePayloadProfile};
+    let hub = store
+        .insert_vertex_named(["OverflowProbeHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    let noise_dst = store
+        .insert_vertex_named(["OverflowProbeNoiseDst"], Vec::<(&str, Value)>::new())
+        .expect("noise dst");
+    let match_dst = store
+        .insert_vertex_named(["OverflowProbeMatchDst"], Vec::<(&str, Value)>::new())
+        .expect("match dst");
+    let label_id = crate::test_labels::edge_label_id_for_name("OverflowProbeRoad");
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        EdgePayloadProfile {
+            byte_width: 2,
+            encoding: EdgePayloadEncoding::WeightRawU16,
+        },
+    );
+    let storage_label =
+        ic_stable_lara::BucketLabelKey::from_raw(label_id.pack(EdgeDirectedness::Directed).raw());
+    for _ in 0..33 {
+        store
+            .insert_directed_edge_with_payload_bytes(
+                hub,
+                noise_dst,
+                Some(label_id),
+                &1u16.to_le_bytes(),
+            )
+            .unwrap();
+    }
+    for _ in 0..3 {
+        store
+            .insert_directed_edge_with_payload_bytes(
+                hub,
+                match_dst,
+                Some(label_id),
+                &7u16.to_le_bytes(),
+            )
+            .unwrap();
+    }
+    assert!(
+        !store
+            .out_label_bucket_dense_payload_batch_eligible(hub, storage_label)
+            .expect("eligibility")
+    );
+
+    let equality = PreparedEdgePayloadPredicate::prepare(
+        None,
+        label_id,
+        &EdgePayloadPredicate {
+            op: CmpOp::Eq,
+            value: ScanValue::Literal(Value::Uint16(7)),
+        },
+        &params(),
+    )
+    .expect("prepare")
+    .expect("equality");
+    let mut out = Vec::new();
+    super::candidates::expand_candidates_matching_edge_payload_into(
+        &store,
+        hub,
+        EdgeDirection::PointingRight,
+        label_id,
+        EdgeSequenceOrder::Descending,
+        &equality,
+        &mut out,
+    )
+    .expect("expand candidates");
+
+    assert_eq!(out.len(), 3);
+    assert!(
+        out.iter()
+            .all(|(dst, _)| matches!(dst, ExpandDst::Local(id) if *id == match_dst))
+    );
+}
+
 fn f32_vector_bytes(values: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(values.len() * 4);
     for value in values {

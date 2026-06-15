@@ -81,6 +81,24 @@ impl GraphStore {
         })
     }
 
+    pub(crate) fn out_label_bucket_dense_payload_batch_eligible(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+    ) -> Result<bool, GraphStoreError> {
+        Ok(GRAPH
+            .with_borrow(|graph| graph.out_bucket_dense_payload_batch_eligible(vertex_id, label))?)
+    }
+
+    pub(crate) fn in_label_bucket_dense_payload_batch_eligible(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+    ) -> Result<bool, GraphStoreError> {
+        Ok(GRAPH
+            .with_borrow(|graph| graph.in_bucket_dense_payload_batch_eligible(vertex_id, label))?)
+    }
+
     pub(crate) fn visit_in_payload_value_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,

@@ -1026,7 +1026,29 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Visits forward outgoing payload bytes for one label in `order` (dense buckets only).
+    /// Returns whether forward `(src, label_id)` supports dense payload-only phase 1.
+    pub fn out_bucket_dense_payload_batch_eligible(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<bool, DeferredBidirectionalLabeledError> {
+        self.forward
+            .out_bucket_dense_payload_batch_eligible(src, label_id)
+            .map_err(DeferredBidirectionalLabeledError::Forward)
+    }
+
+    /// Returns whether reverse `(dst, label_id)` supports dense payload-only phase 1.
+    pub fn in_bucket_dense_payload_batch_eligible(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<bool, DeferredBidirectionalLabeledError> {
+        self.reverse
+            .out_bucket_dense_payload_batch_eligible(dst, label_id)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
+    /// Visits forward outgoing payload bytes for one label in `order` (dense, hybrid, and sparse).
     pub fn visit_out_payload_value_batches_for_label<Visit>(
         &self,
         src: VertexId,
@@ -1078,7 +1100,7 @@ where
             .map_err(DeferredBidirectionalLabeledError::Forward)
     }
 
-    /// Visits reverse outgoing payload bytes for one label in `order` (dense buckets only).
+    /// Visits reverse outgoing payload bytes for one label in `order` (dense, hybrid, and sparse).
     pub fn visit_in_payload_value_batches_for_label<Visit>(
         &self,
         dst: VertexId,

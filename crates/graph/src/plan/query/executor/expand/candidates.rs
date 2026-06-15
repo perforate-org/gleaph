@@ -75,13 +75,23 @@ fn try_expand_matching_edge_payload_payload_first(
     predicate: &PreparedEdgePayloadPredicate,
     out: &mut Vec<ExpandCandidate>,
 ) -> Result<bool, PlanQueryError> {
-    let mut saw_dense = false;
+    let dense_payload_batch = match direction {
+        EdgeDirection::PointingRight => {
+            store.out_label_bucket_dense_payload_batch_eligible(src_id, storage_label)?
+        }
+        EdgeDirection::PointingLeft => {
+            store.in_label_bucket_dense_payload_batch_eligible(src_id, storage_label)?
+        }
+        other => return Err(PlanQueryError::UnsupportedDirection(other)),
+    };
+    // Hybrid/sparse overflow hubs use combined batch only; skip phase 1 probe (M6a).
+    if !dense_payload_batch {
+        return Ok(false);
+    }
+
     let mut pending = Vec::new();
     let mut value_scratch = LabeledPayloadValueBatchScratch::default();
     let mut visit_values = |batch: ic_stable_lara::labeled::LabeledPayloadValueBatch<'_>| {
-        if batch.dense {
-            saw_dense = true;
-        }
         let mut matches = Vec::new();
         predicate.kernel.collect_matching_value_indices(
             batch.values,
@@ -120,10 +130,6 @@ fn try_expand_matching_edge_payload_payload_first(
             )
             .map_err(GraphStoreError::from)?,
         other => return Err(PlanQueryError::UnsupportedDirection(other)),
-    }
-
-    if !saw_dense {
-        return Ok(false);
     }
 
     if pending.is_empty() {

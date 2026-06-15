@@ -73,6 +73,29 @@ fn emit_edge_payload_batch<'a, E, Visit>(
     });
 }
 
+fn emit_payload_value_batch<'a, Visit>(
+    scratch: &'a LabeledPayloadValueBatchScratch,
+    visit: &mut Visit,
+    label_id: BucketLabelKey,
+    byte_width: u16,
+    order: OutEdgeOrder,
+    dense: bool,
+) where
+    Visit: for<'b> FnMut(LabeledPayloadValueBatch<'b>),
+{
+    if scratch.slot_indices.is_empty() {
+        return;
+    }
+    visit(LabeledPayloadValueBatch {
+        label_id,
+        byte_width,
+        order,
+        slot_indices: &scratch.slot_indices,
+        values: &scratch.values,
+        dense,
+    });
+}
+
 fn order_slot_indices(slots: &[u32], order: OutEdgeOrder) -> Vec<u32> {
     let mut ordered = slots.to_vec();
     match order {
@@ -1099,11 +1122,32 @@ where
         }
     }
 
+    /// Returns whether `(src, label_id)` is eligible for dense payload-only batch traversal.
+    ///
+    /// Hybrid and sparse overflow buckets return `false`; predicate expand should use the
+    /// combined edge+payload batch path without probing phase 1 first.
+    pub fn out_bucket_dense_payload_batch_eligible(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+    ) -> Result<bool, LabeledOperationError> {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            return Ok(false);
+        }
+        let bucket = match self.find_bucket(src, &vertex, label_id)? {
+            BucketSearch::Found { bucket, .. } => bucket,
+            BucketSearch::Missing { .. } => return Ok(false),
+        };
+        Ok(super::super::invariants::bucket_dense_payload_batch_eligible(&bucket))
+    }
+
     /// Visits outgoing payload bytes for one label as batches without materializing edge rows.
     ///
-    /// Only **dense** resident buckets are supported (`design/storage/payload-first-traversal.md`).
-    /// Sparse or log-backed buckets are a no-op; callers must use
-    /// [`Self::visit_out_edge_payload_batches_for_label`] instead.
+    /// Dense buckets bulk-read the payload slab; hybrid buckets combine slab bulk reads with
+    /// per-log-entry payload resolution; sparse buckets walk the span iterator and emit slot
+    /// indices with attached payload bytes only.
     pub fn visit_out_payload_value_batches_for_label<Visit>(
         &self,
         src: VertexId,
@@ -1121,16 +1165,47 @@ where
         if vertex.is_default_edge_labeled() {
             return Ok(());
         }
-        let bucket = match self.find_bucket(src, &vertex, label_id)? {
-            BucketSearch::Found { bucket, .. } => bucket,
+        let (slot, bucket) = match self.find_bucket(src, &vertex, label_id)? {
+            BucketSearch::Found { slot, bucket } => (slot, bucket),
             BucketSearch::Missing { .. } => return Ok(()),
         };
-        if !super::super::invariants::bucket_dense_payload_batch_eligible(&bucket) {
+        if bucket.degree() == 0 || bucket.payload_byte_width() == 0 {
             return Ok(());
         }
+        if super::super::invariants::bucket_dense_payload_batch_eligible(&bucket) {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _bench_scope = bench_scope("labeled_visit_dense_out_payload_value_batches");
+            return self.visit_dense_out_payload_value_batches_for_bucket(
+                bucket, order, scratch, &mut visit,
+            );
+        }
+        let bucket_index = Self::labeled_bucket_descriptor_index(&vertex, slot)?;
+        if bucket_hybrid_slab_payload_batch_eligible(self, src, &bucket) {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _bench_scope = bench_scope("labeled_visit_hybrid_out_payload_value_batches");
+            return self.visit_hybrid_out_payload_value_batches_for_bucket(
+                src,
+                &vertex,
+                bucket_index,
+                slot,
+                bucket,
+                order,
+                scratch,
+                &mut visit,
+            );
+        }
+
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
-        let _bench_scope = bench_scope("labeled_visit_dense_out_payload_value_batches");
-        self.visit_dense_out_payload_value_batches_for_bucket(bucket, order, scratch, &mut visit)
+        let _bench_scope = bench_scope("labeled_visit_sparse_out_payload_value_batches");
+        self.visit_sparse_out_payload_value_batches_for_bucket(
+            src,
+            &vertex,
+            bucket_index,
+            bucket,
+            order,
+            scratch,
+            &mut visit,
+        )
     }
 
     fn visit_dense_out_payload_value_batches_for_bucket<Visit>(
@@ -1647,6 +1722,290 @@ where
                 );
                 Ok(())
             }
+        }
+    }
+
+    fn visit_dense_out_payload_value_batches_for_slab_prefix<Visit>(
+        &self,
+        bucket: LabelBucket,
+        scan_slots: u32,
+        deleted_slab_offsets: &[u32],
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        visit: &mut Visit,
+        dense: bool,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: for<'b> FnMut(LabeledPayloadValueBatch<'b>),
+    {
+        if scan_slots == 0 {
+            return Ok(());
+        }
+        let width = usize::from(bucket.payload_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width).max(1);
+        let label_id = bucket.bucket_label_key();
+        let mut remaining = scan_slots;
+        while remaining > 0 {
+            let take = remaining.min(batch_edges as u32);
+            let first_slot = match order {
+                OutEdgeOrder::Descending => remaining - take,
+                OutEdgeOrder::Ascending => scan_slots - remaining,
+            };
+            scratch.clear();
+            scratch.slot_indices.reserve(take as usize);
+            scratch.values.reserve(take as usize * width);
+
+            let edge_bytes = take as usize * E::BYTES;
+            let payload_bytes = take as usize * width;
+            let mut raw_edges = vec![0u8; edge_bytes];
+            self.edges
+                .read_slots_contiguous(bucket.edge_start() + u64::from(first_slot), &mut raw_edges);
+            let payload_offset =
+                super::super::invariants::payload_byte_offset_at_slot(&bucket, first_slot)?;
+            let mut raw_values = vec![0u8; payload_bytes];
+            self.values.read_bytes(payload_offset, &mut raw_values);
+
+            match order {
+                OutEdgeOrder::Ascending => {
+                    for i in 0..take as usize {
+                        let slot = first_slot + i as u32;
+                        if slab_slot_deleted(slot, deleted_slab_offsets) {
+                            continue;
+                        }
+                        let edge_off = i * E::BYTES;
+                        let value_off = i * width;
+                        let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES])
+                            .with_slot_index(slot)
+                            .with_label_id(label_id.raw());
+                        if edge.is_deleted_slot() {
+                            continue;
+                        }
+                        scratch.slot_indices.push(slot);
+                        scratch
+                            .values
+                            .extend_from_slice(&raw_values[value_off..value_off + width]);
+                    }
+                }
+                OutEdgeOrder::Descending => {
+                    for i in (0..take as usize).rev() {
+                        let slot = first_slot + i as u32;
+                        if slab_slot_deleted(slot, deleted_slab_offsets) {
+                            continue;
+                        }
+                        let edge_off = i * E::BYTES;
+                        let value_off = i * width;
+                        let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES])
+                            .with_slot_index(slot)
+                            .with_label_id(label_id.raw());
+                        if edge.is_deleted_slot() {
+                            continue;
+                        }
+                        scratch.slot_indices.push(slot);
+                        scratch
+                            .values
+                            .extend_from_slice(&raw_values[value_off..value_off + width]);
+                    }
+                }
+            }
+
+            emit_payload_value_batch(
+                scratch,
+                visit,
+                label_id,
+                bucket.payload_byte_width(),
+                order,
+                dense,
+            );
+            remaining -= take;
+        }
+        Ok(())
+    }
+
+    fn visit_hybrid_out_payload_value_batches_for_bucket<Visit>(
+        &self,
+        src: VertexId,
+        vertex: &LabeledVertex,
+        bucket_index: u32,
+        bucket_slot: u64,
+        bucket: LabelBucket,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        visit: &mut Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: for<'b> FnMut(LabeledPayloadValueBatch<'b>),
+    {
+        let successor_start =
+            self.bucket_successor_start_after_bucket(vertex, bucket_index, &bucket)?;
+        let acc = LabelEdgeSpanAccess::new(&self.buckets, bucket_slot, successor_start, src);
+        let label_id = bucket.bucket_label_key();
+        let width = usize::from(bucket.payload_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width).max(1);
+        let log_chains = self.bucket_payload_log_chains_opt(src, &bucket);
+
+        match order {
+            OutEdgeOrder::Descending => {
+                let OutOverflowDescParts {
+                    log_entries,
+                    deleted_slab_offsets,
+                    slab_slots,
+                    mut next_log_slot,
+                } = self
+                    .edges
+                    .out_edges_iter(&acc, VertexId::from(0))?
+                    .into_overflow_desc_parts();
+                scratch.clear();
+                for edge_opt in log_entries {
+                    if scratch.slot_indices.len() >= batch_edges {
+                        emit_payload_value_batch(
+                            scratch,
+                            visit,
+                            label_id,
+                            bucket.payload_byte_width(),
+                            order,
+                            false,
+                        );
+                        scratch.clear();
+                    }
+                    let Some(edge) = edge_opt else {
+                        next_log_slot = next_log_slot.saturating_sub(1);
+                        continue;
+                    };
+                    let slot = next_log_slot;
+                    next_log_slot = next_log_slot.saturating_sub(1);
+                    let edge = edge.with_slot_index(slot).with_label_id(label_id.raw());
+                    let payload = self.read_bucket_payload_for_edge(
+                        src,
+                        &bucket,
+                        &edge,
+                        log_chains.as_ref(),
+                    )?;
+                    scratch.slot_indices.push(slot);
+                    scratch.values.extend_from_slice(&payload);
+                }
+                emit_payload_value_batch(
+                    scratch,
+                    visit,
+                    label_id,
+                    bucket.payload_byte_width(),
+                    order,
+                    false,
+                );
+                self.visit_dense_out_payload_value_batches_for_slab_prefix(
+                    bucket,
+                    slab_slots,
+                    &deleted_slab_offsets,
+                    order,
+                    scratch,
+                    visit,
+                    true,
+                )
+            }
+            OutEdgeOrder::Ascending => {
+                let OutOverflowAscParts {
+                    inserted_log_entries,
+                    deleted_slab_offsets,
+                    slab_slots,
+                    mut next_inserted_log_slot,
+                } = self
+                    .edges
+                    .asc_out_edges_iter(&acc, VertexId::from(0))?
+                    .into_overflow_asc_parts();
+                self.visit_dense_out_payload_value_batches_for_slab_prefix(
+                    bucket,
+                    slab_slots,
+                    &deleted_slab_offsets,
+                    order,
+                    scratch,
+                    visit,
+                    true,
+                )?;
+                scratch.clear();
+                for edge_opt in inserted_log_entries {
+                    if scratch.slot_indices.len() >= batch_edges {
+                        emit_payload_value_batch(
+                            scratch,
+                            visit,
+                            label_id,
+                            bucket.payload_byte_width(),
+                            order,
+                            false,
+                        );
+                        scratch.clear();
+                    }
+                    let Some(edge) = edge_opt else {
+                        next_inserted_log_slot = next_inserted_log_slot.saturating_add(1);
+                        continue;
+                    };
+                    let slot = next_inserted_log_slot;
+                    next_inserted_log_slot = next_inserted_log_slot.saturating_add(1);
+                    let edge = edge.with_slot_index(slot).with_label_id(label_id.raw());
+                    let payload = self.read_bucket_payload_for_edge(
+                        src,
+                        &bucket,
+                        &edge,
+                        log_chains.as_ref(),
+                    )?;
+                    scratch.slot_indices.push(slot);
+                    scratch.values.extend_from_slice(&payload);
+                }
+                emit_payload_value_batch(
+                    scratch,
+                    visit,
+                    label_id,
+                    bucket.payload_byte_width(),
+                    order,
+                    false,
+                );
+                Ok(())
+            }
+        }
+    }
+
+    fn visit_sparse_out_payload_value_batches_for_bucket<Visit>(
+        &self,
+        src: VertexId,
+        vertex: &LabeledVertex,
+        bucket_index: u32,
+        bucket: LabelBucket,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledPayloadValueBatchScratch,
+        visit: &mut Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: for<'b> FnMut(LabeledPayloadValueBatch<'b>),
+    {
+        let label_id = bucket.bucket_label_key();
+        let width = usize::from(bucket.payload_byte_width());
+        let batch_edges = (EDGE_PAYLOAD_BATCH_TARGET_BYTES / width).max(1);
+        let mut iter =
+            self.labeled_bucket_span_iter(src, order, vertex, &[bucket], 0, bucket_index, true)?;
+        loop {
+            scratch.clear();
+            scratch.slot_indices.reserve(batch_edges);
+            scratch.values.reserve(batch_edges * width);
+            for _ in 0..batch_edges {
+                let Some(edge) = iter.next() else {
+                    break;
+                };
+                let edge = edge?;
+                scratch.slot_indices.push(edge.edge_slot_index_raw());
+                scratch.values.extend_from_slice(edge.edge_payload_bytes());
+            }
+            if scratch.slot_indices.is_empty() {
+                return Ok(());
+            }
+            emit_payload_value_batch(
+                scratch,
+                visit,
+                label_id,
+                bucket.payload_byte_width(),
+                order,
+                false,
+            );
         }
     }
 
