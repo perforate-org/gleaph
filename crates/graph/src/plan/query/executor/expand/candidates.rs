@@ -251,6 +251,26 @@ pub(crate) fn expand_candidates_matching_edge_vector_threshold_into(
 ) -> Result<(), PlanQueryError> {
     let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
     let order = sequence_order.into();
+    expand_matching_edge_vector_threshold_combined_batch(
+        store,
+        src_id,
+        direction,
+        storage_label,
+        order,
+        predicate,
+        out,
+    )
+}
+
+fn expand_matching_edge_vector_threshold_combined_batch(
+    store: &GraphStore,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    storage_label: LaraLabelId,
+    order: OutEdgeOrder,
+    predicate: &PreparedEdgeVectorThreshold,
+    out: &mut Vec<ExpandCandidate>,
+) -> Result<(), PlanQueryError> {
     let mut scratch = LabeledEdgePayloadBatchScratch::default();
     let mut matches = Vec::new();
     let mut error = None;
@@ -338,6 +358,102 @@ pub(super) fn expand_vector_dst_only_rows_into(
 ) -> Result<(), PlanQueryError> {
     let storage_label = LaraLabelId::from_raw(edge_label_id.pack(EdgeDirectedness::Directed).raw());
     let order = sequence_order.into();
+    expand_vector_dst_only_rows_combined_batch(
+        store,
+        execution,
+        row,
+        src_id,
+        direction,
+        storage_label,
+        order,
+        dst,
+        dst_key,
+        dst_filter,
+        dst_only_prefilter,
+        dst_property_projection,
+        parameters,
+        caller,
+        gleaph_weight_decoders,
+        evaluator,
+        predicate,
+        out,
+        scratch,
+        matches,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn push_vector_dst_only_row_for_edge(
+    store: &GraphStore,
+    execution: &GqlExecutionContext,
+    row: &PlanRow,
+    dst: &Str,
+    dst_key: &str,
+    dst_filter: &[Expr],
+    dst_only_prefilter: bool,
+    dst_property_projection: Option<&[Str]>,
+    parameters: &BTreeMap<String, Value>,
+    caller: Option<Principal>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    evaluator: &QueryExprEvaluator<'_>,
+    edge: Edge,
+    out: &mut Vec<PlanRow>,
+) -> Result<(), PlanQueryError> {
+    let Some(edge_dst) = ExpandDst::from_edge(&edge)? else {
+        return Ok(());
+    };
+    if !expand_dst_matches_prebound_vertex(row, dst, edge_dst) {
+        return Ok(());
+    }
+    if let ExpandDst::Local(dst_id) = edge_dst {
+        if dst_only_prefilter
+            && !vertex_row_matches_dst_filters(
+                store,
+                parameters,
+                dst,
+                dst_id,
+                dst_filter,
+                caller,
+                gleaph_weight_decoders,
+            )?
+        {
+            return Ok(());
+        }
+    } else if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection) {
+        return Ok(());
+    }
+    let dst_binding = expand_dst_binding(store, execution, edge_dst, dst_property_projection)?;
+    let expanded = row.fork([(dst_key, dst_binding)]);
+    if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
+        return Ok(());
+    }
+    out.push(expanded);
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
+fn expand_vector_dst_only_rows_combined_batch(
+    store: &GraphStore,
+    execution: &GqlExecutionContext,
+    row: &PlanRow,
+    src_id: VertexId,
+    direction: EdgeDirection,
+    storage_label: LaraLabelId,
+    order: OutEdgeOrder,
+    dst: &Str,
+    dst_key: &str,
+    dst_filter: &[Expr],
+    dst_only_prefilter: bool,
+    dst_property_projection: Option<&[Str]>,
+    parameters: &BTreeMap<String, Value>,
+    caller: Option<Principal>,
+    gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    evaluator: &QueryExprEvaluator<'_>,
+    predicate: &PreparedEdgeVectorThreshold,
+    out: &mut Vec<PlanRow>,
+    scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
+    matches: &mut Vec<usize>,
+) -> Result<(), PlanQueryError> {
     let mut error = None;
     let mut visit_batch = |batch: ic_stable_lara::labeled::LabeledEdgePayloadBatch<'_, Edge>| {
         if error.is_some() {
@@ -352,39 +468,22 @@ pub(super) fn expand_vector_dst_only_rows_into(
             let Some(edge) = batch.edges.get(idx).cloned() else {
                 continue;
             };
-            match ExpandDst::from_edge(&edge).and_then(|edge_dst| {
-                let Some(edge_dst) = edge_dst else {
-                    return Ok(());
-                };
-                if !expand_dst_matches_prebound_vertex(row, dst, edge_dst) {
-                    return Ok(());
-                }
-                if let ExpandDst::Local(dst_id) = edge_dst {
-                    if dst_only_prefilter
-                        && !vertex_row_matches_dst_filters(
-                            store,
-                            parameters,
-                            dst,
-                            dst_id,
-                            dst_filter,
-                            caller,
-                            gleaph_weight_decoders,
-                        )?
-                    {
-                        return Ok(());
-                    }
-                } else if !expand_accepts_remote_dst(dst_only_prefilter, dst_property_projection) {
-                    return Ok(());
-                }
-                let dst_binding =
-                    expand_dst_binding(store, execution, edge_dst, dst_property_projection)?;
-                let expanded = row.fork([(dst_key, dst_binding)]);
-                if !dst_only_prefilter && !row_matches_all(evaluator, &expanded, dst_filter)? {
-                    return Ok(());
-                }
-                out.push(expanded);
-                Ok(())
-            }) {
+            match push_vector_dst_only_row_for_edge(
+                store,
+                execution,
+                row,
+                dst,
+                dst_key,
+                dst_filter,
+                dst_only_prefilter,
+                dst_property_projection,
+                parameters,
+                caller,
+                gleaph_weight_decoders,
+                evaluator,
+                edge,
+                out,
+            ) {
                 Ok(()) => {}
                 Err(err) => {
                     error = Some(err);

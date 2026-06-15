@@ -63,8 +63,12 @@ pub fn visit_out_payload_value_batches_for_label<Visit>(...) -> Result<(), Label
 **Dense bucket** (`payload_log_head < 0 && overflow_log_head < 0 && stored_slots == degree`):
 
 1. Bulk-read `take * byte_width` bytes from `payload_offset + first_slot * width`.
-2. Emit `slot_indices = first_slot..first_slot+take` (skip tombstone slots only if tombstones are visible in a side bitmap or via a cheap edge-prefix scan — see [Open questions](#open-questions)).
+2. Emit `slot_indices = first_slot..first_slot+take` in scan order.
 3. Do **not** call `E::read_from` on the edge slab.
+
+Tombstone deletes decrement `degree` without shrinking `stored_slots`, so buckets with in-slab
+tombstones are not dense-eligible and use the combined-batch fallback. Phase 2 still skips deleted
+slots if eligibility invariants drift.
 
 **Sparse / log-backed:** defer to phase-2-compatible fallback (existing combined batch) until a dedicated sparse payload walk exists.
 
@@ -86,13 +90,12 @@ pub fn read_out_edge_slots_for_label(
 
 ### Combined batch (compatibility)
 
-Keep `visit_out_edge_payload_batches_for_label` as a **thin adapter**:
+Dense-eligible buckets keep the **single-pass** parallel edge+payload read in
+`visit_dense_out_edge_payload_batches_for_bucket` (bulk `read_slots_contiguous` +
+payload bytes). A phase 1+2 adapter was tried and reverted: full-batch callers
+(vector expand, high match-rate filters) regressed on canbench versus one IO pass.
 
-```text
-visit_payload_value_batches → (optional filter) → read_out_edge_slots → zip → LabeledEdgePayloadBatch
-```
-
-New code should prefer the two-phase API when filtering is possible.
+Hybrid and sparse buckets keep dedicated combined-batch paths.
 
 ## Facade layer (`GraphStore`)
 
@@ -113,7 +116,7 @@ Executor routing:
 | Weighted `ShortestPath` | Bulk payload + bulk edge for **all** live slots (can use phase 1 + phase 2 with full slot list; no filter between phases) |
 | `Expand` + payload predicate | Phase 1 → kernel filter on `values` → phase 2 for `matches` only |
 | `Expand` + equality index | Index → slot set → phase 2 (payload optional if index key is not payload-derived) |
-| `Expand` + vector threshold | Phase 1 → vector kernel → phase 2 for hits |
+| `Expand` + vector threshold | Combined batch + filter indices (payload-first deferred — canbench regression at all tested scan/match sizes) |
 
 ## Executor integration (planned)
 
@@ -184,7 +187,7 @@ Options for later:
 | M5 | Weighted shortest: prepared decoder on relax hot path | **Implemented** — `PreparedWeightDecoder::decode`; optional zip refactor deferred |
 | M6 | Sparse payload-first (if needed) | skewed-hub benches |
 
-**Backward compatibility:** combined `LabeledEdgePayloadBatch` API remains; adapter implemented in terms of phases 1+2.
+**Backward compatibility:** combined `LabeledEdgePayloadBatch` API remains; dense buckets use single-pass bulk read. Phase 1+2 APIs are for selective slot reads (predicate/index expand). Hybrid/sparse paths unchanged.
 
 ## Benchmark expectations
 
@@ -197,7 +200,7 @@ Options for later:
 
 ## Open questions
 
-1. **Tombstones in dense payload-only scan:** Payload slab may still hold bytes for deleted slots. Phase 1 must either (a) carry a live-slot bitmap from a minimal edge-prefix scan, or (b) document that phase-2 skips deleted slots and phase-1 may over-read — predicate kernels must not assume `values.len() == live_degree`.
+1. **Tombstones in dense payload-only scan:** Resolved for dense-eligible buckets — `stored_slots == degree` excludes in-slab tombstones; phase 1 reads payload bytes only. Phase 2 skips deleted slots on invariant drift.
 2. **Reverse / in-edges:** Mirror API on in-edge storage; same contract.
 3. **Undirected expand:** May require two directed phase-2 reads or a dedicated undirected slot resolver.
 4. **ADR:** Not required for M1–M3 (API addition + executor routing). Consider ADR if sparse payload-first changes overflow log scan contract.

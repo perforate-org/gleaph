@@ -14,6 +14,7 @@ node_modules/
 .icp/xdg-data/
 
 .canbench/
+.canbench-compare/
 .pocket-ic/
 
 frontend-old/

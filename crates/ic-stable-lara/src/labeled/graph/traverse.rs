@@ -1141,7 +1141,6 @@ where
         visit: &mut Visit,
     ) -> Result<(), LabeledOperationError>
     where
-        E: CsrEdgeTombstone,
         Visit: for<'b> FnMut(LabeledPayloadValueBatch<'b>),
     {
         let width = usize::from(bucket.payload_byte_width());
@@ -1159,24 +1158,19 @@ where
             scratch.slot_indices.reserve(take as usize);
             scratch.values.reserve(take as usize * width);
 
-            let mut raw_edges = vec![0u8; take as usize * E::BYTES];
-            self.edges
-                .read_slots_contiguous(bucket.edge_start() + u64::from(first_slot), &mut raw_edges);
             let payload_offset =
                 super::super::invariants::payload_byte_offset_at_slot(&bucket, first_slot)?;
             let mut raw_values = vec![0u8; take as usize * width];
             self.values.read_bytes(payload_offset, &mut raw_values);
 
+            // Dense-eligible buckets satisfy `stored_slots == degree` with no overflow logs.
+            // Tombstone deletes decrement `degree` without shrinking `stored_slots`, so they
+            // fall off the dense path; phase 2 still skips deleted slots if invariants drift.
             match order {
                 OutEdgeOrder::Ascending => {
                     for i in 0..take as usize {
                         let slot = first_slot + i as u32;
-                        let edge_off = i * E::BYTES;
                         let value_off = i * width;
-                        let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES]);
-                        if edge.is_deleted_slot() {
-                            continue;
-                        }
                         scratch.slot_indices.push(slot);
                         scratch
                             .values
@@ -1186,12 +1180,7 @@ where
                 OutEdgeOrder::Descending => {
                     for i in (0..take as usize).rev() {
                         let slot = first_slot + i as u32;
-                        let edge_off = i * E::BYTES;
                         let value_off = i * width;
-                        let edge = E::read_from(&raw_edges[edge_off..edge_off + E::BYTES]);
-                        if edge.is_deleted_slot() {
-                            continue;
-                        }
                         scratch.slot_indices.push(slot);
                         scratch
                             .values
@@ -1213,6 +1202,28 @@ where
             remaining -= take;
         }
         Ok(())
+    }
+
+    fn visit_dense_out_edge_payload_batches_for_bucket<Visit>(
+        &self,
+        bucket: LabelBucket,
+        order: OutEdgeOrder,
+        scratch: &mut LabeledEdgePayloadBatchScratch<E>,
+        visit: &mut Visit,
+    ) -> Result<(), LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: for<'b> FnMut(LabeledEdgePayloadBatch<'b, E>),
+    {
+        self.visit_dense_out_edge_payload_batches_for_slab_prefix(
+            bucket,
+            bucket.degree(),
+            &[],
+            order,
+            scratch,
+            visit,
+            true,
+        )
     }
 
     /// Reads topology-only outgoing edge rows for the requested bucket slot indices.
@@ -1382,28 +1393,6 @@ where
             edge.with_slot_index(slot_index)
                 .with_label_id(label_id.raw()),
         ))
-    }
-
-    fn visit_dense_out_edge_payload_batches_for_bucket<Visit>(
-        &self,
-        bucket: LabelBucket,
-        order: OutEdgeOrder,
-        scratch: &mut LabeledEdgePayloadBatchScratch<E>,
-        visit: &mut Visit,
-    ) -> Result<(), LabeledOperationError>
-    where
-        E: CsrEdgeTombstone,
-        Visit: for<'b> FnMut(LabeledEdgePayloadBatch<'b, E>),
-    {
-        self.visit_dense_out_edge_payload_batches_for_slab_prefix(
-            bucket,
-            bucket.degree(),
-            &[],
-            order,
-            scratch,
-            visit,
-            true,
-        )
     }
 
     fn visit_dense_out_edge_payload_batches_for_slab_prefix<Visit>(
