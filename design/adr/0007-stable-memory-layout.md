@@ -2,8 +2,8 @@
 
 Date: 2026-06-12  
 Status: accepted  
-Last revised: 2026-06-15
-Anchor timestamp: 2026-06-15 10:38:29 UTC +0000
+Last revised: 2026-06-15  
+Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
 
 ## Revision history
 
@@ -14,6 +14,7 @@ Anchor timestamp: 2026-06-15 10:38:29 UTC +0000
 | 2026-06-12 | Layout registry in `graph-kernel::stable_layout` + per-canister `layout.rs`. |
 | 2026-06-12 | Initial canbench suite in `graph-kernel` (cold touch 5/21/43, router catalog intern). |
 | 2026-06-15 | Graph facade regions 37–39 and router region 17 repacked for label stats projection ([ADR 0015](0015-label-stats-projection-log.md)). |
+| 2026-06-15 | **Phase 8 closed (8d):** 8a complete; 8b final (P2/P4 retain, P1/P3 done); 8c not required; grouped-catalog prototype not pursued. |
 | 2026-06-12 | Extended canbench to graph/router/graph-index; §8b preliminary retain/defer judgments. |
 | 2026-06-12 | P1 executed: retired `EDGE_WEIGHT_PROFILES`; graph facade repacked to 42 regions (ids 37–41). |
 | 2026-06-12 | ADR 0008 executed: retired graph `EDGE_PAYLOAD_PROFILES`; graph 41 regions (facade 32–40); router 22 regions (0–21). |
@@ -23,7 +24,7 @@ Anchor timestamp: 2026-06-15 10:38:29 UTC +0000
 
 ## Context
 
-Phases 0–7 of the [refactoring roadmap](../architecture/refactoring-roadmap.md) are complete.
+Phases 0–8 of the [refactoring roadmap](../architecture/refactoring-roadmap.md) are complete.
 Storage-domain APIs, derived-state rebuild paths, and catalog abstractions are explicit. ADR 0006
 repacked graph, router, and graph-index `MemoryId` assignments into consecutive layouts and removed
 federation-only stable regions from the single-shard footprint.
@@ -163,7 +164,7 @@ Until consolidation rows exist, **no consolidation patch merges**.
 | `bench_layout_router_three_catalog_intern_6vm` | P2 baseline (six-region router catalog layout) | **Done** — grouped prototype TBD |
 | `bench_layout_edge_weight_profile_read` | Edge profile read via `GraphStore` | **Done** (post-P1) |
 | `bench_layout_index_posting_insert_64` | Posting insert hot path (backfill proxy) | **Done** |
-| Grouped catalog prototype vs 6 VM | P2 merge gate | **Pending** |
+| Grouped catalog prototype vs 6 VM | P2 merge gate | **N/A** (retain without prototype; Phase 8 closed) |
 
 **Results (2026-06-12, layout canbench, wasm32):**
 
@@ -193,9 +194,9 @@ grouped-layout prototype bench before merge.
 Existing hot-path benches (labeled hub insert/scan, router seed dispatch) remain regression guards;
 they do not substitute for layout-specific measurements.
 
-### 8b. Consolidation judgment (2026-06-12)
+### 8b. Consolidation judgment (final 2026-06-15)
 
-Preliminary decisions from §6 canbench (wasm32). Final after grouped-catalog prototype if pursued.
+Decisions from §6 canbench (wasm32). Grouped-catalog prototype was not pursued; P2 retain is final.
 
 | ID | Decision | Rationale |
 |----|----------|-----------|
@@ -204,8 +205,8 @@ Preliminary decisions from §6 canbench (wasm32). Final after grouped-catalog pr
 | P3 Label stats delta log | **Done** | Repacked 2026-06-15 per ADR 0015 |
 | P4 Backfill cursors | **Retain** | Low priority; no hot-path evidence |
 
-**Phase 8 close (8d):** 8a complete except grouped-catalog prototype (optional). 8c consolidation
-**not required** for Phase 8 close at this time.
+**Phase 8 close (8d): Closed 2026-06-15.** 8a complete (grouped-catalog prototype N/A). 8c consolidation
+**not required**. Future layout changes require a new ADR per §2.
 
 ### 7. Memory layout registry (Phase 8 deliverable)
 
@@ -268,8 +269,8 @@ Any patch that changes `MemoryId` assignment or merges regions must:
 1. ~~**Accept this ADR**~~ — layout policy and baseline frozen at §2. **Done (2026-06-12).**
 2. **Fix inventory drift** — `INDEX_POSTINGS` rebuild row; link this ADR from inventory.
 3. ~~**Add layout registry**~~ — descriptive only; no id changes. **Done (2026-06-12).**
-4. ~~**Run §6 benchmarks**~~ — **Done (2026-06-12)** except optional grouped-catalog prototype.
-5. **Optional consolidation patches** — none required per §8b; revisit P1 when legacy stable is absent.
+4. ~~**Run §6 benchmarks**~~ — **Done (2026-06-12)**; grouped-catalog prototype **not pursued** (P2 retain final).
+5. ~~**Optional consolidation patches**~~ — **N/A** per §8b; Phase 8 closed 2026-06-15.
 
 ---
 

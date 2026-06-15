@@ -1,8 +1,8 @@
 # Gleaph Refactoring Roadmap
 
-Last updated: 2026-06-12 UTC  
-Status: In progress (Phases 0–7 complete; Phase 8a in progress; Phase 9 ongoing; Federation deferred)  
-Anchor timestamp: 2026-06-12 07:31:01 UTC +0000
+Last updated: 2026-06-15 UTC  
+Status: In progress (Phases 0–8 complete; Phase 9 ongoing; Federation deferred)  
+Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
 
 ## Purpose
 
@@ -398,12 +398,11 @@ Goal: **decide** whether to consolidate stable-memory regions — not to reduce 
 Internet Computer–facing paths use **canbench on wasm32**; criterion remains for non-IC crates
 (e.g. `gleaph-gql-planner`).
 
-**Status: Near complete (2026-06-12)** — ADR [0007](../adr/0007-stable-memory-layout.md) accepted; registry
-done; **8a** benchmarks done (grouped-catalog prototype optional); **8b** preliminary judgments
-recorded (retain P2–P4; P1 deferred); **8c** not required; **8d** ready to close.
+**Status: Complete (2026-06-15)** — ADR [0007](../adr/0007-stable-memory-layout.md) accepted; registry
+done; **8a** benchmarks done (grouped-catalog prototype optional, not pursued); **8b** judgments
+recorded (P1 retired, P3 repacked per ADR 0015, P2/P4 retain); **8c** not required; **8d** closed.
 
-Phase 8 **may close with zero consolidation** when ADR 0007 §8b records retain decisions with
-benchmark evidence.
+Phase 8 closed with **zero further consolidation** (retain P2/P4; P1/P3 executed as separate ADRs).
 
 #### 8a — Benchmark suite (ADR 0007 §6)
 
@@ -415,7 +414,7 @@ benchmark evidence.
 | `bench_layout_router_stable_reopen_touch` | router | Post-upgrade facade re-init | **Done** |
 | `bench_layout_edge_weight_profile_read` | graph | Edge profile read path | **Done** |
 | `bench_layout_index_posting_insert_64` | graph-index | Posting/backfill hot path | **Done** |
-| Grouped catalog prototype vs 6 VM | graph-kernel or router | P2 merge gate | **Optional** (retain without prototype) |
+| Grouped catalog prototype vs 6 VM | graph-kernel or router | P2 merge gate | **N/A** (retain without prototype) |
 
 Run: `canbench layout` per crate; persist with `canbench --persist` when baselines change.
 
@@ -423,11 +422,11 @@ Run: `canbench layout` per crate; persist with `canbench --persist` when baselin
 
 For each consolidation candidate P1–P4, record **merge / retain / defer** with canbench citation:
 
-| ID | Candidate | Decision (2026-06-12) |
+| ID | Candidate | Decision (2026-06-15) |
 |----|-----------|-------------------------|
 | P1 | Retire `EDGE_WEIGHT_PROFILES` | **Retired** (2026-06-12) — dev policy; facade repacked to 42 regions |
 | P2 | Router catalog VM grouping | **Retain** |
-| P3 | Label telemetry seq + outbox merge | **Retain** |
+| P3 | Label stats delta seq + log | **Done** (2026-06-15) — repacked per [ADR 0015](../adr/0015-label-stats-projection-log.md); router projection cursor at region 17 |
 | P4 | Router backfill cursor merge | **Retain** |
 
 #### 8c — Optional consolidation patches
@@ -437,8 +436,9 @@ canbench delta. Skip entirely if 8b chooses retain for all candidates.
 
 #### 8d — Phase 8 close
 
-Mark Phase 8 **complete** when 8a rows are Done or N/A and 8b decisions are committed in ADR 0007.
-Consolidation patches (8c) are optional follow-ups, not blockers.
+**Closed 2026-06-15.** 8a rows are Done or N/A; 8b decisions are committed in ADR 0007 §8b.
+Consolidation patches (8c) were not required. Optional P2 grouped-catalog prototype was not pursued;
+retain decision stands on §6 canbench evidence.
 
 **Completed prerequisites:**
 
@@ -492,17 +492,16 @@ Validation sequence:
 
 ## Suggested Implementation Order
 
-Phases 0–7 are **complete**.
+Phases 0–8 are **complete**.
 
 | Stream | When | Content |
 |--------|------|---------|
-| **Now** | Phase 8a → 8b | Finish canbench suite; record merge/retain in ADR 0007 |
-| **Optional** | Phase 8c | P1–P4 patches only where 8b says merge |
 | **Ongoing** | Phase 9 | Tests + canbench on every boundary PR |
+| **Optional** | Phase 8c follow-ups | P2 grouped-catalog prototype only if product revisits merge |
 | **Deferred** | Federation ADR | ADR 0006 step 6+ (`RemoteVertexId`, `GROUP_SIZE`, peer expand) — blocked on product |
 | **Independent** | Feature epics | bulk-ingest finalize, payload-first traversal, executor gaps — not Phase numbers |
 
-Phase 8 may end with **retain all regions**; that is a successful outcome when backed by canbench.
+Phase 8 closed with **retain** on P2/P4 and executed repacks on P1/P3; that is the recorded outcome.
 
 ## Related Documents
 
