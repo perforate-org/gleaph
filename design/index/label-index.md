@@ -110,6 +110,8 @@ the outbox. After router downtime or partial apply, drain pending events per sha
 `admin_label_telemetry_replay_step` (controller-only; call in a loop until `done`).
 Already-applied events are acked without changing aggregates. There is no full historical
 rebuild from vertex label scans — replay depends on the graph outbox retaining pending events.
+ADR 0015 proposes replacing this telemetry-centered mechanism with an explicit label stats
+projection log, graph mutation journal, and per-shard router projection cursor.
 
 **Compound read seeds:** `MATCH (n:L) WHERE n.p = v RETURN n` uses `SeedAnchorSet` to
 intersect label and property index hits before per-shard `seed_bindings_blob` dispatch

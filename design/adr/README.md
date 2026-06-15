@@ -49,5 +49,6 @@ Last revised: YYYY-MM-DD
 | [0012](0012-edge-index-direction-in-ddl.md) | Edge index direction in `CREATE INDEX FOR` (GQL patterns); wire label in graph-index keys; planner subset rule | accepted |
 | [0013](0013-gql-graph-type-catalog-on-router.md) | Mount `gleaph-graph-catalog` on router; `GraphId`-keyed schema bindings; GQL catalog DDL; planner schema bridge | accepted |
 | [0014](0014-graph-type-id-catalog-on-router.md) | Graph type name ↔ `GraphTypeId` catalog on router; migrate `type_map` and `TypeRef` off string keys (0013 follow-up) | accepted |
+| [0015](0015-label-stats-projection-log.md) | Label stats projection log and graph mutation journal | proposed |
 
 When adding an ADR, link it from the relevant design doc and update this table.
