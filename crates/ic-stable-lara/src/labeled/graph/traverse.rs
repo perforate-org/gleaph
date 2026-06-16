@@ -2129,10 +2129,21 @@ where
                     scratch,
                     visit,
                     true,
-                    true,
+                    false,
                 )
             }
             OutEdgeOrder::Ascending => {
+                let slab_slots = self.bucket_slab_prefix_slots(src, &bucket);
+                self.visit_dense_out_payload_value_batches_for_slab_prefix(
+                    bucket,
+                    slab_slots,
+                    &[],
+                    order,
+                    scratch,
+                    visit,
+                    true,
+                    false,
+                )?;
                 let (slab_slots, deleted_slab_offsets) = self
                     .emit_hybrid_overflow_log_payload_values_asc(
                         src,
@@ -2142,16 +2153,8 @@ where
                         visit,
                         log_chains.as_ref(),
                     )?;
-                self.visit_dense_out_payload_value_batches_for_slab_prefix(
-                    bucket,
-                    slab_slots,
-                    &deleted_slab_offsets,
-                    order,
-                    scratch,
-                    visit,
-                    true,
-                    true,
-                )?;
+                debug_assert!(deleted_slab_offsets.is_empty());
+                debug_assert_eq!(slab_slots, self.bucket_slab_prefix_slots(src, &bucket));
                 Ok(())
             }
         }

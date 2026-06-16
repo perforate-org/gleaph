@@ -87,6 +87,7 @@ pub struct HybridOverflowEdgeReplay {
 }
 
 impl HybridOverflowEdgeReplay {
+    /// Returns whether this replay cache contains data that can satisfy a phase-2 topology read.
     pub fn is_active(&self) -> bool {
         self.slab_slots > 0 || !self.slot_to_log_idx.is_empty()
     }

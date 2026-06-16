@@ -227,7 +227,7 @@ profile flag; when present, log-backed payloads always use the blob map regardle
 ## Benchmark Gate
 
 Changes to log entry layout and scan replay affect storage, traversal, and payload-first execution.
-Before accepting implementation of `src` removal or payload log 16 B compression, run focused
+Before accepting implementation of `src` removal or payload log 12 B compression, run focused
 benchmarks that separate setup, mutation, scan, and payload attach costs.
 
 Required benchmark coverage:
@@ -236,7 +236,7 @@ Required benchmark coverage:
 |------|------------------|
 | Same-label overflow insert | Whether smaller entries improve append-heavy log pressure |
 | Same-label scan | Whether tombstone skipping and tag decoding affect hot traversal |
-| Payload attach scan | Whether 16 B payload entries improve stable-memory IO enough to matter |
+| Payload attach scan | Whether 12 B payload entries improve stable-memory IO enough to matter |
 | Payload-first phase 1/2 | Whether cached replay and slot-to-log lookup stay neutral or faster |
 | Tombstone-heavy delete/rewrite | Whether foreground delete stays cheap and maintenance cost remains bounded |
 
@@ -346,7 +346,7 @@ Positive effects:
 - Foreground delete no longer needs delete-target log history.
 - Surviving edge slot indices stay stable after deletion.
 - Payload bytes remain subordinate to edge liveness, reducing duplicate delete rules.
-- Payload log 16 B compression has a clear path without mixing tag state into `prev`.
+- Payload log 12 B compression avoids mixing tag state into `prev`.
 - One schema source for inline vs blob on the payload log: bucket `payload_byte_width` (+ profile).
 
 Trade-offs:

@@ -1542,6 +1542,55 @@ mod tests {
     }
 
     #[test]
+    fn hybrid_payload_value_batches_ascending_visits_slab_before_log() {
+        let graph = payload_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .unwrap();
+        for target in 1..=33u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                )
+                .unwrap();
+        }
+
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert!(bucket.overflow_log_head() >= 0);
+        assert!(graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket) > 0);
+
+        let mut slots = Vec::new();
+        let mut values = Vec::new();
+        let mut scratch = LabeledPayloadValueBatchScratch::default();
+        graph
+            .visit_out_payload_value_batches_for_label(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Ascending,
+                &mut scratch,
+                |batch| {
+                    slots.extend_from_slice(batch.slot_indices);
+                    values.extend(
+                        batch
+                            .values
+                            .chunks_exact(2)
+                            .map(|b| u16::from_le_bytes([b[0], b[1]])),
+                    );
+                },
+            )
+            .unwrap();
+
+        assert_eq!(slots, (0..33).collect::<Vec<_>>());
+        assert_eq!(values, (1..=33).collect::<Vec<_>>());
+    }
+
+    #[test]
     fn dense_read_out_edge_slots_follow_requested_order() {
         let graph = payload_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
@@ -2014,6 +2063,56 @@ mod tests {
         let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
         assert_eq!(bucket.degree(), 1);
         assert_eq!(bucket.payload_log_head(), 0);
+    }
+
+    #[test]
+    fn hybrid_payload_value_batches_skip_slab_tombstones() {
+        let graph = payload_test_graph_with_capacity(1 << 16);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .unwrap();
+        for target in 1..=33u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(0),
+                    road,
+                    PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                )
+                .unwrap();
+        }
+        let vertex = graph.vertices().get(VertexId::from(0));
+        let bucket_slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(bucket_slot).unwrap();
+        assert!(bucket.overflow_log_head() >= 0);
+        assert!(graph.bucket_slab_prefix_slots(VertexId::from(0), &bucket) > 0);
+
+        graph
+            .remove_edge_at_slot(VertexId::from(0), road, 0)
+            .unwrap()
+            .expect("removed slab edge");
+
+        let mut values = Vec::new();
+        let mut scratch = LabeledPayloadValueBatchScratch::default();
+        graph
+            .visit_out_payload_value_batches_for_label(
+                VertexId::from(0),
+                road,
+                OutEdgeOrder::Ascending,
+                &mut scratch,
+                |batch| {
+                    values.extend(
+                        batch
+                            .values
+                            .chunks_exact(2)
+                            .map(|b| u16::from_le_bytes([b[0], b[1]])),
+                    );
+                },
+            )
+            .unwrap();
+
+        assert_eq!(values, (2..=33).collect::<Vec<_>>());
     }
 
     #[test]
