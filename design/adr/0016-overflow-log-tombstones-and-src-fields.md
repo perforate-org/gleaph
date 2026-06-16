@@ -334,9 +334,9 @@ and benchmark gate before changing stable bytes.
 ### F. Keep per-cell inline/blob tags in `PayloadLogCell`
 
 Rejected for the target layout. Tags duplicate bucket schema, force read paths to branch on cell
-bytes instead of bucket context, and consume a byte that prevents 16 B entries. The write path
-already derives inline vs blob from `payload_byte_width`; phase 2 aligns the read path and wire
-layout with that model. Legacy tagged cells remain readable until layout version migration.
+bytes instead of bucket context, and consume a byte that prevents the 12 B entry target. The write
+path already derives inline vs blob from `payload_byte_width`; phase 2 aligns the read path and wire
+layout with that model. Legacy tagged cells are not supported after this fresh-store layout break.
 
 ## Consequences
 

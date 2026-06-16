@@ -1575,6 +1575,61 @@ mod tests {
         }
     }
 
+    #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+    struct SlotAwareTestEdge {
+        target: u32,
+        slot: u32,
+    }
+
+    impl SlotAwareTestEdge {
+        fn new(target: u32) -> Self {
+            Self {
+                target,
+                slot: u32::MAX,
+            }
+        }
+    }
+
+    impl CsrEdge for SlotAwareTestEdge {
+        const BYTES: usize = 4;
+
+        fn read_from(bytes: &[u8]) -> Self {
+            Self::new(u32::from_le_bytes(bytes[0..4].try_into().unwrap()))
+        }
+
+        fn write_to(&self, bytes: &mut [u8]) {
+            bytes[0..4].copy_from_slice(&self.target.to_le_bytes());
+        }
+
+        fn neighbor_vid(&self) -> VertexId {
+            VertexId::from(self.target)
+        }
+
+        fn with_neighbor_vid(&self, vid: VertexId) -> Self {
+            Self {
+                target: u32::from(vid),
+                ..*self
+            }
+        }
+
+        fn with_slot_index(self, slot_index: u32) -> Self {
+            Self {
+                slot: slot_index,
+                ..self
+            }
+        }
+
+        fn edge_slot_index_raw(&self) -> u32 {
+            self.slot
+        }
+    }
+
+    impl CsrEdgeTombstone for SlotAwareTestEdge {
+        fn tombstone_edge() -> Self {
+            Self::new(u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL))
+        }
+    }
+
     #[test]
     fn lara_graph_new_rejects_elem_capacity_above_index_space() {
         assert!(
@@ -1889,6 +1944,52 @@ mod tests {
                 .unwrap()
                 .collect::<Vec<_>>(),
             vec![TestEdge(12), TestEdge(11), TestEdge(10)]
+        );
+    }
+
+    #[test]
+    fn lara_collect_refs_preserves_log_slot_ordinals_after_tombstone() {
+        let graph = LaraGraph::<SlotAwareTestEdge, Vertex, _>::new(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            2,
+            2,
+            0,
+        )
+        .unwrap();
+        graph.push_vertex(Vertex::default()).unwrap();
+
+        graph
+            .insert_edge_raw(VertexId::from(0), SlotAwareTestEdge::new(10))
+            .unwrap();
+        graph
+            .insert_edge_raw(VertexId::from(0), SlotAwareTestEdge::new(11))
+            .unwrap();
+        graph
+            .insert_edge_raw(VertexId::from(0), SlotAwareTestEdge::new(12))
+            .unwrap();
+        assert!(graph.vertices().get(VertexId::from(0)).log_head() >= 0);
+
+        assert!(
+            graph
+                .remove_edge_matching(VertexId::from(0), |edge| edge.target == 11)
+                .unwrap()
+                .is_some()
+        );
+
+        let removed = graph
+            .remove_edge_matching(VertexId::from(0), |edge| {
+                edge.target == 12 && edge.edge_slot_index_raw() == 2
+            })
+            .unwrap();
+        assert_eq!(
+            removed.map(|edge| (edge.edge_slot_index_raw(), edge.target)),
+            Some((2, 12))
         );
     }
 

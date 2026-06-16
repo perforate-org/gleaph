@@ -107,13 +107,22 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         entries.reverse();
 
+        let mut log_slot_index =
+            u32::try_from(slab_count).map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
         for (log_idx, edge) in entries {
             if edge.is_deleted_slot() {
+                log_slot_index = log_slot_index
+                    .checked_add(1)
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                 continue;
             }
-            let slot_index = u32::try_from(out.len())
-                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-            out.push((DeleteTarget::Log(log_idx), edge.with_slot_index(slot_index)));
+            out.push((
+                DeleteTarget::Log(log_idx),
+                edge.with_slot_index(log_slot_index),
+            ));
+            log_slot_index = log_slot_index
+                .checked_add(1)
+                .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         }
         debug_assert_eq!(
             out.len(),
