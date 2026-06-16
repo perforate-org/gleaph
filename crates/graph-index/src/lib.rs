@@ -5,8 +5,8 @@
 //!
 //! ## API visibility
 //!
-//! Read APIs are router-only (`guard_router_canister`). Posting sync updates are enforced at
-//! handler entry for the owning graph shard (`guard_shard_canister`). Admin APIs are router-only.
+//! Read APIs are router-only (`guard_router_canister`). Posting sync updates call
+//! `guard_shard_canister` at the canister entrypoint before dispatch. Admin APIs are router-only.
 //!
 //! `lookup_range` uses the same lexicographic order on encoded value bytes as `lookup_equal` (`memcmp`).
 
@@ -38,10 +38,16 @@ pub use key::PostingKey;
 pub use label_key::LabelPostingKey;
 pub use state::IndexError;
 
-use crate::guards::guard_router_canister;
+use crate::guards::{guard_router_canister, guard_shard_canister};
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
 use ic_cdk_macros::{init, query, update};
+
+fn guard_shard_canister_or_trap(shard_id: ShardId) {
+    if let Err(e) = guard_shard_canister(shard_id) {
+        ic_cdk::trap(&e);
+    }
+}
 
 #[init]
 fn init(args: IndexInitArgs) {
@@ -63,11 +69,13 @@ fn admin_detach_shard_canister(shard_id: ShardId) -> Result<(), String> {
 
 #[update]
 fn posting_insert(shard_id: ShardId, property_id: u32, value: Vec<u8>, vertex_id: u32) {
+    guard_shard_canister_or_trap(shard_id);
     canister::posting_insert(shard_id, property_id, value, vertex_id);
 }
 
 #[update]
 fn posting_remove(shard_id: ShardId, property_id: u32, value: Vec<u8>, vertex_id: u32) {
+    guard_shard_canister_or_trap(shard_id);
     canister::posting_remove(shard_id, property_id, value, vertex_id);
 }
 
@@ -80,6 +88,7 @@ fn edge_posting_insert(
     owner_vertex_id: u32,
     slot_index: u32,
 ) {
+    guard_shard_canister_or_trap(shard_id);
     canister::edge_posting_insert(
         shard_id,
         property_id,
@@ -99,6 +108,7 @@ fn edge_posting_remove(
     owner_vertex_id: u32,
     slot_index: u32,
 ) {
+    guard_shard_canister_or_trap(shard_id);
     canister::edge_posting_remove(
         shard_id,
         property_id,
@@ -111,11 +121,13 @@ fn edge_posting_remove(
 
 #[update]
 fn label_posting_insert(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32) {
+    guard_shard_canister_or_trap(shard_id);
     canister::label_posting_insert(shard_id, vertex_label_id, vertex_id);
 }
 
 #[update]
 fn label_posting_remove(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32) {
+    guard_shard_canister_or_trap(shard_id);
     canister::label_posting_remove(shard_id, vertex_label_id, vertex_id);
 }
 
