@@ -1,9 +1,9 @@
 # 0016. Overflow log tombstones and `src` field layout review
 
 Date: 2026-06-15  
-Status: accepted (phase 1 implemented)  
-Last revised: 2026-06-15
-Anchor timestamp: 2026-06-15 23:44:43 UTC +0000
+Status: accepted (phase 1 implemented; phase 2 design locked)  
+Last revised: 2026-06-16
+Anchor timestamp: 2026-06-16 00:47:34 UTC +0000
 
 ## Context
 
@@ -75,12 +75,21 @@ The edge log `src` word currently carries:
 The payload log also stores a `src` word even though payload identity is tied to the same leaf and
 entry index as the edge log, and blob identity is derived from `(leaf_segment, entry_idx)`.
 
-This raises two layout questions:
+This raises three layout questions:
 
 1. Does the edge body log still need a physical `src` word after delete state moves into the edge
    payload tombstone contract?
 2. Does the payload log need a full `src` word, or can that word become `src_and_tag` so the payload
    entry shrinks from 17 B to 16 B?
+3. Does the payload log cell need per-entry inline/blob tags when the label bucket already declares
+   `payload_byte_width`?
+
+### 3. Payload log cells duplicate bucket schema
+
+The current `PayloadLogCell` stores an inline/blob tag and, for blob entries, repeats the physical
+width in the cell even though `LabelBucket::payload_byte_width` is already the schema for every
+slot in that bucket. The write path already chooses inline vs blob from bucket width; the read path
+branches on cell tags instead. That splits schema ownership across bucket metadata and log bytes.
 
 ## Existing Architecture Assessment
 
@@ -91,6 +100,7 @@ The existing storage domains can own this change. No new storage subsystem is re
 | Edge liveness | Edge row payload | Slab and log entries both expose the same tombstone-edge contract |
 | Edge slot identity | Labeled bucket scan order | Deleting one edge must not change surviving edge slot indices |
 | Payload identity | Edge slot plus label bucket payload width | Payload log site mirrors the edge log site; blob body remains keyed by log site |
+| Payload storage class | Label bucket schema (`payload_byte_width` + profile encoding) | Inline vs blob on the payload log is derived from bucket schema, not stored per cell |
 | Log reclamation | Maintenance / rewrite path | Tombstoned log entries are reclaimed only by fold, rebalance, or compaction |
 | Derived state | Graph mutation path | Edge aliases, postings, and payloads update from canonical edge delete once |
 
@@ -157,34 +167,71 @@ first: move log-backed delete state to tombstone edge payloads
 then: benchmark and review whether `src` can be removed or repurposed
 ```
 
-### 4. Make payload log 16 B only if `src_and_tag` remains fit for purpose
+### 4. Derive payload inline/blob from bucket schema, not per-cell tags
 
-The likely payload log target is:
+Do not store inline vs blob storage class in the payload slab or payload log cell.
+
+**Schema source of truth:** `LabelBucket::payload_byte_width`, plus (when added) the label's
+`EdgePayloadProfile.encoding` for variable-length payloads.
+
+**Location-specific resolution:**
+
+```text
+on payload slab(slot):
+  read payload_byte_width bytes at the slot byte offset
+
+on payload log(leaf, entry_idx) with bucket context:
+  if payload_byte_width == 0           → no payload
+  if encoding is variable-length       → blob at (leaf, entry_idx)   [future]
+  if payload_byte_width <= 8           → inline bytes in the 8 B cell
+  else                                 → blob at (leaf, entry_idx)
+```
+
+Notes:
+
+- The payload **slab** never uses the blob map; wide fixed-width payloads live directly in the byte
+  CSR regardless of width.
+- The payload **log** uses the blob map only when the fixed width exceeds the 8 B inline cell.
+- Blob identity remains `(leaf_segment, entry_idx)`; blob body width comes from the bucket, not the
+  cell.
+- Foreground insert already rejects `edge_payload_byte_width != bucket.payload_byte_width`, so
+  storage class does not vary per slot within one bucket.
+
+Per-cell inline/blob tags and duplicated blob widths in `PayloadLogCell` are legacy wire shape only.
+Phase 2 removes them from the target layout.
+
+### 5. Make payload log 16 B with `src_and_tag` and an untagged 8 B cell
+
+The target payload log entry is:
 
 ```text
 prev: i32
 src_and_tag: i32
-payload_or_blob_cell: [u8; 8]
+payload_cell: [u8; 8]
 ```
 
-This would replace the current 17 B implementation:
+This replaces the current 17 B implementation:
 
 ```text
 prev: i32
 src: i32
-PayloadLogCell: [u8; 9]
+PayloadLogCell: [u8; 9]   // tag byte + inline bytes or blob width metadata
 ```
 
-The tag can move out of `PayloadLogCell` because:
+Design constraints:
 
-- inline payload bytes need up to 8 B,
-- blob identity is already the log site `(leaf_segment, entry_idx)`,
-- blob width is available from the label bucket `payload_byte_width`,
-- dead/empty state can be represented by tag bits instead of an all-zero 9 B cell.
+- `payload_cell` holds up to 8 B of inline payload when bucket schema says inline-on-log; it is
+  otherwise ignored and the blob map owns the body.
+- `src_and_tag` carries only what bucket width cannot express: dead/empty payload log entry state
+  (and any future small metadata). Edge liveness remains primary; payload dead bits are secondary
+  for log-chain walks that lack edge context.
+- Do not put inline/blob class bits in `payload_cell`; derive class from bucket schema at read time.
+- Prefer tag bits in `src_and_tag`, not `prev`, because `prev` is the chain pointer and should remain
+  a pure traversal primitive.
 
-Prefer putting tag bits in `src_and_tag`, not `prev`, because `prev` is the chain pointer and should
-remain a pure traversal primitive. `src_and_tag` can be decoded once per entry without changing chain
-walking.
+Variable-length payloads (not implemented in LARA storage as of 2026-06-16) require an additional
+profile flag; when present, log-backed payloads always use the blob map regardless of
+`payload_byte_width`.
 
 ## Benchmark Gate
 
@@ -252,6 +299,13 @@ about.
 Rejected. The design doc was ahead of implementation. This ADR requires an explicit layout review
 and benchmark gate before changing stable bytes.
 
+### F. Keep per-cell inline/blob tags in `PayloadLogCell`
+
+Rejected for the target layout. Tags duplicate bucket schema, force read paths to branch on cell
+bytes instead of bucket context, and consume a byte that prevents 16 B entries. The write path
+already derives inline vs blob from `payload_byte_width`; phase 2 aligns the read path and wire
+layout with that model. Legacy tagged cells remain readable until layout version migration.
+
 ## Consequences
 
 Positive effects:
@@ -261,6 +315,7 @@ Positive effects:
 - Surviving edge slot indices stay stable after deletion.
 - Payload bytes remain subordinate to edge liveness, reducing duplicate delete rules.
 - Payload log 16 B compression has a clear path without mixing tag state into `prev`.
+- One schema source for inline vs blob on the payload log: bucket `payload_byte_width` (+ profile).
 
 Trade-offs:
 
@@ -269,6 +324,8 @@ Trade-offs:
 - Foreground deletes may leave unreachable payload slab bytes until maintenance.
 - Edge log `src` removal is not decided here; keeping it may leave bytes on the table, while
   removing it too early could split core and labeled LARA layout concepts.
+- Payload log reads require bucket context (or cached bucket width) to interpret log cells; low-level
+  log walks without label context cannot infer inline vs blob from cell bytes alone.
 
 ## Implementation status (2026-06-15)
 
@@ -279,10 +336,12 @@ Phase 1 (implemented):
 3. Scan/replay paths skip tombstone log entries; legacy delete-target replay remains for old chains.
 4. Payload log chains stay aligned with edge log chains; payload bodies are cleared without rewiring.
 
-Deferred (benchmark gate):
+Deferred (benchmark gate; design locked 2026-06-16):
 
 - Edge log `src` removal or repurposing review.
-- Payload log 16 B compression (`src_and_tag` + 8 B cell).
+- Payload log 16 B layout: untagged 8 B cell + `src_and_tag`; derive inline/blob from bucket schema
+  on read; remove `PayloadLogCell` tag and duplicated blob width from wire bytes.
+- Variable-length payload encoding flag (profile) → always blob on log; not in current storage.
 
 Tests should cover:
 
@@ -300,10 +359,10 @@ Documents to update when this ADR is implemented:
 
 | Document | Required update |
 |----------|-----------------|
-| `design/storage/labeled-edge-payloads.md` | Mark current 17 B implementation and target 16 B compression accurately |
+| `design/storage/labeled-edge-payloads.md` | **Updated 2026-06-16:** storage class derivation, current 17 B vs target 16 B |
 | `design/storage/lara-dgap-contract.md` | Record log tombstone policy and DGAP divergence |
-| `design/storage/payload-first-traversal.md` | Update sparse overflow replay contract if delete-target replay is removed |
-| `design/storage/stable-memory-inventory.md` | Update if payload or edge log layout version changes |
+| `design/storage/payload-first-traversal.md` | Note bucket-derived log attach for sparse overflow (when phase 2 lands) |
+| `design/storage/stable-memory-inventory.md` | Update when payload log layout version changes |
 
 ## Related
 

@@ -75,6 +75,12 @@ prefix (bulk payload) plus overflow-log entries, or the sparse span iterator, em
 `slot_indices` + `values` without retaining edge rows in the batch. Predicate expand uses
 phase 1 + phase 2 on these buckets (M6).
 
+Log-backed payload attach uses `LabelBucket::payload_byte_width` to interpret each overflow-log
+site: inline bytes in the log cell when width `<= 8`, else the blob map at `(leaf, entry_idx)`.
+The current wire format still stores inline/blob tags in `PayloadLogCell`; phase 2
+([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md)) removes those tags and derives
+storage class from bucket schema on read.
+
 ### Phase 2 — selective edge row read
 
 ```rust
