@@ -188,7 +188,7 @@ Router **34 regions** total (0–33).
 | 1 | `INDEX_SHARD_CANISTER_BY_SHARD` | `INDEX_SHARD_CANISTER_CATALOG` | `init_index_shard_canister_catalog` | canonical | shard canister catalog | — |
 | 2 | `INDEX_SHARD_BY_CANISTER` | `INDEX_SHARD_CANISTER_CATALOG` | `init_index_shard_canister_catalog` | canonical | shard canister catalog | — |
 | 3 | `INDEX_VERTEX_POSTINGS` | `INDEX_VERTEX_POSTINGS` | `init_index_vertex_postings` | derived | property postings | **Implemented:** `backfill_property_postings` + router `admin_property_backfill_step` |
-| 4 | `INDEX_LABEL_POSTINGS` | `INDEX_LABEL_POSTINGS` | `init_index_label_postings` | derived | label postings | `backfill_label_postings` |
+| 4 | `INDEX_VERTEX_LABEL_POSTINGS` | `INDEX_VERTEX_LABEL_POSTINGS` | `init_index_vertex_label_postings` | derived | vertex label postings | `backfill_label_postings` |
 | 5 | `INDEX_EDGE_POSTINGS` | `INDEX_EDGE_POSTINGS` | `init_index_edge_postings` | derived | edge property postings | **Implemented:** `backfill_edge_property_postings` (ADR 0009) |
 
 ---

@@ -1,7 +1,7 @@
 //! Vertex label membership postings: shard-canister writes and posting-local reads.
 
 use super::{DEFAULT_LABEL_LOOKUP_PAGE_LIMIT, IndexStore, pack_posting_vertex};
-use crate::facade::stable::INDEX_LABEL_POSTINGS;
+use crate::facade::stable::INDEX_VERTEX_LABEL_POSTINGS;
 use crate::label_key::LabelPostingKey;
 use crate::label_range::label_shard_posting_bucket;
 use crate::state::IndexError;
@@ -25,7 +25,7 @@ impl IndexStore {
             shard_id,
             vertex_id,
         };
-        INDEX_LABEL_POSTINGS.with_borrow_mut(|postings| {
+        INDEX_VERTEX_LABEL_POSTINGS.with_borrow_mut(|postings| {
             postings.insert(key);
         });
         Ok(())
@@ -44,7 +44,7 @@ impl IndexStore {
             shard_id,
             vertex_id,
         };
-        INDEX_LABEL_POSTINGS.with_borrow_mut(|postings| {
+        INDEX_VERTEX_LABEL_POSTINGS.with_borrow_mut(|postings| {
             postings.remove(&key);
         });
         Ok(())
@@ -73,7 +73,7 @@ impl IndexStore {
     pub fn lookup_label(&self, vertex_label_id: u32) -> Vec<PostingHit> {
         let lo = LabelPostingKey::prefix_lower(vertex_label_id);
         let hi = LabelPostingKey::prefix_upper(vertex_label_id);
-        INDEX_LABEL_POSTINGS.with_borrow(|postings| {
+        INDEX_VERTEX_LABEL_POSTINGS.with_borrow(|postings| {
             postings
                 .range(lo..=hi)
                 .map(|k| PostingHit {
@@ -93,7 +93,7 @@ impl IndexStore {
         let Some((low, high)) = label_shard_posting_bucket(vertex_label_id, shard_id) else {
             return Vec::new();
         };
-        INDEX_LABEL_POSTINGS.with_borrow(|postings| {
+        INDEX_VERTEX_LABEL_POSTINGS.with_borrow(|postings| {
             postings
                 .range(low..high)
                 .map(|k| PostingHit {
@@ -143,7 +143,7 @@ impl IndexStore {
         }
 
         let mut hits = Vec::with_capacity(limit.min(256));
-        INDEX_LABEL_POSTINGS.with_borrow(|postings| {
+        INDEX_VERTEX_LABEL_POSTINGS.with_borrow(|postings| {
             for key in postings.range(low..high).take(limit + 1) {
                 hits.push(PostingHit {
                     shard_id: key.shard_id,
@@ -174,7 +174,7 @@ impl IndexStore {
             let lo = LabelPostingKey::prefix_lower(label_id);
             let hi = LabelPostingKey::prefix_upper(label_id);
             let mut set = std::collections::HashSet::new();
-            INDEX_LABEL_POSTINGS.with_borrow(|postings| {
+            INDEX_VERTEX_LABEL_POSTINGS.with_borrow(|postings| {
                 for key in postings.range(lo..=hi) {
                     let packed = pack_posting_vertex(key.shard_id, key.vertex_id);
                     set.insert(packed);
@@ -205,7 +205,7 @@ impl IndexStore {
         vertex_label_id: u32,
         hits: &[PostingHit],
     ) -> Vec<PostingHit> {
-        INDEX_LABEL_POSTINGS.with_borrow(|labels| {
+        INDEX_VERTEX_LABEL_POSTINGS.with_borrow(|labels| {
             hits.iter()
                 .copied()
                 .filter(|hit| {

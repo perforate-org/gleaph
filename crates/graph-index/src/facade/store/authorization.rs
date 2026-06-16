@@ -8,7 +8,7 @@ use gleaph_graph_kernel::federation::ShardId;
 
 use crate::facade::stable::memory::ShardCanisterCatalogInsertError;
 use crate::facade::stable::{
-    INDEX_EDGE_POSTINGS, INDEX_LABEL_POSTINGS, INDEX_ROUTER, INDEX_SHARD_CANISTER_CATALOG,
+    INDEX_EDGE_POSTINGS, INDEX_ROUTER, INDEX_SHARD_CANISTER_CATALOG, INDEX_VERTEX_LABEL_POSTINGS,
     INDEX_VERTEX_POSTINGS,
 };
 
@@ -17,7 +17,7 @@ impl IndexStore {
     pub fn init_from_args(&self, args: &IndexInitArgs) {
         INDEX_SHARD_CANISTER_CATALOG.with_borrow_mut(|catalog| catalog.clear_new());
         INDEX_VERTEX_POSTINGS.with_borrow_mut(|postings| postings.clear());
-        INDEX_LABEL_POSTINGS.with_borrow_mut(|postings| postings.clear());
+        INDEX_VERTEX_LABEL_POSTINGS.with_borrow_mut(|postings| postings.clear());
         INDEX_EDGE_POSTINGS.with_borrow_mut(|postings| postings.clear());
         INDEX_ROUTER.with_borrow_mut(|router| {
             router.set(args.router_canister);

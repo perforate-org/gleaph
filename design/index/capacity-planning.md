@@ -47,7 +47,7 @@ Leave **≥ 100 GiB** below 500 GiB for B-tree internal nodes, `MemoryManager` b
 | MemoryId | Symbol | Scales with | Class |
 |--------|--------|-------------|-------|
 | 3 | `INDEX_VERTEX_POSTINGS` | Indexed **vertex** property assignments | derived |
-| 4 | `INDEX_LABEL_POSTINGS` | **Label memberships** (all labeled vertices) | derived |
+| 4 | `INDEX_VERTEX_LABEL_POSTINGS` | **Label memberships** (all labeled vertices) | derived |
 | 5 | `INDEX_EDGE_POSTINGS` | Indexed **edge** property assignments | derived |
 | 0–1, 3 | admins, shard owners, router | O(shards) | canonical |
 
@@ -309,7 +309,7 @@ S_vprop_inverted = η × (D × (17 + V) + N × (17 + 4))  // planned tail uses u
 Same pattern applies to **`EdgePostingKey`** (`23 + V` → value bucket + fixed tail).
 
 Label postings (`13` B fixed) do not carry value bytes; this optimization does **not** apply to
-`INDEX_LABEL_POSTINGS`.
+`INDEX_VERTEX_LABEL_POSTINGS`.
 
 ### Read paths (must remain equivalent)
 

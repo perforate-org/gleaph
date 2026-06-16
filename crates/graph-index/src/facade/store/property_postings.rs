@@ -1,7 +1,7 @@
 //! Property equality postings: shard-canister writes and posting-local reads.
 
 use super::{IndexStore, pack_posting_vertex};
-use crate::facade::stable::{INDEX_LABEL_POSTINGS, INDEX_VERTEX_POSTINGS};
+use crate::facade::stable::{INDEX_VERTEX_LABEL_POSTINGS, INDEX_VERTEX_POSTINGS};
 use crate::key::PostingKey;
 use crate::label_key::LabelPostingKey;
 use crate::posting_range::{posting_key_half_open_range, property_posting_bucket};
@@ -179,7 +179,7 @@ impl IndexStore {
         };
 
         INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
-            INDEX_LABEL_POSTINGS.with_borrow(|labels| {
+            INDEX_VERTEX_LABEL_POSTINGS.with_borrow(|labels| {
                 for key in postings.range(low..high) {
                     if !labels.contains(&LabelPostingKey {
                         vertex_label_id,

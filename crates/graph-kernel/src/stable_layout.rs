@@ -61,7 +61,7 @@ pub enum StableMemoryClass {
     /// - LARA reverse orientation (`REV_*` adjacency and payloads) — co-updated on DML, no public
     ///   scan-rebuild API
     /// - `EDGE_ALIASES` — sync rebuild API on graph shard
-    /// - `INDEX_VERTEX_POSTINGS`, `INDEX_LABEL_POSTINGS` — graph-index projections; backfill from graph
+    /// - `INDEX_VERTEX_POSTINGS`, `INDEX_VERTEX_LABEL_POSTINGS` — graph-index projections; backfill from graph
     ///
     /// **Merge policy (ADR 0007):** Do not merge with canonical neighbor regions without benchmark
     /// proof and a layout ADR.
@@ -110,7 +110,7 @@ pub enum StableMemoryClass {
     /// - Router `ROUTER_VERTEX_LABEL_STATS`, live-by-shard maps, `ROUTER_LABEL_STATS_PROJECTION`
     ///   (replay dedup)
     ///
-    /// **Not telemetry:** `VERTEX_LABEL_SETS` (canonical membership), `INDEX_LABEL_POSTINGS`
+    /// **Not telemetry:** `VERTEX_LABEL_SETS` (canonical membership), `INDEX_VERTEX_LABEL_POSTINGS`
     /// (derived postings for seeds/sieve).
     Telemetry,
 
@@ -847,10 +847,10 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             Some("backfill_property_postings"),
         ),
         region(
-            "INDEX_LABEL_POSTINGS",
+            "INDEX_VERTEX_LABEL_POSTINGS",
             4,
             StableMemoryClass::Derived,
-            "label postings",
+            "vertex label postings",
             "Global vertex label membership posting set",
             Some("backfill_label_postings"),
         ),

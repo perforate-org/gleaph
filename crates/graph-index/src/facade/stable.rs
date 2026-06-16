@@ -15,8 +15,8 @@ thread_local! {
     pub(crate) static INDEX_VERTEX_POSTINGS: RefCell<memory::StableIndexVertexPostingSet> =
         RefCell::new(memory::init_index_vertex_postings());
 
-    pub(crate) static INDEX_LABEL_POSTINGS: RefCell<memory::StableIndexLabelPostingSet> =
-        RefCell::new(memory::init_index_label_postings());
+    pub(crate) static INDEX_VERTEX_LABEL_POSTINGS: RefCell<memory::StableIndexVertexLabelPostingSet> =
+        RefCell::new(memory::init_index_vertex_label_postings());
 
     pub(crate) static INDEX_EDGE_POSTINGS: RefCell<memory::StableIndexEdgePostingSet> =
         RefCell::new(memory::init_index_edge_postings());
