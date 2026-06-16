@@ -8,33 +8,19 @@ use gleaph_graph_kernel::federation::ShardId;
 
 use crate::facade::stable::memory::ShardCanisterCatalogInsertError;
 use crate::facade::stable::{
-    INDEX_ADMINS, INDEX_EDGE_POSTINGS, INDEX_LABEL_POSTINGS, INDEX_POSTINGS, INDEX_ROUTER,
+    INDEX_EDGE_POSTINGS, INDEX_LABEL_POSTINGS, INDEX_POSTINGS, INDEX_ROUTER,
     INDEX_SHARD_CANISTER_CATALOG,
 };
 
 impl IndexStore {
-    /// Clears admins, shard/canister catalog, postings; seeds admins and router principal from init args.
+    /// Clears shard/canister catalog and postings; seeds router principal from init args.
     pub fn init_from_args(&self, args: &IndexInitArgs) {
-        INDEX_ADMINS.with_borrow_mut(|admins| {
-            admins.clear();
-            for p in &args.controllers {
-                admins.insert(*p);
-            }
-        });
         INDEX_SHARD_CANISTER_CATALOG.with_borrow_mut(|catalog| catalog.clear_new());
         INDEX_POSTINGS.with_borrow_mut(|postings| postings.clear());
         INDEX_LABEL_POSTINGS.with_borrow_mut(|postings| postings.clear());
         INDEX_EDGE_POSTINGS.with_borrow_mut(|postings| postings.clear());
         INDEX_ROUTER.with_borrow_mut(|router| {
             router.set(args.router_canister);
-        });
-    }
-
-    pub fn bootstrap_admins(&self, principals: &[Principal]) {
-        INDEX_ADMINS.with_borrow_mut(|admins| {
-            for p in principals {
-                admins.insert(*p);
-            }
         });
     }
 

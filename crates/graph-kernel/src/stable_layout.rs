@@ -815,11 +815,11 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph-index",
     regions: &[
         region(
-            "INDEX_ADMINS",
+            "INDEX_ROUTER",
             0,
             StableMemoryClass::Canonical,
-            "authorization",
-            "Index canister admin principal set",
+            "router authorization",
+            "Authorized router canister principal cell",
             None,
         ),
         region(
@@ -847,16 +847,8 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             Some("backfill_property_postings"),
         ),
         region(
-            "INDEX_ROUTER",
-            4,
-            StableMemoryClass::Canonical,
-            "router authorization",
-            "Authorized router canister principal cell",
-            None,
-        ),
-        region(
             "INDEX_LABEL_POSTINGS",
-            5,
+            4,
             StableMemoryClass::Derived,
             "label postings",
             "Global vertex label membership posting set",
@@ -864,7 +856,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "INDEX_EDGE_POSTINGS",
-            6,
+            5,
             StableMemoryClass::Derived,
             "edge property postings",
             "Global edge property equality posting set (ADR 0009)",
@@ -1041,8 +1033,8 @@ mod tests {
     #[test]
     fn index_layout_registry_matches_baseline() {
         assert_layout(&INDEX_STABLE_LAYOUT);
-        assert_eq!(INDEX_STABLE_LAYOUT.region_count(), 7);
-        assert_eq!(INDEX_STABLE_LAYOUT.max_memory_id(), Some(6));
+        assert_eq!(INDEX_STABLE_LAYOUT.region_count(), 6);
+        assert_eq!(INDEX_STABLE_LAYOUT.max_memory_id(), Some(5));
     }
 
     #[test]

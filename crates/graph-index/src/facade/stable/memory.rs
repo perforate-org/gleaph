@@ -13,21 +13,19 @@ use crate::label_key::LabelPostingKey;
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
-const INDEX_ADMINS: MemoryId = MemoryId::new(0);
+const INDEX_ROUTER: MemoryId = MemoryId::new(0);
 const INDEX_SHARD_CANISTER_BY_SHARD: MemoryId = MemoryId::new(1);
 const INDEX_SHARD_BY_CANISTER: MemoryId = MemoryId::new(2);
 const INDEX_POSTINGS: MemoryId = MemoryId::new(3);
-const INDEX_ROUTER: MemoryId = MemoryId::new(4);
-const INDEX_LABEL_POSTINGS: MemoryId = MemoryId::new(5);
-const INDEX_EDGE_POSTINGS: MemoryId = MemoryId::new(6);
+const INDEX_LABEL_POSTINGS: MemoryId = MemoryId::new(4);
+const INDEX_EDGE_POSTINGS: MemoryId = MemoryId::new(5);
 
-pub(crate) type StableIndexAdminSet = BTreeSet<Principal, Memory>;
+pub(crate) type StableIndexRouterCell = Cell<Principal, Memory>;
 pub(crate) type StableIndexShardCanisterByShardMap = BTreeMap<ShardId, Principal, Memory>;
 pub(crate) type StableIndexShardByCanisterMap = BTreeMap<Principal, ShardId, Memory>;
 pub(crate) type StableIndexPostingSet = BTreeSet<PostingKey, Memory>;
 pub(crate) type StableIndexLabelPostingSet = BTreeSet<LabelPostingKey, Memory>;
 pub(crate) type StableIndexEdgePostingSet = BTreeSet<EdgePostingKey, Memory>;
-pub(crate) type StableIndexRouterCell = Cell<Principal, Memory>;
 
 pub(crate) struct ShardCanisterCatalog {
     by_shard: StableIndexShardCanisterByShardMap,
@@ -112,8 +110,11 @@ thread_local! {
         RefCell::new(MemoryManager::init(DefaultMemoryImpl::default()));
 }
 
-pub(crate) fn init_index_admins() -> StableIndexAdminSet {
-    BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_ADMINS)))
+pub(crate) fn init_index_router() -> StableIndexRouterCell {
+    Cell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_ROUTER)),
+        Principal::anonymous(),
+    )
 }
 
 pub(crate) fn init_index_shard_canister_catalog() -> ShardCanisterCatalog {
@@ -130,11 +131,4 @@ pub(crate) fn init_index_label_postings() -> StableIndexLabelPostingSet {
 
 pub(crate) fn init_index_edge_postings() -> StableIndexEdgePostingSet {
     BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_EDGE_POSTINGS)))
-}
-
-pub(crate) fn init_index_router() -> StableIndexRouterCell {
-    Cell::init(
-        MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_ROUTER)),
-        Principal::anonymous(),
-    )
 }

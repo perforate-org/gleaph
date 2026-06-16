@@ -14,6 +14,6 @@ mod tests {
     #[test]
     fn graph_index_canister_layout_registry() {
         validate_layout(&INDEX_STABLE_LAYOUT).expect("graph-index layout invariants");
-        assert_eq!(STABLE_REGION_COUNT, 7);
+        assert_eq!(STABLE_REGION_COUNT, 6);
     }
 }

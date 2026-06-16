@@ -20,7 +20,6 @@ fn setup_index_store() -> (IndexStore, Principal, Principal) {
     let router = Principal::from_slice(&[9]);
     let owner = Principal::from_slice(&[1]);
     store.init_from_args(&IndexInitArgs {
-        controllers: vec![],
         router_canister: router,
     });
     store

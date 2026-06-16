@@ -1,4 +1,4 @@
-//! Stable-memory-backed index fragments (admin set, shard/canister catalog, postings).
+//! Stable-memory-backed index fragments (router, shard/canister catalog, postings).
 
 use std::cell::RefCell;
 
@@ -6,8 +6,8 @@ pub(crate) mod layout;
 pub(crate) mod memory;
 
 thread_local! {
-    pub(crate) static INDEX_ADMINS: RefCell<memory::StableIndexAdminSet> =
-        RefCell::new(memory::init_index_admins());
+    pub(crate) static INDEX_ROUTER: RefCell<memory::StableIndexRouterCell> =
+        RefCell::new(memory::init_index_router());
 
     pub(crate) static INDEX_SHARD_CANISTER_CATALOG: RefCell<memory::ShardCanisterCatalog> =
         RefCell::new(memory::init_index_shard_canister_catalog());
@@ -20,7 +20,4 @@ thread_local! {
 
     pub(crate) static INDEX_EDGE_POSTINGS: RefCell<memory::StableIndexEdgePostingSet> =
         RefCell::new(memory::init_index_edge_postings());
-
-    pub(crate) static INDEX_ROUTER: RefCell<memory::StableIndexRouterCell> =
-        RefCell::new(memory::init_index_router());
 }

@@ -108,7 +108,6 @@ pub struct E2eAttachFederationArgs {
 
 #[derive(CandidType)]
 pub struct IndexInitArgs {
-    pub controllers: Vec<Principal>,
     pub router_canister: Principal,
 }
 
@@ -184,7 +183,6 @@ pub fn install_router_and_index() -> FederationEnv {
         index,
         wasm_bytes("INDEX_WASM"),
         Encode!(&IndexInitArgs {
-            controllers: vec![admin],
             router_canister: router,
         })
         .expect("encode index init"),
@@ -223,7 +221,6 @@ pub fn install_federation() -> FederationEnv {
         index,
         wasm_bytes("INDEX_WASM"),
         Encode!(&IndexInitArgs {
-            controllers: vec![admin],
             router_canister: router,
         })
         .expect("encode index init"),
@@ -299,7 +296,6 @@ pub fn install_two_graph_federation() -> FederationEnv {
         index,
         wasm_bytes("INDEX_WASM"),
         Encode!(&IndexInitArgs {
-            controllers: vec![admin],
             router_canister: router,
         })
         .expect("encode index init"),
@@ -381,7 +377,6 @@ pub fn install_single_shard_federation() -> FederationEnv {
         index,
         wasm_bytes("INDEX_WASM"),
         Encode!(&IndexInitArgs {
-            controllers: vec![admin],
             router_canister: router,
         })
         .expect("encode index init"),

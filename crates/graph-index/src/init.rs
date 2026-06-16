@@ -4,9 +4,6 @@ use candid::{CandidType, Deserialize, Principal};
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct IndexInitArgs {
-    /// Principals allowed to call index admin APIs other than router-driven shard/canister updates.
-    #[serde(default)]
-    pub controllers: Vec<Principal>,
     /// Router canister allowed to call `admin_attach_shard_canister` / `admin_detach_shard_canister`.
     pub router_canister: Principal,
 }
@@ -20,7 +17,6 @@ mod canbench_init_hex {
     fn print_index_canbench_init_hex() {
         let admin = Principal::from_slice(&[0xAB; 29]);
         let bytes = Encode!(&IndexInitArgs {
-            controllers: vec![admin],
             router_canister: admin,
         })
         .expect("encode");

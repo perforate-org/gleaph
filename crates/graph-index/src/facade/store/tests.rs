@@ -21,7 +21,6 @@ fn test_router() -> Principal {
 fn init_test_store(store: &IndexStore) -> Principal {
     let router = test_router();
     store.init_from_args(&IndexInitArgs {
-        controllers: vec![],
         router_canister: router,
     });
     router
