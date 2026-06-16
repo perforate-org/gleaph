@@ -79,6 +79,33 @@ pub struct PropertyBackfillShardStatus {
     pub done: bool,
 }
 
+/// One router-orchestrated batch of edge property posting backfill on a graph shard.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminEdgeBackfillStepArgs {
+    pub logical_graph_name: String,
+    pub shard_id: ShardId,
+    /// Maximum edge property entries to scan on the shard in this step (must be > 0).
+    pub max_entries: u32,
+}
+
+/// Progress from one router edge backfill step.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminEdgeBackfillStepResult {
+    pub shard_id: ShardId,
+    pub next_after_key: Option<Vec<u8>>,
+    pub entries_processed: u32,
+    pub postings_synced: u32,
+    pub done: bool,
+}
+
+/// Router-stable cursor for edge property posting backfill on one shard.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct EdgeBackfillShardStatus {
+    pub shard_id: ShardId,
+    pub after_key: Option<Vec<u8>>,
+    pub done: bool,
+}
+
 /// One router-orchestrated batch advancing label stats projection for a graph shard.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AdminLabelStatsProjectionStepArgs {

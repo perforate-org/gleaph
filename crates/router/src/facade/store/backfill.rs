@@ -4,18 +4,21 @@ use std::future::Future;
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
-    BackfillShardState, PostingBackfillArgs, PostingBackfillResult, ShardId, ShardRegistryEntry,
+    BackfillShardState, EdgeBackfillShardState, EdgePostingBackfillArgs, EdgePostingBackfillResult,
+    PostingBackfillArgs, PostingBackfillResult, ShardId, ShardRegistryEntry,
 };
 
 use super::super::stable::graph_catalog::lookup_graph_id;
 
+use super::super::stable::ROUTER_EDGE_BACKFILL_STATE;
 use super::super::stable::ROUTER_LABEL_BACKFILL_STATE;
 use super::super::stable::ROUTER_PROPERTY_BACKFILL_STATE;
 use super::RouterStore;
 use crate::state::RouterError;
 use crate::types::{
-    AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminPropertyBackfillStepArgs,
-    AdminPropertyBackfillStepResult, LabelBackfillShardStatus, PropertyBackfillShardStatus,
+    AdminEdgeBackfillStepArgs, AdminEdgeBackfillStepResult, AdminLabelBackfillStepArgs,
+    AdminLabelBackfillStepResult, AdminPropertyBackfillStepArgs, AdminPropertyBackfillStepResult,
+    EdgeBackfillShardStatus, LabelBackfillShardStatus, PropertyBackfillShardStatus,
 };
 
 impl RouterStore {
@@ -187,6 +190,92 @@ impl RouterStore {
 
     fn store_property_backfill_state(&self, shard_id: ShardId, cursor: BackfillShardState) {
         ROUTER_PROPERTY_BACKFILL_STATE.with_borrow_mut(|map| {
+            map.insert(shard_id, cursor);
+        });
+    }
+
+    pub(crate) async fn admin_edge_backfill_step<F, Fut>(
+        &self,
+        caller: Principal,
+        args: AdminEdgeBackfillStepArgs,
+        call_backfill: F,
+    ) -> Result<AdminEdgeBackfillStepResult, RouterError>
+    where
+        F: FnOnce(Principal, EdgePostingBackfillArgs) -> Fut,
+        Fut: Future<Output = Result<EdgePostingBackfillResult, String>>,
+    {
+        if !self.is_controller(caller) {
+            return Err(RouterError::NotAuthorized);
+        }
+        if args.max_entries == 0 {
+            return Err(RouterError::InvalidArgument(
+                "max_entries must be greater than zero".into(),
+            ));
+        }
+
+        let shard = self.resolve_shard_for_backfill(&args.logical_graph_name, args.shard_id)?;
+        let mut cursor = self.load_edge_backfill_state(args.shard_id);
+        if cursor.done {
+            return Ok(AdminEdgeBackfillStepResult {
+                shard_id: args.shard_id,
+                next_after_key: cursor.after_key,
+                entries_processed: 0,
+                postings_synced: 0,
+                done: true,
+            });
+        }
+
+        let result = call_backfill(
+            shard.graph_canister,
+            EdgePostingBackfillArgs {
+                after_key: cursor.after_key.clone(),
+                max_entries: args.max_entries,
+            },
+        )
+        .await
+        .map_err(RouterError::Internal)?;
+        cursor.apply_batch_progress(result.next_after_key.clone(), result.done);
+        self.store_edge_backfill_state(args.shard_id, cursor);
+
+        Ok(AdminEdgeBackfillStepResult {
+            shard_id: args.shard_id,
+            next_after_key: result.next_after_key,
+            entries_processed: result.entries_processed,
+            postings_synced: result.postings_synced,
+            done: result.done,
+        })
+    }
+
+    pub(crate) fn admin_list_edge_backfill_status(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+    ) -> Result<Vec<EdgeBackfillShardStatus>, RouterError> {
+        if !self.is_controller(caller) {
+            return Err(RouterError::NotAuthorized);
+        }
+        let shards = self.list_shards_for_graph(logical_graph_name)?;
+        let mut out: Vec<EdgeBackfillShardStatus> = shards
+            .into_iter()
+            .map(|shard| {
+                let cursor = self.load_edge_backfill_state(shard.shard_id);
+                EdgeBackfillShardStatus {
+                    shard_id: shard.shard_id,
+                    after_key: cursor.after_key,
+                    done: cursor.done,
+                }
+            })
+            .collect();
+        out.sort_by_key(|status| status.shard_id);
+        Ok(out)
+    }
+
+    fn load_edge_backfill_state(&self, shard_id: ShardId) -> EdgeBackfillShardState {
+        ROUTER_EDGE_BACKFILL_STATE.with_borrow(|state| state.get(&shard_id).unwrap_or_default())
+    }
+
+    fn store_edge_backfill_state(&self, shard_id: ShardId, cursor: EdgeBackfillShardState) {
+        ROUTER_EDGE_BACKFILL_STATE.with_borrow_mut(|map| {
             map.insert(shard_id, cursor);
         });
     }
@@ -442,6 +531,61 @@ mod tests {
             .expect("status");
         assert_eq!(status.len(), 1);
         assert_eq!(status[0].next_vertex_id, 32);
+        assert!(!status[0].done);
+    }
+
+    #[test]
+    fn admin_edge_backfill_step_advances_cursor() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::anonymous();
+        store.bootstrap_controllers(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
+
+        let graph = graph_principal(1);
+        let index = graph_principal(2);
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id: ShardId::new(0),
+                graph_canister: graph,
+                index_canister: index,
+                logical_graph_name: "tenant.main".into(),
+            },
+        ))
+        .expect("register shard");
+
+        let key = vec![7u8; gleaph_graph_kernel::federation::EDGE_PROPERTY_KEY_BYTES];
+        let expected_key = key.clone();
+        let result = futures::executor::block_on(store.admin_edge_backfill_step(
+            admin,
+            AdminEdgeBackfillStepArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                max_entries: 32,
+            },
+            |_graph, args| async move {
+                Ok(EdgePostingBackfillResult {
+                    next_after_key: Some(key.clone()),
+                    entries_processed: args.max_entries,
+                    postings_synced: 5,
+                    done: false,
+                })
+            },
+        ))
+        .expect("step");
+
+        assert_eq!(result.shard_id, ShardId::new(0));
+        assert_eq!(result.entries_processed, 32);
+        assert_eq!(result.postings_synced, 5);
+        assert_eq!(result.next_after_key, Some(expected_key));
+        assert!(!result.done);
+
+        let status = store
+            .admin_list_edge_backfill_status(admin, "tenant.main")
+            .expect("status");
+        assert_eq!(status.len(), 1);
+        assert_eq!(status[0].after_key, Some(vec![7u8; 14]));
         assert!(!status[0].done);
     }
 }

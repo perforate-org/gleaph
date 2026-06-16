@@ -8,7 +8,8 @@ use gleaph_graph_kernel::bidirectional_catalog::{
 };
 use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, GraphTypeId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::{
-    BackfillShardState, GlobalVertexId, ShardId, ShardRegistryEntry, VertexPlacement,
+    BackfillShardState, EdgeBackfillShardState, GlobalVertexId, ShardId, ShardRegistryEntry,
+    VertexPlacement,
 };
 
 use gleaph_auth::AuthState;
@@ -60,6 +61,7 @@ const ROUTER_GRAPH_TYPE_DEFINITIONS: MemoryId = MemoryId::new(30);
 const ROUTER_GRAPH_SCHEMA_BINDINGS: MemoryId = MemoryId::new(31);
 const ROUTER_GRAPH_TYPE_BY_NAME: MemoryId = MemoryId::new(32);
 const ROUTER_GRAPH_TYPE_BY_ID: MemoryId = MemoryId::new(33);
+const ROUTER_EDGE_BACKFILL_STATE: MemoryId = MemoryId::new(34);
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
@@ -131,6 +133,7 @@ pub(crate) type StableMutationByClientKey = BTreeMap<
 >;
 pub(crate) type StableLabelBackfillStateMap = BTreeMap<ShardId, BackfillShardState, Memory>;
 pub(crate) type StablePropertyBackfillStateMap = BTreeMap<ShardId, BackfillShardState, Memory>;
+pub(crate) type StableEdgeBackfillStateMap = BTreeMap<ShardId, EdgeBackfillShardState, Memory>;
 pub(crate) type StableMutationCounter = Cell<u64, Memory>;
 pub(crate) type StableAuthState = AuthState<Memory>;
 pub(crate) type StablePreparedPlanMap = BTreeMap<
@@ -227,6 +230,10 @@ pub(crate) fn init_label_backfill_state() -> StableLabelBackfillStateMap {
 
 pub(crate) fn init_property_backfill_state() -> StablePropertyBackfillStateMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BACKFILL_STATE)))
+}
+
+pub(crate) fn init_edge_backfill_state() -> StableEdgeBackfillStateMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_BACKFILL_STATE)))
 }
 
 pub(crate) fn init_edge_payload_profiles() -> StableEdgePayloadProfileStore {

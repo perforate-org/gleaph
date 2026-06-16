@@ -92,6 +92,9 @@ thread_local! {
     pub(crate) static ROUTER_PROPERTY_BACKFILL_STATE: RefCell<memory::StablePropertyBackfillStateMap> =
         RefCell::new(memory::init_property_backfill_state());
 
+    pub(crate) static ROUTER_EDGE_BACKFILL_STATE: RefCell<memory::StableEdgeBackfillStateMap> =
+        RefCell::new(memory::init_edge_backfill_state());
+
     pub(crate) static ROUTER_AUTH_STATE: RefCell<memory::StableAuthState> =
         RefCell::new(memory::init_auth_state());
 

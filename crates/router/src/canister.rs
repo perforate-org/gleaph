@@ -6,12 +6,13 @@ use crate::index_ddl::IndexTarget;
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
 use crate::types::{
-    AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminLabelStatsProjectionStepArgs,
+    AdminEdgeBackfillStepArgs, AdminEdgeBackfillStepResult, AdminLabelBackfillStepArgs,
+    AdminLabelBackfillStepResult, AdminLabelStatsProjectionStepArgs,
     AdminLabelStatsProjectionStepResult, AdminPropertyBackfillStepArgs,
     AdminPropertyBackfillStepResult, AdminRegisterShardArgs, CommitVertexPlacementArgs,
-    EdgeLabelId, GlobalVertexId, GrantRoleArgs, GraphRegistryEntry, LabelBackfillShardStatus,
-    PropertyBackfillShardStatus, PropertyId, ReleaseVertexPlacementArgs, ShardId,
-    ShardRegistryEntry, VertexLabelId, VertexPlacement,
+    EdgeBackfillShardStatus, EdgeLabelId, GlobalVertexId, GrantRoleArgs, GraphRegistryEntry,
+    LabelBackfillShardStatus, PropertyBackfillShardStatus, PropertyId, ReleaseVertexPlacementArgs,
+    ShardId, ShardRegistryEntry, VertexLabelId, VertexPlacement,
 };
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
@@ -170,6 +171,28 @@ pub(crate) fn admin_list_property_backfill_status(
     logical_graph_name: String,
 ) -> Result<Vec<PropertyBackfillShardStatus>, RouterError> {
     crate::property_backfill::admin_list_property_backfill_status(
+        &RouterStore::new(),
+        msg_caller(),
+        &logical_graph_name,
+    )
+}
+
+pub(crate) async fn admin_edge_backfill_step(
+    args: AdminEdgeBackfillStepArgs,
+) -> Result<AdminEdgeBackfillStepResult, RouterError> {
+    crate::edge_backfill::admin_edge_backfill_step(
+        &RouterStore::new(),
+        msg_caller(),
+        args,
+        crate::graph_client::backfill_edge_property_postings,
+    )
+    .await
+}
+
+pub(crate) fn admin_list_edge_backfill_status(
+    logical_graph_name: String,
+) -> Result<Vec<EdgeBackfillShardStatus>, RouterError> {
+    crate::edge_backfill::admin_list_edge_backfill_status(
         &RouterStore::new(),
         msg_caller(),
         &logical_graph_name,

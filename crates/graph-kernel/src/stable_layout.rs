@@ -807,6 +807,14 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "GraphTypeId → graph type name (ADR 0014)",
             None,
         ),
+        region(
+            "ROUTER_EDGE_BACKFILL_STATE",
+            34,
+            StableMemoryClass::Maintenance,
+            "edge backfill",
+            "Per-shard cursor for edge property posting backfill admin",
+            None,
+        ),
     ],
 };
 
@@ -1018,8 +1026,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 34);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(33));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 35);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(34));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[17].class,
             StableMemoryClass::Telemetry

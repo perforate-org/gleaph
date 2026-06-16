@@ -6,7 +6,7 @@
 //! - [`catalogs`] — federated label and property name resolution
 //! - [`label_stats_projection`] — label stats projection from graph shard deltas (ADR 0015)
 //! - [`idempotency`] — mutation ids and client mutation keys
-//! - [`backfill`] — label and property posting backfill cursors and shard orchestration
+//! - [`backfill`] — label, property, and edge posting backfill cursors and shard orchestration
 
 mod backfill;
 mod catalogs;

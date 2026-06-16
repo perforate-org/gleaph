@@ -5,6 +5,7 @@ mod bench;
 
 mod bulk_ingest_finalize;
 mod canister;
+mod edge_backfill;
 mod edge_index_direction;
 mod execution_path;
 pub mod facade;
@@ -306,6 +307,22 @@ fn admin_list_property_backfill_status(
     logical_graph_name: String,
 ) -> Result<Vec<types::PropertyBackfillShardStatus>, RouterError> {
     canister::admin_list_property_backfill_status(logical_graph_name)
+}
+
+/// Advance edge property posting backfill for one graph shard (controller-only; call in a loop).
+#[update]
+async fn admin_edge_backfill_step(
+    args: types::AdminEdgeBackfillStepArgs,
+) -> Result<types::AdminEdgeBackfillStepResult, RouterError> {
+    canister::admin_edge_backfill_step(args).await
+}
+
+/// List router-stable edge backfill cursors for all shards of a logical graph.
+#[query]
+fn admin_list_edge_backfill_status(
+    logical_graph_name: String,
+) -> Result<Vec<types::EdgeBackfillShardStatus>, RouterError> {
+    canister::admin_list_edge_backfill_status(logical_graph_name)
 }
 
 /// Advance label stats projection for one graph shard (controller-only; call in a loop).

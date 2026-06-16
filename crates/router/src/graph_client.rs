@@ -167,10 +167,6 @@ pub async fn unregister_indexed_edge_index(
     call_graph_result(graph, "unregister_indexed_edge_index", args).await
 }
 
-#[expect(
-    dead_code,
-    reason = "wired in router admin edge backfill step (ADR 0009 phase C follow-up)"
-)]
 pub async fn backfill_edge_property_postings(
     graph: Principal,
     args: gleaph_graph_kernel::federation::EdgePostingBackfillArgs,
