@@ -24,8 +24,8 @@ fn setup_index_store() -> (IndexStore, Principal, Principal) {
         router_canister: router,
     });
     store
-        .admin_set_shard_owner(router, ShardId::new(0), owner)
-        .expect("shard owner");
+        .admin_attach_shard_canister(router, ShardId::new(0), owner)
+        .expect("attach shard canister");
     (store, router, owner)
 }
 

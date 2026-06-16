@@ -1,7 +1,7 @@
 //! Stateless facade over stable index storage ([`super::stable`]).
 //!
 //! Storage domains (Phase 2):
-//! - [`authorization`] — admins, shard owners, router caller checks
+//! - [`authorization`] — admins, shard-canister attachments, router caller checks
 //! - [`property_postings`] — property equality postings read/write
 //! - [`label_postings`] — vertex label membership postings read/write
 

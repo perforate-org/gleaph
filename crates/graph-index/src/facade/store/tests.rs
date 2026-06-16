@@ -27,15 +27,15 @@ fn init_test_store(store: &IndexStore) -> Principal {
     router
 }
 
-fn register_shard_owner(
+fn attach_shard_canister(
     store: &IndexStore,
     router: Principal,
     shard_id: ShardId,
-    owner: Principal,
+    shard_canister: Principal,
 ) {
     store
-        .admin_set_shard_owner(router, shard_id, owner)
-        .expect("set shard owner");
+        .admin_attach_shard_canister(router, shard_id, shard_canister)
+        .expect("attach shard canister");
 }
 
 #[test]
@@ -44,8 +44,8 @@ fn count_postings_by_value_groups_across_shards() {
     let router = init_test_store(&store);
     let shard_a = Principal::from_slice(&[1]);
     let shard_b = Principal::from_slice(&[2]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_a);
-    register_shard_owner(&store, router, ShardId::new(1), shard_b);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+    attach_shard_canister(&store, router, ShardId::new(1), shard_b);
 
     let property_id = 42;
     let us = index_key(Value::Text("US".into()));
@@ -78,7 +78,7 @@ fn count_postings_by_value_respects_vertex_filter() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_a = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_a);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
 
     let property_id = 42;
     let us = index_key(Value::Text("US".into()));
@@ -106,7 +106,7 @@ fn insert_and_lookup_equal() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     store
         .posting_insert(shard_principal, ShardId::new(0), 42, b"v".to_vec(), 100)
@@ -127,7 +127,7 @@ fn insert_and_lookup_equal_principal_value_index_key() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     let p = Principal::from_text("aaaaa-aa").expect("management id");
     let key = index_key(Value::from(PrincipalValue(p)));
@@ -151,7 +151,7 @@ fn lookup_range_ge_and_lt_use_encoded_lex_order() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     for (vid, val) in [
         (100u32, vec![1u8]),
@@ -185,7 +185,7 @@ fn lookup_range_respects_sortable_value_key_boundaries() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     for (vid, value) in [
         (10u32, gleaph_gql::Value::Int64(-1)),
@@ -221,7 +221,7 @@ fn lookup_range_text_prefix_boundaries_are_exact() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     for (vid, value) in [
         (1u32, gleaph_gql::Value::Text("a".into())),
@@ -250,7 +250,7 @@ fn lookup_range_respects_list_value_key_boundaries() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     let values = [
         (10u32, gleaph_gql::Value::List(vec![])),
@@ -301,7 +301,7 @@ fn lookup_range_respects_record_value_key_boundaries() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     for (vid, value) in [
         (
@@ -348,50 +348,50 @@ fn lookup_range_respects_record_value_key_boundaries() {
 }
 
 #[test]
-fn admin_set_shard_owner_idempotent_same_principal() {
+fn admin_attach_shard_canister_idempotent_same_principal() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard = Principal::from_slice(&[2]);
     store
-        .admin_set_shard_owner(router, ShardId::new(1), shard)
+        .admin_attach_shard_canister(router, ShardId::new(1), shard)
         .expect("first register");
     store
-        .admin_set_shard_owner(router, ShardId::new(1), shard)
+        .admin_attach_shard_canister(router, ShardId::new(1), shard)
         .expect("idempotent re-register");
 }
 
 #[test]
-fn admin_set_shard_owner_rejects_principal_change() {
+fn admin_attach_shard_canister_rejects_principal_change() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let a = Principal::self_authenticating([1u8; 32]);
     let b = Principal::self_authenticating([2u8; 32]);
     store
-        .admin_set_shard_owner(router, ShardId::new(1), a)
+        .admin_attach_shard_canister(router, ShardId::new(1), a)
         .unwrap();
     assert_eq!(
-        store.admin_set_shard_owner(router, ShardId::new(1), b),
-        Err(IndexError::ShardAlreadyRegistered)
+        store.admin_attach_shard_canister(router, ShardId::new(1), b),
+        Err(IndexError::ShardCanisterAlreadyAttached)
     );
 }
 
 #[test]
-fn admin_set_shard_owner_rejects_anonymous_owner() {
+fn admin_attach_shard_canister_rejects_anonymous_principal() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     assert_eq!(
-        store.admin_set_shard_owner(router, ShardId::new(3), Principal::anonymous()),
+        store.admin_attach_shard_canister(router, ShardId::new(3), Principal::anonymous()),
         Err(IndexError::InvalidPrincipalInRegistry)
     );
 }
 
 #[test]
-fn admin_set_shard_owner_rejects_non_router_caller() {
+fn admin_attach_shard_canister_rejects_non_router_caller() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let other = Principal::from_slice(&[8]);
     assert_eq!(
-        store.admin_set_shard_owner(other, ShardId::new(1), Principal::from_slice(&[1])),
+        store.admin_attach_shard_canister(other, ShardId::new(1), Principal::from_slice(&[1])),
         Err(IndexError::NotAuthorized)
     );
     let _ = router;
@@ -402,7 +402,7 @@ fn lookup_intersection_returns_vertices_in_all_specs() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     store
         .posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), 10)
@@ -437,7 +437,7 @@ fn lookup_intersection_empty_when_disjoint() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     store
         .posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), 10)
@@ -469,7 +469,7 @@ fn lookup_intersection_mixed_vertex_and_edge_projects_owners() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let owner = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), owner);
+    attach_shard_canister(&store, router, ShardId::new(0), owner);
 
     store
         .posting_insert(owner, ShardId::new(0), 10, b"30".to_vec(), 100)
@@ -501,7 +501,7 @@ fn lookup_intersection_all_edge_arms_returns_edge_hits() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let owner = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), owner);
+    attach_shard_canister(&store, router, ShardId::new(0), owner);
 
     store
         .edge_posting_insert(owner, ShardId::new(0), 30, b"1".to_vec(), 9, 50, 1)
@@ -532,7 +532,7 @@ fn insert_and_lookup_label() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     store
         .label_posting_insert(shard_principal, ShardId::new(0), 3, 100)
@@ -565,7 +565,7 @@ fn label_posting_remove() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     store
         .label_posting_insert(shard_principal, ShardId::new(0), 1, 10)
@@ -581,7 +581,7 @@ fn filter_hits_by_label_keeps_members_only() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     store
         .label_posting_insert(shard_principal, ShardId::new(0), 2, 10)
@@ -626,8 +626,8 @@ fn lookup_label_for_shard_returns_only_local_shard() {
     let router = init_test_store(&store);
     let shard_a = Principal::from_slice(&[1]);
     let shard_b = Principal::from_slice(&[2]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_a);
-    register_shard_owner(&store, router, ShardId::new(1), shard_b);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+    attach_shard_canister(&store, router, ShardId::new(1), shard_b);
 
     store
         .label_posting_insert(shard_a, ShardId::new(0), 3, 10)
@@ -651,7 +651,7 @@ fn lookup_label_page_paginates_within_shard() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_a = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_a);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
 
     for vid in [1u32, 2, 3] {
         store
@@ -690,7 +690,7 @@ fn lookup_label_intersection_returns_common_vertices() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     for vid in [10u32, 20, 30] {
         store
@@ -718,7 +718,7 @@ fn count_postings_by_value_for_label_sieves_by_label() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let shard_principal = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), shard_principal);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
 
     let property_id = 42;
     let us = index_key(Value::Text("US".into()));
@@ -752,7 +752,7 @@ fn edge_posting_insert_remove_and_lookup_equal() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let owner = Principal::from_slice(&[3]);
-    register_shard_owner(&store, router, ShardId::new(0), owner);
+    attach_shard_canister(&store, router, ShardId::new(0), owner);
 
     let property_id = 77;
     let value = index_key(Value::Int64(5));
@@ -811,7 +811,7 @@ fn edge_posting_lookup_filters_by_label_prefix() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     let owner = Principal::from_slice(&[1]);
-    register_shard_owner(&store, router, ShardId::new(0), owner);
+    attach_shard_canister(&store, router, ShardId::new(0), owner);
 
     let property_id = 88;
     let value = index_key(Value::Int64(1));

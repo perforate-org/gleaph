@@ -823,16 +823,24 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             None,
         ),
         region(
-            "INDEX_SHARD_OWNERS",
+            "INDEX_SHARD_CANISTER_BY_SHARD",
             1,
             StableMemoryClass::Canonical,
-            "shard ownership",
-            "ShardId → owning graph canister principal",
+            "shard canister catalog",
+            "ShardId → graph shard canister principal",
+            None,
+        ),
+        region(
+            "INDEX_SHARD_BY_CANISTER",
+            2,
+            StableMemoryClass::Canonical,
+            "shard canister catalog",
+            "Graph shard canister principal → ShardId",
             None,
         ),
         region(
             "INDEX_POSTINGS",
-            2,
+            3,
             StableMemoryClass::Derived,
             "property postings",
             "Global property equality/range posting set",
@@ -840,7 +848,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "INDEX_ROUTER",
-            3,
+            4,
             StableMemoryClass::Canonical,
             "router authorization",
             "Authorized router canister principal cell",
@@ -848,7 +856,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "INDEX_LABEL_POSTINGS",
-            4,
+            5,
             StableMemoryClass::Derived,
             "label postings",
             "Global vertex label membership posting set",
@@ -856,7 +864,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "INDEX_EDGE_POSTINGS",
-            5,
+            6,
             StableMemoryClass::Derived,
             "edge property postings",
             "Global edge property equality posting set (ADR 0009)",
@@ -1033,8 +1041,8 @@ mod tests {
     #[test]
     fn index_layout_registry_matches_baseline() {
         assert_layout(&INDEX_STABLE_LAYOUT);
-        assert_eq!(INDEX_STABLE_LAYOUT.region_count(), 6);
-        assert_eq!(INDEX_STABLE_LAYOUT.max_memory_id(), Some(5));
+        assert_eq!(INDEX_STABLE_LAYOUT.region_count(), 7);
+        assert_eq!(INDEX_STABLE_LAYOUT.max_memory_id(), Some(6));
     }
 
     #[test]

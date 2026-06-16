@@ -1,4 +1,4 @@
-//! Vertex label membership postings: shard-owner writes and posting-local reads.
+//! Vertex label membership postings: shard-canister writes and posting-local reads.
 
 use super::{DEFAULT_LABEL_LOOKUP_PAGE_LIMIT, IndexStore, pack_posting_vertex};
 use crate::facade::stable::INDEX_LABEL_POSTINGS;
@@ -19,7 +19,7 @@ impl IndexStore {
         vertex_label_id: u32,
         vertex_id: u32,
     ) -> Result<(), IndexError> {
-        self.assert_shard_owner(caller, shard_id)?;
+        self.assert_shard_canister(caller, shard_id)?;
         let key = LabelPostingKey {
             vertex_label_id,
             shard_id,
@@ -38,7 +38,7 @@ impl IndexStore {
         vertex_label_id: u32,
         vertex_id: u32,
     ) -> Result<(), IndexError> {
-        self.assert_shard_owner(caller, shard_id)?;
+        self.assert_shard_canister(caller, shard_id)?;
         let key = LabelPostingKey {
             vertex_label_id,
             shard_id,

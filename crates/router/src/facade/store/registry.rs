@@ -246,7 +246,7 @@ impl RouterStore {
 
         #[cfg(not(feature = "pocket-ic-e2e"))]
         {
-            index_sync::admin_set_shard_owner(
+            index_sync::admin_attach_shard_canister(
                 args.index_canister,
                 args.shard_id,
                 args.graph_canister,
@@ -296,7 +296,7 @@ impl RouterStore {
 
         #[cfg(not(feature = "pocket-ic-e2e"))]
         {
-            index_sync::admin_clear_shard_owner(entry.index_canister, shard_id)
+            index_sync::admin_detach_shard_canister(entry.index_canister, shard_id)
                 .await
                 .map_err(RouterError::Internal)?;
         }

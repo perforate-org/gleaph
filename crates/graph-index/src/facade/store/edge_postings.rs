@@ -19,7 +19,7 @@ impl IndexStore {
         owner_vertex_id: u32,
         slot_index: u32,
     ) -> Result<(), IndexError> {
-        self.assert_shard_owner(caller, shard_id)?;
+        self.assert_shard_canister(caller, shard_id)?;
         let key = EdgePostingKey {
             property_id,
             value,
@@ -44,7 +44,7 @@ impl IndexStore {
         owner_vertex_id: u32,
         slot_index: u32,
     ) -> Result<(), IndexError> {
-        self.assert_shard_owner(caller, shard_id)?;
+        self.assert_shard_canister(caller, shard_id)?;
         let key = EdgePostingKey {
             property_id,
             value,

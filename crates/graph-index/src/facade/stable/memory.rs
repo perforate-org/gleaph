@@ -14,18 +14,98 @@ use crate::label_key::LabelPostingKey;
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
 const INDEX_ADMINS: MemoryId = MemoryId::new(0);
-const INDEX_SHARD_OWNERS: MemoryId = MemoryId::new(1);
-const INDEX_POSTINGS: MemoryId = MemoryId::new(2);
-const INDEX_ROUTER: MemoryId = MemoryId::new(3);
-const INDEX_LABEL_POSTINGS: MemoryId = MemoryId::new(4);
-const INDEX_EDGE_POSTINGS: MemoryId = MemoryId::new(5);
+const INDEX_SHARD_CANISTER_BY_SHARD: MemoryId = MemoryId::new(1);
+const INDEX_SHARD_BY_CANISTER: MemoryId = MemoryId::new(2);
+const INDEX_POSTINGS: MemoryId = MemoryId::new(3);
+const INDEX_ROUTER: MemoryId = MemoryId::new(4);
+const INDEX_LABEL_POSTINGS: MemoryId = MemoryId::new(5);
+const INDEX_EDGE_POSTINGS: MemoryId = MemoryId::new(6);
 
 pub(crate) type StableIndexAdminSet = BTreeSet<Principal, Memory>;
-pub(crate) type StableIndexShardOwnerMap = BTreeMap<ShardId, Principal, Memory>;
+pub(crate) type StableIndexShardCanisterByShardMap = BTreeMap<ShardId, Principal, Memory>;
+pub(crate) type StableIndexShardByCanisterMap = BTreeMap<Principal, ShardId, Memory>;
 pub(crate) type StableIndexPostingSet = BTreeSet<PostingKey, Memory>;
 pub(crate) type StableIndexLabelPostingSet = BTreeSet<LabelPostingKey, Memory>;
 pub(crate) type StableIndexEdgePostingSet = BTreeSet<EdgePostingKey, Memory>;
 pub(crate) type StableIndexRouterCell = Cell<Principal, Memory>;
+
+pub(crate) struct ShardCanisterCatalog {
+    by_shard: StableIndexShardCanisterByShardMap,
+    by_canister: StableIndexShardByCanisterMap,
+}
+
+impl ShardCanisterCatalog {
+    pub(crate) fn init() -> Self {
+        Self {
+            by_shard: BTreeMap::init(
+                MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_SHARD_CANISTER_BY_SHARD)),
+            ),
+            by_canister: BTreeMap::init(
+                MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_SHARD_BY_CANISTER)),
+            ),
+        }
+    }
+
+    pub(crate) fn clear_new(&mut self) {
+        self.by_shard.clear_new();
+        self.by_canister.clear_new();
+    }
+
+    pub(crate) fn shard_canister(&self, shard_id: ShardId) -> Option<Principal> {
+        self.by_shard.get(&shard_id)
+    }
+
+    #[cfg(target_family = "wasm")]
+    pub(crate) fn shard_for_canister(&self, canister: Principal) -> Option<ShardId> {
+        self.by_canister.get(&canister)
+    }
+
+    pub(crate) fn insert(
+        &mut self,
+        shard_id: ShardId,
+        canister: Principal,
+    ) -> Result<(), ShardCanisterCatalogInsertError> {
+        if let Some(existing_canister) = self.by_shard.get(&shard_id) {
+            if existing_canister == canister {
+                return Ok(());
+            }
+            return Err(ShardCanisterCatalogInsertError::ShardAlreadyAttached {
+                shard_id,
+                existing_canister,
+            });
+        }
+        if let Some(existing_shard) = self.by_canister.get(&canister) {
+            if existing_shard == shard_id {
+                return Ok(());
+            }
+            return Err(ShardCanisterCatalogInsertError::CanisterAlreadyAttached {
+                canister,
+                existing_shard,
+            });
+        }
+        self.by_shard.insert(shard_id, canister);
+        self.by_canister.insert(canister, shard_id);
+        Ok(())
+    }
+
+    pub(crate) fn remove_shard(&mut self, shard_id: ShardId) -> Option<Principal> {
+        let canister = self.by_shard.remove(&shard_id)?;
+        self.by_canister.remove(&canister);
+        Some(canister)
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ShardCanisterCatalogInsertError {
+    ShardAlreadyAttached {
+        shard_id: ShardId,
+        existing_canister: Principal,
+    },
+    CanisterAlreadyAttached {
+        canister: Principal,
+        existing_shard: ShardId,
+    },
+}
 
 thread_local! {
     pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -36,8 +116,8 @@ pub(crate) fn init_index_admins() -> StableIndexAdminSet {
     BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_ADMINS)))
 }
 
-pub(crate) fn init_index_shard_owners() -> StableIndexShardOwnerMap {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_SHARD_OWNERS)))
+pub(crate) fn init_index_shard_canister_catalog() -> ShardCanisterCatalog {
+    ShardCanisterCatalog::init()
 }
 
 pub(crate) fn init_index_postings() -> StableIndexPostingSet {

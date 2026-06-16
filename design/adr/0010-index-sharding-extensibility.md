@@ -67,7 +67,7 @@ These remain fixed across index sharding rollout:
 | **`PostingHit { shard_id, vertex_id }`** on index read APIs | Router seed construction |
 | Graph-index **read API args** stay value-oriented: `lookup_equal(property_id, encoded_value)`, `lookup_intersection(...)`, etc. | Planner/router unchanged at boundary |
 | Graph DML → **`posting_insert/remove(..., shard_id, ...)`** on **that shard’s configured index** | `FederationRouting.index_canister` |
-| Index **`admin_set_shard_owner(shard_id, graph_canister)`** per shard on each canister | Write authorization |
+| Index **`admin_attach_shard_canister(shard_id, graph_canister)`** per shard on each canister | Write authorization |
 | Postings are **derived**; rebuild via backfill | Split = new canister + cursor replay, not key rewrite |
 
 **Do not add** `logical_graph_id`, `index_group_id`, or split policy ids to posting key
@@ -135,7 +135,7 @@ Each graph shard writes postings only to **`FederationRouting.index_canister`** 
 registration). On index split:
 
 1. Install new index canister(s).
-2. `admin_set_shard_owner` on each index for moved shard ids.
+2. `admin_attach_shard_canister` on each index for moved shard ids.
 3. Update **`index_canister`** on affected `ShardRegistryEntry` rows.
 4. Backfill postings for moved shards.
 5. Graph metadata **`FederationRouting.index_canister`** updated per shard.

@@ -9,7 +9,7 @@ or vertex migration.
 - `LogicalVertexId = nat64` — stable global vertex identity (router-allocated).
 - `ShardId = nat32` — partition id; not a substitute for logical identity.
 - Index posting keys stay **physical**: `(property_id, encoded_value, shard_id, local_vertex_id)`.
-- Shard registry moves from `gleaph-graph-index` to the router; index keeps shard **owner** map only.
+- Shard registry moves from `gleaph-graph-index` to the router; index keeps shard/canister attachment map only.
 - Breaking changes are acceptable (no migration from prior federation v1 wire formats).
 
 ---
@@ -138,7 +138,7 @@ Caller must be in `controllers` (set at `init`).
 | `admin_register_graph` | `entry : GraphRegistryEntry` | `Result<(), RouterError>` | |
 | `admin_update_graph_status` | `graph_name : text`, `status : GraphStatus`, `version : nat64` | `Result<(), RouterError>` | Optimistic `version` |
 | `admin_register_shard` | `AdminRegisterShardArgs` | `Result<(), RouterError>` | Router registry + IC call to index |
-| `admin_unregister_shard` | `shard_id : ShardId` | `Result<(), RouterError>` | PR1: registry removal + index owner clear |
+| `admin_unregister_shard` | `shard_id : ShardId` | `Result<(), RouterError>` | PR1: registry removal + index shard/canister detach |
 | `admin_intern_vertex_label` | `name : text` | `Result<VertexLabelId, RouterError>` | Idempotent; `0` reserved |
 | `admin_intern_edge_label` | `name : text` | `Result<EdgeLabelId, RouterError>` | Idempotent; max `0x7FFF` catalog id |
 | `admin_intern_property` | `name : text` | `Result<PropertyId, RouterError>` | Idempotent intern |
@@ -155,7 +155,7 @@ type AdminRegisterShardArgs = record {
 **`admin_register_shard` side effect:** after router stable insert, the router calls the index canister:
 
 ```text
-index.admin_set_shard_owner(shard_id, graph_canister)
+index.admin_attach_shard_canister(shard_id, graph_canister)
 ```
 
 ---
@@ -257,7 +257,7 @@ Removed: `index_canister`, `graph_shard_id` (index principal comes from `resolve
 | Change | Detail |
 |--------|--------|
 | Remove | `admin_register_shard`, `resolve_shard_principal` |
-| Add | `admin_set_shard_owner(ShardId, principal) -> Result<(), text>` — **router caller only** |
+| Add | `admin_attach_shard_canister(ShardId, principal) -> Result<(), text>` — **router caller only** |
 | Change | `posting_*` / `PostingHit.shard_id` → `ShardId` (`nat32`) |
 | Change | `PostingKey` encoding — `shard_id` 4 bytes; consider `POSTING_KEY_MAGIC = 2` |
 

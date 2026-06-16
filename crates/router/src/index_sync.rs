@@ -7,37 +7,37 @@ use gleaph_graph_kernel::federation::ShardId;
     feature = "pocket-ic-e2e",
     expect(
         dead_code,
-        reason = "index sync skipped when pocket-ic-e2e manages shard owners"
+        reason = "index sync skipped when pocket-ic-e2e manages shard/canister attachments"
     )
 )]
 #[cfg(target_family = "wasm")]
-pub async fn admin_set_shard_owner(
+pub async fn admin_attach_shard_canister(
     index_canister: Principal,
     shard_id: ShardId,
-    owner_principal: Principal,
+    shard_canister_principal: Principal,
 ) -> Result<(), String> {
     use ic_cdk::call::Call;
 
-    Call::unbounded_wait(index_canister, "admin_set_shard_owner")
-        .with_args(&(shard_id.raw(), owner_principal))
+    Call::unbounded_wait(index_canister, "admin_attach_shard_canister")
+        .with_args(&(shard_id.raw(), shard_canister_principal))
         .await
-        .map_err(|e| format!("index admin_set_shard_owner call failed: {e}"))?
+        .map_err(|e| format!("index admin_attach_shard_canister call failed: {e}"))?
         .candid()
-        .map_err(|e| format!("index admin_set_shard_owner decode failed: {e}"))?
+        .map_err(|e| format!("index admin_attach_shard_canister decode failed: {e}"))?
 }
 
 #[cfg_attr(
     feature = "pocket-ic-e2e",
     expect(
         dead_code,
-        reason = "index sync skipped when pocket-ic-e2e manages shard owners"
+        reason = "index sync skipped when pocket-ic-e2e manages shard/canister attachments"
     )
 )]
 #[cfg(not(target_family = "wasm"))]
-pub async fn admin_set_shard_owner(
+pub async fn admin_attach_shard_canister(
     _index_canister: Principal,
     _shard_id: ShardId,
-    _owner_principal: Principal,
+    _shard_canister_principal: Principal,
 ) -> Result<(), String> {
     Ok(())
 }
@@ -46,33 +46,33 @@ pub async fn admin_set_shard_owner(
     feature = "pocket-ic-e2e",
     expect(
         dead_code,
-        reason = "index sync skipped when pocket-ic-e2e manages shard owners"
+        reason = "index sync skipped when pocket-ic-e2e manages shard/canister attachments"
     )
 )]
 #[cfg(target_family = "wasm")]
-pub async fn admin_clear_shard_owner(
+pub async fn admin_detach_shard_canister(
     index_canister: Principal,
     shard_id: ShardId,
 ) -> Result<(), String> {
     use ic_cdk::call::Call;
 
-    Call::unbounded_wait(index_canister, "admin_clear_shard_owner")
+    Call::unbounded_wait(index_canister, "admin_detach_shard_canister")
         .with_args(&(shard_id.raw(),))
         .await
-        .map_err(|e| format!("index admin_clear_shard_owner call failed: {e}"))?
+        .map_err(|e| format!("index admin_detach_shard_canister call failed: {e}"))?
         .candid()
-        .map_err(|e| format!("index admin_clear_shard_owner decode failed: {e}"))?
+        .map_err(|e| format!("index admin_detach_shard_canister decode failed: {e}"))?
 }
 
 #[cfg_attr(
     feature = "pocket-ic-e2e",
     expect(
         dead_code,
-        reason = "index sync skipped when pocket-ic-e2e manages shard owners"
+        reason = "index sync skipped when pocket-ic-e2e manages shard/canister attachments"
     )
 )]
 #[cfg(not(target_family = "wasm"))]
-pub async fn admin_clear_shard_owner(
+pub async fn admin_detach_shard_canister(
     _index_canister: Principal,
     _shard_id: ShardId,
 ) -> Result<(), String> {

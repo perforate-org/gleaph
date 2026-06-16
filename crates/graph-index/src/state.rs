@@ -4,10 +4,10 @@
 pub enum IndexError {
     NotAuthorized,
     UnknownShard,
-    WrongShardOwner,
+    WrongShardCanister,
     InvalidPrincipalInRegistry,
-    /// `shard_id` is already mapped to a different canister principal.
-    ShardAlreadyRegistered,
+    /// `shard_id` or principal is already attached to a different counterpart.
+    ShardCanisterAlreadyAttached,
 }
 
 impl std::fmt::Display for IndexError {
@@ -15,10 +15,15 @@ impl std::fmt::Display for IndexError {
         match self {
             Self::NotAuthorized => write!(f, "caller is not authorized"),
             Self::UnknownShard => write!(f, "shard is not registered"),
-            Self::WrongShardOwner => write!(f, "caller does not own this shard"),
+            Self::WrongShardCanister => {
+                write!(f, "caller is not the attached canister for this shard")
+            }
             Self::InvalidPrincipalInRegistry => write!(f, "invalid principal in shard registry"),
-            Self::ShardAlreadyRegistered => {
-                write!(f, "shard_id is already registered to a different principal")
+            Self::ShardCanisterAlreadyAttached => {
+                write!(
+                    f,
+                    "shard/canister attachment already exists with a different counterpart"
+                )
             }
         }
     }

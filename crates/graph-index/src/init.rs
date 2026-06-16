@@ -4,10 +4,10 @@ use candid::{CandidType, Deserialize, Principal};
 
 #[derive(CandidType, Deserialize, Clone, Debug)]
 pub struct IndexInitArgs {
-    /// Principals allowed to call index admin APIs other than router-driven shard owner updates.
+    /// Principals allowed to call index admin APIs other than router-driven shard/canister updates.
     #[serde(default)]
     pub controllers: Vec<Principal>,
-    /// Router canister allowed to call `admin_set_shard_owner` / `admin_clear_shard_owner`.
+    /// Router canister allowed to call `admin_attach_shard_canister` / `admin_detach_shard_canister`.
     pub router_canister: Principal,
 }
 

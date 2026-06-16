@@ -1,13 +1,13 @@
 //! Federated property index canister (`gleaph-graph-index`).
 //!
-//! Owns global postings `(property_id, value, shard_id, vertex_id)`. Shard ownership is configured
-//! by the router via `admin_set_shard_owner`.
+//! Owns global postings `(property_id, value, shard_id, vertex_id)`. Shard/canister attachments are
+//! configured by the router via `admin_attach_shard_canister`.
 //!
-//! ## Read API visibility (v1)
+//! ## Read API visibility
 //!
-//! `lookup_equal` and `lookup_range` perform **no caller-based authorization**: any principal that
-//! can reach this canister may read the full posting directory. Treat that as public metadata unless
-//! you gate the canister at a higher layer.
+//! Public read APIs are guarded for federation control-plane callers:
+//! - Router-only for global scans/lookups.
+//! - Router or owning graph shard for shard-scoped label exports.
 //!
 //! `lookup_range` uses the same lexicographic order on encoded value bytes as `lookup_equal` (`memcmp`).
 
@@ -25,6 +25,7 @@ pub mod state;
 pub mod init;
 
 mod canister;
+mod guards;
 
 pub use edge_key::EdgePostingKey;
 pub use facade::IndexStore;
@@ -38,6 +39,7 @@ pub use key::PostingKey;
 pub use label_key::LabelPostingKey;
 pub use state::IndexError;
 
+use crate::guards::guard_router_canister;
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
 use ic_cdk_macros::{init, query, update};
@@ -48,13 +50,16 @@ fn init(args: IndexInitArgs) {
 }
 
 #[update]
-fn admin_set_shard_owner(shard_id: ShardId, owner_principal: Principal) -> Result<(), String> {
-    canister::admin_set_shard_owner(shard_id, owner_principal)
+fn admin_attach_shard_canister(
+    shard_id: ShardId,
+    shard_canister_principal: Principal,
+) -> Result<(), String> {
+    canister::admin_attach_shard_canister(shard_id, shard_canister_principal)
 }
 
 #[update]
-fn admin_clear_shard_owner(shard_id: ShardId) -> Result<(), String> {
-    canister::admin_clear_shard_owner(shard_id)
+fn admin_detach_shard_canister(shard_id: ShardId) -> Result<(), String> {
+    canister::admin_detach_shard_canister(shard_id)
 }
 
 #[update]
@@ -115,12 +120,12 @@ fn label_posting_remove(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32)
     canister::label_posting_remove(shard_id, vertex_label_id, vertex_id);
 }
 
-#[query]
+#[query(guard = "guard_router_canister")]
 fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
     canister::lookup_equal(property_id, value)
 }
 
-#[query]
+#[query(guard = "guard_router_canister")]
 fn lookup_edge_equal(
     property_id: u32,
     value: Vec<u8>,
@@ -129,7 +134,7 @@ fn lookup_edge_equal(
     canister::lookup_edge_equal(property_id, value, label_id)
 }
 
-#[query]
+#[query(guard = "guard_router_canister")]
 fn lookup_label(vertex_label_id: u32) -> Vec<PostingHit> {
     canister::lookup_label(vertex_label_id)
 }
@@ -144,22 +149,22 @@ fn lookup_label_page(req: LabelLookupPageRequest) -> LabelLookupPageResult {
     canister::lookup_label_page(req)
 }
 
-#[query]
+#[query(guard = "guard_router_canister")]
 fn lookup_intersection(req: IndexIntersectionRequest) -> IndexIntersectionResult {
     canister::lookup_intersection(req)
 }
 
-#[query]
+#[query(guard = "guard_router_canister")]
 fn lookup_label_intersection(req: IndexLabelIntersectionRequest) -> Vec<PostingHit> {
     canister::lookup_label_intersection(req)
 }
 
-#[query]
+#[query(guard = "guard_router_canister")]
 fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<PostingHit> {
     canister::lookup_range(property_id, req)
 }
 
-#[query]
+#[query(guard = "guard_router_canister")]
 fn count_postings_by_value(
     property_id: u32,
     min_count: u64,
@@ -168,12 +173,12 @@ fn count_postings_by_value(
     canister::count_postings_by_value(property_id, min_count, vertex_filter_packed)
 }
 
-#[query]
+#[query(guard = "guard_router_canister")]
 fn filter_hits_by_label(vertex_label_id: u32, hits: Vec<PostingHit>) -> Vec<PostingHit> {
     canister::filter_hits_by_label(vertex_label_id, hits)
 }
 
-#[query]
+#[query(guard = "guard_router_canister")]
 fn count_postings_by_value_for_label(
     property_id: u32,
     vertex_label_id: u32,

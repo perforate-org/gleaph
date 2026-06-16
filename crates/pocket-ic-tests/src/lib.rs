@@ -428,7 +428,7 @@ pub fn install_single_shard_federation() -> FederationEnv {
     env
 }
 
-fn register_index_shard_owner(
+fn attach_index_shard_canister(
     pic: &PocketIc,
     router: Principal,
     index: Principal,
@@ -439,14 +439,14 @@ fn register_index_shard_owner(
         .update_call(
             index,
             router,
-            "admin_set_shard_owner",
-            Encode!(&shard_id, &graph).expect("encode admin_set_shard_owner"),
+            "admin_attach_shard_canister",
+            Encode!(&shard_id, &graph).expect("encode admin_attach_shard_canister"),
         )
-        .expect("admin_set_shard_owner");
+        .expect("admin_attach_shard_canister");
     match Decode!(&bytes, Result<(), String>) {
         Ok(Ok(())) => {}
-        Ok(Err(err)) => panic!("admin_set_shard_owner rejected: {err}"),
-        Err(err) => panic!("decode admin_set_shard_owner: {err}"),
+        Ok(Err(err)) => panic!("admin_attach_shard_canister rejected: {err}"),
+        Err(err) => panic!("decode admin_attach_shard_canister: {err}"),
     }
 }
 
@@ -491,7 +491,7 @@ pub fn register_graph_single_shard(
         Encode!(&args).expect("encode register shard"),
     )
     .expect("admin_register_shard");
-    register_index_shard_owner(pic, router, index, shard_id, graph);
+    attach_index_shard_canister(pic, router, index, shard_id, graph);
 }
 
 pub fn register_graph_and_shards(
@@ -536,7 +536,7 @@ pub fn register_graph_and_shards(
             Encode!(&args).expect("encode register shard"),
         )
         .expect("admin_register_shard");
-        register_index_shard_owner(pic, router, index, shard, graph);
+        attach_index_shard_canister(pic, router, index, shard, graph);
     }
 }
 
@@ -590,7 +590,7 @@ pub fn register_two_graphs_and_shards(
             Encode!(&args).expect("encode register shard"),
         )
         .expect("admin_register_shard");
-        register_index_shard_owner(pic, router, index, shard, graph);
+        attach_index_shard_canister(pic, router, index, shard, graph);
     }
 }
 

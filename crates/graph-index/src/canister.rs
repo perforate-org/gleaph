@@ -1,6 +1,7 @@
 //! Canister request handlers for `gleaph-graph-index`.
 
 use crate::facade::{DEFAULT_COUNT_POSTINGS_MAX_GROUPS, IndexStore};
+use crate::guards::guard_router_or_shard_canister;
 use crate::init::IndexInitArgs;
 use crate::state::IndexError;
 use candid::Principal;
@@ -18,18 +19,18 @@ pub(crate) fn init(args: IndexInitArgs) {
     IndexStore::new().init_from_args(&args);
 }
 
-pub(crate) fn admin_set_shard_owner(
+pub(crate) fn admin_attach_shard_canister(
     shard_id: ShardId,
-    owner_principal: Principal,
+    shard_canister_principal: Principal,
 ) -> Result<(), String> {
     IndexStore::new()
-        .admin_set_shard_owner(msg_caller(), shard_id, owner_principal)
+        .admin_attach_shard_canister(msg_caller(), shard_id, shard_canister_principal)
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn admin_clear_shard_owner(shard_id: ShardId) -> Result<(), String> {
+pub(crate) fn admin_detach_shard_canister(shard_id: ShardId) -> Result<(), String> {
     IndexStore::new()
-        .admin_clear_shard_owner(msg_caller(), shard_id)
+        .admin_detach_shard_canister(msg_caller(), shard_id)
         .map_err(|e| e.to_string())
 }
 
@@ -121,12 +122,18 @@ pub(crate) fn lookup_label_for_shard(
     vertex_label_id: u32,
     shard_id: gleaph_graph_kernel::federation::ShardId,
 ) -> Vec<PostingHit> {
+    if let Err(e) = guard_router_or_shard_canister(shard_id) {
+        ic_cdk::trap(&e);
+    }
     IndexStore::new().lookup_label_for_shard(vertex_label_id, shard_id)
 }
 
 pub(crate) fn lookup_label_page(
     req: gleaph_graph_kernel::index::LabelLookupPageRequest,
 ) -> gleaph_graph_kernel::index::LabelLookupPageResult {
+    if let Err(e) = guard_router_or_shard_canister(req.shard_id) {
+        ic_cdk::trap(&e);
+    }
     IndexStore::new().lookup_label_page(&req)
 }
 
