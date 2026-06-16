@@ -49,6 +49,8 @@ explicit `ResolvedLabelTable`.
 
 When an edge insert lands in the edge overflow log, the paired payload bytes are written to the payload log at the same entry index; `LabelBucket::payload_log_head` tracks the chain head (parallel to `overflow_log_head`).
 
+**Delete (implemented):** edge liveness is the single source of truth. Log-backed edge delete rewrites the target log entry to the tombstone edge payload without rewiring `prev`. Payload log entries at the same logical site are marked dead or blob bodies dropped; payload slab bytes may remain until maintenance.
+
 ## Payload overflow log
 
 Layout mirrors `EdgeStore` segment logs (`LLG`): one index word per leaf segment plus fixed-capacity entry slots. `push_vertex` grows the payload log segment tree in lockstep with the edge log. Span rewrites fold log-backed payloads back onto the byte slab and clear the segment log.

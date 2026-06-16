@@ -97,6 +97,10 @@ where
                         }
                         continue;
                     }
+                    LogEntryKind::Live if edge.is_deleted_slot() => {
+                        self.next_log_slot = self.next_log_slot.saturating_sub(1);
+                        continue;
+                    }
                     LogEntryKind::Live => {}
                 }
                 if let Some(pos) = self.deleted_log_indices.iter().position(|&d| d == log_idx) {

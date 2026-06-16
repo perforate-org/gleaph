@@ -3,15 +3,14 @@
 use crate::lara::operation_error::{LaraOperationError, VertexAccess};
 use crate::{
     SegmentId, VertexId,
-    traits::{CsrEdge, CsrVertex},
+    traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
 
 use super::log::HeaderV1 as LogHeaderV1;
 use super::scan_iter::leaf_segment;
 use super::{
-    DeleteTarget, EdgeLayout, EdgeStore, INLINE_EDGE_BYTES, LOG_SRC_DEAD, LogEntryKind,
-    decode_log_entry_kind, encode_delete_target,
+    DeleteTarget, EdgeLayout, EdgeStore, INLINE_EDGE_BYTES, LogEntryKind, decode_log_entry_kind,
 };
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
@@ -133,7 +132,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     }
                     continue;
                 }
-                LogEntryKind::Live => {}
+                LogEntryKind::Live => {
+                    if edge.is_deleted_slot() {
+                        log_entries.push(None);
+                        continue;
+                    }
+                }
             }
             if let Some(pos) = deleted_log_indices.iter().position(|&d| d == log_idx) {
                 deleted_log_indices.swap_remove(pos);
@@ -234,7 +238,8 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 return Ok((replay_entries, deleted_slab_offsets, log_table_buf));
             }
             let log_idx = log_i as u32;
-            let (prev, src) = self.read_log_entry_src_tag(log_h, leaf, log_idx, log_table);
+            let (prev, src, edge) =
+                self.read_log_edge_from_table_or_store(log_h, leaf, log_idx, log_table);
             log_i = prev;
             match decode_log_entry_kind(src) {
                 LogEntryKind::Dead => {
@@ -245,6 +250,10 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     DeleteTarget::Slab(offset) => deleted_slab_offsets.push(offset),
                     DeleteTarget::Log(index) => deleted_log_indices.push(index),
                 },
+                LogEntryKind::Live if edge.is_deleted_slot() => {
+                    replay_entries.push(None);
+                    continue;
+                }
                 LogEntryKind::Live => {}
             }
             if let Some(pos) = deleted_log_indices.iter().position(|&d| d == log_idx) {
@@ -278,8 +287,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             if steps >= log_h.max_log_entries {
                 return Err(LaraOperationError::LogChainShort);
             }
-            let (prev, src) = self.read_log_entry_src_tag(log_h, leaf, log_i as u32, log_table);
-            entries.push((log_i as u32, src));
+            let (prev, src, edge) =
+                self.read_log_edge_from_table_or_store(log_h, leaf, log_i as u32, log_table);
+            entries.push((log_i as u32, src, edge));
             log_i = prev;
             steps = steps
                 .checked_add(1)
@@ -289,7 +299,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
         let mut inserted: Vec<(DeleteTarget, Option<u32>)> = Vec::new();
         let mut deleted_slab_offsets = Vec::new();
-        for (log_idx, src) in entries {
+        for (log_idx, src, edge) in entries {
             match decode_log_entry_kind(src) {
                 LogEntryKind::Dead => inserted.push((DeleteTarget::Log(log_idx), None)),
                 LogEntryKind::Delete(target) => match target {
@@ -303,6 +313,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                         }
                     }
                 },
+                LogEntryKind::Live if edge.is_deleted_slot() => {
+                    inserted.push((DeleteTarget::Log(log_idx), None));
+                }
                 LogEntryKind::Live => inserted.push((DeleteTarget::Log(log_idx), Some(log_idx))),
             }
         }
@@ -325,62 +338,62 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         edge
     }
 
-    pub(super) fn insert_delete_into_log_with_layout<V, A>(
+    pub(crate) fn rewrite_overflow_log_entry_tombstone(
+        &self,
+        leaf: u32,
+        entry_idx: u32,
+    ) -> Result<(), LaraOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        let log_h = self.log.header();
+        let (prev, src, _) = self.read_log_edge_from_table_or_store(&log_h, leaf, entry_idx, None);
+        let tombstone = E::tombstone_edge();
+        if E::BYTES <= INLINE_EDGE_BYTES {
+            let mut payload = [0u8; INLINE_EDGE_BYTES];
+            tombstone.write_to(&mut payload[..E::BYTES]);
+            self.log
+                .write_entry_with_header(&log_h, leaf, entry_idx, prev, src, &payload[..E::BYTES])
+                .map_err(LaraOperationError::WriteLogFailed)?;
+        } else {
+            let mut payload = vec![0u8; E::BYTES];
+            tombstone.write_to(&mut payload);
+            self.log
+                .write_entry_with_header(&log_h, leaf, entry_idx, prev, src, &payload)
+                .map_err(LaraOperationError::WriteLogFailed)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn tombstone_overflow_log_delete_target<V, A>(
         &self,
         edge_layout: &EdgeLayout,
         vertices: &A,
         vid: VertexId,
         v: V,
         target: DeleteTarget,
-        edge: E,
     ) -> Result<(), LaraOperationError>
     where
         V: CsrVertex,
         A: VertexAccess<V>,
+        E: CsrEdgeTombstone,
     {
-        let leaf = leaf_segment(vertices.log_leaf_vertex(vid), edge_layout.segment_size);
-        let log_h = self.log.header();
-        let idx = self.log.read_idx_with_header(&log_h, leaf);
-        if idx < 0 || idx >= log_h.max_log_entries as i32 {
-            return Err(LaraOperationError::SegmentLogFull);
+        match target {
+            DeleteTarget::Slab(offset) => {
+                let rm_slot = v
+                    .base_slot_start()
+                    .checked_add(u64::from(offset))
+                    .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+                self.write_slot(rm_slot, E::tombstone_edge())
+                    .map_err(LaraOperationError::WriteEdgeSlotFailed)?;
+            }
+            DeleteTarget::Log(entry_idx) => {
+                let leaf = leaf_segment(vertices.log_leaf_vertex(vid), edge_layout.segment_size);
+                self.rewrite_overflow_log_entry_tombstone(leaf, entry_idx)?;
+            }
         }
-        let src = encode_delete_target(target)?;
-        if E::BYTES <= INLINE_EDGE_BYTES {
-            let mut payload = [0u8; INLINE_EDGE_BYTES];
-            edge.write_to(&mut payload[..E::BYTES]);
-            self.log
-                .write_entry_with_header(
-                    &log_h,
-                    leaf,
-                    idx as u32,
-                    v.log_head(),
-                    src,
-                    &payload[..E::BYTES],
-                )
-                .map_err(LaraOperationError::WriteLogFailed)?;
-        } else {
-            let mut payload = vec![0u8; E::BYTES];
-            edge.write_to(&mut payload);
-            self.log
-                .write_entry_with_header(&log_h, leaf, idx as u32, v.log_head(), src, &payload)
-                .map_err(LaraOperationError::WriteLogFailed)?;
-        }
-        self.log.write_idx_with_header(&log_h, leaf, idx + 1);
-        vertices.set(vid, &v.with_log_head(idx).after_slab_tombstone_delete());
+        vertices.set(vid, &v.after_slab_tombstone_delete());
         Ok(())
-    }
-
-    pub(crate) fn mark_overflow_log_entry_dead(
-        &self,
-        leaf: u32,
-        entry_idx: u32,
-    ) -> Result<(), LaraOperationError> {
-        let log_h = self.log.header();
-        let (prev, _, _) = self.read_log_edge_from_table_or_store(&log_h, leaf, entry_idx, None);
-        let payload = vec![0u8; E::BYTES];
-        self.log
-            .write_entry_with_header(&log_h, leaf, entry_idx, prev, LOG_SRC_DEAD, &payload)
-            .map_err(LaraOperationError::WriteLogFailed)
     }
 
     pub(super) fn insert_into_log_with_layout<V, A>(

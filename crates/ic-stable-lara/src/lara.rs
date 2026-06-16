@@ -1797,7 +1797,7 @@ mod tests {
     }
 
     #[test]
-    fn lara_remove_edge_appends_overflow_log_delete_without_reordering() {
+    fn lara_remove_edge_rewrites_overflow_log_tombstone_without_reordering() {
         let graph = test_graph(2, 2, &[0, 1]);
 
         graph
@@ -1809,7 +1809,12 @@ mod tests {
         graph
             .insert_edge_raw(VertexId::from(0), TestEdge(12))
             .unwrap();
-        assert!(graph.vertices().get(VertexId::from(0)).log_head() >= 0);
+        let log_head_before = graph.vertices().get(VertexId::from(0)).log_head();
+        assert!(log_head_before >= 0);
+        let leaf = 0u32;
+        let chain_before = graph
+            .edges()
+            .overflow_log_chain_asc_indices(leaf, log_head_before);
 
         assert!(graph.remove_edge(VertexId::from(0), TestEdge(11)).unwrap());
 
@@ -1825,7 +1830,14 @@ mod tests {
             vec![TestEdge(10), TestEdge(12)]
         );
         assert_eq!(graph.vertices().get(VertexId::from(0)).degree(), 2);
-        assert!(graph.vertices().get(VertexId::from(0)).log_head() >= 0);
+        assert_eq!(
+            graph.vertices().get(VertexId::from(0)).log_head(),
+            log_head_before
+        );
+        let chain_after = graph
+            .edges()
+            .overflow_log_chain_asc_indices(leaf, log_head_before);
+        assert_eq!(chain_before, chain_after);
         assert_eq!(graph.edges().header().num_edges, 2);
         assert_vertex_capacity_invariants(&graph);
     }

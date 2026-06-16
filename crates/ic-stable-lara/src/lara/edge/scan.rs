@@ -359,6 +359,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                         }
                     }
                 },
+                LogEntryKind::Live if edge.is_deleted_slot() => {
+                    inserted.push((DeleteTarget::Log(log_idx), None));
+                }
                 LogEntryKind::Live => inserted.push((DeleteTarget::Log(log_idx), Some(edge))),
             }
         }

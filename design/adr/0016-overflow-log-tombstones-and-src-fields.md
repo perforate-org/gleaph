@@ -1,18 +1,18 @@
 # 0016. Overflow log tombstones and `src` field layout review
 
 Date: 2026-06-15  
-Status: proposed  
+Status: accepted (phase 1 implemented)  
 Last revised: 2026-06-15
-Anchor timestamp: 2026-06-15 23:34:08 UTC +0000
+Anchor timestamp: 2026-06-15 23:44:43 UTC +0000
 
 ## Context
 
 LARA edge storage has two physical locations for a labeled edge row:
 
-| Location | Owner | Current delete representation |
-|----------|-------|-------------------------------|
+| Location | Owner | Delete representation (implemented) |
+|----------|-------|-------------------------------------|
 | Edge slab | `EdgeStore` / labeled bucket span | In-place tombstone edge payload |
-| Edge overflow log | `LogStore` (`LLG`) | Live entries plus separate delete/dead encodings in the log entry `src` word |
+| Edge overflow log | `LogStore` (`LLG`) | In-place tombstone edge payload; `prev` chain unchanged |
 
 Payload bytes mirror the edge row order:
 
@@ -26,8 +26,11 @@ Current implementation facts:
 
 - Edge overflow log entries store `prev_offset` (4 B), `src` (4 B), and edge bytes
   ([`edge/log.rs`](../../crates/ic-stable-lara/src/lara/edge/log.rs)).
-- Edge log delete state is encoded through the `src` word:
-  `LOG_SRC_DEAD`, `DeleteTarget::Slab`, and `DeleteTarget::Log`
+- **Implemented (2026-06-15):** log-backed delete rewrites the target entry's edge payload to the
+  tombstone contract and keeps the entry in the chain. Foreground delete no longer appends separate
+  delete-target log entries. Scans skip tombstone edge rows in both slab and log locations.
+- **Legacy read path:** `LOG_SRC_DEAD`, `DeleteTarget::Slab`, and `DeleteTarget::Log` encodings in
+  the `src` word remain decodable for older log chains
   ([`edge/targets.rs`](../../crates/ic-stable-lara/src/lara/edge/targets.rs)).
 - Payload overflow log entries are currently 17 B in code:
   `prev` (4 B), `src` (4 B), and a 9 B `PayloadLogCell`
@@ -267,17 +270,19 @@ Trade-offs:
 - Edge log `src` removal is not decided here; keeping it may leave bytes on the table, while
   removing it too early could split core and labeled LARA layout concepts.
 
-## Implementation Notes
+## Implementation status (2026-06-15)
 
-Implementation should be staged:
+Phase 1 (implemented):
 
-1. Add tests that prove deleting a log-backed edge does not change surviving edge slot indices.
-2. Change log-backed delete to rewrite the target log entry as a tombstone edge payload.
-3. Remove separate delete-target replay from scan paths after the tombstone path is covered.
-4. Keep payload log chains aligned with edge log chains; clear/drop payload bodies without rewiring.
-5. Add payload log 16 B prototype behind a focused patch if the layout review accepts
-   `src_and_tag`.
-6. Run the benchmark gate before accepting the compression patch.
+1. Log-backed delete rewrites the target log entry as a tombstone edge payload (`rewrite_overflow_log_entry_tombstone`).
+2. Slab-backed delete on log rows writes the slab tombstone directly (no delete-target append).
+3. Scan/replay paths skip tombstone log entries; legacy delete-target replay remains for old chains.
+4. Payload log chains stay aligned with edge log chains; payload bodies are cleared without rewiring.
+
+Deferred (benchmark gate):
+
+- Edge log `src` removal or repurposing review.
+- Payload log 16 B compression (`src_and_tag` + 8 B cell).
 
 Tests should cover:
 

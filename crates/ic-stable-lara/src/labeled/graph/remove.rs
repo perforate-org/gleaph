@@ -85,7 +85,8 @@ where
             if src_tag < 0 || removed.is_tombstone_edge() {
                 return Ok(None);
             }
-            self.edges.mark_overflow_log_entry_dead(leaf, entry_idx)?;
+            self.edges
+                .rewrite_overflow_log_entry_tombstone(leaf, entry_idx)?;
             self.vertices
                 .set(src, &vertex.after_slab_tombstone_delete());
             self.decrement_edge_counts_after_remove(src)?;
@@ -214,7 +215,8 @@ where
             if src_tag < 0 || removed.is_tombstone_edge() {
                 return Ok(None);
             }
-            self.edges.mark_overflow_log_entry_dead(leaf, entry_idx)?;
+            self.edges
+                .rewrite_overflow_log_entry_tombstone(leaf, entry_idx)?;
             self.mark_payload_log_slot_dead(src, &bucket, slot_index)?;
             let updated = bucket.after_slab_tombstone_delete();
             self.buckets.write_label_bucket_slot(slot, updated)?;
@@ -859,7 +861,7 @@ mod tests {
     }
 
     #[test]
-    fn removing_log_edge_dead_marks_entry_and_preserves_later_slot() {
+    fn removing_log_edge_tombstone_preserves_later_slot() {
         let graph = payload_test_graph_with_capacity(1 << 20);
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
@@ -916,8 +918,9 @@ mod tests {
             .edges()
             .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
         let entry_idx = chain[log_ordinal as usize];
-        let (_, src_tag, _) = graph.edges().read_overflow_log_entry(leaf, entry_idx);
-        assert_eq!(src_tag, crate::lara::edge::LOG_SRC_DEAD);
+        let (_, src_tag, edge) = graph.edges().read_overflow_log_entry(leaf, entry_idx);
+        assert!(src_tag >= 0);
+        assert!(edge.is_deleted_slot());
     }
 
     #[test]

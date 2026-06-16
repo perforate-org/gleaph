@@ -8,7 +8,7 @@ use crate::{
 use ic_stable_structures::Memory;
 
 use super::scan_iter::{OutEdgeSlabIter, leaf_segment};
-use super::{DeleteTarget, EdgeStore, InsertLocation, decode_delete_target};
+use super::{DeleteTarget, EdgeStore, InsertLocation, LogEntryKind, decode_log_entry_kind};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(super) fn collect_out_edge_refs_slot_order<V, A>(
@@ -108,14 +108,20 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         entries.reverse();
 
         for (log_idx, src, edge) in entries {
-            if let Some(target) = decode_delete_target(src) {
-                if let Some(index) = out.iter().position(|(candidate, _)| *candidate == target) {
-                    out.remove(index);
+            match decode_log_entry_kind(src) {
+                LogEntryKind::Dead => {}
+                LogEntryKind::Delete(target) => {
+                    if let Some(index) = out.iter().position(|(candidate, _)| *candidate == target)
+                    {
+                        out.remove(index);
+                    }
                 }
-            } else {
-                let slot_index = u32::try_from(out.len())
-                    .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-                out.push((DeleteTarget::Log(log_idx), edge.with_slot_index(slot_index)));
+                LogEntryKind::Live if edge.is_deleted_slot() => {}
+                LogEntryKind::Live => {
+                    let slot_index = u32::try_from(out.len())
+                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+                    out.push((DeleteTarget::Log(log_idx), edge.with_slot_index(slot_index)));
+                }
             }
         }
         debug_assert_eq!(
@@ -217,14 +223,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 return Ok(None);
             };
             let removed_for_return = removed.clone();
-            self.insert_delete_into_log_with_layout(
-                &edge_layout,
-                vertices,
-                vid,
-                v,
-                target,
-                removed,
-            )?;
+            self.tombstone_overflow_log_delete_target(&edge_layout, vertices, vid, v, target)?;
             let next_global = edge_layout
                 .num_edges
                 .checked_sub(1)

@@ -1759,6 +1759,7 @@ where
                             }
                         }
                     },
+                    LogEntryKind::Live if edge.is_tombstone_edge() => {}
                     LogEntryKind::Live => {
                         inserted_log_edges.push((DeleteTarget::Log(log_idx), edge));
                     }
