@@ -104,7 +104,7 @@ pub use error::InitError;
 pub(crate) use scan_iter::OutEdgeSlabIter;
 pub use scan_iter::{AscOutEdgesIter, OutEdgesIter};
 pub(crate) use scan_iter::{OutOverflowAscParts, OutOverflowDescParts};
-pub(crate) use targets::{DeleteTarget, EdgeLayout, InsertLocation, LOG_SRC_DEAD};
+pub(crate) use targets::{DeleteTarget, EdgeLayout, InsertLocation};
 pub(crate) use visit_window::OutEdgeVisitWindow;
 
 /// Combined stable edge storage used by [`LaraGraph`](crate::LaraGraph).

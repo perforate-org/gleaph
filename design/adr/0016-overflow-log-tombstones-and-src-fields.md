@@ -1,9 +1,9 @@
 # 0016. Overflow log tombstones and `src` field layout review
 
 Date: 2026-06-15  
-Status: accepted (phase 1 and phase 2 implemented)  
+Status: accepted (phases 1–3 implemented)  
 Last revised: 2026-06-16  
-Anchor timestamp: 2026-06-16 04:05:24 UTC +0000
+Anchor timestamp: 2026-06-16 04:17:26 UTC +0000
 
 ## Context
 
@@ -19,7 +19,7 @@ Payload bytes mirror the edge row order:
 | Location | Owner | Current layout |
 |----------|-------|----------------|
 | Payload slab | `EdgePayloadStore` (`payload_slab`) | Byte CSR, indexed by the same logical edge slot |
-| Payload overflow log | `PayloadLogStore` (`LVL`) | `prev: i32`, `src: i32`, `payload_cell: [u8; 8]` |
+| Payload overflow log | `PayloadLogStore` (`LVL`) | `prev: i32`, `payload_cell: [u8; 8]` |
 | Payload blobs | `payload_blobs` | Wide overflow payload body keyed by `(leaf_segment, entry_idx)` |
 
 Current implementation facts:
@@ -30,12 +30,14 @@ Current implementation facts:
 - **Implemented (2026-06-15):** log-backed delete rewrites the target entry's edge payload to the
   tombstone contract and keeps the entry in the chain. Foreground delete no longer appends separate
   delete-target log entries. Scans skip tombstone edge rows in both slab and log locations.
-- **Implemented (2026-06-16):** payload overflow log entries are 16 B (`LVL`, layout version 1):
-  `prev` (4 B), `src` (4 B), and an untagged 8 B inline cell
+- **Implemented (2026-06-16):** payload overflow log entries are 12 B (`LVL`, layout version 1):
+  `prev` (4 B) and an untagged 8 B inline cell
   ([`edge_payload/log.rs`](../../crates/ic-stable-lara/src/lara/edge_payload/log.rs),
   [`edge_payload/cell.rs`](../../crates/ic-stable-lara/src/lara/edge_payload/cell.rs)).
   Inline vs blob on the log is derived from `LabelBucket::payload_byte_width`; wide bodies live in
-  `payload_blobs` at `(leaf_segment, entry_idx)`.
+  `payload_blobs` at `(leaf_segment, entry_idx)`. Log-backed payload liveness mirrors the slab
+  contract: the paired edge row tombstone is the only delete signal; there is no per-entry `src`
+  word on `LVL`.
 
 DGAP stores a source-like field in its log entry (`u`) next to destination (`v`) and `prev_offset`,
 but ordinary traversal is anchored from the owning vertex row and follows `prev_offset` while
@@ -134,14 +136,16 @@ tombstoned rows while preserving the externally visible edge order for surviving
 Payload bytes are not the canonical liveness source.
 
 - If the edge body is tombstoned, traversal must ignore that edge even if old payload bytes remain.
-- If the payload body is in the payload log, mark or clear the payload log entry at the same logical
-  log site without rewiring the payload log chain.
-- If the payload body is in `payload_blobs`, drop the blob body for that log site.
+- If the payload body is in the payload log, **do not** write a separate dead marker on the payload
+  log entry. The paired edge overflow log entry at the same `(leaf_segment, entry_idx)` and logical
+  ordinal already carries the tombstone contract.
+- If the payload body is in `payload_blobs`, foreground delete may leave the blob until maintenance;
+  fold/sweep drops blob bodies for reclaimed log sites.
 - If the payload body is in the payload slab, foreground delete may leave bytes in place. Those bytes
   are unreachable because the edge row is tombstoned; maintenance can reclaim or rewrite them later.
 
 This keeps edge body liveness as the single source of truth and avoids a second payload-specific
-delete contract.
+delete contract on both slab and log.
 
 ### 3. Review the necessity of edge log `src`
 
@@ -196,13 +200,12 @@ Notes:
 
 Per-cell inline/blob tags and duplicated blob widths are not stored on the wire.
 
-### 5. Payload log 16 B with an untagged 8 B cell (implemented)
+### 5. Payload log 12 B with an untagged 8 B cell (implemented)
 
 The payload log entry (`LVL`, layout version 1) is:
 
 ```text
 prev: i32
-src: i32          // LOG_SRC_DEAD for dead payload log entries
 payload_cell: [u8; 8]
 ```
 
@@ -210,13 +213,12 @@ Design constraints:
 
 - `payload_cell` holds up to 8 B of inline payload when bucket schema says inline-on-log; it is
   otherwise ignored and the blob map owns the body.
-- `src` carries dead/empty payload log entry state via `LOG_SRC_DEAD` (and any future small
-  metadata). Edge liveness remains primary; payload dead bits are secondary for log-chain walks that
-  lack edge context. A future `src_and_tag` rename is still open if the edge log `src` word is
-  repurposed.
+- Liveness on the payload log is **not** stored in the log entry. Labeled reads consult the paired
+  edge overflow log entry at the same ordinal (`overflow_log_head` chain) and treat edge tombstone
+  the same way slab payload reads treat slab edge tombstone: unreachable bytes may remain until
+  maintenance.
 - Do not put inline/blob class bits in `payload_cell`; derive class from bucket schema at read time.
-- Prefer tag bits in `src_and_tag`, not `prev`, because `prev` is the chain pointer and should remain
-  a pure traversal primitive.
+- `prev` remains the chain pointer only.
 
 Variable-length payloads (not implemented in LARA storage as of 2026-06-16) require an additional
 profile flag; when present, log-backed payloads always use the blob map regardless of
@@ -276,7 +278,27 @@ Benchmark gate complete. Code review of prior `LLG` `src` word usage:
 - `LLG` stride is `4 + edge_stride` (`prev` + edge bytes). Layout version stays **1**; development
   stores are recreated rather than migrated.
 - Replay and scan skip tombstone edge payloads only; no `decode_log_entry_kind` on the edge log.
-- Payload log (`LVL`) still uses `src` for `LOG_SRC_DEAD`; that is a separate follow-up.
+
+## Payload log `src` review (2026-06-16)
+
+Benchmark gate and edge-log `src` removal are complete. Payload log review:
+
+| Question | Finding |
+| -------- | ------- |
+| Separate payload dead marker required? | **No.** Slab payloads already have no tombstone; traversal gates on edge tombstone only. |
+| Can log-backed payload mirror slab? | **Yes.** Edge and payload logs share `(leaf_segment, entry_idx)` and ascending ordinal; edge tombstone at that site means the payload site is dead. |
+| Does `LOG_SRC_DEAD` add information? | **No** after foreground delete writes only the edge tombstone. It duplicated edge liveness and forced a second write on delete. |
+| Low-level payload log read without edge context? | **Cannot infer liveness** (same as inline/blob class). Labeled APIs must consult the paired edge chain or skip ordinals already filtered by edge replay. |
+| Live owner in `src` on write? | **Never read**, same as the removed edge log `src` word. |
+
+**Decision (2026-06-16):** remove the payload log `src` word and stop writing `LOG_SRC_DEAD`.
+
+- `LVL` stride is `4 + 8` (`prev` + `payload_cell`). Layout version stays **1**; development stores
+  are recreated rather than migrated.
+- Foreground delete tombstones the edge log entry only; payload log cells and blobs may remain until
+  maintenance `sweep_payload_log_chain` / fold.
+- Labeled payload reads for log-backed slots check the paired edge overflow entry before reading
+  payload bytes.
 
 ## Alternatives Considered
 
@@ -332,7 +354,7 @@ Trade-offs:
 - Tombstoned log entries remain in chains until maintenance folds or rewrites them.
 - Scans must skip tombstone entries in both slab and log locations.
 - Foreground deletes may leave unreachable payload slab bytes until maintenance.
-- Edge log `src` removal saves 4 B per `LLG` entry; payload log `src` remains until a separate review.
+- Payload log 12 B compression aligns log layout with slab semantics (edge tombstone is the delete signal).
 - Payload log reads require bucket context (or cached bucket width) to interpret log cells; low-level
   log walks without label context cannot infer inline vs blob from cell bytes alone.
 
@@ -347,9 +369,8 @@ Phase 1 (implemented 2026-06-15):
 
 Phase 2 (implemented 2026-06-16):
 
-1. Payload log layout version 1: 16 B stride (`prev`, `src`, 8 B untagged cell).
+1. Payload log layout version 1: bucket-derived inline/blob; wide bodies in `payload_blobs`.
 2. Inline vs blob derived from `LabelBucket::payload_byte_width` on read and write; no per-cell tags.
-3. Wide log-backed payloads store body in `payload_blobs` at `(leaf_segment, entry_idx)`; log cell is zero.
 
 Benchmark gate (implemented 2026-06-16):
 
@@ -364,9 +385,15 @@ Edge log `src` removal (implemented 2026-06-16):
 2. Scan/replay paths use edge tombstone only; `LogEntryKind` / `decode_log_entry_kind` removed from edge log.
 3. Fresh development stores only; no migration path.
 
+Payload log `src` removal (implemented 2026-06-16):
+
+1. `LVL` entry stride 12 B (`prev` + 8 B cell); layout version 1 unchanged.
+2. Remove `LOG_SRC_DEAD`, `mark_payload_log_entry_dead`, and foreground payload-log dead writes.
+3. Labeled log-backed payload reads gate on paired edge tombstone at the same ordinal.
+4. Maintenance sweep still clears payload log cells and drops blobs on fold.
+
 Deferred:
 
-- Payload log `src` physical removal or `src_and_tag` repurposing (`LVL` layout change).
 - Variable-length payload encoding flag (profile) → always blob on log; not in current storage.
 
 Tests should cover:
@@ -385,9 +412,9 @@ Documents to update when this ADR is implemented:
 
 | Document | Required update |
 |----------|-----------------|
-| `design/storage/labeled-edge-payloads.md` | **Updated 2026-06-16:** `LVL` layout version 1, 16 B entry; bucket-derived storage class |
+| `design/storage/labeled-edge-payloads.md` | **Updated 2026-06-16:** `LVL` 12 B entry; edge-tombstone payload liveness on log |
 | `design/storage/lara-dgap-contract.md` | Record log tombstone policy and DGAP divergence |
-| `design/storage/payload-first-traversal.md` | **Updated 2026-06-16:** bucket-derived log attach for sparse overflow |
+| `design/storage/payload-first-traversal.md` | **Updated 2026-06-16:** bucket-derived log attach; edge replay filters dead log ordinals |
 | `design/storage/stable-memory-inventory.md` | Note `LVL` layout version 1 when revisiting region docs |
 
 ## Related

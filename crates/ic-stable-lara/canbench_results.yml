@@ -33,7 +33,7 @@ benches:
   bench_labeled_deferred_maintenance_compact_vertex_span_1:
     total:
       calls: 1
-      instructions: 9856098
+      instructions: 10046250
       heap_increase: 28
       stable_memory_increase: 0
     scopes:
@@ -49,7 +49,7 @@ benches:
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 72
-        instructions: 6511652
+        instructions: 6701588
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_for_each_edges_for_label_24_x51:
@@ -214,31 +214,31 @@ benches:
   bench_labeled_payload_log_scan_8b_inline_overflow:
     total:
       calls: 1
-      instructions: 4346121
+      instructions: 3994425
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_visit_hybrid_out_payload_value_batches:
         calls: 51
-        instructions: 4044421
+        instructions: 3692725
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_tombstone_log_delete_then_scan:
     total:
       calls: 1
-      instructions: 3684647
+      instructions: 3437399
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       labeled_for_each_edges_for_label:
         calls: 51
-        instructions: 3460452
+        instructions: 3213204
         heap_increase: 0
         stable_memory_increase: 0
   bench_labeled_tombstone_log_rewrite_maintenance:
     total:
       calls: 1
-      instructions: 40509230
+      instructions: 40541078
       heap_increase: 600
       stable_memory_increase: 0
     scopes:
@@ -254,7 +254,7 @@ benches:
         stable_memory_increase: 0
       labeled_remove_edge_skip_leaf:
         calls: 24
-        instructions: 503664
+        instructions: 535440
         heap_increase: 0
         stable_memory_increase: 0
       labeled_rewrite_copy_inplace_vec:

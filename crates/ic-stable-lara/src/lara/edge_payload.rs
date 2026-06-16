@@ -6,7 +6,7 @@ mod blobs;
 mod cell;
 mod log;
 
-use crate::lara::edge::{LOG_SRC_DEAD, free_span::FreeSpanStore};
+use crate::lara::edge::free_span::FreeSpanStore;
 use crate::lara::edge_payload::blobs::EdgePayloadBlobMap;
 use crate::lara::edge_payload::cell::payload_log_uses_blob;
 use crate::lara::edge_payload::log::{
@@ -445,10 +445,14 @@ impl<M: Memory> EdgePayloadStore<M> {
 
     pub(crate) fn clear_payload_log_cell(&self, leaf_segment: u32, entry_idx: u32) {
         let h = self.log.header();
+        let mut scratch = [0u8; PAYLOAD_BYTES];
+        let prev = self
+            .log
+            .read_entry_with_header(&h, leaf_segment, entry_idx, &mut scratch);
         let zeros = [0u8; PAYLOAD_BYTES];
         let _ = self
             .log
-            .write_entry_with_header(&h, leaf_segment, entry_idx, -1, -1, &zeros);
+            .write_entry_with_header(&h, leaf_segment, entry_idx, prev, &zeros);
     }
 
     pub(crate) fn write_payload_log_entry(
@@ -456,7 +460,6 @@ impl<M: Memory> EdgePayloadStore<M> {
         leaf_segment: u32,
         entry_idx: u32,
         prev_head: i32,
-        src: i32,
         width: u16,
         payload_bytes: &[u8],
     ) -> Result<(), PayloadLogWriteError> {
@@ -476,7 +479,6 @@ impl<M: Memory> EdgePayloadStore<M> {
             leaf_segment,
             entry_idx,
             prev_head,
-            src,
             cell.as_bytes(),
         )?;
         self.log.write_idx_at_least(
@@ -490,7 +492,6 @@ impl<M: Memory> EdgePayloadStore<M> {
         &self,
         leaf_segment: u32,
         prev_head: i32,
-        src: i32,
         width: u16,
         payload_bytes: &[u8],
     ) -> Result<u32, PayloadLogWriteError> {
@@ -500,14 +501,7 @@ impl<M: Memory> EdgePayloadStore<M> {
             return Err(PayloadLogWriteError::SegmentLogFull);
         }
         let entry_idx = u32::try_from(idx).map_err(|_| PayloadLogWriteError::SegmentLogFull)?;
-        self.write_payload_log_entry(
-            leaf_segment,
-            entry_idx,
-            prev_head,
-            src,
-            width,
-            payload_bytes,
-        )?;
+        self.write_payload_log_entry(leaf_segment, entry_idx, prev_head, width, payload_bytes)?;
         Ok(entry_idx)
     }
 
@@ -550,23 +544,6 @@ impl<M: Memory> EdgePayloadStore<M> {
         Err(PayloadLogReadError::InvalidInlineCell { width })
     }
 
-    pub(crate) fn mark_payload_log_entry_dead(
-        &self,
-        leaf_segment: u32,
-        entry_idx: u32,
-    ) -> Result<(), PayloadLogWriteError> {
-        self.blobs.drop_log_site(leaf_segment, entry_idx);
-        let mut payload = [0u8; PAYLOAD_BYTES];
-        let h = self.log.header();
-        let (prev, _) = self
-            .log
-            .read_entry_with_header(&h, leaf_segment, entry_idx, &mut payload);
-        let zeros = [0u8; PAYLOAD_BYTES];
-        self.log
-            .write_entry_with_header(&h, leaf_segment, entry_idx, prev, LOG_SRC_DEAD, &zeros)
-            .map_err(|_| PayloadLogWriteError::SegmentLogFull)
-    }
-
     #[cfg(test)]
     pub(crate) fn drop_payload_blob_for_test(&self, leaf_segment: u32, entry_idx: u32) {
         self.blobs.drop_log_site(leaf_segment, entry_idx);
@@ -587,9 +564,9 @@ impl<M: Memory> EdgePayloadStore<M> {
             chain.push(cur as u32);
             let mut scratch = [0u8; PAYLOAD_BYTES];
             let h = self.log.header();
-            let (prev, _) =
-                self.log
-                    .read_entry_with_header(&h, leaf_segment, cur as u32, &mut scratch);
+            let prev = self
+                .log
+                .read_entry_with_header(&h, leaf_segment, cur as u32, &mut scratch);
             cur = prev;
         }
         chain.reverse();
@@ -608,14 +585,6 @@ impl<M: Memory> EdgePayloadStore<M> {
         let Some(&entry_idx) = payload_chain.get(asc_log_index as usize) else {
             return Err(PayloadLogReadError::MissingAscLogIndex { asc_log_index });
         };
-        let mut scratch = [0u8; PAYLOAD_BYTES];
-        let h = self.log.header();
-        let (_, src) = self
-            .log
-            .read_entry_with_header(&h, leaf_segment, entry_idx, &mut scratch);
-        if src == LOG_SRC_DEAD {
-            return Err(PayloadLogReadError::MissingAscLogIndex { asc_log_index });
-        }
         self.read_payload_log_entry(leaf_segment, entry_idx, width, out)
     }
 
@@ -839,7 +808,7 @@ mod tests {
         let store = test_store();
         let payload = vec![0xABu8; 100];
         store
-            .write_payload_log_entry(0, 0, -1, 0, 100, &payload)
+            .write_payload_log_entry(0, 0, -1, 100, &payload)
             .expect("write");
         let mut out = vec![0u8; 100];
         store
@@ -852,7 +821,7 @@ mod tests {
     fn payload_log_round_trips_payload() {
         let store = test_store();
         store
-            .write_payload_log_entry(0, 0, -1, 0, 4, &[1, 2, 3, 4])
+            .write_payload_log_entry(0, 0, -1, 4, &[1, 2, 3, 4])
             .expect("write");
         let mut out = [0u8; 4];
         store
@@ -869,7 +838,7 @@ mod tests {
     fn payload_log_read_rejects_undersized_output_buffer() {
         let store = test_store();
         store
-            .write_payload_log_entry(0, 0, -1, 0, 4, &[1, 2, 3, 4])
+            .write_payload_log_entry(0, 0, -1, 4, &[1, 2, 3, 4])
             .expect("write");
         let mut out = [0u8; 3];
         assert_eq!(
@@ -885,7 +854,7 @@ mod tests {
     fn payload_log_read_rejects_bucket_width_blob_without_body() {
         let store = test_store();
         store
-            .write_payload_log_entry(0, 0, -1, 0, 8, &[1, 2, 3, 4, 5, 6, 7, 8])
+            .write_payload_log_entry(0, 0, -1, 8, &[1, 2, 3, 4, 5, 6, 7, 8])
             .expect("write");
         store.drop_payload_blob_for_test(0, 0);
         let mut out = [0u8; 9];
@@ -902,7 +871,7 @@ mod tests {
     fn payload_log_read_rejects_missing_blob() {
         let store = test_store();
         store
-            .write_payload_log_entry(0, 0, -1, 0, 9, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
+            .write_payload_log_entry(0, 0, -1, 9, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
             .expect("write");
         store.blobs.drop_log_site(0, 0);
         let mut out = [0u8; 9];
@@ -919,7 +888,7 @@ mod tests {
     fn payload_log_read_rejects_blob_width_mismatch() {
         let store = test_store();
         store
-            .write_payload_log_entry(0, 0, -1, 0, 9, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
+            .write_payload_log_entry(0, 0, -1, 9, &[1, 2, 3, 4, 5, 6, 7, 8, 9])
             .expect("write");
         store
             .blobs
@@ -970,10 +939,10 @@ mod tests {
     fn payload_log_asc_index_follows_oldest_to_newest() {
         let store = test_store();
         store
-            .write_payload_log_entry(0, 0, -1, 0, 2, &[10, 0])
+            .write_payload_log_entry(0, 0, -1, 2, &[10, 0])
             .expect("entry 0");
         store
-            .write_payload_log_entry(0, 1, 0, 0, 2, &[20, 0])
+            .write_payload_log_entry(0, 1, 0, 2, &[20, 0])
             .expect("entry 1");
         let mut out = [0u8; 2];
         store
@@ -993,7 +962,7 @@ mod tests {
         store.grow_segment_count_to(4).expect("grow");
         assert_eq!(store.log.header().segment_count, 4);
         store
-            .write_payload_log_entry(3, 0, -1, 0, 1, &[7])
+            .write_payload_log_entry(3, 0, -1, 1, &[7])
             .expect("leaf 3");
         let mut out = [0u8; 1];
         store

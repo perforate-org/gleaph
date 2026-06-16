@@ -8,7 +8,10 @@ use crate::{
         bucket_label_key::BucketLabelKey,
         record::{LabelBucket, LabeledVertex},
     },
-    lara::{edge_payload::PayloadLogWriteError, operation_error::LaraOperationError},
+    lara::{
+        edge_payload::{PayloadLogReadError, PayloadLogWriteError},
+        operation_error::LaraOperationError,
+    },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use ic_stable_structures::Memory;
@@ -205,6 +208,33 @@ where
         Ok(out)
     }
 
+    fn overflow_log_edge_live_at_ordinal(
+        &self,
+        src: VertexId,
+        bucket: &LabelBucket,
+        asc_log_index: u32,
+        log_chains: Option<&(Vec<u32>, Vec<u32>)>,
+    ) -> Result<bool, LabeledOperationError> {
+        if bucket.overflow_log_head() < 0 {
+            return Ok(false);
+        }
+        let leaf = self.payload_log_leaf(src);
+        let edge_entry_idx = match log_chains {
+            Some((edge_chain, _)) => edge_chain.get(asc_log_index as usize).copied(),
+            None => {
+                let chain = self
+                    .edges
+                    .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
+                chain.get(asc_log_index as usize).copied()
+            }
+        };
+        let Some(edge_entry_idx) = edge_entry_idx else {
+            return Ok(false);
+        };
+        let (_, edge) = self.edges.read_overflow_log_entry(leaf, edge_entry_idx);
+        Ok(!edge.is_deleted_slot())
+    }
+
     pub(super) fn read_bucket_payload_for_slot(
         &self,
         src: VertexId,
@@ -237,6 +267,11 @@ where
         let asc_log_index = slot_index
             .checked_sub(slab_payload_slots)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        if !self.overflow_log_edge_live_at_ordinal(src, bucket, asc_log_index, log_chains)? {
+            return Err(LabeledOperationError::from(
+                PayloadLogReadError::MissingAscLogIndex { asc_log_index },
+            ));
+        }
         let mut buf = vec![0u8; usize::from(width)];
         if let Some((_, payload_chain)) = log_chains {
             self.values
@@ -281,14 +316,11 @@ where
         if width == 0 {
             return Ok(*bucket);
         }
-        let src_i32 = i32::try_from(u32::from(src))
-            .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
         let entry_idx = self
             .values
             .append_payload_log_entry(
                 self.payload_log_leaf(src),
                 bucket.payload_log_head(),
-                src_i32,
                 width,
                 edge.edge_payload_bytes(),
             )
@@ -303,38 +335,6 @@ where
                     .map_err(|_| LaraOperationError::CollectAllocationOverflow)?,
                 next_len,
             )
-            .map_err(LabeledOperationError::from)
-    }
-
-    pub(super) fn mark_payload_log_slot_dead(
-        &self,
-        src: VertexId,
-        bucket: &LabelBucket,
-        slot_index: u32,
-    ) -> Result<(), LabeledOperationError> {
-        if bucket.payload_log_head() < 0 || bucket.payload_log_len() == 0 {
-            return Ok(());
-        }
-        let reserved_slots = self.bucket_reserved_edge_slots(src, bucket);
-        let payload_log_len = u32::from(bucket.payload_log_len());
-        let payload_log_base = reserved_slots
-            .checked_sub(payload_log_len)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        if slot_index < payload_log_base {
-            return Ok(());
-        }
-        let asc_log_index = slot_index
-            .checked_sub(payload_log_base)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
-        let leaf = self.payload_log_leaf(src);
-        let chain = self
-            .values
-            .payload_log_chain_asc_indices(leaf, bucket.payload_log_head());
-        let Some(&entry_idx) = chain.get(asc_log_index as usize) else {
-            return Ok(());
-        };
-        self.values
-            .mark_payload_log_entry_dead(leaf, entry_idx)
             .map_err(LabeledOperationError::from)
     }
 

@@ -217,7 +217,6 @@ where
             }
             self.edges
                 .rewrite_overflow_log_entry_tombstone(leaf, entry_idx)?;
-            self.mark_payload_log_slot_dead(src, &bucket, slot_index)?;
             let updated = bucket.after_slab_tombstone_delete();
             self.buckets.write_label_bucket_slot(slot, updated)?;
             self.decrement_edge_counts_after_remove(src)?;

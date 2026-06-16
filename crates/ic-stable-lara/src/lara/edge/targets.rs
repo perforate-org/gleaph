@@ -2,9 +2,6 @@
 
 use super::edges::HeaderV1 as EdgeHeaderV1;
 
-/// Dead/empty marker for the payload overflow log (`LVL`) `src` word.
-pub(crate) const LOG_SRC_DEAD: i32 = i32::MIN;
-
 /// Internal delete location used by compaction and maintenance replay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DeleteTarget {

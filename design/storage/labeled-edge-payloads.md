@@ -60,14 +60,14 @@ explicit `ResolvedLabelTable`.
 - Existing edge/bucket memories
 - `payload_slab` — byte CSR backing store (`EdgePayloadStore`)
 - `payload_free_spans` / `payload_free_span_by_start` — retired byte-span index
-- `payload_log` — per-PMA-leaf overflow log (`LVL`, layout version 1). 16 B entries: `prev`, `src`,
-  untagged 8 B `payload_cell`; inline/blob derived from bucket `payload_byte_width`, not cell tags
-  ([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md)).
+- `payload_log` — per-PMA-leaf overflow log (`LVL`, layout version 1). 12 B entries: `prev`,
+  untagged 8 B `payload_cell`; inline/blob derived from bucket `payload_byte_width`, not cell tags.
+  Log-backed liveness follows the paired edge tombstone at the same ordinal ([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md)).
 - `payload_blobs` — overflow payload bodies for log entries whose bucket width exceeds 8 B
 
 When an edge insert lands in the edge overflow log, the paired payload bytes are written to the payload log at the same entry index; `LabelBucket::payload_log_head` tracks the chain head (parallel to `overflow_log_head`).
 
-**Delete (implemented):** edge liveness is the single source of truth. Log-backed edge delete rewrites the target log entry to the tombstone edge payload without rewiring `prev`. Payload log entries at the same logical site are marked dead or blob bodies dropped; payload slab bytes may remain until maintenance.
+**Delete (implemented):** edge liveness is the single source of truth. Log-backed edge delete rewrites the target log entry to the tombstone edge payload without rewiring `prev`. Payload log entries at the same logical site are not separately marked dead; paired edge tombstone gates reads. Payload slab bytes and log cells/blobs may remain until maintenance.
 
 ## Payload overflow log
 
@@ -76,10 +76,9 @@ When an edge insert lands in the edge overflow log, the paired payload bytes are
 | Field | Size | Notes |
 | ----- | ---- | ----- |
 | `prev` | 4 B | Chain pointer (same as edge log) |
-| `src` | 4 B | `LOG_SRC_DEAD` marks dead payload log entries |
 | `payload_cell` | 8 B | Inline payload bytes when `payload_byte_width <= 8`; ignored for blob |
 
-Implemented as `LVL` layout version 1 with 16 B stride.
+Implemented as `LVL` layout version 1 with 12 B stride.
 
 Layout mirrors `EdgeStore` segment logs (`LLG`, `prev` + edge bytes per entry): one index word per leaf segment plus fixed-capacity
 entry slots. `push_vertex` grows the payload log segment tree in lockstep with the edge log. Span
@@ -91,8 +90,9 @@ When bucket schema says inline-on-log (`payload_byte_width <= 8`), the 8 B cell 
 (width from bucket on decode). When width exceeds 8 B, the cell is zero on wire and the body lives in
 `payload_blobs` at `(leaf_segment, entry_idx)` via `EdgePayloadBlobId::from_log_site`.
 
-Dead/empty log entry state uses `LOG_SRC_DEAD` in the `src` word; edge tombstone remains the primary
-liveness source ([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md)).
+Log-backed payload liveness matches the slab: the paired edge row tombstone is the delete signal.
+Unreachable inline cells and blob bodies may remain until maintenance fold/sweep
+([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md)).
 
 ### Blob lifecycle
 

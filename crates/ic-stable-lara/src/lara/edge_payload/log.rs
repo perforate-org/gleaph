@@ -1,4 +1,7 @@
 //! Per-segment overflow log for edge payload bytes.
+//!
+//! Each entry stores `prev` (4 bytes) and an 8-byte inline cell. Liveness is encoded in the paired
+//! edge overflow log tombstone contract at the same `(leaf_segment, entry_idx)`.
 
 use crate::{GrowFailed, read_i32, read_u32, safe_write, types::Address, write_i32, write_u32};
 use ic_stable_structures::Memory;
@@ -171,16 +174,15 @@ impl<M: Memory> PayloadLogStore<M> {
         leaf_segment: u32,
         entry_idx: u32,
         out: &mut [u8],
-    ) -> (i32, i32) {
+    ) -> i32 {
         debug_assert!(
             out.len() >= PAYLOAD_BYTES,
             "payload log read buffer too small"
         );
         let off = entry_offset(h, leaf_segment, entry_idx);
         let prev = read_i32(&self.memory, Address::from(off));
-        let src = read_i32(&self.memory, Address::from(off + 4));
-        self.memory.read(off + 8, &mut out[..PAYLOAD_BYTES]);
-        (prev, src)
+        self.memory.read(off + 4, &mut out[..PAYLOAD_BYTES]);
+        prev
     }
 
     pub(crate) fn write_entry_with_header(
@@ -189,15 +191,13 @@ impl<M: Memory> PayloadLogStore<M> {
         leaf_segment: u32,
         entry_idx: u32,
         prev: i32,
-        src: i32,
         payload: &[u8; PAYLOAD_BYTES],
     ) -> Result<(), GrowFailed> {
         let off = entry_offset(h, leaf_segment, entry_idx);
         let entry_len = PAYLOAD_LOG_ENTRY_STRIDE;
         let mut bytes = [0u8; INLINE_LOG_ENTRY_BYTES];
         bytes[0..4].copy_from_slice(&prev.to_le_bytes());
-        bytes[4..8].copy_from_slice(&src.to_le_bytes());
-        bytes[8..8 + PAYLOAD_BYTES].copy_from_slice(payload);
+        bytes[4..4 + PAYLOAD_BYTES].copy_from_slice(payload);
         safe_write(&self.memory, off, &bytes[..entry_len])
     }
 
@@ -267,7 +267,7 @@ impl<M: Memory> PayloadLogStore<M> {
     }
 }
 
-pub const PAYLOAD_LOG_ENTRY_STRIDE: usize = 8 + PAYLOAD_BYTES;
+pub const PAYLOAD_LOG_ENTRY_STRIDE: usize = 4 + PAYLOAD_BYTES;
 
 #[inline]
 fn idx_offset(h: &HeaderV1, leaf_segment: u32) -> u64 {

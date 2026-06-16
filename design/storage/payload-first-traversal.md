@@ -77,7 +77,9 @@ phase 1 + phase 2 on these buckets (M6).
 
 Log-backed payload attach uses `LabelBucket::payload_byte_width` to interpret each overflow-log
 site: inline bytes in the 8 B log cell when width `<= 8`, else the blob map at `(leaf, entry_idx)`.
-Storage class is not stored in the cell ([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md)).
+Storage class is not stored in the cell. Log ordinals skipped by edge overflow replay (tombstone
+edges) are not read for payload phase 1
+([ADR 0016](../adr/0016-overflow-log-tombstones-and-src-fields.md)).
 
 ### Phase 2 — selective edge row read
 
