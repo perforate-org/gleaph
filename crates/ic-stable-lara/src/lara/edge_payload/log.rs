@@ -4,14 +4,16 @@ use crate::{GrowFailed, read_i32, read_u32, safe_write, types::Address, write_i3
 use ic_stable_structures::Memory;
 use std::{cell::Cell, fmt};
 
+use super::cell::PAYLOAD_LOG_CELL_BYTES;
+
 /// Magic bytes that identify a LARA payload overflow-log memory.
 pub const MAGIC: [u8; 3] = *b"LVL";
 /// Current overflow-log layout version.
-pub const LAYOUT_VERSION: u8 = 3;
+pub const LAYOUT_VERSION: u8 = 1;
 const HEADER_SIZE: u64 = 32;
-const INLINE_LOG_ENTRY_BYTES: usize = 17;
-/// Payload bytes per payload overflow log entry (`PayloadLogCell`).
-pub const PAYLOAD_BYTES: usize = 9;
+const INLINE_LOG_ENTRY_BYTES: usize = 16;
+/// Payload cell bytes per payload overflow log entry.
+pub const PAYLOAD_BYTES: usize = PAYLOAD_LOG_CELL_BYTES;
 
 /// Default per-segment overflow-log capacity (matches edge log).
 pub const DEFAULT_MAX_LOG_ENTRIES: u32 = 170;

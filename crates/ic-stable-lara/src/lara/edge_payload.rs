@@ -8,7 +8,7 @@ mod log;
 
 use crate::lara::edge::{LOG_SRC_DEAD, free_span::FreeSpanStore};
 use crate::lara::edge_payload::blobs::EdgePayloadBlobMap;
-use crate::lara::edge_payload::cell::MAX_PAYLOAD_LOG_INLINE_WIDTH;
+use crate::lara::edge_payload::cell::payload_log_uses_blob;
 use crate::lara::edge_payload::log::{
     HeaderV1 as PayloadLogHeaderV1, PAYLOAD_BYTES, PayloadLogStore,
 };
@@ -461,14 +461,14 @@ impl<M: Memory> EdgePayloadStore<M> {
         payload_bytes: &[u8],
     ) -> Result<(), PayloadLogWriteError> {
         self.blobs.drop_log_site(leaf_segment, entry_idx);
-        let cell = if usize::from(width) <= MAX_PAYLOAD_LOG_INLINE_WIDTH {
+        let cell = if payload_log_uses_blob(width) {
+            let id = EdgePayloadBlobId::from_log_site(leaf_segment, entry_idx);
+            self.blobs.put_blob(id, payload_bytes)?;
+            PayloadLogCell::EMPTY
+        } else {
             let w = usize::from(width);
             debug_assert_eq!(payload_bytes.len(), w);
             PayloadLogCell::inline(width, payload_bytes)
-        } else {
-            let id = EdgePayloadBlobId::from_log_site(leaf_segment, entry_idx);
-            self.blobs.put_blob(id, payload_bytes)?;
-            PayloadLogCell::blob(width)
         };
         let h = self.log.header();
         self.log.write_entry_with_header(
@@ -525,13 +525,7 @@ impl<M: Memory> EdgePayloadStore<M> {
                 out_len: out.len(),
             });
         }
-        let cell = self.read_payload_log_cell(leaf_segment, entry_idx);
-        if cell.is_inline() {
-            if cell.decode_inline(width, out).is_some() {
-                return Ok(());
-            }
-            return Err(PayloadLogReadError::InvalidInlineCell { width });
-        } else if cell.is_blob() {
+        if payload_log_uses_blob(width) {
             let id = EdgePayloadBlobId::from_log_site(leaf_segment, entry_idx);
             let mut buf = Vec::with_capacity(w);
             if !self.blobs.get_blob(id, &mut buf) {
@@ -547,6 +541,10 @@ impl<M: Memory> EdgePayloadStore<M> {
                 });
             }
             out[..w].copy_from_slice(&buf);
+            return Ok(());
+        }
+        let cell = self.read_payload_log_cell(leaf_segment, entry_idx);
+        if cell.decode_inline(width, out).is_some() {
             return Ok(());
         }
         Err(PayloadLogReadError::InvalidInlineCell { width })
@@ -884,15 +882,19 @@ mod tests {
     }
 
     #[test]
-    fn payload_log_read_rejects_inline_width_above_inline_limit() {
+    fn payload_log_read_rejects_bucket_width_blob_without_body() {
         let store = test_store();
         store
             .write_payload_log_entry(0, 0, -1, 0, 8, &[1, 2, 3, 4, 5, 6, 7, 8])
             .expect("write");
+        store.drop_payload_blob_for_test(0, 0);
         let mut out = [0u8; 9];
         assert_eq!(
             store.read_payload_log_entry(0, 0, 9, &mut out),
-            Err(PayloadLogReadError::InvalidInlineCell { width: 9 })
+            Err(PayloadLogReadError::MissingBlob {
+                leaf_segment: 0,
+                entry_idx: 0
+            })
         );
     }
 

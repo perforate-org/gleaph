@@ -1,9 +1,9 @@
 # 0016. Overflow log tombstones and `src` field layout review
 
 Date: 2026-06-15  
-Status: accepted (phase 1 implemented; phase 2 design locked)  
+Status: accepted (phase 1 and phase 2 implemented)  
 Last revised: 2026-06-16
-Anchor timestamp: 2026-06-16 00:47:34 UTC +0000
+Anchor timestamp: 2026-06-16 00:53:57 UTC +0000
 
 ## Context
 
@@ -19,7 +19,7 @@ Payload bytes mirror the edge row order:
 | Location | Owner | Current layout |
 |----------|-------|----------------|
 | Payload slab | `EdgePayloadStore` (`payload_slab`) | Byte CSR, indexed by the same logical edge slot |
-| Payload overflow log | `PayloadLogStore` (`LVL`) | `prev: i32`, `src: i32`, `PayloadLogCell` |
+| Payload overflow log | `PayloadLogStore` (`LVL`) | `prev: i32`, `src: i32`, `payload_cell: [u8; 8]` |
 | Payload blobs | `payload_blobs` | Wide overflow payload body keyed by `(leaf_segment, entry_idx)` |
 
 Current implementation facts:
@@ -32,12 +32,12 @@ Current implementation facts:
 - **Legacy read path:** `LOG_SRC_DEAD`, `DeleteTarget::Slab`, and `DeleteTarget::Log` encodings in
   the `src` word remain decodable for older log chains
   ([`edge/targets.rs`](../../crates/ic-stable-lara/src/lara/edge/targets.rs)).
-- Payload overflow log entries are currently 17 B in code:
-  `prev` (4 B), `src` (4 B), and a 9 B `PayloadLogCell`
+- **Implemented (2026-06-16):** payload overflow log entries are 16 B (`LVL`, layout version 1):
+  `prev` (4 B), `src` (4 B), and an untagged 8 B inline cell
   ([`edge_payload/log.rs`](../../crates/ic-stable-lara/src/lara/edge_payload/log.rs),
   [`edge_payload/cell.rs`](../../crates/ic-stable-lara/src/lara/edge_payload/cell.rs)).
-- `labeled-edge-payloads.md` had already described the target payload entry as 16 B.
-  This ADR records the missing decision gate before code is changed to match that target.
+  Inline vs blob on the log is derived from `LabelBucket::payload_byte_width`; wide bodies live in
+  `payload_blobs` at `(leaf_segment, entry_idx)`.
 
 DGAP stores a source-like field in its log entry (`u`) next to destination (`v`) and `prev_offset`,
 but ordinary traversal is anchored from the owning vertex row and follows `prev_offset` while
@@ -84,12 +84,11 @@ This raises three layout questions:
 3. Does the payload log cell need per-entry inline/blob tags when the label bucket already declares
    `payload_byte_width`?
 
-### 3. Payload log cells duplicate bucket schema
+### 3. Payload log cells duplicated bucket schema (resolved)
 
-The current `PayloadLogCell` stores an inline/blob tag and, for blob entries, repeats the physical
-width in the cell even though `LabelBucket::payload_byte_width` is already the schema for every
-slot in that bucket. The write path already chooses inline vs blob from bucket width; the read path
-branches on cell tags instead. That splits schema ownership across bucket metadata and log bytes.
+Earlier design drafts stored inline/blob tags and duplicated blob width in the log cell even though
+`LabelBucket::payload_byte_width` is already the schema for every slot in that bucket. The
+implemented layout derives inline vs blob from bucket width on read and write; no per-cell tags.
 
 ## Existing Architecture Assessment
 
@@ -197,34 +196,26 @@ Notes:
 - Foreground insert already rejects `edge_payload_byte_width != bucket.payload_byte_width`, so
   storage class does not vary per slot within one bucket.
 
-Per-cell inline/blob tags and duplicated blob widths in `PayloadLogCell` are legacy wire shape only.
-Phase 2 removes them from the target layout.
+Per-cell inline/blob tags and duplicated blob widths are not stored on the wire.
 
-### 5. Make payload log 16 B with `src_and_tag` and an untagged 8 B cell
+### 5. Payload log 16 B with an untagged 8 B cell (implemented)
 
-The target payload log entry is:
+The payload log entry (`LVL`, layout version 1) is:
 
 ```text
 prev: i32
-src_and_tag: i32
+src: i32          // LOG_SRC_DEAD for dead payload log entries
 payload_cell: [u8; 8]
-```
-
-This replaces the current 17 B implementation:
-
-```text
-prev: i32
-src: i32
-PayloadLogCell: [u8; 9]   // tag byte + inline bytes or blob width metadata
 ```
 
 Design constraints:
 
 - `payload_cell` holds up to 8 B of inline payload when bucket schema says inline-on-log; it is
   otherwise ignored and the blob map owns the body.
-- `src_and_tag` carries only what bucket width cannot express: dead/empty payload log entry state
-  (and any future small metadata). Edge liveness remains primary; payload dead bits are secondary
-  for log-chain walks that lack edge context.
+- `src` carries dead/empty payload log entry state via `LOG_SRC_DEAD` (and any future small
+  metadata). Edge liveness remains primary; payload dead bits are secondary for log-chain walks that
+  lack edge context. A future `src_and_tag` rename is still open if the edge log `src` word is
+  repurposed.
 - Do not put inline/blob class bits in `payload_cell`; derive class from bucket schema at read time.
 - Prefer tag bits in `src_and_tag`, not `prev`, because `prev` is the chain pointer and should remain
   a pure traversal primitive.
@@ -327,20 +318,24 @@ Trade-offs:
 - Payload log reads require bucket context (or cached bucket width) to interpret log cells; low-level
   log walks without label context cannot infer inline vs blob from cell bytes alone.
 
-## Implementation status (2026-06-15)
+## Implementation status (2026-06-16)
 
-Phase 1 (implemented):
+Phase 1 (implemented 2026-06-15):
 
 1. Log-backed delete rewrites the target log entry as a tombstone edge payload (`rewrite_overflow_log_entry_tombstone`).
 2. Slab-backed delete on log rows writes the slab tombstone directly (no delete-target append).
 3. Scan/replay paths skip tombstone log entries; legacy delete-target replay remains for old chains.
 4. Payload log chains stay aligned with edge log chains; payload bodies are cleared without rewiring.
 
-Deferred (benchmark gate; design locked 2026-06-16):
+Phase 2 (implemented 2026-06-16):
 
-- Edge log `src` removal or repurposing review.
-- Payload log 16 B layout: untagged 8 B cell + `src_and_tag`; derive inline/blob from bucket schema
-  on read; remove `PayloadLogCell` tag and duplicated blob width from wire bytes.
+1. Payload log layout version 1: 16 B stride (`prev`, `src`, 8 B untagged cell).
+2. Inline vs blob derived from `LabelBucket::payload_byte_width` on read and write; no per-cell tags.
+3. Wide log-backed payloads store body in `payload_blobs` at `(leaf_segment, entry_idx)`; log cell is zero.
+
+Deferred:
+
+- Edge log `src` removal or repurposing review (benchmark gate).
 - Variable-length payload encoding flag (profile) → always blob on log; not in current storage.
 
 Tests should cover:
@@ -359,10 +354,10 @@ Documents to update when this ADR is implemented:
 
 | Document | Required update |
 |----------|-----------------|
-| `design/storage/labeled-edge-payloads.md` | **Updated 2026-06-16:** storage class derivation, current 17 B vs target 16 B |
+| `design/storage/labeled-edge-payloads.md` | **Updated 2026-06-16:** `LVL` layout version 1, 16 B entry; bucket-derived storage class |
 | `design/storage/lara-dgap-contract.md` | Record log tombstone policy and DGAP divergence |
-| `design/storage/payload-first-traversal.md` | Note bucket-derived log attach for sparse overflow (when phase 2 lands) |
-| `design/storage/stable-memory-inventory.md` | Update when payload log layout version changes |
+| `design/storage/payload-first-traversal.md` | **Updated 2026-06-16:** bucket-derived log attach for sparse overflow |
+| `design/storage/stable-memory-inventory.md` | Note `LVL` layout version 1 when revisiting region docs |
 
 ## Related
 

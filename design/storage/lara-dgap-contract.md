@@ -172,7 +172,7 @@ Ordered steps; each should keep `mixed_label_hub_*` regressions green:
 
 - [lara.md](./lara.md) — **agreed LARA model** (four contracts, DGAP vs LARA)
 - [0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md) — decision record
-- [0016-overflow-log-tombstones-and-src-fields.md](../adr/0016-overflow-log-tombstones-and-src-fields.md) — log tombstone policy (phase 1 implemented); payload log 16 B + bucket-derived inline/blob (phase 2 design locked)
+- [0016-overflow-log-tombstones-and-src-fields.md](../adr/0016-overflow-log-tombstones-and-src-fields.md) — log tombstone policy (phase 1); payload log `LVL` layout version 1, 16 B + bucket-derived inline/blob (phase 2)
 - [lara-and-facade.md](./lara-and-facade.md) — Gleaph layering
 - [labeled-edge-payloads.md](./labeled-edge-payloads.md) — payload slab (parallel contract)
 - `crates/ic-stable-lara/README.md` — crate-level overview
