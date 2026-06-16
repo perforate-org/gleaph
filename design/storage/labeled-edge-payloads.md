@@ -81,7 +81,7 @@ When an edge insert lands in the edge overflow log, the paired payload bytes are
 
 Implemented as `LVL` layout version 1 with 16 B stride.
 
-Layout mirrors `EdgeStore` segment logs (`LLG`): one index word per leaf segment plus fixed-capacity
+Layout mirrors `EdgeStore` segment logs (`LLG`, `prev` + edge bytes per entry): one index word per leaf segment plus fixed-capacity
 entry slots. `push_vertex` grows the payload log segment tree in lockstep with the edge log. Span
 rewrites fold log-backed payloads back onto the byte slab and clear the segment log.
 

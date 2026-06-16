@@ -1,57 +1,15 @@
-//! Edge layout helpers and delete-target encoding.
+//! Edge layout helpers and delete-target bookkeeping.
 
 use super::edges::HeaderV1 as EdgeHeaderV1;
-use crate::lara::operation_error::LaraOperationError;
 
+/// Dead/empty marker for the payload overflow log (`LVL`) `src` word.
 pub(crate) const LOG_SRC_DEAD: i32 = i32::MIN;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum LogEntryKind {
-    Live,
-    Dead,
-    Delete(DeleteTarget),
-}
-
-pub(crate) fn decode_log_entry_kind(src: i32) -> LogEntryKind {
-    if src == LOG_SRC_DEAD {
-        LogEntryKind::Dead
-    } else if let Some(target) = decode_delete_target(src) {
-        LogEntryKind::Delete(target)
-    } else {
-        LogEntryKind::Live
-    }
-}
-
+/// Internal delete location used by compaction and maintenance replay.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum DeleteTarget {
     Slab(u32),
     Log(u32),
-}
-
-pub(crate) fn encode_delete_target(target: DeleteTarget) -> Result<i32, LaraOperationError> {
-    let tag = match target {
-        DeleteTarget::Slab(offset) => offset
-            .checked_mul(2)
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?,
-        DeleteTarget::Log(index) => index
-            .checked_mul(2)
-            .and_then(|n| n.checked_add(1))
-            .ok_or(LaraOperationError::CollectAllocationOverflow)?,
-    };
-    let encoded = -1i64 - i64::from(tag);
-    i32::try_from(encoded).map_err(|_| LaraOperationError::CollectAllocationOverflow)
-}
-
-pub(crate) fn decode_delete_target(src: i32) -> Option<DeleteTarget> {
-    if src >= 0 {
-        return None;
-    }
-    let tag = (-1i64 - i64::from(src)) as u32;
-    if tag.is_multiple_of(2) {
-        Some(DeleteTarget::Slab(tag / 2))
-    } else {
-        Some(DeleteTarget::Log(tag / 2))
-    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

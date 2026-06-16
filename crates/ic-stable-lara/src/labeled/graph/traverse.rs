@@ -1579,8 +1579,8 @@ where
         let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
             return Ok(None);
         };
-        let (_, src_tag, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
-        if src_tag < 0 || edge.is_tombstone_edge() {
+        let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+        if edge.is_tombstone_edge() {
             return Ok(None);
         }
         Ok(Some(

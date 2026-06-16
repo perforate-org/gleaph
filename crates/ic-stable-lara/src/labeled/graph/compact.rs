@@ -8,7 +8,7 @@ use crate::{
         slot_index::checked_add_slot_index,
     },
     lara::{
-        edge::{DeleteTarget, EdgeStore, LogEntryKind, decode_log_entry_kind},
+        edge::{DeleteTarget, EdgeStore},
         operation_error::LaraOperationError,
     },
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
@@ -1740,41 +1740,22 @@ where
         let expected_live = bucket.degree();
         let edge_start = bucket.edge_start();
 
-        let mut deleted_slab_offsets = Vec::new();
         let mut inserted_log_edges: Vec<(DeleteTarget, E)> = Vec::new();
         if log_len > 0 {
             let chain = self
                 .edges
                 .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
             for log_idx in chain {
-                let (_, src_tag, edge) = self.edges.read_overflow_log_entry(leaf, log_idx);
-                match decode_log_entry_kind(src_tag) {
-                    LogEntryKind::Dead => {}
-                    LogEntryKind::Delete(target) => match target {
-                        DeleteTarget::Slab(offset) => deleted_slab_offsets.push(offset),
-                        DeleteTarget::Log(_) => {
-                            if let Some(index) = inserted_log_edges
-                                .iter()
-                                .position(|(candidate, _)| *candidate == target)
-                            {
-                                inserted_log_edges.remove(index);
-                            }
-                        }
-                    },
-                    LogEntryKind::Live if edge.is_tombstone_edge() => {}
-                    LogEntryKind::Live => {
-                        inserted_log_edges.push((DeleteTarget::Log(log_idx), edge));
-                    }
+                let (_, edge) = self.edges.read_overflow_log_entry(leaf, log_idx);
+                if edge.is_tombstone_edge() {
+                    continue;
                 }
+                inserted_log_edges.push((DeleteTarget::Log(log_idx), edge));
             }
-            deleted_slab_offsets.sort_unstable();
         }
 
         let mut cursor = 0u32;
         for slot_index in 0..slab_prefix_slots {
-            if deleted_slab_offsets.binary_search(&slot_index).is_ok() {
-                continue;
-            }
             let edge_slot = checked_add_slot_index(edge_start, u64::from(slot_index))
                 .ok_or(LaraOperationError::CollectAllocationOverflow)?;
             let edge = self.edges.read_slot(edge_slot);

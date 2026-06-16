@@ -9,9 +9,7 @@ use ic_stable_structures::Memory;
 
 use super::log::HeaderV1 as LogHeaderV1;
 use super::scan_iter::leaf_segment;
-use super::{
-    DeleteTarget, EdgeLayout, EdgeStore, INLINE_EDGE_BYTES, LogEntryKind, decode_log_entry_kind,
-};
+use super::{DeleteTarget, EdgeLayout, EdgeStore, INLINE_EDGE_BYTES};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(crate) fn overflow_log_chain_len(&self, leaf: u32, head: i32) -> u32 {
@@ -26,7 +24,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             len = len.saturating_add(1);
             if E::BYTES <= INLINE_EDGE_BYTES {
                 let mut scratch = [0u8; INLINE_EDGE_BYTES];
-                let (prev, _) = self.log.read_entry_with_header(
+                let prev = self.log.read_entry_with_header(
                     &h,
                     leaf,
                     cur as u32,
@@ -35,7 +33,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 cur = prev;
             } else {
                 let mut scratch = vec![0u8; E::BYTES];
-                let (prev, _) = self
+                let prev = self
                     .log
                     .read_entry_with_header(&h, leaf, cur as u32, &mut scratch);
                 cur = prev;
@@ -56,7 +54,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             chain.push(cur as u32);
             if E::BYTES <= INLINE_EDGE_BYTES {
                 let mut scratch = [0u8; INLINE_EDGE_BYTES];
-                let (prev, _) = self.log.read_entry_with_header(
+                let prev = self.log.read_entry_with_header(
                     &h,
                     leaf,
                     cur as u32,
@@ -65,7 +63,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 cur = prev;
             } else {
                 let mut scratch = vec![0u8; E::BYTES];
-                let (prev, _) = self
+                let prev = self
                     .log
                     .read_entry_with_header(&h, leaf, cur as u32, &mut scratch);
                 cur = prev;
@@ -90,7 +88,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
     }
 
-    pub(crate) fn read_overflow_log_entry(&self, leaf: u32, entry_idx: u32) -> (i32, i32, E) {
+    pub(crate) fn read_overflow_log_entry(&self, leaf: u32, entry_idx: u32) -> (i32, E) {
         let h = self.log.header();
         self.read_log_edge_from_table_or_store(&h, leaf, entry_idx, None)
     }
@@ -106,8 +104,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .read_segment_entry_table_into(log_h, leaf, &mut log_table_buf);
         let log_table = (!log_table_buf.is_empty()).then_some(log_table_buf.as_slice());
 
-        let mut deleted_log_indices: Vec<u32> = Vec::new();
-        let mut deleted_slab_offsets: Vec<u32> = Vec::new();
+        let deleted_slab_offsets: Vec<u32> = Vec::new();
         let mut log_entries: Vec<Option<E>> = Vec::new();
         let mut log_i = log_head;
         let mut budget = log_h.max_log_entries;
@@ -117,30 +114,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 return Ok((log_entries, deleted_slab_offsets));
             }
             let log_idx = log_i as u32;
-            let (prev, src, edge) =
+            let (prev, edge) =
                 self.read_log_edge_from_table_or_store(log_h, leaf, log_idx, log_table);
             log_i = prev;
-            match decode_log_entry_kind(src) {
-                LogEntryKind::Dead => {
-                    log_entries.push(None);
-                    continue;
-                }
-                LogEntryKind::Delete(target) => {
-                    match target {
-                        DeleteTarget::Slab(offset) => deleted_slab_offsets.push(offset),
-                        DeleteTarget::Log(index) => deleted_log_indices.push(index),
-                    }
-                    continue;
-                }
-                LogEntryKind::Live => {
-                    if edge.is_deleted_slot() {
-                        log_entries.push(None);
-                        continue;
-                    }
-                }
-            }
-            if let Some(pos) = deleted_log_indices.iter().position(|&d| d == log_idx) {
-                deleted_log_indices.swap_remove(pos);
+            if edge.is_deleted_slot() {
+                log_entries.push(None);
                 continue;
             }
             log_entries.push(Some(edge));
@@ -151,67 +129,36 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         Ok((log_entries, deleted_slab_offsets))
     }
 
-    pub(super) fn read_log_entry_src_tag(
-        &self,
-        log_h: &LogHeaderV1,
-        leaf: u32,
-        log_idx: u32,
-        table: Option<&[u8]>,
-    ) -> (i32, i32) {
-        if let Some(buf) = table {
-            let stride = log_h.stride as usize;
-            if stride > 0 {
-                let off = log_idx as usize * stride;
-                if off + 8 <= buf.len() {
-                    let prev = i32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
-                    let src = i32::from_le_bytes(buf[off + 4..off + 8].try_into().unwrap());
-                    return (prev, src);
-                }
-            }
-        }
-        let mut buf = [0u8; 8];
-        self.log
-            .read_entry_with_header(log_h, leaf, log_idx, &mut buf)
-    }
-
     pub(super) fn read_log_edge_from_table_or_store(
         &self,
         log_h: &LogHeaderV1,
         leaf: u32,
         log_idx: u32,
         table: Option<&[u8]>,
-    ) -> (i32, i32, E) {
+    ) -> (i32, E) {
         if let Some(buf) = table {
             let stride = log_h.stride as usize;
             if stride > 0 {
                 let off = log_idx as usize * stride;
-                if off + stride <= buf.len() && off + 8 + E::BYTES <= buf.len() {
+                if off + stride <= buf.len() && off + 4 + E::BYTES <= buf.len() {
                     let prev = i32::from_le_bytes(buf[off..off + 4].try_into().unwrap());
-                    let src = i32::from_le_bytes(buf[off + 4..off + 8].try_into().unwrap());
-                    let edge = E::read_from(&buf[off + 8..off + 8 + E::BYTES]);
-                    return (prev, src, edge);
+                    let edge = E::read_from(&buf[off + 4..off + 4 + E::BYTES]);
+                    return (prev, edge);
                 }
             }
         }
-        let (prev, src) = self.read_log_entry_src_tag(log_h, leaf, log_idx, table);
-        if E::BYTES <= 8 {
-            let mut buf = [0u8; 8];
-            let (_, _) =
-                self.log
-                    .read_entry_with_header(log_h, leaf, log_idx, &mut buf[..E::BYTES]);
-            (prev, src, E::read_from(&buf[..E::BYTES]))
-        } else if E::BYTES <= INLINE_EDGE_BYTES {
+        if E::BYTES <= INLINE_EDGE_BYTES {
             let mut buf = [0u8; INLINE_EDGE_BYTES];
-            let (_, _) =
-                self.log
-                    .read_entry_with_header(log_h, leaf, log_idx, &mut buf[..E::BYTES]);
-            (prev, src, E::read_from(&buf[..E::BYTES]))
+            let prev = self
+                .log
+                .read_entry_with_header(log_h, leaf, log_idx, &mut buf[..E::BYTES]);
+            (prev, E::read_from(&buf[..E::BYTES]))
         } else {
             let mut buf = vec![0u8; E::BYTES];
-            let (_, _) = self
+            let prev = self
                 .log
                 .read_entry_with_header(log_h, leaf, log_idx, &mut buf);
-            (prev, src, E::read_from(&buf))
+            (prev, E::read_from(&buf))
         }
     }
 
@@ -227,8 +174,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .read_segment_entry_table_into(log_h, leaf, &mut log_table_buf);
         let log_table = (!log_table_buf.is_empty()).then_some(log_table_buf.as_slice());
 
-        let mut deleted_log_indices: Vec<u32> = Vec::new();
-        let mut deleted_slab_offsets: Vec<u32> = Vec::new();
+        let deleted_slab_offsets: Vec<u32> = Vec::new();
         let mut replay_entries: Vec<Option<u32>> = Vec::new();
         let mut log_i = log_head;
         let mut budget = log_h.max_log_entries;
@@ -238,26 +184,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                 return Ok((replay_entries, deleted_slab_offsets, log_table_buf));
             }
             let log_idx = log_i as u32;
-            let (prev, src, edge) =
+            let (prev, edge) =
                 self.read_log_edge_from_table_or_store(log_h, leaf, log_idx, log_table);
             log_i = prev;
-            match decode_log_entry_kind(src) {
-                LogEntryKind::Dead => {
-                    replay_entries.push(None);
-                    continue;
-                }
-                LogEntryKind::Delete(target) => match target {
-                    DeleteTarget::Slab(offset) => deleted_slab_offsets.push(offset),
-                    DeleteTarget::Log(index) => deleted_log_indices.push(index),
-                },
-                LogEntryKind::Live if edge.is_deleted_slot() => {
-                    replay_entries.push(None);
-                    continue;
-                }
-                LogEntryKind::Live => {}
-            }
-            if let Some(pos) = deleted_log_indices.iter().position(|&d| d == log_idx) {
-                deleted_log_indices.swap_remove(pos);
+            if edge.is_deleted_slot() {
+                replay_entries.push(None);
                 continue;
             }
             replay_entries.push(Some(log_idx));
@@ -287,9 +218,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             if steps >= log_h.max_log_entries {
                 return Err(LaraOperationError::LogChainShort);
             }
-            let (prev, src, edge) =
+            let (prev, edge) =
                 self.read_log_edge_from_table_or_store(log_h, leaf, log_i as u32, log_table);
-            entries.push((log_i as u32, src, edge));
+            entries.push((log_i as u32, edge));
             log_i = prev;
             steps = steps
                 .checked_add(1)
@@ -297,34 +228,19 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         entries.reverse();
 
-        let mut inserted: Vec<(DeleteTarget, Option<u32>)> = Vec::new();
-        let mut deleted_slab_offsets = Vec::new();
-        for (log_idx, src, edge) in entries {
-            match decode_log_entry_kind(src) {
-                LogEntryKind::Dead => inserted.push((DeleteTarget::Log(log_idx), None)),
-                LogEntryKind::Delete(target) => match target {
-                    DeleteTarget::Slab(offset) => deleted_slab_offsets.push(offset),
-                    DeleteTarget::Log(_) => {
-                        if let Some(index) = inserted
-                            .iter()
-                            .position(|(candidate, _)| *candidate == target)
-                        {
-                            inserted.remove(index);
-                        }
-                    }
-                },
-                LogEntryKind::Live if edge.is_deleted_slot() => {
-                    inserted.push((DeleteTarget::Log(log_idx), None));
+        let deleted_slab_offsets: Vec<u32> = Vec::new();
+        let inserted: Vec<Option<u32>> = entries
+            .into_iter()
+            .map(|(log_idx, edge)| {
+                if edge.is_deleted_slot() {
+                    None
+                } else {
+                    Some(log_idx)
                 }
-                LogEntryKind::Live => inserted.push((DeleteTarget::Log(log_idx), Some(log_idx))),
-            }
-        }
+            })
+            .collect();
 
-        Ok((
-            inserted.into_iter().map(|(_, tag)| tag).collect(),
-            deleted_slab_offsets,
-            log_table_buf,
-        ))
+        Ok((inserted, deleted_slab_offsets, log_table_buf))
     }
 
     pub(crate) fn decode_overflow_log_edge_from_table(
@@ -334,7 +250,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         log_table: Option<&[u8]>,
     ) -> E {
         let h = self.log.header();
-        let (_, _, edge) = self.read_log_edge_from_table_or_store(&h, leaf, log_idx, log_table);
+        let (_, edge) = self.read_log_edge_from_table_or_store(&h, leaf, log_idx, log_table);
         edge
     }
 
@@ -347,19 +263,19 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         E: CsrEdgeTombstone,
     {
         let log_h = self.log.header();
-        let (prev, src, _) = self.read_log_edge_from_table_or_store(&log_h, leaf, entry_idx, None);
+        let (prev, _) = self.read_log_edge_from_table_or_store(&log_h, leaf, entry_idx, None);
         let tombstone = E::tombstone_edge();
         if E::BYTES <= INLINE_EDGE_BYTES {
             let mut payload = [0u8; INLINE_EDGE_BYTES];
             tombstone.write_to(&mut payload[..E::BYTES]);
             self.log
-                .write_entry_with_header(&log_h, leaf, entry_idx, prev, src, &payload[..E::BYTES])
+                .write_entry_with_header(&log_h, leaf, entry_idx, prev, &payload[..E::BYTES])
                 .map_err(LaraOperationError::WriteLogFailed)?;
         } else {
             let mut payload = vec![0u8; E::BYTES];
             tombstone.write_to(&mut payload);
             self.log
-                .write_entry_with_header(&log_h, leaf, entry_idx, prev, src, &payload)
+                .write_entry_with_header(&log_h, leaf, entry_idx, prev, &payload)
                 .map_err(LaraOperationError::WriteLogFailed)?;
         }
         Ok(())
@@ -416,8 +332,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         if idx < 0 || idx >= log_h.max_log_entries as i32 {
             return Err(LaraOperationError::SegmentLogFull);
         }
-        let src = i32::try_from(u32::from(log_owner))
-            .map_err(|_| LaraOperationError::VertexIdExceedsI32)?;
         if E::BYTES <= INLINE_EDGE_BYTES {
             let mut payload = [0u8; INLINE_EDGE_BYTES];
             edge.write_to(&mut payload[..E::BYTES]);
@@ -427,7 +341,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
                     leaf,
                     idx as u32,
                     v.log_head(),
-                    src,
                     &payload[..E::BYTES],
                 )
                 .map_err(LaraOperationError::WriteLogFailed)?;
@@ -435,7 +348,7 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let mut payload = vec![0u8; E::BYTES];
             edge.write_to(&mut payload);
             self.log
-                .write_entry_with_header(&log_h, leaf, idx as u32, v.log_head(), src, &payload)
+                .write_entry_with_header(&log_h, leaf, idx as u32, v.log_head(), &payload)
                 .map_err(LaraOperationError::WriteLogFailed)?;
         }
         self.log.write_idx_with_header(&log_h, leaf, idx + 1);

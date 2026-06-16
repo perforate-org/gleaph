@@ -8,7 +8,7 @@ use crate::{
 use ic_stable_structures::Memory;
 
 use super::scan_iter::{OutEdgeSlabIter, leaf_segment};
-use super::{DeleteTarget, EdgeStore, InsertLocation, LogEntryKind, decode_log_entry_kind};
+use super::{DeleteTarget, EdgeStore, InsertLocation};
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
     pub(super) fn collect_out_edge_refs_slot_order<V, A>(
@@ -97,9 +97,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             if steps >= log_h.max_log_entries {
                 return Err(LaraOperationError::LogChainShort);
             }
-            let (prev, src, edge) =
+            let (prev, edge) =
                 self.read_log_edge_from_table_or_store(&log_h, leaf, log_i as u32, log_table);
-            entries.push((log_i as u32, src, edge));
+            entries.push((log_i as u32, edge));
             log_i = prev;
             steps = steps
                 .checked_add(1)
@@ -107,22 +107,13 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         }
         entries.reverse();
 
-        for (log_idx, src, edge) in entries {
-            match decode_log_entry_kind(src) {
-                LogEntryKind::Dead => {}
-                LogEntryKind::Delete(target) => {
-                    if let Some(index) = out.iter().position(|(candidate, _)| *candidate == target)
-                    {
-                        out.remove(index);
-                    }
-                }
-                LogEntryKind::Live if edge.is_deleted_slot() => {}
-                LogEntryKind::Live => {
-                    let slot_index = u32::try_from(out.len())
-                        .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
-                    out.push((DeleteTarget::Log(log_idx), edge.with_slot_index(slot_index)));
-                }
+        for (log_idx, edge) in entries {
+            if edge.is_deleted_slot() {
+                continue;
             }
+            let slot_index = u32::try_from(out.len())
+                .map_err(|_| LaraOperationError::CollectAllocationOverflow)?;
+            out.push((DeleteTarget::Log(log_idx), edge.with_slot_index(slot_index)));
         }
         debug_assert_eq!(
             out.len(),

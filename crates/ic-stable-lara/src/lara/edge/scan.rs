@@ -11,8 +11,7 @@ use super::scan_iter::{
     AscOutEdgesIter, LogBackedDescIter, OutEdgeSlabChunk, OutEdgeSlabIter, leaf_segment,
 };
 use super::{
-    DeleteTarget, EdgeStore, LogEntryKind, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES, OutEdgeVisitWindow,
-    OutEdgesIter, decode_log_entry_kind,
+    DeleteTarget, EdgeStore, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES, OutEdgeVisitWindow, OutEdgesIter,
 };
 
 impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
@@ -173,7 +172,6 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             log_header,
             log_table: None,
             slab_chunk,
-            deleted_log_indices: Vec::new(),
             deleted_slab_offsets: Vec::new(),
             sorted_slab_deletes: false,
             next_log_slot: slab_count
@@ -333,9 +331,9 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             if steps >= log_h.max_log_entries {
                 return Err(LaraOperationError::LogChainShort);
             }
-            let (prev, src, edge) =
+            let (prev, edge) =
                 self.read_log_edge_from_table_or_store(&log_h, leaf, log_i as u32, log_table);
-            entries.push((log_i as u32, src, edge));
+            entries.push((log_i as u32, edge));
             log_i = prev;
             steps = steps
                 .checked_add(1)
@@ -344,25 +342,12 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         entries.reverse();
 
         let mut inserted = Vec::new();
-        let mut deleted_slab_offsets = Vec::new();
-        for (log_idx, src, edge) in entries {
-            match decode_log_entry_kind(src) {
-                LogEntryKind::Dead => inserted.push((DeleteTarget::Log(log_idx), None)),
-                LogEntryKind::Delete(target) => match target {
-                    DeleteTarget::Slab(offset) => deleted_slab_offsets.push(offset),
-                    DeleteTarget::Log(_) => {
-                        if let Some(index) = inserted
-                            .iter()
-                            .position(|(candidate, _)| *candidate == target)
-                        {
-                            inserted.remove(index);
-                        }
-                    }
-                },
-                LogEntryKind::Live if edge.is_deleted_slot() => {
-                    inserted.push((DeleteTarget::Log(log_idx), None));
-                }
-                LogEntryKind::Live => inserted.push((DeleteTarget::Log(log_idx), Some(edge))),
+        let deleted_slab_offsets: Vec<u32> = Vec::new();
+        for (log_idx, edge) in entries {
+            if edge.is_deleted_slot() {
+                inserted.push((DeleteTarget::Log(log_idx), None));
+            } else {
+                inserted.push((DeleteTarget::Log(log_idx), Some(edge)));
             }
         }
 

@@ -2,8 +2,8 @@
 
 Date: 2026-06-15  
 Status: accepted (phase 1 and phase 2 implemented)  
-Last revised: 2026-06-16
-Anchor timestamp: 2026-06-16 01:28:06 UTC +0000
+Last revised: 2026-06-16  
+Anchor timestamp: 2026-06-16 04:05:24 UTC +0000
 
 ## Context
 
@@ -24,14 +24,12 @@ Payload bytes mirror the edge row order:
 
 Current implementation facts:
 
-- Edge overflow log entries store `prev_offset` (4 B), `src` (4 B), and edge bytes
-  ([`edge/log.rs`](../../crates/ic-stable-lara/src/lara/edge/log.rs)).
+- Edge overflow log entries store `prev` (4 B) and edge bytes only
+  ([`edge/log.rs`](../../crates/ic-stable-lara/src/lara/edge/log.rs)). Liveness is encoded in the
+  edge payload tombstone contract; there is no per-entry `src` word on `LLG`.
 - **Implemented (2026-06-15):** log-backed delete rewrites the target entry's edge payload to the
   tombstone contract and keeps the entry in the chain. Foreground delete no longer appends separate
   delete-target log entries. Scans skip tombstone edge rows in both slab and log locations.
-- **Legacy read path:** `LOG_SRC_DEAD`, `DeleteTarget::Slab`, and `DeleteTarget::Log` encodings in
-  the `src` word remain decodable for older log chains
-  ([`edge/targets.rs`](../../crates/ic-stable-lara/src/lara/edge/targets.rs)).
 - **Implemented (2026-06-16):** payload overflow log entries are 16 B (`LVL`, layout version 1):
   `prev` (4 B), `src` (4 B), and an untagged 8 B inline cell
   ([`edge_payload/log.rs`](../../crates/ic-stable-lara/src/lara/edge_payload/log.rs),
@@ -260,33 +258,25 @@ tombstone handling, payload blob cleanup, alias maintenance, or derived-state up
 benchmark explicitly says it is measuring a lower-level isolated primitive.
 
 **Status (2026-06-16):** focused benches below are implemented and baselined via canbench.
-Edge log `src` removal remains gated on reviewing these results.
-
-**Status (2026-06-16):** focused benches below are implemented and baselined via canbench.
-Edge log `src` wire removal is **deferred** after review (see below); payload log 16 B compression
-is accepted.
+Edge log `src` wire removal is **implemented** (see review section).
 
 ## Edge log `src` review (2026-06-16)
 
-Benchmark gate complete. Code review of current `LLG` `src` word usage:
+Benchmark gate complete. Code review of prior `LLG` `src` word usage:
 
 | Question | Finding |
 | -------- | ------- |
-| Required for core scan without labeled context? | **No for neighbor emission.** Scans anchor on the owning vertex row (`log_head`) and walk `prev`. `src` is decoded only for entry kind (`Live` / `Dead` / legacy `Delete`). |
-| Required for validation or reopen? | **Partially.** Negative `src` encodes `LOG_SRC_DEAD` and legacy `DeleteTarget` replay. Labeled paths also treat `src < 0` as a fast dead check alongside edge-payload tombstones ([`traverse.rs`](../../crates/ic-stable-lara/src/labeled/graph/traverse.rs), [`remove.rs`](../../crates/ic-stable-lara/src/labeled/graph/remove.rs)). |
-| Is live owner vertex id in `src` read on hot paths? | **No.** Live inserts write `log_owner` into `src` ([`log_mut.rs`](../../crates/ic-stable-lara/src/lara/edge/log_mut.rs)), but replay/scan never validates or uses that id after `decode_log_entry_kind` returns `Live`. |
-| Can labeled derive owner without per-entry `src`? | **Yes** for current insert paths: `log_owner = vertices.log_leaf_vertex(vid)` at insert time; leaf segment is derived from the vertex row, not from log entry `src`. |
-| Cost of removing the word now? | **Layout migration.** `LLG` stride is `8 + edge_stride`; dropping `src` needs a new layout version and dual-read or fresh-store policy. DGAP keeps a source-like `u` field; LARA mirrors it on wire today. |
+| Required for core scan without labeled context? | **No for neighbor emission.** Scans anchor on the owning vertex row (`log_head`) and walk `prev`. `src` was decoded only for entry kind (`Live` / `Dead` / legacy `Delete`). |
+| Required for validation or reopen? | **No after tombstone-only delete.** Tombstone edge payloads subsume `LOG_SRC_DEAD` and legacy `DeleteTarget` replay on the edge log. |
+| Is live owner vertex id in `src` read on hot paths? | **No.** Live inserts wrote `log_owner` into `src`, but replay/scan never validated or used that id. |
+| Can labeled derive owner without per-entry `src`? | **Yes:** `log_owner = vertices.log_leaf_vertex(vid)` at insert time; leaf segment is derived from the vertex row. |
 
-**Decision:** keep the edge log `src` word for now.
+**Decision (2026-06-16):** remove the edge log `src` word.
 
-- Foreground delete liveness is already on the edge payload tombstone; `src` is not a second
-  liveness source for new chains.
-- The word still carries `LOG_SRC_DEAD`, legacy delete-target replay, and (redundantly) live owner
-  vertex id on write.
-- Physical removal or `src_and_tag` repurposing is a **follow-up layout change**, not required for
-  phase 1/2 correctness. Revisit only if a future `LLG` stride reduction benchmark shows material
-  stable-memory win.
+- `LLG` stride is `4 + edge_stride` (`prev` + edge bytes). Layout version stays **1**; development
+  stores are recreated rather than migrated.
+- Replay and scan skip tombstone edge payloads only; no `decode_log_entry_kind` on the edge log.
+- Payload log (`LVL`) still uses `src` for `LOG_SRC_DEAD`; that is a separate follow-up.
 
 ## Alternatives Considered
 
@@ -342,8 +332,7 @@ Trade-offs:
 - Tombstoned log entries remain in chains until maintenance folds or rewrites them.
 - Scans must skip tombstone entries in both slab and log locations.
 - Foreground deletes may leave unreachable payload slab bytes until maintenance.
-- Edge log `src` removal is not decided here; keeping it may leave bytes on the table, while
-  removing it too early could split core and labeled LARA layout concepts.
+- Edge log `src` removal saves 4 B per `LLG` entry; payload log `src` remains until a separate review.
 - Payload log reads require bucket context (or cached bucket width) to interpret log cells; low-level
   log walks without label context cannot infer inline vs blob from cell bytes alone.
 
@@ -369,11 +358,15 @@ Benchmark gate (implemented 2026-06-16):
 - `bench_labeled_tombstone_log_rewrite_maintenance` — 40.64 M ix (edge overflow hub + incremental compact)
 - `bench_graph_payload_first_log_backed_selective_match` — 698 K ix (48+24 overflow hub expand)
 
-Edge log `src` review (2026-06-16): **complete; wire removal deferred** (see review section).
+Edge log `src` removal (implemented 2026-06-16):
+
+1. `LLG` entry stride `4 + E::BYTES` (`prev` + edge); layout version 1 unchanged.
+2. Scan/replay paths use edge tombstone only; `LogEntryKind` / `decode_log_entry_kind` removed from edge log.
+3. Fresh development stores only; no migration path.
 
 Deferred:
 
-- Edge log `src` physical removal or `src_and_tag` repurposing (`LLG` layout version bump).
+- Payload log `src` physical removal or `src_and_tag` repurposing (`LVL` layout change).
 - Variable-length payload encoding flag (profile) → always blob on log; not in current storage.
 
 Tests should cover:

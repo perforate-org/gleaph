@@ -21,31 +21,18 @@
 //! -------------------------------------------------- <- Address 32
 //! Segment log block 0
 //!   I_0                                 ↕ 4 bytes
-//!   L_0_0                               ↕ 8 + E::BYTES bytes
-//!   L_0_1                               ↕ 8 + E::BYTES bytes
+//!   L_0_0                               ↕ 4 + E::BYTES bytes
+//!   L_0_1                               ↕ 4 + E::BYTES bytes
 //!   ...
-//!   L_0_(max_log_entries-1)             ↕ 8 + E::BYTES bytes
-//! --------------------------------------------------
-//! Segment log block 1
-//!   I_1                                 ↕ 4 bytes
-//!   L_1_0                               ↕ 8 + E::BYTES bytes
-//!   L_1_1                               ↕ 8 + E::BYTES bytes
-//!   ...
-//!   L_1_(max_log_entries-1)             ↕ 8 + E::BYTES bytes
+//!   L_0_(max_log_entries-1)             ↕ 4 + E::BYTES bytes
 //! --------------------------------------------------
 //! ...
-//! --------------------------------------------------
-//! Segment log block (segment_count-1)
-//!   I_(segment_count-1)                 ↕ 4 bytes
-//!   L_(segment_count-1)_0               ↕ 8 + E::BYTES bytes
-//!   ...
-//!   L_(segment_count-1)_(max_log_entries-1)
-//!                                       ↕ 8 + E::BYTES bytes
 //! --------------------------------------------------
 //! Unallocated space
 //! ```
 //!
-//! Each log entry stores `prev_offset` (4 bytes), `src` (4 bytes), and the edge payload.
+//! Each log entry stores `prev` (4 bytes) and the edge payload. Liveness is
+//! encoded only in the edge payload tombstone contract.
 
 use crate::{
     GrowFailed, read_i32, read_u32, safe_write, traits::CsrEdge, types::Address, write_i32,
@@ -87,7 +74,7 @@ impl HeaderV1 {
             version: LAYOUT_VERSION,
             segment_count,
             max_log_entries: DEFAULT_MAX_LOG_ENTRIES,
-            stride: 8 + edge_stride,
+            stride: 4 + edge_stride,
         }
     }
 }
@@ -266,7 +253,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         );
     }
 
-    /// Reads one log entry payload and returns `(previous_entry, source_vertex)`.
+    /// Reads one log entry payload and returns the previous-entry index.
     #[cfg_attr(
         not(test),
         expect(
@@ -274,7 +261,7 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
             reason = "stable LogStore API; in-crate uses read_entry_with_header"
         )
     )]
-    pub fn read_entry(&self, leaf_segment: u32, entry_idx: u32, out: &mut [u8]) -> (i32, i32) {
+    pub fn read_entry(&self, leaf_segment: u32, entry_idx: u32, out: &mut [u8]) -> i32 {
         let h = self.header();
         self.read_entry_with_header(&h, leaf_segment, entry_idx, out)
     }
@@ -285,12 +272,11 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         leaf_segment: u32,
         entry_idx: u32,
         out: &mut [u8],
-    ) -> (i32, i32) {
+    ) -> i32 {
         let off = entry_offset::<E>(h, leaf_segment, entry_idx);
         let prev = read_i32(&self.memory, Address::from(off));
-        let src = read_i32(&self.memory, Address::from(off + 4));
-        self.memory.read(off + 8, out);
-        (prev, src)
+        self.memory.read(off + 4, out);
+        prev
     }
 
     /// Writes one log entry in a leaf segment.
@@ -306,11 +292,10 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         leaf_segment: u32,
         entry_idx: u32,
         prev: i32,
-        src: i32,
         payload: &[u8],
     ) -> Result<(), GrowFailed> {
         let h = self.header();
-        self.write_entry_with_header(&h, leaf_segment, entry_idx, prev, src, payload)
+        self.write_entry_with_header(&h, leaf_segment, entry_idx, prev, payload)
     }
 
     pub(crate) fn write_entry_with_header(
@@ -319,7 +304,6 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         leaf_segment: u32,
         entry_idx: u32,
         prev: i32,
-        src: i32,
         payload: &[u8],
     ) -> Result<(), GrowFailed> {
         let off = entry_offset::<E>(h, leaf_segment, entry_idx);
@@ -328,14 +312,12 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         if entry_len <= INLINE_LOG_ENTRY_BYTES {
             let mut bytes = [0u8; INLINE_LOG_ENTRY_BYTES];
             bytes[0..4].copy_from_slice(&prev.to_le_bytes());
-            bytes[4..8].copy_from_slice(&src.to_le_bytes());
-            bytes[8..8 + payload.len()].copy_from_slice(payload);
+            bytes[4..4 + payload.len()].copy_from_slice(payload);
             safe_write(&self.memory, off, &bytes[..entry_len])
         } else {
             let mut bytes = vec![0u8; entry_len];
             bytes[0..4].copy_from_slice(&prev.to_le_bytes());
-            bytes[4..8].copy_from_slice(&src.to_le_bytes());
-            bytes[8..8 + payload.len()].copy_from_slice(payload);
+            bytes[4..4 + payload.len()].copy_from_slice(payload);
             safe_write(&self.memory, off, &bytes)
         }
     }
@@ -440,7 +422,7 @@ fn required_bytes<E: CsrEdge>(h: &HeaderV1) -> u64 {
 /// Returns the byte width of one log entry for edge type `E`.
 #[inline]
 pub fn log_entry_stride<E: CsrEdge>() -> u64 {
-    8 + E::BYTES as u64
+    4 + E::BYTES as u64
 }
 
 #[cfg(test)]
@@ -481,14 +463,11 @@ mod tests {
         let edge = TestEdge(42);
         let mut payload = [0u8; TestEdge::BYTES];
         edge.write_to(&mut payload);
-        store
-            .write_entry(0, 0, -1, 7, &payload)
-            .expect("write entry");
+        store.write_entry(0, 0, -1, &payload).expect("write entry");
         store.write_idx(0, 1);
         let mut out = [0u8; TestEdge::BYTES];
-        let (prev, src) = store.read_entry(0, 0, &mut out);
+        let prev = store.read_entry(0, 0, &mut out);
         assert_eq!(prev, -1);
-        assert_eq!(src, 7);
         assert_eq!(TestEdge::read_from(&out), edge);
     }
 
@@ -498,16 +477,13 @@ mod tests {
         let edge = TestEdge(9);
         let mut payload = [0u8; TestEdge::BYTES];
         edge.write_to(&mut payload);
-        store
-            .write_entry(0, 0, -1, 1, &payload)
-            .expect("write entry");
+        store.write_entry(0, 0, -1, &payload).expect("write entry");
         store.write_idx(0, 1);
         store.release_segment(0).expect("release");
         assert_eq!(store.read_idx(0), 0);
         let mut out = [0u8; TestEdge::BYTES];
-        let (prev, src) = store.read_entry(0, 0, &mut out);
+        let prev = store.read_entry(0, 0, &mut out);
         assert_eq!(prev, 0);
-        assert_eq!(src, 0);
         assert_eq!(TestEdge::read_from(&out), TestEdge(0));
     }
 
@@ -552,7 +528,6 @@ mod bench {
                         black_box(segment),
                         black_box(entry),
                         entry as i32 - 1,
-                        i as i32,
                         &payload,
                     )
                     .expect("write log entry");
@@ -563,9 +538,8 @@ mod bench {
                 let i = black_box(i);
                 let segment = (i % 16) as u32;
                 let entry = (i / 16) as u32;
-                let (prev, src) =
-                    store.read_entry(black_box(segment), black_box(entry), &mut payload);
-                sum ^= prev ^ src ^ TestEdge::read_from(&payload).0 as i32;
+                let prev = store.read_entry(black_box(segment), black_box(entry), &mut payload);
+                sum ^= prev ^ TestEdge::read_from(&payload).0 as i32;
             }
             store.release_segment(0).expect("release segment");
             black_box(sum);

@@ -7,15 +7,13 @@ use std::{iter::FusedIterator, num::NonZero};
 
 use super::log::HeaderV1 as LogHeaderV1;
 use super::{
-    DeleteTarget, EdgeStore, INLINE_EDGE_BYTES, LogEntryKind, OUT_EDGE_SLAB_CHUNK_SLOTS,
-    OUT_EDGE_SLAB_PREFETCH_MIN_BYTES, decode_log_entry_kind,
+    EdgeStore, INLINE_EDGE_BYTES, OUT_EDGE_SLAB_CHUNK_SLOTS, OUT_EDGE_SLAB_PREFETCH_MIN_BYTES,
 };
 
 /// Descending scan for a **log-backed** row without prefetching every live log edge into a `Vec`.
 ///
 /// Same logical order as [`OutEdgesIter`]: scan the core-LARA overflow log chain (newest first),
-/// then walk the slab prefix in descending slot order, skipping slab slots targeted by overflow-log
-/// delete entries.
+/// then walk the slab prefix in descending slot order, skipping tombstoned slab slots.
 pub(crate) struct LogBackedDescIter<'a, E: CsrEdge, M: Memory> {
     pub(super) store: &'a EdgeStore<E, M>,
     pub(super) leaf: u32,
@@ -27,7 +25,6 @@ pub(crate) struct LogBackedDescIter<'a, E: CsrEdge, M: Memory> {
     pub(super) log_header: LogHeaderV1,
     pub(super) log_table: Option<Vec<u8>>,
     pub(super) slab_chunk: Option<OutEdgeSlabChunk>,
-    pub(super) deleted_log_indices: Vec<u32>,
     pub(super) deleted_slab_offsets: Vec<u32>,
     pub(super) sorted_slab_deletes: bool,
     pub(super) next_log_slot: u32,
@@ -78,33 +75,14 @@ where
                 }
                 self.remaining_log -= 1;
                 let log_idx = self.next_log as u32;
-                let (prev, src, edge) = self.store.read_log_edge_from_table_or_store(
+                let (prev, edge) = self.store.read_log_edge_from_table_or_store(
                     &self.log_header,
                     self.leaf,
                     log_idx,
                     log_table_sl,
                 );
                 self.next_log = prev;
-                match decode_log_entry_kind(src) {
-                    LogEntryKind::Dead => {
-                        self.next_log_slot = self.next_log_slot.saturating_sub(1);
-                        continue;
-                    }
-                    LogEntryKind::Delete(target) => {
-                        match target {
-                            DeleteTarget::Slab(offset) => self.deleted_slab_offsets.push(offset),
-                            DeleteTarget::Log(index) => self.deleted_log_indices.push(index),
-                        }
-                        continue;
-                    }
-                    LogEntryKind::Live if edge.is_deleted_slot() => {
-                        self.next_log_slot = self.next_log_slot.saturating_sub(1);
-                        continue;
-                    }
-                    LogEntryKind::Live => {}
-                }
-                if let Some(pos) = self.deleted_log_indices.iter().position(|&d| d == log_idx) {
-                    self.deleted_log_indices.swap_remove(pos);
+                if edge.is_deleted_slot() {
                     self.next_log_slot = self.next_log_slot.saturating_sub(1);
                     continue;
                 }

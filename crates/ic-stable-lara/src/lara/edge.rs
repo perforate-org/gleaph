@@ -18,8 +18,8 @@
 //! **Default contiguous read contract:** [`EdgeStore::out_edges_iter`] (see [`OutEdgesIter`])
 //! walks the overflow log from the chain head first, then live slab slots **high index to low**
 //! (still skipping tombstoned slots). Log-backed rows prefetch the log chain at iterator
-//! construction so slab scans can skip tombstoned log entries and legacy overflow-log delete-target
-//! markers without decoding masked slab slots. Labeled compact rows normally avoid this log-backed
+//! construction so slab scans can skip tombstoned log entries without decoding masked slab slots.
+//! Labeled compact rows normally avoid this log-backed
 //! path by rewriting rows into slab tombstones before deletion. The descending scan is the preferred
 //! hot path (cache- and prefetch-friendly, newest log entries first). Callers that need slot order should use
 //! `asc_out_edges` instead, or reverse the vector produced by `out_edges_iter` when
@@ -104,9 +104,7 @@ pub use error::InitError;
 pub(crate) use scan_iter::OutEdgeSlabIter;
 pub use scan_iter::{AscOutEdgesIter, OutEdgesIter};
 pub(crate) use scan_iter::{OutOverflowAscParts, OutOverflowDescParts};
-pub(crate) use targets::{
-    DeleteTarget, EdgeLayout, InsertLocation, LOG_SRC_DEAD, LogEntryKind, decode_log_entry_kind,
-};
+pub(crate) use targets::{DeleteTarget, EdgeLayout, InsertLocation, LOG_SRC_DEAD};
 pub(crate) use visit_window::OutEdgeVisitWindow;
 
 /// Combined stable edge storage used by [`LaraGraph`](crate::LaraGraph).

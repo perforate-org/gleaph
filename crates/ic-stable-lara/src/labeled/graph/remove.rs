@@ -81,8 +81,8 @@ where
             let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
                 return Ok(None);
             };
-            let (_, src_tag, removed) = self.edges.read_overflow_log_entry(leaf, entry_idx);
-            if src_tag < 0 || removed.is_tombstone_edge() {
+            let (_, removed) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+            if removed.is_tombstone_edge() {
                 return Ok(None);
             }
             self.edges
@@ -158,8 +158,8 @@ where
             .edges
             .overflow_log_chain_asc_indices(leaf, vertex.bypass_overflow_log_head());
         for (ordinal, entry_idx) in chain.into_iter().enumerate() {
-            let (_, src_tag, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
-            if src_tag < 0 || edge.is_tombstone_edge() {
+            let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+            if edge.is_tombstone_edge() {
                 continue;
             }
             let slot_index = slab_prefix_slots
@@ -211,8 +211,8 @@ where
             let Some(&entry_idx) = chain.get(log_ordinal as usize) else {
                 return Ok(None);
             };
-            let (_, src_tag, removed) = self.edges.read_overflow_log_entry(leaf, entry_idx);
-            if src_tag < 0 || removed.is_tombstone_edge() {
+            let (_, removed) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+            if removed.is_tombstone_edge() {
                 return Ok(None);
             }
             self.edges
@@ -678,8 +678,8 @@ where
                     .edges
                     .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
                 for (ordinal, entry_idx) in chain.into_iter().enumerate() {
-                    let (_, src_tag, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
-                    if src_tag < 0 || edge.is_tombstone_edge() {
+                    let (_, edge) = self.edges.read_overflow_log_entry(leaf, entry_idx);
+                    if edge.is_tombstone_edge() {
                         continue;
                     }
                     let slot_index = bucket
@@ -918,8 +918,7 @@ mod tests {
             .edges()
             .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
         let entry_idx = chain[log_ordinal as usize];
-        let (_, src_tag, edge) = graph.edges().read_overflow_log_entry(leaf, entry_idx);
-        assert!(src_tag >= 0);
+        let (_, edge) = graph.edges().read_overflow_log_entry(leaf, entry_idx);
         assert!(edge.is_deleted_slot());
     }
 
