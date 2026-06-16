@@ -2,7 +2,7 @@
 
 use super::{IndexStore, pack_edge_identity, pack_posting_vertex};
 use crate::edge_key::EdgePostingKey;
-use crate::facade::stable::{INDEX_EDGE_POSTINGS, INDEX_POSTINGS};
+use crate::facade::stable::{INDEX_EDGE_POSTINGS, INDEX_VERTEX_POSTINGS};
 use crate::key::PostingKey;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
@@ -61,7 +61,7 @@ fn collect_vertex_arm(spec: &IndexEqualSpec) -> HashSet<u64> {
     let lo = PostingKey::prefix_lower(spec.property_id, &spec.value);
     let hi = PostingKey::prefix_upper(spec.property_id, &spec.value);
     let mut set = HashSet::new();
-    INDEX_POSTINGS.with_borrow(|postings| {
+    INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
         for key in postings.range(lo..=hi) {
             set.insert(pack_posting_vertex(key.shard_id, key.vertex_id));
         }

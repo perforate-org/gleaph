@@ -12,8 +12,8 @@ thread_local! {
     pub(crate) static INDEX_SHARD_CANISTER_CATALOG: RefCell<memory::ShardCanisterCatalog> =
         RefCell::new(memory::init_index_shard_canister_catalog());
 
-    pub(crate) static INDEX_POSTINGS: RefCell<memory::StableIndexPostingSet> =
-        RefCell::new(memory::init_index_postings());
+    pub(crate) static INDEX_VERTEX_POSTINGS: RefCell<memory::StableIndexVertexPostingSet> =
+        RefCell::new(memory::init_index_vertex_postings());
 
     pub(crate) static INDEX_LABEL_POSTINGS: RefCell<memory::StableIndexLabelPostingSet> =
         RefCell::new(memory::init_index_label_postings());

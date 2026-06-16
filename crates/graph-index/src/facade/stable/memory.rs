@@ -16,14 +16,14 @@ pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 const INDEX_ROUTER: MemoryId = MemoryId::new(0);
 const INDEX_SHARD_CANISTER_BY_SHARD: MemoryId = MemoryId::new(1);
 const INDEX_SHARD_BY_CANISTER: MemoryId = MemoryId::new(2);
-const INDEX_POSTINGS: MemoryId = MemoryId::new(3);
+const INDEX_VERTEX_POSTINGS: MemoryId = MemoryId::new(3);
 const INDEX_LABEL_POSTINGS: MemoryId = MemoryId::new(4);
 const INDEX_EDGE_POSTINGS: MemoryId = MemoryId::new(5);
 
 pub(crate) type StableIndexRouterCell = Cell<Principal, Memory>;
 pub(crate) type StableIndexShardCanisterByShardMap = BTreeMap<ShardId, Principal, Memory>;
 pub(crate) type StableIndexShardByCanisterMap = BTreeMap<Principal, ShardId, Memory>;
-pub(crate) type StableIndexPostingSet = BTreeSet<PostingKey, Memory>;
+pub(crate) type StableIndexVertexPostingSet = BTreeSet<PostingKey, Memory>;
 pub(crate) type StableIndexLabelPostingSet = BTreeSet<LabelPostingKey, Memory>;
 pub(crate) type StableIndexEdgePostingSet = BTreeSet<EdgePostingKey, Memory>;
 
@@ -121,8 +121,8 @@ pub(crate) fn init_index_shard_canister_catalog() -> ShardCanisterCatalog {
     ShardCanisterCatalog::init()
 }
 
-pub(crate) fn init_index_postings() -> StableIndexPostingSet {
-    BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_POSTINGS)))
+pub(crate) fn init_index_vertex_postings() -> StableIndexVertexPostingSet {
+    BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_VERTEX_POSTINGS)))
 }
 
 pub(crate) fn init_index_label_postings() -> StableIndexLabelPostingSet {

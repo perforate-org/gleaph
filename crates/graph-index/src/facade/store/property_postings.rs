@@ -1,7 +1,7 @@
 //! Property equality postings: shard-canister writes and posting-local reads.
 
 use super::{IndexStore, pack_posting_vertex};
-use crate::facade::stable::{INDEX_LABEL_POSTINGS, INDEX_POSTINGS};
+use crate::facade::stable::{INDEX_LABEL_POSTINGS, INDEX_VERTEX_POSTINGS};
 use crate::key::PostingKey;
 use crate::label_key::LabelPostingKey;
 use crate::posting_range::{posting_key_half_open_range, property_posting_bucket};
@@ -26,7 +26,7 @@ impl IndexStore {
             shard_id,
             vertex_id,
         };
-        INDEX_POSTINGS.with_borrow_mut(|postings| {
+        INDEX_VERTEX_POSTINGS.with_borrow_mut(|postings| {
             postings.insert(key);
         });
         Ok(())
@@ -47,7 +47,7 @@ impl IndexStore {
             shard_id,
             vertex_id,
         };
-        INDEX_POSTINGS.with_borrow_mut(|postings| {
+        INDEX_VERTEX_POSTINGS.with_borrow_mut(|postings| {
             postings.remove(&key);
         });
         Ok(())
@@ -78,7 +78,7 @@ impl IndexStore {
     pub fn lookup_equal(&self, property_id: u32, value: &[u8]) -> Vec<PostingHit> {
         let lo = PostingKey::prefix_lower(property_id, value);
         let hi = PostingKey::prefix_upper(property_id, value);
-        INDEX_POSTINGS.with_borrow(|postings| {
+        INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
             postings
                 .range(lo..=hi)
                 .map(|k| PostingHit {
@@ -117,7 +117,7 @@ impl IndexStore {
             }
         };
 
-        INDEX_POSTINGS.with_borrow(|postings| {
+        INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
             for key in postings.range(low..high) {
                 if let Some(filter) = vertex_filter {
                     let packed = pack_posting_vertex(key.shard_id, key.vertex_id);
@@ -178,7 +178,7 @@ impl IndexStore {
             }
         };
 
-        INDEX_POSTINGS.with_borrow(|postings| {
+        INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
             INDEX_LABEL_POSTINGS.with_borrow(|labels| {
                 for key in postings.range(low..high) {
                     if !labels.contains(&LabelPostingKey {
@@ -225,7 +225,7 @@ impl IndexStore {
         if low >= high {
             return Vec::new();
         }
-        INDEX_POSTINGS.with_borrow(|postings| {
+        INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
             postings
                 .range(low..high)
                 .map(|k| PostingHit {

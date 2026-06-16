@@ -61,7 +61,7 @@ pub enum StableMemoryClass {
     /// - LARA reverse orientation (`REV_*` adjacency and payloads) — co-updated on DML, no public
     ///   scan-rebuild API
     /// - `EDGE_ALIASES` — sync rebuild API on graph shard
-    /// - `INDEX_POSTINGS`, `INDEX_LABEL_POSTINGS` — graph-index projections; backfill from graph
+    /// - `INDEX_VERTEX_POSTINGS`, `INDEX_LABEL_POSTINGS` — graph-index projections; backfill from graph
     ///
     /// **Merge policy (ADR 0007):** Do not merge with canonical neighbor regions without benchmark
     /// proof and a layout ADR.
@@ -839,7 +839,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             None,
         ),
         region(
-            "INDEX_POSTINGS",
+            "INDEX_VERTEX_POSTINGS",
             3,
             StableMemoryClass::Derived,
             "property postings",

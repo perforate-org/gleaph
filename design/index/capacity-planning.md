@@ -46,7 +46,7 @@ Leave **≥ 100 GiB** below 500 GiB for B-tree internal nodes, `MemoryManager` b
 
 | MemoryId | Symbol | Scales with | Class |
 |--------|--------|-------------|-------|
-| 2 | `INDEX_POSTINGS` | Indexed **vertex** property assignments | derived |
+| 3 | `INDEX_VERTEX_POSTINGS` | Indexed **vertex** property assignments | derived |
 | 4 | `INDEX_LABEL_POSTINGS` | **Label memberships** (all labeled vertices) | derived |
 | 5 | `INDEX_EDGE_POSTINGS` | Indexed **edge** property assignments | derived |
 | 0–1, 3 | admins, shard owners, router | O(shards) | canonical |
@@ -334,7 +334,7 @@ Label postings (`13` B fixed) do not carry value bytes; this optimization does *
 
 ### Status
 
-**Planned** — no change to current `INDEX_POSTINGS` / `INDEX_EDGE_POSTINGS` layout yet. Tables
+**Planned** — no change to current `INDEX_VERTEX_POSTINGS` / `INDEX_EDGE_POSTINGS` layout yet. Tables
 A–D in this document assume **flat keys** until an ADR lands and layout version bumps ([ADR
 0007](../adr/0007-stable-memory-layout.md)). Rebuild path: derived backfill from graph canonical
 properties (same as today).

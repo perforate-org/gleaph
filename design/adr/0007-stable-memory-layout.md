@@ -50,7 +50,7 @@ bench results.
 | **Policy gap** | No ADR states when to keep vs merge `VirtualMemory` regions after Phase 0–7 |
 | **Layout knowledge** | `MemoryId` constants live in three `memory.rs` files; inventory is prose, not a typed registry |
 | **Consolidation pressure** | Many small regions suggest grouping, but hot-path cost of region count is unmeasured |
-| **Inventory drift** | `INDEX_POSTINGS` rebuild row in inventory understates `backfill_property_postings` coverage |
+| **Inventory drift** | `INDEX_VERTEX_POSTINGS` rebuild row in inventory understates `backfill_property_postings` coverage |
 
 ### Prerequisites (met)
 
@@ -267,7 +267,7 @@ Any patch that changes `MemoryId` assignment or merges regions must:
 ## Implementation order
 
 1. ~~**Accept this ADR**~~ — layout policy and baseline frozen at §2. **Done (2026-06-12).**
-2. **Fix inventory drift** — `INDEX_POSTINGS` rebuild row; link this ADR from inventory.
+2. **Fix inventory drift** — `INDEX_VERTEX_POSTINGS` rebuild row; link this ADR from inventory.
 3. ~~**Add layout registry**~~ — descriptive only; no id changes. **Done (2026-06-12).**
 4. ~~**Run §6 benchmarks**~~ — **Done (2026-06-12)**; grouped-catalog prototype **not pursued** (P2 retain final).
 5. ~~**Optional consolidation patches**~~ — **N/A** per §8b; Phase 8 closed 2026-06-15.
