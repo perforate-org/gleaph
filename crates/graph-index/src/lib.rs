@@ -3,11 +3,10 @@
 //! Owns global postings `(property_id, value, shard_id, vertex_id)`. Shard/canister attachments are
 //! configured by the router via `admin_attach_shard_canister`.
 //!
-//! ## Read API visibility
+//! ## API visibility
 //!
-//! Public read APIs are guarded for federation control-plane callers:
-//! - Router-only for global scans/lookups.
-//! - Router or owning graph shard for shard-scoped label exports.
+//! Read APIs are router-only (`guard_router_canister`). Posting sync updates are enforced at
+//! handler entry for the owning graph shard (`guard_shard_canister`). Admin APIs are router-only.
 //!
 //! `lookup_range` uses the same lexicographic order on encoded value bytes as `lookup_equal` (`memcmp`).
 
@@ -49,7 +48,7 @@ fn init(args: IndexInitArgs) {
     canister::init(args);
 }
 
-#[update]
+#[update(guard = "guard_router_canister")]
 fn admin_attach_shard_canister(
     shard_id: ShardId,
     shard_canister_principal: Principal,
@@ -57,7 +56,7 @@ fn admin_attach_shard_canister(
     canister::admin_attach_shard_canister(shard_id, shard_canister_principal)
 }
 
-#[update]
+#[update(guard = "guard_router_canister")]
 fn admin_detach_shard_canister(shard_id: ShardId) -> Result<(), String> {
     canister::admin_detach_shard_canister(shard_id)
 }
@@ -139,12 +138,12 @@ fn lookup_label(vertex_label_id: u32) -> Vec<PostingHit> {
     canister::lookup_label(vertex_label_id)
 }
 
-#[query]
+#[query(guard = "guard_router_canister")]
 fn lookup_label_for_shard(vertex_label_id: u32, shard_id: ShardId) -> Vec<PostingHit> {
     canister::lookup_label_for_shard(vertex_label_id, shard_id)
 }
 
-#[query]
+#[query(guard = "guard_router_canister")]
 fn lookup_label_page(req: LabelLookupPageRequest) -> LabelLookupPageResult {
     canister::lookup_label_page(req)
 }

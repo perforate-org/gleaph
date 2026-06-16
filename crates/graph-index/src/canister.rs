@@ -1,7 +1,7 @@
 //! Canister request handlers for `gleaph-graph-index`.
 
 use crate::facade::{DEFAULT_COUNT_POSTINGS_MAX_GROUPS, IndexStore};
-use crate::guards::guard_router_or_shard_canister;
+use crate::guards::guard_shard_canister;
 use crate::init::IndexInitArgs;
 use crate::state::IndexError;
 use candid::Principal;
@@ -34,7 +34,18 @@ pub(crate) fn admin_detach_shard_canister(shard_id: ShardId) -> Result<(), Strin
         .map_err(|e| e.to_string())
 }
 
+fn trap_guard_err(e: String) {
+    ic_cdk::trap(&e);
+}
+
+fn guard_shard_canister_or_trap(shard_id: gleaph_graph_kernel::federation::ShardId) {
+    if let Err(e) = guard_shard_canister(shard_id) {
+        trap_guard_err(e);
+    }
+}
+
 pub(crate) fn posting_insert(shard_id: ShardId, property_id: u32, value: Vec<u8>, vertex_id: u32) {
+    guard_shard_canister_or_trap(shard_id);
     let caller = msg_caller();
     if let Err(e) =
         IndexStore::new().posting_insert(caller, shard_id, property_id, value, vertex_id)
@@ -44,6 +55,7 @@ pub(crate) fn posting_insert(shard_id: ShardId, property_id: u32, value: Vec<u8>
 }
 
 pub(crate) fn posting_remove(shard_id: ShardId, property_id: u32, value: Vec<u8>, vertex_id: u32) {
+    guard_shard_canister_or_trap(shard_id);
     let caller = msg_caller();
     if let Err(e) =
         IndexStore::new().posting_remove(caller, shard_id, property_id, value, vertex_id)
@@ -60,6 +72,7 @@ pub(crate) fn edge_posting_insert(
     owner_vertex_id: u32,
     slot_index: u32,
 ) {
+    guard_shard_canister_or_trap(shard_id);
     let caller = msg_caller();
     if let Err(e) = IndexStore::new().edge_posting_insert(
         caller,
@@ -82,6 +95,7 @@ pub(crate) fn edge_posting_remove(
     owner_vertex_id: u32,
     slot_index: u32,
 ) {
+    guard_shard_canister_or_trap(shard_id);
     let caller = msg_caller();
     if let Err(e) = IndexStore::new().edge_posting_remove(
         caller,
@@ -97,6 +111,7 @@ pub(crate) fn edge_posting_remove(
 }
 
 pub(crate) fn label_posting_insert(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32) {
+    guard_shard_canister_or_trap(shard_id);
     let caller = msg_caller();
     if let Err(e) =
         IndexStore::new().label_posting_insert(caller, shard_id, vertex_label_id, vertex_id)
@@ -106,6 +121,7 @@ pub(crate) fn label_posting_insert(shard_id: ShardId, vertex_label_id: u32, vert
 }
 
 pub(crate) fn label_posting_remove(shard_id: ShardId, vertex_label_id: u32, vertex_id: u32) {
+    guard_shard_canister_or_trap(shard_id);
     let caller = msg_caller();
     if let Err(e) =
         IndexStore::new().label_posting_remove(caller, shard_id, vertex_label_id, vertex_id)
@@ -122,18 +138,12 @@ pub(crate) fn lookup_label_for_shard(
     vertex_label_id: u32,
     shard_id: gleaph_graph_kernel::federation::ShardId,
 ) -> Vec<PostingHit> {
-    if let Err(e) = guard_router_or_shard_canister(shard_id) {
-        ic_cdk::trap(&e);
-    }
     IndexStore::new().lookup_label_for_shard(vertex_label_id, shard_id)
 }
 
 pub(crate) fn lookup_label_page(
     req: gleaph_graph_kernel::index::LabelLookupPageRequest,
 ) -> gleaph_graph_kernel::index::LabelLookupPageResult {
-    if let Err(e) = guard_router_or_shard_canister(req.shard_id) {
-        ic_cdk::trap(&e);
-    }
     IndexStore::new().lookup_label_page(&req)
 }
 

@@ -25,34 +25,33 @@ pub fn guard_router_canister() -> Result<(), String> {
     }
 }
 
-/// Read access for shard-scoped endpoints: router or the shard's owning graph canister.
+/// Native unit tests call handlers directly without canister caller context.
 #[cfg(not(target_family = "wasm"))]
-pub fn guard_router_or_shard_canister(_shard_id: ShardId) -> Result<(), String> {
+pub fn guard_shard_canister(_shard_id: ShardId) -> Result<(), String> {
     Ok(())
 }
 
-/// Read access for shard-scoped endpoints: router or the shard's owning graph canister.
+/// Posting sync updates: owning graph shard canister for `shard_id` only.
 #[cfg(target_family = "wasm")]
-pub fn guard_router_or_shard_canister(shard_id: ShardId) -> Result<(), String> {
-    use crate::facade::stable::{INDEX_ROUTER, INDEX_SHARD_CANISTER_CATALOG};
+pub fn guard_shard_canister(shard_id: ShardId) -> Result<(), String> {
+    use crate::facade::stable::INDEX_SHARD_CANISTER_CATALOG;
     use ic_cdk::api::msg_caller;
 
     let caller = msg_caller();
-    let router = INDEX_ROUTER.with_borrow(|cell| *cell.get());
-    if caller == router {
-        return Ok(());
-    }
-    let caller_shard =
-        INDEX_SHARD_CANISTER_CATALOG.with_borrow(|catalog| catalog.shard_for_canister(caller));
-    match caller_shard {
-        Some(s) if s == shard_id => Ok(()),
-        Some(s) => Err(format!(
-            "caller {caller} is attached to shard {} (requested shard {})",
-            s.raw(),
+    let registered =
+        INDEX_SHARD_CANISTER_CATALOG.with_borrow(|catalog| catalog.shard_canister(shard_id));
+    let Some(reg) = registered else {
+        return Err(format!(
+            "shard {} is not attached to any graph canister",
             shard_id.raw()
-        )),
-        None => Err(format!(
-            "caller {caller} is not router {router} and is not attached to any shard canister"
-        )),
+        ));
+    };
+    if caller == reg {
+        Ok(())
+    } else {
+        Err(format!(
+            "caller {caller} is not the graph canister {reg} attached to shard {}",
+            shard_id.raw()
+        ))
     }
 }
