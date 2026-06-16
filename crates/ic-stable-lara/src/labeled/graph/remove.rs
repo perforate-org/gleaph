@@ -776,7 +776,20 @@ where
 mod tests {
     use super::super::test_support::*;
     use super::super::*;
-    use crate::VertexId;
+    use crate::{
+        VertexId,
+        traits::{CsrEdge, CsrEdgeTombstone},
+    };
+
+    #[test]
+    fn tombstone_bit_edges_satisfy_csr_liveness_contract() {
+        let tombstone = FlagTombstoneEdge::tombstone_edge();
+        assert!(tombstone.is_tombstone_edge());
+        assert!(
+            tombstone.is_deleted_slot(),
+            "storage read paths with only a CsrEdge bound rely on is_deleted_slot"
+        );
+    }
 
     #[test]
     fn remove_edge_at_slot_uses_edge_tombstone_contract() {

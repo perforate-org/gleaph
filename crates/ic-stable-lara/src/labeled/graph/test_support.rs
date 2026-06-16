@@ -85,6 +85,10 @@ impl CsrEdge for FlagTombstoneEdge {
             raw: (self.raw & Self::TOMBSTONE_BIT) | u32::from(vid),
         }
     }
+
+    fn is_deleted_slot(&self) -> bool {
+        self.raw & Self::TOMBSTONE_BIT != 0
+    }
 }
 
 impl CsrEdgeTombstone for FlagTombstoneEdge {

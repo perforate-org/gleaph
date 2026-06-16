@@ -1389,19 +1389,20 @@ where
             return Ok(());
         }
 
-        if let Some(replay) = replay {
-            if replay.is_active() && bucket.overflow_log_head() >= 0 && replay.label_id == label_id
-            {
-                #[cfg(all(feature = "canbench", target_family = "wasm"))]
-                let _bench_scope = bench_scope("labeled_read_hybrid_replay_out_edge_slots");
-                return self.read_out_edge_slots_with_hybrid_replay(
-                    &bucket,
-                    label_id,
-                    &visit_order,
-                    replay,
-                    &mut visit,
-                );
-            }
+        if let Some(replay) = replay
+            && replay.is_active()
+            && bucket.overflow_log_head() >= 0
+            && replay.label_id == label_id
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _bench_scope = bench_scope("labeled_read_hybrid_replay_out_edge_slots");
+            return self.read_out_edge_slots_with_hybrid_replay(
+                &bucket,
+                label_id,
+                &visit_order,
+                replay,
+                &mut visit,
+            );
         }
 
         #[cfg(all(feature = "canbench", target_family = "wasm"))]

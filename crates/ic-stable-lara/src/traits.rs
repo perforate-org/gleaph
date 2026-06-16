@@ -154,6 +154,10 @@ pub trait CsrEdge: Clone {
     }
 
     /// Returns `true` when this slot holds a logical delete marker.
+    ///
+    /// This is the canonical liveness predicate used by storage read paths, including
+    /// paths that only require [`CsrEdge`]. Edge layouts that encode tombstones outside
+    /// [`Self::neighbor_vid`] must override this method.
     #[inline]
     fn is_deleted_slot(&self) -> bool {
         self.neighbor_vid().is_edge_tombstone_sentinel()
@@ -186,8 +190,10 @@ pub trait CsrEdge: Clone {
 
 /// Edge records that support **logical slab deletion** without swap-remove.
 ///
-/// New compact edge layouts generally encode this as a tombstone bit in the slot payload. Older
-/// test edges may still use [`VertexId::EDGE_TOMBSTONE_SENTINEL`] as their sentinel.
+/// New compact edge layouts generally encode this as a tombstone bit in the slot payload. Those
+/// layouts must also override [`CsrEdge::is_deleted_slot`] so read paths with only a [`CsrEdge`]
+/// bound preserve the same liveness contract. Older test edges may still use
+/// [`VertexId::EDGE_TOMBSTONE_SENTINEL`] as their sentinel.
 pub trait CsrEdgeTombstone: CsrEdge {
     /// Encoded edge payload for a tombstoned slab slot (must satisfy [`Self::is_tombstone_edge`]).
     fn tombstone_edge() -> Self;

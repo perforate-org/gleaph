@@ -50,6 +50,6 @@ Last revised: YYYY-MM-DD
 | [0013](0013-gql-graph-type-catalog-on-router.md) | Mount `gleaph-graph-catalog` on router; `GraphId`-keyed schema bindings; GQL catalog DDL; planner schema bridge | accepted |
 | [0014](0014-graph-type-id-catalog-on-router.md) | Graph type name ↔ `GraphTypeId` catalog on router; migrate `type_map` and `TypeRef` off string keys (0013 follow-up) | accepted |
 | [0015](0015-label-stats-projection-log.md) | Label stats projection log and graph mutation journal | proposed |
-| [0016](0016-overflow-log-tombstones-and-src-fields.md) | Overflow log tombstones and `src` field layout review | proposed |
+| [0016](0016-overflow-log-tombstones-and-src-fields.md) | Overflow log tombstones and `src` field layout review | accepted |
 
 When adding an ADR, link it from the relevant design doc and update this table.
