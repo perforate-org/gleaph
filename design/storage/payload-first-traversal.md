@@ -194,16 +194,16 @@ Options for later:
 | M3 | Facade wrappers + predicate expand switched | **Implemented** — dense + overflow use phase 1+2; sparse keeps combined batch in executor |
 | M4 | Equality-index expand uses phase 2 only | **Implemented** — forward (`PointingRight`); reverse/undirected keep full-scan fallback |
 | M5 | Weighted shortest: prepared decoder on relax hot path | **Implemented** — `PreparedWeightDecoder::decode`; optional zip refactor deferred |
-| M6 | Sparse payload-first | **Implemented (LARA)** — overflow `visit_out_payload_value_batches`; edge-free hybrid slab prefix; cached payload log chains |
+| M6 | Sparse payload-first | **Implemented (LARA)** — overflow `visit_out_payload_value_batches`; hybrid slab prefix reads edge rows for tombstone gating; cached payload log chains |
 | M6a | Executor probe removal | **Implemented** — dense-eligibility pre-check before phase 1 |
-| M6b | Edge-free hybrid slab + chain cache | **Implemented** — slab prefix skips edge slab IO; `read_payload_log_chain_entry`; phase-2 overflow chain cache |
-| M6c | Executor overflow routing | **Implemented** — edge-free phase-1 tag walk; `HybridOverflowEdgeReplay` caches log table + slot→log_idx for phase 2 (avoids chain rebuild + stable re-read). Naive routing regressed +23% on `expand_payload_skewed_2k`; replay fix **−32%** vs baseline (2026-06-15 canbench) |
+| M6b | Hybrid tombstone gating + chain cache | **Implemented** — slab prefix filters edge tombstones before emitting payload slots; `read_payload_log_chain_entry`; phase-2 overflow chain cache |
+| M6c | Executor overflow routing | **Implemented** — phase 1 reuses hybrid overflow replay (`log_table`, `slot→log_idx`, slab delete set) for phase 2 (avoids chain rebuild + stable re-read). Naive routing regressed +23% on `expand_payload_skewed_2k`; replay fix **−32%** vs baseline (2026-06-15 canbench) |
 
 **Backward compatibility:** combined `LabeledEdgePayloadBatch` API remains; dense buckets use single-pass bulk read. Phase 1+2 APIs are for selective slot reads (predicate/index expand). Sparse-only paths unchanged in the executor.
 
 ### M6c insight: why naive overflow routing regressed
 
-Overflow predicate expand must scan **all** payload bytes to filter (low match rate does not skip payload IO). Combined batch decodes each live edge once while attaching payload. Naive payload-first avoided edge decode in phase 1 but **phase 2 re-built the overflow log chain and re-read stable memory per match slot**, duplicating work. Caching phase-1 replay (`log_table`, `slot_to_log_idx`, slab delete set) makes phase 2 decode only the **m** matching edges from the cached table.
+Overflow predicate expand must scan **all** payload bytes to filter (low match rate does not skip payload IO). Combined batch decodes each live edge once while attaching payload. Naive payload-first moved topology work to phase 2, but **phase 2 re-built the overflow log chain and re-read stable memory per match slot**, duplicating work. Caching phase-1 replay (`log_table`, `slot_to_log_idx`, slab delete set) makes phase 2 decode only the **m** matching edges from the cached table. The hybrid slab prefix still reads edge rows when needed to keep tombstoned slab payloads out of phase 1.
 
 ## Benchmark expectations
 
