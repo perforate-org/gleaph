@@ -5,7 +5,9 @@
 
 use crate::bench as helper;
 use crate::labeled::{
-    BucketLabelKey, DeferredLabeledLaraGraph, LabeledVertex, graph::LabeledLaraGraph,
+    BucketLabelKey, DeferredLabeledLaraGraph, LabeledPayloadValueBatchScratch, LabeledVertex,
+    OutEdgeOrder,
+    graph::{LabeledLaraGraph, VertexEdgeSpanCompactOneStep},
 };
 use crate::{
     VertexId,
@@ -46,7 +48,136 @@ impl CsrEdgeTombstone for BenchEdge {
     }
 }
 
+/// Labeled edge with inline payload bytes for payload-log / tombstone benches.
+#[derive(Clone, Debug, PartialEq, Eq)]
+struct PayloadBenchEdge {
+    target: u32,
+    slot_index: u32,
+    payload: [u8; 8],
+    payload_len: u16,
+}
+
+impl PayloadBenchEdge {
+    fn with_payload(target: u32, payload_len: u16, bytes: &[u8]) -> Self {
+        let len = u16::try_from(bytes.len()).expect("bench payload fits u16");
+        debug_assert_eq!(len, payload_len);
+        let mut payload = [0u8; 8];
+        payload[..bytes.len()].copy_from_slice(bytes);
+        Self {
+            target,
+            slot_index: 0,
+            payload,
+            payload_len,
+        }
+    }
+}
+
+impl CsrEdge for PayloadBenchEdge {
+    const BYTES: usize = 4;
+
+    fn read_from(bytes: &[u8]) -> Self {
+        Self {
+            target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
+            slot_index: 0,
+            payload: [0u8; 8],
+            payload_len: 0,
+        }
+    }
+
+    fn write_to(&self, bytes: &mut [u8]) {
+        bytes[0..4].copy_from_slice(&self.target.to_le_bytes());
+    }
+
+    fn neighbor_vid(&self) -> VertexId {
+        VertexId::from(self.target)
+    }
+
+    fn with_neighbor_vid(&self, vid: VertexId) -> Self {
+        Self {
+            target: u32::from(vid),
+            ..self.clone()
+        }
+    }
+
+    fn with_slot_index(self, slot_index: u32) -> Self {
+        Self { slot_index, ..self }
+    }
+
+    fn edge_slot_index_raw(&self) -> u32 {
+        self.slot_index
+    }
+
+    fn edge_payload_byte_width(&self) -> u16 {
+        self.payload_len
+    }
+
+    fn edge_payload_bytes(&self) -> &[u8] {
+        &self.payload[..usize::from(self.payload_len)]
+    }
+
+    fn with_stored_payload_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
+        let len = usize::from(width).min(bytes.len()).min(8);
+        self.payload = [0u8; 8];
+        self.payload[..len].copy_from_slice(&bytes[..len]);
+        self.payload_len = u16::try_from(len).expect("bench payload width fits u16");
+        self
+    }
+}
+
+impl CsrEdgeTombstone for PayloadBenchEdge {
+    fn tombstone_edge() -> Self {
+        Self {
+            target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
+            slot_index: 0,
+            payload: [0u8; 8],
+            payload_len: 0,
+        }
+    }
+}
+
 fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorMemory> {
+    let (
+        vertices,
+        buckets,
+        bucket_free_spans,
+        bucket_free_span_by_start,
+        edge_counts,
+        edges,
+        edge_log,
+        edge_span_meta,
+        edge_free_spans,
+        edge_free_span_by_start,
+        payload_slab,
+        value_free_spans,
+        value_free_span_by_start,
+        payload_log,
+        value_blob,
+    ) = labeled_lara_memories();
+    LabeledLaraGraph::new(
+        vertices,
+        buckets,
+        bucket_free_spans,
+        bucket_free_span_by_start,
+        edge_counts,
+        edges,
+        edge_log,
+        edge_span_meta,
+        edge_free_spans,
+        edge_free_span_by_start,
+        payload_slab,
+        value_free_spans,
+        value_free_span_by_start,
+        payload_log,
+        value_blob,
+        elem_capacity,
+        BucketLabelKey::from_raw(1),
+    )
+    .expect("graph")
+}
+
+fn payload_bench_graph(
+    elem_capacity: u64,
+) -> LabeledLaraGraph<PayloadBenchEdge, crate::VectorMemory> {
     let (
         vertices,
         buckets,
@@ -98,6 +229,54 @@ fn deferred_bench_graph(
 const CONVERGING_HUB_PREFIX_EDGES: u32 = 48;
 const CONVERGING_HUB_OUT_EDGES: u32 = 24;
 const CONVERGING_HUB_EXPAND_CALLS: u32 = 51;
+
+/// Same-label overflow hub used by ADR 0016 payload-log and tombstone benches.
+const OVERFLOW_LOG_HUB_EDGES: u32 = 48;
+const PAYLOAD_LOG_INLINE_WIDTH: u16 = 8;
+
+fn seed_overflow_payload_hub(
+    graph: &LabeledLaraGraph<PayloadBenchEdge, crate::VectorMemory>,
+    edge_count: u32,
+    payload_width: u16,
+) -> (VertexId, BucketLabelKey) {
+    graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    let vid = VertexId::from(0);
+    let label = BucketLabelKey::from_raw(2);
+    graph
+        .ensure_label_bucket_payload_byte_width(vid, label, payload_width)
+        .expect("payload width");
+    for target in 1..=edge_count {
+        let mut payload = [0u8; 8];
+        let width = usize::from(payload_width);
+        payload[..width].copy_from_slice(&(target as u64).to_le_bytes()[..width]);
+        graph
+            .insert_edge_skip_leaf_cascade(
+                vid,
+                label,
+                PayloadBenchEdge::with_payload(target, payload_width, &payload),
+            )
+            .expect("insert");
+    }
+    (vid, label)
+}
+
+fn compact_vertex_edge_span_until_overflow_or_done<E: CsrEdge + CsrEdgeTombstone>(
+    graph: &LabeledLaraGraph<E, crate::VectorMemory>,
+    vid: VertexId,
+) {
+    let mut resume = 0u32;
+    loop {
+        match graph
+            .compact_vertex_edge_span_one_step(vid, resume)
+            .expect("compact step")
+        {
+            VertexEdgeSpanCompactOneStep::EdgeMoved(_) => {}
+            VertexEdgeSpanCompactOneStep::AdvanceBucket(next) => resume = next,
+            VertexEdgeSpanCompactOneStep::OverflowRewrite(_)
+            | VertexEdgeSpanCompactOneStep::Finished => break,
+        }
+    }
+}
 
 /// Mirrors `build_mixed_label_hub` in `graph/test_support.rs` for canbench fixtures.
 fn seed_mixed_label_hub(
@@ -468,5 +647,83 @@ fn bench_labeled_deferred_maintenance_compact_vertex_span_1() -> canbench_rs::Be
         });
         black_box(report.rebalanced_segments);
         black_box(graph.maintenance_queue_len());
+    })
+}
+
+/// ADR 0016: payload attach over hybrid slab + 8 B inline payload overflow log.
+#[bench(raw)]
+fn bench_labeled_payload_log_scan_8b_inline_overflow() -> canbench_rs::BenchResult {
+    let graph = payload_bench_graph(1 << 20);
+    let (vid, label) =
+        seed_overflow_payload_hub(&graph, OVERFLOW_LOG_HUB_EDGES, PAYLOAD_LOG_INLINE_WIDTH);
+    let mut scratch = LabeledPayloadValueBatchScratch::default();
+    bench_fn(|| {
+        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
+            let mut byte_count = 0usize;
+            graph
+                .visit_out_payload_value_batches_for_label(
+                    vid,
+                    label,
+                    OutEdgeOrder::Descending,
+                    &mut scratch,
+                    |batch| {
+                        byte_count = byte_count.saturating_add(batch.values.len());
+                    },
+                )
+                .expect("payload batches");
+            black_box(byte_count);
+        }
+    })
+}
+
+/// ADR 0016: scan after log-backed tombstone deletes without chain rewiring.
+#[bench(raw)]
+fn bench_labeled_tombstone_log_delete_then_scan() -> canbench_rs::BenchResult {
+    let graph = payload_bench_graph(1 << 20);
+    let (vid, label) = seed_overflow_payload_hub(&graph, OVERFLOW_LOG_HUB_EDGES, 2);
+    for target in (1..=OVERFLOW_LOG_HUB_EDGES).step_by(2) {
+        graph
+            .remove_edge_matching(vid, label, |edge| edge.target == target)
+            .expect("remove")
+            .expect("removed");
+    }
+    bench_fn(|| {
+        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
+            let mut count = 0usize;
+            graph
+                .for_each_edges_for_label(vid, label, |edge| {
+                    count += usize::from(edge.payload_len > 0);
+                })
+                .expect("for_each");
+            black_box(count);
+        }
+    })
+}
+
+/// ADR 0016: foreground log deletes plus incremental span compaction on an overflow edge hub.
+#[bench(raw)]
+fn bench_labeled_tombstone_log_rewrite_maintenance() -> canbench_rs::BenchResult {
+    bench_fn(|| {
+        let graph = bench_graph(1 << 20);
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+        let vid = VertexId::from(0);
+        let label = BucketLabelKey::from_raw(2);
+        for target in 1..=OVERFLOW_LOG_HUB_EDGES {
+            graph
+                .insert_edge_skip_leaf_cascade(vid, label, BenchEdge(target))
+                .expect("insert");
+        }
+        for target in 1..=OVERFLOW_LOG_HUB_EDGES / 2 {
+            graph
+                .remove_edge_matching(vid, label, |edge| edge.0 == target)
+                .expect("remove")
+                .expect("removed");
+        }
+        compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
+        let mut count = 0usize;
+        graph
+            .for_each_edges_for_label(vid, label, |_| count += 1)
+            .expect("for_each");
+        black_box(count);
     })
 }

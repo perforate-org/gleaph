@@ -755,6 +755,9 @@ fn setup_expand_single_label_hub(store: &GraphStore, hub_out: u32, edge_label: &
 const PAYLOAD_SKEW_EDGE_LABEL: &str = "BenchPayloadSkewRoad";
 const PAYLOAD_SKEW_MATCH_WEIGHT: u16 = 7;
 const PAYLOAD_SKEW_NOISE_WEIGHT: u16 = 1;
+/// Minimum same-label edge count that forces hybrid slab + overflow log on one hub (see ADR 0016).
+const PAYLOAD_FIRST_LOG_OVERFLOW_NOISE: u32 = 48;
+const PAYLOAD_FIRST_LOG_MATCH_OUT: u32 = 24;
 
 /// Single-label hub with skewed payload values; expand filters by edge payload equality.
 fn setup_expand_payload_skewed_graph_scaled(store: &GraphStore, noise: u32, match_out: u32) {
@@ -1610,6 +1613,16 @@ fn bench_graph_expand_payload_skewed_2k_a_100b() -> canbench_rs::BenchResult {
         EXPAND_SKEW_NOISE_M,
         EXPAND_HUB_OUT_M,
         "expand_payload_skewed_2k_a_100b",
+    )
+}
+
+/// ADR 0016 / M6: 48 noise + 24 payload matches on one overflow-log hub; payload-first selective expand.
+#[bench(raw)]
+fn bench_graph_payload_first_log_backed_selective_match() -> canbench_rs::BenchResult {
+    bench_expand_payload_skewed(
+        PAYLOAD_FIRST_LOG_OVERFLOW_NOISE,
+        PAYLOAD_FIRST_LOG_MATCH_OUT,
+        "payload_first_log_backed_selective_match",
     )
 }
 

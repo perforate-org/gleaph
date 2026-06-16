@@ -248,16 +248,19 @@ Existing candidate benches:
 - `bench_labeled_for_each_edges_for_label_48_x51`
 - payload-first benches listed in `design/storage/payload-first-traversal.md`
 
-Likely new focused benches:
+Likely new focused benches (added 2026-06-16):
 
-- `bench_labeled_payload_log_scan_8b_inline_overflow`
-- `bench_labeled_payload_first_log_backed_selective_match`
-- `bench_labeled_tombstone_log_delete_then_scan`
-- `bench_labeled_tombstone_log_rewrite_maintenance`
+- `bench_labeled_payload_log_scan_8b_inline_overflow` — **implemented**
+- `bench_labeled_payload_first_log_backed_selective_match` — **implemented** (`graph`: `bench_graph_payload_first_log_backed_selective_match`)
+- `bench_labeled_tombstone_log_delete_then_scan` — **implemented**
+- `bench_labeled_tombstone_log_rewrite_maintenance` — **implemented**
 
 Benchmark acceptance should compare against the current implementation and must not disable
 tombstone handling, payload blob cleanup, alias maintenance, or derived-state updates unless the
 benchmark explicitly says it is measuring a lower-level isolated primitive.
+
+**Status (2026-06-16):** focused benches below are implemented and baselined via canbench.
+Edge log `src` removal remains gated on reviewing these results.
 
 ## Alternatives Considered
 

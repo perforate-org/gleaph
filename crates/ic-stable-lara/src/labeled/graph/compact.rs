@@ -18,6 +18,8 @@ use ic_stable_structures::Memory;
 use super::error::LabeledOperationError;
 use super::{DEFAULT_SEGMENT_SIZE, EdgeSlotMove, LabeledLaraGraph, VertexEdgeSpanCompactOneStep};
 
+#[cfg(feature = "canbench")]
+use canbench_rs::bench_scope;
 use std::cell::Cell;
 #[cfg(test)]
 use std::sync::atomic::{AtomicU32, Ordering};
