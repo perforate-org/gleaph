@@ -89,8 +89,9 @@ thread_local! {
     pub(crate) static ROUTER_LABEL_BACKFILL_STATE: RefCell<memory::StableLabelBackfillStateMap> =
         RefCell::new(memory::init_label_backfill_state());
 
-    pub(crate) static ROUTER_PROPERTY_BACKFILL_STATE: RefCell<memory::StablePropertyBackfillStateMap> =
-        RefCell::new(memory::init_property_backfill_state());
+    pub(crate) static ROUTER_VERTEX_PROPERTY_BACKFILL_STATE: RefCell<
+        memory::StableVertexPropertyBackfillStateMap,
+    > = RefCell::new(memory::init_vertex_property_backfill_state());
 
     pub(crate) static ROUTER_EDGE_BACKFILL_STATE: RefCell<memory::StableEdgeBackfillStateMap> =
         RefCell::new(memory::init_edge_backfill_state());

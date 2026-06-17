@@ -50,7 +50,7 @@ bench results.
 | **Policy gap** | No ADR states when to keep vs merge `VirtualMemory` regions after Phase 0–7 |
 | **Layout knowledge** | `MemoryId` constants live in three `memory.rs` files; inventory is prose, not a typed registry |
 | **Consolidation pressure** | Many small regions suggest grouping, but hot-path cost of region count is unmeasured |
-| **Inventory drift** | `INDEX_VERTEX_POSTINGS` rebuild row in inventory understates `backfill_property_postings` coverage |
+| **Inventory drift** | `INDEX_VERTEX_POSTINGS` rebuild row in inventory understates `backfill_vertex_property_postings` coverage |
 
 ### Prerequisites (met)
 

@@ -339,14 +339,15 @@ pub async fn backfill_label_postings(
     crate::index::label_backfill::backfill_label_postings(&store, &index, args).await
 }
 
-pub async fn backfill_property_postings(
+pub async fn backfill_vertex_property_postings(
     args: gleaph_graph_kernel::federation::PostingBackfillArgs,
 ) -> Result<gleaph_graph_kernel::federation::PostingBackfillResult, String> {
     let store = GraphStore::new();
     let Some(index) = wasm_index_client_holder() else {
         return Err("federation not configured".into());
     };
-    crate::index::property_backfill::backfill_property_postings(&store, &index, args).await
+    crate::index::vertex_property_backfill::backfill_vertex_property_postings(&store, &index, args)
+        .await
 }
 
 pub fn register_indexed_property(

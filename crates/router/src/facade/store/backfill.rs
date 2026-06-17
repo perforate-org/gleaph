@@ -12,13 +12,14 @@ use super::super::stable::graph_catalog::lookup_graph_id;
 
 use super::super::stable::ROUTER_EDGE_BACKFILL_STATE;
 use super::super::stable::ROUTER_LABEL_BACKFILL_STATE;
-use super::super::stable::ROUTER_PROPERTY_BACKFILL_STATE;
+use super::super::stable::ROUTER_VERTEX_PROPERTY_BACKFILL_STATE;
 use super::RouterStore;
 use crate::state::RouterError;
 use crate::types::{
     AdminEdgeBackfillStepArgs, AdminEdgeBackfillStepResult, AdminLabelBackfillStepArgs,
-    AdminLabelBackfillStepResult, AdminPropertyBackfillStepArgs, AdminPropertyBackfillStepResult,
-    EdgeBackfillShardStatus, LabelBackfillShardStatus, PropertyBackfillShardStatus,
+    AdminLabelBackfillStepResult, AdminVertexPropertyBackfillStepArgs,
+    AdminVertexPropertyBackfillStepResult, EdgeBackfillShardStatus, LabelBackfillShardStatus,
+    VertexPropertyBackfillShardStatus,
 };
 
 impl RouterStore {
@@ -108,12 +109,12 @@ impl RouterStore {
         });
     }
 
-    pub(crate) async fn admin_property_backfill_step<F, Fut>(
+    pub(crate) async fn admin_vertex_property_backfill_step<F, Fut>(
         &self,
         caller: Principal,
-        args: AdminPropertyBackfillStepArgs,
+        args: AdminVertexPropertyBackfillStepArgs,
         call_backfill: F,
-    ) -> Result<AdminPropertyBackfillStepResult, RouterError>
+    ) -> Result<AdminVertexPropertyBackfillStepResult, RouterError>
     where
         F: FnOnce(Principal, PostingBackfillArgs) -> Fut,
         Fut: Future<Output = Result<PostingBackfillResult, String>>,
@@ -128,9 +129,9 @@ impl RouterStore {
         }
 
         let shard = self.resolve_shard_for_backfill(&args.logical_graph_name, args.shard_id)?;
-        let mut cursor = self.load_property_backfill_state(args.shard_id);
+        let mut cursor = self.load_vertex_property_backfill_state(args.shard_id);
         if cursor.done {
-            return Ok(AdminPropertyBackfillStepResult {
+            return Ok(AdminVertexPropertyBackfillStepResult {
                 shard_id: args.shard_id,
                 next_vertex_id: cursor.next_vertex_id,
                 vertices_processed: 0,
@@ -149,9 +150,9 @@ impl RouterStore {
         .await
         .map_err(RouterError::Internal)?;
         cursor.apply_batch_progress(result.next_vertex_id, result.done);
-        self.store_property_backfill_state(args.shard_id, cursor);
+        self.store_vertex_property_backfill_state(args.shard_id, cursor);
 
-        Ok(AdminPropertyBackfillStepResult {
+        Ok(AdminVertexPropertyBackfillStepResult {
             shard_id: args.shard_id,
             next_vertex_id: result.next_vertex_id,
             vertices_processed: result.vertices_processed,
@@ -160,20 +161,20 @@ impl RouterStore {
         })
     }
 
-    pub(crate) fn admin_list_property_backfill_status(
+    pub(crate) fn admin_list_vertex_property_backfill_status(
         &self,
         caller: Principal,
         logical_graph_name: &str,
-    ) -> Result<Vec<PropertyBackfillShardStatus>, RouterError> {
+    ) -> Result<Vec<VertexPropertyBackfillShardStatus>, RouterError> {
         if !self.is_controller(caller) {
             return Err(RouterError::NotAuthorized);
         }
         let shards = self.list_shards_for_graph(logical_graph_name)?;
-        let mut out: Vec<PropertyBackfillShardStatus> = shards
+        let mut out: Vec<VertexPropertyBackfillShardStatus> = shards
             .into_iter()
             .map(|shard| {
-                let cursor = self.load_property_backfill_state(shard.shard_id);
-                PropertyBackfillShardStatus {
+                let cursor = self.load_vertex_property_backfill_state(shard.shard_id);
+                VertexPropertyBackfillShardStatus {
                     shard_id: shard.shard_id,
                     next_vertex_id: cursor.next_vertex_id,
                     done: cursor.done,
@@ -184,12 +185,13 @@ impl RouterStore {
         Ok(out)
     }
 
-    fn load_property_backfill_state(&self, shard_id: ShardId) -> BackfillShardState {
-        ROUTER_PROPERTY_BACKFILL_STATE.with_borrow(|state| state.get(&shard_id).unwrap_or_default())
+    fn load_vertex_property_backfill_state(&self, shard_id: ShardId) -> BackfillShardState {
+        ROUTER_VERTEX_PROPERTY_BACKFILL_STATE
+            .with_borrow(|state| state.get(&shard_id).unwrap_or_default())
     }
 
-    fn store_property_backfill_state(&self, shard_id: ShardId, cursor: BackfillShardState) {
-        ROUTER_PROPERTY_BACKFILL_STATE.with_borrow_mut(|map| {
+    fn store_vertex_property_backfill_state(&self, shard_id: ShardId, cursor: BackfillShardState) {
+        ROUTER_VERTEX_PROPERTY_BACKFILL_STATE.with_borrow_mut(|map| {
             map.insert(shard_id, cursor);
         });
     }
@@ -483,7 +485,7 @@ mod tests {
     }
 
     #[test]
-    fn admin_property_backfill_step_advances_cursor() {
+    fn admin_vertex_property_backfill_step_advances_cursor() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
@@ -503,9 +505,9 @@ mod tests {
         ))
         .expect("register shard");
 
-        let result = futures::executor::block_on(store.admin_property_backfill_step(
+        let result = futures::executor::block_on(store.admin_vertex_property_backfill_step(
             admin,
-            AdminPropertyBackfillStepArgs {
+            AdminVertexPropertyBackfillStepArgs {
                 logical_graph_name: "tenant.main".into(),
                 shard_id: ShardId::new(0),
                 max_vertices: 32,
@@ -527,7 +529,7 @@ mod tests {
         assert!(!result.done);
 
         let status = store
-            .admin_list_property_backfill_status(admin, "tenant.main")
+            .admin_list_vertex_property_backfill_status(admin, "tenant.main")
             .expect("status");
         assert_eq!(status.len(), 1);
         assert_eq!(status[0].next_vertex_id, 32);

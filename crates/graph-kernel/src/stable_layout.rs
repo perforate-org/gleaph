@@ -696,11 +696,11 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             None,
         ),
         region(
-            "ROUTER_PROPERTY_BACKFILL_STATE",
+            "ROUTER_VERTEX_PROPERTY_BACKFILL_STATE",
             20,
             StableMemoryClass::Maintenance,
-            "property backfill",
-            "Per-shard cursor for property posting backfill admin",
+            "vertex property backfill",
+            "Per-shard cursor for vertex property posting backfill admin",
             None,
         ),
         region(
@@ -852,7 +852,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "property postings",
             "Global property equality/range posting set",
-            Some("backfill_property_postings"),
+            Some("backfill_vertex_property_postings"),
         ),
         region(
             "INDEX_VERTEX_LABEL_POSTINGS",

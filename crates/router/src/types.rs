@@ -52,18 +52,18 @@ pub struct LabelBackfillShardStatus {
     pub done: bool,
 }
 
-/// One router-orchestrated batch of property posting backfill on a graph shard.
+/// One router-orchestrated batch of vertex property posting backfill on a graph shard.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
-pub struct AdminPropertyBackfillStepArgs {
+pub struct AdminVertexPropertyBackfillStepArgs {
     pub logical_graph_name: String,
     pub shard_id: ShardId,
     /// Maximum local vertices to scan on the shard in this step (must be > 0).
     pub max_vertices: u32,
 }
 
-/// Progress from one router property backfill step.
+/// Progress from one router vertex property backfill step.
 #[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct AdminPropertyBackfillStepResult {
+pub struct AdminVertexPropertyBackfillStepResult {
     pub shard_id: ShardId,
     pub next_vertex_id: LocalVertexId,
     pub vertices_processed: u32,
@@ -71,9 +71,9 @@ pub struct AdminPropertyBackfillStepResult {
     pub done: bool,
 }
 
-/// Router-stable cursor for property posting backfill on one shard.
+/// Router-stable cursor for vertex property posting backfill on one shard.
 #[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PropertyBackfillShardStatus {
+pub struct VertexPropertyBackfillShardStatus {
     pub shard_id: ShardId,
     pub next_vertex_id: LocalVertexId,
     pub done: bool,

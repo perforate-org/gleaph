@@ -10,7 +10,7 @@ use std::borrow::Cow;
 const LOCAL_VERTEX_ID_MASK: u32 = (1 << 30) - 1;
 const DONE_BIT: u32 = 1 << 30;
 
-/// Router-stable progress cursor for one shard posting backfill (label or property).
+/// Router-stable progress cursor for one shard posting backfill (label or vertex property).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct BackfillShardState {
     pub next_vertex_id: LocalVertexId,

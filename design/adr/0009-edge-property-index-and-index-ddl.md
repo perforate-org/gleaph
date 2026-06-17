@@ -118,7 +118,7 @@ that logical graph and entity kind.
 secondary indexes; fixes
 today’s divergence between maintenance (all indexable values) and planning (stats subset).
 
-**Backfill:** Extend router `admin_property_backfill_step` / graph `backfill_property_postings` to
+**Backfill:** Extend router `admin_vertex_property_backfill_step` / graph `backfill_vertex_property_postings` to
 **registered vertex properties only**; add `admin_edge_property_backfill_step` (or unified step) for
 registered edge properties replaying from `EDGE_PROPERTIES`.
 

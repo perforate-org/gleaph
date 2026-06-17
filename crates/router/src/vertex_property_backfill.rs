@@ -1,0 +1,33 @@
+//! Router-orchestrated vertex property posting backfill across graph shards.
+
+use std::future::Future;
+
+use candid::Principal;
+use gleaph_graph_kernel::federation::{PostingBackfillArgs, PostingBackfillResult};
+
+use crate::facade::store::RouterStore;
+use crate::state::RouterError;
+use crate::types::{AdminVertexPropertyBackfillStepArgs, AdminVertexPropertyBackfillStepResult};
+
+pub(crate) async fn admin_vertex_property_backfill_step<F, Fut>(
+    store: &RouterStore,
+    caller: Principal,
+    args: AdminVertexPropertyBackfillStepArgs,
+    call_backfill: F,
+) -> Result<AdminVertexPropertyBackfillStepResult, RouterError>
+where
+    F: FnOnce(Principal, PostingBackfillArgs) -> Fut,
+    Fut: Future<Output = Result<PostingBackfillResult, String>>,
+{
+    store
+        .admin_vertex_property_backfill_step(caller, args, call_backfill)
+        .await
+}
+
+pub(crate) fn admin_list_vertex_property_backfill_status(
+    store: &RouterStore,
+    caller: Principal,
+    logical_graph_name: &str,
+) -> Result<Vec<crate::types::VertexPropertyBackfillShardStatus>, RouterError> {
+    store.admin_list_vertex_property_backfill_status(caller, logical_graph_name)
+}

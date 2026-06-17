@@ -59,7 +59,7 @@ This is a deployment misconfiguration, not a supported degraded mode.
 
 ### Backfill in progress
 
-`backfill_label_postings` / `backfill_property_postings` replay historical canonical state into
+`backfill_label_postings` / `backfill_vertex_property_postings` replay historical canonical state into
 graph-index. Router `admin_*_backfill_step` advances per-shard cursors (`BackfillShardState`).
 
 **Query behavior:** Vertices before the cursor may be missing from the index. DML after deployment

@@ -129,11 +129,11 @@ full scan path is used.
 
 On DML / property updates, graph enqueues posting changes when federation routing and an index client are configured. Without client, mutations may drop index updates (`index/pending.rs`) — deployments with property indexes must wire the index canister.
 
-**Backfill:** `backfill_property_postings` on graph shards replays indexable vertex properties from
+**Backfill:** `backfill_vertex_property_postings` on graph shards replays indexable vertex properties from
 `VERTEX_PROPERTIES` into graph-index via `posting_insert` (router-guarded update, same cursor batching
 model as `backfill_label_postings`). Unindexable values are skipped (see `property_indexability` in
 `crates/graph/src/property/`). Router orchestrates per-shard cursors via
-`admin_property_backfill_step` / `admin_list_property_backfill_status` (controller-only).
+`admin_vertex_property_backfill_step` / `admin_list_vertex_property_backfill_status` (controller-only).
 
 ## Derived-state lag
 

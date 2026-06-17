@@ -132,11 +132,11 @@ pub async fn backfill_label_postings(
     call_graph_result(graph, "backfill_label_postings", args).await
 }
 
-pub async fn backfill_property_postings(
+pub async fn backfill_vertex_property_postings(
     graph: Principal,
     args: PostingBackfillArgs,
 ) -> Result<PostingBackfillResult, String> {
-    call_graph_result(graph, "backfill_property_postings", args).await
+    call_graph_result(graph, "backfill_vertex_property_postings", args).await
 }
 
 pub async fn register_indexed_property(

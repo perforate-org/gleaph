@@ -9,7 +9,7 @@ pub mod label_pending;
 pub mod lookup;
 pub mod pending;
 pub mod placement;
-pub mod property_backfill;
 pub mod registry;
 pub mod router;
 mod router_call;
+pub mod vertex_property_backfill;

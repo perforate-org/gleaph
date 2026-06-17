@@ -8,11 +8,11 @@ use crate::state::RouterError;
 use crate::types::{
     AdminEdgeBackfillStepArgs, AdminEdgeBackfillStepResult, AdminLabelBackfillStepArgs,
     AdminLabelBackfillStepResult, AdminLabelStatsProjectionStepArgs,
-    AdminLabelStatsProjectionStepResult, AdminPropertyBackfillStepArgs,
-    AdminPropertyBackfillStepResult, AdminRegisterShardArgs, CommitVertexPlacementArgs,
-    EdgeBackfillShardStatus, EdgeLabelId, GlobalVertexId, GrantRoleArgs, GraphRegistryEntry,
-    LabelBackfillShardStatus, PropertyBackfillShardStatus, PropertyId, ReleaseVertexPlacementArgs,
-    ShardId, ShardRegistryEntry, VertexLabelId, VertexPlacement,
+    AdminLabelStatsProjectionStepResult, AdminRegisterShardArgs,
+    AdminVertexPropertyBackfillStepArgs, AdminVertexPropertyBackfillStepResult,
+    CommitVertexPlacementArgs, EdgeBackfillShardStatus, EdgeLabelId, GlobalVertexId, GrantRoleArgs,
+    GraphRegistryEntry, LabelBackfillShardStatus, PropertyId, ReleaseVertexPlacementArgs, ShardId,
+    ShardRegistryEntry, VertexLabelId, VertexPlacement, VertexPropertyBackfillShardStatus,
 };
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
@@ -155,22 +155,22 @@ pub(crate) fn admin_list_label_backfill_status(
     )
 }
 
-pub(crate) async fn admin_property_backfill_step(
-    args: AdminPropertyBackfillStepArgs,
-) -> Result<AdminPropertyBackfillStepResult, RouterError> {
-    crate::property_backfill::admin_property_backfill_step(
+pub(crate) async fn admin_vertex_property_backfill_step(
+    args: AdminVertexPropertyBackfillStepArgs,
+) -> Result<AdminVertexPropertyBackfillStepResult, RouterError> {
+    crate::vertex_property_backfill::admin_vertex_property_backfill_step(
         &RouterStore::new(),
         msg_caller(),
         args,
-        crate::graph_client::backfill_property_postings,
+        crate::graph_client::backfill_vertex_property_postings,
     )
     .await
 }
 
-pub(crate) fn admin_list_property_backfill_status(
+pub(crate) fn admin_list_vertex_property_backfill_status(
     logical_graph_name: String,
-) -> Result<Vec<PropertyBackfillShardStatus>, RouterError> {
-    crate::property_backfill::admin_list_property_backfill_status(
+) -> Result<Vec<VertexPropertyBackfillShardStatus>, RouterError> {
+    crate::vertex_property_backfill::admin_list_vertex_property_backfill_status(
         &RouterStore::new(),
         msg_caller(),
         &logical_graph_name,

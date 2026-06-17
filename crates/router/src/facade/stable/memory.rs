@@ -47,7 +47,7 @@ const ROUTER_MUTATION_COUNTER: MemoryId = MemoryId::new(16);
 const ROUTER_LABEL_STATS_PROJECTION: MemoryId = MemoryId::new(17);
 const ROUTER_MUTATION_BY_CLIENT_KEY: MemoryId = MemoryId::new(18);
 const ROUTER_LABEL_BACKFILL_STATE: MemoryId = MemoryId::new(19);
-const ROUTER_PROPERTY_BACKFILL_STATE: MemoryId = MemoryId::new(20);
+const ROUTER_VERTEX_PROPERTY_BACKFILL_STATE: MemoryId = MemoryId::new(20);
 const ROUTER_EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(21);
 const ROUTER_NAMED_INDEXES: MemoryId = MemoryId::new(22);
 const ROUTER_INDEXED_PROPERTY_SET: MemoryId = MemoryId::new(23);
@@ -132,7 +132,8 @@ pub(crate) type StableMutationByClientKey = BTreeMap<
     Memory,
 >;
 pub(crate) type StableLabelBackfillStateMap = BTreeMap<ShardId, BackfillShardState, Memory>;
-pub(crate) type StablePropertyBackfillStateMap = BTreeMap<ShardId, BackfillShardState, Memory>;
+pub(crate) type StableVertexPropertyBackfillStateMap =
+    BTreeMap<ShardId, BackfillShardState, Memory>;
 pub(crate) type StableEdgeBackfillStateMap = BTreeMap<ShardId, EdgeBackfillShardState, Memory>;
 pub(crate) type StableMutationCounter = Cell<u64, Memory>;
 pub(crate) type StableAuthState = AuthState<Memory>;
@@ -228,8 +229,8 @@ pub(crate) fn init_label_backfill_state() -> StableLabelBackfillStateMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_LABEL_BACKFILL_STATE)))
 }
 
-pub(crate) fn init_property_backfill_state() -> StablePropertyBackfillStateMap {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BACKFILL_STATE)))
+pub(crate) fn init_vertex_property_backfill_state() -> StableVertexPropertyBackfillStateMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VERTEX_PROPERTY_BACKFILL_STATE)))
 }
 
 pub(crate) fn init_edge_backfill_state() -> StableEdgeBackfillStateMap {

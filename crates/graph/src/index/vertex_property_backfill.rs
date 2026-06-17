@@ -1,4 +1,4 @@
-//! Cursor-based backfill of property index postings from shard-local vertex properties.
+//! Cursor-based backfill of vertex property index postings from shard-local vertex properties.
 
 use crate::facade::GraphStore;
 use crate::index::lookup::PropertyIndexLookup;
@@ -6,7 +6,7 @@ use crate::property::sortable_index_key;
 use gleaph_graph_kernel::federation::{PostingBackfillArgs, PostingBackfillResult};
 use ic_stable_lara::VertexId;
 
-pub async fn backfill_property_postings(
+pub async fn backfill_vertex_property_postings(
     store: &GraphStore,
     index: &dyn PropertyIndexLookup,
     args: PostingBackfillArgs,
@@ -180,7 +180,7 @@ mod tests {
             .set_vertex_property(vid, score, Value::Int64(99))
             .expect("score");
 
-        let result = pollster::block_on(backfill_property_postings(
+        let result = pollster::block_on(backfill_vertex_property_postings(
             &store,
             &index,
             PostingBackfillArgs {
@@ -213,7 +213,7 @@ mod tests {
             .set_vertex_property(vid, pid, Value::Float64(f64::NAN))
             .expect("nan property");
 
-        let result = pollster::block_on(backfill_property_postings(
+        let result = pollster::block_on(backfill_vertex_property_postings(
             &store,
             &index,
             PostingBackfillArgs {
