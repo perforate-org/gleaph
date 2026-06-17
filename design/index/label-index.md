@@ -1,7 +1,8 @@
 # Label index
 
-Last updated: 2026-06-10  
-Implementation verified as of: 2026-06-10 (label index through router backfill orchestration and paginated multi-label seeds)
+Last updated: 2026-06-17  
+Anchor timestamp: 2026-06-17 02:55:17 UTC +0000  
+Implementation verified as of: 2026-06-17 (postings, read paths A–D, label stats projection path B, backfill orchestration)
 
 ## Status
 
@@ -18,14 +19,14 @@ Vertex **label membership** on graph-index: `contains(label, shard, vertex)` and
 Most labeled queries should **not** bulk-export membership. Use:
 
 - **Property index + label sieve** when properties participate.
-- **Label telemetry** when only counts are needed.
+- **Label stats projection** when only counts are needed.
 - **Paginated `lookup_label_page`** when a **vertex list** is required.
 
 ## Non-goals
 
 - Edge label postings.
 - Bulk `lookup_label` as the default for large labels on every query shape.
-- Replacing label telemetry for count-only queries.
+- Replacing label stats projection for count-only queries.
 
 ## Posting model
 
@@ -53,13 +54,17 @@ acceptable when vertex ids are required; unseeded graph scans are worse.
 
 **Not for:** `COUNT(*)` without vertices; `GROUP BY` indexed property (use C).
 
-### B — Label telemetry — Implemented (router)
+### B — Label stats projection — Implemented (router)
 
 | Source | When |
 |--------|------|
-| `vertex_label_shard_live_count`, `vertex_label_stats` | `MATCH (n:L) RETURN count(*)` and other **count-only** shapes |
+| `vertex_label_stats` (`live_count`), `vertex_label_shard_live_count` | `MATCH (n:L) RETURN count(*)` and other **count-only** shapes |
 
-Updated from graph `LabelUsageDelta` on DML. No graph-index call.
+Graph shards append `LabelStatsDelta` events to `LABEL_STATS_DELTA_LOG` on DML. Router applies
+them via `advance_label_stats_projection` into `ROUTER_VERTEX_LABEL_STATS` and per-shard live
+maps (`ROUTER_VERTEX_LABEL_LIVE_BY_SHARD`); `ROUTER_LABEL_STATS_PROJECTION` tracks each shard's
+`applied_through_seq`. No graph-index call. See [ADR 0015](../adr/0015-label-stats-projection-log.md)
+and the write-path **Label stats projection** section below.
 
 ### C — Property path + label sieve — Implemented
 
@@ -203,8 +208,9 @@ intersection — a different pattern, documented in [lookup-intersection.md](loo
 ## Derived-state lag
 
 Posting export and compound seeds follow label **postings**; count-only paths follow router
-**telemetry**. Lag scenarios and operator expectations:
-[derived-state-query-semantics.md](derived-state-query-semantics.md).
+**label stats projection** (path **B**). Lag scenarios, DML vs read asymmetry, and operator
+expectations: [derived-state-query-semantics.md](derived-state-query-semantics.md) (label stats
+projection lag).
 
 ## Capacity
 
@@ -214,5 +220,6 @@ Label postings scale **linearly with labeled vertices** (one key per membership)
 
 - [derived-state-query-semantics.md](derived-state-query-semantics.md)
 - [ADR 0004](../adr/0004-label-index.md)
+- [ADR 0015](../adr/0015-label-stats-projection-log.md)
 - [property-index.md](property-index.md)
 - [../adr/0003-federated-aggregate-merge.md](../adr/0003-federated-aggregate-merge.md)

@@ -1,11 +1,11 @@
 # Derived-state query semantics
 
-Last updated: 2026-06-11  
-Anchor timestamp: 2026-06-11 23:23:04 UTC +0000
+Last updated: 2026-06-17  
+Anchor timestamp: 2026-06-17 02:53:19 UTC +0000
 
 ## Status
 
-**Implemented** — documents current query behavior when derived indexes, telemetry, or maintenance
+**Implemented** — documents current query behavior when derived indexes, label stats projection, or maintenance
 state may lag canonical graph data. Complements [stable-memory-inventory.md](../storage/stable-memory-inventory.md).
 
 ## Purpose
@@ -35,7 +35,7 @@ not paper over sync gaps with graph-side tombstone filtering at the index layer.
 | Edge aliases | **Sync** on edge insert/delete | None (bug if mismatched) | Wrong reverse/undirected expand; use `check_edge_aliases` / `rebuild_edge_aliases` |
 | Property postings (graph-index) | DML enqueue + `pending` flush | Pending queue before flush; flush retry; historical **backfill** in progress | **Under-posted:** equality/range/seed miss live vertices. **Over-posted:** extra hits until remove syncs. No silent drop at read time |
 | Label postings (graph-index) | DML enqueue + `label_pending` flush | Same as property postings | **Under-posted:** label sieve / export / intersection miss. **Over-posted:** extra hits until remove syncs |
-| Router label telemetry | Graph outbox event apply | Unacked outbox events; router down before replay | **Count-only** paths (`COUNT(*)`, stats) under/over-count. Vertex-list paths use label **postings**, not telemetry |
+| Router label stats projection | Graph `LABEL_STATS_DELTA_LOG` replay via `advance_label_stats_projection` ([ADR 0015](../adr/0015-label-stats-projection-log.md)) | Unacked deltas in graph log; router down before drain; gap in delta log | **Count-only** fast path may **under-count** (reads aggregates without cursor check). **DML** fails if projection cannot reach `emitted_delta_last_seq`. Vertex-list paths use label **postings**, not projection aggregates |
 | Graph CSR vertex rows (tombstone bit) | Graph DML | Tombstone on delete; no slot reuse | Live vertex = row in range and not tombstoned |
 | Index property/label postings | Graph DML → index sync | Backfill from graph | Stale posting = DML/index sync bug |
 
@@ -69,12 +69,57 @@ historical completeness.
 
 ### Label stats projection lag
 
-`admin_label_stats_projection_step` drains graph `LABEL_STATS_DELTA_LOG` into router aggregates
-via `advance_label_stats_projection`. Per-shard `ROUTER_LABEL_STATS_PROJECTION` cursors must
-advance contiguously; a gap in the delta log fails the step until the graph catches up.
+Router label stats are an event-sourced projection ([ADR 0015](../adr/0015-label-stats-projection-log.md)).
+Graph shards append `LabelStatsDelta` events to `LABEL_STATS_DELTA_LOG`; router aggregates land in
+`ROUTER_VERTEX_LABEL_STATS`, `ROUTER_EDGE_LABEL_STATS`, and per-shard live maps
+(`ROUTER_*_LABEL_LIVE_BY_SHARD`). `ROUTER_LABEL_STATS_PROJECTION` records each shard's
+`applied_through_seq` — the durable idempotency boundary for ordered replay. All apply paths go
+through `advance_label_stats_projection`; there is no full historical rebuild from vertex label scans.
 
-**Query behavior:** Count-only labeled queries may under-count until projection catches up. Label
-membership export and property+label compound seeds use **postings**, not router label stats.
+**DML vs read asymmetry (operational):**
+
+| Path | Projection contract | Observable when lagging |
+|------|---------------------|-------------------------|
+| Federated **DML** | After each shard execute, advance through `emitted_delta_last_seq` from the graph mutation journal | Mutation **fails** with `label stats projection lag for shard …` if deltas cannot be drained inline |
+| **Read-only** `MATCH (n:L) RETURN count(*)` (path **B**) | Fast path reads `ROUTER_VERTEX_LABEL_STATS.live_count` directly | Query **succeeds** with a potentially stale **under-count**; no cursor check at read time |
+| Vertex list / compound seeds (paths **A**, **C**, **D**) | graph-index label **postings** | Unaffected by projection lag unless postings are separately stale |
+
+Normal DML therefore blocks new writes when projection cannot catch up; ad-hoc count queries do not
+surface lag as an error. Operators who need count correctness after router downtime must drain
+pending deltas before trusting count-only results.
+
+**Advance invariants:**
+
+- Per-shard cursor advances only over a **contiguous prefix** of `LABEL_STATS_DELTA_LOG`.
+- A gap in the log fails advance with `label stats projection gap`; cursor and aggregates stay at
+  the last good prefix until the graph supplies the missing seq.
+- `admin_label_stats_projection_step` (Admin-only) loops `advance_label_stats_projection` with
+  `max_deltas` per call; repeat until `done` when `deltas_applied < max_deltas`.
+- Mutation retry uses the graph mutation journal (`emitted_delta_first_seq` /
+  `emitted_delta_last_seq`) and `reconcile_router_mutation_projection` for shards that completed
+  execution but did not yet record `projection_advanced`.
+
+**Query shapes affected by lag:**
+
+| Shape | Source | Lag symptom |
+|-------|--------|-------------|
+| `MATCH (n:L) RETURN count(*)` (no `GROUP BY` property) | Router projection aggregates | Under-count |
+| `MATCH (n:L) GROUP BY n.p` / property filter + label | graph-index postings + label sieve | Not projection lag (see posting lag) |
+| `MATCH (n:L) RETURN n` | graph-index label postings | Not projection lag |
+| Edge label counts (if exposed) | Router edge projection aggregates | Same under-count pattern as vertex |
+
+**Remediation checklist:**
+
+1. Per affected shard: call `admin_label_stats_projection_step` in a loop until `done`.
+2. If advance fails with **gap**, inspect graph `LABEL_STATS_DELTA_LOG` for the missing seq before
+   retrying — do not expect aggregates to self-heal past a hole.
+3. If deltas were acked and dropped while cursor lags, replay depends on graph retention policy;
+   there is no router-side full rescan fallback.
+4. After canister upgrade, projection cursors survive on router and the delta log survives on graph
+   shards; drain before count SLA checks.
+
+See also [label-index.md](label-index.md) path **B** and
+[stable-memory-inventory.md](../storage/stable-memory-inventory.md) (router regions 25–29).
 
 ### Upgrade / ephemeral loss
 
@@ -89,7 +134,9 @@ count completeness is required.
 |---------|--------------|-------------|
 | Index miss for known property value | Unindexable value, pending not flushed, or backfill incomplete | Check `property_indexability`; flush pending; run property backfill |
 | Extra index hit for deleted vertex | Remove posting not synced | Flush/retry pending; verify DML index path |
-| `COUNT(*)` wrong for label | Projection lag | `admin_label_stats_projection_step` per shard |
+| `COUNT(*)` under-counts for label after router restart | Projection lag on read path (DML would have failed instead) | Drain `admin_label_stats_projection_step` per shard until `done`; verify cursor vs log head |
+| DML fails with `label stats projection lag` | Inline advance could not reach journal `emitted_delta_last_seq` | Drain projection for that shard; retry mutation |
+| DML fails with `label stats projection gap` | Missing seq in graph delta log | Fix graph log continuity before advancing cursor |
 | Expand equality wrong | graph-index edge posting lag or unregistered property | `backfill_edge_property_postings`; verify index registry |
 | Reverse expand wrong | Edge alias drift | `check_edge_aliases`; `rebuild_edge_aliases` |
 
@@ -98,6 +145,7 @@ count completeness is required.
 - [stable-memory-inventory.md](../storage/stable-memory-inventory.md)
 - [property-index.md](property-index.md)
 - [label-index.md](label-index.md)
+- [../adr/0015-label-stats-projection-log.md](../adr/0015-label-stats-projection-log.md)
 - [../sharding/standalone-mode.md](../sharding/standalone-mode.md)
 - [../federation/query-semantics.md](../federation/query-semantics.md)
 - [../architecture/refactoring-roadmap.md](../architecture/refactoring-roadmap.md)
