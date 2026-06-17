@@ -16,9 +16,6 @@ pub(crate) mod scoped_name_catalog;
 
 thread_local! {
     // --- auth ---
-    pub(crate) static ROUTER_CONTROLLERS: RefCell<memory::StableControllerSet> =
-        RefCell::new(memory::init_controllers());
-
     pub(crate) static ROUTER_AUTH_STATE: RefCell<memory::StableAuthState> =
         RefCell::new(memory::init_auth_state());
 

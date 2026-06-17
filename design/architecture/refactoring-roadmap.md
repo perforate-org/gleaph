@@ -266,12 +266,12 @@ Goal: make multi-store invariants explicit while preserving the existing stable 
 
 **Status: Complete (2026-06-10).**
 
-**Progress:** All three facades (`graph`, `router`, `graph-index`) use `facade/store.rs` + `facade/store/*.rs` domain modules (not `store/mod.rs`). Graph `GraphStore` domain commits cover adjacency, properties, labels, vertex delete, telemetry, edge profiles, local indexes, and sidecar coordination; mutation and federation call sites route through `commit_*` APIs. Router domains cover registry (including controllers), placement, catalogs (`commit_intern_*`), idempotency, telemetry (`commit_apply_label_delta`), and backfill. Graph-index domains cover authorization (`commit_register_shard_owner`), property postings (`commit_posting_*`), and label postings (`commit_label_posting_*`).
+**Progress:** All three facades (`graph`, `router`, `graph-index`) use `facade/store.rs` + `facade/store/*.rs` domain modules (not `store/mod.rs`). Graph `GraphStore` domain commits cover adjacency, properties, labels, vertex delete, telemetry, edge profiles, local indexes, and sidecar coordination; mutation and federation call sites route through `commit_*` APIs. Router domains cover registry, stable auth (`Role::Admin` for ops), catalogs (`commit_intern_*`), idempotency, telemetry (`commit_apply_label_delta`), and backfill. Graph-index domains cover router authorization (`INDEX_ROUTER`), property postings (`commit_posting_*`), and label postings (`commit_label_posting_*`).
 
 Deliverables:
 
 - Split graph facade behavior into storage domains: adjacency, properties, labels, edge profiles, local indexes, telemetry, and maintenance. **Done.**
-- Split router facade behavior into registry, placement, resolution catalogs, idempotency, telemetry, and backfill domains. **Done.**
+- Split router facade behavior into registry, auth, resolution catalogs, idempotency, telemetry, and backfill domains. **Done.**
 - Split graph-index behavior into property postings, label postings, shard ownership, and router authorization domains. **Done.**
 - Move repeated write sequences behind methods owned by the invariant owner. **Done** for graph/router/graph-index mutation paths; query planners still read derived indexes directly where read-only.
 

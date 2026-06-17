@@ -70,7 +70,7 @@ do not** — they appear as raw `String` in stable keys and in stored records:
 | Canister uniqueness map | `ROUTER_SHARD_BY_GRAPH` | `Principal → ShardId` (**not** logical graph name) |
 | Named index row key | `ROUTER_NAMED_INDEXES` | `NamedIndexKey { graph, index_name }` |
 | Index membership key | `ROUTER_INDEXED_PROPERTY_SET` | `IndexedPropertyKey { graph, … }` |
-| Prepared plan key | `ROUTER_PREPARED_PLANS` (stable, MemoryId 8) | **`PreparedPlanKey { graph_id, name }`** → **`PreparedPlanRecord::V1`** |
+| Prepared plan key | `ROUTER_PREPARED_PLANS` (stable, MemoryId 7) | **`PreparedPlanKey { graph_id, name }`** → **`PreparedPlanRecord::V1`** |
 | Idempotency key | `ROUTER_MUTATION_BY_CLIENT_KEY` | `ClientMutationKey.logical_graph_name` |
 | Label telemetry | mutation records | `logical_graph_name: String` |
 
@@ -261,7 +261,7 @@ composite name key:
 | Stable regions | `ROUTER_INDEX_NAME_BY_NAME` + `ROUTER_INDEX_NAME_BY_ID` (new pair; repack per ADR 0007) |
 | DDL | `CREATE INDEX person_age …` → `get_or_insert(graph_id, "person_age")` → `IndexNameId` |
 
-**Index metadata rows** ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md), regions 22–23)
+**Index metadata rows** ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md), regions 18–19)
 — **replace string keys entirely**:
 
 | Region | Current key | Target key |
@@ -294,7 +294,7 @@ interns at entry.
 | `ShardRegistryEntry` | `logical_graph_name: String` → **`graph_id: GraphId`** |
 | `list_shards_for_graph(name)` | Resolve name → `GraphId`; add **`ROUTER_SHARDS_BY_GRAPH_ID: GraphId → Vec<ShardId>`** (or equivalent index) — **distinct from** `ROUTER_SHARD_BY_GRAPH` (`Principal → ShardId`, unchanged) |
 | `ROUTER_NAMED_INDEXES` / `ROUTER_INDEXED_PROPERTY_SET` keys | §4 |
-| `ROUTER_PREPARED_PLANS` key / value | **`PreparedPlanKey { graph_id, name }`** → **`PreparedPlanRecord::V1(PreparedPlanRecordV1)`** (stable MemoryId 8) |
+| `ROUTER_PREPARED_PLANS` key / value | **`PreparedPlanKey { graph_id, name }`** → **`PreparedPlanRecord::V1(PreparedPlanRecordV1)`** (stable MemoryId 7) |
 | `ClientMutationKey` / label telemetry mutation records | `logical_graph_name: String` → **`graph_id: GraphId`** |
 | `graph_stats_for`, `create_index`, `drop_index`, index fan-out | Parameters **`GraphId`** (+ `IndexNameId` for named index ops) |
 | `graph-kernel::ShardRegistryEntry` wire/Candid | **`graph_id: GraphId`**; expose name via router lookup when needed |
@@ -321,7 +321,7 @@ flowchart TB
     GC["Graph BidirectionalCatalog<br/>GraphId"]
     INC["Index name BidirectionalCatalog<br/>IndexNameId per GraphId"]
     REG["ROUTER_GRAPHS / SHARDS<br/>keys: GraphId"]
-    IC["Index rows 22–23<br/>keys: GraphId + IndexNameId"]
+    IC["Index rows 18–19<br/>keys: GraphId + IndexNameId"]
     PL["Planner stats<br/>load_graph_stats(GraphId)"]
     D["Dispatch<br/>shards for GraphId"]
 
@@ -401,7 +401,7 @@ flowchart TB
 | **U2** | Multi-graph fan-out + router merge (nested peel, sequential/NEXT union, cross-graph join) | **Implemented** — prepared multi-graph still rejected |
 
 **Stable repack:** G1 + I1 share one ADR 0007 gate (new MemoryId pairs for graph + index name
-catalogs; rewrite regions 1–3, 22–23 as needed). Dev snapshot discard acceptable pre-production.
+catalogs; rewrite regions 1–3, 18–19 as needed). Dev snapshot discard acceptable pre-production.
 
 ---
 

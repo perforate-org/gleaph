@@ -49,7 +49,7 @@ does not vary among live slots in one bucket.
 `EdgePayloadProfile` pairs `byte_width: u16` with `EdgePayloadEncoding` (e.g. `RawI32`, `RawU16`, `F32`, `WeightLinearU16`). Legacy `EdgeWeightProfile` maps to weight encodings with 2-byte width.
 
 **Ownership (implemented):** logical schema (`EdgeLabelId → EdgePayloadProfile`) is **router SSOT**
-(`ROUTER_EDGE_PAYLOAD_PROFILES`, router MemoryId 21). Plan and mutation wire carry
+(`ROUTER_EDGE_PAYLOAD_PROFILES`, router MemoryId 20). Plan and mutation wire carry
 `payload_profile` on `ResolvedEdgeLabel` per [ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md).
 Graph shards resolve schema from execution context; graph stable `EDGE_PAYLOAD_PROFILES` is retired
 (facade MemoryIds 38–41 repacked to 37–40). Tests may inject profiles via `test_labels` or an

@@ -789,10 +789,9 @@ mod tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
-            controllers: vec![],
         });
         let admin = candid::Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         store
             .admin_intern_property(admin, property)
             .expect("intern property");
@@ -883,10 +882,9 @@ mod tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
-            controllers: vec![],
         });
         let admin = candid::Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         store
             .admin_intern_vertex_label(admin, "Person")
             .expect("intern Person");
@@ -926,10 +924,9 @@ mod tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
-            controllers: vec![],
         });
         let admin = candid::Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         store
             .admin_intern_vertex_label(admin, "Person")
             .expect("intern Person");
@@ -987,10 +984,9 @@ mod tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
-            controllers: vec![],
         });
         let admin = candid::Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         store
             .admin_intern_vertex_label(admin, "Person")
             .expect("intern Person");

@@ -303,7 +303,7 @@ entry replaces outcome for router recovery).
 
 | Method | Role |
 |--------|------|
-| `admin_label_stats_projection_step` | Controller repair loop per shard |
+| `admin_label_stats_projection_step` | Admin repair loop per shard |
 
 Removed: `admin_label_telemetry_replay_step`.
 

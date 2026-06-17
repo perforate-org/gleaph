@@ -105,8 +105,8 @@ The local network uses `mode: managed` with `gateway.port: 0`, so parallel workt
 
 Current status: `icp build` succeeds for all configured canisters, and `scripts/deploy-knowledge-map-local.sh` deploys the local IC demo stack. The asset build commands run `corepack pnpm` with `HOME`, `COREPACK_HOME`, `XDG_CACHE_HOME`, and `XDG_DATA_HOME` under `.icp/`, so local CLI builds do not depend on global package-manager cache paths. The script wires local deployment order, init args, and the Alice fan-out demo graph:
 
-- `RouterInitArgs`: installer/admin/controller principals;
-- `IndexInitArgs`: Router canister id and controllers;
+- `RouterInitArgs`: `issuing_principal`, `initial_admins` (auth bootstrap);
+- `IndexInitArgs`: `router_canister`;
 - `GraphInitArgs`: logical graph name, Router canister id, shard id, and index canister id;
 - `gql_execute_idempotent`: 28 idempotent mutations generated from `knowledge-map-graph.json` (node inserts plus `MATCH ... RETURN ... NEXT INSERT ...` edge inserts).
 

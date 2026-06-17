@@ -38,9 +38,9 @@ Distinct from federation **property graph** registration ([ADR 0011](adr/0011-gq
 
 | Term | Owner / region | Meaning |
 |------|----------------|---------|
-| **`GraphCatalog`** | Router regions **22–23** (`ROUTER_GQL_GRAPH_CATALOG`) | SSOT for GQL **graph type definitions** and **per-graph schema bindings** ([ADR 0013](adr/0013-gql-graph-type-catalog-on-router.md)). |
-| **`ROUTER_GRAPH_CATALOG`** | Regions **15–16** | Federation **property graph name ↔ `GraphId`** — prerequisite for `CREATE GRAPH g …` ([ADR 0011](adr/0011-gql-graph-resolution-and-catalog-scoping.md)). |
-| **`ROUTER_GRAPH_TYPE_CATALOG`** | Regions **24–25** | GQL **graph type name ↔ `GraphTypeId`**; intern at `CREATE GRAPH TYPE` ([ADR 0014](adr/0014-graph-type-id-catalog-on-router.md)). |
+| **`GraphCatalog`** | Router regions **21–22** (`ROUTER_GQL_GRAPH_CATALOG`) | SSOT for GQL **graph type definitions** and **per-graph schema bindings** ([ADR 0013](adr/0013-gql-graph-type-catalog-on-router.md)). |
+| **`ROUTER_GRAPH_CATALOG`** | Regions **14–15** | Federation **property graph name ↔ `GraphId`** — prerequisite for `CREATE GRAPH g …` ([ADR 0011](adr/0011-gql-graph-resolution-and-catalog-scoping.md)). |
+| **`ROUTER_GRAPH_TYPE_CATALOG`** | Regions **23–24** | GQL **graph type name ↔ `GraphTypeId`**; intern at `CREATE GRAPH TYPE` ([ADR 0014](adr/0014-graph-type-id-catalog-on-router.md)). |
 | **`GraphTypeId`** | `ROUTER_GRAPH_TYPE_CATALOG` | Router-issued `GraphTypeId(u32)` for named graph types (`CREATE GRAPH TYPE gt { … }`); **`0` reserved**. Keys `type_map` and `TYPED` binding refs. |
 | **Graph schema binding** | `GraphCatalog.binding_map` | Row at federation **`GraphId`**: inline graph type definition or `TYPED` ref to **`GraphTypeId`**. Open graph (`ANY`) = no row. |
 | **`object_name_key`** | DDL ingress | Joins qualified GQL object name segments with `.` for lookup at the GQL surface (before intern). |

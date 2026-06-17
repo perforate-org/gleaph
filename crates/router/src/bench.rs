@@ -8,7 +8,6 @@ use std::hint::black_box;
 
 fn router_stable_reopen_round() {
     // auth
-    black_box(memory::init_controllers());
     black_box(memory::init_auth_state());
     // registry
     black_box(memory::init_graphs());

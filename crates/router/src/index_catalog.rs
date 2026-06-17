@@ -252,7 +252,7 @@ mod tests {
 
     fn register_test_graph(store: &RouterStore, name: &str) -> GraphId {
         let owner = candid::Principal::anonymous();
-        store.bootstrap_controllers(&[owner]);
+        crate::facade::auth::grant_admins(&[owner]);
         store
             .admin_register_graph(
                 owner,

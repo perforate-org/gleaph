@@ -12,6 +12,7 @@ use super::super::stable::{
     ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
 };
 use super::RouterStore;
+use crate::facade::auth;
 use crate::state::RouterError;
 use crate::types::{
     AdminLabelStatsProjectionStepArgs, AdminLabelStatsProjectionStepResult, EdgeLabelId, ShardId,
@@ -217,9 +218,7 @@ impl RouterStore {
         FAck: FnMut(Principal, ShardEventSeq) -> FutAck,
         FutAck: Future<Output = Result<(), String>>,
     {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         if args.max_deltas == 0 {
             return Err(RouterError::InvalidArgument(
                 "max_deltas must be greater than zero".into(),
@@ -277,7 +276,6 @@ mod tests {
         RouterInitArgs {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
-            controllers: vec![],
         }
     }
 
@@ -370,7 +368,7 @@ mod tests {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         store
             .admin_register_graph(
                 admin,

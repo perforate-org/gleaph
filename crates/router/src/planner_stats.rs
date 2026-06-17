@@ -174,9 +174,8 @@ mod tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
-            controllers: vec![],
         });
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         let property_id = store
             .admin_intern_property(admin, "region")
             .expect("intern region");
@@ -195,9 +194,8 @@ mod tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
-            controllers: vec![],
         });
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         let _ = store
             .admin_intern_edge_label(admin, "KNOWS")
             .expect("label");

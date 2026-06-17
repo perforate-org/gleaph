@@ -1326,10 +1326,9 @@ mod tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
-            controllers: vec![],
         });
         let admin = Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
         for (shard_id, graph_byte) in [(ShardId::new(0), 1u8), (ShardId::new(1), 4)] {
             futures::executor::block_on(store.admin_register_shard(
@@ -2393,7 +2392,6 @@ mod tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
-            controllers: vec![],
         });
         let shard_id = ShardId::new(0);
         let graph = graph_principal(1);

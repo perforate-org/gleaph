@@ -172,7 +172,6 @@ pub fn install_router_and_index() -> FederationEnv {
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
-            controllers: vec![admin],
         })
         .expect("encode router init"),
         None,
@@ -210,7 +209,6 @@ pub fn install_federation() -> FederationEnv {
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
-            controllers: vec![admin],
         })
         .expect("encode router init"),
         None,
@@ -285,7 +283,6 @@ pub fn install_two_graph_federation() -> FederationEnv {
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
-            controllers: vec![admin],
         })
         .expect("encode router init"),
         None,
@@ -366,7 +363,6 @@ pub fn install_single_shard_federation() -> FederationEnv {
         Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
-            controllers: vec![admin],
         })
         .expect("encode router init"),
         None,

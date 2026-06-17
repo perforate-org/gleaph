@@ -126,14 +126,12 @@ main() {
     record {
       issuing_principal = principal \"$admin\";
       initial_admins = vec {};
-      controllers = vec { principal \"$admin\" };
     }
   )"
 
   log "Installing gleaph-graph-index"
   icp_cmd canister install -e local -y --mode "$INSTALL_MODE" gleaph-graph-index --args "(
     record {
-      controllers = vec { principal \"$admin\" };
       router_canister = principal \"$router_id\";
     }
   )"

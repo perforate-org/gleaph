@@ -252,7 +252,7 @@ async fn admin_set_indexed_edge_property(
     canister::admin_set_indexed_edge_property(logical_graph_name, edge_label, property).await
 }
 
-/// Advance label posting backfill for one graph shard (controller-only; call in a loop).
+/// Advance label posting backfill for one graph shard (`Role::Admin`; call in a loop).
 #[update]
 async fn admin_label_backfill_step(
     args: types::AdminLabelBackfillStepArgs,
@@ -268,7 +268,7 @@ fn admin_list_label_backfill_status(
     canister::admin_list_label_backfill_status(logical_graph_name)
 }
 
-/// Advance vertex property posting backfill for one graph shard (controller-only; call in a loop).
+/// Advance vertex property posting backfill for one graph shard (`Role::Admin`; call in a loop).
 #[update]
 async fn admin_vertex_property_backfill_step(
     args: types::AdminVertexPropertyBackfillStepArgs,
@@ -284,7 +284,7 @@ fn admin_list_vertex_property_backfill_status(
     canister::admin_list_vertex_property_backfill_status(logical_graph_name)
 }
 
-/// Advance edge property posting backfill for one graph shard (controller-only; call in a loop).
+/// Advance edge property posting backfill for one graph shard (`Role::Admin`; call in a loop).
 #[update]
 async fn admin_edge_backfill_step(
     args: types::AdminEdgeBackfillStepArgs,
@@ -300,7 +300,7 @@ fn admin_list_edge_backfill_status(
     canister::admin_list_edge_backfill_status(logical_graph_name)
 }
 
-/// Advance label stats projection for one graph shard (controller-only; call in a loop).
+/// Advance label stats projection for one graph shard (`Role::Admin`; call in a loop).
 #[update]
 async fn admin_label_stats_projection_step(
     args: types::AdminLabelStatsProjectionStepArgs,

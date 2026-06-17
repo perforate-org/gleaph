@@ -47,8 +47,7 @@ impl RouterStore {
         Self
     }
 
-    pub fn init_from_args(&self, args: &RouterInitArgs) {
-        self.commit_init_controllers(&args.controllers);
+    pub fn init_from_args(&self, _args: &RouterInitArgs) {
         ROUTER_GRAPHS.with_borrow_mut(|g| g.clear_new());
         ROUTER_SHARDS.with_borrow_mut(|s| s.clear_new());
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| m.clear_new());

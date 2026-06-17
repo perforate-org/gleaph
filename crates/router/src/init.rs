@@ -6,11 +6,9 @@ use candid::{CandidType, Deserialize, Principal};
 pub struct RouterInitArgs {
     /// Installer principal; receives [`gleaph_auth::Role::Admin`] in stable auth.
     pub issuing_principal: Principal,
+    /// Additional principals seeded as [`gleaph_auth::Role::Admin`] at init.
     #[serde(default)]
     pub initial_admins: Vec<Principal>,
-    /// Internet Computer controllers (upgrade / control plane, separate from RBAC).
-    #[serde(default)]
-    pub controllers: Vec<Principal>,
 }
 
 #[cfg(test)]
@@ -24,7 +22,6 @@ mod canbench_init_hex {
         let bytes = Encode!(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
-            controllers: vec![admin],
         })
         .expect("encode");
         let hex: String = bytes.iter().map(|b| format!("{b:02x}")).collect();

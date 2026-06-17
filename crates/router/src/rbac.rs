@@ -28,11 +28,9 @@ pub fn authorize_prepared_execute(caller: &Principal) -> Result<(), RouterError>
     Ok(())
 }
 
-/// Index DDL (`CREATE INDEX` / `DROP INDEX`): controller or Manager with `PREPARE_REGISTER`.
+/// Index DDL (`CREATE INDEX` / `DROP INDEX`): Admin or Manager with `PREPARE_REGISTER`.
 pub fn authorize_index_ddl(caller: &Principal) -> Result<(), RouterError> {
-    if crate::facade::store::RouterStore::new().is_controller(*caller)
-        || auth::can_prepare_register(caller)
-    {
+    if auth::is_admin(caller) || auth::can_prepare_register(caller) {
         Ok(())
     } else {
         Err(RouterError::Forbidden)

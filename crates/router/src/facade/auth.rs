@@ -1,8 +1,10 @@
-//! Stable RBAC for router user-facing GQL and prepared-query APIs.
+//! Stable RBAC for router user-facing GQL, prepared-query, and admin APIs.
 
 use candid::Principal;
 use gleaph_auth::{AuthRecord, Role};
 use std::str::FromStr;
+
+use crate::state::RouterError;
 
 use super::stable::ROUTER_AUTH_STATE;
 
@@ -10,6 +12,37 @@ pub fn bootstrap_canister_auth(issuing_principal: Principal, initial_admins: &[P
     ROUTER_AUTH_STATE.with_borrow_mut(|auth| {
         auth.bootstrap_admins(issuing_principal, initial_admins);
     });
+}
+
+/// Grant [`Role::Admin`] to `principal` (tests and local bootstrap).
+pub fn grant_admin(principal: Principal) {
+    ROUTER_AUTH_STATE.with_borrow_mut(|auth| {
+        auth.upsert_record(
+            principal,
+            AuthRecord {
+                role: Role::Admin as u8,
+                manager_caps: 0,
+            },
+        );
+    });
+}
+
+pub fn grant_admins(principals: &[Principal]) {
+    for principal in principals {
+        grant_admin(*principal);
+    }
+}
+
+pub fn is_admin(principal: &Principal) -> bool {
+    caller_role(principal).satisfies_at_least(Role::Admin)
+}
+
+pub fn require_admin(principal: &Principal) -> Result<(), RouterError> {
+    if is_admin(principal) {
+        Ok(())
+    } else {
+        Err(RouterError::NotAuthorized)
+    }
 }
 
 pub fn caller_role(principal: &Principal) -> Role {

@@ -634,9 +634,8 @@ mod tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![admin],
-            controllers: vec![],
         });
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         store
             .admin_intern_property(admin, "country")
             .expect("intern country");

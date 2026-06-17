@@ -15,7 +15,7 @@ Anchor timestamp: 2026-06-13 11:04:14 UTC +0000
 
 **Phase D (ADR 0009) — Implemented:** router `EdgeIndexScan` / all-edge intersection → `lookup_edge_equal` / `lookup_intersection`; per-shard `LocalEdgePosting` seeds; graph applies edge seeds and skips leading `EdgeIndexScan`; shard-local `EDGE_EQUALITY_POSTINGS` retired (MemoryId repack to 40 regions); expand reads graph-index or canonical `EDGE_PROPERTIES` scan when no index client.
 
-**Phase E (ADR 0009) — Implemented:** router extension DDL `CREATE INDEX` / `DROP INDEX` (parsed in `router/index_ddl.rs`, executed on `gql_execute*`); named index catalog per logical graph; controller or Manager+ auth. Legacy `admin_set_indexed_*` APIs delegate to `CREATE INDEX IF NOT EXISTS` with synthetic index names (require entity label + property).
+**Phase E (ADR 0009) — Implemented:** router extension DDL `CREATE INDEX` / `DROP INDEX` (parsed in `router/index_ddl.rs`, executed on `gql_execute*`); named index catalog per logical graph; Admin or Manager+ auth. Legacy `admin_set_indexed_*` APIs delegate to `CREATE INDEX IF NOT EXISTS` with synthetic index names (require entity label + property).
 
 **ADR 0012 — Implemented:** edge `FOR` patterns carry Gleaph GQL `EdgeDirection` (bracket form only; slash rejected); graph-index edge keys use LARA `wire_label_id`; planner applies storage-class subset rule via `is_edge_property_indexed_for`. Leading `EdgeIndexScan` supports `PointingRight`, `PointingLeft`, and `Undirected`. PocketIC e2e covers `AnyDirection`, `PointingRight`, and `Undirected` indexes (including federated undirected anchor and subset negative: undirected-only index does not seed directed wire postings). See [0012-edge-index-direction-in-ddl.md](../adr/0012-edge-index-direction-in-ddl.md).
 
@@ -133,7 +133,7 @@ On DML / property updates, graph enqueues posting changes when federation routin
 `VERTEX_PROPERTIES` into graph-index via `posting_insert` (router-guarded update, same cursor batching
 model as `backfill_label_postings`). Unindexable values are skipped (see `property_indexability` in
 `crates/graph/src/property/`). Router orchestrates per-shard cursors via
-`admin_vertex_property_backfill_step` / `admin_list_vertex_property_backfill_status` (controller-only).
+`admin_vertex_property_backfill_step` / `admin_list_vertex_property_backfill_status` (Admin-only).
 
 ## Derived-state lag
 

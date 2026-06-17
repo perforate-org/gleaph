@@ -4,6 +4,7 @@ use super::super::stable::{
     ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_PAYLOAD_PROFILES, ROUTER_PROPERTY_CATALOG,
     ROUTER_VERTEX_LABEL_CATALOG,
 };
+use crate::facade::auth;
 use crate::state::RouterError;
 use crate::types::{EdgeLabelId, PropertyId, VertexLabelId};
 use candid::Principal;
@@ -77,9 +78,7 @@ impl RouterStore {
         caller: Principal,
         name: &str,
     ) -> Result<VertexLabelId, RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         validate_metadata_name(name)?;
         Self::commit_intern_vertex_label_name(name)
     }
@@ -89,9 +88,7 @@ impl RouterStore {
         caller: Principal,
         name: &str,
     ) -> Result<EdgeLabelId, RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         validate_metadata_name(name)?;
         Self::commit_intern_edge_label_name(name)
     }
@@ -101,9 +98,7 @@ impl RouterStore {
         caller: Principal,
         name: &str,
     ) -> Result<PropertyId, RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         validate_metadata_name(name)?;
         Self::commit_intern_property_name(name)
     }
@@ -114,9 +109,7 @@ impl RouterStore {
         name: &str,
         profile: EdgePayloadProfile,
     ) -> Result<(), RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         validate_metadata_name(name)?;
         let id = self.lookup_edge_label_id(name)?;
         Self::commit_set_edge_label_payload_profile(id, profile)

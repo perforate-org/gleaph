@@ -25,7 +25,6 @@ fn test_init_args() -> RouterInitArgs {
     RouterInitArgs {
         issuing_principal: Principal::anonymous(),
         initial_admins: vec![],
-        controllers: vec![],
     }
 }
 
@@ -58,7 +57,7 @@ fn list_shards_for_graph_returns_matching_registrations() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     register_test_graph(&store, admin, "other.graph");
 
@@ -99,7 +98,7 @@ fn unregister_shard_removes_registry_and_leaves_siblings() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
     let graph_a = graph_principal(1);
@@ -135,7 +134,7 @@ fn resolve_graph_checks_permissions() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
     let owner = graph_principal(10);
     let other = graph_principal(11);
 
@@ -166,7 +165,7 @@ fn vertex_and_edge_labels_with_same_name_get_distinct_ids() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
 
     let v = store
         .admin_intern_vertex_label(admin, "Person")
@@ -248,7 +247,7 @@ fn resolve_plan_attaches_edge_payload_profile() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
 
     let profile = EdgePayloadProfile {
         byte_width: 2,
@@ -283,7 +282,7 @@ fn label_stats_delta_updates_namespace_separated_stats() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
 
     let vertex_label = store
         .admin_intern_vertex_label(admin, "Person")
@@ -364,7 +363,7 @@ fn label_stats_delta_tracks_per_shard_live_counts() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
     let label = store
         .admin_intern_vertex_label(admin, "Person")
         .expect("vertex label");
@@ -414,7 +413,7 @@ fn label_stats_projection_applies_delta_once_per_seq() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
     let label = store
         .admin_intern_vertex_label(admin, "Person")
         .expect("vertex label");
@@ -521,7 +520,7 @@ fn client_mutation_key_reuses_router_mutation_id() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
     let request = b"request-a".to_vec();
@@ -593,7 +592,7 @@ fn client_mutation_key_rejects_different_request() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
 
@@ -627,7 +626,7 @@ fn client_mutation_key_rejects_expired_key() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
     let graph_id =
@@ -663,7 +662,7 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
 
@@ -721,7 +720,7 @@ fn abandoned_routing_reservation_preserves_id_and_allows_new_owner() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
 
@@ -763,7 +762,7 @@ fn router_mutation_journal_tracks_shard_completion() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
     store
@@ -846,7 +845,7 @@ fn router_mutation_journal_records_zero_shard_completion() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
+    crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
     store

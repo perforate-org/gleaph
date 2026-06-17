@@ -14,6 +14,7 @@ use super::super::stable::ROUTER_EDGE_BACKFILL_STATE;
 use super::super::stable::ROUTER_LABEL_BACKFILL_STATE;
 use super::super::stable::ROUTER_VERTEX_PROPERTY_BACKFILL_STATE;
 use super::RouterStore;
+use crate::facade::auth;
 use crate::state::RouterError;
 use crate::types::{
     AdminEdgeBackfillStepArgs, AdminEdgeBackfillStepResult, AdminLabelBackfillStepArgs,
@@ -33,9 +34,7 @@ impl RouterStore {
         F: FnOnce(Principal, PostingBackfillArgs) -> Fut,
         Fut: Future<Output = Result<PostingBackfillResult, String>>,
     {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         if args.max_vertices == 0 {
             return Err(RouterError::InvalidArgument(
                 "max_vertices must be greater than zero".into(),
@@ -80,9 +79,7 @@ impl RouterStore {
         caller: Principal,
         logical_graph_name: &str,
     ) -> Result<Vec<LabelBackfillShardStatus>, RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         let shards = self.list_shards_for_graph(logical_graph_name)?;
         let mut out: Vec<LabelBackfillShardStatus> = shards
             .into_iter()
@@ -119,9 +116,7 @@ impl RouterStore {
         F: FnOnce(Principal, PostingBackfillArgs) -> Fut,
         Fut: Future<Output = Result<PostingBackfillResult, String>>,
     {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         if args.max_vertices == 0 {
             return Err(RouterError::InvalidArgument(
                 "max_vertices must be greater than zero".into(),
@@ -166,9 +161,7 @@ impl RouterStore {
         caller: Principal,
         logical_graph_name: &str,
     ) -> Result<Vec<VertexPropertyBackfillShardStatus>, RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         let shards = self.list_shards_for_graph(logical_graph_name)?;
         let mut out: Vec<VertexPropertyBackfillShardStatus> = shards
             .into_iter()
@@ -206,9 +199,7 @@ impl RouterStore {
         F: FnOnce(Principal, EdgePostingBackfillArgs) -> Fut,
         Fut: Future<Output = Result<EdgePostingBackfillResult, String>>,
     {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         if args.max_entries == 0 {
             return Err(RouterError::InvalidArgument(
                 "max_entries must be greater than zero".into(),
@@ -253,9 +244,7 @@ impl RouterStore {
         caller: Principal,
         logical_graph_name: &str,
     ) -> Result<Vec<EdgeBackfillShardStatus>, RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         let shards = self.list_shards_for_graph(logical_graph_name)?;
         let mut out: Vec<EdgeBackfillShardStatus> = shards
             .into_iter()
@@ -314,7 +303,6 @@ mod tests {
         RouterInitArgs {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
-            controllers: vec![],
         }
     }
 
@@ -358,7 +346,7 @@ mod tests {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
 
         let graph = graph_principal(1);
@@ -410,7 +398,7 @@ mod tests {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
         register_test_graph(&store, admin, "other.graph");
 
@@ -444,7 +432,7 @@ mod tests {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
 
         futures::executor::block_on(store.admin_register_shard(
@@ -489,7 +477,7 @@ mod tests {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
 
         let graph = graph_principal(1);
@@ -541,7 +529,7 @@ mod tests {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
         let admin = Principal::anonymous();
-        store.bootstrap_controllers(&[admin]);
+        crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
 
         let graph = graph_principal(1);

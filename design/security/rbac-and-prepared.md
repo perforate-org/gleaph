@@ -45,9 +45,10 @@ GQL catalog statements set `has_catalog_modification` in [`ProgramModificationFl
 | DDL surface | Entry | Minimum role / gate |
 |-------------|-------|---------------------|
 | **Graph type catalog** (`CREATE`/`DROP GRAPH TYPE`, `CREATE`/`DROP GRAPH` in `gql_execute*`) | `authorize_adhoc_gql` after `classify_program` | **Write** (includes `has_catalog_modification`) |
-| **Index DDL** (`CREATE INDEX` / `DROP INDEX` standalone parse path) | `authorize_index_ddl` | **Controller** or Manager with **`PREPARE_REGISTER`** |
+| **Index DDL** (`CREATE INDEX` / `DROP INDEX` standalone parse path) | `authorize_index_ddl` | **Admin** or Manager with **`PREPARE_REGISTER`** |
 | **Prepared plan registry** | `authorize_prepared_catalog_change` | Admin or Manager with **`PREPARE_REGISTER`** |
-| **Federation graph registration** | `admin_register_graph` | Admin (Candid admin API; separate from GQL catalog DDL) |
+| **Federation graph registration** | `admin_register_graph` | **Admin** (`Role::Admin` in auth store) |
+| **Shard registry / catalog intern / backfill** | `admin_*` Candid APIs | **Admin** |
 
 Graph type catalog DDL runs on the main GQL path **before** ingress dispatch when the transaction block contains catalog statements ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)). Catalog-only blocks return zero rows without dispatching DML/query ops.
 
@@ -79,7 +80,7 @@ Benefits:
 
 - `crates/router/src/prepared.rs`
 - `crates/graph-prepared` (if present in workspace)
-- Plan blob storage on router stable memory (`ROUTER_PREPARED_PLANS`, MemoryId 8); records are versioned (`PreparedPlanRecord::V1`)
+- Plan blob storage on router stable memory (`ROUTER_PREPARED_PLANS`, MemoryId 7); records are versioned (`PreparedPlanRecord::V1`)
 
 ## IC caller identity
 

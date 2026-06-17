@@ -536,16 +536,8 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "router",
     regions: &[
         region(
-            "ROUTER_CONTROLLERS",
-            0,
-            StableMemoryClass::Canonical,
-            "auth",
-            "Controller principal allowlist",
-            None,
-        ),
-        region(
             "ROUTER_AUTH_PRINCIPAL_RECORDS",
-            1,
+            0,
             StableMemoryClass::Canonical,
             "auth",
             "Per-principal RBAC / prepared-query auth records",
@@ -553,7 +545,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_GRAPHS",
-            2,
+            1,
             StableMemoryClass::Canonical,
             "registry",
             "GraphId → registry entry",
@@ -561,7 +553,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_SHARDS",
-            3,
+            2,
             StableMemoryClass::Canonical,
             "registry",
             "ShardId → shard registry entry",
@@ -569,7 +561,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_SHARD_BY_GRAPH",
-            4,
+            3,
             StableMemoryClass::Canonical,
             "registry",
             "Graph canister principal → ShardId",
@@ -577,7 +569,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_SHARDS_BY_GRAPH_ID",
-            5,
+            4,
             StableMemoryClass::Canonical,
             "registry",
             "GraphId → shard id list (ADR 0011)",
@@ -585,7 +577,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_MUTATION_COUNTER",
-            6,
+            5,
             StableMemoryClass::Canonical,
             "idempotency",
             "Monotonic router mutation id allocator",
@@ -593,7 +585,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_MUTATION_BY_CLIENT_KEY",
-            7,
+            6,
             StableMemoryClass::Canonical,
             "idempotency",
             "Client mutation key → router mutation record",
@@ -601,7 +593,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_PREPARED_PLANS",
-            8,
+            7,
             StableMemoryClass::Canonical,
             "prepared queries",
             "PreparedPlanKey → versioned plan wire blob",
@@ -609,7 +601,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_VERTEX_LABEL_BY_NAME",
-            9,
+            8,
             StableMemoryClass::Catalog,
             "resolution",
             "Vertex label name → VertexLabelId",
@@ -617,7 +609,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_VERTEX_LABEL_BY_ID",
-            10,
+            9,
             StableMemoryClass::Catalog,
             "resolution",
             "VertexLabelId → label name",
@@ -625,7 +617,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_EDGE_LABEL_BY_NAME",
-            11,
+            10,
             StableMemoryClass::Catalog,
             "resolution",
             "Edge label name → EdgeLabelId",
@@ -633,7 +625,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_EDGE_LABEL_BY_ID",
-            12,
+            11,
             StableMemoryClass::Catalog,
             "resolution",
             "EdgeLabelId → label name",
@@ -641,7 +633,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_PROPERTY_BY_NAME",
-            13,
+            12,
             StableMemoryClass::Catalog,
             "resolution",
             "Property name → PropertyId",
@@ -649,7 +641,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_PROPERTY_BY_ID",
-            14,
+            13,
             StableMemoryClass::Catalog,
             "resolution",
             "PropertyId → property name",
@@ -657,7 +649,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_GRAPH_BY_NAME",
-            15,
+            14,
             StableMemoryClass::Catalog,
             "resolution",
             "Graph name → GraphId (ADR 0011)",
@@ -665,7 +657,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_GRAPH_BY_ID",
-            16,
+            15,
             StableMemoryClass::Catalog,
             "resolution",
             "GraphId → graph name (ADR 0011)",
@@ -673,7 +665,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_INDEX_NAME_BY_NAME",
-            17,
+            16,
             StableMemoryClass::Catalog,
             "resolution",
             "Graph-scoped index name → IndexNameId (ADR 0011)",
@@ -681,7 +673,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_INDEX_NAME_BY_ID",
-            18,
+            17,
             StableMemoryClass::Catalog,
             "resolution",
             "Graph-scoped IndexNameId → index name (ADR 0011)",
@@ -689,7 +681,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_NAMED_INDEXES",
-            19,
+            18,
             StableMemoryClass::Catalog,
             "index planner catalog",
             "(graph_id, index_name_id) → IndexDefRecord (ADR 0009 DDL metadata)",
@@ -697,7 +689,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_INDEXED_PROPERTY_SET",
-            20,
+            19,
             StableMemoryClass::Catalog,
             "index planner catalog",
             "(graph_id, kind, property_id) membership for planner + shard fan-out",
@@ -705,7 +697,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_EDGE_PAYLOAD_PROFILES",
-            21,
+            20,
             StableMemoryClass::Catalog,
             "edge payload schema",
             "EdgeLabelId → EdgePayloadProfile (ADR 0008 SSOT)",
@@ -713,7 +705,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_GRAPH_TYPE_DEFINITIONS",
-            22,
+            21,
             StableMemoryClass::Catalog,
             "graph type catalog",
             "GraphTypeId → graph type definition (ADR 0014)",
@@ -721,7 +713,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_GRAPH_SCHEMA_BINDINGS",
-            23,
+            22,
             StableMemoryClass::Catalog,
             "graph type catalog",
             "GraphId → property graph schema binding (ADR 0013)",
@@ -729,7 +721,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_GRAPH_TYPE_BY_NAME",
-            24,
+            23,
             StableMemoryClass::Catalog,
             "graph type name catalog",
             "Graph type name → GraphTypeId (ADR 0014)",
@@ -737,7 +729,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_GRAPH_TYPE_BY_ID",
-            25,
+            24,
             StableMemoryClass::Catalog,
             "graph type name catalog",
             "GraphTypeId → graph type name (ADR 0014)",
@@ -745,7 +737,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_VERTEX_LABEL_STATS",
-            26,
+            25,
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Aggregated vertex label usage stats",
@@ -753,7 +745,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_EDGE_LABEL_STATS",
-            27,
+            26,
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Aggregated edge label usage stats",
@@ -761,7 +753,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_VERTEX_LABEL_LIVE_BY_SHARD",
-            28,
+            27,
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Per-shard live vertex counts per label",
@@ -769,7 +761,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_EDGE_LABEL_LIVE_BY_SHARD",
-            29,
+            28,
             StableMemoryClass::Telemetry,
             "label telemetry",
             "Per-shard live edge counts per label",
@@ -777,7 +769,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_LABEL_STATS_PROJECTION",
-            30,
+            29,
             StableMemoryClass::Telemetry,
             "label stats projection",
             "ShardId → applied_through_seq for graph label stats deltas (ADR 0015)",
@@ -785,7 +777,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_LABEL_BACKFILL_STATE",
-            31,
+            30,
             StableMemoryClass::Maintenance,
             "label backfill",
             "Per-shard cursor for label posting backfill admin",
@@ -793,7 +785,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_VERTEX_PROPERTY_BACKFILL_STATE",
-            32,
+            31,
             StableMemoryClass::Maintenance,
             "vertex property backfill",
             "Per-shard cursor for vertex property posting backfill admin",
@@ -801,7 +793,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         ),
         region(
             "ROUTER_EDGE_BACKFILL_STATE",
-            33,
+            32,
             StableMemoryClass::Maintenance,
             "edge backfill",
             "Per-shard cursor for edge property posting backfill admin",
@@ -1018,14 +1010,14 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 34);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(33));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 33);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(32));
         assert_eq!(
-            ROUTER_STABLE_LAYOUT.regions[30].class,
+            ROUTER_STABLE_LAYOUT.regions[29].class,
             StableMemoryClass::Telemetry
         );
         assert_eq!(
-            ROUTER_STABLE_LAYOUT.regions[30].symbol,
+            ROUTER_STABLE_LAYOUT.regions[29].symbol,
             "ROUTER_LABEL_STATS_PROJECTION"
         );
     }

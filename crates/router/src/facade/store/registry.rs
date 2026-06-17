@@ -1,12 +1,11 @@
-//! Graph and shard registry plus router controller principals.
+//! Graph and shard registry.
 
 use super::super::stable::graph_catalog::{
     self, intern_graph_name, list_shards_for_graph_id, lookup_graph_id, register_shard_index,
     unregister_shard_index,
 };
-use super::super::stable::{
-    ROUTER_CONTROLLERS, ROUTER_GRAPHS, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
-};
+use super::super::stable::{ROUTER_GRAPHS, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS};
+use crate::facade::auth;
 #[cfg(not(feature = "pocket-ic-e2e"))]
 use crate::index_sync;
 use crate::state::RouterError;
@@ -18,27 +17,6 @@ use gleaph_graph_kernel::federation::ShardRegistryEntry;
 use super::{RouterStore, ic_time_ns, validate_metadata_name};
 
 impl RouterStore {
-    pub(super) fn commit_init_controllers(&self, controllers: &[Principal]) {
-        ROUTER_CONTROLLERS.with_borrow_mut(|admins| {
-            admins.clear();
-            for p in controllers {
-                admins.insert(*p);
-            }
-        });
-    }
-
-    pub fn bootstrap_controllers(&self, principals: &[Principal]) {
-        ROUTER_CONTROLLERS.with_borrow_mut(|admins| {
-            for p in principals {
-                admins.insert(*p);
-            }
-        });
-    }
-
-    pub(crate) fn is_controller(&self, caller: Principal) -> bool {
-        ROUTER_CONTROLLERS.with_borrow(|admins| admins.contains(&caller))
-    }
-
     pub fn resolve_graph(
         &self,
         graph_name: &str,
@@ -141,9 +119,7 @@ impl RouterStore {
         caller: Principal,
         mut entry: GraphRegistryEntry,
     ) -> Result<(), RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         validate_metadata_name(&entry.graph_name)?;
         if lookup_graph_id(&entry.graph_name).is_some() {
             return Err(RouterError::Conflict(entry.graph_name.clone()));
@@ -176,9 +152,7 @@ impl RouterStore {
         status: GraphStatus,
         version: u64,
     ) -> Result<(), RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         let graph_id = lookup_graph_id(graph_name)
             .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
         let mut entry = ROUTER_GRAPHS
@@ -203,9 +177,7 @@ impl RouterStore {
         caller: Principal,
         args: AdminRegisterShardArgs,
     ) -> Result<(), RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         if args.graph_canister == Principal::anonymous()
             || args.index_canister == Principal::anonymous()
         {
@@ -279,9 +251,7 @@ impl RouterStore {
         caller: Principal,
         shard_id: ShardId,
     ) -> Result<(), RouterError> {
-        if !self.is_controller(caller) {
-            return Err(RouterError::NotAuthorized);
-        }
+        auth::require_admin(&caller)?;
         let entry = ROUTER_SHARDS
             .with_borrow(|s| s.get(&shard_id))
             .ok_or(RouterError::ShardNotRegistered)?;

@@ -100,7 +100,7 @@ needs explicit ids for `:L1:L2:…` (`IndexAnchor::LabelIntersection` from `Node
 
 **Backfill:** `backfill_label_postings` on graph shards replays `VertexLabelStore` into
 graph-index for pre-existing data. Router orchestrates per-shard cursors via
-`admin_label_backfill_step` / `admin_list_label_backfill_status` (controller-only).
+`admin_label_backfill_step` / `admin_list_label_backfill_status` (Admin-only).
 
 **Label stats projection:** Graph shards persist unacked `LabelStatsDelta` events in
 `LABEL_STATS_DELTA_LOG` (seq in `LABEL_STATS_DELTA_SEQ`). Router aggregates land in
@@ -108,7 +108,7 @@ graph-index for pre-existing data. Router orchestrates per-shard cursors via
 `ROUTER_LABEL_STATS_PROJECTION` records the per-shard applied-through seq. Normal DML applies
 deltas inline via `advance_label_stats_projection` and acks the graph log. After router downtime
 or partial apply, drain pending deltas per shard via `admin_label_stats_projection_step`
-(controller-only; call in a loop until `done`). Already-applied seqs are skipped by cursor
+(Admin-only; call in a loop until `done`). Already-applied seqs are skipped by cursor
 advance without changing aggregates. There is no full historical rebuild from vertex label scans —
 replay depends on the graph delta log retaining pending events. See [ADR 0015](../adr/0015-label-stats-projection-log.md).
 

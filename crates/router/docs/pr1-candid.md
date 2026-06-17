@@ -90,7 +90,8 @@ type RouterError = variant {
 
 ```candid
 type RouterInitArgs = record {
-  controllers : vec principal;
+  issuing_principal : principal;
+  initial_admins : vec principal;
 };
 ```
 
@@ -122,7 +123,8 @@ this).
 
 ## Update — router admin
 
-Caller must be in `controllers` (set at `init`).
+Caller must have **`Role::Admin`** in stable auth (`ROUTER_AUTH_PRINCIPAL_RECORDS`). Init seeds
+`issuing_principal` and `initial_admins` as Admin. Grant or revoke via `admin_grant_role`.
 
 | Method | Args | Returns | Notes |
 |--------|------|---------|-------|
@@ -230,7 +232,6 @@ Removed: `index_canister`, `graph_shard_id` (index principal comes from `resolve
 
 ```candid
 type IndexInitArgs = record {
-  controllers : vec principal;
   router_canister : principal;
 };
 ```

@@ -217,7 +217,7 @@ DROP INDEX knows_weight IF EXISTS;
 
 | Rule | Detail |
 |------|--------|
-| **Authorization** | Router controller / Manager+ role per [rbac-and-prepared.md](../security/rbac-and-prepared.md) |
+| **Authorization** | Router Admin / Manager+ role per [rbac-and-prepared.md](../security/rbac-and-prepared.md) |
 | **Name resolution** | `Person`, `KNOWS`, property names interned via existing router catalogs → ids stored in index registry |
 | **Index identity** | `index_name` unique per logical graph; maps to `(entity, label_id?, property_id)`; edge indexes also store **`EdgeDirection`** per [ADR 0012](0012-edge-index-direction-in-ddl.md) |
 | **No side effects on CREATE GRAPH** | Creating a graph or graph type does **not** create indexes |
