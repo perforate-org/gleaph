@@ -36,7 +36,7 @@ tombstone + sidecar/index sync). **Remove router placement registry and APIs.**
 
 | Artifact | Action |
 |----------|--------|
-| `ROUTER_PLACEMENTS` (router MemoryId 4) | Retire — slot left unused (dev migration) |
+| `ROUTER_PLACEMENTS` (router MemoryId 4) | Remove — slot reclaimed in 2026-06-17 category repack ([ADR 0007](0007-stable-memory-layout.md)) |
 | `commit_vertex_placement`, `release_vertex_placement` | Remove router update endpoints |
 | `resolve_placement`, `resolve_global_at` | Remove router query endpoints |
 | `VertexPlacement`, `CommitVertexPlacementArgs`, `ReleaseVertexPlacementArgs` | Remove from `graph-kernel` wire types |
@@ -80,7 +80,7 @@ not interpret tombstones; delete DML must enqueue removals before tombstoning th
 ### Negative / migration
 
 - **Breaking Candid change:** placement endpoints and error variants removed from router.
-- **MemoryId 4** on router is an unused slot until a future repack ADR.
+- **Stable layout repack:** router MemoryIds regrouped by category (auth → maintenance); placement region removed ([ADR 0007](0007-stable-memory-layout.md)).
 - External tools that called `resolve_placement` must query the owning graph shard or use GQL
   `ELEMENT_ID` materialization instead.
 - Future vertex migration must tombstone the source row on the graph shard (same as today’s delete
@@ -101,5 +101,6 @@ not interpret tombstones; delete DML must enqueue removals before tombstoning th
 |------|--------|
 | ADR 0017 | **Accepted** |
 | Remove router placement stable region and APIs | **Implemented** |
+| Repack router MemoryIds by category (auth → maintenance) | **Implemented** |
 | Graph liveness helpers + call-site migration | **Implemented** |
 | Design doc sync (`model.md`, inventory, ADR 0005/0006 notes) | **Implemented** |

@@ -50,24 +50,24 @@ impl RouterStore {
     pub fn init_from_args(&self, args: &RouterInitArgs) {
         self.commit_init_controllers(&args.controllers);
         ROUTER_GRAPHS.with_borrow_mut(|g| g.clear_new());
+        ROUTER_SHARDS.with_borrow_mut(|s| s.clear_new());
+        ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| m.clear_new());
+        ROUTER_SHARDS_BY_GRAPH_ID.with_borrow_mut(|m| m.clear_new());
+        ROUTER_MUTATION_COUNTER.with_borrow_mut(|c| {
+            c.set(0);
+        });
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.clear_new());
         ROUTER_GRAPH_CATALOG.with_borrow_mut(|c| c.clear_new());
         ROUTER_GRAPH_TYPE_CATALOG.with_borrow_mut(|c| c.clear_new());
         ROUTER_INDEX_NAME_CATALOG.with_borrow_mut(|c| c.clear_new());
-        ROUTER_SHARDS.with_borrow_mut(|s| s.clear_new());
-        ROUTER_SHARDS_BY_GRAPH_ID.with_borrow_mut(|m| m.clear_new());
-        ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| m.clear_new());
         ROUTER_VERTEX_LABEL_CATALOG.with_borrow_mut(|m| m.clear_new());
         ROUTER_EDGE_LABEL_CATALOG.with_borrow_mut(|m| m.clear_new());
+        ROUTER_PROPERTY_CATALOG.with_borrow_mut(|m| m.clear_new());
         ROUTER_VERTEX_LABEL_STATS.with_borrow_mut(|m| m.clear_new());
         ROUTER_EDGE_LABEL_STATS.with_borrow_mut(|m| m.clear_new());
         ROUTER_VERTEX_LABEL_LIVE_BY_SHARD.with_borrow_mut(|m| m.clear_new());
         ROUTER_EDGE_LABEL_LIVE_BY_SHARD.with_borrow_mut(|m| m.clear_new());
-        ROUTER_MUTATION_COUNTER.with_borrow_mut(|c| {
-            c.set(0);
-        });
         ROUTER_LABEL_STATS_PROJECTION.replace(super::stable::memory::init_label_stats_projection());
-        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.clear_new());
-        ROUTER_PROPERTY_CATALOG.with_borrow_mut(|m| m.clear_new());
     }
 }
 

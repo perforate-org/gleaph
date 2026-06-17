@@ -79,7 +79,7 @@ Benefits:
 
 - `crates/router/src/prepared.rs`
 - `crates/graph-prepared` (if present in workspace)
-- Plan blob storage on router stable memory (`ROUTER_PREPARED_PLANS`, MemoryId 29); records are versioned (`PreparedPlanRecord::V1`)
+- Plan blob storage on router stable memory (`ROUTER_PREPARED_PLANS`, MemoryId 8); records are versioned (`PreparedPlanRecord::V1`)
 
 ## IC caller identity
 

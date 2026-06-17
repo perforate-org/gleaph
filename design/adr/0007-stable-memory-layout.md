@@ -2,7 +2,7 @@
 
 Date: 2026-06-12  
 Status: accepted  
-Last revised: 2026-06-15  
+Last revised: 2026-06-17  
 Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
 
 ## Revision history
@@ -13,7 +13,7 @@ Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
 | 2026-06-12 | Accepted; policy frozen at §2 pending §6 benchmarks and registry follow-up. |
 | 2026-06-12 | Layout registry in `graph-kernel::stable_layout` + per-canister `layout.rs`. |
 | 2026-06-12 | Initial canbench suite in `graph-kernel` (cold touch 5/21/43, router catalog intern). |
-| 2026-06-15 | Graph facade regions 37–39 and router region 17 repacked for label stats projection ([ADR 0015](0015-label-stats-projection-log.md)). |
+| 2026-06-17 | Router repack: placement removed ([ADR 0017](0017-graph-vertex-existence-ssot.md)); MemoryIds grouped auth → maintenance; **34** regions (0–33). |
 | 2026-06-15 | **Phase 8 closed (8d):** 8a complete; 8b final (P2/P4 retain, P1/P3 done); 8c not required; grouped-catalog prototype not pursued. |
 | 2026-06-12 | Extended canbench to graph/router/graph-index; §8b preliminary retain/defer judgments. |
 | 2026-06-12 | P1 executed: retired `EDGE_WEIGHT_PROFILES`; graph facade repacked to 42 regions (ids 37–41). |
@@ -101,12 +101,12 @@ Code source of truth:
 |----------|-------------|----------|-------|
 | Graph — LARA bundle | 32 | 0–31 | Forward canonical + reverse derived + maintenance; wired into one `DeferredBidirectionalLabeledLaraGraph` |
 | Graph — facade | 8 | 32–39 | Properties, labels, aliases, label stats delta log, mutation journal |
-| Router | 34 | 0–33 | Registry, placement, catalogs, auth, label stats (4), projection cursor, idempotency (2), backfill cursors (2), prepared plans, graph type catalog |
+| Router | 34 | 0–33 | Grouped auth → registry → idempotency → catalog → telemetry → maintenance; prepared plans at MemoryId 8 |
 | Graph-index | 5 | 0–4 | Admins, shard owners, property postings, router auth, label postings |
 
 Ephemeral heap state (pending posting queues on graph canisters) is **not**
 part of this layout; see inventory § ephemeral. Router prepared plans are **stable**
-(`ROUTER_PREPARED_PLANS`, MemoryId 29) as of 2026-06-13.
+(`ROUTER_PREPARED_PLANS`, MemoryId 8) as of 2026-06-17 repack.
 
 ### 3. Regions that must stay separated
 
@@ -119,7 +119,7 @@ Do not merge across these boundaries without a new ADR and benchmark proof:
 | LARA adjacency vs graph facade (32+) | `ic-stable-lara` bundle vs Gleaph domain stores |
 | Vertex/edge property values vs graph-index postings | Separate canisters; postings are derived |
 | Graph-index property postings vs label postings | Different key shapes and backfill paths |
-| Router placement vs label stats projection | Canonical placement vs event-derived aggregates |
+| Router placement vs label stats projection | *(removed)* Router placement retired ADR 0017; label stats projection remains separate from catalog |
 | Canonical stores vs maintenance queues | Query scan paths must not depend on PMA maintenance |
 | Router catalog vs label stats / projection cursor vs backfill cursors | Different lifecycles and admin surfaces |
 

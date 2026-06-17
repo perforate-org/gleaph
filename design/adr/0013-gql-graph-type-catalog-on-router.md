@@ -32,7 +32,7 @@ logic in the standalone crate **`gleaph-graph-catalog`** (`GraphCatalog`):
 **names** at the API boundary; router interns once via `ROUTER_GRAPH_CATALOG` ([ADR 0011](0011-gql-graph-resolution-and-catalog-scoping.md)).
 Graph **type** names from catalog DDL intern via `ROUTER_GRAPH_TYPE_CATALOG` ([ADR 0014](0014-graph-type-id-catalog-on-router.md)).
 
-**Implemented (2026-06-13):** `GraphCatalog` is mounted on router regions **30–31**; catalog DDL
+**Implemented (2026-06-13):** `GraphCatalog` is mounted on router regions **22–23**; catalog DDL
 runs on `gql_execute*`; schema is injected at plan + validate when a binding exists for the
 focused **`GraphId`** ([layers.md](../gql/layers.md)).
 
@@ -42,10 +42,10 @@ Do not conflate them with this ADR:
 
 | Name in code/docs | Stable regions | Role |
 |-------------------|----------------|------|
-| **`ROUTER_GRAPH_CATALOG`** | 24–25 (`ROUTER_GRAPH_BY_NAME` / `_BY_ID`) | Federation **name ↔ `GraphId`** ([ADR 0011](0011-gql-graph-resolution-and-catalog-scoping.md)) |
-| **`ROUTER_GRAPHS`** | 1 | Federation **registry** (`GraphRegistryEntry`: canister, owner, `is_home`, …) |
-| **`GraphCatalog` (this ADR)** | **30–31** (implemented) | GQL **property graph schema** (types + bindings); type keys **`GraphTypeId`** after [ADR 0014](0014-graph-type-id-catalog-on-router.md) |
-| **`ROUTER_GRAPH_TYPE_CATALOG`** | **32–33** ([ADR 0014](0014-graph-type-id-catalog-on-router.md)) | Graph **type** name ↔ **`GraphTypeId`** |
+| **`ROUTER_GRAPH_CATALOG`** | 15–16 (`ROUTER_GRAPH_BY_NAME` / `_BY_ID`) | Federation **name ↔ `GraphId`** ([ADR 0011](0011-gql-graph-resolution-and-catalog-scoping.md)) |
+| **`ROUTER_GRAPHS`** | 2 | Federation **registry** (`GraphRegistryEntry`: canister, owner, `is_home`, …) |
+| **`GraphCatalog` (this ADR)** | **22–23** (implemented) | GQL **property graph schema** (types + bindings); type keys **`GraphTypeId`** after [ADR 0014](0014-graph-type-id-catalog-on-router.md) |
+| **`ROUTER_GRAPH_TYPE_CATALOG`** | **24–25** ([ADR 0014](0014-graph-type-id-catalog-on-router.md)) | Graph **type** name ↔ **`GraphTypeId`** |
 
 Federation registration (`admin_register_graph`) and GQL catalog DDL (`CREATE GRAPH`) remain
 **separate operations**, but **`binding_map` rows are keyed by the same `GraphId`** as
@@ -93,18 +93,18 @@ Mount [`GraphCatalog`] on the **router canister** in two new stable regions:
 
 | MemoryId | Symbol | Map | Class |
 |--------|--------|-----|-------|
-| 30 | `ROUTER_GRAPH_TYPE_DEFINITIONS` | `type_map` | catalog |
-| 31 | `ROUTER_GRAPH_SCHEMA_BINDINGS` | `binding_map` (`GraphId` → binding) | catalog |
+| 22 | `ROUTER_GRAPH_TYPE_DEFINITIONS` | `type_map` | catalog |
+| 23 | `ROUTER_GRAPH_SCHEMA_BINDINGS` | `binding_map` (`GraphId` → binding) | catalog |
 
-Thread-local: one `GraphCatalog<Memory, Memory>` initialized from regions 30–31 (same pattern as
+Thread-local: one `GraphCatalog<Memory, Memory>` initialized from regions 22–23 (same pattern as
 index catalog maps).
 
 **Wire format:** `StorableGraphTypeDefinition::V1` for definitions;
 [`GraphSchemaBinding::V2`] for bindings (`TypeRef(u32)` = `GraphTypeId` raw). Legacy
 [`GraphSchemaBinding::V1`] string `TypeRef` rows fail on read (dev discard / migration hook).
 
-**Stable repack:** [ADR 0007](0007-stable-memory-layout.md) gates added router regions **30–31** (this ADR)
-and **32–33** ([ADR 0014](0014-graph-type-id-catalog-on-router.md)); router **34** regions total.
+**Stable repack:** [ADR 0007](0007-stable-memory-layout.md) gates added router regions **22–23** (this ADR)
+and **24–25** ([ADR 0014](0014-graph-type-id-catalog-on-router.md)); router **34** regions total (0–33).
 Dev snapshot discard acceptable pre-production. `ROUTER_STABLE_LAYOUT`, `stable-memory-inventory.md`,
 and layout tests updated in implementation patches.
 
@@ -262,7 +262,7 @@ stats load per `GraphId` in ADR 0011 U2).
 | Phase | Scope | Status |
 |-------|--------|--------|
 | **S0a** | Refactor `gleaph-graph-catalog`: `binding_map` **`GraphId` keys**; `try_property_schema_for_graph_id`; `GraphNotRegistered`; update unit tests | **Implemented** |
-| **S0b** | Router MemoryId 30–31; thread-local `GraphCatalog`; layout registry + inventory | **Implemented** |
+| **S0b** | Router MemoryId 22–23; thread-local `GraphCatalog`; layout registry + inventory | **Implemented** |
 | **S1** | Catalog DDL on `gql_execute*`; name→`GraphId` via `ROUTER_GRAPH_CATALOG`; map `CatalogError` → `RouterError` | **Implemented** |
 | **S2** | Inject resolved schema at **plan + validate** by **`GraphId`** (replace `NoSchema` when binding exists) | **Implemented** |
 | **S3** | PocketIC e2e: register graph → `CREATE GRAPH TYPE` + `TYPED` binding → query | **Implemented** (`router_graph_type_catalog`) |
@@ -283,7 +283,7 @@ stats load per `GraphId` in ADR 0011 U2).
 | Document | Update | Status |
 |----------|--------|--------|
 | [adr/README.md](README.md) | Index ADR 0013 | **Implemented** |
-| [storage/stable-memory-inventory.md](../storage/stable-memory-inventory.md) | Regions 30–31; **`GraphId` binding keys**; 32–33 via [ADR 0014](0014-graph-type-id-catalog-on-router.md) | **Implemented** |
+| [storage/stable-memory-inventory.md](../storage/stable-memory-inventory.md) | Regions 22–23; **`GraphId` binding keys**; 24–25 via [ADR 0014](0014-graph-type-id-catalog-on-router.md) | **Implemented** |
 | [gql/layers.md](../gql/layers.md) | Schema resolution step; catalog DDL | **Implemented** |
 | [security/rbac-and-prepared.md](../security/rbac-and-prepared.md) | Catalog DDL authorization | **Implemented** |
 | [glossary.md](../glossary.md) | Distinguish federation catalog vs graph type catalog | **Implemented** |
