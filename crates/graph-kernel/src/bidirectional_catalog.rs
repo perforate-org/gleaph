@@ -90,6 +90,10 @@ where
         self.id_to_name.get(&id)
     }
 
+    pub fn iter_ids(&self) -> impl Iterator<Item = Id> + '_ {
+        self.id_to_name.iter().map(|entry| *entry.key())
+    }
+
     pub fn get_or_insert(&mut self, name: &str) -> Result<Id, CatalogError<Id>> {
         if let Some(id) = self.get_id(name) {
             return Ok(id);

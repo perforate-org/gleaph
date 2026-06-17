@@ -74,7 +74,9 @@ A vertex is **live** on a graph shard when its CSR row exists in range and is **
 
 - `shard_id`
 - `graph_canister`, `index_canister`
-- `logical_graph_name`
+- `graph_id` (logical graph; name via `ROUTER_GRAPH_CATALOG`)
+
+Five stable regions (`ROUTER_GRAPH_CATALOG`, `ROUTER_GRAPHS`, `ROUTER_SHARDS`, `ROUTER_SHARDS_BY_GRAPH_ID`, `ROUTER_SHARD_BY_GRAPH`) are intentionally denormalized for lookup performance. Registry mutations go through `commit_register_*` / `commit_unregister_shard` (shard commits require a `ROUTER_GRAPHS` entry); `check_registry_invariants` verifies full bidirectional consistency in tests. Query fan-out reads `ROUTER_SHARDS_BY_GRAPH_ID` only and validates index-local integrity. See [stable-memory-inventory.md](../storage/stable-memory-inventory.md) § registry denormalization invariants.
 
 Router `list_shards_for_graph` drives multi-shard dispatch (PocketIC experiments; not product-supported in standalone mode).
 

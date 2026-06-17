@@ -141,10 +141,25 @@ Repacked 2026-06-17: placement removed, controllers merged into auth, MemoryIds 
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
 | 0 | `ROUTER_AUTH_PRINCIPAL_RECORDS` | `ROUTER_AUTH_STATE` | `init_auth_state` | canonical | auth | SSOT for router principal roles (`Role::Admin` for ops) |
-| 1 | `ROUTER_GRAPHS` | `ROUTER_GRAPHS` | `init_graphs` | canonical | registry | **`BTreeMap<GraphId, GraphRegistryEntry>`** |
-| 2 | `ROUTER_SHARDS` | `ROUTER_SHARDS` | `init_shards` | canonical | registry | values include `graph_id: GraphId` |
-| 3 | `ROUTER_SHARD_BY_GRAPH` | `ROUTER_SHARD_BY_GRAPH` | `init_shard_by_graph` | canonical | registry | **`Principal → ShardId`** |
-| 4 | `ROUTER_SHARDS_BY_GRAPH_ID` | `ROUTER_SHARDS_BY_GRAPH_ID` | `init_shards_by_graph_id` | canonical | registry | **`GraphId → Vec<ShardId>`** shard index |
+| 1 | `ROUTER_GRAPHS` | `ROUTER_GRAPHS` | `init_graphs` | canonical | registry | **`BTreeMap<GraphId, GraphRegistryEntry>`** — graph registry SSOT |
+| 2 | `ROUTER_SHARDS` | `ROUTER_SHARDS` | `init_shards` | canonical | registry | **`ShardId → ShardRegistryEntry`** — shard dispatch SSOT (`graph_id` on entry) |
+| 3 | `ROUTER_SHARD_BY_GRAPH` | `ROUTER_SHARD_BY_GRAPH` | `init_shard_by_graph` | derived index | registry | **`Principal → ShardId`** — denormalized from `ROUTER_SHARDS`; commit-synced |
+| 4 | `ROUTER_SHARDS_BY_GRAPH_ID` | `ROUTER_SHARDS_BY_GRAPH_ID` | `init_shards_by_graph_id` | derived index | registry | **`GraphId → Vec<ShardId>`** — denormalized fan-out index; commit-synced |
+
+### Registry denormalization invariants (implemented 2026-06-17)
+
+Regions **1–2** (canonical), **3–4** (derived indexes), plus **`ROUTER_GRAPH_CATALOG` (14–15)** form an intentional denormalized lookup set — not a merge candidate. Federation dispatch depends on all five staying synchronized at each registry **commit** boundary.
+
+| Region | Class | Role in invariant |
+|--------|-------|-------------------|
+| `ROUTER_GRAPH_CATALOG` | catalog (registry commit) | name ↔ `GraphId` |
+| `ROUTER_GRAPHS` | canonical | `GraphId` → `GraphRegistryEntry` (RBAC, status, `is_home`) |
+| `ROUTER_SHARDS` | canonical | `ShardId` → `ShardRegistryEntry` (includes `graph_id`) — dispatch SSOT |
+| `ROUTER_SHARDS_BY_GRAPH_ID` | derived index | `GraphId` → `[ShardId]` — fan-out listing |
+| `ROUTER_SHARD_BY_GRAPH` | derived index | `Principal` → `ShardId` — graph canister uniqueness |
+
+**Commit APIs** (`RouterStore::commit_register_graph`, `commit_register_shard`, `commit_unregister_shard` in `crates/router/src/facade/store/registry.rs`) update the affected regions atomically from the domain owner's perspective. **`commit_register_shard`** requires a matching `ROUTER_GRAPHS` entry (not catalog-only). **`check_registry_invariants`** (`registry_invariants.rs`) verifies full bidirectional consistency; unit tests call it after every registry mutation. **`list_shards_for_graph_id`** uses the derived index only (O(shards for graph)); it rejects duplicate index ids and stale index→primary references, but does not full-scan `ROUTER_SHARDS` — missing index rows are caught on commit / by `check_registry_invariants`.
+
 | 5 | `ROUTER_MUTATION_COUNTER` | `ROUTER_MUTATION_COUNTER` | `init_mutation_counter` | canonical | idempotency | — |
 | 6 | `ROUTER_MUTATION_BY_CLIENT_KEY` | `ROUTER_MUTATION_BY_CLIENT_KEY` | `init_mutation_by_client_key` | canonical | idempotency | keys use **`graph_id: GraphId`** |
 | 7 | `ROUTER_PREPARED_PLANS` | `ROUTER_PREPARED_PLANS` | `init_prepared_plans` | canonical | prepared queries | **`PreparedPlanKey → PreparedPlanRecord::V1`** |

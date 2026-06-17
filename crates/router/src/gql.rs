@@ -718,7 +718,7 @@ pub async fn dispatch_plan_blob(
     stats: &RouterGraphStats,
 ) -> Result<GqlQueryResult, RouterError> {
     let store = RouterStore::new();
-    let shards = store.list_shards_for_graph_id(graph_id);
+    let shards = store.list_shards_for_graph_id(graph_id)?;
     if shards.is_empty() {
         return Err(RouterError::ShardNotRegistered);
     }
@@ -1886,7 +1886,7 @@ mod tests {
         client_key: &str,
     ) -> Result<GqlQueryResult, RouterError> {
         let graph_id = tenant_main_graph_id();
-        let shards = store.list_shards_for_graph_id(graph_id);
+        let shards = store.list_shards_for_graph_id(graph_id)?;
         dispatch_plan_blob_with_index(
             graph_id,
             plan_blob,
@@ -2228,7 +2228,9 @@ mod tests {
         let plan = compound_label_property_read_plan();
         let plan_blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
         let fake = compound_seed_fake_index();
-        let shards = store.list_shards_for_graph_id(tenant_main_graph_id());
+        let shards = store
+            .list_shards_for_graph_id(tenant_main_graph_id())
+            .expect("shards");
         let stats = RouterGraphStats::test_vertex_indexed(&store, &["region"]);
 
         let err = futures::executor::block_on(dispatch_plan_blob_with_index(
@@ -2325,7 +2327,9 @@ mod tests {
         let plan = label_intersection_read_plan();
         let plan_blob = encode_block_plans(std::slice::from_ref(&plan), false).expect("encode");
         let fake = label_intersection_fake_index();
-        let shards = store.list_shards_for_graph_id(tenant_main_graph_id());
+        let shards = store
+            .list_shards_for_graph_id(tenant_main_graph_id())
+            .expect("shards");
 
         let err = futures::executor::block_on(dispatch_plan_blob_with_index(
             tenant_main_graph_id(),

@@ -79,7 +79,7 @@ pub fn resolve_seed_routings_multi(
     if hits.is_empty() {
         return Ok(Vec::new());
     }
-    let shards = store.list_shards_for_graph_id(graph_id);
+    let shards = store.list_shards_for_graph_id(graph_id)?;
     let shard_ids = match &hits {
         SeedHits::Vertices(hits) => {
             let mut shard_ids: Vec<ShardId> = hits.iter().map(|h| h.shard_id).collect();

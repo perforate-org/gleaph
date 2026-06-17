@@ -12,6 +12,8 @@ mod catalogs;
 mod idempotency;
 mod label_stats_projection;
 mod registry;
+#[cfg(test)]
+mod registry_invariants;
 
 #[cfg(test)]
 mod tests;

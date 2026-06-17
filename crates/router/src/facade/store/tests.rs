@@ -16,6 +16,7 @@ use gleaph_graph_kernel::plan_exec::{
 use std::collections::BTreeSet;
 
 use crate::facade::stable::graph_catalog::lookup_graph_id;
+use crate::facade::store::registry_invariants::assert_registry_invariants;
 
 fn graph_principal(byte: u8) -> Principal {
     Principal::self_authenticating([byte; 32])
@@ -46,6 +47,7 @@ fn register_test_graph(store: &RouterStore, admin: Principal, name: &str) {
             },
         )
         .expect("register graph");
+    assert_registry_invariants();
 }
 
 fn tenant_main_graph_id() -> GraphId {
@@ -127,6 +129,200 @@ fn unregister_shard_removes_registry_and_leaves_siblings() {
     assert_eq!(listed[0].graph_canister, graph_b);
     assert!(store.resolve_shard(ShardId::new(0)).is_err());
     assert!(store.resolve_shard(ShardId::new(1)).is_ok());
+    assert_registry_invariants();
+}
+
+#[test]
+fn registry_invariants_hold_after_graph_and_shard_register() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+
+    assert_registry_invariants();
+}
+
+#[test]
+fn list_shards_for_graph_fails_on_stale_shard_index() {
+    use crate::facade::stable::ROUTER_SHARDS_BY_GRAPH_ID;
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+
+    let graph_id = tenant_main_graph_id();
+    ROUTER_SHARDS_BY_GRAPH_ID.with_borrow_mut(|index| {
+        let mut list = index.get(&graph_id).unwrap_or_default();
+        list.shard_ids.push(ShardId::new(99));
+        index.insert(graph_id, list);
+    });
+
+    let err = store
+        .list_shards_for_graph("tenant.main")
+        .expect_err("stale index must fail");
+    assert!(matches!(err, RouterError::Internal(_)));
+}
+
+#[test]
+fn check_registry_invariants_fails_when_shard_missing_from_index() {
+    use super::registry_invariants::check_registry_invariants;
+    use crate::facade::stable::ROUTER_SHARDS_BY_GRAPH_ID;
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+
+    let graph_id = tenant_main_graph_id();
+    ROUTER_SHARDS_BY_GRAPH_ID.with_borrow_mut(|index| {
+        index.remove(&graph_id);
+    });
+
+    let err = check_registry_invariants().expect_err("missing index entry must fail invariants");
+    assert!(err.contains("ROUTER_SHARDS_BY_GRAPH_ID"));
+}
+
+#[test]
+fn admin_register_shard_rejects_orphan_catalog_graph() {
+    use crate::facade::stable::graph_catalog::insert_graph_name;
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    insert_graph_name("orphan.graph", GraphId::from_raw(99)).expect("catalog insert");
+
+    let err = futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "orphan.graph".into(),
+        },
+    ))
+    .expect_err("orphan catalog graph");
+    assert_eq!(err, RouterError::NotFound("orphan.graph".into()));
+}
+
+#[test]
+fn admin_register_shard_rejects_same_id_under_different_graph() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    register_test_graph(&store, admin, "other.graph");
+
+    let graph = graph_principal(1);
+    let index = graph_principal(2);
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph,
+            index_canister: index,
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register under tenant.main");
+
+    let err = futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph,
+            index_canister: index,
+            logical_graph_name: "other.graph".into(),
+        },
+    ))
+    .expect_err("same shard under different graph");
+    assert!(matches!(err, RouterError::Conflict(_)));
+}
+
+#[test]
+fn list_shards_for_graph_fails_on_duplicate_shard_index() {
+    use crate::facade::stable::ROUTER_SHARDS_BY_GRAPH_ID;
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+
+    let graph_id = tenant_main_graph_id();
+    ROUTER_SHARDS_BY_GRAPH_ID.with_borrow_mut(|index| {
+        let mut list = index.get(&graph_id).unwrap_or_default();
+        list.shard_ids.push(ShardId::new(0));
+        index.insert(graph_id, list);
+    });
+
+    let err = store
+        .list_shards_for_graph("tenant.main")
+        .expect_err("duplicate index entry must fail");
+    assert!(matches!(err, RouterError::Internal(_)));
+}
+
+#[test]
+fn check_registry_invariants_rejects_orphan_catalog_entry() {
+    use super::registry_invariants::check_registry_invariants;
+    use crate::facade::stable::graph_catalog::insert_graph_name;
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    insert_graph_name("orphan.graph", GraphId::from_raw(99)).expect("catalog insert");
+
+    let err = check_registry_invariants().expect_err("orphan catalog");
+    assert!(err.contains("ROUTER_GRAPH_CATALOG"));
+    assert!(err.contains("ROUTER_GRAPHS"));
 }
 
 #[test]
