@@ -9,11 +9,6 @@ publish = false
 path = "src/lib.rs"
 
 [[test]]
-name = "router_placement"
-path = "tests/router_placement.rs"
-harness = true
-
-[[test]]
 name = "graph_seed_dispatch"
 path = "tests/graph_seed_dispatch.rs"
 harness = true

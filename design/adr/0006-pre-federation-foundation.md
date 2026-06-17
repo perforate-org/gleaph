@@ -120,9 +120,9 @@ abstraction; **ownership** is router-only for federated name resolution.
 - Router placement keyed by logical id; `ROUTER_PLACEMENT_BY_PHYSICAL` → logical reverse map
 - APIs: `allocate_logical_vertex_id`, `resolve_placement(logical)`, `release_logical_vertex`
 
-**Router placement (simplified):** graph inserts locally → `commit_vertex_placement { local_vertex_id }`
-(shard from registration) → router records active **`GlobalVertexId`**. Resolve by physical key
-only.
+**Router placement (removed):** Former `commit_vertex_placement` / `ROUTER_PLACEMENTS` registry was
+removed in [0017](0017-graph-vertex-existence-ssot.md). Graph CSR tombstone + index sync is the
+existence SSOT.
 
 **Shard-internal remote pointer:** **`RemoteVertexId`** (rename of `RemoteRefId`) — 30-bit payload
 in `VertexRef` with existing remote bit. **Never exported** on router, index, or client APIs.

@@ -2,11 +2,8 @@ use super::super::test_support::*;
 use super::execute_var_len_expand;
 use super::predicates::{PreparedEdgePayloadPredicate, PreparedEdgeVectorThreshold};
 use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
-use crate::index::placement::native_test_set_active_placement;
 use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorMetric, EdgeVectorPredicate};
-use gleaph_graph_kernel::federation::{
-    ElementIdEncodingKey, GlobalVertexId, PhysicalVertexLocation, ShardId,
-};
+use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
 use pollster;
 
 #[test]
@@ -14,15 +11,11 @@ fn resolve_traversal_expand_source_rejects_foreign_authority() {
     let store = GraphStore::new();
     configure_test_federation(&store);
     let vertex = store.insert_vertex().expect("vertex");
-    let logical = store.global_vertex_id(vertex).expect("logical");
-    native_test_set_active_placement(
-        logical,
-        PhysicalVertexLocation::new(ShardId::new(1), u32::from(vertex)),
-    );
+    let foreign = GlobalVertexId::new(ShardId::new(1), u32::from(vertex));
 
     let err = pollster::block_on(resolve_traversal_expand_source(
         &store,
-        Some(&PlanBinding::Vertex(vertex)),
+        Some(&PlanBinding::RemoteVertex(foreign)),
         EdgeDirection::PointingRight,
     ))
     .expect_err("foreign placement");
@@ -52,14 +45,9 @@ fn federated_var_len_rejects_peer_expand_source() {
     let store = GraphStore::new();
     configure_test_federation(&store);
     let vertex = store.insert_vertex().expect("vertex");
-    let logical = store.global_vertex_id(vertex).expect("logical");
-    native_test_set_active_placement(
-        logical,
-        PhysicalVertexLocation::new(ShardId::new(1), u32::from(vertex)),
-    );
-
+    let foreign = GlobalVertexId::new(ShardId::new(1), u32::from(vertex));
     let mut seed = PlanRow::new();
-    seed.insert("a".to_owned(), PlanBinding::Vertex(vertex));
+    seed.insert("a".to_owned(), PlanBinding::RemoteVertex(foreign));
 
     let parameters = params();
     let ctx = ExecuteCtx::new(

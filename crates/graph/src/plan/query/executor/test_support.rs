@@ -20,8 +20,8 @@ use gleaph_graph_kernel::entry::GraphId;
 use super::super::GLEAPH_PATH_EXTENSION_HANDLER;
 use super::context::QueryExprEvaluator;
 use crate::facade::FederationRouting;
+use crate::index::federation_routing;
 use crate::index::lookup::PropertyIndexLookup;
-use crate::index::placement;
 
 pub use super::super::error::PlanQueryError;
 pub use super::super::row::PlanRow;
@@ -442,14 +442,16 @@ pub fn configure_test_federation(store: &GraphStore) {
         .set_logical_graph_name(Some("tenant.main".into()))
         .expect("graph name");
     let graph_id = GraphId::from_raw(1);
-    placement::native_test_register_graph_name("tenant.main", graph_id);
-    placement::native_test_register_shard(gleaph_graph_kernel::federation::ShardRegistryEntry {
-        shard_id: ShardId::new(0),
-        graph_canister: Principal::management_canister(),
-        index_canister: Principal::management_canister(),
-        graph_id,
-        registered_at_ns: 0,
-    });
+    federation_routing::native_test_register_graph_name("tenant.main", graph_id);
+    federation_routing::native_test_register_shard(
+        gleaph_graph_kernel::federation::ShardRegistryEntry {
+            shard_id: ShardId::new(0),
+            graph_canister: Principal::management_canister(),
+            index_canister: Principal::management_canister(),
+            graph_id,
+            registered_at_ns: 0,
+        },
+    );
 }
 
 pub fn agg_count_star() -> Expr {

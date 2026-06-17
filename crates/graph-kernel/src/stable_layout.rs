@@ -570,9 +570,9 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
         region(
             "ROUTER_PLACEMENTS",
             4,
-            StableMemoryClass::Canonical,
-            "placement",
-            "GlobalVertexId → physical placement record",
+            StableMemoryClass::Compatibility,
+            "retired",
+            "Retired ADR 0017 — vertex existence SSOT on graph shard; MemoryId slot unused",
             None,
         ),
         region(

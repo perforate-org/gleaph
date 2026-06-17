@@ -37,25 +37,12 @@ pub use shard_id::ShardId;
 use crate::entry::GraphId;
 
 use candid::{CandidType, Decode, Encode, Principal};
-use ic_stable_lara::VertexId;
 use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 
 /// Dense vertex index within a single graph shard (`VertexId` in LARA).
 pub type LocalVertexId = u32;
-
-/// Router `commit_vertex_placement` argument (graph shard → router).
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct CommitVertexPlacementArgs {
-    pub local_vertex_id: LocalVertexId,
-}
-
-/// Authoritative graph shard drops router placement after deleting the vertex locally.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct ReleaseVertexPlacementArgs {
-    pub local_vertex_id: LocalVertexId,
-}
 
 /// Canonical global vertex key (`shard_id`, `local_vertex_id`).
 #[derive(
@@ -122,34 +109,6 @@ impl Storable for GlobalVertexId {
     }
 }
 
-/// Current physical storage location of a vertex.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct PhysicalVertexLocation {
-    pub shard_id: ShardId,
-    pub local_vertex_id: LocalVertexId,
-}
-
-impl PhysicalVertexLocation {
-    #[inline]
-    pub const fn new(shard_id: ShardId, local_vertex_id: LocalVertexId) -> Self {
-        Self {
-            shard_id,
-            local_vertex_id,
-        }
-    }
-
-    #[inline]
-    pub fn local_vertex(self) -> VertexId {
-        VertexId::from(self.local_vertex_id)
-    }
-}
-
-/// Authoritative vertex placement state owned by the router.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub enum VertexPlacement {
-    Active(PhysicalVertexLocation),
-}
-
 /// Shard registration record returned by the router (`resolve_shard`).
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct ShardRegistryEntry {
@@ -188,26 +147,10 @@ impl Storable for ShardRegistryEntry {
     const BOUND: Bound = Bound::Unbounded;
 }
 
-impl Storable for VertexPlacement {
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode VertexPlacement"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode VertexPlacement")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), VertexPlacement).expect("decode VertexPlacement")
-    }
-
-    const BOUND: Bound = Bound::Unbounded;
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-    use candid::{Decode, Encode};
+    use candid::Principal;
     use ic_stable_structures::Storable;
 
     #[test]
@@ -225,16 +168,6 @@ mod tests {
     }
 
     #[test]
-    fn vertex_placement_storable_and_candid_roundtrip() {
-        let placement = VertexPlacement::Active(PhysicalVertexLocation::new(ShardId::new(1), 10));
-        let storable = placement.to_bytes();
-        assert_eq!(placement, VertexPlacement::from_bytes(storable));
-        let encoded = Encode!(&placement).expect("encode");
-        let decoded: VertexPlacement = Decode!(&encoded, VertexPlacement).expect("decode");
-        assert_eq!(placement, decoded);
-    }
-
-    #[test]
     fn shard_registry_entry_storable_roundtrip() {
         let entry = ShardRegistryEntry {
             shard_id: ShardId::new(1),
@@ -245,18 +178,5 @@ mod tests {
         };
         let bytes = entry.to_bytes();
         assert_eq!(entry, ShardRegistryEntry::from_bytes(bytes));
-    }
-
-    #[test]
-    fn placement_args_candid_roundtrip() {
-        let commit = CommitVertexPlacementArgs {
-            local_vertex_id: 42,
-        };
-        let release = ReleaseVertexPlacementArgs {
-            local_vertex_id: 42,
-        };
-        for value in [Encode!(&commit).unwrap(), Encode!(&release).unwrap()] {
-            assert!(!value.is_empty());
-        }
     }
 }

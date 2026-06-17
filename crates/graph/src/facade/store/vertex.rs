@@ -1,11 +1,9 @@
 //! GraphStore `vertex` implementation.
 
 use super::super::stable::GRAPH;
-use crate::index::placement;
+use crate::index::federation_routing;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, Vertex};
-use gleaph_graph_kernel::federation::{
-    CommitVertexPlacementArgs, ElementIdEncodingKey, GlobalVertexId, ShardId,
-};
+use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexCount, VertexId, traits::CsrEdge};
 
@@ -30,25 +28,12 @@ impl GraphStore {
     }
 
     pub async fn insert_vertex_row(&self, vertex: Vertex) -> Result<VertexId, GraphStoreError> {
-        let vertex_id = self
-            .with_graph_mut(|graph| graph.push_vertex_row(vertex.into()))
-            .map_err(GraphStoreError::from)?;
-
-        if let Some(routing) = self.federation_routing() {
-            placement::commit_vertex_placement(
-                routing.router_canister,
-                CommitVertexPlacementArgs {
-                    local_vertex_id: placement::local_vertex_id_raw(vertex_id),
-                },
-            )
-            .await?;
-        }
-
-        Ok(vertex_id)
+        self.with_graph_mut(|graph| graph.push_vertex_row(vertex.into()))
+            .map_err(GraphStoreError::from)
     }
 
     pub fn global_vertex_id(&self, vertex_id: VertexId) -> Option<GlobalVertexId> {
-        let local = placement::local_vertex_id_raw(vertex_id);
+        let local = federation_routing::local_vertex_id_raw(vertex_id);
         let shard_id = self
             .federation_routing()
             .map(|r| r.shard_id)
@@ -62,36 +47,31 @@ impl GraphStore {
         self.global_vertex_id(vertex_id)
     }
 
+    /// Whether the local CSR row exists and is not tombstoned.
+    pub(crate) fn is_vertex_live(&self, vertex_id: VertexId) -> bool {
+        self.vertex(vertex_id).is_some_and(|v| !v.is_tombstone())
+    }
+
+    /// Resolve a global id to a live local handle when this shard is authoritative.
+    pub(crate) fn resolve_local_vertex(&self, global: GlobalVertexId) -> Option<VertexId> {
+        let home_shard = self
+            .federation_routing()
+            .map(|r| r.shard_id)
+            .unwrap_or(ShardId::new(0));
+        if global.shard_id != home_shard {
+            return None;
+        }
+        let local = VertexId::from(global.local_vertex_id);
+        self.is_vertex_live(local).then_some(local)
+    }
+
     pub(crate) fn assert_local_vertex_writable(
         &self,
         vertex_id: VertexId,
     ) -> Result<(), GraphStoreError> {
-        if self.vertex(vertex_id).is_some_and(|v| v.is_tombstone()) {
+        if !self.is_vertex_live(vertex_id) {
             return Err(GraphStoreError::VertexTombstoned);
         }
-        let Some(routing) = self.federation_routing() else {
-            return Ok(());
-        };
-        let Some(global_vertex_id) = self.global_vertex_id(vertex_id) else {
-            return Ok(());
-        };
-        #[cfg(target_family = "wasm")]
-        let placement = {
-            let _ = global_vertex_id;
-            let local = placement::local_vertex_id_raw(vertex_id);
-            gleaph_graph_kernel::federation::VertexPlacement::Active(
-                gleaph_graph_kernel::federation::PhysicalVertexLocation::new(
-                    routing.shard_id,
-                    local,
-                ),
-            )
-        };
-        #[cfg(not(target_family = "wasm"))]
-        let placement = pollster::block_on(placement::resolve_placement(
-            routing.router_canister,
-            global_vertex_id,
-        ))?;
-        let _ = placement;
         Ok(())
     }
 

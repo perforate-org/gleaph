@@ -25,7 +25,6 @@ use super::sort_keys::compare_sort_keys;
 use crate::facade::GraphStore;
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
-use crate::index::placement;
 use crate::plan::expr_evaluator::truthy;
 use candid::Principal;
 use context::{ExecuteCtx, QueryExprEvaluator};
@@ -500,28 +499,19 @@ pub(crate) async fn resolve_federated_traversal_vertex(
             "Expand(remote vertex requires federation routing)",
         ));
     };
-    let placement = placement::resolve_placement(routing.router_canister, vertex_id)
-        .await
-        .map_err(|_| PlanQueryError::UnsupportedOp("Expand(remote placement lookup)"))?;
-    match placement {
-        gleaph_graph_kernel::federation::VertexPlacement::Active(loc)
-            if loc.shard_id == routing.shard_id =>
-        {
-            Ok(Some(VertexId::from(loc.local_vertex_id)))
-        }
-        gleaph_graph_kernel::federation::VertexPlacement::Active(_) => {
-            let op = match expand_direction {
-                Some(EdgeDirection::PointingLeft) => {
-                    "Expand.reverse(federated placement on another shard)"
-                }
-                Some(EdgeDirection::Undirected) => {
-                    "Expand.undirected(federated placement on another shard)"
-                }
-                _ => "Expand.forward(federated placement on another shard)",
-            };
-            Err(PlanQueryError::UnsupportedOp(op))
-        }
+    if vertex_id.shard_id != routing.shard_id {
+        let op = match expand_direction {
+            Some(EdgeDirection::PointingLeft) => {
+                "Expand.reverse(federated placement on another shard)"
+            }
+            Some(EdgeDirection::Undirected) => {
+                "Expand.undirected(federated placement on another shard)"
+            }
+            _ => "Expand.forward(federated placement on another shard)",
+        };
+        return Err(PlanQueryError::UnsupportedOp(op));
     }
+    Ok(store.resolve_local_vertex(vertex_id))
 }
 
 pub(crate) fn limit_value(value: &Value) -> Result<usize, PlanQueryError> {

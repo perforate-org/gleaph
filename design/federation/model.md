@@ -1,8 +1,8 @@
 # Federation model
 
-Last updated: 2026-06-11  
-Status: **Partially Implemented** (global vertex identity and router placement per [ADR 0005](../adr/0005-vertex-identity.md) / [ADR 0006](../adr/0006-pre-federation-foundation.md); cross-shard remote CSR and `federated_expand` deferred)  
-Anchor timestamp: 2026-06-11 16:18:18 UTC +0000
+Last updated: 2026-06-17  
+Status: **Partially Implemented** (global vertex identity per [ADR 0005](../adr/0005-vertex-identity.md) / [ADR 0006](../adr/0006-pre-federation-foundation.md); vertex **existence SSOT on graph shard** per [ADR 0017](../adr/0017-graph-vertex-existence-ssot.md); cross-shard remote CSR and `federated_expand` deferred)  
+Anchor timestamp: 2026-06-17 00:16:22 UTC +0000
 
 ## Purpose
 
@@ -29,48 +29,40 @@ Define the **distributed graph identity and placement model** shared by router, 
 ```mermaid
 flowchart TD
     G["GlobalVertexId<br/>shard_id + local_vertex_id"]
-    G --> VP["VertexPlacement (router)<br/>Active"]
-    VP --> PVL["PhysicalVertexLocation<br/>same 8-byte tuple"]
-    PVL --> LV["LocalVertexId / VertexId<br/>dense CSR on one graph shard"]
+    G --> LIVE["Graph CSR liveness<br/>!tombstone"]
+    LIVE --> LV["LocalVertexId / VertexId<br/>dense CSR on one graph shard"]
     G --> ENC["EncodedVertexId (8B)<br/>client wire / ELEMENT_ID"]
+    LIVE --> IDX["Index postings<br/>property + label projections"]
 ```
 
 | Type | Owner / location | Notes |
 |------|------------------|-------|
 | `ShardId` | Router registry (`ROUTER_SHARDS`) | `ShardId(u32)` newtype; sole standalone shard is **`0`** |
-| `GlobalVertexId` | Derived + router `ROUTER_PLACEMENTS` | Canonical global key: `(shard_id, local_vertex_id)` — 8 bytes LE |
-| `LocalVertexId` | Graph shard | Same bits as LARA `VertexId` on that shard |
+| `GlobalVertexId` | Graph shard (derived) | Canonical global key: `(shard_id, local_vertex_id)` — 8 bytes LE |
+| `LocalVertexId` | Graph shard | Same bits as LARA `VertexId` on that shard; **not reused** after delete |
 | `GlobalEdgeId` | Query-time handle | `(shard_id, owner_local, edge_slot_index)` — 12 bytes; not stable across compaction |
 | `EncodedVertexId` / `EncodedEdgeId` | Client wire only | Bijective encoding of global keys; see `federation/encoded.rs` |
 | `PhysicalPlacementKey` | Type alias | Deprecated name for `GlobalVertexId` during migration |
 
-**Removed:** `LogicalVertexId`, `allocate_logical_vertex_id`, graph `VERTEX_LOGICAL_IDS`, router logical counter / pending logical / placement-by-physical reverse map.
+**Removed:** `LogicalVertexId`, router `ROUTER_PLACEMENTS`, placement commit/release APIs ([ADR 0017](../adr/0017-graph-vertex-existence-ssot.md)).
 
-**Standalone:** `GlobalVertexId { shard_id: ShardId(0), local_vertex_id }` when graph metadata has no federation routing or for the sole registered shard. Graph derives the global key from `FederationRouting.shard_id` + local dense id — no per-vertex stable map on the graph shard.
+**Standalone:** `GlobalVertexId { shard_id: ShardId(0), local_vertex_id }` when graph metadata has federation routing for shard 0. Graph derives the global key from `FederationRouting.shard_id` + local dense id.
 
-## Vertex placement state machine
+## Vertex existence (graph shard SSOT)
 
-```mermaid
-stateDiagram-v2
-    [*] --> Active: commit_vertex_placement<br/>{ local_vertex_id }
-    Active --> [*]: release_vertex_placement<br/>(authoritative shard deletes vertex)
-```
+A vertex is **live** on a graph shard when its CSR row exists in range and is **not tombstoned**. Delete DML clears property/label sidecars (and enqueues index removals) before tombstoning the CSR row.
 
 ### Invariants
 
-1. **Router is authoritative** for `VertexPlacement` keyed by `GlobalVertexId`.
-2. **At most one active physical home** per `(shard_id, local_vertex_id)` registered in `ROUTER_PLACEMENTS`.
-3. Graph shards **commit** placement after local insert with **local id only**; router resolves `shard_id` from `ROUTER_SHARD_BY_GRAPH`.
-4. Migration is future work; adding it should introduce an explicit placement transition state and runtime protocol together.
+1. **Graph shard is authoritative** for vertex/edge existence (CSR tombstone).
+2. **`VertexId` is not reused** after delete; invalid global keys decode to tombstoned or out-of-range locals.
+3. **Index postings** are derived projections; vertex delete must enqueue property/label index removals before tombstone.
+4. **Router** owns shard registry and encoded wire ids only — not per-vertex existence.
+5. Migration (future) tombstones the source vertex on the graph shard; no router placement transition state.
 
-### Router APIs (implemented)
+### Removed router APIs (ADR 0017)
 
-| API | Args / result |
-|-----|----------------|
-| `commit_vertex_placement` | `{ local_vertex_id }` |
-| `release_vertex_placement` | `{ local_vertex_id }` |
-| `resolve_placement` | `GlobalVertexId` → `VertexPlacement` |
-| `resolve_global_at` | `(shard_id, local_vertex_id)` → `GlobalVertexId` |
+`commit_vertex_placement`, `release_vertex_placement`, `resolve_placement`, `resolve_global_at`.
 
 ## Remote edges
 

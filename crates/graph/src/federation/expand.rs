@@ -6,12 +6,11 @@ use gleaph_gql::Value;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgeLabelId};
 use gleaph_graph_kernel::federation::{
-    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, VertexPlacement,
+    FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor, GlobalVertexId,
 };
 use ic_stable_lara::VertexId;
 
 use crate::facade::GraphStore;
-use crate::index::placement;
 use crate::plan::{PlanBinding, PlanQueryError};
 
 /// How to execute an expand from a bound traversal source.
@@ -29,6 +28,23 @@ pub(crate) fn federated_direction_for_expand(direction: EdgeDirection) -> Federa
         EdgeDirection::Undirected => FederatedExpandDirection::Undirected,
         _ => FederatedExpandDirection::Outgoing,
     }
+}
+
+fn resolve_local_expand_vertex(
+    store: &GraphStore,
+    global: GlobalVertexId,
+) -> Result<Option<VertexId>, PlanQueryError> {
+    let Some(routing) = store.federation_routing() else {
+        return Err(PlanQueryError::UnsupportedOp(
+            "Expand(remote vertex requires federation routing)",
+        ));
+    };
+    if global.shard_id != routing.shard_id {
+        return Err(PlanQueryError::UnsupportedOp(
+            "cross-shard expand (foreign shard authority)",
+        ));
+    }
+    Ok(store.resolve_local_vertex(global))
 }
 
 /// Decide whether expand uses local CSR on this shard.
@@ -54,9 +70,9 @@ pub(crate) async fn resolve_traversal_expand_source(
         };
     };
 
-    let logical = match binding {
+    let global = match binding {
         PlanBinding::Vertex(vertex_id) => store.global_vertex_id(*vertex_id),
-        PlanBinding::RemoteVertex(logical) => Some(*logical),
+        PlanBinding::RemoteVertex(global) => Some(*global),
         _ => {
             return Err(PlanQueryError::MissingBinding {
                 variable: "expand source".into(),
@@ -64,29 +80,24 @@ pub(crate) async fn resolve_traversal_expand_source(
         }
     };
 
-    let Some(logical) = logical else {
+    let Some(global) = global else {
         return match binding {
             PlanBinding::Vertex(vertex_id) => Ok(Some(TraversalExpandSource::LocalCsr(*vertex_id))),
-            PlanBinding::RemoteVertex(_) => unreachable!("RemoteVertex branch sets logical"),
+            PlanBinding::RemoteVertex(_) => unreachable!("RemoteVertex branch sets global"),
             _ => unreachable!(),
         };
     };
 
-    let placement = placement::resolve_placement(routing.router_canister, logical).await;
-
-    match (binding, placement) {
-        (PlanBinding::RemoteVertex(_), Err(_)) => Err(PlanQueryError::UnsupportedOp(
-            "cross-shard expand (remote vertex binding)",
-        )),
-        (_, Err(_)) => Err(PlanQueryError::UnsupportedOp(
-            "Expand(remote placement lookup)",
-        )),
-        (_, Ok(VertexPlacement::Active(loc))) if loc.shard_id == routing.shard_id => Ok(Some(
-            TraversalExpandSource::LocalCsr(VertexId::from(loc.local_vertex_id)),
-        )),
-        (_, Ok(VertexPlacement::Active(_))) => Err(PlanQueryError::UnsupportedOp(
-            "cross-shard expand (foreign placement authority)",
-        )),
+    match binding {
+        PlanBinding::RemoteVertex(_) if global.shard_id != routing.shard_id => Err(
+            PlanQueryError::UnsupportedOp("cross-shard expand (remote vertex binding)"),
+        ),
+        _ => match resolve_local_expand_vertex(store, global)? {
+            Some(local) => Ok(Some(TraversalExpandSource::LocalCsr(local))),
+            None => Err(PlanQueryError::UnsupportedOp(
+                "Expand(deleted or missing vertex)",
+            )),
+        },
     }
 }
 

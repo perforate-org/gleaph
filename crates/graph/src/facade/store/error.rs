@@ -1,7 +1,6 @@
 //! Graph store error type and conversions.
 
 use super::super::{PropertyCatalogError, VertexLabelStoreError, VertexPropertyStoreError};
-use crate::index::placement;
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::{
     DeferredBidirectionalLabeledError, VertexId, labeled::BucketLabelKey as LaraLabelId,
@@ -40,7 +39,6 @@ pub enum GraphStoreError {
     FederatedExpandPayload {
         detail: String,
     },
-    VertexPlacement(placement::VertexPlacementError),
     /// Shard-local CSR row is tombstoned.
     VertexTombstoned,
 }
@@ -93,7 +91,6 @@ impl fmt::Display for GraphStoreError {
             Self::FederatedExpandPayload { detail } => {
                 write!(f, "invalid federated expand edge payload: {detail}")
             }
-            Self::VertexPlacement(err) => write!(f, "{err}"),
             Self::VertexTombstoned => write!(f, "vertex row is tombstoned on this shard"),
         }
     }
@@ -113,15 +110,8 @@ impl std::error::Error for GraphStoreError {
             | Self::EdgePayloadWidthMismatch { .. }
             | Self::RemoteEdgeNotSupported
             | Self::FederatedExpandPayload { .. }
-            | Self::VertexPlacement(_)
             | Self::VertexTombstoned => None,
         }
-    }
-}
-
-impl From<placement::VertexPlacementError> for GraphStoreError {
-    fn from(value: placement::VertexPlacementError) -> Self {
-        Self::VertexPlacement(value)
     }
 }
 

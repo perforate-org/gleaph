@@ -32,10 +32,10 @@ Document **operational flows**: shard registration, vertex lifecycle, and cross-
 
 1. Graph shard inserts local vertex (LARA).
 2. Graph derives `GlobalVertexId { shard_id, local_vertex_id }` from federation routing.
-3. Graph calls router `commit_vertex_placement` with `{ local_vertex_id }`.
-4. Placement becomes `VertexPlacement::Active`.
+3. Property/label index postings are enqueued on subsequent DML as today.
 
-**Invariant:** No federated reads should treat the vertex as globally visible until placement is committed (exact visibility rules follow router index updates).
+**Invariant:** Vertex is live when its CSR row is not tombstoned; index projections follow graph DML
+([ADR 0017](../adr/0017-graph-vertex-existence-ssot.md)).
 
 ## Federated expand
 

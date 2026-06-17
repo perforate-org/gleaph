@@ -43,7 +43,8 @@ crates/router/src/federation.rs
   dispatch.rs      multi-shard fan-out (planned target path)
 ```
 
-**Rule:** executor, scan, and expand code call `FederationPort` only — not direct `placement::resolve_placement` from query hot paths, not direct index intersection loops.
+**Rule:** executor, scan, and expand code call `FederationPort` only — not direct router existence
+lookups from query hot paths, not direct index intersection loops.
 
 ## What stays (hooks)
 

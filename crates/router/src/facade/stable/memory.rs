@@ -8,8 +8,7 @@ use gleaph_graph_kernel::bidirectional_catalog::{
 };
 use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, GraphTypeId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::{
-    BackfillShardState, EdgeBackfillShardState, GlobalVertexId, ShardId, ShardRegistryEntry,
-    VertexPlacement,
+    BackfillShardState, EdgeBackfillShardState, ShardId, ShardRegistryEntry,
 };
 
 use gleaph_auth::AuthState;
@@ -31,7 +30,7 @@ const ROUTER_CONTROLLERS: MemoryId = MemoryId::new(0);
 const ROUTER_GRAPHS: MemoryId = MemoryId::new(1);
 const ROUTER_SHARDS: MemoryId = MemoryId::new(2);
 const ROUTER_SHARD_BY_GRAPH: MemoryId = MemoryId::new(3);
-const ROUTER_PLACEMENTS: MemoryId = MemoryId::new(4);
+// MemoryId 4: retired `ROUTER_PLACEMENTS` (ADR 0017) — slot unused until repack.
 const ROUTER_VERTEX_LABEL_BY_NAME: MemoryId = MemoryId::new(5);
 const ROUTER_VERTEX_LABEL_BY_ID: MemoryId = MemoryId::new(6);
 const ROUTER_EDGE_LABEL_BY_NAME: MemoryId = MemoryId::new(7);
@@ -113,7 +112,6 @@ pub(crate) type StableIndexNameCatalog = GraphScopedNameCatalog<Memory, Memory>;
 pub(crate) type StableShardsByGraphId = BTreeMap<GraphId, GraphShardList, Memory>;
 pub(crate) type StableShardRegistry = BTreeMap<ShardId, ShardRegistryEntry, Memory>;
 pub(crate) type StableShardByGraph = BTreeMap<Principal, ShardId, Memory>;
-pub(crate) type StablePlacementMap = BTreeMap<GlobalVertexId, VertexPlacement, Memory>;
 pub(crate) type StableVertexLabelCatalog =
     BidirectionalCatalog<VertexLabelId, Memory, Memory, DenseMaxPlusOnePolicy>;
 pub(crate) type StableEdgeLabelCatalog =
@@ -163,10 +161,6 @@ pub(crate) fn init_shards() -> StableShardRegistry {
 
 pub(crate) fn init_shard_by_graph() -> StableShardByGraph {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_SHARD_BY_GRAPH)))
-}
-
-pub(crate) fn init_placements() -> StablePlacementMap {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PLACEMENTS)))
 }
 
 pub(crate) fn init_vertex_label_catalog() -> StableVertexLabelCatalog {

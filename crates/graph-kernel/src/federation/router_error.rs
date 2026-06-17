@@ -38,12 +38,6 @@ pub enum RouterError {
     ShardNotRegistered,
     #[error("shard already registered")]
     ShardAlreadyRegistered,
-    #[error("vertex not found")]
-    VertexNotFound,
-    #[error("placement already committed")]
-    PlacementAlreadyCommitted,
-    #[error("unallocated logical vertex")]
-    UnallocatedLogicalVertex,
     #[error("id exhausted: {0}")]
     IdExhausted(String),
     #[error("internal: {0}")]

@@ -36,7 +36,8 @@ not paper over sync gaps with graph-side tombstone filtering at the index layer.
 | Property postings (graph-index) | DML enqueue + `pending` flush | Pending queue before flush; flush retry; historical **backfill** in progress | **Under-posted:** equality/range/seed miss live vertices. **Over-posted:** extra hits until remove syncs. No silent drop at read time |
 | Label postings (graph-index) | DML enqueue + `label_pending` flush | Same as property postings | **Under-posted:** label sieve / export / intersection miss. **Over-posted:** extra hits until remove syncs |
 | Router label telemetry | Graph outbox event apply | Unacked outbox events; router down before replay | **Count-only** paths (`COUNT(*)`, stats) under/over-count. Vertex-list paths use label **postings**, not telemetry |
-| Router placements (`ROUTER_PLACEMENTS`) | Placement commit on graph DML | Rebuild from placement map only on repair | `resolve_placement(GlobalVertexId)` wrong or missing until rebuilt |
+| Graph CSR vertex rows (tombstone bit) | Graph DML | Tombstone on delete; no slot reuse | Live vertex = row in range and not tombstoned |
+| Index property/label postings | Graph DML → index sync | Backfill from graph | Stale posting = DML/index sync bug |
 
 ## Scenarios
 

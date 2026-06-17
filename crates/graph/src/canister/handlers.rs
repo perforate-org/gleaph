@@ -205,7 +205,7 @@ pub fn e2e_attach_federation(args: super::types::E2eAttachFederationArgs) -> Res
 
 #[cfg(feature = "pocket-ic-e2e")]
 pub async fn e2e_insert_vertex() -> Result<super::types::E2eInsertVertexResult, String> {
-    use crate::index::placement;
+    use crate::index::federation_routing;
     let store = GraphStore::new();
     let vertex_id = store
         .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
@@ -215,7 +215,7 @@ pub async fn e2e_insert_vertex() -> Result<super::types::E2eInsertVertexResult, 
         .global_vertex_id(vertex_id)
         .ok_or_else(|| "global id missing after insert".to_string())?;
     Ok(super::types::E2eInsertVertexResult {
-        local_vertex_id: placement::local_vertex_id_raw(vertex_id),
+        local_vertex_id: federation_routing::local_vertex_id_raw(vertex_id),
         global_vertex_id,
     })
 }
@@ -247,7 +247,7 @@ pub async fn e2e_insert_vertex_with_property(
         .global_vertex_id(vertex_id)
         .ok_or_else(|| "global id missing after insert".to_string())?;
     Ok(super::types::E2eInsertVertexResult {
-        local_vertex_id: crate::index::placement::local_vertex_id_raw(vertex_id),
+        local_vertex_id: crate::index::federation_routing::local_vertex_id_raw(vertex_id),
         global_vertex_id,
     })
 }

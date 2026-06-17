@@ -88,9 +88,6 @@ const RouterError = IDL.Variant({
   }),
   ShardNotRegistered: IDL.Null,
   ShardAlreadyRegistered: IDL.Null,
-  VertexNotFound: IDL.Null,
-  PlacementAlreadyCommitted: IDL.Null,
-  UnallocatedLogicalVertex: IDL.Null,
   IdExhausted: IDL.Text,
   Internal: IDL.Text,
 });

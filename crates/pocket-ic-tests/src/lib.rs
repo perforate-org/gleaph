@@ -3,7 +3,7 @@
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId, VertexPlacement};
+use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId};
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::AdminRegisterShardArgs;
 use pocket_ic::{PocketIc, PocketIcBuilder};
@@ -905,10 +905,6 @@ pub fn e2e_insert_undirected_edge_with_property(
             value,
         },
     );
-}
-
-pub fn resolve_placement(env: &FederationEnv, vertex_id: GlobalVertexId) -> VertexPlacement {
-    query_as_router(env, env.router, "resolve_placement", vertex_id)
 }
 
 /// Router composite `gql_query` (parse → plan → shard dispatch) as the bootstrap admin principal.

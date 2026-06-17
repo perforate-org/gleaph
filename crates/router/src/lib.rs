@@ -1,4 +1,4 @@
-//! Gleaph router canister — federation control plane (graph registry, shard registry, placement).
+//! Gleaph router canister — federation control plane (graph registry, shard registry).
 
 #[cfg(feature = "canbench")]
 mod bench;
@@ -96,21 +96,6 @@ fn list_shards_for_graph(
 }
 
 #[query]
-fn resolve_placement(
-    vertex_id: types::GlobalVertexId,
-) -> Result<types::VertexPlacement, RouterError> {
-    canister::resolve_placement(vertex_id)
-}
-
-#[query]
-fn resolve_global_at(
-    shard_id: types::ShardId,
-    local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
-) -> Result<types::GlobalVertexId, RouterError> {
-    canister::resolve_global_at(shard_id, local_vertex_id)
-}
-
-#[query]
 fn lookup_vertex_label_id(name: String) -> Result<types::VertexLabelId, RouterError> {
     canister::lookup_vertex_label_id(name)
 }
@@ -179,16 +164,6 @@ fn admin_intern_edge_label(name: String) -> Result<types::EdgeLabelId, RouterErr
 #[update]
 fn admin_intern_property(name: String) -> Result<types::PropertyId, RouterError> {
     canister::admin_intern_property(name)
-}
-
-#[update]
-fn commit_vertex_placement(args: types::CommitVertexPlacementArgs) -> Result<(), RouterError> {
-    canister::commit_vertex_placement(args)
-}
-
-#[update]
-fn release_vertex_placement(args: types::ReleaseVertexPlacementArgs) -> Result<(), RouterError> {
-    canister::release_vertex_placement(args)
 }
 
 /// Read-only GQL: composite query (calls index + graph query endpoints).

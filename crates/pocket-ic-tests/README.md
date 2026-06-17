@@ -19,11 +19,10 @@ cargo test -p gleaph-pocket-ic-tests -- --nocapture
 
 | Test                                                                    | Coverage                                                |
 | ----------------------------------------------------------------------- | ------------------------------------------------------- |
-| `router_placement::router_registers_shards_and_commits_active_placement` | `admin_register_shard`, index owner map, active placement |
 | `graph_seed_dispatch::graph_execute_plan_query_skips_index_scan_with_seed_bindings` | Federated graph `execute_plan_query` + `seed_bindings_blob` |
 | `graph_seed_dispatch::graph_execute_plan_query_rejects_index_scan_without_seeds` | Federated graph rejects bare `IndexScan` without router seeds |
 | `router_gql_query::router_gql_query_node_scan_on_single_shard` | Router `gql_query` composite dispatch on a single registered shard |
-| `router_gql_query::standalone_e2e_insert_commits_placement_and_global_id` | Standalone `e2e_insert_vertex` → `GlobalVertexId` + router `resolve_placement` |
+| `router_gql_query::standalone_e2e_insert_assigns_global_id` | Standalone `e2e_insert_vertex` → `GlobalVertexId` from graph routing |
 | `router_gql_query::standalone_gql_query_index_seeded_property_eq` | Single-shard router `gql_query` with `CREATE INDEX` DDL + indexed property equality anchor |
 | `router_gql_query::standalone_gql_query_edge_index_seeded_property_eq` | Single-shard router `gql_query` with edge `CREATE INDEX` DDL + indexed edge property equality anchor |
 | `router_gql_query::standalone_gql_query_returns_element_id_bytes` | Router `gql_query` returns encoded `ELEMENT_ID` bytes via `rows_blob` |

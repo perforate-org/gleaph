@@ -73,13 +73,11 @@ Expand calls `resolve_traversal_expand_source` (`graph/federation/expand.rs`):
 
 `property projection on remote vertex binding` → `InvalidExpressionValue` (remote endpoints cannot hydrate arbitrary property maps locally).
 
-### Placement resolution (current)
+### Expand source resolution (current)
 
-`placement::resolve_placement` maps `GlobalVertexId` → `VertexPlacement` for expand source checks (native test stubs + wasm IC).
-
-Failures surface as `PlanQueryError::UnsupportedOp` for cross-shard expand, or placement errors when routing is misconfigured.
-
-**Target:** placement authority stays on router for writes; graph placement IC reads narrowed to expand-time routing when peer expand returns.
+`GraphStore::resolve_local_vertex` maps `GlobalVertexId` → live local `VertexId` when this shard is
+authoritative (CSR tombstone check). Foreign `shard_id` returns `UnsupportedOp` until cross-shard
+expand is implemented.
 
 ---
 

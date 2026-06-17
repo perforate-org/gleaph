@@ -5,7 +5,7 @@
 
 use gleaph_gql::Value;
 use gleaph_gql_ic::IcWirePlanQueryResult;
-use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, VertexPlacement};
+use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use gleaph_pocket_ic_tests::{
     DEST_SHARD, SOURCE_SHARD, admin_intern_edge_label, admin_intern_property,
@@ -15,8 +15,7 @@ use gleaph_pocket_ic_tests::{
     e2e_insert_undirected_edge_with_property, e2e_insert_vertex, e2e_insert_vertex_with_property,
     gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
     gql_query_as_admin, gql_query_as_admin_expect_err, install_federation,
-    install_single_shard_federation, knowledge_map_live_query, resolve_placement,
-    seed_knowledge_map_graph,
+    install_single_shard_federation, knowledge_map_live_query, seed_knowledge_map_graph,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -40,7 +39,7 @@ fn router_gql_query_node_scan_on_single_shard() {
 }
 
 #[test]
-fn standalone_e2e_insert_commits_placement_and_global_id() {
+fn standalone_e2e_insert_assigns_global_id() {
     let env = install_single_shard_federation();
     let inserted = e2e_insert_vertex(&env, env.graph_source);
 
@@ -49,13 +48,6 @@ fn standalone_e2e_insert_commits_placement_and_global_id() {
         inserted.global_vertex_id.local_vertex_id,
         inserted.local_vertex_id
     );
-
-    let placement = resolve_placement(&env, inserted.global_vertex_id);
-    assert!(matches!(
-        placement,
-        VertexPlacement::Active(loc)
-            if loc.shard_id == SOURCE_SHARD && loc.local_vertex_id == inserted.local_vertex_id
-    ));
 
     let same_id = GlobalVertexId::new(SOURCE_SHARD, inserted.local_vertex_id);
     assert_eq!(inserted.global_vertex_id, same_id);

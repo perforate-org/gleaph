@@ -136,7 +136,7 @@ Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores va
 
 ## Router canister — stable regions
 
-Repacked 2026-06-13 (ADR 0011 graph/index name catalogs). Prior repack 2026-06-11 (ADR 0006 slice D). **Removed:** `ROUTER_LOGICAL_COUNTER` (5), `ROUTER_PENDING_LOGICAL` (6), `ROUTER_PLACEMENT_BY_PHYSICAL` (13). `ROUTER_PLACEMENTS` keyed by `GlobalVertexId`. `ROUTER_GRAPHS` keyed by **`GraphId`** (not graph name string); values are **`GraphRegistryEntry`** including **`is_home: bool`** for HOME resolution (ADR 0011 §1.3 B). `ShardRegistryEntry` stores **`graph_id: GraphId`**. `ROUTER_SHARD_BY_GRAPH` remains **`Principal → ShardId`** (canister uniqueness); shard listing per logical graph uses **`ROUTER_SHARDS_BY_GRAPH_ID`**.
+Repacked 2026-06-13 (ADR 0011 graph/index name catalogs). Prior repack 2026-06-11 (ADR 0006 slice D). **Removed:** `ROUTER_LOGICAL_COUNTER` (5), `ROUTER_PENDING_LOGICAL` (6), `ROUTER_PLACEMENT_BY_PHYSICAL` (13), **`ROUTER_PLACEMENTS` (4)** — ADR 0017; MemoryId 4 slot unused. `ROUTER_GRAPHS` keyed by **`GraphId`** (not graph name string); values are **`GraphRegistryEntry`** including **`is_home: bool`** for HOME resolution (ADR 0011 §1.3 B). `ShardRegistryEntry` stores **`graph_id: GraphId`**. `ROUTER_SHARD_BY_GRAPH` remains **`Principal → ShardId`** (canister uniqueness); shard listing per logical graph uses **`ROUTER_SHARDS_BY_GRAPH_ID`**.
 
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
@@ -144,7 +144,7 @@ Repacked 2026-06-13 (ADR 0011 graph/index name catalogs). Prior repack 2026-06-1
 | 1 | `ROUTER_GRAPHS` | `ROUTER_GRAPHS` | `init_graphs` | canonical | registry | **`BTreeMap<GraphId, GraphRegistryEntry>`** |
 | 2 | `ROUTER_SHARDS` | `ROUTER_SHARDS` | `init_shards` | canonical | registry | values include `graph_id: GraphId` |
 | 3 | `ROUTER_SHARD_BY_GRAPH` | `ROUTER_SHARD_BY_GRAPH` | `init_shard_by_graph` | canonical | registry | **`Principal → ShardId`** (not logical graph name) |
-| 4 | `ROUTER_PLACEMENTS` | `ROUTER_PLACEMENTS` | `init_placements` | canonical | placement (`GlobalVertexId`) | — |
+| 4 | *(retired)* `ROUTER_PLACEMENTS` | — | — | compatibility | retired ([ADR 0017](../adr/0017-graph-vertex-existence-ssot.md)) | MemoryId slot unused |
 | 5–6 | `ROUTER_VERTEX_LABEL_BY_NAME` / `ROUTER_VERTEX_LABEL_BY_ID` | `ROUTER_VERTEX_LABEL_CATALOG` | `init_vertex_label_catalog` | catalog | resolution | `BidirectionalCatalog` (dense) |
 | 7–8 | `ROUTER_EDGE_LABEL_BY_NAME` / `ROUTER_EDGE_LABEL_BY_ID` | `ROUTER_EDGE_LABEL_CATALOG` | `init_edge_label_catalog` | catalog | resolution | `BidirectionalCatalog` (dense, capped) |
 | 9–10 | `ROUTER_PROPERTY_BY_NAME` / `ROUTER_PROPERTY_BY_ID` | `ROUTER_PROPERTY_CATALOG` | `init_property_catalog` | catalog | resolution | `BidirectionalCatalog` (dense) |

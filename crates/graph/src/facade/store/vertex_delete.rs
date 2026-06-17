@@ -1,8 +1,6 @@
 //! Vertex delete domain: clear derived sidecars and commit graph row removal.
 
 use gleaph_graph_kernel::entry::Edge;
-#[cfg(not(target_family = "wasm"))]
-use gleaph_graph_kernel::federation::{ReleaseVertexPlacementArgs, VertexPlacement};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
     labeled::OutEdgeOrder,
@@ -11,8 +9,6 @@ use ic_stable_lara::{
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
-#[cfg(not(target_family = "wasm"))]
-use crate::index::placement;
 
 impl GraphStore {
     /// Detached vertex delete: clear sidecars, remove CSR row, drain maintenance.
@@ -49,13 +45,12 @@ impl GraphStore {
         self.drain_deferred_maintenance()
     }
 
-    /// Property, placement, and label sidecars before a vertex CSR row is removed.
+    /// Property and label sidecars before a vertex CSR row is removed.
     pub(super) fn commit_prepare_vertex_sidecars_for_delete(
         &self,
         vertex_id: VertexId,
     ) -> Result<(), GraphStoreError> {
         self.commit_clear_vertex_properties(vertex_id);
-        self.release_federated_vertex_placement_if_authoritative(vertex_id)?;
 
         let vertex = self.vertex(vertex_id).ok_or_else(|| {
             GraphStoreError::Graph(DeferredBidirectionalLabeledError::VertexOutOfRange {
@@ -101,41 +96,5 @@ impl GraphStore {
         });
         to_clear.dedup_by_key(|h| (u32::from(h.owner_vertex_id), h.label_id.raw(), h.slot_index));
         Ok(to_clear)
-    }
-
-    fn release_federated_vertex_placement_if_authoritative(
-        &self,
-        vertex_id: VertexId,
-    ) -> Result<(), GraphStoreError> {
-        let Some(routing) = self.federation_routing() else {
-            return Ok(());
-        };
-        let Some(global_vertex_id) = self.global_vertex_id(vertex_id) else {
-            return Ok(());
-        };
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let placement = pollster::block_on(placement::resolve_placement(
-                routing.router_canister,
-                global_vertex_id,
-            ))?;
-            let VertexPlacement::Active(loc) = placement;
-            if loc.shard_id != routing.shard_id
-                || loc.local_vertex_id != placement::local_vertex_id_raw(vertex_id)
-            {
-                return Ok(());
-            }
-            pollster::block_on(placement::release_vertex_placement(
-                routing.router_canister,
-                ReleaseVertexPlacementArgs {
-                    local_vertex_id: placement::local_vertex_id_raw(vertex_id),
-                },
-            ))?;
-        }
-        #[cfg(target_family = "wasm")]
-        {
-            let _ = (routing, global_vertex_id);
-        }
-        Ok(())
     }
 }

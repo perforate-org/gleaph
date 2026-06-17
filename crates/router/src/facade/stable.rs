@@ -36,9 +36,6 @@ thread_local! {
     pub(crate) static ROUTER_SHARD_BY_GRAPH: RefCell<memory::StableShardByGraph> =
         RefCell::new(memory::init_shard_by_graph());
 
-    pub(crate) static ROUTER_PLACEMENTS: RefCell<memory::StablePlacementMap> =
-        RefCell::new(memory::init_placements());
-
     pub(crate) static ROUTER_VERTEX_LABEL_CATALOG: RefCell<memory::StableVertexLabelCatalog> =
         RefCell::new(memory::init_vertex_label_catalog());
 

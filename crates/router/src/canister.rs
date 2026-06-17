@@ -10,9 +10,9 @@ use crate::types::{
     AdminLabelBackfillStepResult, AdminLabelStatsProjectionStepArgs,
     AdminLabelStatsProjectionStepResult, AdminRegisterShardArgs,
     AdminVertexPropertyBackfillStepArgs, AdminVertexPropertyBackfillStepResult,
-    CommitVertexPlacementArgs, EdgeBackfillShardStatus, EdgeLabelId, GlobalVertexId, GrantRoleArgs,
-    GraphRegistryEntry, LabelBackfillShardStatus, PropertyId, ReleaseVertexPlacementArgs, ShardId,
-    ShardRegistryEntry, VertexLabelId, VertexPlacement, VertexPropertyBackfillShardStatus,
+    EdgeBackfillShardStatus, EdgeLabelId, GrantRoleArgs, GraphRegistryEntry,
+    LabelBackfillShardStatus, PropertyId, ShardId, ShardRegistryEntry, VertexLabelId,
+    VertexPropertyBackfillShardStatus,
 };
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
@@ -60,17 +60,6 @@ pub(crate) fn list_shards_for_graph(
     logical_graph_name: String,
 ) -> Result<Vec<ShardRegistryEntry>, RouterError> {
     RouterStore::new().list_shards_for_graph(&logical_graph_name)
-}
-
-pub(crate) fn resolve_placement(vertex_id: GlobalVertexId) -> Result<VertexPlacement, RouterError> {
-    RouterStore::new().resolve_placement(vertex_id)
-}
-
-pub(crate) fn resolve_global_at(
-    shard_id: ShardId,
-    local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
-) -> Result<GlobalVertexId, RouterError> {
-    RouterStore::new().resolve_global_at(shard_id, local_vertex_id)
 }
 
 pub(crate) fn lookup_vertex_label_id(name: String) -> Result<VertexLabelId, RouterError> {
@@ -253,14 +242,4 @@ pub(crate) async fn admin_set_indexed_edge_property(
         },
     )
     .await
-}
-
-pub(crate) fn commit_vertex_placement(args: CommitVertexPlacementArgs) -> Result<(), RouterError> {
-    RouterStore::new().commit_vertex_placement(msg_caller(), args)
-}
-
-pub(crate) fn release_vertex_placement(
-    args: ReleaseVertexPlacementArgs,
-) -> Result<(), RouterError> {
-    RouterStore::new().release_vertex_placement(msg_caller(), args)
 }

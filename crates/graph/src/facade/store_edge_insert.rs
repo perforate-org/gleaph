@@ -2,37 +2,9 @@
 
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use gleaph_graph_kernel::federation::GlobalVertexId;
-#[cfg(not(target_family = "wasm"))]
-use gleaph_graph_kernel::federation::VertexPlacement;
 use ic_stable_lara::VertexId;
 
 use super::store::{EdgeHandle, GraphStore, GraphStoreError};
-#[cfg(not(target_family = "wasm"))]
-use crate::index::placement;
-
-fn resolve_local_endpoint(store: &GraphStore, vertex_id: GlobalVertexId) -> Option<VertexId> {
-    let routing = store.federation_routing()?;
-    if vertex_id.shard_id != routing.shard_id {
-        return None;
-    }
-    #[cfg(not(target_family = "wasm"))]
-    {
-        let placement = pollster::block_on(placement::resolve_placement(
-            routing.router_canister,
-            vertex_id,
-        ))
-        .ok()?;
-        let VertexPlacement::Active(loc) = placement;
-        if loc.shard_id != routing.shard_id {
-            return None;
-        }
-        Some(VertexId::from(loc.local_vertex_id))
-    }
-    #[cfg(target_family = "wasm")]
-    {
-        Some(VertexId::from(vertex_id.local_vertex_id))
-    }
-}
 
 /// Target endpoint for an edge insert.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

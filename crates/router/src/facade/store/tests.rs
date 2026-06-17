@@ -3,17 +3,12 @@ use super::super::stable::label_stats::{
 };
 use super::*;
 use crate::init::RouterInitArgs;
-use crate::types::VertexPlacement;
-use crate::types::{
-    AdminRegisterShardArgs, CommitVertexPlacementArgs, GlobalVertexId, GraphRegistryEntry,
-    GraphStatus, ProvisioningState, ReleaseVertexPlacementArgs,
-};
+use crate::types::{AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ProvisioningState};
 use candid::Principal;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
-use gleaph_graph_kernel::federation::PhysicalVertexLocation;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
     LabelStatsDelta, LabelStatsDeltaEventWire, ResolvedLabelTable, ResolvedPropertyTable,
@@ -56,52 +51,6 @@ fn register_test_graph(store: &RouterStore, admin: Principal, name: &str) {
 
 fn tenant_main_graph_id() -> GraphId {
     lookup_graph_id("tenant.main").expect("tenant.main")
-}
-
-#[test]
-fn register_shard_and_commit_placement() {
-    let store = RouterStore::new();
-    store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
-    register_test_graph(&store, admin, "tenant.main");
-
-    let graph = graph_principal(1);
-    let index = graph_principal(2);
-
-    futures::executor::block_on(store.admin_register_shard(
-        admin,
-        AdminRegisterShardArgs {
-            shard_id: ShardId::new(0),
-            graph_canister: graph,
-            index_canister: index,
-            logical_graph_name: "tenant.main".into(),
-        },
-    ))
-    .expect("register");
-
-    store
-        .commit_vertex_placement(
-            graph,
-            CommitVertexPlacementArgs {
-                local_vertex_id: 42,
-            },
-        )
-        .expect("commit");
-
-    let vertex_id = GlobalVertexId::new(ShardId::new(0), 42);
-    assert_eq!(
-        store
-            .resolve_global_at(ShardId::new(0), 42)
-            .expect("reverse"),
-        vertex_id
-    );
-
-    let placement = store.resolve_placement(vertex_id).expect("resolve");
-    assert_eq!(
-        placement,
-        VertexPlacement::Active(PhysicalVertexLocation::new(ShardId::new(0), 42))
-    );
 }
 
 #[test]
@@ -179,51 +128,6 @@ fn unregister_shard_removes_registry_and_leaves_siblings() {
     assert_eq!(listed[0].graph_canister, graph_b);
     assert!(store.resolve_shard(ShardId::new(0)).is_err());
     assert!(store.resolve_shard(ShardId::new(1)).is_ok());
-}
-
-#[test]
-fn release_vertex_placement_clears_registry() {
-    let store = RouterStore::new();
-    store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
-    store.bootstrap_controllers(&[admin]);
-    register_test_graph(&store, admin, "tenant.main");
-
-    let graph = graph_principal(1);
-    let index = graph_principal(2);
-
-    futures::executor::block_on(store.admin_register_shard(
-        admin,
-        AdminRegisterShardArgs {
-            shard_id: ShardId::new(0),
-            graph_canister: graph,
-            index_canister: index,
-            logical_graph_name: "tenant.main".into(),
-        },
-    ))
-    .expect("register");
-
-    store
-        .commit_vertex_placement(
-            graph,
-            CommitVertexPlacementArgs {
-                local_vertex_id: 42,
-            },
-        )
-        .expect("commit");
-
-    store
-        .release_vertex_placement(
-            graph,
-            ReleaseVertexPlacementArgs {
-                local_vertex_id: 42,
-            },
-        )
-        .expect("release");
-
-    let vertex_id = GlobalVertexId::new(ShardId::new(0), 42);
-    assert!(store.resolve_placement(vertex_id).is_err());
-    assert!(store.resolve_global_at(ShardId::new(0), 42).is_err());
 }
 
 #[test]

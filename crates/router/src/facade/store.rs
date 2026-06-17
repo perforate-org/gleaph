@@ -2,7 +2,6 @@
 //!
 //! Storage domains (Phase 2):
 //! - [`registry`] — graph and shard registration
-//! - [`placement`] — logical vertex placement and reverse physical lookup
 //! - [`catalogs`] — federated label and property name resolution
 //! - [`label_stats_projection`] — label stats projection from graph shard deltas (ADR 0015)
 //! - [`idempotency`] — mutation ids and client mutation keys
@@ -12,7 +11,6 @@ mod backfill;
 mod catalogs;
 mod idempotency;
 mod label_stats_projection;
-mod placement;
 mod registry;
 
 #[cfg(test)]
@@ -22,9 +20,8 @@ use super::stable::{
     ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS,
     ROUTER_GRAPH_CATALOG, ROUTER_GRAPH_TYPE_CATALOG, ROUTER_GRAPHS, ROUTER_INDEX_NAME_CATALOG,
     ROUTER_LABEL_STATS_PROJECTION, ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER,
-    ROUTER_PLACEMENTS, ROUTER_PROPERTY_CATALOG, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
-    ROUTER_SHARDS_BY_GRAPH_ID, ROUTER_VERTEX_LABEL_CATALOG, ROUTER_VERTEX_LABEL_LIVE_BY_SHARD,
-    ROUTER_VERTEX_LABEL_STATS,
+    ROUTER_PROPERTY_CATALOG, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_SHARDS_BY_GRAPH_ID,
+    ROUTER_VERTEX_LABEL_CATALOG, ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
 };
 use crate::init::RouterInitArgs;
 use crate::state::RouterError;
@@ -59,7 +56,6 @@ impl RouterStore {
         ROUTER_SHARDS.with_borrow_mut(|s| s.clear_new());
         ROUTER_SHARDS_BY_GRAPH_ID.with_borrow_mut(|m| m.clear_new());
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| m.clear_new());
-        ROUTER_PLACEMENTS.with_borrow_mut(|p| p.clear_new());
         ROUTER_VERTEX_LABEL_CATALOG.with_borrow_mut(|m| m.clear_new());
         ROUTER_EDGE_LABEL_CATALOG.with_borrow_mut(|m| m.clear_new());
         ROUTER_VERTEX_LABEL_STATS.with_borrow_mut(|m| m.clear_new());

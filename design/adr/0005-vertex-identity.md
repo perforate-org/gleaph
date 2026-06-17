@@ -2,7 +2,11 @@
 
 Date: 2026-06-11  
 Status: accepted  
-Last revised: 2026-06-11
+Last revised: 2026-06-17
+
+> **Placement registry:** Router `ROUTER_PLACEMENTS` and placement APIs were removed in
+> [0017](0017-graph-vertex-existence-ssot.md). Vertex existence is authoritative on the graph
+> shard (CSR tombstone) with index sync on delete.
 
 Part of the broader pre-federation foundation in [0006](0006-pre-federation-foundation.md)
 (shard identity, catalogs, stable layout). This ADR details **vertex/edge identity and encoded

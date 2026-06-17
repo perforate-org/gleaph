@@ -6,8 +6,7 @@ use serde::{Deserialize, Serialize};
 pub use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
 pub use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 pub use gleaph_graph_kernel::federation::{
-    CommitVertexPlacementArgs, GlobalVertexId, LocalVertexId, PhysicalVertexLocation,
-    ReleaseVertexPlacementArgs, ShardId, ShardRegistryEntry, VertexPlacement,
+    GlobalVertexId, LocalVertexId, ShardId, ShardRegistryEntry,
 };
 
 #[derive(CandidType, Deserialize)]
