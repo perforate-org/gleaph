@@ -1,7 +1,7 @@
 # Index and catalog capacity planning
 
-Last updated: 2026-06-12  
-Anchor timestamp: 2026-06-12 23:38:44 UTC +0000
+Last updated: 2026-06-17  
+Anchor timestamp: 2026-06-17 14:00:46 UTC +0000
 
 ## Status
 
@@ -15,7 +15,9 @@ Provide **falsifiable formulas and threshold tables** so graph-index (and relate
 
 - Exact byte-accurate stable page accounting (use canbench / future metrics for that).
 - Graph canister (LARA) sizing in full detail — only enough context to show index is usually not the first limit.
-- Choosing final **`GROUP_SIZE` or split axis** — deferred to operator policy / follow-up ADR ([ADR 0010](../adr/0010-index-sharding-extensibility.md)); capacity-planning lists options only.
+- Choosing final **`GROUP_SIZE` or split axis** — **shard-group `GROUP_SIZE` committed per graph**
+  ([ADR 0019](../adr/0019-graph-local-shard-id-and-index-clusters.md), `ROUTER_GRAPH_RUNTIME_CONFIG.index_group_size`);
+  subject/range split axes remain operator policy ([ADR 0010](../adr/0010-index-sharding-extensibility.md)).
 - Subnet-level storage quotas or cycle billing.
 
 ## Platform limits (planning assumptions)
@@ -225,10 +227,10 @@ All use **η = 2.0**. “Soft OK” means **`S_index` ≲ 350 GiB**.
 
 | Strategy | Partition key | Best when | Router change |
 |----------|---------------|-----------|---------------|
-| **Shard group** (`GROUP_SIZE`) | `shard_id / GROUP_SIZE` | Graph already sharded; postings tagged with `shard_id` | Resolve group → index principal at registration (**example policy** — [ADR 0010](../adr/0010-index-sharding-extensibility.md)) |
+| **Shard group** (`GROUP_SIZE`) | `shard_id / index_group_size` | Graph already sharded; postings tagged with graph-local `shard_id` | **Implemented** — `ROUTER_GRAPH_RUNTIME_CONFIG` + registration invariants ([ADR 0019](../adr/0019-graph-local-shard-id-and-index-clusters.md)) |
 | **Subject split** | label vs vertex-prop vs edge-prop regions | One posting type dominates | Fan-out lookup by plan anchor kind |
 | **Property range** | `property_id` bands | Few huge indexed properties | Merge `lookup_equal` / intersection results |
-| **Logical graph boundary** | one index canister per graph | Multi-tenant router; catalog on index | `list_shards_for_graph` → single index principal |
+| **Logical graph boundary** | one index cluster per graph | Multi-tenant router | **Default layout** — dedicated index cluster per `GraphId` ([ADR 0019](../adr/0019-graph-local-shard-id-and-index-clusters.md)) |
 
 Postings are **derived** ([stable-memory-inventory.md](../storage/stable-memory-inventory.md)): migration = **new canister + backfill + router registry cutover**.
 

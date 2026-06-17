@@ -61,11 +61,11 @@ async fn create_index(
     target: &IndexTarget,
 ) -> Result<(), RouterError> {
     let store = RouterStore::new();
-    validate_target_labels(&store, target)?;
-    let property_id = store.lookup_property_id(&target.property)?;
+    validate_target_labels(&store, graph_id, target)?;
+    let property_id = store.lookup_property_id(graph_id, &target.property)?;
     let label_id = match target.kind {
-        IndexedPropertyKind::Vertex => store.lookup_vertex_label_id(&target.label)?.raw(),
-        IndexedPropertyKind::Edge => store.lookup_edge_label_id(&target.label)?.raw(),
+        IndexedPropertyKind::Vertex => store.lookup_vertex_label_id(graph_id, &target.label)?.raw(),
+        IndexedPropertyKind::Edge => store.lookup_edge_label_id(graph_id, &target.label)?.raw(),
     };
     let edge_direction_tag = match target.kind {
         IndexedPropertyKind::Vertex => 0,
@@ -142,13 +142,17 @@ async fn drop_index(
     Ok(())
 }
 
-fn validate_target_labels(store: &RouterStore, target: &IndexTarget) -> Result<(), RouterError> {
+fn validate_target_labels(
+    store: &RouterStore,
+    graph_id: GraphId,
+    target: &IndexTarget,
+) -> Result<(), RouterError> {
     match target.kind {
         IndexedPropertyKind::Vertex => {
-            store.lookup_vertex_label_id(&target.label)?;
+            store.lookup_vertex_label_id(graph_id, &target.label)?;
         }
         IndexedPropertyKind::Edge => {
-            store.lookup_edge_label_id(&target.label)?;
+            store.lookup_edge_label_id(graph_id, &target.label)?;
         }
     }
     Ok(())
@@ -162,7 +166,7 @@ async fn fan_out_register(
     let store = RouterStore::new();
     let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
         .ok_or_else(|| RouterError::NotFound(graph_id.to_string()))?;
-    let shards = store.list_shards_for_graph(&graph_name)?;
+    let shards = store.list_live_shards_for_graph(&graph_name)?;
     let args = RegisterIndexedPropertyArgs {
         kind,
         property_id: property_id.raw(),
@@ -183,7 +187,7 @@ async fn fan_out_unregister(
     let store = RouterStore::new();
     let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
         .ok_or_else(|| RouterError::NotFound(graph_id.to_string()))?;
-    let shards = store.list_shards_for_graph(&graph_name)?;
+    let shards = store.list_live_shards_for_graph(&graph_name)?;
     let args = RegisterIndexedPropertyArgs {
         kind,
         property_id: property_id.raw(),
@@ -205,7 +209,7 @@ async fn fan_out_register_edge_index(
     let store = RouterStore::new();
     let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
         .ok_or_else(|| RouterError::NotFound(graph_id.to_string()))?;
-    let shards = store.list_shards_for_graph(&graph_name)?;
+    let shards = store.list_live_shards_for_graph(&graph_name)?;
     let args = RegisterIndexedEdgeIndexArgs {
         label_id,
         property_id: property_id.raw(),
@@ -228,7 +232,7 @@ async fn fan_out_unregister_edge_index(
     let store = RouterStore::new();
     let graph_name = crate::facade::stable::graph_catalog::graph_name(graph_id)
         .ok_or_else(|| RouterError::NotFound(graph_id.to_string()))?;
-    let shards = store.list_shards_for_graph(&graph_name)?;
+    let shards = store.list_live_shards_for_graph(&graph_name)?;
     let args = RegisterIndexedEdgeIndexArgs {
         label_id,
         property_id: property_id.raw(),
@@ -286,10 +290,10 @@ mod tests {
         let store = RouterStore::new();
         let graph_id = register_test_graph(&store, "tenant.main");
         store
-            .admin_intern_vertex_label(candid::Principal::anonymous(), "Person")
+            .admin_intern_vertex_label(candid::Principal::anonymous(), "tenant.main", "Person")
             .expect("intern label");
         store
-            .admin_intern_property(candid::Principal::anonymous(), "age")
+            .admin_intern_property(candid::Principal::anonymous(), "tenant.main", "age")
             .expect("intern property");
         futures::executor::block_on(create_admin_compat_property_index(
             graph_id,
@@ -315,10 +319,10 @@ mod tests {
         let store = RouterStore::new();
         let graph_id = register_test_graph(&store, "tenant.edge");
         store
-            .admin_intern_edge_label(candid::Principal::anonymous(), "KNOWS")
+            .admin_intern_edge_label(candid::Principal::anonymous(), "tenant.edge", "KNOWS")
             .expect("intern edge");
         store
-            .admin_intern_property(candid::Principal::anonymous(), "weight")
+            .admin_intern_property(candid::Principal::anonymous(), "tenant.edge", "weight")
             .expect("intern property");
         futures::executor::block_on(create_admin_compat_property_index(
             graph_id,

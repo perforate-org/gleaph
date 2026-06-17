@@ -46,8 +46,12 @@ pub(crate) fn resolve_graph(graph_name: String) -> Result<GraphRegistryEntry, Ro
     RouterStore::new().resolve_graph(&graph_name, msg_caller())
 }
 
-pub(crate) fn resolve_shard(shard_id: ShardId) -> Result<ShardRegistryEntry, RouterError> {
-    RouterStore::new().resolve_shard(shard_id)
+pub(crate) fn resolve_shard(
+    logical_graph_name: String,
+    shard_id: ShardId,
+) -> Result<ShardRegistryEntry, RouterError> {
+    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    RouterStore::new().resolve_shard(graph_id, shard_id)
 }
 
 pub(crate) fn lookup_graph_id(
@@ -56,38 +60,74 @@ pub(crate) fn lookup_graph_id(
     RouterStore::new().resolve_graph_id(&graph_name)
 }
 
+pub(crate) fn graph_element_id_encoding_key(
+    logical_graph_name: String,
+) -> Result<[u8; 16], RouterError> {
+    auth::require_admin(&msg_caller())?;
+    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    Ok(RouterStore::new()
+        .graph_element_id_encoding_key(graph_id)?
+        .0)
+}
+
 pub(crate) fn list_shards_for_graph(
     logical_graph_name: String,
 ) -> Result<Vec<ShardRegistryEntry>, RouterError> {
     RouterStore::new().list_shards_for_graph(&logical_graph_name)
 }
 
-pub(crate) fn lookup_vertex_label_id(name: String) -> Result<VertexLabelId, RouterError> {
-    RouterStore::new().lookup_vertex_label_id(&name)
+pub(crate) fn lookup_vertex_label_id(
+    logical_graph_name: String,
+    name: String,
+) -> Result<VertexLabelId, RouterError> {
+    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    RouterStore::new().lookup_vertex_label_id(graph_id, &name)
 }
 
-pub(crate) fn lookup_edge_label_id(name: String) -> Result<EdgeLabelId, RouterError> {
-    RouterStore::new().lookup_edge_label_id(&name)
+pub(crate) fn lookup_edge_label_id(
+    logical_graph_name: String,
+    name: String,
+) -> Result<EdgeLabelId, RouterError> {
+    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    RouterStore::new().lookup_edge_label_id(graph_id, &name)
 }
 
-pub(crate) fn lookup_property_id(name: String) -> Result<PropertyId, RouterError> {
-    RouterStore::new().lookup_property_id(&name)
+pub(crate) fn lookup_property_id(
+    logical_graph_name: String,
+    name: String,
+) -> Result<PropertyId, RouterError> {
+    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    RouterStore::new().lookup_property_id(graph_id, &name)
 }
 
-pub(crate) fn reverse_vertex_label_name(label_id: VertexLabelId) -> Result<String, RouterError> {
-    RouterStore::new().reverse_vertex_label_name(label_id)
+pub(crate) fn reverse_vertex_label_name(
+    logical_graph_name: String,
+    label_id: VertexLabelId,
+) -> Result<String, RouterError> {
+    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    RouterStore::new().reverse_vertex_label_name(graph_id, label_id)
 }
 
-pub(crate) fn reverse_edge_label_name(label_id: EdgeLabelId) -> Result<String, RouterError> {
-    RouterStore::new().reverse_edge_label_name(label_id)
+pub(crate) fn reverse_edge_label_name(
+    logical_graph_name: String,
+    label_id: EdgeLabelId,
+) -> Result<String, RouterError> {
+    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    RouterStore::new().reverse_edge_label_name(graph_id, label_id)
 }
 
-pub(crate) fn reverse_property_name(property_id: PropertyId) -> Result<String, RouterError> {
-    RouterStore::new().reverse_property_name(property_id)
+pub(crate) fn reverse_property_name(
+    logical_graph_name: String,
+    property_id: PropertyId,
+) -> Result<String, RouterError> {
+    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    RouterStore::new().reverse_property_name(graph_id, property_id)
 }
 
-pub(crate) fn admin_register_graph(entry: GraphRegistryEntry) -> Result<(), RouterError> {
-    RouterStore::new().admin_register_graph(msg_caller(), entry)
+pub(crate) async fn admin_register_graph(entry: GraphRegistryEntry) -> Result<(), RouterError> {
+    RouterStore::new()
+        .admin_register_graph_with_random_key(msg_caller(), entry)
+        .await
 }
 
 pub(crate) fn admin_update_graph_status(
@@ -98,28 +138,44 @@ pub(crate) fn admin_update_graph_status(
     RouterStore::new().admin_update_graph_status(msg_caller(), &graph_name, status, version)
 }
 
+pub(crate) fn admin_unregister_graph(logical_graph_name: String) -> Result<(), RouterError> {
+    RouterStore::new().admin_unregister_graph(msg_caller(), &logical_graph_name)
+}
+
 pub(crate) async fn admin_register_shard(args: AdminRegisterShardArgs) -> Result<(), RouterError> {
     RouterStore::new()
         .admin_register_shard(msg_caller(), args)
         .await
 }
 
-pub(crate) async fn admin_unregister_shard(shard_id: ShardId) -> Result<(), RouterError> {
+pub(crate) async fn admin_unregister_shard(
+    logical_graph_name: String,
+    shard_id: ShardId,
+) -> Result<(), RouterError> {
     RouterStore::new()
-        .admin_unregister_shard(msg_caller(), shard_id)
+        .admin_unregister_shard(msg_caller(), &logical_graph_name, shard_id)
         .await
 }
 
-pub(crate) fn admin_intern_vertex_label(name: String) -> Result<VertexLabelId, RouterError> {
-    RouterStore::new().admin_intern_vertex_label(msg_caller(), &name)
+pub(crate) fn admin_intern_vertex_label(
+    logical_graph_name: String,
+    name: String,
+) -> Result<VertexLabelId, RouterError> {
+    RouterStore::new().admin_intern_vertex_label(msg_caller(), &logical_graph_name, &name)
 }
 
-pub(crate) fn admin_intern_edge_label(name: String) -> Result<EdgeLabelId, RouterError> {
-    RouterStore::new().admin_intern_edge_label(msg_caller(), &name)
+pub(crate) fn admin_intern_edge_label(
+    logical_graph_name: String,
+    name: String,
+) -> Result<EdgeLabelId, RouterError> {
+    RouterStore::new().admin_intern_edge_label(msg_caller(), &logical_graph_name, &name)
 }
 
-pub(crate) fn admin_intern_property(name: String) -> Result<PropertyId, RouterError> {
-    RouterStore::new().admin_intern_property(msg_caller(), &name)
+pub(crate) fn admin_intern_property(
+    logical_graph_name: String,
+    name: String,
+) -> Result<PropertyId, RouterError> {
+    RouterStore::new().admin_intern_property(msg_caller(), &logical_graph_name, &name)
 }
 
 pub(crate) async fn admin_label_backfill_step(

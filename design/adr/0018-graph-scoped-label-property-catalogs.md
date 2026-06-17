@@ -1,9 +1,9 @@
 # 0018. Graph-scoped label and property catalogs
 
-Date: 2026-06-17  
-Status: proposed  
-Last revised: 2026-06-17  
-Anchor timestamp: 2026-06-17 06:57:24 UTC +0000
+Date: 2026-06-17
+Status: accepted
+Last revised: 2026-06-17
+Anchor timestamp: 2026-06-17 10:36:18 UTC +0000
 
 ## Revision history
 
@@ -11,6 +11,7 @@ Anchor timestamp: 2026-06-17 06:57:24 UTC +0000
 |------|--------|
 | 2026-06-17 | Proposed: scope `PropertyId`, `VertexLabelId`, and `EdgeLabelId` catalogs per `GraphId`; supersede ADR 0011 global-catalog policy. |
 | 2026-06-17 | Clarified label live-by-shard keys after ADR 0019: router-wide maps must include `GraphId` once `ShardId` becomes graph-local. |
+| 2026-06-17 | **Accepted.** V0–V5 implemented; design docs synced (`glossary.md`, `property-index.md`, `stable-memory-inventory.md`, ADR 0011 amendments). |
 
 ## Context
 
@@ -20,25 +21,24 @@ store **values only**, keyed by router-issued ids. Index postings use the same n
 ([property-index.md](../index/property-index.md)).
 
 [ADR 0011](0011-gql-graph-resolution-and-catalog-scoping.md) scoped **logical graph names** and
-**index names** per `GraphId`, but explicitly left **label / property ids global**:
-
-> **Label / property ids** remain **global** (not graph-scoped) — unchanged from ADR 0006.
+**index names** per `GraphId`. Its original draft left **label / property ids global**; **this ADR
+supersedes that policy** (0011 amended 2026-06-17).
 
 That choice optimized federation wiring: one intern table, fixed-width posting keys without
 `GraphId`, and simple plan resolution. It diverges from common property-graph products (Neo4j per
 database, JanusGraph per graph instance) where the same string name in two logical graphs may
 denote unrelated semantics.
 
-### Current router catalogs (problem, as of 2026-06-17 UTC)
+### Router catalogs (implemented, as of 2026-06-17 UTC)
 
-| Catalog | Stable regions | Key shape (as of 2026-06-17 UTC) | Scope |
-|---------|----------------|-------------------|-------|
-| Vertex labels | 8–9 | `String → VertexLabelId` | **Global** |
-| Edge labels | 10–11 | `String → EdgeLabelId` | **Global** |
-| Properties | 12–13 | `String → PropertyId` | **Global** |
+| Catalog | Stable regions | Key shape | Scope |
+|---------|----------------|-----------|-------|
+| Vertex labels | 8–9 | `(GraphId, name) ↔ (GraphId, VertexLabelId)` | **Per graph** |
+| Edge labels | 10–11 | `(GraphId, name) ↔ (GraphId, EdgeLabelId)` | **Per graph** |
+| Properties | 12–13 | `(GraphId, name) ↔ (GraphId, PropertyId)` | **Per graph** |
 | Index names | 16–17 | `(GraphId, String) → IndexNameId` | Per graph ([0011](0011-gql-graph-resolution-and-catalog-scoping.md)) |
-| Edge payload profiles | 20 | `EdgeLabelId → EdgePayloadProfile` | **Global** ([0008](0008-edge-payload-profile-router-ssot.md)) |
-| Label stats aggregates | 25–28 | `u16 label_id` / `(ShardId, u16)` | **Global label id** ([0015](0015-label-stats-projection-log.md)) |
+| Edge payload profiles | 20 | `(GraphId, EdgeLabelId) → EdgePayloadProfile` | **Per graph** ([0008](0008-edge-payload-profile-router-ssot.md)) |
+| Label stats aggregates | 25–28 | `(GraphId, label_id)` / `(GraphId, ShardId, label_id)` | **Per graph** ([0015](0015-label-stats-projection-log.md)) |
 
 GQL **graph type** metadata is already per federation graph via `GraphCatalog.binding_map`
 keyed by `GraphId` ([0013](0013-gql-graph-type-catalog-on-router.md)). Runtime vocabulary ids
@@ -99,7 +99,7 @@ context, where graph-local `ShardId` values identify shards only for that `Graph
 
 Replace the three global `BidirectionalCatalog` instances with **graph-scoped** bidirectional
 catalogs using the same composite-key pattern as index names ([0011](0011-gql-graph-resolution-and-catalog-scoping.md) §4,
-[`scoped_name_catalog.rs`](../../crates/router/src/facade/stable/scoped_name_catalog.rs)):
+[`scoped_name_catalog.rs`](../../crates/graph-kernel/src/scoped_name_catalog.rs)):
 
 | Catalog | Id type | Name key | Id key |
 |---------|---------|----------|--------|
@@ -252,7 +252,7 @@ flowchart TB
 - `DROP GRAPH` can reclaim catalog partitions
 - Consistent pattern with graph-scoped index names ([0011](0011-gql-graph-resolution-and-catalog-scoping.md))
 - Graph shard and index posting layouts preserved — smaller blast radius than embedding `GraphId` in postings
-- Enables future `GraphCatalog` → auto-intern on `CREATE GRAPH TYPED` ([0013](0013-gql-graph-type-catalog-on-router.md) follow-up)
+- Enables `GraphCatalog` → auto-intern on `CREATE GRAPH` / `CREATE GRAPH TYPED` ([0013](0013-gql-graph-type-catalog-on-router.md) follow-up, **V5**)
 
 ### Trade-offs
 
@@ -281,12 +281,12 @@ flowchart TB
 
 | Phase | Scope | Status |
 |-------|--------|--------|
-| **V0** | `GraphScopedNameCatalog<Id: CatalogId>` in graph-kernel; unit tests | pending |
-| **V1** | Migrate regions 8–13; router lookup / intern / reverse APIs take `GraphId` | pending |
-| **V2** | `resolve_plan_*` + gql ingress + seed + index_catalog + aggregate fast path | pending |
-| **V3** | `(GraphId, EdgeLabelId)` payload profiles; `(GraphId, label_id)` label stats keys; `(GraphId, ShardId, label_id)` live-by-shard keys or equivalent graph partition | pending |
-| **V4** | `DROP GRAPH` / unregister cascade for vocabulary partitions | pending |
-| **V5** (optional) | `GraphCatalog` DDL auto-intern labels/properties into graph partition | pending |
+| **V0** | `GraphScopedNameCatalog<Id: CatalogId>` in graph-kernel; unit tests | **done** |
+| **V1** | Migrate regions 8–13; router lookup / intern / reverse APIs take `GraphId` | **done** |
+| **V2** | `resolve_plan_*` + gql ingress + seed + index_catalog + aggregate fast path | **done** |
+| **V3** | `(GraphId, EdgeLabelId)` payload profiles; `(GraphId, label_id)` label stats keys; `(GraphId, ShardId, label_id)` live-by-shard keys or equivalent graph partition | **done** |
+| **V4** | `DROP GRAPH` / unregister cascade for vocabulary partitions | **done** |
+| **V5** (optional) | `GraphCatalog` DDL auto-intern labels/properties into graph partition | **done** |
 
 **Stable repack:** V0–V3 share one [ADR 0007](0007-stable-memory-layout.md) gate. Dev snapshot
 discard acceptable pre-production.
@@ -301,9 +301,9 @@ vocabulary per graph.
 1. **Dev / pre-production:** reinstall router canister; discard snapshots (ADR 0007 policy).
 2. **If retaining snapshots:** one-shot upgrade hook:
    - For each `GraphId` in `ROUTER_GRAPHS`, walk global catalogs and re-insert into scoped catalogs (requires attributing existing interned names to a graph — **only valid for single-graph deployments**; multi-graph snapshots need discard or manual partition script).
-3. Update [stable-memory-inventory.md](../storage/stable-memory-inventory.md), [glossary.md](../glossary.md), and layout tests when V1 lands.
-4. Amend [0011](0011-gql-graph-resolution-and-catalog-scoping.md) §Catalog problem / §5 to cross-link here.
-5. PocketIC / SDK: pass graph context to `admin_intern_*` helpers.
+3. ~~Update [stable-memory-inventory.md](../storage/stable-memory-inventory.md), [glossary.md](../glossary.md), and layout tests when V1 lands.~~ **Done** (2026-06-17).
+4. ~~Amend [0011](0011-gql-graph-resolution-and-catalog-scoping.md) §Catalog problem / §5 to cross-link here.~~ **Done** (2026-06-17).
+5. ~~PocketIC / SDK: pass graph context to `admin_intern_*` helpers.~~ **Done** — attach/register APIs and federation helpers pass `GraphId` / graph name.
 
 ---
 
@@ -311,11 +311,11 @@ vocabulary per graph.
 
 | Document | Update | Status |
 |----------|--------|--------|
-| [adr/README.md](README.md) | Index ADR 0018 | **This patch** |
-| [glossary.md](../glossary.md) | Property / label id scoped per `GraphId` | pending V1 |
-| [storage/stable-memory-inventory.md](../storage/stable-memory-inventory.md) | Catalog key shapes for regions 8–13, 20, 25–28 | pending V1/V3 |
-| [index/property-index.md](../index/property-index.md) | Resolve per `GraphId`; posting keys unchanged | pending V2 |
-| [0011-gql-graph-resolution-and-catalog-scoping.md](0011-gql-graph-resolution-and-catalog-scoping.md) | Superseded global-catalog bullets | pending acceptance |
+| [adr/README.md](README.md) | Index ADR 0018 | **done** |
+| [glossary.md](../glossary.md) | Property / label id scoped per `GraphId` | **done** |
+| [storage/stable-memory-inventory.md](../storage/stable-memory-inventory.md) | Catalog key shapes for regions 8–13, 20, 25–28 | **done** |
+| [index/property-index.md](../index/property-index.md) | Resolve per `GraphId`; posting keys unchanged | **done** |
+| [0011-gql-graph-resolution-and-catalog-scoping.md](0011-gql-graph-resolution-and-catalog-scoping.md) | Superseded global-catalog bullets | **done** |
 
 ---
 

@@ -47,6 +47,7 @@ ethnum = "1.5.3"
 f256 = "0.11"
 half = "2"
 ic-cdk = "0.20"
+ic-cdk-management-canister = "0.1.1"
 ic-cdk-macros = "0.20"
 ic-stable-roaring = { path = "../ic-stable-roaring" }
 ic-stable-structures = "0.7.2"

@@ -112,6 +112,7 @@ mod tests {
             index_canister: Principal::management_canister(),
             graph_id,
             registered_at_ns: 0,
+            index_attached: true,
         });
         native_test_register_shard(ShardRegistryEntry {
             shard_id: ShardId::new(1),
@@ -119,6 +120,7 @@ mod tests {
             index_canister: Principal::management_canister(),
             graph_id,
             registered_at_ns: 0,
+            index_attached: true,
         });
 
         let listed = pollster::block_on(list_shards_for_graph(

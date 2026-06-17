@@ -7,6 +7,7 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::ObjectName;
 use gleaph_gql_ic::principal_to_value;
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::plan_exec::{ResolvedLabelTable, ResolvedPropertyTable};
 
 /// Carries data that is fixed for one GQL execution (adhoc, prepared, or plan replay).
@@ -18,6 +19,8 @@ pub struct GqlExecutionContext {
     pub resolved_labels: Option<ResolvedLabelTable>,
     /// Router-resolved property names for this execution.
     pub resolved_properties: Option<ResolvedPropertyTable>,
+    /// Router-issued per-graph key for ELEMENT_ID and path element encoding.
+    pub element_id_encoding_key: Option<[u8; 16]>,
 }
 
 impl GqlExecutionContext {
@@ -106,6 +109,21 @@ impl GqlExecutionContext {
 
     pub fn requires_resolved_properties(&self) -> bool {
         self.resolved_properties.is_some()
+    }
+
+    pub fn element_id_encoding_key(&self) -> Option<ElementIdEncodingKey> {
+        self.element_id_encoding_key.map(ElementIdEncodingKey)
+    }
+}
+
+#[cfg(any(test, feature = "canbench"))]
+impl GqlExecutionContext {
+    /// Host graph tests without router registration (ADR 0019 `host_test_fixture` key).
+    pub fn with_host_test_element_id_key() -> Self {
+        Self {
+            element_id_encoding_key: Some(ElementIdEncodingKey::host_test_fixture().0),
+            ..Self::default()
+        }
     }
 }
 

@@ -16,6 +16,7 @@ fn explicit_empty_resolved_table_fails_labeled_node_scan() {
                 caller: None,
                 resolved_labels: Some(ResolvedLabelTable::default()),
                 resolved_properties: Some(ResolvedPropertyTable::default()),
+                element_id_encoding_key: None,
             },
         )
         .expect_err("missing resolved node label must fail");
@@ -43,6 +44,7 @@ fn explicit_empty_resolved_table_fails_labeled_expand() {
             caller: None,
             resolved_labels: Some(ResolvedLabelTable::default()),
             resolved_properties: Some(ResolvedPropertyTable::default()),
+            element_id_encoding_key: None,
         },
         None,
     );

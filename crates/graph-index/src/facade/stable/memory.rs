@@ -1,10 +1,15 @@
 //! Graph-index canister stable-memory layout — see `design/storage/stable-memory-inventory.md`
 //! and `facade/stable/layout.rs` (ADR 0007 registry).
+//!
+//! MemoryIds: router authorization → shard catalog → ownership config → derived postings.
 
-use candid::Principal;
+use candid::{CandidType, Decode, Encode, Principal};
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
+use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 use std::cell::RefCell;
 
 use crate::edge_key::EdgePostingKey;
@@ -16,16 +21,54 @@ pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 const INDEX_ROUTER: MemoryId = MemoryId::new(0);
 const INDEX_SHARD_CANISTER_BY_SHARD: MemoryId = MemoryId::new(1);
 const INDEX_SHARD_BY_CANISTER: MemoryId = MemoryId::new(2);
-const INDEX_VERTEX_POSTINGS: MemoryId = MemoryId::new(3);
-const INDEX_VERTEX_LABEL_POSTINGS: MemoryId = MemoryId::new(4);
-const INDEX_EDGE_POSTINGS: MemoryId = MemoryId::new(5);
+const INDEX_OWNERSHIP_CONFIG: MemoryId = MemoryId::new(3);
+const INDEX_VERTEX_POSTINGS: MemoryId = MemoryId::new(4);
+const INDEX_VERTEX_LABEL_POSTINGS: MemoryId = MemoryId::new(5);
+const INDEX_EDGE_POSTINGS: MemoryId = MemoryId::new(6);
 
 pub(crate) type StableIndexRouterCell = Cell<Principal, Memory>;
+pub(crate) type StableIndexOwnershipConfigCell = Cell<IndexOwnershipConfig, Memory>;
 pub(crate) type StableIndexShardCanisterByShardMap = BTreeMap<ShardId, Principal, Memory>;
 pub(crate) type StableIndexShardByCanisterMap = BTreeMap<Principal, ShardId, Memory>;
 pub(crate) type StableIndexVertexPostingSet = BTreeSet<PostingKey, Memory>;
 pub(crate) type StableIndexVertexLabelPostingSet = BTreeSet<LabelPostingKey, Memory>;
 pub(crate) type StableIndexEdgePostingSet = BTreeSet<EdgePostingKey, Memory>;
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IndexOwnershipConfig {
+    pub initialized: bool,
+    pub graph_id: GraphId,
+    pub index_group_size: u32,
+    pub group_index: u32,
+}
+
+impl Default for IndexOwnershipConfig {
+    fn default() -> Self {
+        Self {
+            initialized: false,
+            graph_id: GraphId::from_raw(0),
+            index_group_size: 1,
+            group_index: 0,
+        }
+    }
+}
+
+impl ic_stable_structures::Storable for IndexOwnershipConfig {
+    const BOUND: ic_stable_structures::storable::Bound =
+        ic_stable_structures::storable::Bound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode IndexOwnershipConfig"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode IndexOwnershipConfig")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), IndexOwnershipConfig).expect("decode IndexOwnershipConfig")
+    }
+}
 
 pub(crate) struct ShardCanisterCatalog {
     by_shard: StableIndexShardCanisterByShardMap,
@@ -51,11 +94,6 @@ impl ShardCanisterCatalog {
 
     pub(crate) fn shard_canister(&self, shard_id: ShardId) -> Option<Principal> {
         self.by_shard.get(&shard_id)
-    }
-
-    #[cfg(target_family = "wasm")]
-    pub(crate) fn shard_for_canister(&self, canister: Principal) -> Option<ShardId> {
-        self.by_canister.get(&canister)
     }
 
     pub(crate) fn insert(
@@ -119,6 +157,13 @@ pub(crate) fn init_index_router() -> StableIndexRouterCell {
 
 pub(crate) fn init_index_shard_canister_catalog() -> ShardCanisterCatalog {
     ShardCanisterCatalog::init()
+}
+
+pub(crate) fn init_index_ownership_config() -> StableIndexOwnershipConfigCell {
+    Cell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_OWNERSHIP_CONFIG)),
+        IndexOwnershipConfig::default(),
+    )
 }
 
 pub(crate) fn init_index_vertex_postings() -> StableIndexVertexPostingSet {

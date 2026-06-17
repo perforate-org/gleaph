@@ -27,7 +27,6 @@ pub enum IndexSubject {
 /// `value` must be the sortable index key from `gleaph_gql::value_to_index_key_bytes`.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct IndexEqualSpec {
-    #[serde(default)]
     pub subject: IndexSubject,
     pub property_id: u32,
     pub value: Vec<u8>,

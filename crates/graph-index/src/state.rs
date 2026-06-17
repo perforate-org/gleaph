@@ -8,6 +8,9 @@ pub enum IndexError {
     InvalidPrincipalInRegistry,
     /// `shard_id` or principal is already attached to a different counterpart.
     ShardCanisterAlreadyAttached,
+    GraphOwnershipMismatch,
+    InvalidIndexGroupConfig,
+    ShardOutOfRangeForGroup,
 }
 
 impl std::fmt::Display for IndexError {
@@ -24,6 +27,18 @@ impl std::fmt::Display for IndexError {
                     f,
                     "shard/canister attachment already exists with a different counterpart"
                 )
+            }
+            Self::GraphOwnershipMismatch => {
+                write!(
+                    f,
+                    "index canister is already bound to a different graph/group"
+                )
+            }
+            Self::InvalidIndexGroupConfig => {
+                write!(f, "invalid index group configuration")
+            }
+            Self::ShardOutOfRangeForGroup => {
+                write!(f, "shard id is outside the attached index group range")
             }
         }
     }

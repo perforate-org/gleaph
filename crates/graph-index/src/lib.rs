@@ -40,6 +40,7 @@ pub use state::IndexError;
 
 use crate::guards::{guard_router_canister, guard_shard_canister};
 use candid::Principal;
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use ic_cdk_macros::{init, query, update};
 
@@ -56,10 +57,19 @@ fn init(args: IndexInitArgs) {
 
 #[update(guard = "guard_router_canister")]
 fn admin_attach_shard_canister(
+    graph_id: GraphId,
+    index_group_size: u32,
+    group_index: u32,
     shard_id: ShardId,
     shard_canister_principal: Principal,
 ) -> Result<(), String> {
-    canister::admin_attach_shard_canister(shard_id, shard_canister_principal)
+    canister::admin_attach_shard_canister(
+        graph_id,
+        index_group_size,
+        group_index,
+        shard_id,
+        shard_canister_principal,
+    )
 }
 
 #[update(guard = "guard_router_canister")]

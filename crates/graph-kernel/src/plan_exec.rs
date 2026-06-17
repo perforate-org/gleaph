@@ -31,6 +31,8 @@ pub enum GqlExecutionMode {
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ExecutePlanArgs {
     pub target_shard_id: ShardId,
+    /// Per-graph key for ELEMENT_ID/path id encoding.
+    pub element_id_encoding_key: [u8; 16],
     /// Router-issued idempotency key for update/DML execution.
     pub mutation_id: Option<MutationId>,
     pub plan_blob: Vec<u8>,
@@ -50,7 +52,6 @@ pub struct ExecutePlanResult {
     /// Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`]; set on query shard execution.
     pub rows_blob: Option<Vec<u8>>,
     /// Forward out-adjacency hubs from a DML batch (router P3 auto-finalize hint).
-    #[serde(default)]
     pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
 }
 
@@ -109,7 +110,6 @@ pub struct GraphMutationJournalEntryWire {
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
     /// Forward hubs observed during DML, persisted so router recovery can still finalize.
-    #[serde(default)]
     pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
 }
 
@@ -187,9 +187,7 @@ pub struct LocalEdgePosting {
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct SeedBindingEntry {
     pub variable: String,
-    #[serde(default)]
     pub local_vertex_ids: Vec<u32>,
-    #[serde(default)]
     pub local_edge_postings: Vec<LocalEdgePosting>,
 }
 
@@ -201,6 +199,7 @@ pub struct SeedBindingsWire {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::federation::ElementIdEncodingKey;
     use candid::{Decode, Encode};
 
     #[test]
@@ -248,6 +247,7 @@ mod tests {
         let seed_blob = Encode!(&seed).expect("seed encode");
         let args = ExecutePlanArgs {
             target_shard_id: ShardId::new(0),
+            element_id_encoding_key: ElementIdEncodingKey::host_test_fixture().0,
             mutation_id: Some(1),
             plan_blob: vec![1, 2, 3],
             params_blob: vec![4],

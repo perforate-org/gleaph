@@ -1,7 +1,9 @@
 # Federation model
 
 Last updated: 2026-06-17
-Status: **Partially Implemented** (global vertex identity per [ADR 0005](../adr/0005-vertex-identity.md) / [ADR 0006](../adr/0006-pre-federation-foundation.md); vertex **existence SSOT on graph shard** per [ADR 0017](../adr/0017-graph-vertex-existence-ssot.md); cross-shard remote CSR and `federated_expand` deferred)
+Status: **Partially Implemented** (graph-scoped vertex identity per [ADR 0005](../adr/0005-vertex-identity.md) /
+[ADR 0019](../adr/0019-graph-local-shard-id-and-index-clusters.md); vertex **existence SSOT on graph shard**
+per [ADR 0017](../adr/0017-graph-vertex-existence-ssot.md); cross-shard remote CSR and `federated_expand` deferred)
 Anchor timestamp: 2026-06-17 00:16:22 UTC +0000
 
 ## Purpose

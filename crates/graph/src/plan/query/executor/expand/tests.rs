@@ -999,7 +999,11 @@ fn expand_reused_dst_only_keeps_self_loop_edges() {
     let plan =
         plan_gql("MATCH (a:ReuseExpandA)-[:ReuseExpandRel]->(a) RETURN ELEMENT_ID(a) AS a_id");
     let result = store
-        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .execute_plan_query(
+            &plan,
+            &params(),
+            GqlExecutionContext::with_host_test_element_id_key(),
+        )
         .expect("reused dst expand");
     assert_eq!(
         result.rows.len(),
@@ -1016,7 +1020,7 @@ fn expand_reused_dst_only_keeps_self_loop_edges() {
     assert_eq!(
         GraphPathVertexId::try_from_slice(id_bytes.as_ref())
             .expect("decode vertex id")
-            .decode_global(&ElementIdEncodingKey::standalone()),
+            .decode_global(&ElementIdEncodingKey::host_test_fixture()),
         store.global_vertex_id(anchor).expect("anchor global id"),
     );
 }
@@ -1081,7 +1085,11 @@ fn expand_reused_dst_relabeled_endpoints_keep_self_loop() {
         "MATCH (a:ReuseRelabelPerson)-[:ReuseRelabelRel]->(a:ReuseRelabelUser) RETURN ELEMENT_ID(a) AS a_id",
     );
     let result = store
-        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .execute_plan_query(
+            &plan,
+            &params(),
+            GqlExecutionContext::with_host_test_element_id_key(),
+        )
         .expect("reused relabeled dst expand");
     assert_eq!(
         result.rows.len(),
@@ -1098,7 +1106,7 @@ fn expand_reused_dst_relabeled_endpoints_keep_self_loop() {
     assert_eq!(
         GraphPathVertexId::try_from_slice(id_bytes.as_ref())
             .expect("decode vertex id")
-            .decode_global(&ElementIdEncodingKey::standalone()),
+            .decode_global(&ElementIdEncodingKey::host_test_fixture()),
         store.global_vertex_id(anchor).expect("anchor global id"),
     );
 }

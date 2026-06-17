@@ -2,7 +2,7 @@
 
 use gleaph_graph_kernel::bidirectional_catalog::CatalogError;
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::ShardRegistryEntry;
+use gleaph_graph_kernel::federation::{GraphShardKey, ShardId, ShardRegistryEntry};
 use std::collections::BTreeSet;
 
 use crate::facade::stable::{
@@ -99,7 +99,7 @@ pub(crate) fn list_shards_for_graph_id(
     let mut out = Vec::with_capacity(indexed_unique.len());
     for shard_id in shard_ids {
         let entry = ROUTER_SHARDS
-            .with_borrow(|shards| shards.get(&shard_id))
+            .with_borrow(|shards| shards.get(&GraphShardKey::new(graph_id, shard_id)))
             .ok_or_else(|| {
                 RouterError::Internal(format!(
                     "registry invariant violation: shard {shard_id:?} listed for graph {graph_id:?} but missing from ROUTER_SHARDS"
@@ -114,4 +114,38 @@ pub(crate) fn list_shards_for_graph_id(
         out.push(entry);
     }
     Ok(out)
+}
+
+/// Index-attached shards only — used for dispatch, index fan-out, and backfill orchestration.
+pub(crate) fn list_live_shards_for_graph_id(
+    graph_id: GraphId,
+) -> Result<Vec<ShardRegistryEntry>, RouterError> {
+    Ok(list_shards_for_graph_id(graph_id)?
+        .into_iter()
+        .filter(|entry| entry.index_attached)
+        .collect())
+}
+
+/// Next graph-local [`ShardId`] for `admin_register_shard` (dense `0..n-1` growth).
+pub(crate) fn next_graph_local_shard_id(graph_id: GraphId) -> ShardId {
+    let shard_ids = ROUTER_SHARDS_BY_GRAPH_ID.with_borrow(|index| {
+        index
+            .get(&graph_id)
+            .map(|list| list.shard_ids.clone())
+            .unwrap_or_default()
+    });
+    let next = shard_ids
+        .iter()
+        .map(|id| id.raw())
+        .max()
+        .map(|max| max.saturating_add(1))
+        .unwrap_or(0);
+    ShardId::new(next)
+}
+
+pub(crate) fn lookup_shard_entry(
+    graph_id: GraphId,
+    shard_id: ShardId,
+) -> Option<ShardRegistryEntry> {
+    ROUTER_SHARDS.with_borrow(|shards| shards.get(&GraphShardKey::new(graph_id, shard_id)))
 }

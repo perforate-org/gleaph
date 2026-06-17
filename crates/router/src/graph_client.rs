@@ -185,16 +185,20 @@ pub async fn finalize_bulk_ingest(
 mod tests {
     use super::*;
 
+    use gleaph_graph_kernel::federation::ElementIdEncodingKey;
+    use gleaph_graph_kernel::plan_exec::GqlExecutionMode;
+
     #[test]
     fn native_build_graph_client_returns_unavailable() {
         let fut = execute_plan_on_graph(
             Principal::anonymous(),
             ExecutePlanArgs {
                 target_shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                element_id_encoding_key: ElementIdEncodingKey::host_test_fixture().0,
                 mutation_id: None,
                 plan_blob: vec![],
                 params_blob: vec![],
-                mode: gleaph_graph_kernel::plan_exec::GqlExecutionMode::Query,
+                mode: GqlExecutionMode::Query,
                 seed_bindings_blob: None,
                 resolved_labels: None,
                 resolved_properties: None,

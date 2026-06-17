@@ -1,14 +1,17 @@
 # 0019. Graph-local `ShardId` and per-graph index clusters
 
 Date: 2026-06-17  
-Status: proposed  
+Status: accepted  
 Last revised: 2026-06-17  
-Anchor timestamp: 2026-06-17 06:57:24 UTC +0000
+
+Anchor timestamp: 2026-06-17 13:34:18 UTC +0000
 
 ## Revision history
 
 | Date | Change |
 |------|--------|
+| 2026-06-17 | **Accepted** — S0–S5 implemented; post-accept doc sync (0005/0006/0010, capacity-planning, federation-target). |
+| 2026-06-17 | Repack: `ROUTER_GRAPH_RUNTIME_CONFIG` → MemoryId **5** (after registry); `INDEX_OWNERSHIP_CONFIG` → MemoryId **3** (before postings). |
 | 2026-06-17 | Proposed: `ShardId` dense per `GraphId`; one index cluster per logical graph; commit `GROUP_SIZE` shard-group routing. |
 | 2026-06-17 | **`GlobalVertexId` / `GlobalEdgeId` unchanged** — remain `(ShardId, …)` without `GraphId`; graph partition is execution context, not embedded in element keys ([§3](#3-global-vertex-and-edge-identity-graph-scoped-not-federation-wide)). |
 | 2026-06-17 | **Encoded ids are graph-context-bound** — `ElementIdEncodingKey` is derived per graph from IC randomness, but encoded bytes alone are not graph-agnostic ids ([§3.1](#31-element-id-encoding-key-per-logical-graph)). |
@@ -107,8 +110,16 @@ catalog ids → dedicated index cluster.
 | `ROUTER_SHARDS_BY_GRAPH_ID` | `GraphId → Vec<ShardId>` | **Unchanged list shape** — entries are **graph-local** ordinals |
 | `ROUTER_SHARD_BY_GRAPH` | `Principal → ShardId` | **`Principal → GraphShardKey`** (one graph canister → one graph-local shard) |
 
-`list_shards_for_graph_id(graph_id)` returns **`Vec<ShardId>`** in **`0..n-1`** order for that
-graph only.
+**Derived index vs query API**
+
+| Layer | Shape | Notes |
+|-------|--------|-------|
+| `ROUTER_SHARDS_BY_GRAPH_ID` | **`GraphId → Vec<ShardId>`** | Denormalized fan-out index; dense **`0..n-1`** insertion order per graph |
+| `list_shards_for_graph_id` / `list_shards_for_graph` | **`Vec<ShardRegistryEntry>`** | Walks the index, hydrates each ordinal from `ROUTER_SHARDS[GraphShardKey]`, validates `entry.graph_id` |
+| `list_live_shards_for_graph_id` / `list_live_shards_for_graph` | **`Vec<ShardRegistryEntry>`** | Same as above, filtered to `index_attached == true` (dispatch / index fan-out / backfill) |
+
+Listing APIs do **not** return bare `ShardId` vectors; callers get full registry rows
+(`graph_canister`, `index_canister`, `index_attached`, …).
 
 ### 3. Global vertex and edge identity: graph-scoped, not federation-wide
 
@@ -146,8 +157,8 @@ shard canister, a graph-dedicated index canister, or router code mid-dispatch fo
 
 [ADR 0005](0005-vertex-identity.md) already specifies a **per-graph `ElementIdEncodingKey`**
 (Feistel bijection over the 8 B / 12 B canonical keys). As of 2026-06-17 UTC, implementation
-still uses **`ElementIdEncodingKey::standalone()`** in graph materialization paths — acceptable
-for single-graph dev, **insufficient for multi-graph** once `ShardId` is graph-local.
+still uses **`ElementIdEncodingKey::host_test_fixture()`** (test/canbench only) when the router key
+is not set — **not** in production wasm paths.
 
 **Encoded ids are graph-context-bound handles.** `EncodedVertexId` and `EncodedEdgeId` remain
 8 B / 12 B opaque payloads and do **not** embed `GraphId`. A raw encoded payload is meaningful
@@ -215,7 +226,7 @@ Keep public/admin graph metadata separate from router execution configuration:
 | Store | Key | Owns |
 |-------|-----|------|
 | `ROUTER_GRAPHS` | `GraphId` | `GraphRegistryEntry`: display/admin metadata such as name, owner, status, HOME flag |
-| `ROUTER_GRAPH_RUNTIME_CONFIG` | `GraphId` | Router-owned execution config: element-id key, index grouping, index cluster |
+| `ROUTER_GRAPH_RUNTIME_CONFIG` | `GraphId` | Router-owned execution config: element-id key, index grouping, index cluster (**router MemoryId 5**, immediately after registry regions) |
 
 `GraphRegistryEntry` currently lives in `gleaph-gql-ic` for Candid/admin registry presentation.
 Do **not** require that type to expose `ElementIdEncodingKey` or index topology. The router may
@@ -268,20 +279,30 @@ cluster.
 | **Isolation** | Index canisters for graph `g` store postings **only** for shards of `g` |
 | **Deployment** | Separate subnet/cluster per logical graph (operator policy); router stores principals in that graph’s `index_cluster` |
 | **graph-index metadata** | Canister records owning **`GraphId`** at init / first `admin_attach_shard_canister`; rejects attachments for other graphs |
-| **Read routing** | `resolve_index_lookup_targets(graph_id)` → **`index_cluster` deduped**, not a cross-graph union from `ROUTER_SHARDS` scan |
+| **Read routing** | `graph_index_lookup_targets(graph_id)` → **deduped `index_canister` principals from live `ROUTER_SHARDS` rows** for that graph (not a stale `index_cluster` scan) |
 | **Write routing** | Graph shard uses formula (or cached `index_canister` on registry row) for **its** graph |
 
 Posting keys stay **`(property_id, value, shard_id, local_vertex_id)`** ([0010](0010-index-sharding-extensibility.md) invariant preserved). **`graph_id` is not added to postings** because the **canister boundary** is the graph partition.
 
 With [ADR 0018](0018-graph-scoped-label-property-catalogs.md), **`property_id` / label ids are also graph-local**, so a graph-dedicated index canister’s posting space is fully self-contained.
 
-### 7. graph-index `admin_attach_shard_canister`
+### 7. graph-index shard attach / detach
+
+**`admin_attach_shard_canister`**
 
 | Check | Policy |
 |-------|--------|
 | `graph_id` match | Attachment’s graph (from router) must equal index canister `GraphId` |
 | `shard_id` range | For canister at `group_index = k`, only shards with `shard_id ∈ [k×G, (k+1)×G)` |
 | Catalog | `INDEX_SHARD_CANISTER_BY_SHARD` keys **graph-local `shard_id`** only |
+
+**`admin_detach_shard_canister`**
+
+| Effect | Policy |
+|--------|--------|
+| Auth catalog | Remove `shard_id` ↔ graph-canister mapping |
+| Postings | Purge vertex, label, and edge postings for that **graph-local `shard_id`** so unregister does not leave stale index hits |
+| Router read path | `RouterIndexLookup` also filters index hits to **live registered shards** before merge |
 
 ### 8. Supersede ADR 0006 §1 and amend ADR 0010 / 0005 (semantics only)
 
@@ -366,13 +387,33 @@ flowchart TB
 
 | Phase | Scope | Status |
 |-------|--------|--------|
-| **S0** | `GraphShardKey` storable; `ROUTER_SHARDS` / `ROUTER_SHARD_BY_GRAPH` key migration | pending |
-| **S1** | Graph-local shard allocation on `commit_register_shard`; invariant tests | pending |
-| **S2** | Document graph-scoped `Global*` semantics; audit router paths for missing `GraphId` context | pending |
-| **S2b** | `ROUTER_GRAPH_RUNTIME_CONFIG.element_id_encoding_key`; `raw_rand()` derivation; router encode/decode; remove production `standalone()` | pending |
-| **S3** | `ROUTER_GRAPH_RUNTIME_CONFIG.index_group_size` + `index_cluster`; registration computes group and validates invariants | pending |
-| **S4** | graph-index owning `GraphId`; attach range checks; router `index_route` uses formula | pending |
-| **S5** | PocketIC multi-graph: two graphs both with `ShardId(0)`; distinct index clusters | pending |
+| **S0** | `GraphShardKey` storable; `ROUTER_SHARDS` / `ROUTER_SHARD_BY_GRAPH` key migration | **done** |
+| **S1** | Graph-local shard allocation on `commit_register_shard`; invariant tests | **done** |
+| **S2** | Document graph-scoped `Global*` semantics; audit router paths for missing `GraphId` context | **done** |
+| **S2b** | `ROUTER_GRAPH_RUNTIME_CONFIG.element_id_encoding_key`; `raw_rand()` derivation; router encode/decode; remove production `standalone()` | **done** |
+| **S3** | `ROUTER_GRAPH_RUNTIME_CONFIG.index_group_size` + `index_cluster`; registration computes group and validates invariants | **done** |
+| **S4** | graph-index owning `GraphId`; attach range checks; router `index_route` uses formula | done |
+| **S5** | PocketIC multi-graph: two graphs both with `ShardId(0)`; distinct index clusters | done |
+
+### S2 audit notes (2026-06-17)
+
+Router dispatch and multi-graph call sites were audited for missing `GraphId` scope:
+
+- `run_gql` resolves graph context first, then plans/dispatches with explicit `dispatch_graph_id`.
+- `dispatch_plan_blob(graph_id, ...)` threads `graph_id` through shard listing, label/property resolution,
+  idempotency records, routing, and projection advancement.
+- `dispatch_multi_graph_use_segments` dispatches each segment with that segment's `graph_id`.
+- `dispatch_use_graph_join` dispatches left/right branches with distinct `graph_id` values and only
+  merges wire rows at the router boundary.
+- `prepared_register` / `prepared_execute` key and execute prepared plans by `GraphId`.
+
+S2 confirms graph context ownership at router dispatch boundaries; no element wire layout change.
+
+### Post-S5 contract fixes (2026-06-17)
+
+- **`admin_register_graph_with_random_key`:** fetch `raw_rand()` entropy **before** `intern_graph_name` so a failed entropy call cannot leave an orphan `ROUTER_GRAPH_CATALOG` row.
+- **Index lookup targets:** `graph_index_lookup_targets` derives from **live shard registry** (`ShardRegistryEntry.index_canister`), not a stale `index_cluster` vector left over after unregister.
+- **Shard unregister:** `admin_detach_shard_canister` purges postings for the detached `shard_id`; router `RouterIndexLookup` filters merged hits to registered shards.
 
 **Sequencing:** S0–S1 before multi-graph federation tests; S2 is docs + call-site audit (no element wire bump); land with [0018](0018-graph-scoped-label-property-catalogs.md) V0–V2 when possible (shared router repack gate per [0007](0007-stable-memory-layout.md)).
 
@@ -385,7 +426,7 @@ flowchart TB
 3. **Runtime config:** create `ROUTER_GRAPH_RUNTIME_CONFIG` rows for each graph; derive or fixture
    `element_id_encoding_key` during graph re-registration.
 4. **Single-graph deployments:** existing `ShardId(0)` remains `ShardId(0)` under the sole `GraphId` — behavioral change only when a **second graph** is added.
-5. Update [stable-memory-inventory.md](../storage/stable-memory-inventory.md), [glossary.md](../glossary.md), [0005](0005-vertex-identity.md), [0010](0010-index-sharding-extensibility.md) on acceptance.
+5. Update [stable-memory-inventory.md](../storage/stable-memory-inventory.md), [glossary.md](../glossary.md), [0005](0005-vertex-identity.md), [0010](0010-index-sharding-extensibility.md) on acceptance. **Done** (2026-06-17).
 
 ---
 
@@ -395,10 +436,11 @@ flowchart TB
 |----------|--------|--------|
 | [adr/README.md](README.md) | Index ADR 0019 | **This patch** |
 | [0018-graph-scoped-label-property-catalogs.md](0018-graph-scoped-label-property-catalogs.md) | Cross-link; label live-by-shard keys include `GraphId` after graph-local `ShardId` | **This patch** |
-| [storage/stable-memory-inventory.md](../storage/stable-memory-inventory.md) | `ROUTER_SHARDS` key shape; `ROUTER_SHARD_BY_GRAPH` value shape; new `ROUTER_GRAPH_RUNTIME_CONFIG` region | pending S0/S2b/S3 |
-| [glossary.md](../glossary.md) | `ShardId` graph-local; `GlobalVertexId` graph-scoped semantics; encoded ids are graph-context-bound (8 B unchanged) | pending |
-| [index/capacity-planning.md](../index/capacity-planning.md) | Per-graph cluster + committed `GROUP_SIZE` | pending |
-| [sharding/standalone-mode.md](../sharding/standalone-mode.md) | `ShardId(0)` under sole `GraphId` | pending |
+| [storage/stable-memory-inventory.md](../storage/stable-memory-inventory.md) | `ROUTER_SHARDS` key shape; `ROUTER_SHARD_BY_GRAPH` value shape; new `ROUTER_GRAPH_RUNTIME_CONFIG` region | **done** |
+| [glossary.md](../glossary.md) | `ShardId` graph-local; `GlobalVertexId` graph-scoped semantics; encoded ids are graph-context-bound (8 B unchanged) | **done** |
+| [index/capacity-planning.md](../index/capacity-planning.md) | Per-graph cluster + committed `GROUP_SIZE` | **done** |
+| [sharding/standalone-mode.md](../sharding/standalone-mode.md) | `ShardId(0)` under sole `GraphId` | **done** |
+| [0005](0005-vertex-identity.md), [0006](0006-pre-federation-foundation.md) §1/§5, [0010](0010-index-sharding-extensibility.md) | Graph-scoped `Global*` semantics; graph-local `ShardId`; shard-group policy committed | **done** |
 
 ---
 

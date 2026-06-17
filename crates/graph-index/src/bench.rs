@@ -7,6 +7,7 @@ use crate::init::IndexInitArgs;
 use canbench_rs::bench;
 use candid::Principal;
 use gleaph_gql::{Value, value_to_index_key_bytes};
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use std::cell::Cell;
 use std::hint::black_box;
@@ -23,7 +24,7 @@ fn setup_index_store() -> (IndexStore, Principal, Principal) {
         router_canister: router,
     });
     store
-        .admin_attach_shard_canister(router, ShardId::new(0), owner)
+        .admin_attach_shard_canister(router, GraphId::from_raw(1), 1, 0, ShardId::new(0), owner)
         .expect("attach shard canister");
     (store, router, owner)
 }

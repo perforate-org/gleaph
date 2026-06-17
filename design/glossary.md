@@ -1,7 +1,7 @@
 # Glossary
 
 Last updated: 2026-06-17
-Anchor timestamp: 2026-06-17 00:16:22 UTC +0000
+Anchor timestamp: 2026-06-17 10:34:31 UTC +0000
 
 Terms used across Gleaph design documents. Canonical types live in **`gleaph-graph-kernel`** unless noted.
 
@@ -11,12 +11,12 @@ See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md), [adr/0006-pre-fe
 
 | Term | Type / location | Meaning |
 |------|-----------------|--------|
-| **Shard id** | `ShardId` (`u32` newtype) | Partition of a logical graph. Standalone sole shard is **`ShardId(0)`**. |
+| **Shard id** | `ShardId` (`u32` newtype) | Partition of a logical graph. Semantics are graph-local (`GraphId`-scoped), so `ShardId(0)` exists per graph. Standalone sole shard is **`ShardId(0)`**. |
 | **Local vertex id** | `LocalVertexId` / LARA `VertexId` | Dense id within one graph shard’s CSR store; not reused after delete. |
-| **Global vertex id** | `GlobalVertexId` | Canonical global key: `{ shard_id, local_vertex_id }` (8 bytes LE). Used by index routing and federation expand. |
-| **Global edge id** | `GlobalEdgeId` | Query-time physical edge handle: `{ shard_id, owner_local, edge_slot_index }` (12 bytes). Not stable across compaction. |
-| **Encoded vertex id** | `EncodedVertexId` (`[u8; 8]`) | Opaque client wire id for vertices (`ELEMENT_ID`, path elements). Bijective encoding of `GlobalVertexId` under a per-graph `ElementIdEncodingKey`. |
-| **Encoded edge id** | `EncodedEdgeId` (`[u8; 12]`) | Opaque client wire id for edges in paths and `ELEMENT_ID`. |
+| **Global vertex id** | `GlobalVertexId` | Canonical graph-scoped key: `{ shard_id, local_vertex_id }` (8 bytes LE). Interpreted only under an explicit `GraphId` context. |
+| **Global edge id** | `GlobalEdgeId` | Query-time graph-scoped physical edge handle: `{ shard_id, owner_local, edge_slot_index }` (12 bytes). Interpreted only with graph context; not stable across compaction. |
+| **Encoded vertex id** | `EncodedVertexId` (`[u8; 8]`) | Opaque client wire id for vertices (`ELEMENT_ID`, path elements). Bijective encoding of `GlobalVertexId` under a per-graph `ElementIdEncodingKey`; encoded bytes are graph-context-bound handles. |
+| **Encoded edge id** | `EncodedEdgeId` (`[u8; 12]`) | Opaque client wire id for edges in paths and `ELEMENT_ID`; encoded bytes are graph-context-bound handles. |
 | **Vertex liveness** | Graph CSR tombstone bit | Authoritative existence on a shard: row in range and not tombstoned ([ADR 0017](adr/0017-graph-vertex-existence-ssot.md)). |
 | **Physical placement key** | `PhysicalPlacementKey` | Type alias for `GlobalVertexId` (deprecated name). |
 | **Remote vertex id** | `RemoteVertexId` | Shard-local 30-bit handle inside `VertexRef` for remote CSR endpoints — kernel type only; **no graph stable yet**. |
@@ -28,9 +28,11 @@ See [adr/0005-vertex-identity.md](adr/0005-vertex-identity.md), [adr/0006-pre-fe
 
 | Term | Owner | Meaning |
 |------|-------|---------|
-| **Property id** | Router `ROUTER_PROPERTY_CATALOG` | Name ↔ `PropertyId` SSOT for federated graphs. Graph stores values only. |
-| **Vertex / edge label id** | Router label catalogs | Name ↔ label id SSOT; graph stores label sets by id. |
-| **Resolved property table** | Plan wire (`ResolvedPropertyTable`) | Router-supplied name→id map attached to `ExecutePlanArgs` for graph DML/scan. |
+| **Property id** | Router `ROUTER_PROPERTY_CATALOG` | Name ↔ `PropertyId` SSOT **per `GraphId`** (`GraphScopedNameCatalog`; [ADR 0018](adr/0018-graph-scoped-label-property-catalogs.md)). Same string in two graphs may map to different ids. Graph stores values only. |
+| **Vertex label id** | Router `ROUTER_VERTEX_LABEL_CATALOG` | Name ↔ `VertexLabelId` **per `GraphId`**. Graph stores label sets by id. |
+| **Edge label id** | Router `ROUTER_EDGE_LABEL_CATALOG` | Name ↔ `EdgeLabelId` **per `GraphId`**. |
+| **Resolved property table** | Plan wire (`ResolvedPropertyTable`) | Router-supplied name→id map for the dispatch **`GraphId`**, attached to `ExecutePlanArgs` for graph DML/scan. |
+| **Graph-scoped name catalog** | `GraphScopedNameCatalog<Id>` in graph-kernel | Shared router abstraction for `(GraphId, name) ↔ id` partitions ([ADR 0018](adr/0018-graph-scoped-label-property-catalogs.md)). |
 
 ## GQL graph type catalog (router)
 

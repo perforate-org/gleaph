@@ -90,6 +90,16 @@ pub struct FederationEnv {
     pub graph_dest: Principal,
 }
 
+pub struct TwoGraphTwoIndexEnv {
+    pub pic: PocketIc,
+    pub admin: Principal,
+    pub router: Principal,
+    pub index_home: Principal,
+    pub index_remote: Principal,
+    pub graph_home: Principal,
+    pub graph_remote: Principal,
+}
+
 #[derive(CandidType, serde::Deserialize)]
 pub struct GraphInitArgs {
     pub logical_graph_name: Option<String>,
@@ -214,21 +224,32 @@ pub fn install_federation() -> FederationEnv {
         None,
     );
 
-    let index = create_funded_canister(&pic);
-    pic.install_canister(
-        index,
-        wasm_bytes("INDEX_WASM"),
-        Encode!(&IndexInitArgs {
-            router_canister: router,
-        })
-        .expect("encode index init"),
-        None,
-    );
+    let index_source = create_funded_canister(&pic);
+    let index_dest = create_funded_canister(&pic);
+    for index in [index_source, index_dest] {
+        pic.install_canister(
+            index,
+            wasm_bytes("INDEX_WASM"),
+            Encode!(&IndexInitArgs {
+                router_canister: router,
+            })
+            .expect("encode index init"),
+            None,
+        );
+    }
 
     let graph_source = create_funded_canister(&pic);
     let graph_dest = create_funded_canister(&pic);
 
-    register_graph_and_shards(&pic, admin, router, index, graph_source, graph_dest);
+    register_graph_and_shards(
+        &pic,
+        admin,
+        router,
+        index_source,
+        index_dest,
+        graph_source,
+        graph_dest,
+    );
 
     for (graph, _shard) in [(graph_source, SOURCE_SHARD), (graph_dest, DEST_SHARD)] {
         pic.install_canister(
@@ -249,12 +270,15 @@ pub fn install_federation() -> FederationEnv {
         pic,
         admin,
         router,
-        index,
+        index: index_source,
         graph_source,
         graph_dest,
     };
 
-    for (graph, shard) in [(graph_source, SOURCE_SHARD), (graph_dest, DEST_SHARD)] {
+    for (graph, shard, index) in [
+        (graph_source, SOURCE_SHARD, index_source),
+        (graph_dest, DEST_SHARD, index_dest),
+    ] {
         let _: () = update_as_router(
             &env,
             graph,
@@ -288,21 +312,32 @@ pub fn install_two_graph_federation() -> FederationEnv {
         None,
     );
 
-    let index = create_funded_canister(&pic);
-    pic.install_canister(
-        index,
-        wasm_bytes("INDEX_WASM"),
-        Encode!(&IndexInitArgs {
-            router_canister: router,
-        })
-        .expect("encode index init"),
-        None,
-    );
+    let index_home = create_funded_canister(&pic);
+    let index_remote = create_funded_canister(&pic);
+    for index in [index_home, index_remote] {
+        pic.install_canister(
+            index,
+            wasm_bytes("INDEX_WASM"),
+            Encode!(&IndexInitArgs {
+                router_canister: router,
+            })
+            .expect("encode index init"),
+            None,
+        );
+    }
 
     let graph_source = create_funded_canister(&pic);
     let graph_dest = create_funded_canister(&pic);
 
-    register_two_graphs_and_shards(&pic, admin, router, index, graph_source, graph_dest);
+    register_two_graphs_and_shards(
+        &pic,
+        admin,
+        router,
+        index_home,
+        index_remote,
+        graph_source,
+        graph_dest,
+    );
 
     for (graph, graph_name) in [
         (graph_source, GRAPH_HOME_NAME),
@@ -326,14 +361,14 @@ pub fn install_two_graph_federation() -> FederationEnv {
         pic,
         admin,
         router,
-        index,
+        index: index_home,
         graph_source,
         graph_dest,
     };
 
-    for ((graph, graph_name), shard) in [
-        ((graph_source, GRAPH_HOME_NAME), SOURCE_SHARD),
-        ((graph_dest, GRAPH_REMOTE_NAME), DEST_SHARD),
+    for ((graph, graph_name), shard, index) in [
+        ((graph_source, GRAPH_HOME_NAME), SOURCE_SHARD, index_home),
+        ((graph_dest, GRAPH_REMOTE_NAME), DEST_SHARD, index_remote),
     ] {
         let _: () = update_as_router(
             &env,
@@ -419,8 +454,12 @@ pub fn install_single_shard_federation() -> FederationEnv {
     env
 }
 
+#[allow(clippy::too_many_arguments)]
 fn attach_index_shard_canister(
     pic: &PocketIc,
+    graph_id: GraphId,
+    index_group_size: u32,
+    group_index: u32,
     router: Principal,
     index: Principal,
     shard_id: ShardId,
@@ -431,13 +470,44 @@ fn attach_index_shard_canister(
             index,
             router,
             "admin_attach_shard_canister",
-            Encode!(&shard_id, &graph).expect("encode admin_attach_shard_canister"),
+            Encode!(
+                &graph_id,
+                &index_group_size,
+                &group_index,
+                &shard_id,
+                &graph
+            )
+            .expect("encode admin_attach_shard_canister"),
         )
         .expect("admin_attach_shard_canister");
     match Decode!(&bytes, Result<(), String>) {
         Ok(Ok(())) => {}
         Ok(Err(err)) => panic!("admin_attach_shard_canister rejected: {err}"),
         Err(err) => panic!("decode admin_attach_shard_canister: {err}"),
+    }
+}
+
+fn lookup_graph_id(
+    pic: &PocketIc,
+    admin: Principal,
+    router: Principal,
+    graph_name: &str,
+) -> GraphId {
+    let bytes = pic
+        .query_call(
+            router,
+            admin,
+            "lookup_graph_id",
+            Encode!(&graph_name.to_string()).expect("encode lookup_graph_id"),
+        )
+        .expect("lookup_graph_id");
+    match Decode!(
+        &bytes,
+        Result<gleaph_graph_kernel::entry::GraphId, gleaph_graph_kernel::federation::RouterError>
+    ) {
+        Ok(Ok(graph_id)) => graph_id,
+        Ok(Err(err)) => panic!("lookup_graph_id rejected: {err:?}"),
+        Err(err) => panic!("decode lookup_graph_id: {err}"),
     }
 }
 
@@ -482,14 +552,16 @@ pub fn register_graph_single_shard(
         Encode!(&args).expect("encode register shard"),
     )
     .expect("admin_register_shard");
-    attach_index_shard_canister(pic, router, index, shard_id, graph);
+    let graph_id = lookup_graph_id(pic, admin, router, GRAPH_NAME);
+    attach_index_shard_canister(pic, graph_id, 1, 0, router, index, shard_id, graph);
 }
 
 pub fn register_graph_and_shards(
     pic: &PocketIc,
     admin: Principal,
     router: Principal,
-    index: Principal,
+    source_index: Principal,
+    dest_index: Principal,
     graph_source: Principal,
     graph_dest: Principal,
 ) {
@@ -513,7 +585,10 @@ pub fn register_graph_and_shards(
     )
     .expect("admin_register_graph");
 
-    for (shard, graph) in [(SOURCE_SHARD, graph_source), (DEST_SHARD, graph_dest)] {
+    for (shard, graph, index) in [
+        (SOURCE_SHARD, graph_source, source_index),
+        (DEST_SHARD, graph_dest, dest_index),
+    ] {
         let args = AdminRegisterShardArgs {
             shard_id: shard,
             graph_canister: graph,
@@ -527,7 +602,9 @@ pub fn register_graph_and_shards(
             Encode!(&args).expect("encode register shard"),
         )
         .expect("admin_register_shard");
-        attach_index_shard_canister(pic, router, index, shard, graph);
+        let graph_id = lookup_graph_id(pic, admin, router, GRAPH_NAME);
+        let group_index = shard.raw();
+        attach_index_shard_canister(pic, graph_id, 1, group_index, router, index, shard, graph);
     }
 }
 
@@ -535,7 +612,8 @@ pub fn register_two_graphs_and_shards(
     pic: &PocketIc,
     admin: Principal,
     router: Principal,
-    index: Principal,
+    home_index: Principal,
+    remote_index: Principal,
     graph_home: Principal,
     graph_remote: Principal,
 ) {
@@ -564,9 +642,9 @@ pub fn register_two_graphs_and_shards(
         .expect("admin_register_graph");
     }
 
-    for (shard, graph, graph_name) in [
-        (SOURCE_SHARD, graph_home, GRAPH_HOME_NAME),
-        (DEST_SHARD, graph_remote, GRAPH_REMOTE_NAME),
+    for (shard, graph, graph_name, index) in [
+        (SOURCE_SHARD, graph_home, GRAPH_HOME_NAME, home_index),
+        (DEST_SHARD, graph_remote, GRAPH_REMOTE_NAME, remote_index),
     ] {
         let args = AdminRegisterShardArgs {
             shard_id: shard,
@@ -581,7 +659,136 @@ pub fn register_two_graphs_and_shards(
             Encode!(&args).expect("encode register shard"),
         )
         .expect("admin_register_shard");
-        attach_index_shard_canister(pic, router, index, shard, graph);
+        let graph_id = lookup_graph_id(pic, admin, router, graph_name);
+        attach_index_shard_canister(pic, graph_id, 1, 0, router, index, shard, graph);
+    }
+}
+
+/// Two logical graphs, both graph-local `ShardId(0)`, with distinct index canisters.
+pub fn install_two_graph_two_index_federation() -> TwoGraphTwoIndexEnv {
+    let pic = new_pocket_ic();
+    let admin = Principal::from_slice(&[0xAB; 29]);
+
+    let router = create_funded_canister(&pic);
+    pic.install_canister(
+        router,
+        wasm_bytes("ROUTER_WASM"),
+        Encode!(&RouterInitArgs {
+            issuing_principal: admin,
+            initial_admins: vec![],
+        })
+        .expect("encode router init"),
+        None,
+    );
+
+    let index_home = create_funded_canister(&pic);
+    let index_remote = create_funded_canister(&pic);
+    for index in [index_home, index_remote] {
+        pic.install_canister(
+            index,
+            wasm_bytes("INDEX_WASM"),
+            Encode!(&IndexInitArgs {
+                router_canister: router,
+            })
+            .expect("encode index init"),
+            None,
+        );
+    }
+
+    let graph_home = create_funded_canister(&pic);
+    let graph_remote = create_funded_canister(&pic);
+    for (graph, graph_name) in [
+        (graph_home, GRAPH_HOME_NAME),
+        (graph_remote, GRAPH_REMOTE_NAME),
+    ] {
+        let entry = GraphRegistryEntry {
+            graph_id: GraphId::from_raw(0),
+            graph_name: graph_name.into(),
+            canister_id: graph,
+            owner: admin,
+            admins: Default::default(),
+            status: GraphStatus::Active,
+            version: 1,
+            updated_at_ns: 0,
+            provisioning_state: ProvisioningState::None,
+            is_home: graph_name == GRAPH_HOME_NAME,
+        };
+        pic.update_call(
+            router,
+            admin,
+            "admin_register_graph",
+            Encode!(&entry).expect("encode graph registry"),
+        )
+        .expect("admin_register_graph");
+    }
+
+    for (graph_name, graph, index) in [
+        (GRAPH_HOME_NAME, graph_home, index_home),
+        (GRAPH_REMOTE_NAME, graph_remote, index_remote),
+    ] {
+        let args = AdminRegisterShardArgs {
+            shard_id: SOURCE_SHARD,
+            graph_canister: graph,
+            index_canister: index,
+            logical_graph_name: graph_name.into(),
+        };
+        pic.update_call(
+            router,
+            admin,
+            "admin_register_shard",
+            Encode!(&args).expect("encode register shard"),
+        )
+        .expect("admin_register_shard");
+
+        let graph_id = lookup_graph_id(&pic, admin, router, graph_name);
+        attach_index_shard_canister(&pic, graph_id, 1, 0, router, index, SOURCE_SHARD, graph);
+    }
+
+    for (graph, graph_name, index) in [
+        (graph_home, GRAPH_HOME_NAME, index_home),
+        (graph_remote, GRAPH_REMOTE_NAME, index_remote),
+    ] {
+        pic.install_canister(
+            graph,
+            wasm_bytes("GRAPH_WASM"),
+            Encode!(&GraphInitArgs {
+                logical_graph_name: Some(graph_name.into()),
+                router_canister: None,
+                shard_id: None,
+                index_canister: None,
+            })
+            .expect("encode graph init"),
+            None,
+        );
+        let bytes = pic
+            .update_call(
+                graph,
+                router,
+                "e2e_attach_federation",
+                Encode!(&E2eAttachFederationArgs {
+                    logical_graph_name: Some(graph_name.into()),
+                    router_canister: router,
+                    index_canister: index,
+                    shard_id: SOURCE_SHARD,
+                })
+                .expect("encode e2e_attach_federation"),
+            )
+            .expect("e2e_attach_federation");
+        match Decode!(&bytes, Result<(), String>) {
+            Ok(Ok(())) => {}
+            Ok(Err(err)) => panic!("e2e_attach_federation rejected: {err}"),
+            Err(err) => panic!("decode e2e_attach_federation: {err}"),
+        }
+    }
+
+    TwoGraphTwoIndexEnv {
+        pic,
+        admin,
+        router,
+        index_home,
+        index_remote,
+        graph_home,
+        graph_remote,
     }
 }
 
@@ -674,26 +881,81 @@ pub fn admin_intern_property(
     env: &FederationEnv,
     name: &str,
 ) -> gleaph_graph_kernel::entry::PropertyId {
-    update_as_admin(env, env.router, "admin_intern_property", name.to_string())
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_intern_property",
+            Encode!(&GRAPH_NAME.to_string(), &name.to_string())
+                .expect("encode admin_intern_property"),
+        )
+        .unwrap_or_else(|e| panic!("admin_intern_property on {}: {e:?}", env.router));
+    match Decode!(
+        &bytes,
+        Result<
+            gleaph_graph_kernel::entry::PropertyId,
+            gleaph_graph_kernel::federation::RouterError
+        >
+    ) {
+        Ok(Ok(value)) => value,
+        Ok(Err(err)) => panic!("admin_intern_property rejected: {err:?}"),
+        Err(err) => panic!("decode admin_intern_property: {err}"),
+    }
 }
 
 pub fn admin_intern_vertex_label(
     env: &FederationEnv,
     name: &str,
 ) -> gleaph_graph_kernel::entry::VertexLabelId {
-    update_as_admin(
-        env,
-        env.router,
-        "admin_intern_vertex_label",
-        name.to_string(),
-    )
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_intern_vertex_label",
+            Encode!(&GRAPH_NAME.to_string(), &name.to_string())
+                .expect("encode admin_intern_vertex_label"),
+        )
+        .unwrap_or_else(|e| panic!("admin_intern_vertex_label on {}: {e:?}", env.router));
+    match Decode!(
+        &bytes,
+        Result<
+            gleaph_graph_kernel::entry::VertexLabelId,
+            gleaph_graph_kernel::federation::RouterError
+        >
+    ) {
+        Ok(Ok(value)) => value,
+        Ok(Err(err)) => panic!("admin_intern_vertex_label rejected: {err:?}"),
+        Err(err) => panic!("decode admin_intern_vertex_label: {err}"),
+    }
 }
 
 pub fn admin_intern_edge_label(
     env: &FederationEnv,
     name: &str,
 ) -> gleaph_graph_kernel::entry::EdgeLabelId {
-    update_as_admin(env, env.router, "admin_intern_edge_label", name.to_string())
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_intern_edge_label",
+            Encode!(&GRAPH_NAME.to_string(), &name.to_string())
+                .expect("encode admin_intern_edge_label"),
+        )
+        .unwrap_or_else(|e| panic!("admin_intern_edge_label on {}: {e:?}", env.router));
+    match Decode!(
+        &bytes,
+        Result<
+            gleaph_graph_kernel::entry::EdgeLabelId,
+            gleaph_graph_kernel::federation::RouterError
+        >
+    ) {
+        Ok(Ok(value)) => value,
+        Ok(Err(err)) => panic!("admin_intern_edge_label rejected: {err:?}"),
+        Err(err) => panic!("decode admin_intern_edge_label: {err}"),
+    }
 }
 
 /// Gleaph extension DDL on the router update path (`gql_execute_idempotent`).
@@ -821,25 +1083,6 @@ pub fn drop_vertex_property_index(
     );
 }
 
-fn update_as_admin<T: CandidType, R: CandidType + serde::de::DeserializeOwned>(
-    env: &FederationEnv,
-    canister: Principal,
-    method: &str,
-    args: T,
-) -> R {
-    use gleaph_graph_kernel::federation::RouterError;
-
-    let bytes = env
-        .pic
-        .update_call(canister, env.admin, method, Encode!(&args).expect("encode"))
-        .unwrap_or_else(|e| panic!("{method} on {canister}: {e:?}"));
-    match Decode!(&bytes, Result<R, RouterError>) {
-        Ok(Ok(value)) => value,
-        Ok(Err(err)) => panic!("{method} rejected: {err:?}"),
-        Err(err) => panic!("decode {method}: {err}"),
-    }
-}
-
 pub fn e2e_insert_edge(
     env: &FederationEnv,
     graph: Principal,
@@ -908,14 +1151,23 @@ pub fn gql_query_as_admin(
     env: &FederationEnv,
     query: &str,
 ) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
+    gql_query_on_router(&env.pic, env.admin, env.router, query)
+}
+
+/// Router composite `gql_query` with explicit caller and router principals.
+pub fn gql_query_on_router(
+    pic: &PocketIc,
+    caller: Principal,
+    router: Principal,
+    query: &str,
+) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
     use gleaph_graph_kernel::federation::RouterError;
     use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 
-    let bytes = env
-        .pic
+    let bytes = pic
         .query_call(
-            env.router,
-            env.admin,
+            router,
+            caller,
             "gql_query",
             Encode!(&query.to_string(), &Vec::<u8>::new()).expect("encode gql_query"),
         )
@@ -925,6 +1177,91 @@ pub fn gql_query_as_admin(
         Ok(Err(err)) => panic!("gql_query rejected: {err:?}"),
         Err(err) => panic!("decode gql_query: {err}"),
     }
+}
+
+/// Admin query: per-graph `ElementIdEncodingKey` bytes from router runtime config (ADR 0019).
+pub fn graph_element_id_encoding_key(
+    pic: &PocketIc,
+    caller: Principal,
+    router: Principal,
+    logical_graph_name: &str,
+) -> gleaph_graph_kernel::federation::ElementIdEncodingKey {
+    use gleaph_graph_kernel::federation::{ElementIdEncodingKey, RouterError};
+
+    let bytes = pic
+        .query_call(
+            router,
+            caller,
+            "graph_element_id_encoding_key",
+            Encode!(&logical_graph_name.to_string()).expect("encode graph_element_id_encoding_key"),
+        )
+        .unwrap_or_else(|e| panic!("graph_element_id_encoding_key on router: {e:?}"));
+    match Decode!(&bytes, Result<[u8; 16], RouterError>) {
+        Ok(Ok(key)) => ElementIdEncodingKey(key),
+        Ok(Err(err)) => panic!("graph_element_id_encoding_key rejected: {err:?}"),
+        Err(err) => panic!("decode graph_element_id_encoding_key: {err}"),
+    }
+}
+
+/// Insert one vertex on `graph` with the router as update caller (federation e2e).
+pub fn e2e_insert_vertex_via_router(
+    pic: &PocketIc,
+    router: Principal,
+    graph: Principal,
+) -> E2eInsertVertexResult {
+    let bytes = pic
+        .update_call(
+            graph,
+            router,
+            "e2e_insert_vertex",
+            Encode!(&()).expect("encode e2e_insert_vertex"),
+        )
+        .unwrap_or_else(|e| panic!("e2e_insert_vertex on {graph}: {e:?}"));
+    match Decode!(&bytes, Result<E2eInsertVertexResult, String>) {
+        Ok(Ok(value)) => value,
+        Ok(Err(err)) => panic!("e2e_insert_vertex rejected: {err}"),
+        Err(err) => panic!("decode e2e_insert_vertex: {err}"),
+    }
+}
+
+/// Decode the first row's bytes column from a router `gql_query` `rows_blob` projection.
+pub fn element_id_bytes_from_gql_result(
+    result: &gleaph_graph_kernel::plan_exec::GqlQueryResult,
+    column: &str,
+) -> Vec<u8> {
+    use gleaph_gql::Value;
+    use gleaph_gql_ic::IcWirePlanQueryResult;
+
+    let rows_blob = result
+        .rows_blob
+        .as_ref()
+        .unwrap_or_else(|| panic!("gql_query should return rows_blob for ELEMENT_ID projection"));
+    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
+    assert_eq!(wire.rows.len(), 1, "expected one ELEMENT_ID row");
+    let row = wire
+        .rows
+        .into_iter()
+        .next()
+        .expect("one row")
+        .try_into_value_row()
+        .expect("wire row to value row");
+    let Value::Bytes(id_bytes) = row.get(column).unwrap_or_else(|| {
+        panic!(
+            "expected ELEMENT_ID bytes in column {column}, got {:?}",
+            row.get(column)
+        )
+    }) else {
+        panic!(
+            "expected ELEMENT_ID bytes in column {column}, got {:?}",
+            row.get(column)
+        );
+    };
+    id_bytes.clone()
+}
+
+/// Per-graph encoding key bytes for a federation env's registered graph name.
+pub fn federation_graph_element_id_encoding_key_bytes(env: &FederationEnv) -> [u8; 16] {
+    graph_element_id_encoding_key(&env.pic, env.admin, env.router, GRAPH_NAME).0
 }
 
 /// Router composite `gql_query` expected to fail (e.g. after DROP INDEX removes federated anchor).

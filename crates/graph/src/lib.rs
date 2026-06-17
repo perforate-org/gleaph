@@ -3,6 +3,7 @@
 #[cfg(feature = "canbench")]
 mod bench;
 mod edge_payload_schema;
+mod element_id_encoding;
 #[expect(
     dead_code,
     reason = "facade exposes canister storage helpers used by feature and integration paths"

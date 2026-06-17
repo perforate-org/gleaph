@@ -156,6 +156,7 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
             caller: None,
             resolved_labels: args.resolved_labels,
             resolved_properties: args.resolved_properties,
+            element_id_encoding_key: Some(args.element_id_encoding_key),
         },
         seeds,
         args.mutation_id,
@@ -466,10 +467,11 @@ mod tests {
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, ProjectColumn};
     use gleaph_gql_planner::wire::encode_block_plans;
-    use gleaph_graph_kernel::federation::{BulkIngestFinalizeArgs, ShardId};
+    use gleaph_graph_kernel::federation::{BulkIngestFinalizeArgs, ElementIdEncodingKey, ShardId};
     use gleaph_graph_kernel::plan_exec::{SeedBindingEntry, SeedBindingsWire};
 
     const TEST_SHARD_ID: ShardId = ShardId::new(0);
+    const TEST_ELEMENT_ID_ENCODING_KEY: [u8; 16] = ElementIdEncodingKey::host_test_fixture().0;
 
     fn attach_test_federation(shard_id: ShardId) {
         let mut metadata = GraphMetadata::default();
@@ -538,6 +540,7 @@ mod tests {
         let params_blob = encode_gql_params_blob(vec![]).expect("encode params");
         let args = ExecutePlanArgs {
             target_shard_id: TEST_SHARD_ID,
+            element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
             mutation_id: None,
             plan_blob,
             params_blob,
@@ -594,6 +597,7 @@ mod tests {
         let params_blob = encode_gql_params_blob(vec![]).expect("encode params");
         let args = ExecutePlanArgs {
             target_shard_id: TEST_SHARD_ID,
+            element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
             mutation_id: None,
             plan_blob,
             params_blob,
@@ -635,6 +639,7 @@ mod tests {
         let params_blob = encode_gql_params_blob(vec![]).expect("encode params");
         let args = ExecutePlanArgs {
             target_shard_id: TEST_SHARD_ID,
+            element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
             mutation_id: None,
             plan_blob,
             params_blob,
@@ -663,6 +668,7 @@ mod tests {
         let params_blob = encode_gql_params_blob(vec![]).expect("encode params");
         let args = ExecutePlanArgs {
             target_shard_id: ShardId::new(1),
+            element_id_encoding_key: TEST_ELEMENT_ID_ENCODING_KEY,
             mutation_id: None,
             plan_blob,
             params_blob,

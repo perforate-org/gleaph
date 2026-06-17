@@ -16,7 +16,6 @@ pub struct GraphMutationJournalEntry {
     pub row_count: u64,
     pub emitted_delta_first_seq: Option<ShardEventSeq>,
     pub emitted_delta_last_seq: Option<ShardEventSeq>,
-    #[serde(default)]
     pub hot_forward_vertices: Vec<LocalVertexId>,
 }
 

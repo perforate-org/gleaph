@@ -2,7 +2,7 @@
 
 Date: 2026-06-11  
 Status: accepted  
-Last revised: 2026-06-11
+Last revised: 2026-06-17
 
 ## Context
 
@@ -41,7 +41,9 @@ expanded in [0005](0005-vertex-identity.md).
 - Production multi-shard `gql_query`, peer expand, remote CSR edge DML.
 - Vertex migration placement state machines.
 - Persistent `RemoteVertexId ↔ GlobalVertexId` table (define type only).
-- Choosing final `GROUP_SIZE` for index canister groups.
+- Choosing final `GROUP_SIZE` for index canister groups — **closed on shard-group axis** per
+  [ADR 0019](0019-graph-local-shard-id-and-index-clusters.md) (`index_group_size` per graph);
+  subject/range split axes remain deferred ([ADR 0010](0010-index-sharding-extensibility.md)).
 
 ---
 
@@ -49,18 +51,29 @@ expanded in [0005](0005-vertex-identity.md).
 
 ### 1. `ShardId` and shard registry
 
+> **Amended 2026-06-17 ([ADR 0019](0019-graph-local-shard-id-and-index-clusters.md)):** `ShardId`
+> ordinals are **graph-local and dense** (`0..n-1` per `GraphId`), not federation-global.
+> Router registry keys are **`GraphShardKey { graph_id, shard_id }`**. `ShardId(0)` is the first
+> shard of **each** graph.
+
 **Type:** transparent newtype `ShardId(u32)` in `graph-kernel`.
 
 - **`Storable`:** delegate to inner `u32` (`self.0.to_le_bytes()` / `ShardId(u32::from_le_bytes(...))`).
 - **`CandidType` / serde:** transparent encoding.
-- **`0` is valid** — the sole shard in standalone mode is always **`ShardId(0)`**.
+- **`0` is valid** — the sole shard in standalone mode is always **`ShardId(0)`** under the sole
+  registered `GraphId`.
 
-**Assignment (strategy A):** shards use contiguous ids **`0..n-1`**. One shard is the degenerate case
-`n = 1` → only shard `0`. Future shards are issued incrementally (`1`, `2`, …) as federation
-rolls out. Tests should use **`0` and `1`**, not arbitrary ids like `7`/`9`.
+**Assignment:** per logical graph, shards use contiguous ids **`0..n-1`**. One shard is the
+degenerate case `n = 1` → only shard `0`. Next shard for graph `g` is **`n`** on
+`admin_register_shard`. Tests should use **`0` and `1`**, not arbitrary ids like `7`/`9`.
 
-**Router** maintains the authoritative **`ShardId ↔ Principal`** registry (`ROUTER_SHARDS`,
-`ShardRegistryEntry`: graph canister, index canister, logical graph name).
+**Router** maintains the authoritative registry:
+
+| Map | Key | Value |
+|-----|-----|-------|
+| `ROUTER_SHARDS` | **`GraphShardKey`** | `ShardRegistryEntry` |
+| `ROUTER_SHARD_BY_GRAPH` | graph canister `Principal` | **`GraphShardKey`** |
+| `ROUTER_SHARDS_BY_GRAPH_ID` | `GraphId` | `Vec<ShardId>` (graph-local ordinals) |
 
 **Graph shards** store their own `shard_id` in metadata but **do not resolve other shard
 Principals** until federation is implemented. No `PEER_GRAPH_CANISTERS` in the single-shard
@@ -70,6 +83,9 @@ layout.
 the router (`Option<ShardId>` for incomplete state; validate membership in `ROUTER_SHARDS` at
 dispatch). Avoid `ShardId::default()` on partially-built structs where `0` could be mistaken for
 “unset” — use `Option<ShardId>`.
+
+**Raw-id ambiguity:** `ShardId(0)` on two graphs denotes **different shards**; always pair with
+`GraphId` at router orchestration boundaries.
 
 **Posting vertex tail:** index `PostingKey` and `LabelPostingKey` identify vertices as
 `(shard_id, local_vertex_id)` plus property/label key prefix. This is fixed for efficient shard
@@ -160,22 +176,28 @@ not stable across compaction.
 
 ### 5. Index canister grouping
 
+> **Amended 2026-06-17 ([ADR 0019](0019-graph-local-shard-id-and-index-clusters.md)):** shard-group
+> routing is **committed** per logical graph. `index_group_size` (`GROUP_SIZE`) and
+> `index_cluster` live in `ROUTER_GRAPH_RUNTIME_CONFIG`. Default multi-tenant layout: **one index
+> cluster per logical graph**.
+
 **No index canister numeric id.** Index instances are identified by **`Principal`** only.
 
-**Grouping (illustrative — not a committed constant):** one index canister per **shard group** is
-the intended direction; an example group function is:
+**Shard-group routing (authoritative per graph):**
 
 ```text
-group_index = shard_id / GROUP_SIZE    // GROUP_SIZE: capacity-driven, deferred — see ADR 0010
+group_index = shard_id / index_group_size
+index_principal = index_cluster[group_index]
 ```
 
-Router resolves **`group_index → index_canister Principal`** at shard registration (or from a
-router-held table). **Per-shard `index_canister` on `ShardRegistryEntry`** is the extensible
-write-time SSOT ([ADR 0010](0010-index-sharding-extensibility.md)). **Graph shard** stores only
-**its** `index_canister` principal (bootstrap / `FederationRouting` / registry row) — not the
-formula, not peer indexes.
+Router validates `ShardRegistryEntry.index_canister` against the formula at shard registration.
+**Read routing** dedupes live shard `index_canister` principals; **write routing** uses the
+formula or cached registry row for the shard's graph.
 
-**Single shard:** `shard_id = 0`, one group, one index canister.
+**Single shard:** `shard_id = 0`, `group_index = 0`, `|index_cluster| = 1`.
+
+Subject split and property-range split remain future optional axes within a graph's cluster
+([ADR 0010](0010-index-sharding-extensibility.md)).
 
 Index postings remain tagged with **`shard_id`** so one index canister can serve multiple graph
 shards in a group.

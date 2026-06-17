@@ -7,7 +7,6 @@ use gleaph_gql::ast::{AggregateFunc, CmpOp, Expr, ExprKind, ObjectName, TruthVal
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::{ProjectColumn, Str};
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, Vertex};
-use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
@@ -710,16 +709,20 @@ impl QueryExprEvaluator<'_> {
                 Some(PlanBinding::Vertex(vertex_id)) => Ok(Value::Bytes(vertex_element_id_bytes(
                     self.store, *vertex_id,
                 )?)),
-                Some(PlanBinding::RemoteVertex(vertex_id)) => Ok(Value::Bytes(
-                    GraphPathVertexId::from_global(&ElementIdEncodingKey::standalone(), *vertex_id)
-                        .to_bytes()
-                        .to_vec(),
-                )),
+                Some(PlanBinding::RemoteVertex(vertex_id)) => {
+                    let key = crate::element_id_encoding::require_execution_element_id_key()
+                        .map_err(|_| PlanQueryError::MissingElementIdEncodingKey)?;
+                    Ok(Value::Bytes(
+                        GraphPathVertexId::from_global(&key, *vertex_id)
+                            .to_bytes()
+                            .to_vec(),
+                    ))
+                }
                 Some(PlanBinding::Edge(edge)) => Ok(Value::Bytes(edge_element_id_bytes(
                     local_shard_id(self.store),
                     edge.handle.owner_vertex_id,
                     EdgeSlotIndex::from_raw(edge.handle.slot_index),
-                ))),
+                )?)),
                 Some(PlanBinding::EdgeGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
                     expression: format!(
                         "ELEMENT_ID({name}) on a group edge variable requires element indexing"
@@ -868,17 +871,21 @@ pub(crate) fn binding_to_value(
 ) -> Result<Value, PlanQueryError> {
     match binding {
         PlanBinding::Vertex(vertex_id) => vertex_to_value(store, resolved_labels, *vertex_id),
-        PlanBinding::RemoteVertex(vertex_id) => Ok(Value::Record(vec![
-            (
-                "id".to_owned(),
-                Value::Bytes(
-                    GraphPathVertexId::from_global(&ElementIdEncodingKey::standalone(), *vertex_id)
-                        .to_bytes()
-                        .to_vec(),
+        PlanBinding::RemoteVertex(vertex_id) => {
+            let key = crate::element_id_encoding::require_execution_element_id_key()
+                .map_err(|_| PlanQueryError::MissingElementIdEncodingKey)?;
+            Ok(Value::Record(vec![
+                (
+                    "id".to_owned(),
+                    Value::Bytes(
+                        GraphPathVertexId::from_global(&key, *vertex_id)
+                            .to_bytes()
+                            .to_vec(),
+                    ),
                 ),
-            ),
-            ("remote".to_owned(), Value::Bool(true)),
-        ])),
+                ("remote".to_owned(), Value::Bool(true)),
+            ]))
+        }
         PlanBinding::Edge(edge) => edge_to_value(store, resolved_labels, edge.clone()),
         PlanBinding::EdgeGroup(edges) => Ok(Value::List(
             edges

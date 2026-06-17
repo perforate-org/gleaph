@@ -4,6 +4,7 @@ use crate::facade::{DEFAULT_COUNT_POSTINGS_MAX_GROUPS, IndexStore};
 use crate::init::IndexInitArgs;
 use crate::state::IndexError;
 use candid::Principal;
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexIntersectionResult, PostingHit, PostingRangeRequest, ValuePostingCount,
@@ -19,11 +20,21 @@ pub(crate) fn init(args: IndexInitArgs) {
 }
 
 pub(crate) fn admin_attach_shard_canister(
+    graph_id: GraphId,
+    index_group_size: u32,
+    group_index: u32,
     shard_id: ShardId,
     shard_canister_principal: Principal,
 ) -> Result<(), String> {
     IndexStore::new()
-        .admin_attach_shard_canister(msg_caller(), shard_id, shard_canister_principal)
+        .admin_attach_shard_canister(
+            msg_caller(),
+            graph_id,
+            index_group_size,
+            group_index,
+            shard_id,
+            shard_canister_principal,
+        )
         .map_err(|e| e.to_string())
 }
 

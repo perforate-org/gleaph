@@ -1,106 +1,73 @@
-//! Index canister resolution from shard registry (ADR 0010).
-
-use std::collections::BTreeMap;
+//! Index routing formula helpers (ADR 0019 S4).
 
 use candid::Principal;
-use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
+use gleaph_graph_kernel::federation::ShardId;
 
-/// Deduped index lookup targets for a logical graph, stable-sorted by Principal bytes.
-pub fn resolve_index_lookup_targets(shards: &[ShardRegistryEntry]) -> Vec<Principal> {
-    let mut targets: Vec<Principal> = shards
-        .iter()
-        .map(|entry| entry.index_canister)
-        .filter(|principal| *principal != Principal::anonymous())
-        .collect();
-    targets.sort();
-    targets.dedup();
-    targets
+/// Authoritative routing formula: `group_index = shard_id / index_group_size`.
+pub fn index_group_index(shard_id: ShardId, index_group_size: u32) -> Option<usize> {
+    if index_group_size == 0 {
+        return None;
+    }
+    usize::try_from(shard_id.raw() / index_group_size).ok()
 }
 
-/// Index canister that holds postings for `shard_id` (write/read routing).
-#[cfg_attr(
-    not(test),
-    expect(
-        dead_code,
-        reason = "ADR 0010 routing helper for future registry and ops tooling"
-    )
-)]
-pub fn index_canister_for_shard(
+/// Resolve index canister by formula and per-graph cluster config.
+pub fn index_canister_for_graph_shard(
     shard_id: ShardId,
-    shards: &[ShardRegistryEntry],
+    index_group_size: u32,
+    index_cluster: &[Principal],
 ) -> Option<Principal> {
-    shards
-        .iter()
-        .find(|entry| entry.shard_id == shard_id)
-        .map(|entry| entry.index_canister)
-        .filter(|principal| *principal != Principal::anonymous())
-}
-
-/// Shard → index map used for shard-scoped index calls (`lookup_label_page`, etc.).
-pub fn shard_index_canisters(shards: &[ShardRegistryEntry]) -> BTreeMap<ShardId, Principal> {
-    shards
-        .iter()
-        .filter(|entry| entry.index_canister != Principal::anonymous())
-        .map(|entry| (entry.shard_id, entry.index_canister))
-        .collect()
+    let group = index_group_index(shard_id, index_group_size)?;
+    let principal = *index_cluster.get(group)?;
+    if principal == Principal::anonymous() {
+        return None;
+    }
+    Some(principal)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
-    use gleaph_graph_kernel::entry::GraphId;
-
-    fn graph_principal(byte: u8) -> Principal {
+    fn index_principal(byte: u8) -> Principal {
         Principal::self_authenticating([byte; 32])
     }
 
-    fn entry(shard: u32, graph: u8, index: u8) -> ShardRegistryEntry {
-        ShardRegistryEntry {
-            shard_id: ShardId::new(shard),
-            graph_canister: graph_principal(graph),
-            index_canister: graph_principal(index),
-            graph_id: GraphId::from_raw(1),
-            registered_at_ns: 0,
-        }
+    #[test]
+    fn index_group_index_uses_formula() {
+        assert_eq!(index_group_index(ShardId::new(0), 2), Some(0));
+        assert_eq!(index_group_index(ShardId::new(1), 2), Some(0));
+        assert_eq!(index_group_index(ShardId::new(2), 2), Some(1));
+        assert_eq!(index_group_index(ShardId::new(9), 3), Some(3));
     }
 
     #[test]
-    fn resolve_targets_dedupes_shared_index() {
-        let shards = vec![entry(0, 1, 2), entry(1, 3, 2)];
+    fn index_canister_for_graph_shard_uses_group_index() {
+        let cluster = vec![index_principal(3), index_principal(5)];
         assert_eq!(
-            resolve_index_lookup_targets(&shards),
-            vec![graph_principal(2)]
+            index_canister_for_graph_shard(ShardId::new(0), 2, &cluster),
+            Some(index_principal(3))
+        );
+        assert_eq!(
+            index_canister_for_graph_shard(ShardId::new(1), 2, &cluster),
+            Some(index_principal(3))
+        );
+        assert_eq!(
+            index_canister_for_graph_shard(ShardId::new(2), 2, &cluster),
+            Some(index_principal(5))
         );
     }
 
     #[test]
-    fn resolve_targets_returns_multiple_principals_sorted() {
-        let shards = vec![entry(0, 1, 5), entry(1, 2, 3)];
-        let targets = resolve_index_lookup_targets(&shards);
-        assert_eq!(targets.len(), 2);
-        assert!(targets[0] < targets[1]);
-        assert!(targets.contains(&graph_principal(3)));
-        assert!(targets.contains(&graph_principal(5)));
-    }
-
-    #[test]
-    fn index_canister_for_shard_uses_registry_row() {
-        let shards = vec![entry(0, 1, 2), entry(1, 3, 4)];
+    fn index_canister_for_graph_shard_rejects_invalid_config() {
+        let shards = vec![index_principal(2)];
         assert_eq!(
-            index_canister_for_shard(ShardId::new(1), &shards),
-            Some(graph_principal(4))
+            index_canister_for_graph_shard(ShardId::new(1), 0, &shards),
+            None
         );
-        assert_eq!(index_canister_for_shard(ShardId::new(9), &shards), None);
-    }
-
-    #[test]
-    fn shard_index_map_skips_anonymous() {
-        let mut anonymous = entry(2, 9, 9);
-        anonymous.index_canister = Principal::anonymous();
-        let shards = vec![entry(0, 1, 2), anonymous];
-        let map = shard_index_canisters(&shards);
-        assert_eq!(map.len(), 1);
-        assert_eq!(map.get(&ShardId::new(0)), Some(&graph_principal(2)));
+        assert_eq!(
+            index_canister_for_graph_shard(ShardId::new(3), 2, &shards),
+            None
+        );
     }
 }

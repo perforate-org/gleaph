@@ -5,6 +5,7 @@ use std::future::Future;
 use std::pin::Pin;
 
 use candid::Principal;
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexIntersectionRequest, IndexIntersectionResult,
@@ -12,8 +13,8 @@ use gleaph_graph_kernel::index::{
     ValuePostingCount,
 };
 
+use crate::facade::store::RouterStore;
 use crate::index_client::RouterIndexClient;
-use crate::index_route::{resolve_index_lookup_targets, shard_index_canisters};
 
 /// Federated index reader: resolves one or more index canisters from shard registry (ADR 0010).
 #[derive(Clone, Debug)]
@@ -23,11 +24,25 @@ pub struct RouterIndexLookup {
 }
 
 impl RouterIndexLookup {
-    pub fn from_shards(shards: &[gleaph_graph_kernel::federation::ShardRegistryEntry]) -> Self {
-        Self {
-            targets: resolve_index_lookup_targets(shards),
-            shard_index: shard_index_canisters(shards),
+    pub fn from_shards(
+        graph_id: GraphId,
+        shards: &[gleaph_graph_kernel::federation::ShardRegistryEntry],
+    ) -> Result<Self, String> {
+        let store = RouterStore::new();
+        let targets = store
+            .graph_index_lookup_targets(graph_id)
+            .map_err(|e| e.to_string())?;
+        let mut shard_index = BTreeMap::new();
+        for entry in shards {
+            let principal = store
+                .graph_index_canister_for_shard(graph_id, entry.shard_id)
+                .map_err(|e| e.to_string())?;
+            shard_index.insert(entry.shard_id, principal);
         }
+        Ok(Self {
+            targets,
+            shard_index,
+        })
     }
 
     fn require_single_target(&self, operation: &str) -> Result<Principal, String> {
@@ -47,6 +62,18 @@ impl RouterIndexLookup {
             .copied()
             .ok_or_else(|| format!("shard {} is not registered", shard_id.raw()))?;
         Ok(RouterIndexClient::new(principal))
+    }
+
+    fn retain_live_vertex_hits(&self, hits: Vec<PostingHit>) -> Vec<PostingHit> {
+        hits.into_iter()
+            .filter(|hit| self.shard_index.contains_key(&hit.shard_id))
+            .collect()
+    }
+
+    fn retain_live_edge_hits(&self, hits: Vec<EdgePostingHit>) -> Vec<EdgePostingHit> {
+        hits.into_iter()
+            .filter(|hit| self.shard_index.contains_key(&hit.shard_id))
+            .collect()
     }
 }
 
@@ -226,7 +253,7 @@ impl IndexLookup for RouterIndexLookup {
                         .await?,
                 );
             }
-            Ok(merge_posting_hits(merged))
+            Ok(merge_posting_hits(self.retain_live_vertex_hits(merged)))
         })
     }
 
@@ -239,9 +266,17 @@ impl IndexLookup for RouterIndexLookup {
             Err(err) => return Box::pin(async move { Err(err) }),
         };
         Box::pin(async move {
-            RouterIndexClient::new(principal)
+            let result = RouterIndexClient::new(principal)
                 .lookup_intersection(req)
-                .await
+                .await?;
+            Ok(match result {
+                IndexIntersectionResult::Vertices(hits) => IndexIntersectionResult::Vertices(
+                    merge_posting_hits(self.retain_live_vertex_hits(hits)),
+                ),
+                IndexIntersectionResult::Edges(hits) => IndexIntersectionResult::Edges(
+                    merge_edge_posting_hits(self.retain_live_edge_hits(hits)),
+                ),
+            })
         })
     }
 
@@ -261,7 +296,7 @@ impl IndexLookup for RouterIndexLookup {
                         .await?,
                 );
             }
-            Ok(merge_edge_posting_hits(merged))
+            Ok(merge_edge_posting_hits(self.retain_live_edge_hits(merged)))
         })
     }
 
@@ -314,9 +349,10 @@ impl IndexLookup for RouterIndexLookup {
             Err(err) => return Box::pin(async move { Err(err) }),
         };
         Box::pin(async move {
-            RouterIndexClient::new(principal)
+            let hits = RouterIndexClient::new(principal)
                 .lookup_label_intersection(req)
-                .await
+                .await?;
+            Ok(merge_posting_hits(self.retain_live_vertex_hits(hits)))
         })
     }
 
@@ -370,42 +406,7 @@ impl IndexLookup for RouterIndexLookup {
 
 #[cfg(test)]
 mod tests {
-    use gleaph_graph_kernel::federation::ShardRegistryEntry;
-
     use super::*;
-    use crate::index_route::{resolve_index_lookup_targets, shard_index_canisters};
-
-    use gleaph_graph_kernel::entry::GraphId;
-
-    fn graph_principal(byte: u8) -> Principal {
-        Principal::self_authenticating([byte; 32])
-    }
-
-    #[test]
-    fn router_index_lookup_from_shards_dedupes_targets() {
-        let shards = vec![
-            ShardRegistryEntry {
-                shard_id: ShardId::new(0),
-                graph_canister: graph_principal(1),
-                index_canister: graph_principal(2),
-                graph_id: GraphId::from_raw(1),
-                registered_at_ns: 0,
-            },
-            ShardRegistryEntry {
-                shard_id: ShardId::new(1),
-                graph_canister: graph_principal(3),
-                index_canister: graph_principal(2),
-                graph_id: GraphId::from_raw(1),
-                registered_at_ns: 0,
-            },
-        ];
-        RouterIndexLookup::from_shards(&shards);
-        assert_eq!(
-            resolve_index_lookup_targets(&shards),
-            vec![graph_principal(2)]
-        );
-        assert_eq!(shard_index_canisters(&shards).len(), 2);
-    }
 
     #[test]
     fn merge_posting_hits_dedupes() {

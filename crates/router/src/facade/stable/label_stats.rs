@@ -50,18 +50,18 @@ impl Storable for LabelStats {
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
-pub struct LabelShardKey {
-    pub shard_id: ShardId,
+pub struct GraphLabelKey {
+    pub graph_id: GraphId,
     pub label_id: u16,
 }
 
-impl LabelShardKey {
-    pub const fn new(shard_id: ShardId, label_id: u16) -> Self {
-        Self { shard_id, label_id }
+impl GraphLabelKey {
+    pub const fn new(graph_id: GraphId, label_id: u16) -> Self {
+        Self { graph_id, label_id }
     }
 }
 
-impl Storable for LabelShardKey {
+impl Storable for GraphLabelKey {
     const BOUND: Bound = Bound::Bounded {
         max_size: 6,
         is_fixed_size: true,
@@ -73,6 +73,54 @@ impl Storable for LabelShardKey {
 
     fn into_bytes(self) -> Vec<u8> {
         let mut out = Vec::with_capacity(6);
+        out.extend_from_slice(&self.graph_id.to_le_bytes());
+        out.extend_from_slice(&self.label_id.to_le_bytes());
+        out
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let bytes = bytes.as_ref();
+        let mut graph = [0; 4];
+        let mut label = [0; 2];
+        graph.copy_from_slice(&bytes[0..4]);
+        label.copy_from_slice(&bytes[4..6]);
+        Self {
+            graph_id: GraphId::from_le_bytes(graph),
+            label_id: u16::from_le_bytes(label),
+        }
+    }
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub struct GraphLabelShardKey {
+    pub graph_id: GraphId,
+    pub shard_id: ShardId,
+    pub label_id: u16,
+}
+
+impl GraphLabelShardKey {
+    pub const fn new(graph_id: GraphId, shard_id: ShardId, label_id: u16) -> Self {
+        Self {
+            graph_id,
+            shard_id,
+            label_id,
+        }
+    }
+}
+
+impl Storable for GraphLabelShardKey {
+    const BOUND: Bound = Bound::Bounded {
+        max_size: 10,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(self.into_bytes())
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(10);
+        out.extend_from_slice(&self.graph_id.to_le_bytes());
         out.extend_from_slice(&self.shard_id.to_le_bytes());
         out.extend_from_slice(&self.label_id.to_le_bytes());
         out
@@ -80,11 +128,14 @@ impl Storable for LabelShardKey {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         let bytes = bytes.as_ref();
+        let mut graph = [0; 4];
         let mut shard = [0; 4];
         let mut label = [0; 2];
-        shard.copy_from_slice(&bytes[0..4]);
-        label.copy_from_slice(&bytes[4..6]);
+        graph.copy_from_slice(&bytes[0..4]);
+        shard.copy_from_slice(&bytes[4..8]);
+        label.copy_from_slice(&bytes[8..10]);
         Self {
+            graph_id: GraphId::from_le_bytes(graph),
             shard_id: ShardId::from_le_bytes(shard),
             label_id: u16::from_le_bytes(label),
         }
@@ -213,7 +264,7 @@ mod tests {
     use ic_stable_structures::Storable;
 
     #[test]
-    fn router_mutation_record_v1_round_trips_through_storable() {
+    fn router_mutation_record_round_trips_through_storable() {
         let record = RouterMutationRecord::new(1, 42, vec![9, 8]);
         let decoded = RouterMutationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
         assert_eq!(decoded, record);

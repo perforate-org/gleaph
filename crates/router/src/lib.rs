@@ -79,13 +79,21 @@ fn resolve_graph(
 }
 
 #[query]
-fn resolve_shard(shard_id: types::ShardId) -> Result<types::ShardRegistryEntry, RouterError> {
-    canister::resolve_shard(shard_id)
+fn resolve_shard(
+    logical_graph_name: String,
+    shard_id: types::ShardId,
+) -> Result<types::ShardRegistryEntry, RouterError> {
+    canister::resolve_shard(logical_graph_name, shard_id)
 }
 
 #[query]
 fn lookup_graph_id(graph_name: String) -> Result<gleaph_graph_kernel::entry::GraphId, RouterError> {
     canister::lookup_graph_id(graph_name)
+}
+
+#[query]
+fn graph_element_id_encoding_key(logical_graph_name: String) -> Result<[u8; 16], RouterError> {
+    canister::graph_element_id_encoding_key(logical_graph_name)
 }
 
 #[query]
@@ -96,40 +104,58 @@ fn list_shards_for_graph(
 }
 
 #[query]
-fn lookup_vertex_label_id(name: String) -> Result<types::VertexLabelId, RouterError> {
-    canister::lookup_vertex_label_id(name)
+fn lookup_vertex_label_id(
+    logical_graph_name: String,
+    name: String,
+) -> Result<types::VertexLabelId, RouterError> {
+    canister::lookup_vertex_label_id(logical_graph_name, name)
 }
 
 #[query]
-fn lookup_edge_label_id(name: String) -> Result<types::EdgeLabelId, RouterError> {
-    canister::lookup_edge_label_id(name)
+fn lookup_edge_label_id(
+    logical_graph_name: String,
+    name: String,
+) -> Result<types::EdgeLabelId, RouterError> {
+    canister::lookup_edge_label_id(logical_graph_name, name)
 }
 
 #[query]
-fn lookup_property_id(name: String) -> Result<types::PropertyId, RouterError> {
-    canister::lookup_property_id(name)
+fn lookup_property_id(
+    logical_graph_name: String,
+    name: String,
+) -> Result<types::PropertyId, RouterError> {
+    canister::lookup_property_id(logical_graph_name, name)
 }
 
 #[query]
-fn reverse_vertex_label_name(label_id: types::VertexLabelId) -> Result<String, RouterError> {
-    canister::reverse_vertex_label_name(label_id)
+fn reverse_vertex_label_name(
+    logical_graph_name: String,
+    label_id: types::VertexLabelId,
+) -> Result<String, RouterError> {
+    canister::reverse_vertex_label_name(logical_graph_name, label_id)
 }
 
 #[query]
-fn reverse_edge_label_name(label_id: types::EdgeLabelId) -> Result<String, RouterError> {
-    canister::reverse_edge_label_name(label_id)
+fn reverse_edge_label_name(
+    logical_graph_name: String,
+    label_id: types::EdgeLabelId,
+) -> Result<String, RouterError> {
+    canister::reverse_edge_label_name(logical_graph_name, label_id)
 }
 
 #[query]
-fn reverse_property_name(property_id: types::PropertyId) -> Result<String, RouterError> {
-    canister::reverse_property_name(property_id)
+fn reverse_property_name(
+    logical_graph_name: String,
+    property_id: types::PropertyId,
+) -> Result<String, RouterError> {
+    canister::reverse_property_name(logical_graph_name, property_id)
 }
 
 #[update]
-fn admin_register_graph(
+async fn admin_register_graph(
     entry: gleaph_gql_ic::graph_registry::GraphRegistryEntry,
 ) -> Result<(), RouterError> {
-    canister::admin_register_graph(entry)
+    canister::admin_register_graph(entry).await
 }
 
 #[update]
@@ -142,28 +168,45 @@ fn admin_update_graph_status(
 }
 
 #[update]
+fn admin_unregister_graph(logical_graph_name: String) -> Result<(), RouterError> {
+    canister::admin_unregister_graph(logical_graph_name)
+}
+
+#[update]
 async fn admin_register_shard(args: types::AdminRegisterShardArgs) -> Result<(), RouterError> {
     canister::admin_register_shard(args).await
 }
 
 #[update]
-async fn admin_unregister_shard(shard_id: types::ShardId) -> Result<(), RouterError> {
-    canister::admin_unregister_shard(shard_id).await
+async fn admin_unregister_shard(
+    logical_graph_name: String,
+    shard_id: types::ShardId,
+) -> Result<(), RouterError> {
+    canister::admin_unregister_shard(logical_graph_name, shard_id).await
 }
 
 #[update]
-fn admin_intern_vertex_label(name: String) -> Result<types::VertexLabelId, RouterError> {
-    canister::admin_intern_vertex_label(name)
+fn admin_intern_vertex_label(
+    logical_graph_name: String,
+    name: String,
+) -> Result<types::VertexLabelId, RouterError> {
+    canister::admin_intern_vertex_label(logical_graph_name, name)
 }
 
 #[update]
-fn admin_intern_edge_label(name: String) -> Result<types::EdgeLabelId, RouterError> {
-    canister::admin_intern_edge_label(name)
+fn admin_intern_edge_label(
+    logical_graph_name: String,
+    name: String,
+) -> Result<types::EdgeLabelId, RouterError> {
+    canister::admin_intern_edge_label(logical_graph_name, name)
 }
 
 #[update]
-fn admin_intern_property(name: String) -> Result<types::PropertyId, RouterError> {
-    canister::admin_intern_property(name)
+fn admin_intern_property(
+    logical_graph_name: String,
+    name: String,
+) -> Result<types::PropertyId, RouterError> {
+    canister::admin_intern_property(logical_graph_name, name)
 }
 
 /// Read-only GQL: composite query (calls index + graph query endpoints).

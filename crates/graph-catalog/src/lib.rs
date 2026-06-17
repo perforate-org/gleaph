@@ -285,42 +285,48 @@ impl<MT: Memory, MB: Memory> GraphCatalog<MT, MB> {
             .map_err(CatalogError::InvalidDefinition)
     }
 
+    /// Resolves the bound graph type definition for a property graph, if any.
+    ///
+    /// Returns [`None`] for reserved ids, missing bindings, or open `ANY` graphs.
+    pub fn graph_type_definition_for_graph_id(
+        &self,
+        graph_id: GraphId,
+    ) -> Result<Option<GraphTypeDefinition>, CatalogError> {
+        if graph_id.is_reserved() {
+            return Ok(None);
+        }
+        let Some(binding) = self.binding_map.get(&graph_id) else {
+            return Ok(None);
+        };
+        self.definition_for_binding(&binding).map(Some)
+    }
+
+    pub fn remove_graph_binding(&mut self, graph_id: GraphId) {
+        self.binding_map.remove(&graph_id);
+    }
+
     fn definition_for_binding(
         &self,
         binding: &GraphSchemaBinding,
     ) -> Result<GraphTypeDefinition, CatalogError> {
         match binding {
-            GraphSchemaBinding::V2(v2) => match v2 {
-                GraphSchemaBindingV2::TypeRef(raw) => {
+            GraphSchemaBinding::V1(v1) => match v1 {
+                GraphSchemaBindingV1::TypeRef(raw) => {
                     let type_id = GraphTypeId::from_raw(*raw);
                     let Some(value) = self.type_map.get(&type_id) else {
                         return Err(CatalogError::GraphTypeNotFound(type_id.to_string()));
                     };
                     Ok(value.into())
                 }
-                GraphSchemaBindingV2::Inline(def) => Ok(def.clone()),
-            },
-            GraphSchemaBinding::V1(v1) => match v1 {
                 GraphSchemaBindingV1::Inline(def) => Ok(def.clone()),
-                GraphSchemaBindingV1::TypeRef(name) => Err(CatalogError::Unsupported(format!(
-                    "legacy graph schema TypeRef `{name}` requires catalog migration (ADR 0014)"
-                ))),
             },
         }
     }
 }
 
-/// Version 1 graph schema binding payload (legacy string [`TypeRef`]).
+/// Version 1 graph schema binding payload.
 #[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 enum GraphSchemaBindingV1 {
-    /// Legacy `CREATE GRAPH ... TYPED` — graph type name string (ADR 0013).
-    TypeRef(String),
-    Inline(GraphTypeDefinition),
-}
-
-/// Version 2 graph schema binding payload (ADR 0014).
-#[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
-enum GraphSchemaBindingV2 {
     /// `CREATE GRAPH ... TYPED <name>` — resolved [`GraphTypeId`] (`raw()` in stable storage).
     TypeRef(u32),
     Inline(GraphTypeDefinition),
@@ -330,25 +336,24 @@ enum GraphSchemaBindingV2 {
 #[derive(Clone, Debug, PartialEq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
 enum GraphSchemaBinding {
     V1(GraphSchemaBindingV1),
-    V2(GraphSchemaBindingV2),
 }
 
 impl GraphSchemaBinding {
     fn type_ref(type_id: GraphTypeId) -> Self {
-        Self::V2(GraphSchemaBindingV2::TypeRef(type_id.raw()))
+        Self::V1(GraphSchemaBindingV1::TypeRef(type_id.raw()))
     }
 
     fn inline(def: GraphTypeDefinition) -> Self {
-        Self::V2(GraphSchemaBindingV2::Inline(def))
+        Self::V1(GraphSchemaBindingV1::Inline(def))
     }
 }
 
 fn binding_type_ref_id(binding: &GraphSchemaBinding) -> Option<GraphTypeId> {
     match binding {
-        GraphSchemaBinding::V2(GraphSchemaBindingV2::TypeRef(raw)) => {
+        GraphSchemaBinding::V1(GraphSchemaBindingV1::TypeRef(raw)) => {
             Some(GraphTypeId::from_raw(*raw))
         }
-        GraphSchemaBinding::V1(_) | GraphSchemaBinding::V2(GraphSchemaBindingV2::Inline(_)) => None,
+        GraphSchemaBinding::V1(GraphSchemaBindingV1::Inline(_)) => None,
     }
 }
 
@@ -812,7 +817,7 @@ mod tests {
     }
 
     #[test]
-    fn versioned_catalog_records_round_trip_through_storable() {
+    fn catalog_records_round_trip_through_storable() {
         let block = block_from("CREATE GRAPH TYPE gt { NODE Person LABEL Person }");
         let stmt = block.iter_statements().next().expect("stmt");
         let Statement::CreateGraphType(c) = stmt else {
@@ -830,13 +835,12 @@ mod tests {
         let decoded_binding =
             GraphSchemaBinding::from_bytes(Cow::Owned(binding.clone().into_bytes()));
         match decoded_binding {
-            GraphSchemaBinding::V2(GraphSchemaBindingV2::Inline(decoded_def)) => {
+            GraphSchemaBinding::V1(GraphSchemaBindingV1::Inline(decoded_def)) => {
                 GraphTypePropertySchema::try_from_definition(&decoded_def)
                     .expect("decoded binding schema");
             }
-            GraphSchemaBinding::V1(_)
-            | GraphSchemaBinding::V2(GraphSchemaBindingV2::TypeRef(_)) => {
-                panic!("expected inline V2 binding")
+            GraphSchemaBinding::V1(GraphSchemaBindingV1::TypeRef(_)) => {
+                panic!("expected inline binding")
             }
         }
     }

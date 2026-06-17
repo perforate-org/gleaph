@@ -1,9 +1,9 @@
 # 0011. GQL graph resolution and catalog scoping
 
-Date: 2026-06-13  
-Status: accepted  
-Last revised: 2026-06-13  
-Anchor timestamp: 2026-06-13 12:15:07 UTC +0000
+Date: 2026-06-13
+Status: accepted (catalog vocabulary superseded by [ADR 0018](0018-graph-scoped-label-property-catalogs.md) as of 2026-06-17)
+Last revised: 2026-06-17
+Anchor timestamp: 2026-06-17 10:34:31 UTC +0000
 
 ## Revision history
 
@@ -17,6 +17,7 @@ Anchor timestamp: 2026-06-13 12:15:07 UTC +0000
 | 2026-06-13 | Follow-up: `admin_set_indexed_*` → CREATE INDEX compat; PocketIC HOME + remote USE e2e. |
 | 2026-06-13 | **U2 (partial):** nested `USE GRAPH` chain peel + sequential multi-graph union merge at router. |
 | 2026-06-13 | **U2:** NEXT-chain union, cross-graph cartesian join + tail Project, root HashJoin/CartesianProduct fan-out. |
+| 2026-06-17 | **Catalog scope superseded by [ADR 0018](0018-graph-scoped-label-property-catalogs.md):** label and property name catalogs are **graph-scoped** per `GraphId`; §1.4 global-vocabulary bullets amended below. |
 
 ## Context
 
@@ -70,11 +71,11 @@ do not** — they appear as raw `String` in stable keys and in stored records:
 | Canister uniqueness map | `ROUTER_SHARD_BY_GRAPH` | `Principal → ShardId` (**not** logical graph name) |
 | Named index row key | `ROUTER_NAMED_INDEXES` | `NamedIndexKey { graph, index_name }` |
 | Index membership key | `ROUTER_INDEXED_PROPERTY_SET` | `IndexedPropertyKey { graph, … }` |
-| Prepared plan key | `ROUTER_PREPARED_PLANS` (stable, MemoryId 7) | **`PreparedPlanKey { graph_id, name }`** → **`PreparedPlanRecord::V1`** |
+| Prepared plan key | `ROUTER_PREPARED_PLANS` (stable, MemoryId 8) | **`PreparedPlanKey { graph_id, name }`** → **`PreparedPlanRecord::V1`** |
 | Idempotency key | `ROUTER_MUTATION_BY_CLIENT_KEY` | `ClientMutationKey.logical_graph_name` |
 | Label telemetry | mutation records | `logical_graph_name: String` |
 
-**Label / property ids** remain **global** (not graph-scoped) — unchanged from ADR 0006.
+**Label / property ids** are **graph-scoped** per `GraphId` on the router ([ADR 0018](0018-graph-scoped-label-property-catalogs.md)); supersede the global policy stated in the original 0011 draft.
 
 **This ADR’s catalog decision:** implement the same **`BidirectionalCatalog` pattern** for
 **logical graph names → `GraphId`** and **index names → `IndexNameId` (scoped per `GraphId`)**,
@@ -272,7 +273,7 @@ composite name key:
 **Values** (`IndexDefRecord`) already use `PropertyId` + `label_id` — no index **name** in value.
 
 **Planner stats:** `load_graph_stats(graph_id: GraphId)` scans membership by `graph_id` prefix;
-property **names** in GQL still resolve via global `PropertyId` catalog at plan build.
+property **names** in GQL resolve via graph-scoped `PropertyId` catalog at plan build ([ADR 0018](0018-graph-scoped-label-property-catalogs.md)).
 
 **Index DDL:** Applies to **`GraphId`** from `effective_graph` (§1.1); index identifier in DDL
 interns through §4 catalog.
@@ -294,7 +295,7 @@ interns at entry.
 | `ShardRegistryEntry` | `logical_graph_name: String` → **`graph_id: GraphId`** |
 | `list_shards_for_graph(name)` | Resolve name → `GraphId`; add **`ROUTER_SHARDS_BY_GRAPH_ID: GraphId → Vec<ShardId>`** (or equivalent index) — **distinct from** `ROUTER_SHARD_BY_GRAPH` (`Principal → ShardId`, unchanged) |
 | `ROUTER_NAMED_INDEXES` / `ROUTER_INDEXED_PROPERTY_SET` keys | §4 |
-| `ROUTER_PREPARED_PLANS` key / value | **`PreparedPlanKey { graph_id, name }`** → **`PreparedPlanRecord::V1(PreparedPlanRecordV1)`** (stable MemoryId 7) |
+| `ROUTER_PREPARED_PLANS` key / value | **`PreparedPlanKey { graph_id, name }`** → **`PreparedPlanRecord::V1(PreparedPlanRecordV1)`** (stable MemoryId 8) |
 | `ClientMutationKey` / label telemetry mutation records | `logical_graph_name: String` → **`graph_id: GraphId`** |
 | `graph_stats_for`, `create_index`, `drop_index`, index fan-out | Parameters **`GraphId`** (+ `IndexNameId` for named index ops) |
 | `graph-kernel::ShardRegistryEntry` wire/Candid | **`graph_id: GraphId`**; expose name via router lookup when needed |
@@ -304,7 +305,7 @@ interns at entry.
 
 - GQL AST / planner `PlanOp::UseGraph { graph_name: … }` — textual until router resolves at ingress
 - `GraphRegistryEntry.graph_name` — canonical display name for admin/Candid
-- Property / label **global** catalogs — unchanged
+- Property / label catalogs — **graph-scoped** per `GraphId` on router ([ADR 0018](0018-graph-scoped-label-property-catalogs.md)); graph stores ids only
 
 **Admin APIs:** `admin_set_indexed_*` are thin wrappers over `CREATE INDEX IF NOT EXISTS` with
 synthetic index names (ADR 0009 follow-up); both paths intern graph + index names to ids before

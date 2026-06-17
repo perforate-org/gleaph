@@ -101,12 +101,12 @@ Code source of truth:
 |----------|-------------|----------|-------|
 | Graph — LARA bundle | 32 | 0–31 | Forward canonical + reverse derived + maintenance; wired into one `DeferredBidirectionalLabeledLaraGraph` |
 | Graph — facade | 8 | 32–39 | Properties, labels, aliases, label stats delta log, mutation journal |
-| Router | 33 | 0–32 | Grouped auth → registry → idempotency → catalog → telemetry → maintenance; prepared plans at MemoryId 7 |
-| Graph-index | 5 | 0–4 | Admins, shard owners, property postings, router auth, label postings |
+| Router | 34 | 0–33 | Grouped auth → registry → runtime config → idempotency → catalog → telemetry → maintenance; `ROUTER_GRAPH_RUNTIME_CONFIG` at MemoryId 5 |
+| Graph-index | 7 | 0–6 | Router auth, shard catalog, ownership config, then derived postings |
 
 Ephemeral heap state (pending posting queues on graph canisters) is **not**
 part of this layout; see inventory § ephemeral. Router prepared plans are **stable**
-(`ROUTER_PREPARED_PLANS`, MemoryId 7) as of 2026-06-17 compact.
+(`ROUTER_PREPARED_PLANS`, MemoryId 8) as of 2026-06-17 compact.
 
 ### 3. Regions that must stay separated
 

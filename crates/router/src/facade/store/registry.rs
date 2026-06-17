@@ -1,11 +1,16 @@
 //! Graph and shard registry.
 
 use super::super::stable::graph_catalog::{
-    self, intern_graph_name, list_shards_for_graph_id, lookup_graph_id,
-    require_graph_registry_entry, resolve_registered_graph_id,
+    self, intern_graph_name, list_live_shards_for_graph_id, list_shards_for_graph_id,
+    lookup_graph_id, lookup_shard_entry, next_graph_local_shard_id, require_graph_registry_entry,
+    resolve_registered_graph_id,
 };
 use super::super::stable::{
-    ROUTER_GRAPHS, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_SHARDS_BY_GRAPH_ID,
+    ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS,
+    ROUTER_EDGE_PAYLOAD_PROFILES, ROUTER_GQL_GRAPH_CATALOG, ROUTER_GRAPH_CATALOG,
+    ROUTER_GRAPH_RUNTIME_CONFIG, ROUTER_GRAPHS, ROUTER_INDEX_NAME_CATALOG, ROUTER_PROPERTY_CATALOG,
+    ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS, ROUTER_SHARDS_BY_GRAPH_ID, ROUTER_VERTEX_LABEL_CATALOG,
+    ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
 };
 #[cfg(test)]
 use super::registry_invariants::check_registry_invariants;
@@ -16,19 +21,196 @@ use crate::state::RouterError;
 use crate::types::{AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ShardId};
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::ShardRegistryEntry;
+use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GraphShardKey, ShardRegistryEntry};
 
 use super::{RouterStore, ic_time_ns, validate_metadata_name};
 
+const ELEMENT_ID_KEY_DERIVATION_DOMAIN: &[u8] = b"gleaph:element-id-key:v1";
+/// Deterministic entropy for host unit tests and `admin_register_graph` (not IC `raw_rand`).
+const HOST_GRAPH_REGISTRATION_ENTROPY: &[u8] = b"router-test-entropy-seed-000000000000";
+
+fn shard_group_index(shard_id: ShardId, index_group_size: u32) -> Result<usize, RouterError> {
+    crate::index_route::index_group_index(shard_id, index_group_size).ok_or_else(|| {
+        RouterError::InvalidArgument("index_group_size must be greater than zero".into())
+    })
+}
+
+#[cfg(not(feature = "pocket-ic-e2e"))]
+fn shard_group_index_u32(shard_id: ShardId, index_group_size: u32) -> Result<u32, RouterError> {
+    if index_group_size == 0 {
+        return Err(RouterError::InvalidArgument(
+            "index_group_size must be greater than zero".into(),
+        ));
+    }
+    Ok(shard_id.raw() / index_group_size)
+}
+
+fn validate_index_group_canister_assignment(
+    graph_id: GraphId,
+    shard_id: ShardId,
+    index_canister: Principal,
+) -> Result<(), RouterError> {
+    ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow(|cfg| {
+        let runtime = cfg.get(&graph_id).ok_or_else(|| {
+            RouterError::NotFound(format!("runtime config for graph {graph_id}"))
+        })?;
+        let group_index = shard_group_index(shard_id, runtime.index_group_size)?;
+        if let Some(assigned) = runtime.index_cluster.get(group_index)
+            && *assigned != index_canister
+        {
+            return Err(RouterError::Conflict(format!(
+                "index canister mismatch for graph {graph_id} group {group_index}: expected {assigned}, got {index_canister}",
+            )));
+        }
+        Ok(())
+    })
+}
+
+fn commit_index_group_canister_assignment(
+    graph_id: GraphId,
+    shard_id: ShardId,
+    index_canister: Principal,
+) -> Result<(), RouterError> {
+    ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|cfg| {
+        let mut runtime = cfg.get(&graph_id).ok_or_else(|| {
+            RouterError::NotFound(format!("runtime config for graph {graph_id}"))
+        })?;
+        let group_index = shard_group_index(shard_id, runtime.index_group_size)?;
+        if group_index >= runtime.index_cluster.len() {
+            runtime.index_cluster.resize(group_index + 1, index_canister);
+        } else if runtime.index_cluster[group_index] != index_canister {
+            return Err(RouterError::Conflict(format!(
+                "index canister mismatch for graph {graph_id} group {group_index}: expected {}, got {index_canister}",
+                runtime.index_cluster[group_index],
+            )));
+        }
+        cfg.insert(graph_id, runtime);
+        Ok(())
+    })
+}
+
+fn reconcile_index_cluster_after_shard_removal(graph_id: GraphId) -> Result<(), RouterError> {
+    ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|cfg| {
+        let mut runtime = cfg
+            .get(&graph_id)
+            .ok_or_else(|| RouterError::NotFound(format!("runtime config for graph {graph_id}")))?;
+        let max_group = ROUTER_SHARDS.with_borrow(|shards| {
+            shards
+                .iter()
+                .filter_map(|lazy| {
+                    let key = *lazy.key();
+                    if key.graph_id != graph_id {
+                        return None;
+                    }
+                    shard_group_index(key.shard_id, runtime.index_group_size).ok()
+                })
+                .max()
+        });
+        match max_group {
+            None => runtime.index_cluster.clear(),
+            Some(max) => runtime.index_cluster.truncate(max + 1),
+        }
+        cfg.insert(graph_id, runtime);
+        Ok(())
+    })
+}
+
+#[cfg(not(feature = "pocket-ic-e2e"))]
+fn rollback_failed_shard_registration(
+    graph_id: GraphId,
+    shard_id: ShardId,
+) -> Result<(), RouterError> {
+    let _ = RouterStore::commit_unregister_shard(graph_id, shard_id)?;
+    reconcile_index_cluster_after_shard_removal(graph_id)
+}
+
+fn ensure_graph_registration_slot_available(
+    graph_name: &str,
+    is_home: bool,
+) -> Result<(), RouterError> {
+    validate_metadata_name(graph_name)?;
+    if resolve_registered_graph_id(graph_name).is_ok() {
+        return Err(RouterError::Conflict(graph_name.to_owned()));
+    }
+    if is_home {
+        let existing_home = ROUTER_GRAPHS.with_borrow(|graphs| {
+            graphs.iter().find_map(|lazy| {
+                let existing = lazy.value();
+                existing.is_home.then(|| existing.graph_name.clone())
+            })
+        });
+        if let Some(name) = existing_home {
+            return Err(RouterError::Conflict(format!(
+                "home graph already registered as `{name}`"
+            )));
+        }
+    }
+    Ok(())
+}
+
 impl RouterStore {
+    fn purge_graph_vocabulary_partitions(graph_id: GraphId) {
+        ROUTER_VERTEX_LABEL_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
+        ROUTER_EDGE_LABEL_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
+        ROUTER_PROPERTY_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
+        ROUTER_INDEX_NAME_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
+        ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow_mut(|store| store.remove_graph(graph_id));
+        super::super::stable::indexed_catalog::purge_graph_indexes(graph_id);
+        ROUTER_GQL_GRAPH_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph_binding(graph_id));
+
+        ROUTER_VERTEX_LABEL_STATS.with_borrow_mut(|map| {
+            let keys: Vec<_> = map
+                .iter()
+                .filter_map(|entry| (entry.key().graph_id == graph_id).then_some(*entry.key()))
+                .collect();
+            for key in keys {
+                map.remove(&key);
+            }
+        });
+        ROUTER_EDGE_LABEL_STATS.with_borrow_mut(|map| {
+            let keys: Vec<_> = map
+                .iter()
+                .filter_map(|entry| (entry.key().graph_id == graph_id).then_some(*entry.key()))
+                .collect();
+            for key in keys {
+                map.remove(&key);
+            }
+        });
+        ROUTER_VERTEX_LABEL_LIVE_BY_SHARD.with_borrow_mut(|map| {
+            let keys: Vec<_> = map
+                .iter()
+                .filter_map(|entry| (entry.key().graph_id == graph_id).then_some(*entry.key()))
+                .collect();
+            for key in keys {
+                map.remove(&key);
+            }
+        });
+        ROUTER_EDGE_LABEL_LIVE_BY_SHARD.with_borrow_mut(|map| {
+            let keys: Vec<_> = map
+                .iter()
+                .filter_map(|entry| (entry.key().graph_id == graph_id).then_some(*entry.key()))
+                .collect();
+            for key in keys {
+                map.remove(&key);
+            }
+        });
+    }
+
     /// Atomically interns the graph name and inserts the registry entry.
     pub(super) fn commit_register_graph(
         mut entry: GraphRegistryEntry,
+        runtime_config: super::super::stable::memory::GraphRuntimeConfig,
     ) -> Result<GraphId, RouterError> {
         let graph_id = intern_graph_name(&entry.graph_name)?;
+        if ROUTER_GRAPHS.with_borrow(|graphs| graphs.get(&graph_id).is_some()) {
+            return Err(RouterError::Conflict(entry.graph_name.clone()));
+        }
         entry.graph_id = graph_id;
         ROUTER_GRAPHS.with_borrow_mut(|g| {
             g.insert(graph_id, entry);
+        });
+        ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|cfg| {
+            cfg.insert(graph_id, runtime_config);
         });
         Self::verify_registry_invariants_after_commit()?;
         Ok(graph_id)
@@ -40,12 +222,23 @@ impl RouterStore {
         let graph_id = entry.graph_id;
         let shard_id = entry.shard_id;
         let graph_canister = entry.graph_canister;
+        let key = GraphShardKey::new(graph_id, shard_id);
+
+        if ROUTER_SHARDS.with_borrow(|s| s.get(&key).is_some()) {
+            return Err(RouterError::ShardAlreadyRegistered);
+        }
+        if ROUTER_SHARD_BY_GRAPH
+            .with_borrow(|m| m.get(&graph_canister))
+            .is_some()
+        {
+            return Err(RouterError::ShardAlreadyRegistered);
+        }
 
         ROUTER_SHARDS.with_borrow_mut(|s| {
-            s.insert(shard_id, entry);
+            s.insert(key, entry);
         });
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| {
-            m.insert(graph_canister, shard_id);
+            m.insert(graph_canister, key);
         });
         ROUTER_SHARDS_BY_GRAPH_ID.with_borrow_mut(|index| {
             let mut list = index.get(&graph_id).unwrap_or_default();
@@ -60,14 +253,16 @@ impl RouterStore {
 
     /// Atomically removes shard registry, canister map, and per-graph shard index.
     pub(super) fn commit_unregister_shard(
+        graph_id: GraphId,
         shard_id: ShardId,
     ) -> Result<ShardRegistryEntry, RouterError> {
+        let key = GraphShardKey::new(graph_id, shard_id);
         let entry = ROUTER_SHARDS
-            .with_borrow(|s| s.get(&shard_id))
+            .with_borrow(|s| s.get(&key))
             .ok_or(RouterError::ShardNotRegistered)?;
 
         ROUTER_SHARDS.with_borrow_mut(|s| {
-            s.remove(&shard_id);
+            s.remove(&key);
         });
         ROUTER_SHARD_BY_GRAPH.with_borrow_mut(|m| {
             m.remove(&entry.graph_canister);
@@ -86,6 +281,98 @@ impl RouterStore {
 
         Self::verify_registry_invariants_after_commit()?;
         Ok(entry)
+    }
+
+    fn commit_set_shard_index_attached(
+        graph_id: GraphId,
+        shard_id: ShardId,
+        index_attached: bool,
+    ) -> Result<(), RouterError> {
+        let key = GraphShardKey::new(graph_id, shard_id);
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut entry = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
+            entry.index_attached = index_attached;
+            shards.insert(key, entry);
+            Ok(())
+        })?;
+        Self::verify_registry_invariants_after_commit()
+    }
+
+    #[cfg(not(feature = "pocket-ic-e2e"))]
+    async fn attach_shard_to_index(
+        graph_id: GraphId,
+        shard_id: ShardId,
+        index_canister: Principal,
+        graph_canister: Principal,
+    ) -> Result<(), RouterError> {
+        let runtime = ROUTER_GRAPH_RUNTIME_CONFIG
+            .with_borrow(|cfg| cfg.get(&graph_id))
+            .ok_or_else(|| RouterError::NotFound(format!("runtime config for graph {graph_id}")))?;
+        let group_index = shard_group_index_u32(shard_id, runtime.index_group_size)?;
+        index_sync::admin_attach_shard_canister(
+            index_canister,
+            graph_id,
+            runtime.index_group_size,
+            group_index,
+            shard_id,
+            graph_canister,
+        )
+        .await
+        .map_err(RouterError::Internal)
+    }
+
+    #[cfg(not(feature = "pocket-ic-e2e"))]
+    async fn detach_shard_from_index(
+        index_canister: Principal,
+        shard_id: ShardId,
+    ) -> Result<(), RouterError> {
+        index_sync::admin_detach_shard_canister(index_canister, shard_id)
+            .await
+            .map_err(RouterError::Internal)
+    }
+
+    #[cfg(not(feature = "pocket-ic-e2e"))]
+    async fn finish_shard_index_attach(
+        &self,
+        graph_id: GraphId,
+        shard_id: ShardId,
+        index_canister: Principal,
+        graph_canister: Principal,
+    ) -> Result<(), RouterError> {
+        if let Err(err) =
+            Self::attach_shard_to_index(graph_id, shard_id, index_canister, graph_canister).await
+        {
+            let _ = rollback_failed_shard_registration(graph_id, shard_id);
+            return Err(err);
+        }
+        if let Err(err) = Self::commit_set_shard_index_attached(graph_id, shard_id, true) {
+            let _ = Self::detach_shard_from_index(index_canister, shard_id).await;
+            if lookup_shard_entry(graph_id, shard_id).is_some() {
+                let _ = rollback_failed_shard_registration(graph_id, shard_id);
+            }
+            return Err(err);
+        }
+        Ok(())
+    }
+
+    async fn complete_shard_index_attach(
+        &self,
+        graph_id: GraphId,
+        shard_id: ShardId,
+        index_canister: Principal,
+        graph_canister: Principal,
+    ) -> Result<(), RouterError> {
+        #[cfg(feature = "pocket-ic-e2e")]
+        {
+            let _ = (index_canister, graph_canister);
+            Self::commit_set_shard_index_attached(graph_id, shard_id, true)
+        }
+
+        #[cfg(not(feature = "pocket-ic-e2e"))]
+        {
+            self.finish_shard_index_attach(graph_id, shard_id, index_canister, graph_canister)
+                .await
+        }
     }
 
     #[cfg(test)]
@@ -174,10 +461,12 @@ impl RouterStore {
         }
     }
 
-    pub fn resolve_shard(&self, shard_id: ShardId) -> Result<ShardRegistryEntry, RouterError> {
-        ROUTER_SHARDS
-            .with_borrow(|shards| shards.get(&shard_id))
-            .ok_or(RouterError::ShardNotRegistered)
+    pub fn resolve_shard(
+        &self,
+        graph_id: GraphId,
+        shard_id: ShardId,
+    ) -> Result<ShardRegistryEntry, RouterError> {
+        lookup_shard_entry(graph_id, shard_id).ok_or(RouterError::ShardNotRegistered)
     }
 
     /// Returns all shard registrations for a logical graph (for federated query fan-out).
@@ -197,31 +486,135 @@ impl RouterStore {
         list_shards_for_graph_id(graph_id)
     }
 
+    /// Index-attached shards only (excludes pending registration).
+    pub fn list_live_shards_for_graph_id(
+        &self,
+        graph_id: GraphId,
+    ) -> Result<Vec<ShardRegistryEntry>, RouterError> {
+        list_live_shards_for_graph_id(graph_id)
+    }
+
+    pub fn list_live_shards_for_graph(
+        &self,
+        logical_graph_name: &str,
+    ) -> Result<Vec<ShardRegistryEntry>, RouterError> {
+        validate_metadata_name(logical_graph_name)?;
+        let graph_id = resolve_registered_graph_id(logical_graph_name)?;
+        list_live_shards_for_graph_id(graph_id)
+    }
+
+    /// Host/test registration with deterministic element-id key derivation.
+    ///
+    /// Production canister ingress uses [`Self::admin_register_graph_with_random_key`] (IC
+    /// `raw_rand()` entropy). This sync helper shares the host entropy fixture so unit tests do
+    /// not depend on [`ElementIdEncodingKey::standalone`].
     pub fn admin_register_graph(
         &self,
         caller: Principal,
         entry: GraphRegistryEntry,
     ) -> Result<(), RouterError> {
         auth::require_admin(&caller)?;
-        validate_metadata_name(&entry.graph_name)?;
-        if lookup_graph_id(&entry.graph_name).is_some() {
-            return Err(RouterError::Conflict(entry.graph_name.clone()));
-        }
-        if entry.is_home {
-            let existing_home = ROUTER_GRAPHS.with_borrow(|graphs| {
-                graphs.iter().find_map(|lazy| {
-                    let existing = lazy.value();
-                    existing.is_home.then(|| existing.graph_name.clone())
-                })
-            });
-            if let Some(name) = existing_home {
-                return Err(RouterError::Conflict(format!(
-                    "home graph already registered as `{name}`"
-                )));
-            }
-        }
-        Self::commit_register_graph(entry)?;
+        ensure_graph_registration_slot_available(&entry.graph_name, entry.is_home)?;
+        let graph_id = intern_graph_name(&entry.graph_name)?;
+        let key = derive_element_id_encoding_key(graph_id, HOST_GRAPH_REGISTRATION_ENTROPY);
+        Self::commit_register_graph(
+            entry,
+            super::super::stable::memory::GraphRuntimeConfig::with_element_id_encoding_key(key),
+        )?;
         Ok(())
+    }
+
+    pub async fn admin_register_graph_with_random_key(
+        &self,
+        caller: Principal,
+        entry: GraphRegistryEntry,
+    ) -> Result<(), RouterError> {
+        auth::require_admin(&caller)?;
+        ensure_graph_registration_slot_available(&entry.graph_name, entry.is_home)?;
+
+        let random_bytes = graph_registration_random_entropy().await?;
+        ensure_graph_registration_slot_available(&entry.graph_name, entry.is_home)?;
+
+        let graph_id = intern_graph_name(&entry.graph_name)?;
+        let key = derive_element_id_encoding_key(graph_id, &random_bytes);
+        Self::commit_register_graph(
+            entry,
+            super::super::stable::memory::GraphRuntimeConfig::with_element_id_encoding_key(key),
+        )?;
+        Ok(())
+    }
+
+    pub fn graph_element_id_encoding_key(
+        &self,
+        graph_id: GraphId,
+    ) -> Result<ElementIdEncodingKey, RouterError> {
+        let config = ROUTER_GRAPH_RUNTIME_CONFIG
+            .with_borrow(|cfg| cfg.get(&graph_id))
+            .ok_or_else(|| RouterError::NotFound(format!("runtime config for graph {graph_id}")))?;
+        Ok(ElementIdEncodingKey(config.element_id_encoding_key))
+    }
+
+    pub fn graph_index_lookup_targets(
+        &self,
+        graph_id: GraphId,
+    ) -> Result<Vec<Principal>, RouterError> {
+        let mut targets: Vec<Principal> = self
+            .list_live_shards_for_graph_id(graph_id)?
+            .into_iter()
+            .map(|entry| entry.index_canister)
+            .collect();
+        targets.retain(|principal| *principal != Principal::anonymous());
+        targets.sort();
+        targets.dedup();
+        Ok(targets)
+    }
+
+    pub fn graph_index_canister_for_shard(
+        &self,
+        graph_id: GraphId,
+        shard_id: ShardId,
+    ) -> Result<Principal, RouterError> {
+        let runtime = ROUTER_GRAPH_RUNTIME_CONFIG
+            .with_borrow(|cfg| cfg.get(&graph_id))
+            .ok_or_else(|| RouterError::NotFound(format!("runtime config for graph {graph_id}")))?;
+        let group_index = shard_group_index(shard_id, runtime.index_group_size)?;
+        let index_canister = crate::index_route::index_canister_for_graph_shard(
+            shard_id,
+            runtime.index_group_size,
+            &runtime.index_cluster,
+        )
+        .ok_or_else(|| {
+            RouterError::InvalidArgument(format!(
+                "missing/invalid index cluster entry for graph {graph_id} group {group_index}"
+            ))
+        })?;
+        Ok(index_canister)
+    }
+
+    pub fn admin_unregister_graph(
+        &self,
+        caller: Principal,
+        logical_graph_name: &str,
+    ) -> Result<(), RouterError> {
+        auth::require_admin(&caller)?;
+        validate_metadata_name(logical_graph_name)?;
+        let graph_id = resolve_registered_graph_id(logical_graph_name)?;
+        if !list_shards_for_graph_id(graph_id)?.is_empty() {
+            return Err(RouterError::Conflict(format!(
+                "graph `{logical_graph_name}` still has registered shards"
+            )));
+        }
+        ROUTER_GRAPHS.with_borrow_mut(|g| {
+            g.remove(&graph_id);
+        });
+        ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|cfg| {
+            cfg.remove(&graph_id);
+        });
+        ROUTER_GRAPH_CATALOG.with_borrow_mut(|catalog| {
+            let _ = catalog.remove_by_name(logical_graph_name);
+        });
+        Self::purge_graph_vocabulary_partitions(graph_id);
+        Self::verify_registry_invariants_after_commit()
     }
 
     pub fn admin_update_graph_status(
@@ -268,54 +661,79 @@ impl RouterStore {
         validate_metadata_name(&args.logical_graph_name)?;
         let graph_id = resolve_registered_graph_id(&args.logical_graph_name)?;
 
-        let existing = ROUTER_SHARDS.with_borrow(|s| s.get(&args.shard_id));
-        if let Some(entry) = existing {
-            if entry.graph_canister != args.graph_canister
-                || entry.index_canister != args.index_canister
-            {
+        if let Some(key) = ROUTER_SHARD_BY_GRAPH.with_borrow(|m| m.get(&args.graph_canister)) {
+            let existing = ROUTER_SHARDS
+                .with_borrow(|s| s.get(&key))
+                .ok_or(RouterError::ShardNotRegistered)?;
+            if existing.index_canister != args.index_canister {
                 return Err(RouterError::ShardAlreadyRegistered);
             }
-            if entry.graph_id != graph_id {
+            if existing.graph_id != graph_id {
                 return Err(RouterError::Conflict(format!(
-                    "shard {:?} already registered to graph {:?}, not `{logical_graph}`",
-                    args.shard_id,
-                    graph_catalog::graph_name(entry.graph_id)
-                        .unwrap_or_else(|| entry.graph_id.to_string()),
+                    "graph canister already registered to graph {:?}, not `{logical_graph}`",
+                    existing.graph_id,
                     logical_graph = args.logical_graph_name,
                 )));
             }
+            if existing.shard_id != args.shard_id {
+                return Err(RouterError::Conflict(format!(
+                    "graph canister already registered as shard {:?}, not {:?}",
+                    existing.shard_id, args.shard_id,
+                )));
+            }
+            if !existing.index_attached {
+                return self
+                    .complete_shard_index_attach(
+                        graph_id,
+                        existing.shard_id,
+                        args.index_canister,
+                        args.graph_canister,
+                    )
+                    .await;
+            }
             return Ok(());
         }
-        if ROUTER_SHARD_BY_GRAPH
-            .with_borrow(|m| m.get(&args.graph_canister))
-            .is_some()
-        {
-            return Err(RouterError::Conflict(
-                "graph canister already registered to a shard".into(),
-            ));
+
+        let allocated_shard_id = next_graph_local_shard_id(graph_id);
+        if args.shard_id != allocated_shard_id {
+            return Err(RouterError::Conflict(format!(
+                "expected next graph-local shard {:?} for `{}`, got {:?}",
+                allocated_shard_id, args.logical_graph_name, args.shard_id,
+            )));
         }
+        validate_index_group_canister_assignment(
+            graph_id,
+            allocated_shard_id,
+            args.index_canister,
+        )?;
 
         let registered_at_ns = ic_time_ns();
         let entry = ShardRegistryEntry {
-            shard_id: args.shard_id,
+            shard_id: allocated_shard_id,
             graph_canister: args.graph_canister,
             index_canister: args.index_canister,
             graph_id,
             registered_at_ns,
+            index_attached: false,
         };
 
-        #[cfg(not(feature = "pocket-ic-e2e"))]
-        {
-            index_sync::admin_attach_shard_canister(
-                args.index_canister,
-                args.shard_id,
-                args.graph_canister,
-            )
-            .await
-            .map_err(RouterError::Internal)?;
+        commit_index_group_canister_assignment(
+            graph_id,
+            allocated_shard_id,
+            args.index_canister,
+        )?;
+        if let Err(err) = Self::commit_register_shard(entry) {
+            let _ = reconcile_index_cluster_after_shard_removal(graph_id);
+            return Err(err);
         }
 
-        Self::commit_register_shard(entry)?;
+        self.complete_shard_index_attach(
+            graph_id,
+            allocated_shard_id,
+            args.index_canister,
+            args.graph_canister,
+        )
+        .await?;
 
         #[cfg(target_family = "wasm")]
         crate::peer_sync::sync_peers_after_shard_register(
@@ -331,12 +749,14 @@ impl RouterStore {
     pub async fn admin_unregister_shard(
         &self,
         caller: Principal,
+        logical_graph_name: &str,
         shard_id: ShardId,
     ) -> Result<(), RouterError> {
         auth::require_admin(&caller)?;
-        let entry = ROUTER_SHARDS
-            .with_borrow(|s| s.get(&shard_id))
-            .ok_or(RouterError::ShardNotRegistered)?;
+        validate_metadata_name(logical_graph_name)?;
+        let graph_id = resolve_registered_graph_id(logical_graph_name)?;
+        let entry =
+            lookup_shard_entry(graph_id, shard_id).ok_or(RouterError::ShardNotRegistered)?;
         let graph_name = graph_catalog::graph_name(entry.graph_id).unwrap_or_default();
         let departing_graph = entry.graph_canister;
         let _siblings: Vec<Principal> = self
@@ -346,6 +766,8 @@ impl RouterStore {
             .filter(|graph| *graph != departing_graph)
             .collect();
 
+        Self::commit_set_shard_index_attached(graph_id, shard_id, false)?;
+
         #[cfg(not(feature = "pocket-ic-e2e"))]
         {
             index_sync::admin_detach_shard_canister(entry.index_canister, shard_id)
@@ -353,7 +775,8 @@ impl RouterStore {
                 .map_err(RouterError::Internal)?;
         }
 
-        Self::commit_unregister_shard(shard_id)?;
+        Self::commit_unregister_shard(graph_id, shard_id)?;
+        reconcile_index_cluster_after_shard_removal(graph_id)?;
 
         #[cfg(target_family = "wasm")]
         crate::peer_sync::sync_peers_after_shard_unregister(departing_graph, &_siblings)
@@ -362,4 +785,32 @@ impl RouterStore {
 
         Ok(())
     }
+}
+
+fn derive_element_id_encoding_key(
+    graph_id: GraphId,
+    random_entropy: &[u8],
+) -> ElementIdEncodingKey {
+    use sha2::{Digest, Sha256};
+
+    let mut hasher = Sha256::new();
+    hasher.update(ELEMENT_ID_KEY_DERIVATION_DOMAIN);
+    hasher.update(graph_id.raw().to_le_bytes());
+    hasher.update(random_entropy);
+    let digest = hasher.finalize();
+    let mut key = [0u8; 16];
+    key.copy_from_slice(&digest[..16]);
+    ElementIdEncodingKey(key)
+}
+
+#[cfg(target_family = "wasm")]
+async fn graph_registration_random_entropy() -> Result<Vec<u8>, RouterError> {
+    ic_cdk_management_canister::raw_rand()
+        .await
+        .map_err(|err| RouterError::Internal(format!("raw_rand failed: {err:?}")))
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn graph_registration_random_entropy() -> Result<Vec<u8>, RouterError> {
+    Ok(HOST_GRAPH_REGISTRATION_ENTROPY.to_vec())
 }

@@ -10,10 +10,18 @@ pub const ENCODED_EDGE_ID_BYTES: usize = 12;
 pub struct ElementIdEncodingKey(pub [u8; 16]);
 
 impl ElementIdEncodingKey {
-    /// Standalone / test graphs without router-issued keys.
+    /// Fixed key for **host-only** unit tests that do not run through router graph registration.
+    ///
+    /// Production graphs use per-graph keys from `ROUTER_GRAPH_RUNTIME_CONFIG` (ADR 0019).
+    #[inline]
+    pub const fn host_test_fixture() -> Self {
+        Self(*b"gleaph-std-key!!")
+    }
+
+    /// Alias for [`Self::host_test_fixture`]. Prefer `host_test_fixture` in new tests.
     #[inline]
     pub const fn standalone() -> Self {
-        Self(*b"gleaph-std-key!!")
+        Self::host_test_fixture()
     }
 }
 
@@ -113,7 +121,7 @@ mod tests {
 
     #[test]
     fn vertex_encode_decode_roundtrip() {
-        let key = ElementIdEncodingKey::standalone();
+        let key = ElementIdEncodingKey::host_test_fixture();
         let id = GlobalVertexId::new(ShardId::new(0), 42);
         let enc = encode_global_vertex_id(&key, id);
         assert_eq!(decode_global_vertex_id(&key, enc), id);
@@ -121,7 +129,7 @@ mod tests {
 
     #[test]
     fn edge_encode_decode_roundtrip() {
-        let key = ElementIdEncodingKey::standalone();
+        let key = ElementIdEncodingKey::host_test_fixture();
         let id = GlobalEdgeId::new(ShardId::new(1), 9, EdgeSlotIndex::from_raw(3));
         let enc = encode_global_edge_id(&key, id);
         assert_eq!(decode_global_edge_id(&key, enc), id);
@@ -129,7 +137,7 @@ mod tests {
 
     #[test]
     fn encoded_vertex_differs_from_canonical() {
-        let key = ElementIdEncodingKey::standalone();
+        let key = ElementIdEncodingKey::host_test_fixture();
         let id = GlobalVertexId::new(ShardId::new(0), 1);
         let enc = encode_global_vertex_id(&key, id);
         assert_ne!(enc.0, id.to_le_bytes());

@@ -1,14 +1,55 @@
 //! [`PropertySchema`] built from an inline [`GraphTypeDefinition`] (DDL).
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
-use crate::ast::{EdgeEndpoint, EdgeTypeDef, GraphTypeDefinition, GraphTypeElement, ValueType};
+use crate::ast::{
+    EdgeEndpoint, EdgeTypeDef, GraphTypeDefinition, GraphTypeElement, NodeTypeDef, ValueType,
+};
 use crate::types::EdgeDirection;
 
 use super::schema::PropertySchema;
 
 type EndpointLabelsPair = (Vec<String>, Vec<String>);
 type PropertyTypeSpec = (String, ValueType, bool);
+
+/// Runtime vertex labels, edge labels, and property names declared in a graph type definition.
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub struct GraphTypeVocabulary {
+    pub vertex_labels: BTreeSet<String>,
+    pub edge_labels: BTreeSet<String>,
+    pub properties: BTreeSet<String>,
+}
+
+/// Collect runtime vocabulary from a graph type definition (ADR 0018 V5).
+pub fn collect_graph_type_vocabulary(def: &GraphTypeDefinition) -> GraphTypeVocabulary {
+    let mut vocab = GraphTypeVocabulary::default();
+    for element in &def.elements {
+        match element {
+            GraphTypeElement::Node(node) => {
+                vocab.vertex_labels.extend(node_runtime_labels(node));
+                for property in &node.properties {
+                    vocab.properties.insert(property.name.clone());
+                }
+            }
+            GraphTypeElement::Edge(edge) => {
+                vocab.edge_labels.extend(edge_schema_keys(edge));
+                for property in &edge.properties {
+                    vocab.properties.insert(property.name.clone());
+                }
+            }
+        }
+    }
+    vocab
+}
+
+fn node_runtime_labels(node: &NodeTypeDef) -> Vec<String> {
+    if let Some(label_set) = &node.label_set
+        && !label_set.labels.is_empty()
+    {
+        return label_set.labels.clone();
+    }
+    node.name.clone().into_iter().collect()
+}
 
 /// Property and endpoint metadata derived from `CREATE GRAPH` / `CREATE GRAPH TYPE` inline types.
 #[derive(Clone, Debug, Default)]
@@ -156,6 +197,7 @@ mod tests {
     use crate::ast::{GraphTypeDefinition, GraphTypeElement, Keyword, NodeTypeDef};
     use crate::token::Span;
     use crate::types::EdgeDirection;
+    use std::collections::BTreeSet;
 
     fn node_named(name: &str) -> GraphTypeElement {
         GraphTypeElement::Node(NodeTypeDef {
@@ -222,5 +264,52 @@ mod tests {
             ],
         };
         assert!(GraphTypePropertySchema::try_from_definition(&def).is_err());
+    }
+
+    #[test]
+    fn collect_vocabulary_from_person_knows_shape() {
+        let def = GraphTypeDefinition {
+            span: Span::DUMMY,
+            elements: vec![
+                GraphTypeElement::Node(NodeTypeDef {
+                    span: Span::DUMMY,
+                    keyword: Keyword::new("NODE"),
+                    name: Some("Person".to_string()),
+                    alias: None,
+                    label_set: Some(crate::ast::KeyLabelSet {
+                        span: Span::DUMMY,
+                        label_keyword_plural: false,
+                        labels: vec!["Person".to_string()],
+                    }),
+                    properties: vec![],
+                }),
+                GraphTypeElement::Edge(EdgeTypeDef {
+                    span: Span::DUMMY,
+                    keyword: Keyword::new("EDGE"),
+                    name: Some("KNOWS".to_string()),
+                    direction: EdgeDirection::PointingRight,
+                    source: EdgeEndpoint {
+                        span: Span::DUMMY,
+                        label: None,
+                        type_name: Some("Person".to_string()),
+                    },
+                    destination: EdgeEndpoint {
+                        span: Span::DUMMY,
+                        label: None,
+                        type_name: Some("Person".to_string()),
+                    },
+                    label_set: Some(crate::ast::KeyLabelSet {
+                        span: Span::DUMMY,
+                        label_keyword_plural: false,
+                        labels: vec!["KNOWS".to_string()],
+                    }),
+                    properties: vec![],
+                }),
+            ],
+        };
+        let vocab = collect_graph_type_vocabulary(&def);
+        assert_eq!(vocab.vertex_labels, BTreeSet::from(["Person".to_string()]));
+        assert_eq!(vocab.edge_labels, BTreeSet::from(["KNOWS".to_string()]));
+        assert!(vocab.properties.is_empty());
     }
 }

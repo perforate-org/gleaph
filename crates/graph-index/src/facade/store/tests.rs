@@ -4,6 +4,7 @@ use crate::state::IndexError;
 use candid::Principal;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_ic::PrincipalValue;
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionResult, LabelLookupPageRequest,
@@ -32,8 +33,17 @@ fn attach_shard_canister(
     shard_id: ShardId,
     shard_canister: Principal,
 ) {
+    const INDEX_GROUP_SIZE: u32 = 2;
+    let group_index = shard_id.raw() / INDEX_GROUP_SIZE;
     store
-        .admin_attach_shard_canister(router, shard_id, shard_canister)
+        .admin_attach_shard_canister(
+            router,
+            GraphId::from_raw(1),
+            INDEX_GROUP_SIZE,
+            group_index,
+            shard_id,
+            shard_canister,
+        )
         .expect("attach shard canister");
 }
 
@@ -352,10 +362,10 @@ fn admin_attach_shard_canister_idempotent_same_principal() {
     let router = init_test_store(&store);
     let shard = Principal::from_slice(&[2]);
     store
-        .admin_attach_shard_canister(router, ShardId::new(1), shard)
+        .admin_attach_shard_canister(router, GraphId::from_raw(1), 1, 1, ShardId::new(1), shard)
         .expect("first register");
     store
-        .admin_attach_shard_canister(router, ShardId::new(1), shard)
+        .admin_attach_shard_canister(router, GraphId::from_raw(1), 1, 1, ShardId::new(1), shard)
         .expect("idempotent re-register");
 }
 
@@ -366,10 +376,10 @@ fn admin_attach_shard_canister_rejects_principal_change() {
     let a = Principal::self_authenticating([1u8; 32]);
     let b = Principal::self_authenticating([2u8; 32]);
     store
-        .admin_attach_shard_canister(router, ShardId::new(1), a)
+        .admin_attach_shard_canister(router, GraphId::from_raw(1), 1, 1, ShardId::new(1), a)
         .unwrap();
     assert_eq!(
-        store.admin_attach_shard_canister(router, ShardId::new(1), b),
+        store.admin_attach_shard_canister(router, GraphId::from_raw(1), 1, 1, ShardId::new(1), b),
         Err(IndexError::ShardCanisterAlreadyAttached)
     );
 }
@@ -379,7 +389,14 @@ fn admin_attach_shard_canister_rejects_anonymous_principal() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
     assert_eq!(
-        store.admin_attach_shard_canister(router, ShardId::new(3), Principal::anonymous()),
+        store.admin_attach_shard_canister(
+            router,
+            GraphId::from_raw(1),
+            1,
+            3,
+            ShardId::new(3),
+            Principal::anonymous(),
+        ),
         Err(IndexError::InvalidPrincipalInRegistry)
     );
 }
@@ -390,10 +407,85 @@ fn admin_attach_shard_canister_rejects_non_router_caller() {
     let router = init_test_store(&store);
     let other = Principal::from_slice(&[8]);
     assert_eq!(
-        store.admin_attach_shard_canister(other, ShardId::new(1), Principal::from_slice(&[1])),
+        store.admin_attach_shard_canister(
+            other,
+            GraphId::from_raw(1),
+            1,
+            1,
+            ShardId::new(1),
+            Principal::from_slice(&[1]),
+        ),
         Err(IndexError::NotAuthorized)
     );
     let _ = router;
+}
+
+#[test]
+fn admin_attach_shard_canister_rejects_graph_ownership_mismatch() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[2]);
+    store
+        .admin_attach_shard_canister(router, GraphId::from_raw(1), 1, 0, ShardId::new(0), shard)
+        .expect("first register");
+    assert_eq!(
+        store.admin_attach_shard_canister(
+            router,
+            GraphId::from_raw(2),
+            1,
+            0,
+            ShardId::new(0),
+            shard
+        ),
+        Err(IndexError::GraphOwnershipMismatch)
+    );
+}
+
+#[test]
+fn admin_attach_shard_canister_rejects_shard_out_of_group_range() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[2]);
+    assert_eq!(
+        store.admin_attach_shard_canister(
+            router,
+            GraphId::from_raw(1),
+            4,
+            1,
+            ShardId::new(2),
+            shard
+        ),
+        Err(IndexError::ShardOutOfRangeForGroup)
+    );
+}
+
+#[test]
+fn admin_detach_shard_canister_purges_shard_postings() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let graph_id = GraphId::from_raw(1);
+    let shard_a = Principal::from_slice(&[1]);
+    store
+        .admin_attach_shard_canister(router, graph_id, 1, 0, ShardId::new(0), shard_a)
+        .expect("attach shard 0");
+
+    store
+        .posting_insert(shard_a, ShardId::new(0), 42, b"v".to_vec(), 10)
+        .expect("insert shard0 vertex posting");
+    store
+        .label_posting_insert(shard_a, ShardId::new(0), 7, 10)
+        .expect("insert shard0 label posting");
+    store
+        .edge_posting_insert(shard_a, ShardId::new(0), 88, b"e".to_vec(), 3, 10, 0)
+        .expect("insert shard0 edge posting");
+
+    store
+        .admin_detach_shard_canister(router, ShardId::new(0))
+        .expect("detach shard 0");
+
+    assert!(store.lookup_equal(42, b"v").is_empty());
+    assert!(store.lookup_label(7).is_empty());
+    assert!(store.lookup_edge_equal(88, b"e", Some(3)).is_empty());
 }
 
 #[test]

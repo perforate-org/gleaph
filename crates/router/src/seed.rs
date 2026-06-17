@@ -5,7 +5,7 @@
 //! labeled `NodeScan`); hits are encoded into `seed_bindings_blob` so shards can skip
 //! that op.
 
-use std::collections::BTreeMap;
+use std::collections::{BTreeMap, BTreeSet};
 
 use candid::Encode;
 use gleaph_gql::Value;
@@ -15,6 +15,7 @@ use gleaph_gql::value_to_index_key_bytes;
 use gleaph_gql_planner::GraphStats;
 use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::plan::{PlanOp, ScanValue};
+use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{EdgePostingHit, IndexEqualSpec, PostingHit};
 use gleaph_graph_kernel::plan_exec::{LocalEdgePosting, SeedBindingEntry, SeedBindingsWire};
@@ -72,11 +73,16 @@ impl IndexAnchor {
         plans: &[PhysicalPlan],
         parameters: &BTreeMap<String, Value>,
         store: &RouterStore,
+        graph_id: GraphId,
     ) -> Result<Option<Self>, RouterError> {
-        Ok(
-            SeedAnchorSet::from_plans(plans, parameters, store, &RouterGraphStats::default())?
-                .map(|set| set.routing_anchor()),
-        )
+        let stats = RouterGraphStats::from_catalog(
+            graph_id,
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+        );
+        Ok(SeedAnchorSet::from_plans(plans, parameters, store, &stats)?
+            .map(|set| set.routing_anchor()))
     }
 }
 
@@ -146,15 +152,18 @@ impl SeedProbe {
         plans: &[PhysicalPlan],
         parameters: &BTreeMap<String, Value>,
         store: &RouterStore,
+        graph_id: GraphId,
     ) -> Result<Option<Self>, RouterError> {
-        Ok(match IndexAnchor::from_plans(plans, parameters, store)? {
-            Some(IndexAnchor::Equal(probe)) => Some(probe),
-            Some(IndexAnchor::Intersection { .. })
-            | Some(IndexAnchor::EdgeEqual(_))
-            | Some(IndexAnchor::Label { .. })
-            | Some(IndexAnchor::LabelIntersection { .. })
-            | None => None,
-        })
+        Ok(
+            match IndexAnchor::from_plans(plans, parameters, store, graph_id)? {
+                Some(IndexAnchor::Equal(probe)) => Some(probe),
+                Some(IndexAnchor::Intersection { .. })
+                | Some(IndexAnchor::EdgeEqual(_))
+                | Some(IndexAnchor::Label { .. })
+                | Some(IndexAnchor::LabelIntersection { .. })
+                | None => None,
+            },
+        )
     }
 }
 
@@ -163,10 +172,11 @@ pub(crate) fn index_anchor_from_prefix_ops(
     ops: &[PlanOp],
     parameters: &BTreeMap<String, Value>,
     store: &RouterStore,
+    graph_id: GraphId,
 ) -> Result<Option<IndexAnchor>, RouterError> {
     match ops {
         [] => Ok(None),
-        [op] => extract_from_op(op, parameters, store),
+        [op] => extract_from_op(op, parameters, store, graph_id),
         [
             PlanOp::EdgeIndexScan {
                 variable,
@@ -179,6 +189,7 @@ pub(crate) fn index_anchor_from_prefix_ops(
             },
         ] => Ok(Some(edge_equal_anchor(
             store,
+            graph_id,
             parameters,
             variable,
             property.as_ref(),
@@ -190,10 +201,14 @@ pub(crate) fn index_anchor_from_prefix_ops(
     }
 }
 
-fn resolve_vertex_label_id(store: &RouterStore, label: &str) -> Result<u32, RouterError> {
+fn resolve_vertex_label_id(
+    store: &RouterStore,
+    graph_id: GraphId,
+    label: &str,
+) -> Result<u32, RouterError> {
     Ok(u32::from(
         store
-            .lookup_vertex_label_id(label)
+            .lookup_vertex_label_id(graph_id, label)
             .map_err(|_| RouterError::NotFound(format!("label {label}")))?
             .raw(),
     ))
@@ -201,6 +216,7 @@ fn resolve_vertex_label_id(store: &RouterStore, label: &str) -> Result<u32, Rout
 
 fn edge_equal_anchor(
     store: &RouterStore,
+    graph_id: GraphId,
     params: &BTreeMap<String, Value>,
     variable: impl AsRef<str>,
     property: impl AsRef<str>,
@@ -211,13 +227,13 @@ fn edge_equal_anchor(
     let payload_bytes = resolve_scan_value(value, params)
         .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
     let property_id = store
-        .lookup_property_id(property.as_ref())
+        .lookup_property_id(graph_id, property.as_ref())
         .map_err(|_| RouterError::NotFound(format!("property {}", property.as_ref())))?
         .raw();
     let wire_label_ids = match (edge_label, query_direction) {
         (Some(label), Some(direction)) => {
             let catalog = store
-                .lookup_edge_label_id(label)
+                .lookup_edge_label_id(graph_id, label)
                 .map_err(|_| RouterError::NotFound(format!("edge label {label}")))?;
             wire_labels_for_query(catalog, direction)
         }
@@ -246,6 +262,7 @@ pub(crate) fn parse_seed_anchor_prefix(
     store: &RouterStore,
     stats: &RouterGraphStats,
 ) -> Result<Option<Vec<IndexAnchor>>, RouterError> {
+    let graph_id = stats.graph_id();
     if ops.is_empty() {
         return Ok(None);
     }
@@ -256,8 +273,13 @@ pub(crate) fn parse_seed_anchor_prefix(
                 label: Some(label),
                 variable,
                 ..
-            } => Ok(Some(vec![label_anchor(store, label.as_ref(), variable)?])),
-            _ => match index_anchor_from_prefix_ops(ops, params, store)? {
+            } => Ok(Some(vec![label_anchor(
+                store,
+                graph_id,
+                label.as_ref(),
+                variable,
+            )?])),
+            _ => match index_anchor_from_prefix_ops(ops, params, store, graph_id)? {
                 Some(anchor) => Ok(Some(vec![anchor])),
                 None => Ok(None),
             },
@@ -275,7 +297,10 @@ pub(crate) fn parse_seed_anchor_prefix(
                 ..
             } => {
                 record_bound_var(&mut bound_var, variable)?;
-                push_unique_anchor(&mut anchors, label_anchor(store, label.as_ref(), variable)?);
+                push_unique_anchor(
+                    &mut anchors,
+                    label_anchor(store, graph_id, label.as_ref(), variable)?,
+                );
             }
             PlanOp::NodeScan { label: None, .. } => break,
             PlanOp::IndexScan {
@@ -288,7 +313,7 @@ pub(crate) fn parse_seed_anchor_prefix(
                 record_bound_var(&mut bound_var, variable)?;
                 push_unique_anchor(
                     &mut anchors,
-                    equal_anchor(store, params, variable, property.as_ref(), value)?,
+                    equal_anchor(store, graph_id, params, variable, property.as_ref(), value)?,
                 );
             }
             PlanOp::IndexIntersection {
@@ -302,7 +327,7 @@ pub(crate) fn parse_seed_anchor_prefix(
                             RouterError::InvalidArgument("missing seed parameter".into())
                         })?;
                     let property_id = store
-                        .lookup_property_id(scan.property.as_ref())
+                        .lookup_property_id(graph_id, scan.property.as_ref())
                         .map_err(|_| {
                             RouterError::NotFound(format!("property {}", scan.property.as_ref()))
                         })?
@@ -336,6 +361,7 @@ pub(crate) fn parse_seed_anchor_prefix(
                     &mut anchors,
                     edge_equal_anchor(
                         store,
+                        graph_id,
                         params,
                         variable,
                         property.as_ref(),
@@ -431,17 +457,19 @@ fn record_bound_var(
 
 fn label_anchor(
     store: &RouterStore,
+    graph_id: GraphId,
     label: &str,
     variable: impl AsRef<str>,
 ) -> Result<IndexAnchor, RouterError> {
     Ok(IndexAnchor::Label {
         variable: variable.as_ref().to_string(),
-        vertex_label_id: resolve_vertex_label_id(store, label)?,
+        vertex_label_id: resolve_vertex_label_id(store, graph_id, label)?,
     })
 }
 
 fn equal_anchor(
     store: &RouterStore,
+    graph_id: GraphId,
     params: &BTreeMap<String, Value>,
     variable: impl AsRef<str>,
     property: &str,
@@ -450,7 +478,7 @@ fn equal_anchor(
     let payload_bytes = resolve_scan_value(value, params)
         .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
     let property_id = store
-        .lookup_property_id(property)
+        .lookup_property_id(graph_id, property)
         .map_err(|_| RouterError::NotFound(format!("property {property}")))?
         .raw();
     Ok(IndexAnchor::Equal(SeedProbe {
@@ -480,7 +508,12 @@ fn anchor_from_property_predicate(
             if bound_var.is_some_and(|v| v != variable) {
                 return Ok(None);
             }
-            Ok(Some(label_anchor(store, label, variable)?))
+            Ok(Some(label_anchor(
+                store,
+                stats.graph_id(),
+                label,
+                variable,
+            )?))
         }
         ExprKind::Compare {
             left,
@@ -499,7 +532,7 @@ fn anchor_from_property_predicate(
                 })?
                 .ok_or_else(|| RouterError::InvalidArgument("seed filter rejects null".into()))?;
             let property_id = store
-                .lookup_property_id(&property)
+                .lookup_property_id(stats.graph_id(), &property)
                 .map_err(|_| RouterError::NotFound(format!("property {property}")))?
                 .raw();
             Ok(Some(IndexAnchor::Equal(SeedProbe {
@@ -586,9 +619,10 @@ fn extract_from_ops(
     ops: &[PlanOp],
     parameters: &BTreeMap<String, Value>,
     store: &RouterStore,
+    graph_id: GraphId,
 ) -> Result<Option<IndexAnchor>, RouterError> {
     for op in ops {
-        if let Some(anchor) = extract_from_op(op, parameters, store)? {
+        if let Some(anchor) = extract_from_op(op, parameters, store, graph_id)? {
             return Ok(Some(anchor));
         }
     }
@@ -599,6 +633,7 @@ fn extract_from_op(
     op: &PlanOp,
     parameters: &BTreeMap<String, Value>,
     store: &RouterStore,
+    graph_id: GraphId,
 ) -> Result<Option<IndexAnchor>, RouterError> {
     match op {
         PlanOp::IndexIntersection {
@@ -612,7 +647,7 @@ fn extract_from_op(
                 let payload_bytes = resolve_scan_value(&scan.value, parameters)
                     .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
                 let property_id = store
-                    .lookup_property_id(scan.property.as_ref())
+                    .lookup_property_id(graph_id, scan.property.as_ref())
                     .map_err(|_| {
                         RouterError::NotFound(format!("property {}", scan.property.as_ref()))
                     })?
@@ -630,7 +665,7 @@ fn extract_from_op(
             ..
         } => Ok(Some(IndexAnchor::Label {
             variable: variable.to_string(),
-            vertex_label_id: resolve_vertex_label_id(store, label.as_ref())?,
+            vertex_label_id: resolve_vertex_label_id(store, graph_id, label.as_ref())?,
         })),
         PlanOp::IndexScan {
             variable,
@@ -642,7 +677,7 @@ fn extract_from_op(
             let payload_bytes = resolve_scan_value(value, parameters)
                 .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
             let property_id = store
-                .lookup_property_id(property.as_ref())
+                .lookup_property_id(graph_id, property.as_ref())
                 .map_err(|_| RouterError::NotFound(format!("property {}", property.as_ref())))?
                 .raw();
             Ok(Some(IndexAnchor::Equal(SeedProbe {
@@ -659,6 +694,7 @@ fn extract_from_op(
             ..
         } => Ok(Some(edge_equal_anchor(
             store,
+            graph_id,
             parameters,
             variable,
             property.as_ref(),
@@ -667,25 +703,29 @@ fn extract_from_op(
             None,
         )?)),
         PlanOp::HashJoin { left, right, .. } => {
-            if let Some(p) = extract_from_ops(left, parameters, store)? {
+            if let Some(p) = extract_from_ops(left, parameters, store, graph_id)? {
                 return Ok(Some(p));
             }
-            extract_from_ops(right, parameters, store)
+            extract_from_ops(right, parameters, store, graph_id)
         }
         PlanOp::CartesianProduct { left, right } => {
-            if let Some(p) = extract_from_ops(left, parameters, store)? {
+            if let Some(p) = extract_from_ops(left, parameters, store, graph_id)? {
                 return Ok(Some(p));
             }
-            extract_from_ops(right, parameters, store)
+            extract_from_ops(right, parameters, store, graph_id)
         }
-        PlanOp::OptionalMatch { sub_plan } => extract_from_ops(sub_plan, parameters, store),
+        PlanOp::OptionalMatch { sub_plan } => {
+            extract_from_ops(sub_plan, parameters, store, graph_id)
+        }
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
-            extract_from_ops(&sub_plan.ops, parameters, store)
+            extract_from_ops(&sub_plan.ops, parameters, store, graph_id)
         }
         PlanOp::UseGraph {
             sub_plan: Some(sp), ..
-        } => extract_from_ops(sp, parameters, store),
-        PlanOp::SetOperation { right, .. } => extract_from_ops(&right.ops, parameters, store),
+        } => extract_from_ops(sp, parameters, store, graph_id),
+        PlanOp::SetOperation { right, .. } => {
+            extract_from_ops(&right.ops, parameters, store, graph_id)
+        }
         _ => Ok(None),
     }
 }
@@ -771,6 +811,7 @@ mod tests {
     use gleaph_gql_planner::NodeLabelRef;
     use gleaph_gql_planner::PhysicalPlan;
     use gleaph_gql_planner::plan::{IndexScanSpec, PlanOp, ScanValue};
+    use gleaph_graph_kernel::entry::GraphId;
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::PostingHit;
     use gleaph_graph_kernel::plan_exec::SeedBindingsWire;
@@ -781,21 +822,18 @@ mod tests {
         IndexAnchor, SeedAnchorSet, SeedProbe, seeds_for_local_shard, seeds_for_local_shard_edges,
     };
     use crate::facade::store::RouterStore;
-    use crate::init::RouterInitArgs;
     use crate::planner_stats::RouterGraphStats;
 
-    fn test_store_with_property(property: &str) -> RouterStore {
-        let store = RouterStore::new();
-        store.init_from_args(&RouterInitArgs {
-            issuing_principal: candid::Principal::anonymous(),
-            initial_admins: vec![],
-        });
-        let admin = candid::Principal::anonymous();
-        crate::facade::auth::grant_admins(&[admin]);
+    fn test_store_with_property(property: &str) -> (RouterStore, GraphId) {
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
         store
-            .admin_intern_property(admin, property)
+            .admin_intern_property(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                property,
+            )
             .expect("intern property");
-        store
+        (store, graph_id)
     }
 
     fn index_scan_plan(property: &str, value: Value) -> PhysicalPlan {
@@ -810,9 +848,9 @@ mod tests {
 
     #[test]
     fn index_anchor_from_plans_finds_index_intersection() {
-        let store = test_store_with_property("uid");
+        let (store, graph_id) = test_store_with_property("uid");
         store
-            .admin_intern_property(candid::Principal::anonymous(), "email")
+            .admin_intern_property(candid::Principal::anonymous(), "tenant.main", "email")
             .expect("intern email");
         let plan = PhysicalPlan::from_ops(vec![PlanOp::IndexIntersection {
             variable: Rc::from("n"),
@@ -830,9 +868,14 @@ mod tests {
             ],
             property_projection: None,
         }]);
-        let anchor = IndexAnchor::from_plans(std::slice::from_ref(&plan), &BTreeMap::new(), &store)
-            .expect("anchor")
-            .expect("intersection anchor");
+        let anchor = IndexAnchor::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            graph_id,
+        )
+        .expect("anchor")
+        .expect("intersection anchor");
         assert_eq!(anchor.variable(), "n");
         let IndexAnchor::Intersection { specs, .. } = anchor else {
             panic!("expected intersection anchor");
@@ -843,18 +886,23 @@ mod tests {
         assert!(!specs[0].value.is_empty());
         assert!(!specs[1].value.is_empty());
         assert!(
-            SeedProbe::from_plans(std::slice::from_ref(&plan), &BTreeMap::new(), &store)
-                .expect("probe")
-                .is_none()
+            SeedProbe::from_plans(
+                std::slice::from_ref(&plan),
+                &BTreeMap::new(),
+                &store,
+                graph_id
+            )
+            .expect("probe")
+            .is_none()
         );
     }
 
     #[test]
     fn seed_probe_from_plans_finds_equality_index_scan() {
-        let store = test_store_with_property("uid");
+        let (store, graph_id) = test_store_with_property("uid");
         let plan = index_scan_plan("uid", Value::Text("alice".into()));
         let mut params = BTreeMap::new();
-        let probe = SeedProbe::from_plans(std::slice::from_ref(&plan), &params, &store)
+        let probe = SeedProbe::from_plans(std::slice::from_ref(&plan), &params, &store, graph_id)
             .expect("probe")
             .expect("some probe");
         assert_eq!(probe.variable, "u");
@@ -870,7 +918,7 @@ mod tests {
             cmp: CmpOp::Eq,
             property_projection: None,
         }]);
-        let probe = SeedProbe::from_plans(std::slice::from_ref(&plan), &params, &store)
+        let probe = SeedProbe::from_plans(std::slice::from_ref(&plan), &params, &store, graph_id)
             .expect("probe")
             .expect("parameter probe");
         assert!(!probe.payload_bytes.is_empty());
@@ -878,18 +926,20 @@ mod tests {
 
     #[test]
     fn index_anchor_from_plans_finds_multi_label_intersection() {
-        let store = RouterStore::new();
-        store.init_from_args(&RouterInitArgs {
-            issuing_principal: candid::Principal::anonymous(),
-            initial_admins: vec![],
-        });
-        let admin = candid::Principal::anonymous();
-        crate::facade::auth::grant_admins(&[admin]);
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
         store
-            .admin_intern_vertex_label(admin, "Person")
+            .admin_intern_vertex_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "Person",
+            )
             .expect("intern Person");
         store
-            .admin_intern_vertex_label(admin, "Employee")
+            .admin_intern_vertex_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "Employee",
+            )
             .expect("intern Employee");
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::NodeScan {
@@ -906,9 +956,14 @@ mod tests {
                 stage: 0,
             },
         ]);
-        let anchor = IndexAnchor::from_plans(std::slice::from_ref(&plan), &BTreeMap::new(), &store)
-            .expect("anchor")
-            .expect("label intersection");
+        let anchor = IndexAnchor::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            graph_id,
+        )
+        .expect("anchor")
+        .expect("label intersection");
         let IndexAnchor::LabelIntersection {
             vertex_label_ids, ..
         } = anchor
@@ -920,20 +975,22 @@ mod tests {
 
     #[test]
     fn seed_anchor_set_finds_label_and_index_scan_prefix() {
-        let store = RouterStore::new();
-        store.init_from_args(&RouterInitArgs {
-            issuing_principal: candid::Principal::anonymous(),
-            initial_admins: vec![],
-        });
-        let admin = candid::Principal::anonymous();
-        crate::facade::auth::grant_admins(&[admin]);
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
         store
-            .admin_intern_vertex_label(admin, "Person")
+            .admin_intern_vertex_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "Person",
+            )
             .expect("intern Person");
         store
-            .admin_intern_property(admin, "region")
+            .admin_intern_property(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "region",
+            )
             .expect("intern region");
-        let stats = RouterGraphStats::test_vertex_indexed(&store, &["region"]);
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["region"]);
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::NodeScan {
                 variable: Rc::from("n"),
@@ -980,24 +1037,27 @@ mod tests {
 
     #[test]
     fn index_anchor_from_plans_finds_labeled_node_scan() {
-        let store = RouterStore::new();
-        store.init_from_args(&RouterInitArgs {
-            issuing_principal: candid::Principal::anonymous(),
-            initial_admins: vec![],
-        });
-        let admin = candid::Principal::anonymous();
-        crate::facade::auth::grant_admins(&[admin]);
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
         store
-            .admin_intern_vertex_label(admin, "Person")
+            .admin_intern_vertex_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "Person",
+            )
             .expect("intern Person");
         let plan = PhysicalPlan::from_ops(vec![PlanOp::NodeScan {
             variable: Rc::from("n"),
             label: Some(NodeLabelRef::from("Person")),
             property_projection: None,
         }]);
-        let anchor = IndexAnchor::from_plans(std::slice::from_ref(&plan), &BTreeMap::new(), &store)
-            .expect("anchor")
-            .expect("label anchor");
+        let anchor = IndexAnchor::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            graph_id,
+        )
+        .expect("anchor")
+        .expect("label anchor");
         assert_eq!(anchor.variable(), "n");
         let IndexAnchor::Label {
             vertex_label_id, ..
@@ -1041,10 +1101,20 @@ mod tests {
         use gleaph_gql::types::EdgeDirection;
         use gleaph_gql_planner::plan::EdgeLabelRef;
 
-        let store = test_store_with_property("weight");
-        let admin = candid::Principal::anonymous();
+        let (store, admin, graph_id) = crate::facade::store::catalog_test_support::setup();
         store
-            .admin_intern_edge_label(admin, "KNOWS")
+            .admin_intern_property(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "weight",
+            )
+            .expect("intern weight");
+        store
+            .admin_intern_edge_label(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "KNOWS",
+            )
             .expect("intern edge label");
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::EdgeIndexScan {
@@ -1064,9 +1134,14 @@ mod tests {
                 hop_aux_binding: None,
             },
         ]);
-        let anchor = IndexAnchor::from_plans(std::slice::from_ref(&plan), &BTreeMap::new(), &store)
-            .expect("anchor")
-            .expect("edge anchor");
+        let anchor = IndexAnchor::from_plans(
+            std::slice::from_ref(&plan),
+            &BTreeMap::new(),
+            &store,
+            graph_id,
+        )
+        .expect("anchor")
+        .expect("edge anchor");
         let IndexAnchor::EdgeEqual(probe) = anchor else {
             panic!("expected EdgeEqual anchor");
         };

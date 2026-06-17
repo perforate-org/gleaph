@@ -8,7 +8,7 @@ use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
 use std::fmt;
 
-/// Maximum UTF-8 byte length persisted for [`GraphBootstrapConfigV1::logical_graph_name`].
+/// Maximum UTF-8 byte length persisted for [`GraphMetadataV1::logical_graph_name`].
 pub const MAX_LOGICAL_GRAPH_NAME_BYTES: usize = 256;
 
 pub struct StableGraphMetadata<M: Memory>(StableCell<GraphMetadata, M>);
@@ -55,7 +55,7 @@ impl fmt::Display for GraphMetadataError {
 
 impl std::error::Error for GraphMetadataError {}
 
-/// Bootstrap payload layout **revision 1** (logical graph label + optional index routing).
+/// Bootstrap payload layout revision 1 (logical graph label + optional index routing).
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq, Default)]
 pub struct GraphMetadataV1 {
     logical_graph_name: Option<String>,
@@ -80,6 +80,7 @@ impl GraphMetadataV1 {
     }
 }
 
+/// Versioned graph metadata for stable storage and upgrade-safe evolution.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug)]
 pub enum GraphMetadata {
     V1(GraphMetadataV1),

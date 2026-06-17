@@ -52,7 +52,7 @@ Keep in `graph-kernel` and wire formats without behavioral commitment:
 
 - `ShardId`, `GlobalVertexId`, `EncodedVertexId` / `EncodedEdgeId`
 - `PostingHit { shard_id, vertex_id }`
-- `ExecutePlanArgs { target_shard_id, seed_bindings_blob, ... }`
+- `ExecutePlanArgs { target_shard_id, element_id_encoding_key, seed_bindings_blob, ... }`
 - `ShardRegistryEntry { graph_canister, index_canister, ... }`
 
 ## What to defer or remove

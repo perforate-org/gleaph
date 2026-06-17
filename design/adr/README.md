@@ -52,7 +52,7 @@ Last revised: YYYY-MM-DD
 | [0015](0015-label-stats-projection-log.md) | Label stats projection log and graph mutation journal | proposed |
 | [0016](0016-overflow-log-tombstones-and-src-fields.md) | Overflow log tombstones and `src` field layout review | accepted |
 | [0017](0017-graph-vertex-existence-ssot.md) | Vertex existence SSOT on graph shard; remove router placement registry | accepted |
-| [0018](0018-graph-scoped-label-property-catalogs.md) | Graph-scoped `PropertyId` / label catalogs per `GraphId`; supersede 0011 global vocabulary policy | proposed |
-| [0019](0019-graph-local-shard-id-and-index-clusters.md) | Graph-local dense `ShardId`; per-graph index cluster; commit `GROUP_SIZE` routing | proposed |
+| [0018](0018-graph-scoped-label-property-catalogs.md) | Graph-scoped `PropertyId` / label catalogs per `GraphId`; supersede 0011 global vocabulary policy | accepted |
+| [0019](0019-graph-local-shard-id-and-index-clusters.md) | Graph-local dense `ShardId`; per-graph index cluster; commit `GROUP_SIZE` routing | accepted |
 
 When adding an ADR, link it from the relevant design doc and update this table.

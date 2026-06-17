@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-06-13  
-Anchor timestamp: 2026-06-13 11:04:14 UTC +0000
+Last updated: 2026-06-17
+Anchor timestamp: 2026-06-17 10:34:31 UTC +0000
 
 ## Status
 
@@ -19,7 +19,11 @@ Anchor timestamp: 2026-06-13 11:04:14 UTC +0000
 
 **ADR 0012 — Implemented:** edge `FOR` patterns carry Gleaph GQL `EdgeDirection` (bracket form only; slash rejected); graph-index edge keys use LARA `wire_label_id`; planner applies storage-class subset rule via `is_edge_property_indexed_for`. Leading `EdgeIndexScan` supports `PointingRight`, `PointingLeft`, and `Undirected`. PocketIC e2e covers `AnyDirection`, `PointingRight`, and `Undirected` indexes (including federated undirected anchor and subset negative: undirected-only index does not seed directed wire postings). See [0012-edge-index-direction-in-ddl.md](../adr/0012-edge-index-direction-in-ddl.md).
 
-Property **name → `property_id`** assignment is **router SSOT** ([ADR 0006](../adr/0006-pre-federation-foundation.md) §2). Graph shards no longer maintain `PROPERTY_CATALOG` stable; DML and plan execution use router-resolved `PropertyId` on the wire (`ResolvedPropertyTable`).
+**ADR 0018 — Implemented:** property and label **name → id** catalogs are **graph-scoped** per `GraphId` on the router. Plan build, DDL, and `admin_intern_*` resolve names in the effective graph context. Posting keys are unchanged — numeric `property_id` on the wire is already scoped by dispatch `GraphId`.
+
+**ADR 0019 — Partially Implemented:** per-graph index clusters and graph-local `ShardId`; router `graph_index_lookup_targets` derives from **live shard registry**; shard unregister detaches auth and purges postings for the detached shard. See [0019-graph-local-shard-id-and-index-clusters.md](../adr/0019-graph-local-shard-id-and-index-clusters.md).
+
+Property **name → `property_id`** assignment is **router SSOT per `GraphId`** ([ADR 0006](../adr/0006-pre-federation-foundation.md) §2, scope amended by [ADR 0018](../adr/0018-graph-scoped-label-property-catalogs.md)). Graph shards no longer maintain `PROPERTY_CATALOG` stable; DML and plan execution use router-resolved `PropertyId` on the wire (`ResolvedPropertyTable`).
 
 ## Purpose
 
@@ -29,7 +33,7 @@ Explain the **graph-index canister** and how the router uses it for query routin
 
 - Index build algorithms on graph writes (implementation in `graph/src/index/`).
 - Full Candid API listing.
-- Index canister sharding (multiple index canisters) — **Planned** with graph multi-shard; split strategy deferred ([ADR 0010](../adr/0010-index-sharding-extensibility.md)). Near-term: one index Principal per shard group or shared across shards; capacity axes in [capacity-planning.md](capacity-planning.md).
+- Index canister sharding (multiple index canisters) — **Partially Implemented** per-graph `index_cluster` and shard-group formula ([ADR 0019](../adr/0019-graph-local-shard-id-and-index-clusters.md)); subject/range split axes remain planned ([ADR 0010](../adr/0010-index-sharding-extensibility.md), [capacity-planning.md](capacity-planning.md)).
 
 ## Components
 
@@ -44,21 +48,21 @@ Explain the **graph-index canister** and how the router uses it for query routin
 
 | Layer | Owns |
 |-------|------|
-| **Router** | Property names ↔ `PropertyId` (`ROUTER_PROPERTY_CATALOG`); planner / DML resolve names before dispatch |
+| **Router** | Property names ↔ `PropertyId` **per `GraphId`** (`ROUTER_PROPERTY_CATALOG`); planner / DML resolve names in graph context before dispatch |
 | **Graph shard** | `(property_id, Value)` on vertices and edges only — no property name stable |
-| **Graph-index** | Postings keyed by router-issued `property_id` |
+| **Graph-index** | Postings keyed by router-issued `property_id` (interpreted under the owning graph's dispatch / index-cluster boundary) |
 
 Standalone and test graphs without router resolution use hash-based test property ids (`crates/graph/src/test_labels.rs`) or explicit `ResolvedPropertyTable` on the plan wire.
 
 ## Posting model
 
-Global postings keyed by `(property_id, encoded_value, shard_id, local_vertex_id)`.
+Postings keyed by `(property_id, encoded_value, shard_id, local_vertex_id)` — **no `GraphId` in the key** ([ADR 0010](../adr/0010-index-sharding-extensibility.md)).
 
-- `property_id` — numeric id from the **router** catalog (same id graph uses when writing values).
-- `shard_id` — owning graph shard (`ShardId(0)` in standalone).
+- `property_id` — numeric id from the router catalog **for the dispatch `GraphId`** (same id the graph shard uses when writing values for that graph).
+- `shard_id` — graph-local shard ordinal within the dispatch graph ([ADR 0019](../adr/0019-graph-local-shard-id-and-index-clusters.md)); `ShardId(0)` in standalone.
 - `local_vertex_id` — dense CSR id on that shard (`PostingHit.vertex_id` in `graph-kernel`).
 
-A single index canister holds postings for all graph shards; `shard_id` tags the owning graph shard without embedding Principals in posting keys.
+An index canister holds postings for shards attached to **one graph's index cluster**; `shard_id` tags the owning graph shard without embedding Principals or `GraphId` in posting keys. Router read paths derive lookup targets from **live shard registry** and filter hits to registered shards.
 
 **Invariant:** Postings reflect **live** property values. DML on graph shards enqueues `posting_insert` / `posting_remove` (`graph/src/index/pending.rs`). Vertex/property delete removes postings; index read APIs do not consult graph tombstones. See [../sharding/standalone-mode.md](../sharding/standalone-mode.md).
 

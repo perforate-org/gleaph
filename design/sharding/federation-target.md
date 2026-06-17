@@ -1,7 +1,7 @@
 # Federation target architecture
 
-Last updated: 2026-06-11  
-Anchor timestamp: 2026-06-11 23:23:04 UTC +0000
+Last updated: 2026-06-17  
+Anchor timestamp: 2026-06-17 14:00:46 UTC +0000
 
 ## Status
 
@@ -13,7 +13,10 @@ Describe the **intended** distributed query execution model: Router owns index a
 
 ## Non-goals
 
-- Index canister sharding (multiple index canisters) — **Planned** with graph multi-shard; extensibility rules in [ADR 0010](../adr/0010-index-sharding-extensibility.md). Near-term model: per-shard `index_canister` in registry; posting keys unchanged. Capacity thresholds: [capacity-planning.md](../index/capacity-planning.md).
+- Index canister sharding (multiple index canisters) — **Partially Implemented** per-graph
+  `index_cluster` and shard-group formula ([ADR 0019](../adr/0019-graph-local-shard-id-and-index-clusters.md),
+  [ADR 0010](../adr/0010-index-sharding-extensibility.md)). Posting keys unchanged. Capacity
+  thresholds: [capacity-planning.md](../index/capacity-planning.md).
 - Full row shipping vs count-only aggregation policy — to be decided at merge implementation time.
 - USE GRAPH remote-graph pushdown (planner feature distinct from shard federation).
 
@@ -74,7 +77,7 @@ Graph shards **do not need foreign-shard hits** for intersection: the Router nev
 
 Each shard receives:
 
-- `ExecutePlanArgs { target_shard_id, plan_blob, seed_bindings_blob, ... }`
+- `ExecutePlanArgs { target_shard_id, element_id_encoding_key, plan_blob, seed_bindings_blob, ... }`
 - Initial row bindings from seeds (local `VertexId` only)
 
 The shard runs the physical plan against **local CSR** only. It does not call the index canister for anchor scans in the target model (Router already resolved anchors).

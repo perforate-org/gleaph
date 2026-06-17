@@ -3,10 +3,11 @@
 use std::future::Future;
 
 use candid::Principal;
+use gleaph_graph_kernel::federation::GraphShardKey;
 use gleaph_graph_kernel::plan_exec::{LabelStatsDelta, LabelStatsDeltaEventWire, ShardEventSeq};
 
 use super::super::stable::graph_catalog::lookup_graph_id;
-use super::super::stable::label_stats::{LabelShardKey, LabelStats};
+use super::super::stable::label_stats::{GraphLabelKey, GraphLabelShardKey, LabelStats};
 use super::super::stable::{
     ROUTER_EDGE_LABEL_LIVE_BY_SHARD, ROUTER_EDGE_LABEL_STATS, ROUTER_LABEL_STATS_PROJECTION,
     ROUTER_VERTEX_LABEL_LIVE_BY_SHARD, ROUTER_VERTEX_LABEL_STATS,
@@ -26,49 +27,74 @@ pub struct AdvanceLabelStatsProjectionResult {
 }
 
 impl RouterStore {
-    pub fn label_stats_projection_cursor(&self, shard_id: ShardId) -> ShardEventSeq {
-        ROUTER_LABEL_STATS_PROJECTION
-            .with_borrow(|projection| projection.get(&shard_id).unwrap_or(0))
+    pub fn label_stats_projection_cursor(
+        &self,
+        graph_id: gleaph_graph_kernel::entry::GraphId,
+        shard_id: ShardId,
+    ) -> ShardEventSeq {
+        let key = GraphShardKey::new(graph_id, shard_id);
+        ROUTER_LABEL_STATS_PROJECTION.with_borrow(|projection| projection.get(&key).unwrap_or(0))
     }
 
     fn commit_label_stats_projection_cursor(
         &self,
+        graph_id: gleaph_graph_kernel::entry::GraphId,
         shard_id: ShardId,
         applied_through_seq: ShardEventSeq,
     ) {
+        let key = GraphShardKey::new(graph_id, shard_id);
         ROUTER_LABEL_STATS_PROJECTION.with_borrow_mut(|projection| {
-            let current = projection.get(&shard_id).unwrap_or(0);
+            let current = projection.get(&key).unwrap_or(0);
             if applied_through_seq > current {
-                projection.insert(shard_id, applied_through_seq);
+                projection.insert(key, applied_through_seq);
             }
         });
     }
 
-    pub fn vertex_label_stats(&self, label_id: VertexLabelId) -> LabelStats {
+    pub fn vertex_label_stats(
+        &self,
+        graph_id: gleaph_graph_kernel::entry::GraphId,
+        label_id: VertexLabelId,
+    ) -> LabelStats {
         ROUTER_VERTEX_LABEL_STATS
-            .with_borrow(|m| m.get(&label_id.raw()))
+            .with_borrow(|m| m.get(&GraphLabelKey::new(graph_id, label_id.raw())))
             .unwrap_or_default()
     }
 
-    pub fn edge_label_stats(&self, label_id: EdgeLabelId) -> LabelStats {
+    pub fn edge_label_stats(
+        &self,
+        graph_id: gleaph_graph_kernel::entry::GraphId,
+        label_id: EdgeLabelId,
+    ) -> LabelStats {
         ROUTER_EDGE_LABEL_STATS
-            .with_borrow(|m| m.get(&label_id.raw()))
+            .with_borrow(|m| m.get(&GraphLabelKey::new(graph_id, label_id.raw())))
             .unwrap_or_default()
     }
 
-    pub fn vertex_label_shard_live_count(&self, shard_id: ShardId, label_id: VertexLabelId) -> u64 {
+    pub fn vertex_label_shard_live_count(
+        &self,
+        graph_id: gleaph_graph_kernel::entry::GraphId,
+        shard_id: ShardId,
+        label_id: VertexLabelId,
+    ) -> u64 {
         ROUTER_VERTEX_LABEL_LIVE_BY_SHARD
-            .with_borrow(|m| m.get(&LabelShardKey::new(shard_id, label_id.raw())))
+            .with_borrow(|m| m.get(&GraphLabelShardKey::new(graph_id, shard_id, label_id.raw())))
             .unwrap_or(0)
     }
 
-    pub fn edge_label_shard_live_count(&self, shard_id: ShardId, label_id: EdgeLabelId) -> u64 {
+    pub fn edge_label_shard_live_count(
+        &self,
+        graph_id: gleaph_graph_kernel::entry::GraphId,
+        shard_id: ShardId,
+        label_id: EdgeLabelId,
+    ) -> u64 {
         ROUTER_EDGE_LABEL_LIVE_BY_SHARD
-            .with_borrow(|m| m.get(&LabelShardKey::new(shard_id, label_id.raw())))
+            .with_borrow(|m| m.get(&GraphLabelShardKey::new(graph_id, shard_id, label_id.raw())))
             .unwrap_or(0)
     }
 
     fn commit_apply_label_delta(
+        graph_id: gleaph_graph_kernel::entry::GraphId,
         label_id: u16,
         shard_id: ShardId,
         delta: i64,
@@ -84,7 +110,8 @@ impl RouterStore {
         }
         let magnitude = delta.unsigned_abs();
         stats_map.with_borrow_mut(|stats| {
-            let mut entry = stats.get(&label_id).unwrap_or_default();
+            let key = GraphLabelKey::new(graph_id, label_id);
+            let mut entry = stats.get(&key).unwrap_or_default();
             if delta > 0 {
                 entry.live_count = entry.live_count.saturating_add(magnitude);
                 entry.total_adds = entry.total_adds.saturating_add(magnitude);
@@ -92,10 +119,10 @@ impl RouterStore {
                 entry.live_count = entry.live_count.saturating_sub(magnitude);
                 entry.total_removes = entry.total_removes.saturating_add(magnitude);
             }
-            stats.insert(label_id, entry);
+            stats.insert(key, entry);
         });
 
-        let key = LabelShardKey::new(shard_id, label_id);
+        let key = GraphLabelShardKey::new(graph_id, shard_id, label_id);
         live_by_shard.with_borrow_mut(|live| {
             let current = live.get(&key).unwrap_or(0);
             let next = if delta > 0 {
@@ -113,11 +140,13 @@ impl RouterStore {
 
     pub(crate) fn apply_label_stats_delta_payload(
         &self,
+        graph_id: gleaph_graph_kernel::entry::GraphId,
         shard_id: ShardId,
         delta: &LabelStatsDelta,
     ) {
         for (label_id, value) in &delta.vertex {
             Self::commit_apply_label_delta(
+                graph_id,
                 label_id.raw(),
                 shard_id,
                 *value,
@@ -127,6 +156,7 @@ impl RouterStore {
         }
         for (label_id, value) in &delta.edge {
             Self::commit_apply_label_delta(
+                graph_id,
                 label_id.raw(),
                 shard_id,
                 *value,
@@ -136,17 +166,23 @@ impl RouterStore {
         }
     }
 
-    fn apply_label_stats_delta_event(&self, shard_id: ShardId, delta: &LabelStatsDeltaEventWire) {
-        let cursor = self.label_stats_projection_cursor(shard_id);
+    fn apply_label_stats_delta_event(
+        &self,
+        graph_id: gleaph_graph_kernel::entry::GraphId,
+        shard_id: ShardId,
+        delta: &LabelStatsDeltaEventWire,
+    ) {
+        let cursor = self.label_stats_projection_cursor(graph_id, shard_id);
         if delta.shard_event_seq <= cursor {
             return;
         }
-        self.apply_label_stats_delta_payload(shard_id, &delta.label_stats_delta);
-        self.commit_label_stats_projection_cursor(shard_id, delta.shard_event_seq);
+        self.apply_label_stats_delta_payload(graph_id, shard_id, &delta.label_stats_delta);
+        self.commit_label_stats_projection_cursor(graph_id, shard_id, delta.shard_event_seq);
     }
 
     pub(crate) async fn advance_label_stats_projection<FList, FAck, FutList, FutAck>(
         &self,
+        graph_id: gleaph_graph_kernel::entry::GraphId,
         graph_canister: Principal,
         shard_id: ShardId,
         limit: u32,
@@ -165,7 +201,7 @@ impl RouterStore {
             ));
         }
 
-        let mut cursor = self.label_stats_projection_cursor(shard_id);
+        let mut cursor = self.label_stats_projection_cursor(graph_id, shard_id);
         let next_seq = cursor.checked_add(1).ok_or_else(|| {
             RouterError::Internal("label stats projection cursor exhausted".into())
         })?;
@@ -190,7 +226,7 @@ impl RouterStore {
                     delta.shard_event_seq
                 )));
             }
-            self.apply_label_stats_delta_event(shard_id, delta);
+            self.apply_label_stats_delta_event(graph_id, shard_id, delta);
             cursor = delta.shard_event_seq;
             deltas_applied = deltas_applied.saturating_add(1);
         }
@@ -228,6 +264,7 @@ impl RouterStore {
         let shard = self.resolve_shard_for_projection(&args.logical_graph_name, args.shard_id)?;
         let result = self
             .advance_label_stats_projection(
+                shard.graph_id,
                 shard.graph_canister,
                 args.shard_id,
                 args.max_deltas,
@@ -252,13 +289,7 @@ impl RouterStore {
     ) -> Result<gleaph_graph_kernel::federation::ShardRegistryEntry, RouterError> {
         let graph_id = lookup_graph_id(logical_graph_name)
             .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
-        let entry = self.resolve_shard(shard_id)?;
-        if entry.graph_id != graph_id {
-            return Err(RouterError::InvalidArgument(format!(
-                "shard {shard_id} is registered for graph {}, not {logical_graph_name}",
-                entry.graph_id
-            )));
-        }
+        let entry = self.resolve_shard(graph_id, shard_id)?;
         Ok(entry)
     }
 }
@@ -268,7 +299,7 @@ mod tests {
     use super::*;
     use crate::init::RouterInitArgs;
     use crate::types::AdminRegisterShardArgs;
-    use gleaph_graph_kernel::entry::VertexLabelId;
+    use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::plan_exec::LabelStatsDelta;
 
@@ -309,6 +340,7 @@ mod tests {
         let mut acked = 0u64;
 
         let result = futures::executor::block_on(store.advance_label_stats_projection(
+            GraphId::from_raw(0),
             graph,
             shard_id,
             10,
@@ -326,10 +358,13 @@ mod tests {
         assert_eq!(result.deltas_applied, 2);
         assert_eq!(result.applied_through_seq, 2);
         assert_eq!(acked, 2);
-        assert_eq!(store.label_stats_projection_cursor(shard_id), 2);
+        assert_eq!(
+            store.label_stats_projection_cursor(GraphId::from_raw(0), shard_id),
+            2
+        );
         assert_eq!(
             store
-                .vertex_label_stats(VertexLabelId::from_raw(2))
+                .vertex_label_stats(GraphId::from_raw(0), VertexLabelId::from_raw(2))
                 .live_count,
             4
         );
@@ -347,6 +382,7 @@ mod tests {
         }];
 
         let err = futures::executor::block_on(store.advance_label_stats_projection(
+            GraphId::from_raw(0),
             graph,
             shard_id,
             10,
@@ -356,7 +392,10 @@ mod tests {
         .expect_err("gap should fail");
 
         assert!(matches!(err, RouterError::InvalidArgument(_)));
-        assert_eq!(store.label_stats_projection_cursor(shard_id), 0);
+        assert_eq!(
+            store.label_stats_projection_cursor(GraphId::from_raw(0), shard_id),
+            0
+        );
     }
 
     #[test]
@@ -434,11 +473,90 @@ mod tests {
 
         assert_eq!(result.deltas_applied, 2);
         assert_eq!(acked_through, 2);
+        let graph_id = lookup_graph_id("g").expect("graph id");
         assert_eq!(
             store
-                .vertex_label_stats(VertexLabelId::from_raw(1))
+                .vertex_label_stats(graph_id, VertexLabelId::from_raw(1))
                 .live_count,
             3
+        );
+    }
+
+    #[test]
+    fn label_stats_projection_cursor_isolated_per_graph_same_shard_ordinal() {
+        use crate::types::{GraphRegistryEntry, GraphStatus, ProvisioningState};
+        use std::collections::BTreeSet;
+
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::anonymous();
+        crate::facade::auth::grant_admins(&[admin]);
+
+        for (name, graph_byte) in [("graph_a", 11u8), ("graph_b", 12u8)] {
+            store
+                .admin_register_graph(
+                    admin,
+                    GraphRegistryEntry {
+                        graph_id: GraphId::from_raw(0),
+                        graph_name: name.to_owned(),
+                        canister_id: Principal::management_canister(),
+                        owner: admin,
+                        admins: BTreeSet::new(),
+                        status: GraphStatus::Active,
+                        version: 1,
+                        updated_at_ns: 0,
+                        provisioning_state: ProvisioningState::None,
+                        is_home: false,
+                    },
+                )
+                .expect("register graph");
+            futures::executor::block_on(store.admin_register_shard(
+                admin,
+                AdminRegisterShardArgs {
+                    shard_id: ShardId::new(0),
+                    graph_canister: graph_principal(graph_byte),
+                    index_canister: graph_principal(graph_byte + 10),
+                    logical_graph_name: name.into(),
+                },
+            ))
+            .expect("register shard");
+        }
+
+        let graph_a = lookup_graph_id("graph_a").expect("graph a");
+        let graph_b = lookup_graph_id("graph_b").expect("graph b");
+        let shard_id = ShardId::new(0);
+        let deltas = vec![LabelStatsDeltaEventWire {
+            mutation_id: 1,
+            shard_event_seq: 1,
+            label_stats_delta: LabelStatsDelta {
+                vertex: vec![(VertexLabelId::from_raw(1), 1)],
+                edge: vec![],
+            },
+        }];
+
+        futures::executor::block_on(store.advance_label_stats_projection(
+            graph_a,
+            graph_principal(11),
+            shard_id,
+            10,
+            |_graph, _from, _limit| async { Ok(deltas.clone()) },
+            |_graph, _through| async { Ok(()) },
+        ))
+        .expect("advance graph a");
+
+        assert_eq!(store.label_stats_projection_cursor(graph_a, shard_id), 1);
+        assert_eq!(store.label_stats_projection_cursor(graph_b, shard_id), 0);
+        assert_eq!(
+            store
+                .vertex_label_stats(graph_a, VertexLabelId::from_raw(1))
+                .live_count,
+            1
+        );
+        assert_eq!(
+            store
+                .vertex_label_stats(graph_b, VertexLabelId::from_raw(1))
+                .live_count,
+            0
         );
     }
 }

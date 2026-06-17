@@ -2,24 +2,28 @@
 //! and `facade/stable/layout.rs` (ADR 0007 registry).
 //!
 //! MemoryIds are grouped by [`StableMemoryClass`] / inventory domain:
-//! auth → registry → idempotency → catalog → telemetry → maintenance.
+//! auth → registry → runtime config → idempotency → catalog → telemetry → maintenance.
 
 use super::edge_payload_profiles::EdgePayloadProfileStore;
-use candid::Principal;
+use candid::{Decode, Encode, Principal};
+use gleaph_graph_kernel::bidirectional_catalog::DenseIndexNamePolicy;
 use gleaph_graph_kernel::bidirectional_catalog::{
     BidirectionalCatalog, DenseEdgeLabelPolicy, DenseMaxPlusOnePolicy, SparseFromOnePolicy,
 };
-use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, GraphTypeId, PropertyId, VertexLabelId};
-use gleaph_graph_kernel::federation::{
-    BackfillShardState, EdgeBackfillShardState, ShardId, ShardRegistryEntry,
+use gleaph_graph_kernel::entry::{
+    EdgeLabelId, GraphId, GraphTypeId, IndexNameId, PropertyId, VertexLabelId,
 };
+use gleaph_graph_kernel::federation::{
+    BackfillShardState, EdgeBackfillShardState, ElementIdEncodingKey, GraphShardKey, ShardId,
+    ShardRegistryEntry,
+};
+use gleaph_graph_kernel::scoped_name_catalog::GraphScopedNameCatalog;
 
 use gleaph_auth::AuthState;
 use gleaph_gql_ic::graph_registry::GraphRegistryEntry;
 use gleaph_graph_catalog::GraphCatalog;
 
 use super::indexed_catalog::{IndexDefRecord, IndexedPropertyKey, NamedIndexKey};
-use super::scoped_name_catalog::GraphScopedNameCatalog;
 use candid::CandidType;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
@@ -38,43 +42,46 @@ const ROUTER_SHARDS: MemoryId = MemoryId::new(2);
 const ROUTER_SHARD_BY_GRAPH: MemoryId = MemoryId::new(3);
 const ROUTER_SHARDS_BY_GRAPH_ID: MemoryId = MemoryId::new(4);
 
+// --- runtime config (canonical, per GraphId) ---
+const ROUTER_GRAPH_RUNTIME_CONFIG: MemoryId = MemoryId::new(5);
+
 // --- idempotency / prepared queries (canonical) ---
-const ROUTER_MUTATION_COUNTER: MemoryId = MemoryId::new(5);
-const ROUTER_MUTATION_BY_CLIENT_KEY: MemoryId = MemoryId::new(6);
-const ROUTER_PREPARED_PLANS: MemoryId = MemoryId::new(7);
+const ROUTER_MUTATION_COUNTER: MemoryId = MemoryId::new(6);
+const ROUTER_MUTATION_BY_CLIENT_KEY: MemoryId = MemoryId::new(7);
+const ROUTER_PREPARED_PLANS: MemoryId = MemoryId::new(8);
 
 // --- catalog: label / property / graph / index resolution ---
-const ROUTER_VERTEX_LABEL_BY_NAME: MemoryId = MemoryId::new(8);
-const ROUTER_VERTEX_LABEL_BY_ID: MemoryId = MemoryId::new(9);
-const ROUTER_EDGE_LABEL_BY_NAME: MemoryId = MemoryId::new(10);
-const ROUTER_EDGE_LABEL_BY_ID: MemoryId = MemoryId::new(11);
-const ROUTER_PROPERTY_BY_NAME: MemoryId = MemoryId::new(12);
-const ROUTER_PROPERTY_BY_ID: MemoryId = MemoryId::new(13);
-const ROUTER_GRAPH_BY_NAME: MemoryId = MemoryId::new(14);
-const ROUTER_GRAPH_BY_ID: MemoryId = MemoryId::new(15);
-const ROUTER_INDEX_NAME_BY_NAME: MemoryId = MemoryId::new(16);
-const ROUTER_INDEX_NAME_BY_ID: MemoryId = MemoryId::new(17);
+const ROUTER_VERTEX_LABEL_BY_NAME: MemoryId = MemoryId::new(9);
+const ROUTER_VERTEX_LABEL_BY_ID: MemoryId = MemoryId::new(10);
+const ROUTER_EDGE_LABEL_BY_NAME: MemoryId = MemoryId::new(11);
+const ROUTER_EDGE_LABEL_BY_ID: MemoryId = MemoryId::new(12);
+const ROUTER_PROPERTY_BY_NAME: MemoryId = MemoryId::new(13);
+const ROUTER_PROPERTY_BY_ID: MemoryId = MemoryId::new(14);
+const ROUTER_GRAPH_BY_NAME: MemoryId = MemoryId::new(15);
+const ROUTER_GRAPH_BY_ID: MemoryId = MemoryId::new(16);
+const ROUTER_INDEX_NAME_BY_NAME: MemoryId = MemoryId::new(17);
+const ROUTER_INDEX_NAME_BY_ID: MemoryId = MemoryId::new(18);
 
 // --- catalog: index planner + edge payload + graph type ---
-const ROUTER_NAMED_INDEXES: MemoryId = MemoryId::new(18);
-const ROUTER_INDEXED_PROPERTY_SET: MemoryId = MemoryId::new(19);
-const ROUTER_EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(20);
-const ROUTER_GRAPH_TYPE_DEFINITIONS: MemoryId = MemoryId::new(21);
-const ROUTER_GRAPH_SCHEMA_BINDINGS: MemoryId = MemoryId::new(22);
-const ROUTER_GRAPH_TYPE_BY_NAME: MemoryId = MemoryId::new(23);
-const ROUTER_GRAPH_TYPE_BY_ID: MemoryId = MemoryId::new(24);
+const ROUTER_NAMED_INDEXES: MemoryId = MemoryId::new(19);
+const ROUTER_INDEXED_PROPERTY_SET: MemoryId = MemoryId::new(20);
+const ROUTER_EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(21);
+const ROUTER_GRAPH_TYPE_DEFINITIONS: MemoryId = MemoryId::new(22);
+const ROUTER_GRAPH_SCHEMA_BINDINGS: MemoryId = MemoryId::new(23);
+const ROUTER_GRAPH_TYPE_BY_NAME: MemoryId = MemoryId::new(24);
+const ROUTER_GRAPH_TYPE_BY_ID: MemoryId = MemoryId::new(25);
 
 // --- telemetry ---
-const ROUTER_VERTEX_LABEL_STATS: MemoryId = MemoryId::new(25);
-const ROUTER_EDGE_LABEL_STATS: MemoryId = MemoryId::new(26);
-const ROUTER_VERTEX_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(27);
-const ROUTER_EDGE_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(28);
-const ROUTER_LABEL_STATS_PROJECTION: MemoryId = MemoryId::new(29);
+const ROUTER_VERTEX_LABEL_STATS: MemoryId = MemoryId::new(26);
+const ROUTER_EDGE_LABEL_STATS: MemoryId = MemoryId::new(27);
+const ROUTER_VERTEX_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(28);
+const ROUTER_EDGE_LABEL_LIVE_BY_SHARD: MemoryId = MemoryId::new(29);
+const ROUTER_LABEL_STATS_PROJECTION: MemoryId = MemoryId::new(30);
 
 // --- maintenance (backfill cursors) ---
-const ROUTER_LABEL_BACKFILL_STATE: MemoryId = MemoryId::new(30);
-const ROUTER_VERTEX_PROPERTY_BACKFILL_STATE: MemoryId = MemoryId::new(31);
-const ROUTER_EDGE_BACKFILL_STATE: MemoryId = MemoryId::new(32);
+const ROUTER_LABEL_BACKFILL_STATE: MemoryId = MemoryId::new(31);
+const ROUTER_VERTEX_PROPERTY_BACKFILL_STATE: MemoryId = MemoryId::new(32);
+const ROUTER_EDGE_BACKFILL_STATE: MemoryId = MemoryId::new(33);
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
@@ -121,9 +128,44 @@ pub(crate) type StableAuthState = AuthState<Memory>;
 
 // --- registry ---
 pub(crate) type StableGraphRegistry = BTreeMap<GraphId, GraphRegistryEntry, Memory>;
-pub(crate) type StableShardRegistry = BTreeMap<ShardId, ShardRegistryEntry, Memory>;
-pub(crate) type StableShardByGraph = BTreeMap<Principal, ShardId, Memory>;
+pub(crate) type StableShardRegistry = BTreeMap<GraphShardKey, ShardRegistryEntry, Memory>;
+pub(crate) type StableShardByGraph = BTreeMap<Principal, GraphShardKey, Memory>;
 pub(crate) type StableShardsByGraphId = BTreeMap<GraphId, GraphShardList, Memory>;
+pub(crate) type StableGraphRuntimeConfigMap = BTreeMap<GraphId, GraphRuntimeConfig, Memory>;
+
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub(crate) struct GraphRuntimeConfig {
+    pub element_id_encoding_key: [u8; 16],
+    pub index_group_size: u32,
+    pub index_cluster: Vec<Principal>,
+}
+
+impl GraphRuntimeConfig {
+    pub const fn with_element_id_encoding_key(key: ElementIdEncodingKey) -> Self {
+        Self {
+            element_id_encoding_key: key.0,
+            index_group_size: 1,
+            index_cluster: Vec::new(),
+        }
+    }
+}
+
+impl ic_stable_structures::Storable for GraphRuntimeConfig {
+    const BOUND: ic_stable_structures::storable::Bound =
+        ic_stable_structures::storable::Bound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode GraphRuntimeConfig"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode GraphRuntimeConfig")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), GraphRuntimeConfig).expect("decode GraphRuntimeConfig")
+    }
+}
 
 // --- idempotency / prepared queries ---
 pub(crate) type StableMutationCounter = Cell<u64, Memory>;
@@ -140,14 +182,15 @@ pub(crate) type StablePreparedPlanMap = BTreeMap<
 
 // --- catalog ---
 pub(crate) type StableVertexLabelCatalog =
-    BidirectionalCatalog<VertexLabelId, Memory, Memory, DenseMaxPlusOnePolicy>;
+    GraphScopedNameCatalog<VertexLabelId, Memory, Memory, DenseMaxPlusOnePolicy>;
 pub(crate) type StableEdgeLabelCatalog =
-    BidirectionalCatalog<EdgeLabelId, Memory, Memory, DenseEdgeLabelPolicy>;
+    GraphScopedNameCatalog<EdgeLabelId, Memory, Memory, DenseEdgeLabelPolicy>;
 pub(crate) type StablePropertyCatalog =
-    BidirectionalCatalog<PropertyId, Memory, Memory, DenseMaxPlusOnePolicy>;
+    GraphScopedNameCatalog<PropertyId, Memory, Memory, DenseMaxPlusOnePolicy>;
 pub(crate) type StableGraphCatalog =
     BidirectionalCatalog<GraphId, Memory, Memory, DenseMaxPlusOnePolicy>;
-pub(crate) type StableIndexNameCatalog = GraphScopedNameCatalog<Memory, Memory>;
+pub(crate) type StableIndexNameCatalog =
+    GraphScopedNameCatalog<IndexNameId, Memory, Memory, DenseIndexNamePolicy>;
 pub(crate) type StableNamedIndexMap = BTreeMap<NamedIndexKey, IndexDefRecord, Memory>;
 pub(crate) type StableIndexedPropertySet = BTreeSet<IndexedPropertyKey, Memory>;
 pub(crate) type StableEdgePayloadProfileStore = EdgePayloadProfileStore<Memory>;
@@ -156,15 +199,18 @@ pub(crate) type StableGraphTypeNameCatalog =
     BidirectionalCatalog<GraphTypeId, Memory, Memory, SparseFromOnePolicy>;
 
 // --- telemetry ---
-pub(crate) type StableLabelStatsMap = BTreeMap<u16, super::label_stats::LabelStats, Memory>;
-pub(crate) type StableLabelShardLiveMap = BTreeMap<super::label_stats::LabelShardKey, u64, Memory>;
-pub(crate) type StableLabelStatsProjectionMap = BTreeMap<ShardId, u64, Memory>;
+pub(crate) type StableLabelStatsMap =
+    BTreeMap<super::label_stats::GraphLabelKey, super::label_stats::LabelStats, Memory>;
+pub(crate) type StableLabelShardLiveMap =
+    BTreeMap<super::label_stats::GraphLabelShardKey, u64, Memory>;
+pub(crate) type StableLabelStatsProjectionMap = BTreeMap<GraphShardKey, u64, Memory>;
 
 // --- maintenance ---
-pub(crate) type StableLabelBackfillStateMap = BTreeMap<ShardId, BackfillShardState, Memory>;
+pub(crate) type StableLabelBackfillStateMap = BTreeMap<GraphShardKey, BackfillShardState, Memory>;
 pub(crate) type StableVertexPropertyBackfillStateMap =
-    BTreeMap<ShardId, BackfillShardState, Memory>;
-pub(crate) type StableEdgeBackfillStateMap = BTreeMap<ShardId, EdgeBackfillShardState, Memory>;
+    BTreeMap<GraphShardKey, BackfillShardState, Memory>;
+pub(crate) type StableEdgeBackfillStateMap =
+    BTreeMap<GraphShardKey, EdgeBackfillShardState, Memory>;
 
 thread_local! {
     pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -193,6 +239,10 @@ pub(crate) fn init_shards_by_graph_id() -> StableShardsByGraphId {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_SHARDS_BY_GRAPH_ID)))
 }
 
+pub(crate) fn init_graph_runtime_config() -> StableGraphRuntimeConfigMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_GRAPH_RUNTIME_CONFIG)))
+}
+
 // --- idempotency / prepared queries ---
 pub(crate) fn init_mutation_counter() -> StableMutationCounter {
     Cell::init(
@@ -211,21 +261,21 @@ pub(crate) fn init_prepared_plans() -> StablePreparedPlanMap {
 
 // --- catalog ---
 pub(crate) fn init_vertex_label_catalog() -> StableVertexLabelCatalog {
-    BidirectionalCatalog::init(
+    GraphScopedNameCatalog::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VERTEX_LABEL_BY_NAME)),
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VERTEX_LABEL_BY_ID)),
     )
 }
 
 pub(crate) fn init_edge_label_catalog() -> StableEdgeLabelCatalog {
-    BidirectionalCatalog::init(
+    GraphScopedNameCatalog::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_LABEL_BY_NAME)),
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_LABEL_BY_ID)),
     )
 }
 
 pub(crate) fn init_property_catalog() -> StablePropertyCatalog {
-    BidirectionalCatalog::init(
+    GraphScopedNameCatalog::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BY_NAME)),
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROPERTY_BY_ID)),
     )

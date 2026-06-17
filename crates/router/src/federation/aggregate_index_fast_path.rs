@@ -139,9 +139,13 @@ pub fn gql_query_result_from_label_live_count(
 }
 
 /// Live vertex count for a label from router telemetry.
-pub fn vertex_label_live_count(store: &RouterStore, vertex_label_id: u32) -> u64 {
+pub fn vertex_label_live_count(
+    store: &RouterStore,
+    graph_id: gleaph_graph_kernel::entry::GraphId,
+    vertex_label_id: u32,
+) -> u64 {
     store
-        .vertex_label_stats(VertexLabelId::from_raw(vertex_label_id as u16))
+        .vertex_label_stats(graph_id, VertexLabelId::from_raw(vertex_label_id as u16))
         .live_count
 }
 
@@ -167,7 +171,10 @@ pub fn try_aggregate_index_fast_path(
     if !stats.is_vertex_property_indexed(property) {
         return None;
     }
-    let property_id = store.lookup_property_id(property).ok()?.raw();
+    let property_id = store
+        .lookup_property_id(stats.graph_id(), property)
+        .ok()?
+        .raw();
     let ops = plans.last()?.ops.as_slice();
     let prefix = &ops[..aggregate_idx];
     let index_anchors = match parse_fast_path_prefix(prefix, params, store, stats) {
@@ -283,8 +290,18 @@ fn parse_fast_path_prefix(
                 label: Some(label),
                 variable,
                 ..
-            } => Ok(Some(vec![label_anchor(store, label.as_ref(), variable)?])),
-            _ => match crate::seed::index_anchor_from_prefix_ops(ops, params, store)? {
+            } => Ok(Some(vec![label_anchor(
+                store,
+                stats.graph_id(),
+                label.as_ref(),
+                variable,
+            )?])),
+            _ => match crate::seed::index_anchor_from_prefix_ops(
+                ops,
+                params,
+                store,
+                stats.graph_id(),
+            )? {
                 Some(anchor) => Ok(Some(vec![anchor])),
                 None => Ok(None),
             },
@@ -301,7 +318,12 @@ fn parse_fast_path_prefix(
                 ..
             } => {
                 record_bound_var(&mut bound_var, variable)?;
-                anchors.push(label_anchor(store, label.as_ref(), variable)?);
+                anchors.push(label_anchor(
+                    store,
+                    stats.graph_id(),
+                    label.as_ref(),
+                    variable,
+                )?);
             }
             PlanOp::NodeScan { label: None, .. } => return Ok(None),
             PlanOp::IndexScan {
@@ -314,6 +336,7 @@ fn parse_fast_path_prefix(
                 record_bound_var(&mut bound_var, variable)?;
                 anchors.push(equal_anchor(
                     store,
+                    stats.graph_id(),
                     params,
                     variable,
                     property.as_ref(),
@@ -364,12 +387,13 @@ fn record_bound_var(
 
 fn label_anchor(
     store: &RouterStore,
+    graph_id: gleaph_graph_kernel::entry::GraphId,
     label: &str,
     variable: impl AsRef<str>,
 ) -> Result<IndexAnchor, crate::state::RouterError> {
     let vertex_label_id = u32::from(
         store
-            .lookup_vertex_label_id(label)
+            .lookup_vertex_label_id(graph_id, label)
             .map_err(|_| crate::state::RouterError::NotFound(format!("label {label}")))?
             .raw(),
     );
@@ -381,6 +405,7 @@ fn label_anchor(
 
 fn equal_anchor(
     store: &RouterStore,
+    graph_id: gleaph_graph_kernel::entry::GraphId,
     params: &BTreeMap<String, Value>,
     variable: impl AsRef<str>,
     property: &str,
@@ -390,7 +415,7 @@ fn equal_anchor(
         crate::state::RouterError::InvalidArgument("missing fast path parameter".into())
     })?;
     let property_id = store
-        .lookup_property_id(property)
+        .lookup_property_id(graph_id, property)
         .map_err(|_| crate::state::RouterError::NotFound(format!("property {property}")))?
         .raw();
     Ok(IndexAnchor::Equal(SeedProbe {
@@ -420,7 +445,12 @@ fn anchor_from_property_predicate(
             if bound_var.is_some_and(|v| v != variable) {
                 return Ok(None);
             }
-            Ok(Some(label_anchor(store, label, variable)?))
+            Ok(Some(label_anchor(
+                store,
+                stats.graph_id(),
+                label,
+                variable,
+            )?))
         }
         ExprKind::Compare {
             left,
@@ -445,7 +475,7 @@ fn anchor_from_property_predicate(
                     )
                 })?;
             let property_id = store
-                .lookup_property_id(&property)
+                .lookup_property_id(stats.graph_id(), &property)
                 .map_err(|_| crate::state::RouterError::NotFound(format!("property {property}")))?
                 .raw();
             Ok(Some(IndexAnchor::Equal(SeedProbe {
@@ -566,6 +596,7 @@ fn compare_group_key_rows(
 
 #[cfg(test)]
 mod tests {
+    use std::collections::BTreeSet;
     use std::rc::Rc;
 
     use gleaph_gql::ast::{AggregateFunc, Expr, ExprKind};
@@ -575,6 +606,7 @@ mod tests {
 
     use super::*;
     use crate::facade::store::RouterStore;
+    use crate::federation::GraphId;
     use crate::init::RouterInitArgs;
 
     fn agg_count_star() -> Expr {
@@ -628,7 +660,7 @@ mod tests {
         PhysicalPlan::from_ops(grouped_count_tail(property, having))
     }
 
-    fn store_with_country_and_region() -> RouterStore {
+    fn store_with_country_and_region() -> (RouterStore, GraphId) {
         let store = RouterStore::new();
         let admin = candid::Principal::anonymous();
         store.init_from_args(&RouterInitArgs {
@@ -636,19 +668,35 @@ mod tests {
             initial_admins: vec![admin],
         });
         crate::facade::auth::grant_admins(&[admin]);
+        crate::facade::store::catalog_test_support::register_graph(
+            &store,
+            admin,
+            crate::facade::store::catalog_test_support::GRAPH,
+        );
+        let graph_id = store
+            .resolve_graph_id(crate::facade::store::catalog_test_support::GRAPH)
+            .expect("graph id");
         store
-            .admin_intern_property(admin, "country")
+            .admin_intern_property(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "country",
+            )
             .expect("intern country");
         store
-            .admin_intern_property(admin, "region")
+            .admin_intern_property(
+                admin,
+                crate::facade::store::catalog_test_support::GRAPH,
+                "region",
+            )
             .expect("intern region");
-        store
+        (store, graph_id)
     }
 
     #[test]
     fn detects_grouped_count_star_on_indexed_property() {
-        let store = store_with_country_and_region();
-        let stats = RouterGraphStats::test_vertex_indexed(&store, &["country"]);
+        let (store, graph_id) = store_with_country_and_region();
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["country"]);
         let plan = grouped_count_plan("country", None);
         let fast = try_aggregate_index_fast_path(&[plan], &stats, &store, &BTreeMap::new())
             .expect("fast path");
@@ -660,8 +708,8 @@ mod tests {
 
     #[test]
     fn detects_index_scan_prefix_with_seed_anchor() {
-        let store = store_with_country_and_region();
-        let stats = RouterGraphStats::test_vertex_indexed(&store, &["country"]);
+        let (store, graph_id) = store_with_country_and_region();
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["country"]);
         let mut ops = vec![PlanOp::IndexScan {
             variable: Rc::from("n"),
             property: Rc::from("region"),
@@ -679,18 +727,18 @@ mod tests {
         ));
         assert_eq!(
             fast.property_id,
-            store.lookup_property_id("country").unwrap().raw()
+            store.lookup_property_id(graph_id, "country").unwrap().raw()
         );
     }
 
     #[test]
     fn detects_labeled_node_scan_prefix() {
-        let store = store_with_country_and_region();
+        let (store, graph_id) = store_with_country_and_region();
         let admin = candid::Principal::anonymous();
         store
-            .admin_intern_vertex_label(admin, "Person")
+            .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");
-        let stats = RouterGraphStats::test_vertex_indexed(&store, &["country"]);
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["country"]);
         let group = Expr::new(ExprKind::PropertyAccess {
             expr: Box::new(Expr::var("n")),
             property: "country".into(),
@@ -737,12 +785,12 @@ mod tests {
 
     #[test]
     fn detects_labeled_node_scan_and_index_scan_prefix() {
-        let store = store_with_country_and_region();
+        let (store, graph_id) = store_with_country_and_region();
         let admin = candid::Principal::anonymous();
         store
-            .admin_intern_vertex_label(admin, "Person")
+            .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");
-        let stats = RouterGraphStats::test_vertex_indexed(&store, &["country", "region"]);
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["country", "region"]);
         let mut ops = vec![
             PlanOp::NodeScan {
                 variable: Rc::from("n"),
@@ -780,12 +828,12 @@ mod tests {
 
     #[test]
     fn detects_index_scan_with_is_labeled_property_filter_prefix() {
-        let store = store_with_country_and_region();
+        let (store, graph_id) = store_with_country_and_region();
         let admin = candid::Principal::anonymous();
         store
-            .admin_intern_vertex_label(admin, "Person")
+            .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");
-        let stats = RouterGraphStats::test_vertex_indexed(&store, &["country", "region"]);
+        let stats = RouterGraphStats::test_vertex_indexed(graph_id, &store, &["country", "region"]);
         let mut ops = vec![
             PlanOp::IndexScan {
                 variable: Rc::from("n"),
@@ -822,12 +870,17 @@ mod tests {
 
     #[test]
     fn detects_label_only_count_star_return() {
-        let store = store_with_country_and_region();
+        let (store, graph_id) = store_with_country_and_region();
         let admin = candid::Principal::anonymous();
         store
-            .admin_intern_vertex_label(admin, "Person")
+            .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");
-        let stats = RouterGraphStats::default();
+        let stats = RouterGraphStats::from_catalog(
+            graph_id,
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+        );
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::NodeScan {
                 variable: Rc::from("n"),

@@ -110,3 +110,49 @@ pub(super) fn ic_time_ns() -> u64 {
         0
     }
 }
+
+#[cfg(test)]
+pub(crate) mod catalog_test_support {
+    use super::RouterStore;
+    use crate::facade::auth;
+    use crate::init::RouterInitArgs;
+    use crate::types::{GraphRegistryEntry, GraphStatus, ProvisioningState};
+    use candid::Principal;
+    use gleaph_graph_kernel::entry::GraphId;
+    use std::collections::BTreeSet;
+
+    pub const GRAPH: &str = "tenant.main";
+
+    pub fn register_graph(store: &RouterStore, admin: Principal, name: &str) {
+        store
+            .admin_register_graph(
+                admin,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    graph_name: name.to_owned(),
+                    canister_id: Principal::management_canister(),
+                    owner: admin,
+                    admins: BTreeSet::new(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: false,
+                },
+            )
+            .expect("register graph");
+    }
+
+    pub fn setup() -> (RouterStore, Principal, GraphId) {
+        let store = RouterStore::new();
+        store.init_from_args(&RouterInitArgs {
+            issuing_principal: Principal::anonymous(),
+            initial_admins: vec![],
+        });
+        let admin = Principal::anonymous();
+        auth::grant_admins(&[admin]);
+        register_graph(&store, admin, GRAPH);
+        let graph_id = store.resolve_graph_id(GRAPH).expect("graph id");
+        (store, admin, graph_id)
+    }
+}

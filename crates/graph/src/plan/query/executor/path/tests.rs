@@ -17,7 +17,7 @@ mod path_test_helpers {
     use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalEdgeId, GlobalVertexId};
     use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 
-    pub const PATH_ID_KEY: ElementIdEncodingKey = ElementIdEncodingKey::standalone();
+    pub const PATH_ID_KEY: ElementIdEncodingKey = ElementIdEncodingKey::host_test_fixture();
 
     pub fn decoded_vertex_global(element: &PathElement) -> GlobalVertexId {
         vertex_path_id(element).decode_global(&PATH_ID_KEY)
@@ -396,8 +396,10 @@ fn element_id_returns_graph_kernel_bytes_for_vertices_and_edges() {
              RETURN ELEMENT_ID(a) AS aid, ELEMENT_ID(e) AS eid",
     );
 
+    let execution = GqlExecutionContext::with_host_test_element_id_key();
+
     let result = store
-        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .execute_plan_query(&plan, &params(), execution)
         .expect("element ids");
 
     assert_eq!(result.rows.len(), 1);

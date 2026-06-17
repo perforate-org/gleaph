@@ -600,6 +600,8 @@ async fn dispatch_multi_graph_use_segments(
     }
     let mut merged = empty_execute_plan_result();
     for segment in segments {
+        // ADR 0019 S2: each branch keeps its own GraphId context; do not treat
+        // returned element ids as graph-agnostic across merged rows.
         let seg_plan = crate::use_graph::defocused_plan_from_ops(output_plan.clone(), segment.ops);
         let stats = graph_stats_for(segment.graph_id);
         let plan_blob = encode_block_plans(std::slice::from_ref(&seg_plan), requires_write_path)
@@ -649,6 +651,8 @@ async fn dispatch_use_graph_join(
     }
     let left_plan = crate::use_graph::defocused_plan_from_ops(output_plan.clone(), left.ops);
     let right_plan = crate::use_graph::defocused_plan_from_ops(output_plan.clone(), right.ops);
+    // ADR 0019 S2: dispatch each side with its own GraphId; join merges values
+    // only and does not unify physical element-id identity across graphs.
     let left_stats = graph_stats_for(left.graph_id);
     let right_stats = graph_stats_for(right.graph_id);
     let left_blob = encode_block_plans(std::slice::from_ref(&left_plan), requires_write_path)
@@ -718,11 +722,12 @@ pub async fn dispatch_plan_blob(
     stats: &RouterGraphStats,
 ) -> Result<GqlQueryResult, RouterError> {
     let store = RouterStore::new();
-    let shards = store.list_shards_for_graph_id(graph_id)?;
+    let shards = store.list_live_shards_for_graph_id(graph_id)?;
     if shards.is_empty() {
         return Err(RouterError::ShardNotRegistered);
     }
-    let index = RouterIndexLookup::from_shards(&shards);
+    let index =
+        RouterIndexLookup::from_shards(graph_id, &shards).map_err(RouterError::InvalidArgument)?;
     dispatch_plan_blob_with_index(
         graph_id,
         plan_blob,
@@ -758,7 +763,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
     if mode == GqlExecutionMode::Query && !has_dml {
         if let Some(label_path) = try_label_count_telemetry_fast_path(plans, stats, store, pmap) {
-            let live_count = vertex_label_live_count(store, label_path.vertex_label_id);
+            let live_count = vertex_label_live_count(store, graph_id, label_path.vertex_label_id);
             return gql_query_result_from_label_live_count(&label_path, live_count)
                 .map_err(RouterError::InvalidArgument);
         }
@@ -809,7 +814,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         .and_then(|record| record.resolved_labels.clone())
     {
         Some(resolved_labels) => resolved_labels,
-        None => match store.resolve_plan_labels(plans) {
+        None => match store.resolve_plan_labels(graph_id, plans) {
             Ok(resolved_labels) => resolved_labels,
             Err(err) => {
                 release_routing_if_owner(
@@ -828,7 +833,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         .and_then(|record| record.resolved_properties.clone())
     {
         Some(resolved_properties) => resolved_properties,
-        None => match store.resolve_plan_properties(plans) {
+        None => match store.resolve_plan_properties(graph_id, plans) {
             Ok(resolved_properties) => resolved_properties,
             Err(err) => {
                 release_routing_if_owner(
@@ -973,6 +978,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 .collect();
         }
     }
+    let element_id_encoding_key = store.graph_element_id_encoding_key(graph_id)?.0;
 
     let mut merged = empty_execute_plan_result();
     for dispatch in dispatches {
@@ -980,6 +986,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             dispatch.graph_canister,
             gleaph_graph_kernel::plan_exec::ExecutePlanArgs {
                 target_shard_id: dispatch.shard_id,
+                element_id_encoding_key,
                 mutation_id,
                 plan_blob: dispatch_plan_blob.clone(),
                 params_blob: params.to_vec(),
@@ -996,6 +1003,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 if let Some(mutation_id) = mutation_id
                     && let Some(entry) = recover_mutation_outcome(
                         store,
+                        graph_id,
                         dispatch.graph_canister,
                         dispatch.shard_id,
                         mutation_id,
@@ -1045,6 +1053,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         if let Some(mutation_id) = mutation_id {
             advance_mutation_label_stats_projection(
                 store,
+                graph_id,
                 dispatch.graph_canister,
                 dispatch.shard_id,
                 mutation_id,
@@ -1122,6 +1131,7 @@ const LABEL_STATS_PROJECTION_BATCH_LIMIT: u32 = 1_000;
 
 async fn advance_label_stats_projection_through(
     store: &RouterStore,
+    graph_id: GraphId,
     graph_canister: Principal,
     shard_id: ShardId,
     target_seq: Option<ShardEventSeq>,
@@ -1130,12 +1140,13 @@ async fn advance_label_stats_projection_through(
         return Ok(());
     };
     loop {
-        let cursor = store.label_stats_projection_cursor(shard_id);
+        let cursor = store.label_stats_projection_cursor(graph_id, shard_id);
         if cursor >= target {
             return Ok(());
         }
         let result = store
             .advance_label_stats_projection(
+                graph_id,
                 graph_canister,
                 shard_id,
                 LABEL_STATS_PROJECTION_BATCH_LIMIT,
@@ -1167,6 +1178,7 @@ async fn reconcile_router_mutation_projection(
     {
         let Some(entry) = recover_mutation_outcome(
             store,
+            graph_id,
             shard.graph_canister,
             shard.shard_id,
             record.mutation_id,
@@ -1196,6 +1208,7 @@ async fn reconcile_router_mutation_projection(
 
 async fn advance_mutation_label_stats_projection(
     store: &RouterStore,
+    graph_id: GraphId,
     graph_canister: Principal,
     shard_id: ShardId,
     mutation_id: MutationId,
@@ -1215,6 +1228,7 @@ async fn advance_mutation_label_stats_projection(
     }
     advance_label_stats_projection_through(
         store,
+        graph_id,
         graph_canister,
         shard_id,
         entry.emitted_delta_last_seq,
@@ -1225,6 +1239,7 @@ async fn advance_mutation_label_stats_projection(
 
 async fn recover_mutation_outcome(
     store: &RouterStore,
+    graph_id: GraphId,
     graph_canister: Principal,
     shard_id: ShardId,
     mutation_id: MutationId,
@@ -1240,6 +1255,7 @@ async fn recover_mutation_outcome(
     }
     advance_label_stats_projection_through(
         store,
+        graph_id,
         graph_canister,
         shard_id,
         entry.emitted_delta_last_seq,
@@ -1319,6 +1335,15 @@ mod tests {
 
     fn tenant_main_graph_id() -> GraphId {
         lookup_graph_id("tenant.main").expect("tenant.main")
+    }
+
+    fn tenant_main_stats() -> RouterGraphStats {
+        RouterGraphStats::from_catalog(
+            tenant_main_graph_id(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+            BTreeSet::new(),
+        )
     }
 
     fn store_with_shards() -> RouterStore {
@@ -1584,10 +1609,10 @@ mod tests {
         let store = store_with_shards();
         let admin = Principal::anonymous();
         store
-            .admin_intern_vertex_label(admin, "Person")
+            .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");
         store
-            .admin_intern_vertex_label(admin, "Employee")
+            .admin_intern_vertex_label(admin, "tenant.main", "Employee")
             .expect("intern Employee");
         store
     }
@@ -1786,10 +1811,10 @@ mod tests {
         let store = store_with_shards();
         let admin = Principal::anonymous();
         store
-            .admin_intern_vertex_label(admin, "Person")
+            .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");
         store
-            .admin_intern_property(admin, "region")
+            .admin_intern_property(admin, "tenant.main", "region")
             .expect("intern region");
         store
     }
@@ -1873,7 +1898,7 @@ mod tests {
         let store = store_with_shards();
         let admin = Principal::anonymous();
         store
-            .admin_intern_property(admin, "uid")
+            .admin_intern_property(admin, "tenant.main", "uid")
             .expect("intern uid");
         store
     }
@@ -1886,7 +1911,7 @@ mod tests {
         client_key: &str,
     ) -> Result<GqlQueryResult, RouterError> {
         let graph_id = tenant_main_graph_id();
-        let shards = store.list_shards_for_graph_id(graph_id)?;
+        let shards = store.list_live_shards_for_graph_id(graph_id)?;
         dispatch_plan_blob_with_index(
             graph_id,
             plan_blob,
@@ -1899,7 +1924,7 @@ mod tests {
             shards,
             fake_index,
             Principal::anonymous(),
-            &RouterGraphStats::default(),
+            &tenant_main_stats(),
         )
         .await
     }
@@ -2182,7 +2207,8 @@ mod tests {
     fn compound_label_and_property_seed_routing_intersects_hits() {
         let store = store_with_person_and_region_property();
         let plan = compound_label_property_read_plan();
-        let stats = RouterGraphStats::test_vertex_indexed(&store, &["region"]);
+        let stats =
+            RouterGraphStats::test_vertex_indexed(tenant_main_graph_id(), &store, &["region"]);
         let set = SeedAnchorSet::from_plans(
             std::slice::from_ref(&plan),
             &BTreeMap::new(),
@@ -2231,7 +2257,8 @@ mod tests {
         let shards = store
             .list_shards_for_graph_id(tenant_main_graph_id())
             .expect("shards");
-        let stats = RouterGraphStats::test_vertex_indexed(&store, &["region"]);
+        let stats =
+            RouterGraphStats::test_vertex_indexed(tenant_main_graph_id(), &store, &["region"]);
 
         let err = futures::executor::block_on(dispatch_plan_blob_with_index(
             tenant_main_graph_id(),
@@ -2258,7 +2285,7 @@ mod tests {
     fn label_intersection_seed_routing_fans_out_with_bindings() {
         let store = store_with_person_employee_labels();
         let plan = label_intersection_read_plan();
-        let stats = RouterGraphStats::default();
+        let stats = tenant_main_stats();
         let set = SeedAnchorSet::from_plans(
             std::slice::from_ref(&plan),
             &BTreeMap::new(),
@@ -2343,7 +2370,7 @@ mod tests {
             shards,
             &fake,
             Principal::anonymous(),
-            &RouterGraphStats::default(),
+            &tenant_main_stats(),
         ))
         .expect_err("native graph dispatch should fail after index seeding");
 
@@ -2406,6 +2433,7 @@ mod tests {
         }];
 
         let err = futures::executor::block_on(store.advance_label_stats_projection(
+            GraphId::from_raw(0),
             graph,
             shard_id,
             10,
@@ -2415,6 +2443,9 @@ mod tests {
         .expect_err("gap should fail");
 
         assert!(matches!(err, RouterError::InvalidArgument(_)));
-        assert_eq!(store.label_stats_projection_cursor(shard_id), 0);
+        assert_eq!(
+            store.label_stats_projection_cursor(GraphId::from_raw(0), shard_id),
+            0
+        );
     }
 }

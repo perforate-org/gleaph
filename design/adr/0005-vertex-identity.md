@@ -43,8 +43,15 @@ router catalog SSOT, index grouping, stable memory cleanup, `VertexRef` remote b
 
 ## Decision
 
-Adopt a **two-layer identity model**: canonical **global physical keys** for all internal
-components, and **encoded opaque bytes** for client-visible `ELEMENT_ID` and path elements.
+Adopt a **two-layer identity model**: canonical **graph-scoped physical keys** for all internal
+components (interpreted only with explicit **`GraphId`** execution context), and **encoded opaque
+bytes** for client-visible `ELEMENT_ID` and path elements.
+
+> **Amended 2026-06-17 ([ADR 0019](0019-graph-local-shard-id-and-index-clusters.md)):** **`Global`**
+> means **within one logical graph partition**, not unique across the whole router federation.
+> `GraphId` is **not embedded** in `GlobalVertexId`, `GlobalEdgeId`, or encoded wire payloads.
+> Cross-graph code must thread `GraphId` alongside physical keys. Encoded bytes are
+> **graph-context-bound handles** — use `(GraphId, Encoded*)` when graph boundaries may be crossed.
 
 ### Identity layers
 
@@ -66,8 +73,11 @@ components, and **encoded opaque bytes** for client-visible `ELEMENT_ID` and pat
 
 ### Global vertex identity
 
-- **`GlobalVertexId`** is the single canonical global vertex key:
+- **`GlobalVertexId`** is the single canonical graph-scoped vertex key:
   `{ shard_id: ShardId, local_vertex_id: LocalVertexId }`.
+- **`shard_id`** is **graph-local** ([ADR 0019](0019-graph-local-shard-id-and-index-clusters.md)):
+  `(ShardId(0), local)` on graph `a` ≠ `(ShardId(0), local)` on graph `b` without matching
+  `GraphId` context.
 - Replaces **`LogicalVertexId`** and subsumes today’s **`PhysicalPlacementKey`** /
   **`PhysicalVertexLocation`** field pairing (same 8-byte little-endian layout).
 - Router placement, index **`PostingHit`**, federation expand arguments, and internal maps use
@@ -88,7 +98,8 @@ components, and **encoded opaque bytes** for client-visible `ELEMENT_ID` and pat
 - **`EncodedVertexId`**: 8-byte opaque, bijectively encoded from **`GlobalVertexId`**.
 - **`EncodedEdgeId`**: 12-byte opaque, bijectively encoded from **`GlobalEdgeId`** (not 16 bytes).
 - Encoding uses a **fixed-key bijection** (e.g. Feistel rounds) with a **per-graph key** held by
-  the router (stable config at graph registration).
+  the router in `ROUTER_GRAPH_RUNTIME_CONFIG` (derived at graph registration; production uses IC
+  `raw_rand()` — [ADR 0019](0019-graph-local-shard-id-and-index-clusters.md) §3.1).
 - Properties:
   - **Deterministic** — same canonical id always encodes to the same bytes.
   - **Bijective** — client-sent bytes decode back to exactly one canonical id.

@@ -56,7 +56,7 @@ flowchart LR
    - **Current:** If plan has an **index anchor** (`SeedProbe` on `IndexScan` only), lookup postings and fan out to shards.
    - If **no anchor** and multiple shards → error (`no index anchor: single-shard graph required`).
    - If single shard → execute locally with optional empty seed.
-8. **Execute** — `execute_plan_on_graph` with `ExecutePlanArgs { target_shard_id, plan_blob, seed_bindings_blob, mode }` (`crates/graph-kernel/src/plan_exec.rs`).
+8. **Execute** — `execute_plan_on_graph` with `ExecutePlanArgs { target_shard_id, element_id_encoding_key, plan_blob, seed_bindings_blob, mode }` (`crates/graph-kernel/src/plan_exec.rs`).
 9. **Return** — Row count (values materialized on graph; router aggregates counts for multi-shard).
 
 Update path uses `GqlExecutionMode::Update` and DML operators; graph performs posting maintenance where configured.

@@ -518,6 +518,7 @@ async fn run_wire_plans(
     mutation_id: Option<MutationId>,
 ) -> Result<TransactionBlockRun, GqlRunError> {
     crate::edge_payload_schema::set_execution_resolved_labels(execution.resolved_labels.clone());
+    crate::element_id_encoding::set_execution_element_id_key(execution.element_id_encoding_key());
     let run_result = run_wire_plans_inner(
         store,
         plans,
@@ -532,6 +533,7 @@ async fn run_wire_plans(
     )
     .await;
     crate::edge_payload_schema::clear_execution_resolved_labels();
+    crate::element_id_encoding::clear_execution_element_id_key();
     run_result
 }
 

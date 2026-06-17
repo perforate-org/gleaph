@@ -165,7 +165,7 @@ mod tests {
     }
 
     #[test]
-    fn graph_registry_entry_v1_round_trips_through_storable() {
+    fn graph_registry_entry_round_trips_through_storable() {
         let owner = Principal::from_text("2vxsx-fae").expect("owner");
         let graph_canister =
             Principal::from_text("rrkah-fqaaa-aaaaa-aaaaq-cai").expect("graph canister");

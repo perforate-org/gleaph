@@ -3,13 +3,14 @@
 use gleaph_gql::ast::{Statement, StatementBlock};
 use gleaph_gql::type_check::{GraphTypePropertySchema, NoSchema, PropertySchema};
 use gleaph_gql::validate::SessionGraphSeed;
-use gleaph_graph_catalog::{CatalogError, GraphNameLookup};
+use gleaph_graph_catalog::{CatalogError, GraphNameLookup, object_name_key};
 use gleaph_graph_kernel::entry::GraphId;
 
 use super::ROUTER_GQL_GRAPH_CATALOG;
 use super::ROUTER_GRAPH_TYPE_CATALOG;
 use super::graph_catalog::lookup_graph_id;
 use super::graph_type_name_catalog::RouterGraphTypeLookup;
+use crate::facade::store::RouterStore;
 use crate::state::RouterError;
 
 struct RouterGraphNameLookup;
@@ -56,7 +57,20 @@ pub(crate) fn apply_catalog_statement_block(block: &StatementBlock) -> Result<()
             let mut type_lookup = RouterGraphTypeLookup::new(type_catalog);
             catalog
                 .apply_statement_block(block, &RouterGraphNameLookup, &mut type_lookup)
-                .map_err(catalog_error_to_router)
+                .map_err(catalog_error_to_router)?;
+            for stmt in block.iter_statements() {
+                if let Statement::CreateGraph(create) = stmt {
+                    let graph_name = object_name_key(&create.name);
+                    if let Some(graph_id) = lookup_graph_id(&graph_name)
+                        && let Some(definition) = catalog
+                            .graph_type_definition_for_graph_id(graph_id)
+                            .map_err(catalog_error_to_router)?
+                    {
+                        RouterStore::commit_intern_graph_type_vocabulary(graph_id, &definition)?;
+                    }
+                }
+            }
+            Ok(())
         })
     })
 }

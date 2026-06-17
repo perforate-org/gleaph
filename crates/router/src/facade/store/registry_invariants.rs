@@ -2,16 +2,16 @@
 //!
 //! At every commit boundary the following must hold:
 //! - `ROUTER_GRAPH_CATALOG` ↔ `ROUTER_GRAPHS` (name ↔ `GraphId`, entry.graph_id matches key)
-//! - `ROUTER_SHARDS` ↔ `ROUTER_SHARD_BY_GRAPH` (`graph_canister` ↔ `ShardId`)
+//! - `ROUTER_SHARDS` ↔ `ROUTER_SHARD_BY_GRAPH` (`graph_canister` ↔ `GraphShardKey`)
 //! - `ROUTER_SHARDS` ↔ `ROUTER_SHARDS_BY_GRAPH_ID` (`graph_id` ↔ shard list)
 //! - every shard `graph_id` exists in `ROUTER_GRAPHS`
 
 use super::super::stable::{
-    ROUTER_GRAPH_CATALOG, ROUTER_GRAPHS, ROUTER_SHARD_BY_GRAPH, ROUTER_SHARDS,
-    ROUTER_SHARDS_BY_GRAPH_ID,
+    ROUTER_GRAPH_CATALOG, ROUTER_GRAPH_RUNTIME_CONFIG, ROUTER_GRAPHS, ROUTER_SHARD_BY_GRAPH,
+    ROUTER_SHARDS, ROUTER_SHARDS_BY_GRAPH_ID,
 };
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::federation::{GraphShardKey, ShardId};
 use std::collections::{BTreeMap, BTreeSet};
 
 /// Returns `Ok(())` when all registry denormalization invariants hold.
@@ -74,42 +74,104 @@ pub(super) fn check_registry_invariants() -> Result<(), String> {
         Ok(())
     })?;
 
+    let mut runtime_configs = BTreeMap::new();
+    ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow(|configs| -> Result<(), String> {
+        for lazy in configs.iter() {
+            let graph_id = *lazy.key();
+            let runtime = lazy.value();
+            if !graph_ids_in_registry.contains(&graph_id) {
+                return Err(format!(
+                    "ROUTER_GRAPH_RUNTIME_CONFIG[{graph_id:?}] has no ROUTER_GRAPHS entry"
+                ));
+            }
+            if runtime.index_group_size == 0 {
+                return Err(format!(
+                    "ROUTER_GRAPH_RUNTIME_CONFIG[{graph_id:?}] has index_group_size=0"
+                ));
+            }
+            if runtime
+                .index_cluster
+                .iter()
+                .any(|principal| *principal == candid::Principal::anonymous())
+            {
+                return Err(format!(
+                    "ROUTER_GRAPH_RUNTIME_CONFIG[{graph_id:?}] has anonymous index_cluster member"
+                ));
+            }
+            runtime_configs.insert(graph_id, runtime.clone());
+        }
+        Ok(())
+    })?;
+    for graph_id in &graph_ids_in_registry {
+        if !runtime_configs.contains_key(graph_id) {
+            return Err(format!(
+                "ROUTER_GRAPHS[{graph_id:?}] missing ROUTER_GRAPH_RUNTIME_CONFIG entry"
+            ));
+        }
+    }
+
     let mut shards_by_graph: BTreeMap<GraphId, BTreeSet<ShardId>> = BTreeMap::new();
 
     ROUTER_SHARDS.with_borrow(|shards| -> Result<(), String> {
         for lazy in shards.iter() {
-            let shard_id = *lazy.key();
+            let key = *lazy.key();
             let entry = lazy.value();
 
-            if entry.shard_id != shard_id {
+            if entry.shard_id != key.shard_id {
                 return Err(format!(
-                    "ROUTER_SHARDS[{shard_id:?}].shard_id is {:?}, expected key",
+                    "ROUTER_SHARDS[{key:?}].shard_id is {:?}, expected key shard_id",
                     entry.shard_id
+                ));
+            }
+            if entry.graph_id != key.graph_id {
+                return Err(format!(
+                    "ROUTER_SHARDS[{key:?}].graph_id is {:?}, expected key graph_id",
+                    entry.graph_id
                 ));
             }
             if !graph_ids_in_registry.contains(&entry.graph_id) {
                 return Err(format!(
-                    "ROUTER_SHARDS[{shard_id:?}].graph_id {:?} not in ROUTER_GRAPHS",
+                    "ROUTER_SHARDS[{key:?}].graph_id {:?} not in ROUTER_GRAPHS",
                     entry.graph_id
+                ));
+            }
+            let runtime = runtime_configs.get(&entry.graph_id).ok_or_else(|| {
+                format!(
+                    "ROUTER_SHARDS[{key:?}] graph {:?} missing ROUTER_GRAPH_RUNTIME_CONFIG",
+                    entry.graph_id
+                )
+            })?;
+            let group_index = usize::try_from(key.shard_id.raw() / runtime.index_group_size)
+                .map_err(|_| format!("ROUTER_SHARDS[{key:?}] group index overflow"))?;
+            let expected_index_canister = runtime.index_cluster.get(group_index).ok_or_else(|| {
+                format!(
+                    "ROUTER_SHARDS[{key:?}] group {group_index} out of runtime index_cluster bounds {}",
+                    runtime.index_cluster.len()
+                )
+            })?;
+            if entry.index_canister != *expected_index_canister {
+                return Err(format!(
+                    "ROUTER_SHARDS[{key:?}] index_canister {:?} != runtime index_cluster[{group_index}] {:?}",
+                    entry.index_canister, expected_index_canister
                 ));
             }
 
             shards_by_graph
                 .entry(entry.graph_id)
                 .or_default()
-                .insert(shard_id);
+                .insert(key.shard_id);
 
-            let mapped_shard = ROUTER_SHARD_BY_GRAPH
+            let mapped_key = ROUTER_SHARD_BY_GRAPH
                 .with_borrow(|m| m.get(&entry.graph_canister))
                 .ok_or_else(|| {
                     format!(
-                        "ROUTER_SHARDS[{shard_id:?}].graph_canister {:?} missing from ROUTER_SHARD_BY_GRAPH",
+                        "ROUTER_SHARDS[{key:?}].graph_canister {:?} missing from ROUTER_SHARD_BY_GRAPH",
                         entry.graph_canister
                     )
                 })?;
-            if mapped_shard != shard_id {
+            if mapped_key != key {
                 return Err(format!(
-                    "ROUTER_SHARD_BY_GRAPH[{:?}] is {mapped_shard:?}, expected {shard_id:?}",
+                    "ROUTER_SHARD_BY_GRAPH[{:?}] is {mapped_key:?}, expected {key:?}",
                     entry.graph_canister
                 ));
             }
@@ -120,17 +182,17 @@ pub(super) fn check_registry_invariants() -> Result<(), String> {
     ROUTER_SHARD_BY_GRAPH.with_borrow(|m| -> Result<(), String> {
         for lazy in m.iter() {
             let principal = *lazy.key();
-            let shard_id = lazy.value();
+            let key = lazy.value();
             let entry = ROUTER_SHARDS
-                .with_borrow(|shards| shards.get(&shard_id))
+                .with_borrow(|shards| shards.get(&key))
                 .ok_or_else(|| {
                     format!(
-                        "ROUTER_SHARD_BY_GRAPH[{principal:?}] -> {shard_id:?} missing from ROUTER_SHARDS"
+                        "ROUTER_SHARD_BY_GRAPH[{principal:?}] -> {key:?} missing from ROUTER_SHARDS"
                     )
                 })?;
             if entry.graph_canister != principal {
                 return Err(format!(
-                    "ROUTER_SHARD_BY_GRAPH[{principal:?}] -> {shard_id:?} but ROUTER_SHARDS graph_canister is {:?}",
+                    "ROUTER_SHARD_BY_GRAPH[{principal:?}] -> {key:?} but ROUTER_SHARDS graph_canister is {:?}",
                     entry.graph_canister
                 ));
             }
@@ -157,7 +219,9 @@ pub(super) fn check_registry_invariants() -> Result<(), String> {
                     ));
                 }
                 let entry = ROUTER_SHARDS
-                    .with_borrow(|shards| shards.get(shard_id))
+                    .with_borrow(|shards| {
+                        shards.get(&GraphShardKey::new(graph_id, *shard_id))
+                    })
                     .ok_or_else(|| {
                         format!(
                             "ROUTER_SHARDS_BY_GRAPH_ID[{graph_id:?}] lists {shard_id:?} missing from ROUTER_SHARDS"

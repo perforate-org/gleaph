@@ -30,6 +30,7 @@ pub enum PlanQueryError {
     MissingResolvedProperty {
         name: String,
     },
+    MissingElementIdEncodingKey,
     InvalidExpressionValue {
         expression: String,
     },
@@ -94,6 +95,12 @@ impl fmt::Display for PlanQueryError {
             }
             Self::MissingResolvedProperty { name } => {
                 write!(f, "missing router-resolved property '{name}'")
+            }
+            Self::MissingElementIdEncodingKey => {
+                write!(
+                    f,
+                    "missing router-issued element id encoding key for this graph"
+                )
             }
             Self::InvalidExpressionValue { expression } => {
                 write!(f, "invalid query expression value for '{expression}'")

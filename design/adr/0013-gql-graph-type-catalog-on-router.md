@@ -25,7 +25,7 @@ logic in the standalone crate **`gleaph-graph-catalog`** (`GraphCatalog`):
 | Map | DDL | Key (implemented) | Payload |
 |-----|-----|-------------------|---------|
 | `type_map` | `CREATE GRAPH TYPE` / `DROP GRAPH TYPE` | **`GraphTypeId`** ([ADR 0014](0014-graph-type-id-catalog-on-router.md)) | [`StorableGraphTypeDefinition::V1`] |
-| `binding_map` | `CREATE GRAPH` / `DROP GRAPH` | **`GraphId`** | [`GraphSchemaBinding::V2`] (`TypeRef` stores `GraphTypeId` raw; legacy V1 string `TypeRef` → migration error) |
+| `binding_map` | `CREATE GRAPH` / `DROP GRAPH` | **`GraphId`** | [`GraphSchemaBinding::V1`] (`TypeRef(u32)` = `GraphTypeId` raw; `Inline`) |
 
 [`GraphCatalog::try_property_schema_for_graph_id`] resolves a federation **`GraphId`** to
 [`GraphTypePropertySchema`] for planning and validation. GQL and Candid still use property graph
@@ -100,8 +100,8 @@ Thread-local: one `GraphCatalog<Memory, Memory>` initialized from regions 21–2
 index catalog maps).
 
 **Wire format:** `StorableGraphTypeDefinition::V1` for definitions;
-[`GraphSchemaBinding::V2`] for bindings (`TypeRef(u32)` = `GraphTypeId` raw). Legacy
-[`GraphSchemaBinding::V1`] string `TypeRef` rows fail on read (dev discard / migration hook).
+[`GraphSchemaBinding::V1`] for bindings (`TypeRef(u32)` = `GraphTypeId` raw, or `Inline`).
+Version envelopes are retained for post-production evolution; pre-production legacy string `TypeRef` rows are not supported.
 
 **Stable repack:** [ADR 0007](0007-stable-memory-layout.md) gates added router regions **21–22** (this ADR)
 and **23–24** ([ADR 0014](0014-graph-type-id-catalog-on-router.md)); router **33** regions total (0–32).
@@ -136,7 +136,7 @@ DROP GRAPH g      →  lookup_graph_id("g")?  →  binding_map.remove(&graph_id)
 |---------|----------|
 | Name **not** in `ROUTER_GRAPH_CATALOG` | Fail with **`CatalogError::GraphNotRegistered(name)`** (new variant) — schema cannot exist without a federation graph id |
 | Name registered, `CREATE GRAPH g ANY` | Remove binding row for that `GraphId` (open graph) |
-| Name registered, inline / `TYPED` | Insert/replace [`GraphSchemaBinding::V2`] at `GraphId` |
+| Name registered, inline / `TYPED` | Insert/replace [`GraphSchemaBinding::V1`] at `GraphId` |
 
 **Order of operations (v1):**
 
@@ -164,7 +164,7 @@ Open graphs: no binding row for that `GraphId` → `None` → planner keeps [`No
 #### 2.3 `DROP GRAPH TYPE` cascade
 
 When a named graph type is removed from `type_map`, scan **`binding_map` by `GraphId`** and delete
-rows whose `GraphSchemaBindingV2::TypeRef` matches the dropped **`GraphTypeId`** (integer compare;
+rows whose `GraphSchemaBindingV1::TypeRef` matches the dropped **`GraphTypeId`** (integer compare;
 see [ADR 0014](0014-graph-type-id-catalog-on-router.md)).
 
 ### 3. Catalog DDL ingress on router (mirror index DDL pattern)
@@ -292,7 +292,6 @@ stats load per `GraphId` in ADR 0011 U2).
 
 [`GraphTypeDefinition`]: ../../crates/gql/src/ast/graph_type.rs
 [`GraphSchemaBinding::V1`]: ../../crates/graph-catalog/src/lib.rs
-[`GraphSchemaBinding::V2`]: ../../crates/graph-catalog/src/lib.rs
 [`GraphTypeId`]: ../../crates/graph-kernel/src/entry/graph_type_id.rs
 [`GraphCatalog::try_property_schema_for_graph_id`]: ../../crates/graph-catalog/src/lib.rs
 [`GraphTypePropertySchema`]: ../../crates/gql/src/type_check/graph_type_schema.rs

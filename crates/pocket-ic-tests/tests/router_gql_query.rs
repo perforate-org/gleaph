@@ -76,30 +76,21 @@ fn standalone_gql_query_index_seeded_property_eq() {
 fn standalone_gql_query_returns_element_id_bytes() {
     let env = install_single_shard_federation();
     let inserted = e2e_insert_vertex(&env, env.graph_source);
+    let encoding_key = gleaph_pocket_ic_tests::graph_element_id_encoding_key(
+        &env.pic,
+        env.admin,
+        env.router,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+    );
 
     let result = gql_query_as_admin(&env, "MATCH (n) RETURN ELEMENT_ID(n) AS id");
 
     assert_eq!(result.row_count, 1);
-    let rows_blob = result
-        .rows_blob
-        .as_ref()
-        .expect("router gql_query should return rows_blob for ELEMENT_ID projection");
-    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
-    assert_eq!(wire.rows.len(), 1);
-    let row = wire
-        .rows
-        .into_iter()
-        .next()
-        .expect("one row")
-        .try_into_value_row()
-        .expect("wire row to value row");
-    let Value::Bytes(id_bytes) = row.get("id").expect("id column") else {
-        panic!("expected ELEMENT_ID bytes, got {:?}", row.get("id"));
-    };
+    let id_bytes = gleaph_pocket_ic_tests::element_id_bytes_from_gql_result(&result, "id");
     assert_eq!(
         GraphPathVertexId::try_from_slice(id_bytes.as_ref())
             .expect("decode vertex id")
-            .decode_global(&ElementIdEncodingKey::standalone()),
+            .decode_global(&encoding_key),
         inserted.global_vertex_id
     );
 }
@@ -129,14 +120,20 @@ fn standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter() {
     );
 
     assert_eq!(result.row_count, 1);
+    let encoding_key = gleaph_pocket_ic_tests::graph_element_id_encoding_key(
+        &env.pic,
+        env.admin,
+        env.router,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+    );
     let row = decode_single_value_row(&result);
     assert_eq!(
-        vertex_id_column(&row, "source_id"),
+        vertex_id_column(&row, "source_id", &encoding_key),
         source.global_vertex_id,
         "source ELEMENT_ID should identify the seeded source vertex"
     );
     assert_eq!(
-        vertex_id_column(&row, "target_id"),
+        vertex_id_column(&row, "target_id", &encoding_key),
         target.global_vertex_id,
         "target ELEMENT_ID should identify the seeded target vertex"
     );
@@ -262,6 +259,7 @@ fn decode_single_value_row(
 fn vertex_id_column(
     row: &std::collections::BTreeMap<String, Value>,
     column: &str,
+    encoding_key: &ElementIdEncodingKey,
 ) -> GlobalVertexId {
     let Value::Bytes(id_bytes) = row.get(column).unwrap_or_else(|| panic!("{column} column"))
     else {
@@ -269,7 +267,7 @@ fn vertex_id_column(
     };
     GraphPathVertexId::try_from_slice(id_bytes.as_ref())
         .expect("decode vertex id")
-        .decode_global(&ElementIdEncodingKey::standalone())
+        .decode_global(encoding_key)
 }
 
 #[test]

@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-06-13  
-Status: Implemented (sequential LARA MemoryIds 0–31; facade 32–42; router repack ADR 0011)  
-Anchor timestamp: 2026-06-13 07:36:35 UTC +0000
+Last updated: 2026-06-17
+Status: Implemented (sequential LARA MemoryIds 0–31; facade 32–42; router repack ADR 0011/0018/0019)
+Anchor timestamp: 2026-06-17 10:45:29 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -136,53 +136,55 @@ Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores va
 
 ## Router canister — stable regions
 
-Repacked 2026-06-17: placement removed, controllers merged into auth, MemoryIds compacted to **0–32** (33 regions). Regions grouped **auth → registry → idempotency → catalog → telemetry → maintenance**. `ROUTER_GRAPHS` keyed by **`GraphId`**; `ShardRegistryEntry` stores **`graph_id: GraphId`**. `ROUTER_SHARD_BY_GRAPH` remains **`Principal → ShardId`**; shard listing per logical graph uses **`ROUTER_SHARDS_BY_GRAPH_ID`**.
+Repacked 2026-06-17: placement removed, controllers merged into auth, MemoryIds compacted to **0–33** (34 regions). Regions grouped **auth → registry → runtime config → idempotency → catalog → telemetry → maintenance**. `ROUTER_GRAPHS` keyed by **`GraphId`**; `ShardRegistryEntry` stores **`graph_id: GraphId`**. `ROUTER_SHARDS` keyed by **`GraphShardKey { graph_id, shard_id }`**; `ROUTER_SHARD_BY_GRAPH` is **`Principal → GraphShardKey`**; shard listing per logical graph uses **`ROUTER_SHARDS_BY_GRAPH_ID`**.
 
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
 | 0 | `ROUTER_AUTH_PRINCIPAL_RECORDS` | `ROUTER_AUTH_STATE` | `init_auth_state` | canonical | auth | SSOT for router principal roles (`Role::Admin` for ops) |
 | 1 | `ROUTER_GRAPHS` | `ROUTER_GRAPHS` | `init_graphs` | canonical | registry | **`BTreeMap<GraphId, GraphRegistryEntry>`** — graph registry SSOT |
-| 2 | `ROUTER_SHARDS` | `ROUTER_SHARDS` | `init_shards` | canonical | registry | **`ShardId → ShardRegistryEntry`** — shard dispatch SSOT (`graph_id` on entry) |
-| 3 | `ROUTER_SHARD_BY_GRAPH` | `ROUTER_SHARD_BY_GRAPH` | `init_shard_by_graph` | derived index | registry | **`Principal → ShardId`** — denormalized from `ROUTER_SHARDS`; commit-synced |
+| 2 | `ROUTER_SHARDS` | `ROUTER_SHARDS` | `init_shards` | canonical | registry | **`GraphShardKey → ShardRegistryEntry`** — shard dispatch SSOT ([ADR 0019](../adr/0019-graph-local-shard-id-and-index-clusters.md)) |
+| 3 | `ROUTER_SHARD_BY_GRAPH` | `ROUTER_SHARD_BY_GRAPH` | `init_shard_by_graph` | derived index | registry | **`Principal → GraphShardKey`** — denormalized from `ROUTER_SHARDS`; commit-synced |
 | 4 | `ROUTER_SHARDS_BY_GRAPH_ID` | `ROUTER_SHARDS_BY_GRAPH_ID` | `init_shards_by_graph_id` | derived index | registry | **`GraphId → Vec<ShardId>`** — denormalized fan-out index; commit-synced |
+| 5 | `ROUTER_GRAPH_RUNTIME_CONFIG` | `ROUTER_GRAPH_RUNTIME_CONFIG` | `init_graph_runtime_config` | canonical | runtime config | `GraphId → GraphRuntimeConfig` (`element_id_encoding_key`, `index_group_size`, `index_cluster`; ADR 0019 S2b/S3) |
 
 ### Registry denormalization invariants (implemented 2026-06-17)
 
-Regions **1–2** (canonical), **3–4** (derived indexes), plus **`ROUTER_GRAPH_CATALOG` (14–15)** form an intentional denormalized lookup set — not a merge candidate. Federation dispatch depends on all five staying synchronized at each registry **commit** boundary.
+Regions **1–2** (canonical), **3–4** (derived indexes), **`ROUTER_GRAPH_RUNTIME_CONFIG` (5)**, plus **`ROUTER_GRAPH_CATALOG` (15–16)** form an intentional denormalized lookup set — not a merge candidate. Federation dispatch depends on all six staying synchronized at each registry **commit** boundary.
 
 | Region | Class | Role in invariant |
 |--------|-------|-------------------|
 | `ROUTER_GRAPH_CATALOG` | catalog (registry commit) | name ↔ `GraphId` |
 | `ROUTER_GRAPHS` | canonical | `GraphId` → `GraphRegistryEntry` (RBAC, status, `is_home`) |
-| `ROUTER_SHARDS` | canonical | `ShardId` → `ShardRegistryEntry` (includes `graph_id`) — dispatch SSOT |
-| `ROUTER_SHARDS_BY_GRAPH_ID` | derived index | `GraphId` → `[ShardId]` — fan-out listing |
-| `ROUTER_SHARD_BY_GRAPH` | derived index | `Principal` → `ShardId` — graph canister uniqueness |
+| `ROUTER_GRAPH_RUNTIME_CONFIG` | canonical | `GraphId` → `GraphRuntimeConfig` (encoding key, index cluster) |
+| `ROUTER_SHARDS` | canonical | `GraphShardKey` → `ShardRegistryEntry` — dispatch SSOT |
+| `ROUTER_SHARDS_BY_GRAPH_ID` | derived index | `GraphId` → `[ShardId]` — fan-out listing (shard ordinals graph-local) |
+| `ROUTER_SHARD_BY_GRAPH` | derived index | `Principal` → `GraphShardKey` — graph canister uniqueness |
 
-**Commit APIs** (`RouterStore::commit_register_graph`, `commit_register_shard`, `commit_unregister_shard` in `crates/router/src/facade/store/registry.rs`) update the affected regions atomically from the domain owner's perspective. **`commit_register_shard`** requires a matching `ROUTER_GRAPHS` entry (not catalog-only). **`check_registry_invariants`** (`registry_invariants.rs`) verifies full bidirectional consistency; unit tests call it after every registry mutation. **`list_shards_for_graph_id`** uses the derived index only (O(shards for graph)); it rejects duplicate index ids and stale index→primary references, but does not full-scan `ROUTER_SHARDS` — missing index rows are caught on commit / by `check_registry_invariants`.
+**Commit APIs** (`RouterStore::commit_register_graph`, `commit_register_shard`, `commit_unregister_shard` in `crates/router/src/facade/store/registry.rs`) update the affected regions atomically from the domain owner's perspective. **`commit_register_shard`** requires a matching `ROUTER_GRAPHS` entry (not catalog-only). **`check_registry_invariants`** (`registry_invariants.rs`) verifies full bidirectional consistency; unit tests call it after every registry mutation. **`list_shards_for_graph_id`** / **`list_shards_for_graph`** walk `ROUTER_SHARDS_BY_GRAPH_ID` only (O(shards for graph)), hydrate **`Vec<ShardRegistryEntry>`** from `ROUTER_SHARDS`, and reject duplicate index ids and stale index→primary references; they do not full-scan `ROUTER_SHARDS` — missing index rows are caught on commit / by `check_registry_invariants`.
 
-| 5 | `ROUTER_MUTATION_COUNTER` | `ROUTER_MUTATION_COUNTER` | `init_mutation_counter` | canonical | idempotency | — |
-| 6 | `ROUTER_MUTATION_BY_CLIENT_KEY` | `ROUTER_MUTATION_BY_CLIENT_KEY` | `init_mutation_by_client_key` | canonical | idempotency | keys use **`graph_id: GraphId`** |
-| 7 | `ROUTER_PREPARED_PLANS` | `ROUTER_PREPARED_PLANS` | `init_prepared_plans` | canonical | prepared queries | **`PreparedPlanKey → PreparedPlanRecord::V1`** |
-| 8–9 | `ROUTER_VERTEX_LABEL_BY_NAME` / `ROUTER_VERTEX_LABEL_BY_ID` | `ROUTER_VERTEX_LABEL_CATALOG` | `init_vertex_label_catalog` | catalog | resolution | `BidirectionalCatalog` (dense) |
-| 10–11 | `ROUTER_EDGE_LABEL_BY_NAME` / `ROUTER_EDGE_LABEL_BY_ID` | `ROUTER_EDGE_LABEL_CATALOG` | `init_edge_label_catalog` | catalog | resolution | `BidirectionalCatalog` (dense, capped) |
-| 12–13 | `ROUTER_PROPERTY_BY_NAME` / `ROUTER_PROPERTY_BY_ID` | `ROUTER_PROPERTY_CATALOG` | `init_property_catalog` | catalog | resolution | `BidirectionalCatalog` (dense) |
-| 14–15 | `ROUTER_GRAPH_BY_NAME` / `ROUTER_GRAPH_BY_ID` | `ROUTER_GRAPH_CATALOG` | `init_graph_catalog` | catalog | resolution | Logical graph name ↔ **`GraphId`** ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)) |
-| 16–17 | `ROUTER_INDEX_NAME_BY_NAME` / `ROUTER_INDEX_NAME_BY_ID` | `ROUTER_INDEX_NAME_CATALOG` | `init_index_name_catalog` | catalog | resolution | Graph-scoped index name ↔ **`IndexNameId`** per `GraphId` |
-| 18 | `ROUTER_NAMED_INDEXES` | `ROUTER_NAMED_INDEXES` | `init_named_indexes` | catalog | index DDL metadata | **`(GraphId, IndexNameId) → kind, property_id, label_id`** |
-| 19 | `ROUTER_INDEXED_PROPERTY_SET` | `ROUTER_INDEXED_PROPERTY_SET` | `init_indexed_property_set` | catalog | index membership | **`(GraphId, kind, property_id)`** for planner + fan-out |
-| 20 | `ROUTER_EDGE_PAYLOAD_PROFILES` | `ROUTER_EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | catalog | edge payload schema | — ([ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md)) |
-| 21–22 | `ROUTER_GRAPH_TYPE_DEFINITIONS` / `ROUTER_GRAPH_SCHEMA_BINDINGS` | `ROUTER_GQL_GRAPH_CATALOG` | `init_gql_graph_catalog` | catalog | graph type catalog | type defs + **`GraphId` bindings** ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)) |
-| 23–24 | `ROUTER_GRAPH_TYPE_BY_NAME` / `ROUTER_GRAPH_TYPE_BY_ID` | `ROUTER_GRAPH_TYPE_CATALOG` | `init_graph_type_name_catalog` | catalog | resolution | Graph type name ↔ **`GraphTypeId`** ([ADR 0014](../adr/0014-graph-type-id-catalog-on-router.md)) |
-| 25 | `ROUTER_VERTEX_LABEL_STATS` | `ROUTER_VERTEX_LABEL_STATS` | `init_vertex_label_stats` | telemetry | label telemetry | Event replay |
-| 26 | `ROUTER_EDGE_LABEL_STATS` | `ROUTER_EDGE_LABEL_STATS` | `init_edge_label_stats` | telemetry | label telemetry | Event replay |
-| 27 | `ROUTER_VERTEX_LABEL_LIVE_BY_SHARD` | `ROUTER_VERTEX_LABEL_LIVE_BY_SHARD` | `init_vertex_label_live_by_shard` | telemetry | label telemetry | Event replay |
-| 28 | `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `init_edge_label_live_by_shard` | telemetry | label telemetry | Event replay |
-| 29 | `ROUTER_LABEL_STATS_PROJECTION` | `ROUTER_LABEL_STATS_PROJECTION` | `init_label_stats_projection` | telemetry | label stats projection | Per-shard applied-through seq |
-| 30 | `ROUTER_LABEL_BACKFILL_STATE` | `ROUTER_LABEL_BACKFILL_STATE` | `init_label_backfill_state` | maintenance | label backfill | Cursor for `admin_label_backfill_step` |
-| 31 | `ROUTER_VERTEX_PROPERTY_BACKFILL_STATE` | `ROUTER_VERTEX_PROPERTY_BACKFILL_STATE` | `init_vertex_property_backfill_state` | maintenance | vertex property backfill | Cursor for `admin_vertex_property_backfill_step` |
-| 32 | `ROUTER_EDGE_BACKFILL_STATE` | `ROUTER_EDGE_BACKFILL_STATE` | `init_edge_backfill_state` | maintenance | edge backfill | Cursor for `admin_edge_backfill_step` |
+| 6 | `ROUTER_MUTATION_COUNTER` | `ROUTER_MUTATION_COUNTER` | `init_mutation_counter` | canonical | idempotency | — |
+| 7 | `ROUTER_MUTATION_BY_CLIENT_KEY` | `ROUTER_MUTATION_BY_CLIENT_KEY` | `init_mutation_by_client_key` | canonical | idempotency | keys use **`graph_id: GraphId`** |
+| 8 | `ROUTER_PREPARED_PLANS` | `ROUTER_PREPARED_PLANS` | `init_prepared_plans` | canonical | prepared queries | **`PreparedPlanKey → PreparedPlanRecord::V1`** |
+| 9–10 | `ROUTER_VERTEX_LABEL_BY_NAME` / `ROUTER_VERTEX_LABEL_BY_ID` | `ROUTER_VERTEX_LABEL_CATALOG` | `init_vertex_label_catalog` | catalog | resolution | **`GraphScopedNameCatalog<VertexLabelId>`** — `(GraphId, name) ↔ id` ([ADR 0018](../adr/0018-graph-scoped-label-property-catalogs.md)) |
+| 11–12 | `ROUTER_EDGE_LABEL_BY_NAME` / `ROUTER_EDGE_LABEL_BY_ID` | `ROUTER_EDGE_LABEL_CATALOG` | `init_edge_label_catalog` | catalog | resolution | **`GraphScopedNameCatalog<EdgeLabelId>`** (dense, capped) |
+| 13–14 | `ROUTER_PROPERTY_BY_NAME` / `ROUTER_PROPERTY_BY_ID` | `ROUTER_PROPERTY_CATALOG` | `init_property_catalog` | catalog | resolution | **`GraphScopedNameCatalog<PropertyId>`** (dense) |
+| 15–16 | `ROUTER_GRAPH_BY_NAME` / `ROUTER_GRAPH_BY_ID` | `ROUTER_GRAPH_CATALOG` | `init_graph_catalog` | catalog | resolution | Logical graph name ↔ **`GraphId`** ([ADR 0011](../adr/0011-gql-graph-resolution-and-catalog-scoping.md)) |
+| 17–18 | `ROUTER_INDEX_NAME_BY_NAME` / `ROUTER_INDEX_NAME_BY_ID` | `ROUTER_INDEX_NAME_CATALOG` | `init_index_name_catalog` | catalog | resolution | Graph-scoped index name ↔ **`IndexNameId`** per `GraphId` |
+| 19 | `ROUTER_NAMED_INDEXES` | `ROUTER_NAMED_INDEXES` | `init_named_indexes` | catalog | index DDL metadata | **`(GraphId, IndexNameId) → kind, property_id, label_id`** |
+| 20 | `ROUTER_INDEXED_PROPERTY_SET` | `ROUTER_INDEXED_PROPERTY_SET` | `init_indexed_property_set` | catalog | index membership | **`(GraphId, kind, property_id)`** for planner + fan-out |
+| 21 | `ROUTER_EDGE_PAYLOAD_PROFILES` | `ROUTER_EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | catalog | edge payload schema | **`(GraphId, EdgeLabelId) → EdgePayloadProfile`** ([ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md), [ADR 0018](../adr/0018-graph-scoped-label-property-catalogs.md)) |
+| 22–23 | `ROUTER_GRAPH_TYPE_DEFINITIONS` / `ROUTER_GRAPH_SCHEMA_BINDINGS` | `ROUTER_GQL_GRAPH_CATALOG` | `init_gql_graph_catalog` | catalog | graph type catalog | type defs + **`GraphId` bindings** ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)) |
+| 24–25 | `ROUTER_GRAPH_TYPE_BY_NAME` / `ROUTER_GRAPH_TYPE_BY_ID` | `ROUTER_GRAPH_TYPE_CATALOG` | `init_graph_type_name_catalog` | catalog | resolution | Graph type name ↔ **`GraphTypeId`** ([ADR 0014](../adr/0014-graph-type-id-catalog-on-router.md)) |
+| 26 | `ROUTER_VERTEX_LABEL_STATS` | `ROUTER_VERTEX_LABEL_STATS` | `init_vertex_label_stats` | telemetry | label telemetry | **`(GraphId, VertexLabelId) → LabelStats`** (event replay) |
+| 27 | `ROUTER_EDGE_LABEL_STATS` | `ROUTER_EDGE_LABEL_STATS` | `init_edge_label_stats` | telemetry | label telemetry | **`(GraphId, EdgeLabelId) → LabelStats`** (event replay) |
+| 28 | `ROUTER_VERTEX_LABEL_LIVE_BY_SHARD` | `ROUTER_VERTEX_LABEL_LIVE_BY_SHARD` | `init_vertex_label_live_by_shard` | telemetry | label telemetry | **`(GraphId, ShardId, VertexLabelId) → live_count`** |
+| 29 | `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `init_edge_label_live_by_shard` | telemetry | label telemetry | **`(GraphId, ShardId, EdgeLabelId) → live_count`** |
+| 30 | `ROUTER_LABEL_STATS_PROJECTION` | `ROUTER_LABEL_STATS_PROJECTION` | `init_label_stats_projection` | telemetry | label stats projection | **`GraphShardKey → applied_through_seq`** |
+| 31 | `ROUTER_LABEL_BACKFILL_STATE` | `ROUTER_LABEL_BACKFILL_STATE` | `init_label_backfill_state` | maintenance | label backfill | **`GraphShardKey → BackfillShardState`** |
+| 32 | `ROUTER_VERTEX_PROPERTY_BACKFILL_STATE` | `ROUTER_VERTEX_PROPERTY_BACKFILL_STATE` | `init_vertex_property_backfill_state` | maintenance | vertex property backfill | **`GraphShardKey → BackfillShardState`** |
+| 33 | `ROUTER_EDGE_BACKFILL_STATE` | `ROUTER_EDGE_BACKFILL_STATE` | `init_edge_backfill_state` | maintenance | edge backfill | **`GraphShardKey → EdgeBackfillShardState`** |
 
-Router **33 regions** total (0–32).
+Router **34 regions** total (0–33).
 
 ### Router ephemeral
 
@@ -199,9 +201,10 @@ Router **33 regions** total (0–32).
 | 0 | `INDEX_ROUTER` | `INDEX_ROUTER` | `init_index_router` | canonical | router authorization | — |
 | 1 | `INDEX_SHARD_CANISTER_BY_SHARD` | `INDEX_SHARD_CANISTER_CATALOG` | `init_index_shard_canister_catalog` | canonical | shard canister catalog | — |
 | 2 | `INDEX_SHARD_BY_CANISTER` | `INDEX_SHARD_CANISTER_CATALOG` | `init_index_shard_canister_catalog` | canonical | shard canister catalog | — |
-| 3 | `INDEX_VERTEX_POSTINGS` | `INDEX_VERTEX_POSTINGS` | `init_index_vertex_postings` | derived | vertex property postings | **Implemented:** `backfill_vertex_property_postings` + router `admin_vertex_property_backfill_step` |
-| 4 | `INDEX_VERTEX_LABEL_POSTINGS` | `INDEX_VERTEX_LABEL_POSTINGS` | `init_index_vertex_label_postings` | derived | vertex label postings | `backfill_label_postings` |
-| 5 | `INDEX_EDGE_POSTINGS` | `INDEX_EDGE_POSTINGS` | `init_index_edge_postings` | derived | edge property postings | **Implemented:** `backfill_edge_property_postings` (ADR 0009) |
+| 3 | `INDEX_OWNERSHIP_CONFIG` | `INDEX_OWNERSHIP_CONFIG` | `init_index_ownership_config` | canonical | graph ownership | Graph owner config (`graph_id`, `index_group_size`, `group_index`) for attach range checks (ADR 0019 S4) |
+| 4 | `INDEX_VERTEX_POSTINGS` | `INDEX_VERTEX_POSTINGS` | `init_index_vertex_postings` | derived | vertex property postings | **Implemented:** `backfill_vertex_property_postings` + router `admin_vertex_property_backfill_step` |
+| 5 | `INDEX_VERTEX_LABEL_POSTINGS` | `INDEX_VERTEX_LABEL_POSTINGS` | `init_index_vertex_label_postings` | derived | vertex label postings | `backfill_label_postings` |
+| 6 | `INDEX_EDGE_POSTINGS` | `INDEX_EDGE_POSTINGS` | `init_index_edge_postings` | derived | edge property postings | **Implemented:** `backfill_edge_property_postings` (ADR 0009) |
 
 ---
 

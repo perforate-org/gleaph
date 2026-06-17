@@ -7,6 +7,7 @@ mod edge_posting_backfill;
 mod encoded;
 mod expand;
 mod global_edge_id;
+mod graph_shard_key;
 mod peer_sync;
 mod posting_backfill;
 mod router_error;
@@ -29,6 +30,7 @@ pub use expand::{
     MAX_FEDERATED_EXPAND_PAYLOAD_BYTE_WIDTH,
 };
 pub use global_edge_id::GlobalEdgeId;
+pub use graph_shard_key::GraphShardKey;
 pub use peer_sync::{AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs};
 pub use posting_backfill::{PostingBackfillArgs, PostingBackfillResult};
 pub use router_error::RouterError;
@@ -117,6 +119,8 @@ pub struct ShardRegistryEntry {
     pub index_canister: Principal,
     pub graph_id: GraphId,
     pub registered_at_ns: u64,
+    /// `false` while router awaits index `admin_attach_shard_canister`; excluded from dispatch/index fan-out.
+    pub index_attached: bool,
 }
 
 /// Stable-memory wire envelope for [`ShardRegistryEntry`].
@@ -175,6 +179,7 @@ mod tests {
             index_canister: Principal::management_canister(),
             graph_id: GraphId::from_raw(1),
             registered_at_ns: 123,
+            index_attached: true,
         };
         let bytes = entry.to_bytes();
         assert_eq!(entry, ShardRegistryEntry::from_bytes(bytes));

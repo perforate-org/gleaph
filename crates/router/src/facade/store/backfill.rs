@@ -5,7 +5,7 @@ use std::future::Future;
 use candid::Principal;
 use gleaph_graph_kernel::federation::{
     BackfillShardState, EdgeBackfillShardState, EdgePostingBackfillArgs, EdgePostingBackfillResult,
-    PostingBackfillArgs, PostingBackfillResult, ShardId, ShardRegistryEntry,
+    GraphShardKey, PostingBackfillArgs, PostingBackfillResult, ShardId, ShardRegistryEntry,
 };
 
 use super::super::stable::graph_catalog::lookup_graph_id;
@@ -42,7 +42,8 @@ impl RouterStore {
         }
 
         let shard = self.resolve_shard_for_backfill(&args.logical_graph_name, args.shard_id)?;
-        let mut cursor = self.load_label_backfill_state(args.shard_id);
+        let cursor_key = GraphShardKey::new(shard.graph_id, args.shard_id);
+        let mut cursor = self.load_label_backfill_state(cursor_key);
         if cursor.done {
             return Ok(AdminLabelBackfillStepResult {
                 shard_id: args.shard_id,
@@ -63,7 +64,7 @@ impl RouterStore {
         .await
         .map_err(RouterError::Internal)?;
         cursor.apply_batch_progress(result.next_vertex_id, result.done);
-        self.store_label_backfill_state(args.shard_id, cursor);
+        self.store_label_backfill_state(cursor_key, cursor);
 
         Ok(AdminLabelBackfillStepResult {
             shard_id: args.shard_id,
@@ -80,11 +81,12 @@ impl RouterStore {
         logical_graph_name: &str,
     ) -> Result<Vec<LabelBackfillShardStatus>, RouterError> {
         auth::require_admin(&caller)?;
-        let shards = self.list_shards_for_graph(logical_graph_name)?;
+        let shards = self.list_live_shards_for_graph(logical_graph_name)?;
         let mut out: Vec<LabelBackfillShardStatus> = shards
             .into_iter()
             .map(|shard| {
-                let cursor = self.load_label_backfill_state(shard.shard_id);
+                let cursor_key = GraphShardKey::new(shard.graph_id, shard.shard_id);
+                let cursor = self.load_label_backfill_state(cursor_key);
                 LabelBackfillShardStatus {
                     shard_id: shard.shard_id,
                     next_vertex_id: cursor.next_vertex_id,
@@ -96,13 +98,13 @@ impl RouterStore {
         Ok(out)
     }
 
-    fn load_label_backfill_state(&self, shard_id: ShardId) -> BackfillShardState {
-        ROUTER_LABEL_BACKFILL_STATE.with_borrow(|state| state.get(&shard_id).unwrap_or_default())
+    fn load_label_backfill_state(&self, key: GraphShardKey) -> BackfillShardState {
+        ROUTER_LABEL_BACKFILL_STATE.with_borrow(|state| state.get(&key).unwrap_or_default())
     }
 
-    fn store_label_backfill_state(&self, shard_id: ShardId, cursor: BackfillShardState) {
+    fn store_label_backfill_state(&self, key: GraphShardKey, cursor: BackfillShardState) {
         ROUTER_LABEL_BACKFILL_STATE.with_borrow_mut(|map| {
-            map.insert(shard_id, cursor);
+            map.insert(key, cursor);
         });
     }
 
@@ -124,7 +126,8 @@ impl RouterStore {
         }
 
         let shard = self.resolve_shard_for_backfill(&args.logical_graph_name, args.shard_id)?;
-        let mut cursor = self.load_vertex_property_backfill_state(args.shard_id);
+        let cursor_key = GraphShardKey::new(shard.graph_id, args.shard_id);
+        let mut cursor = self.load_vertex_property_backfill_state(cursor_key);
         if cursor.done {
             return Ok(AdminVertexPropertyBackfillStepResult {
                 shard_id: args.shard_id,
@@ -145,7 +148,7 @@ impl RouterStore {
         .await
         .map_err(RouterError::Internal)?;
         cursor.apply_batch_progress(result.next_vertex_id, result.done);
-        self.store_vertex_property_backfill_state(args.shard_id, cursor);
+        self.store_vertex_property_backfill_state(cursor_key, cursor);
 
         Ok(AdminVertexPropertyBackfillStepResult {
             shard_id: args.shard_id,
@@ -162,11 +165,12 @@ impl RouterStore {
         logical_graph_name: &str,
     ) -> Result<Vec<VertexPropertyBackfillShardStatus>, RouterError> {
         auth::require_admin(&caller)?;
-        let shards = self.list_shards_for_graph(logical_graph_name)?;
+        let shards = self.list_live_shards_for_graph(logical_graph_name)?;
         let mut out: Vec<VertexPropertyBackfillShardStatus> = shards
             .into_iter()
             .map(|shard| {
-                let cursor = self.load_vertex_property_backfill_state(shard.shard_id);
+                let cursor_key = GraphShardKey::new(shard.graph_id, shard.shard_id);
+                let cursor = self.load_vertex_property_backfill_state(cursor_key);
                 VertexPropertyBackfillShardStatus {
                     shard_id: shard.shard_id,
                     next_vertex_id: cursor.next_vertex_id,
@@ -178,14 +182,14 @@ impl RouterStore {
         Ok(out)
     }
 
-    fn load_vertex_property_backfill_state(&self, shard_id: ShardId) -> BackfillShardState {
+    fn load_vertex_property_backfill_state(&self, key: GraphShardKey) -> BackfillShardState {
         ROUTER_VERTEX_PROPERTY_BACKFILL_STATE
-            .with_borrow(|state| state.get(&shard_id).unwrap_or_default())
+            .with_borrow(|state| state.get(&key).unwrap_or_default())
     }
 
-    fn store_vertex_property_backfill_state(&self, shard_id: ShardId, cursor: BackfillShardState) {
+    fn store_vertex_property_backfill_state(&self, key: GraphShardKey, cursor: BackfillShardState) {
         ROUTER_VERTEX_PROPERTY_BACKFILL_STATE.with_borrow_mut(|map| {
-            map.insert(shard_id, cursor);
+            map.insert(key, cursor);
         });
     }
 
@@ -207,7 +211,8 @@ impl RouterStore {
         }
 
         let shard = self.resolve_shard_for_backfill(&args.logical_graph_name, args.shard_id)?;
-        let mut cursor = self.load_edge_backfill_state(args.shard_id);
+        let cursor_key = GraphShardKey::new(shard.graph_id, args.shard_id);
+        let mut cursor = self.load_edge_backfill_state(cursor_key);
         if cursor.done {
             return Ok(AdminEdgeBackfillStepResult {
                 shard_id: args.shard_id,
@@ -228,7 +233,7 @@ impl RouterStore {
         .await
         .map_err(RouterError::Internal)?;
         cursor.apply_batch_progress(result.next_after_key.clone(), result.done);
-        self.store_edge_backfill_state(args.shard_id, cursor);
+        self.store_edge_backfill_state(cursor_key, cursor);
 
         Ok(AdminEdgeBackfillStepResult {
             shard_id: args.shard_id,
@@ -245,11 +250,12 @@ impl RouterStore {
         logical_graph_name: &str,
     ) -> Result<Vec<EdgeBackfillShardStatus>, RouterError> {
         auth::require_admin(&caller)?;
-        let shards = self.list_shards_for_graph(logical_graph_name)?;
+        let shards = self.list_live_shards_for_graph(logical_graph_name)?;
         let mut out: Vec<EdgeBackfillShardStatus> = shards
             .into_iter()
             .map(|shard| {
-                let cursor = self.load_edge_backfill_state(shard.shard_id);
+                let cursor_key = GraphShardKey::new(shard.graph_id, shard.shard_id);
+                let cursor = self.load_edge_backfill_state(cursor_key);
                 EdgeBackfillShardStatus {
                     shard_id: shard.shard_id,
                     after_key: cursor.after_key,
@@ -261,13 +267,13 @@ impl RouterStore {
         Ok(out)
     }
 
-    fn load_edge_backfill_state(&self, shard_id: ShardId) -> EdgeBackfillShardState {
-        ROUTER_EDGE_BACKFILL_STATE.with_borrow(|state| state.get(&shard_id).unwrap_or_default())
+    fn load_edge_backfill_state(&self, key: GraphShardKey) -> EdgeBackfillShardState {
+        ROUTER_EDGE_BACKFILL_STATE.with_borrow(|state| state.get(&key).unwrap_or_default())
     }
 
-    fn store_edge_backfill_state(&self, shard_id: ShardId, cursor: EdgeBackfillShardState) {
+    fn store_edge_backfill_state(&self, key: GraphShardKey, cursor: EdgeBackfillShardState) {
         ROUTER_EDGE_BACKFILL_STATE.with_borrow_mut(|map| {
-            map.insert(shard_id, cursor);
+            map.insert(key, cursor);
         });
     }
 
@@ -278,11 +284,10 @@ impl RouterStore {
     ) -> Result<ShardRegistryEntry, RouterError> {
         let graph_id = lookup_graph_id(logical_graph_name)
             .ok_or_else(|| RouterError::NotFound(logical_graph_name.to_owned()))?;
-        let entry = self.resolve_shard(shard_id)?;
-        if entry.graph_id != graph_id {
+        let entry = self.resolve_shard(graph_id, shard_id)?;
+        if !entry.index_attached {
             return Err(RouterError::InvalidArgument(format!(
-                "shard {shard_id} is registered for graph {}, not {logical_graph_name}",
-                entry.graph_id
+                "shard {shard_id:?} for `{logical_graph_name}` is not index-attached"
             )));
         }
         Ok(entry)
@@ -291,6 +296,7 @@ impl RouterStore {
 
 #[cfg(test)]
 mod tests {
+    use super::super::super::stable::graph_catalog::lookup_graph_id;
     use super::*;
     use crate::init::RouterInitArgs;
     use crate::types::{
@@ -424,7 +430,7 @@ mod tests {
         ))
         .expect_err("wrong graph");
 
-        assert!(matches!(err, RouterError::InvalidArgument(_)));
+        assert!(matches!(err, RouterError::ShardNotRegistered));
     }
 
     #[test]
@@ -447,8 +453,9 @@ mod tests {
         .expect("register shard");
 
         ROUTER_LABEL_BACKFILL_STATE.with_borrow_mut(|map| {
+            let graph_id = lookup_graph_id("tenant.main").expect("graph id");
             map.insert(
-                ShardId::new(0),
+                GraphShardKey::new(graph_id, ShardId::new(0)),
                 BackfillShardState {
                     next_vertex_id: 99,
                     done: true,
@@ -577,5 +584,160 @@ mod tests {
         assert_eq!(status.len(), 1);
         assert_eq!(status[0].after_key, Some(vec![7u8; 14]));
         assert!(!status[0].done);
+    }
+
+    #[test]
+    fn backfill_cursors_isolated_per_graph_same_shard_ordinal() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::anonymous();
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "graph_a");
+        register_test_graph(&store, admin, "graph_b");
+
+        for (name, graph_byte) in [("graph_a", 21u8), ("graph_b", 31u8)] {
+            futures::executor::block_on(store.admin_register_shard(
+                admin,
+                AdminRegisterShardArgs {
+                    shard_id: ShardId::new(0),
+                    graph_canister: graph_principal(graph_byte),
+                    index_canister: graph_principal(graph_byte + 1),
+                    logical_graph_name: name.into(),
+                },
+            ))
+            .expect("register shard");
+        }
+
+        let graph_a = lookup_graph_id("graph_a").expect("graph a");
+        let _graph_b = lookup_graph_id("graph_b").expect("graph b");
+        let shard_id = ShardId::new(0);
+
+        ROUTER_LABEL_BACKFILL_STATE.with_borrow_mut(|map| {
+            map.insert(
+                GraphShardKey::new(graph_a, shard_id),
+                BackfillShardState {
+                    next_vertex_id: 99,
+                    done: true,
+                },
+            );
+        });
+        ROUTER_VERTEX_PROPERTY_BACKFILL_STATE.with_borrow_mut(|map| {
+            map.insert(
+                GraphShardKey::new(graph_a, shard_id),
+                BackfillShardState {
+                    next_vertex_id: 50,
+                    done: true,
+                },
+            );
+        });
+        ROUTER_EDGE_BACKFILL_STATE.with_borrow_mut(|map| {
+            map.insert(
+                GraphShardKey::new(graph_a, shard_id),
+                EdgeBackfillShardState {
+                    after_key: Some(vec![
+                        7u8;
+                        gleaph_graph_kernel::federation::EDGE_PROPERTY_KEY_BYTES
+                    ]),
+                    done: true,
+                },
+            );
+        });
+
+        let label_a = store
+            .admin_list_label_backfill_status(admin, "graph_a")
+            .expect("label a")[0]
+            .done;
+        let label_b = store
+            .admin_list_label_backfill_status(admin, "graph_b")
+            .expect("label b")[0]
+            .done;
+        assert!(label_a);
+        assert!(!label_b);
+
+        let prop_a = store
+            .admin_list_vertex_property_backfill_status(admin, "graph_a")
+            .expect("prop a")[0]
+            .done;
+        let prop_b = store
+            .admin_list_vertex_property_backfill_status(admin, "graph_b")
+            .expect("prop b")[0]
+            .done;
+        assert!(prop_a);
+        assert!(!prop_b);
+
+        let edge_a = store
+            .admin_list_edge_backfill_status(admin, "graph_a")
+            .expect("edge a")[0]
+            .done;
+        let edge_b = store
+            .admin_list_edge_backfill_status(admin, "graph_b")
+            .expect("edge b")[0]
+            .done;
+        assert!(edge_a);
+        assert!(!edge_b);
+
+        let result_b = futures::executor::block_on(store.admin_label_backfill_step(
+            admin,
+            AdminLabelBackfillStepArgs {
+                logical_graph_name: "graph_b".into(),
+                shard_id,
+                max_vertices: 8,
+            },
+            |_graph, args| async move {
+                Ok(PostingBackfillResult {
+                    next_vertex_id: args.start_vertex_id.saturating_add(args.max_vertices),
+                    vertices_processed: args.max_vertices,
+                    postings_synced: 1,
+                    done: false,
+                })
+            },
+        ))
+        .expect("graph b backfill should run");
+        assert!(!result_b.done);
+        assert_eq!(result_b.vertices_processed, 8);
+    }
+
+    #[test]
+    fn admin_label_backfill_step_rejects_pending_shard() {
+        use crate::facade::stable::ROUTER_SHARDS;
+        use gleaph_graph_kernel::federation::GraphShardKey;
+
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::anonymous();
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "tenant.main");
+
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id: ShardId::new(0),
+                graph_canister: graph_principal(21),
+                index_canister: graph_principal(22),
+                logical_graph_name: "tenant.main".into(),
+            },
+        ))
+        .expect("register shard");
+
+        let graph_id = lookup_graph_id("tenant.main").expect("graph id");
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let key = GraphShardKey::new(graph_id, ShardId::new(0));
+            let mut entry = shards.get(&key).expect("shard row");
+            entry.index_attached = false;
+            shards.insert(key, entry);
+        });
+
+        let err = futures::executor::block_on(store.admin_label_backfill_step(
+            admin,
+            AdminLabelBackfillStepArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                max_vertices: 8,
+            },
+            |_graph, _args| async { unreachable!() },
+        ))
+        .expect_err("pending shard must not backfill");
+
+        assert!(matches!(err, RouterError::InvalidArgument(_)));
     }
 }

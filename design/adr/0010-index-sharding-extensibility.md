@@ -2,7 +2,7 @@
 
 Date: 2026-06-12  
 Status: accepted  
-Last revised: 2026-06-12
+Last revised: 2026-06-17
 
 ## Context
 
@@ -13,8 +13,12 @@ anticipate **multiple graph shards** ([ADR 0006](0006-pre-federation-foundation.
 
 [ADR 0006 §5](0006-pre-federation-foundation.md) introduced **index canister grouping** via
 `group_index = shard_id / GROUP_SIZE`. [capacity-planning.md](../index/capacity-planning.md)
-lists additional split axes (subject, property range, logical graph boundary). None of these
-numeric policies or partition formulas are implemented; **`GROUP_SIZE` is not chosen**.
+lists additional split axes (subject, property range, logical graph boundary).
+
+> **Amended 2026-06-17 ([ADR 0019](0019-graph-local-shard-id-and-index-clusters.md)):** the
+> **shard-group axis is committed** — `index_group_size` and `index_cluster` per `GraphId` in
+> `ROUTER_GRAPH_RUNTIME_CONFIG`, with formula `group_index = shard_id / index_group_size`.
+> **Subject split** and **property-range split** remain deferred in this ADR.
 
 We want the same posture as graph sharding:
 
@@ -34,7 +38,7 @@ We want the same posture as graph sharding:
 
 ### Non-goals (this ADR)
 
-- Picking `GROUP_SIZE`, property bands, or subject-split layout.
+- Picking property bands or subject-split layout (shard-group policy is in [ADR 0019](0019-graph-local-shard-id-and-index-clusters.md)).
 - Implementing router multi-index fan-out or merge (graph multi-shard milestone).
 - Index stable-memory layout changes (inverted posting lists — see
   [capacity-planning.md](../index/capacity-planning.md)).
@@ -155,8 +159,9 @@ No change to `posting_insert` argument shape.
 **Not in the same milestone unless split strategy ADR exists:**
 
 - Automatic split at 350 GiB
-- `GROUP_SIZE` assignment
 - Property-range or subject canisters
+
+(Shard-group `GROUP_SIZE` per graph is **implemented** — [ADR 0019](0019-graph-local-shard-id-and-index-clusters.md).)
 
 ### 8. Capacity and layout optimizations stay orthogonal
 
@@ -186,8 +191,8 @@ canister ([ADR 0007](0007-stable-memory-layout.md)), not a posting-key sharding 
 
 ### Clarifies ADR 0006
 
-- §5 grouping formula is **illustrative**; **`GROUP_SIZE` remains deferred** until a
-  capacity-driven follow-up ADR or operator policy selects it.
+- §5 shard-group formula is **committed per graph** ([ADR 0019](0019-graph-local-shard-id-and-index-clusters.md));
+  subject/range axes remain capacity-driven follow-ups.
 - Rejected alternative “assign index numeric ids” unchanged — Principals + router resolution suffice.
 
 ---
@@ -206,7 +211,7 @@ canister ([ADR 0007](0007-stable-memory-layout.md)), not a posting-key sharding 
 
 ## Implementation checklist (graph multi-shard milestone)
 
-1. **`resolve_index_lookup_targets`** in router (dedupe shard index Principals) — **Implemented** (`index_route.rs`).
+1. **Index lookup targets** in router (dedupe live shard `index_canister` Principals per graph) — **Implemented** (`RouterStore::graph_index_lookup_targets`, `RouterIndexLookup::from_shards`; formula helpers in `index_route.rs`).
 2. Replace **`shards[0].index_canister`** call sites — **Implemented** (`RouterIndexLookup`, `gql.rs`).
 3. Registration validation: document **single-index intersection** invariant — **Implemented** (`lookup_intersection` / `lookup_label_intersection` error when `|targets| > 1`).
 4. Tests: two graph shards, **same** index Principal — **Implemented** (`index_route`, `index_lookup` tests; existing multi-shard gql tests).

@@ -450,6 +450,7 @@ pub fn configure_test_federation(store: &GraphStore) {
             index_canister: Principal::management_canister(),
             graph_id,
             registered_at_ns: 0,
+            index_attached: true,
         },
     );
 }

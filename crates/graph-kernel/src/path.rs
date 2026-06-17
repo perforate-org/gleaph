@@ -156,7 +156,7 @@ mod tests {
 
     #[test]
     fn vertex_path_id_roundtrips() {
-        let key = ElementIdEncodingKey::standalone();
+        let key = ElementIdEncodingKey::host_test_fixture();
         let id = GraphPathVertexId::from_global(&key, GlobalVertexId::new(ShardId::new(0), 42));
         assert_eq!(GraphPathVertexId::from_bytes(id.to_bytes()), id);
         assert_eq!(GraphPathVertexId::try_from_slice(&id.to_bytes()), Ok(id));
@@ -164,7 +164,7 @@ mod tests {
 
     #[test]
     fn edge_path_id_roundtrips() {
-        let key = ElementIdEncodingKey::standalone();
+        let key = ElementIdEncodingKey::host_test_fixture();
         let id = GraphPathEdgeId::new(
             &key,
             ShardId::new(0),

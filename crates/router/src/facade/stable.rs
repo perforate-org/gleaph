@@ -12,7 +12,6 @@ pub(crate) mod label_stats;
 pub(crate) mod layout;
 pub(crate) mod memory;
 pub(crate) mod prepared_catalog;
-pub(crate) mod scoped_name_catalog;
 
 thread_local! {
     // --- auth ---
@@ -31,6 +30,9 @@ thread_local! {
 
     pub(crate) static ROUTER_SHARDS_BY_GRAPH_ID: RefCell<memory::StableShardsByGraphId> =
         RefCell::new(memory::init_shards_by_graph_id());
+
+    pub(crate) static ROUTER_GRAPH_RUNTIME_CONFIG: RefCell<memory::StableGraphRuntimeConfigMap> =
+        RefCell::new(memory::init_graph_runtime_config());
 
     // --- idempotency / prepared queries ---
     pub(crate) static ROUTER_MUTATION_COUNTER: RefCell<memory::StableMutationCounter> =

@@ -138,6 +138,30 @@ pub async fn execute_plan_query_bindings_with_initial_rows(
     initial_rows: Vec<PlanRow>,
     skip_leading_index_scan: bool,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
+    crate::element_id_encoding::set_execution_element_id_key(execution.element_id_encoding_key());
+    let run_result = execute_plan_query_bindings_with_initial_rows_inner(
+        store,
+        plan,
+        parameters,
+        index,
+        execution,
+        initial_rows,
+        skip_leading_index_scan,
+    )
+    .await;
+    crate::element_id_encoding::clear_execution_element_id_key();
+    run_result
+}
+
+async fn execute_plan_query_bindings_with_initial_rows_inner(
+    store: &GraphStore,
+    plan: &PhysicalPlan,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
+    initial_rows: Vec<PlanRow>,
+    skip_leading_index_scan: bool,
+) -> Result<Vec<PlanRow>, PlanQueryError> {
     let ops = if skip_leading_index_scan {
         skip_leading_index_anchor_ops(&plan.ops)
     } else {

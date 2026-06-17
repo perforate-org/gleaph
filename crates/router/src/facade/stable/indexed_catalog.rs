@@ -194,7 +194,7 @@ pub(crate) fn load_graph_stats(graph_id: GraphId) -> RouterGraphStats {
         }
     });
 
-    RouterGraphStats::from_catalog(vertex, edge, edge_indexes)
+    RouterGraphStats::from_catalog(graph_id, vertex, edge, edge_indexes)
 }
 
 pub(crate) fn create_named_index(
@@ -282,6 +282,38 @@ pub(crate) fn is_property_registered(
 ) -> bool {
     let key = IndexedPropertyKey::new(graph_id, kind, property_id);
     ROUTER_INDEXED_PROPERTY_SET.with_borrow(|set| set.contains(&key))
+}
+
+pub(crate) fn purge_graph_indexes(graph_id: GraphId) {
+    ROUTER_NAMED_INDEXES.with_borrow_mut(|map| {
+        let start = NamedIndexKey::new(graph_id, IndexNameId::from_raw(0));
+        let end = NamedIndexKey::new(graph_id_upper_bound(graph_id), IndexNameId::from_raw(0));
+        let keys: Vec<_> = map
+            .range((Bound::Included(start), Bound::Excluded(end)))
+            .map(|entry| *entry.key())
+            .collect();
+        for key in keys {
+            map.remove(&key);
+        }
+    });
+    ROUTER_INDEXED_PROPERTY_SET.with_borrow_mut(|set| {
+        let start = IndexedPropertyKey::new(
+            graph_id,
+            IndexedPropertyKind::Vertex,
+            PropertyId::from_raw(0),
+        );
+        let end = IndexedPropertyKey::new(
+            graph_id_upper_bound(graph_id),
+            IndexedPropertyKind::Vertex,
+            PropertyId::from_raw(0),
+        );
+        let keys: Vec<_> = set
+            .range((Bound::Included(start), Bound::Excluded(end)))
+            .collect();
+        for key in keys {
+            set.remove(&key);
+        }
+    });
 }
 
 fn graph_id_upper_bound(graph_id: GraphId) -> GraphId {

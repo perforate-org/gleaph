@@ -10,7 +10,7 @@ Anchor timestamp: 2026-06-13 14:04:54 UTC +0000
 | Date | Change |
 |------|--------|
 | 2026-06-13 | Proposed: `BidirectionalCatalog` for GQL graph **type** names → `GraphTypeId`; migrate `type_map` keys and `TypeRef` bindings off string keys ([ADR 0013](0013-gql-graph-type-catalog-on-router.md) follow-up). |
-| 2026-06-13 | Accepted: T0–T4 — `GraphTypeId`, regions 23–24, `GraphTypeLookup`, V2 bindings, PocketIC regression. |
+| 2026-06-17 | Removed pre-production legacy string `TypeRef` and dual binding envelopes; kept `::V1` version envelopes for post-production evolution. |
 
 ## Context
 
@@ -18,12 +18,12 @@ Anchor timestamp: 2026-06-13 14:04:54 UTC +0000
 
 | Map | Stable region | Key (0013) | Payload |
 |-----|---------------|------------|---------|
-| `type_map` | 30 `ROUTER_GRAPH_TYPE_DEFINITIONS` | [`object_name_key`] (`String`) | [`StorableGraphTypeDefinition::V1`] |
-| `binding_map` | 31 `ROUTER_GRAPH_SCHEMA_BINDINGS` | **`GraphId`** | [`GraphSchemaBinding::V1`] |
+| `type_map` | 30 `ROUTER_GRAPH_TYPE_DEFINITIONS` | [`object_name_key`] (`String`) | [`StorableGraphTypeDefinition`] |
+| `binding_map` | 31 `ROUTER_GRAPH_SCHEMA_BINDINGS` | **`GraphId`** | [`GraphSchemaBinding`] |
 
 Property graph bindings already use federation **`GraphId`** ([ADR 0011](0011-gql-graph-resolution-and-catalog-scoping.md)).
-Named graph **types** still use unbounded string keys in `type_map` and in
-`GraphSchemaBindingV1::TypeRef(String)`.
+Named graph **types** previously used unbounded string keys in `type_map` and string `TypeRef` bindings
+(0013 interim). **0014** retargets both to [`GraphTypeId`].
 
 That asymmetry was intentional in 0013 (ship schema SSOT first). It now blocks:
 
@@ -41,8 +41,10 @@ GQL **graph type definitions** contain node/edge declarations (`Person`, `KNOWS`
 only the **named graph type object** from `CREATE GRAPH TYPE gt { … }` — the `gt` in
 `CREATE GRAPH g TYPED gt`.
 
-Label/property **id catalogs** (`VertexLabelId`, `PropertyId`) remain global and separate; 0013’s
-non-goal of auto-inserting schema labels into those catalogs is unchanged.
+Label/property **id catalogs** (`VertexLabelId`, `PropertyId`) are **graph-scoped** per `GraphId`
+([ADR 0018](0018-graph-scoped-label-property-catalogs.md)) and remain separate from graph-type
+identity; 0013’s non-goal of auto-inserting schema labels into those catalogs was superseded by
+0018 **V5** (optional auto-intern on `CREATE GRAPH` / `CREATE GRAPH TYPED`).
 
 ### Prerequisites
 
@@ -101,22 +103,19 @@ variants** change (§3).
 
 | Map | Region | Key (0014) | Payload |
 |-----|--------|------------|---------|
-| `type_map` | 21 | **`GraphTypeId`** | [`StorableGraphTypeDefinition::V1`] (unchanged value codec) |
-| `binding_map` | 22 | **`GraphId`** | [`GraphSchemaBinding::V2`] |
+| `type_map` | 21 | **`GraphTypeId`** | [`StorableGraphTypeDefinition::V1`] |
+| `binding_map` | 22 | **`GraphId`** | [`GraphSchemaBinding::V1`] |
 
 #### 3.1 `GraphSchemaBinding` wire
 
-Add **`GraphSchemaBinding::V2`** (rkyv envelope):
+Versioned rkyv envelope **`GraphSchemaBinding::V1`**:
 
-| Variant | 0013 (V1) | 0014 (V2) |
-|---------|-----------|-----------|
-| Inline | `Inline(GraphTypeDefinition)` | unchanged |
-| Typed reference | `TypeRef(String)` — [`object_name_key`] | **`TypeRef(GraphTypeId)`** |
+| Variant | Payload |
+|---------|---------|
+| Inline | `Inline(GraphTypeDefinition)` |
+| Typed reference | **`TypeRef(u32)`** — `GraphTypeId::raw()` |
 
-**Read path:** decode V1 or V2; V1 `TypeRef` resolves through name catalog at migration or
-lazy-upgrade on read (implementation choice — prefer **one-shot migration** on upgrade hook for dev).
-
-**Write path:** always emit **V2** after this ADR lands.
+**Write path:** always emit **`GraphSchemaBinding::V1`** with the variants above.
 
 #### 3.2 DDL apply (ingress)
 
@@ -191,7 +190,7 @@ binding_map[graph_id]
 ### Trade-offs
 
 - **Second router repack** (+2 regions) after 0013
-- **Wire migration** for `type_map` keys and `GraphSchemaBinding` (`V1` → `V2`)
+- **No pre-production legacy wire** — string `TypeRef` and dual `V1`/`V2` binding envelopes removed; version envelopes retained for future `V2+`
 - Slightly more ingress work (`get_or_insert` on every new graph type name)
 - Debug dumps show numeric ids — name catalog required for human-readable admin
 
@@ -216,8 +215,8 @@ binding_map[graph_id]
 |-------|--------|--------|
 | **T0** | `GraphTypeId` in `graph-kernel`; `CatalogId`; layout registry regions 23–24 | **Implemented** |
 | **T1** | Router `ROUTER_GRAPH_TYPE_CATALOG` + init; `GraphTypeLookup` in catalog crate | **Implemented** |
-| **T2** | `type_map` keys → `GraphTypeId`; `GraphSchemaBinding::V2`; update unit tests + canbench | **Implemented** |
-| **T3** | Upgrade migration V1→V2 (or dev discard); update `ROUTER_STABLE_LAYOUT` count **33** (0–32) | **Implemented** (dev discard; legacy V1 `TypeRef(String)` → `Unsupported` on read) |
+| **T2** | `type_map` keys → `GraphTypeId`; `GraphSchemaBinding::V1` with `TypeRef(u32)`; update unit tests + canbench | **Implemented** |
+| **T3** | Version envelopes only; update `ROUTER_STABLE_LAYOUT` count **33** (0–32) | **Implemented** (dev discard; no string `TypeRef` legacy) |
 | **T4** | PocketIC regression: `CREATE GRAPH TYPE` + `TYPED` + drop cascade | **Implemented** (`router_graph_type_catalog.rs`) |
 
 **Sequencing:** complete [ADR 0013](0013-gql-graph-type-catalog-on-router.md) **S3** e2e before T0

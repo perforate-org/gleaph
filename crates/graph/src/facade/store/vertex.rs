@@ -3,7 +3,7 @@
 use super::super::stable::GRAPH;
 use crate::index::federation_routing;
 use gleaph_graph_kernel::entry::{Edge, EdgeTarget, Vertex};
-use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
+use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId};
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexCount, VertexId, traits::CsrEdge};
 
@@ -76,8 +76,9 @@ impl GraphStore {
     }
 
     pub(crate) fn path_vertex_element_id(&self, vertex_id: VertexId) -> Option<GraphPathVertexId> {
+        let key = crate::element_id_encoding::execution_element_id_key();
         self.global_vertex_id(vertex_id)
-            .map(|id| GraphPathVertexId::from_global(&ElementIdEncodingKey::standalone(), id))
+            .map(|id| GraphPathVertexId::from_global(&key, id))
     }
 
     pub(crate) fn edge_sidecar_owner_from_in_row(&self, dst: VertexId, edge: &Edge) -> VertexId {

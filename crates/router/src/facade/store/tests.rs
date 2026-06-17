@@ -29,7 +29,7 @@ fn test_init_args() -> RouterInitArgs {
     }
 }
 
-fn register_test_graph(store: &RouterStore, admin: Principal, name: &str) {
+pub(crate) fn register_test_graph(store: &RouterStore, admin: Principal, name: &str) {
     store
         .admin_register_graph(
             admin,
@@ -71,7 +71,7 @@ fn list_shards_for_graph_returns_matching_registrations() {
     for (shard_id, graph) in [
         (ShardId::new(0), graph_a),
         (ShardId::new(1), graph_c),
-        (ShardId::new(2), graph_b),
+        (ShardId::new(0), graph_b),
     ] {
         futures::executor::block_on(store.admin_register_shard(
             admin,
@@ -79,7 +79,7 @@ fn list_shards_for_graph_returns_matching_registrations() {
                 shard_id,
                 graph_canister: graph,
                 index_canister: index,
-                logical_graph_name: if shard_id != ShardId::new(2) {
+                logical_graph_name: if graph != graph_b {
                     "tenant.main".into()
                 } else {
                     "other.graph".into()
@@ -120,15 +120,322 @@ fn unregister_shard_removes_registry_and_leaves_siblings() {
         .expect("register");
     }
 
-    futures::executor::block_on(store.admin_unregister_shard(admin, ShardId::new(0)))
-        .expect("unregister");
+    futures::executor::block_on(store.admin_unregister_shard(
+        admin,
+        "tenant.main",
+        ShardId::new(0),
+    ))
+    .expect("unregister");
 
     let listed = store.list_shards_for_graph("tenant.main").expect("list");
     assert_eq!(listed.len(), 1);
     assert_eq!(listed[0].shard_id, ShardId::new(1));
     assert_eq!(listed[0].graph_canister, graph_b);
-    assert!(store.resolve_shard(ShardId::new(0)).is_err());
-    assert!(store.resolve_shard(ShardId::new(1)).is_ok());
+    let graph_id = tenant_main_graph_id();
+    assert!(store.resolve_shard(graph_id, ShardId::new(0)).is_err());
+    assert!(store.resolve_shard(graph_id, ShardId::new(1)).is_ok());
+    assert_registry_invariants();
+}
+
+#[test]
+fn unregister_shard_prunes_graph_index_lookup_targets_to_live_shards() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard 0");
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(1),
+            graph_canister: graph_principal(3),
+            index_canister: graph_principal(4),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard 1");
+    let targets = store.graph_index_lookup_targets(graph_id).expect("targets");
+    assert_eq!(targets.len(), 2);
+    assert!(targets.contains(&graph_principal(2)));
+    assert!(targets.contains(&graph_principal(4)));
+
+    futures::executor::block_on(store.admin_unregister_shard(
+        admin,
+        "tenant.main",
+        ShardId::new(1),
+    ))
+    .expect("unregister shard 1");
+
+    assert_eq!(
+        store.graph_index_lookup_targets(graph_id).expect("targets"),
+        vec![graph_principal(2)]
+    );
+}
+
+#[test]
+fn admin_register_graph_with_random_key_persists_runtime_config() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    let entry = GraphRegistryEntry {
+        graph_id: GraphId::from_raw(0),
+        graph_name: "tenant.main".to_owned(),
+        canister_id: Principal::management_canister(),
+        owner: admin,
+        admins: BTreeSet::new(),
+        status: GraphStatus::Active,
+        version: 1,
+        updated_at_ns: 0,
+        provisioning_state: ProvisioningState::None,
+        is_home: false,
+    };
+
+    futures::executor::block_on(store.admin_register_graph_with_random_key(admin, entry))
+        .expect("register graph");
+    let graph_id = lookup_graph_id("tenant.main").expect("graph id");
+    let key = store
+        .graph_element_id_encoding_key(graph_id)
+        .expect("runtime key");
+    assert_ne!(
+        key,
+        gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture()
+    );
+}
+
+#[test]
+fn admin_register_graph_derives_distinct_element_id_keys_per_graph() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+
+    for (name, is_home) in [("graph_a", true), ("graph_b", false)] {
+        store
+            .admin_register_graph(
+                admin,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    graph_name: name.to_owned(),
+                    canister_id: Principal::management_canister(),
+                    owner: admin,
+                    admins: BTreeSet::new(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home,
+                },
+            )
+            .expect("register graph");
+    }
+
+    let key_a = store
+        .graph_element_id_encoding_key(lookup_graph_id("graph_a").expect("graph a"))
+        .expect("key a");
+    let key_b = store
+        .graph_element_id_encoding_key(lookup_graph_id("graph_b").expect("graph b"))
+        .expect("key b");
+    assert_ne!(key_a, key_b);
+}
+
+#[test]
+fn register_shard_extends_runtime_index_cluster_by_group() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard 0");
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(1),
+            graph_canister: graph_principal(3),
+            index_canister: graph_principal(4),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard 1");
+
+    let runtime = crate::facade::stable::ROUTER_GRAPH_RUNTIME_CONFIG
+        .with_borrow(|cfg| cfg.get(&graph_id))
+        .expect("runtime config");
+    assert_eq!(runtime.index_group_size, 1);
+    assert_eq!(
+        runtime.index_cluster,
+        vec![graph_principal(2), graph_principal(4)]
+    );
+}
+
+#[test]
+fn register_shard_rejects_index_canister_mismatch_within_group() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+    crate::facade::stable::ROUTER_GRAPH_RUNTIME_CONFIG.with_borrow_mut(|cfg| {
+        let mut runtime = cfg.get(&graph_id).expect("runtime config");
+        runtime.index_group_size = 2;
+        cfg.insert(graph_id, runtime);
+    });
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard 0");
+
+    let err = futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(1),
+            graph_canister: graph_principal(3),
+            index_canister: graph_principal(4),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect_err("group index canister mismatch");
+    assert!(matches!(err, RouterError::Conflict(_)));
+}
+
+#[test]
+fn unregister_graph_rejects_when_shards_exist() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+
+    let err = store
+        .admin_unregister_graph(admin, "tenant.main")
+        .expect_err("must reject while shards exist");
+    assert!(matches!(err, RouterError::Conflict(_)));
+}
+
+#[test]
+fn unregister_graph_cascades_vocabulary_partitions() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+    let edge = store
+        .admin_intern_edge_label(admin, "tenant.main", "KNOWS")
+        .expect("edge label");
+    let vertex = store
+        .admin_intern_vertex_label(admin, "tenant.main", "Person")
+        .expect("vertex label");
+    store
+        .admin_intern_property(admin, "tenant.main", "age")
+        .expect("property");
+    store
+        .admin_set_edge_label_payload_profile(
+            admin,
+            "tenant.main",
+            "KNOWS",
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        )
+        .expect("payload profile");
+    store.apply_label_stats_delta_payload(
+        graph_id,
+        ShardId::new(0),
+        &LabelStatsDelta {
+            vertex: vec![(vertex, 2)],
+            edge: vec![(edge, 1)],
+        },
+    );
+
+    store
+        .admin_unregister_graph(admin, "tenant.main")
+        .expect("unregister graph");
+
+    assert!(store.resolve_graph_id("tenant.main").is_err());
+    register_test_graph(&store, admin, "tenant.main");
+    let new_graph_id = tenant_main_graph_id();
+    assert_eq!(
+        store
+            .admin_intern_vertex_label(admin, "tenant.main", "Person")
+            .expect("vertex re-intern")
+            .raw(),
+        1
+    );
+    assert_eq!(
+        store
+            .admin_intern_edge_label(admin, "tenant.main", "KNOWS")
+            .expect("edge re-intern")
+            .raw(),
+        1
+    );
+    assert_eq!(
+        store
+            .admin_intern_property(admin, "tenant.main", "age")
+            .expect("property re-intern")
+            .raw(),
+        1
+    );
+    assert_eq!(
+        store.vertex_label_stats(new_graph_id, vertex),
+        LabelStats::default()
+    );
+    assert_eq!(
+        store.edge_label_stats(new_graph_id, edge),
+        LabelStats::default()
+    );
+    assert_eq!(
+        store.vertex_label_shard_live_count(new_graph_id, ShardId::new(0), vertex),
+        0
+    );
+    assert_eq!(
+        store.edge_label_shard_live_count(new_graph_id, ShardId::new(0), edge),
+        0
+    );
+    assert!(store.lookup_edge_label_id(new_graph_id, "KNOWS").is_ok());
+    assert!(store.lookup_property_id(new_graph_id, "age").is_ok());
     assert_registry_invariants();
 }
 
@@ -243,7 +550,7 @@ fn admin_register_shard_rejects_orphan_catalog_graph() {
 }
 
 #[test]
-fn admin_register_shard_rejects_same_id_under_different_graph() {
+fn admin_register_shard_allows_same_ordinal_under_different_graphs() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
@@ -251,30 +558,224 @@ fn admin_register_shard_rejects_same_id_under_different_graph() {
     register_test_graph(&store, admin, "tenant.main");
     register_test_graph(&store, admin, "other.graph");
 
-    let graph = graph_principal(1);
-    let index = graph_principal(2);
     futures::executor::block_on(store.admin_register_shard(
         admin,
         AdminRegisterShardArgs {
             shard_id: ShardId::new(0),
-            graph_canister: graph,
-            index_canister: index,
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
             logical_graph_name: "tenant.main".into(),
         },
     ))
     .expect("register under tenant.main");
 
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(3),
+            index_canister: graph_principal(4),
+            logical_graph_name: "other.graph".into(),
+        },
+    ))
+    .expect("same graph-local ordinal under other.graph");
+
+    assert_registry_invariants();
+}
+
+#[test]
+fn admin_register_shard_rejects_wrong_shard_id_for_existing_graph_canister() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard 0");
+
+    let err = futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(1),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect_err("wrong shard id must not succeed");
+
+    assert!(matches!(err, RouterError::Conflict(_)));
+    assert_registry_invariants();
+}
+
+#[test]
+fn pending_shard_excluded_from_index_lookup_targets() {
+    use crate::facade::stable::ROUTER_SHARDS;
+    use gleaph_graph_kernel::federation::GraphShardKey;
+
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+
+    let graph_id = tenant_main_graph_id();
+    assert_eq!(
+        store.graph_index_lookup_targets(graph_id).expect("targets"),
+        vec![graph_principal(2)]
+    );
+
+    ROUTER_SHARDS.with_borrow_mut(|shards| {
+        let key = GraphShardKey::new(graph_id, ShardId::new(0));
+        let mut entry = shards.get(&key).expect("shard row");
+        entry.index_attached = false;
+        shards.insert(key, entry);
+    });
+    assert!(
+        store
+            .graph_index_lookup_targets(graph_id)
+            .expect("targets")
+            .is_empty()
+    );
+}
+
+#[test]
+fn unregister_shard_reconciles_index_cluster_for_retry() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+
+    futures::executor::block_on(store.admin_unregister_shard(
+        admin,
+        "tenant.main",
+        ShardId::new(0),
+    ))
+    .expect("unregister shard");
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(3),
+            index_canister: graph_principal(4),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("re-register with different index canister");
+
+    assert_registry_invariants();
+}
+
+#[test]
+fn admin_register_graph_with_random_key_rejects_duplicate_home_after_first() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+
+    store
+        .admin_register_graph(
+            admin,
+            GraphRegistryEntry {
+                graph_id: GraphId::from_raw(0),
+                graph_name: "home.graph".into(),
+                canister_id: Principal::management_canister(),
+                owner: admin,
+                admins: BTreeSet::new(),
+                status: GraphStatus::Active,
+                version: 1,
+                updated_at_ns: 0,
+                provisioning_state: ProvisioningState::None,
+                is_home: true,
+            },
+        )
+        .expect("register home");
+
+    let err = futures::executor::block_on(store.admin_register_graph_with_random_key(
+        admin,
+        GraphRegistryEntry {
+            graph_id: GraphId::from_raw(0),
+            graph_name: "other.home".into(),
+            canister_id: Principal::management_canister(),
+            owner: admin,
+            admins: BTreeSet::new(),
+            status: GraphStatus::Active,
+            version: 1,
+            updated_at_ns: 0,
+            provisioning_state: ProvisioningState::None,
+            is_home: true,
+        },
+    ))
+    .expect_err("second home graph");
+
+    assert!(matches!(err, RouterError::Conflict(_)));
+}
+
+#[test]
+fn admin_register_shard_rejects_duplicate_graph_local_ordinal() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: graph_principal(1),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard 0");
+
     let err = futures::executor::block_on(store.admin_register_shard(
         admin,
         AdminRegisterShardArgs {
             shard_id: ShardId::new(0),
-            graph_canister: graph,
-            index_canister: index,
-            logical_graph_name: "other.graph".into(),
+            graph_canister: graph_principal(3),
+            index_canister: graph_principal(2),
+            logical_graph_name: "tenant.main".into(),
         },
     ))
-    .expect_err("same shard under different graph");
+    .expect_err("second shard 0 must fail");
+
     assert!(matches!(err, RouterError::Conflict(_)));
+    assert_registry_invariants();
 }
 
 #[test]
@@ -363,20 +864,36 @@ fn vertex_and_edge_labels_with_same_name_get_distinct_ids() {
     let admin = Principal::anonymous();
     crate::facade::auth::grant_admins(&[admin]);
 
+    register_test_graph(&store, admin, "tenant.main");
+
     let v = store
-        .admin_intern_vertex_label(admin, "Person")
+        .admin_intern_vertex_label(admin, "tenant.main", "Person")
         .expect("vertex label");
     let e = store
-        .admin_intern_edge_label(admin, "Person")
+        .admin_intern_edge_label(admin, "tenant.main", "Person")
         .expect("edge label");
     // Same numeric id is fine — namespaces are separate.
     assert_eq!(v.raw(), 1);
     assert_eq!(e.raw(), 1);
-    assert_eq!(store.lookup_vertex_label_id("Person").unwrap(), v);
-    assert_eq!(store.lookup_edge_label_id("Person").unwrap(), e);
-    assert!(store.lookup_edge_label_id("KNOWS").is_err());
+    assert_eq!(
+        store
+            .lookup_vertex_label_id(tenant_main_graph_id(), "Person")
+            .unwrap(),
+        v
+    );
+    assert_eq!(
+        store
+            .lookup_edge_label_id(tenant_main_graph_id(), "Person")
+            .unwrap(),
+        e
+    );
+    assert!(
+        store
+            .lookup_edge_label_id(tenant_main_graph_id(), "KNOWS")
+            .is_err()
+    );
     let v2 = store
-        .admin_intern_vertex_label(admin, "KNOWS")
+        .admin_intern_vertex_label(admin, "tenant.main", "KNOWS")
         .expect("vertex only");
     assert_eq!(v2.raw(), 2);
 }
@@ -385,6 +902,9 @@ fn vertex_and_edge_labels_with_same_name_get_distinct_ids() {
 fn read_plan_requires_existing_label() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
 
     let plan = PhysicalPlan::from_ops(vec![PlanOp::NodeScan {
         variable: "n".into(),
@@ -393,7 +913,7 @@ fn read_plan_requires_existing_label() {
     }]);
 
     assert_eq!(
-        store.resolve_plan_labels(&[plan]),
+        store.resolve_plan_labels(tenant_main_graph_id(), &[plan]),
         Err(RouterError::NotFound("Missing".into()))
     );
 }
@@ -402,6 +922,9 @@ fn read_plan_requires_existing_label() {
 fn dml_plan_creates_only_requested_label_namespaces() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
+    let admin = Principal::anonymous();
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
 
     let node_only = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
         variable: Some("n".into()),
@@ -410,14 +933,24 @@ fn dml_plan_creates_only_requested_label_namespaces() {
     }]);
 
     let resolved = store
-        .resolve_plan_labels(&[node_only])
+        .resolve_plan_labels(tenant_main_graph_id(), &[node_only])
         .expect("resolve node DML labels");
     assert_eq!(resolved.vertex.len(), 1);
     assert_eq!(resolved.vertex[0].name, "Person");
     assert_eq!(resolved.vertex[0].id.raw(), 1);
     assert!(resolved.edge.is_empty());
-    assert_eq!(store.lookup_vertex_label_id("Person").unwrap().raw(), 1);
-    assert!(store.lookup_edge_label_id("Person").is_err());
+    assert_eq!(
+        store
+            .lookup_vertex_label_id(tenant_main_graph_id(), "Person")
+            .unwrap()
+            .raw(),
+        1
+    );
+    assert!(
+        store
+            .lookup_edge_label_id(tenant_main_graph_id(), "Person")
+            .is_err()
+    );
 
     let edge_only = PhysicalPlan::from_ops(vec![PlanOp::InsertEdge {
         variable: Some("e".into()),
@@ -429,13 +962,25 @@ fn dml_plan_creates_only_requested_label_namespaces() {
     }]);
 
     let resolved = store
-        .resolve_plan_labels(&[edge_only])
+        .resolve_plan_labels(tenant_main_graph_id(), &[edge_only])
         .expect("resolve edge DML labels");
     assert_eq!(resolved.edge.len(), 1);
     assert_eq!(resolved.edge[0].name, "Person");
     assert_eq!(resolved.edge[0].id.raw(), 1);
-    assert_eq!(store.lookup_vertex_label_id("Person").unwrap().raw(), 1);
-    assert_eq!(store.lookup_edge_label_id("Person").unwrap().raw(), 1);
+    assert_eq!(
+        store
+            .lookup_vertex_label_id(tenant_main_graph_id(), "Person")
+            .unwrap()
+            .raw(),
+        1
+    );
+    assert_eq!(
+        store
+            .lookup_edge_label_id(tenant_main_graph_id(), "Person")
+            .unwrap()
+            .raw(),
+        1
+    );
 }
 
 #[test]
@@ -445,15 +990,17 @@ fn resolve_plan_attaches_edge_payload_profile() {
     let admin = Principal::anonymous();
     crate::facade::auth::grant_admins(&[admin]);
 
+    register_test_graph(&store, admin, "tenant.main");
+
     let profile = EdgePayloadProfile {
         byte_width: 2,
         encoding: EdgePayloadEncoding::WeightRawU16,
     };
     store
-        .admin_intern_edge_label(admin, "KNOWS")
+        .admin_intern_edge_label(admin, "tenant.main", "KNOWS")
         .expect("intern edge");
     store
-        .admin_set_edge_label_payload_profile(admin, "KNOWS", profile.clone())
+        .admin_set_edge_label_payload_profile(admin, "tenant.main", "KNOWS", profile.clone())
         .expect("set profile");
 
     let edge_only = PhysicalPlan::from_ops(vec![PlanOp::InsertEdge {
@@ -466,7 +1013,7 @@ fn resolve_plan_attaches_edge_payload_profile() {
     }]);
 
     let resolved = store
-        .resolve_plan_labels(&[edge_only])
+        .resolve_plan_labels(tenant_main_graph_id(), &[edge_only])
         .expect("resolve edge DML labels");
     assert_eq!(resolved.edge.len(), 1);
     assert_eq!(resolved.edge[0].name, "KNOWS");
@@ -480,14 +1027,17 @@ fn label_stats_delta_updates_namespace_separated_stats() {
     let admin = Principal::anonymous();
     crate::facade::auth::grant_admins(&[admin]);
 
+    register_test_graph(&store, admin, "tenant.main");
+
     let vertex_label = store
-        .admin_intern_vertex_label(admin, "Person")
+        .admin_intern_vertex_label(admin, "tenant.main", "Person")
         .expect("vertex label");
     let edge_label = store
-        .admin_intern_edge_label(admin, "Person")
+        .admin_intern_edge_label(admin, "tenant.main", "Person")
         .expect("edge label");
 
     store.apply_label_stats_delta_payload(
+        tenant_main_graph_id(),
         ShardId::new(0),
         &LabelStatsDelta {
             vertex: vec![(vertex_label, 2)],
@@ -496,7 +1046,7 @@ fn label_stats_delta_updates_namespace_separated_stats() {
     );
 
     assert_eq!(
-        store.vertex_label_stats(vertex_label),
+        store.vertex_label_stats(tenant_main_graph_id(), vertex_label),
         LabelStats {
             live_count: 2,
             total_adds: 2,
@@ -504,7 +1054,7 @@ fn label_stats_delta_updates_namespace_separated_stats() {
         }
     );
     assert_eq!(
-        store.edge_label_stats(edge_label),
+        store.edge_label_stats(tenant_main_graph_id(), edge_label),
         LabelStats {
             live_count: 3,
             total_adds: 3,
@@ -512,15 +1062,16 @@ fn label_stats_delta_updates_namespace_separated_stats() {
         }
     );
     assert_eq!(
-        store.vertex_label_shard_live_count(ShardId::new(0), vertex_label),
+        store.vertex_label_shard_live_count(tenant_main_graph_id(), ShardId::new(0), vertex_label),
         2
     );
     assert_eq!(
-        store.edge_label_shard_live_count(ShardId::new(0), edge_label),
+        store.edge_label_shard_live_count(tenant_main_graph_id(), ShardId::new(0), edge_label),
         3
     );
 
     store.apply_label_stats_delta_payload(
+        tenant_main_graph_id(),
         ShardId::new(0),
         &LabelStatsDelta {
             vertex: vec![(vertex_label, -1)],
@@ -529,7 +1080,7 @@ fn label_stats_delta_updates_namespace_separated_stats() {
     );
 
     assert_eq!(
-        store.vertex_label_stats(vertex_label),
+        store.vertex_label_stats(tenant_main_graph_id(), vertex_label),
         LabelStats {
             live_count: 1,
             total_adds: 2,
@@ -537,7 +1088,7 @@ fn label_stats_delta_updates_namespace_separated_stats() {
         }
     );
     assert_eq!(
-        store.edge_label_stats(edge_label),
+        store.edge_label_stats(tenant_main_graph_id(), edge_label),
         LabelStats {
             live_count: 1,
             total_adds: 3,
@@ -545,11 +1096,11 @@ fn label_stats_delta_updates_namespace_separated_stats() {
         }
     );
     assert_eq!(
-        store.vertex_label_shard_live_count(ShardId::new(0), vertex_label),
+        store.vertex_label_shard_live_count(tenant_main_graph_id(), ShardId::new(0), vertex_label),
         1
     );
     assert_eq!(
-        store.edge_label_shard_live_count(ShardId::new(0), edge_label),
+        store.edge_label_shard_live_count(tenant_main_graph_id(), ShardId::new(0), edge_label),
         1
     );
 }
@@ -560,11 +1111,13 @@ fn label_stats_delta_tracks_per_shard_live_counts() {
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
     crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
     let label = store
-        .admin_intern_vertex_label(admin, "Person")
+        .admin_intern_vertex_label(admin, "tenant.main", "Person")
         .expect("vertex label");
 
     store.apply_label_stats_delta_payload(
+        tenant_main_graph_id(),
         ShardId::new(0),
         &LabelStatsDelta {
             vertex: vec![(label, 2)],
@@ -572,6 +1125,7 @@ fn label_stats_delta_tracks_per_shard_live_counts() {
         },
     );
     store.apply_label_stats_delta_payload(
+        tenant_main_graph_id(),
         ShardId::new(1),
         &LabelStatsDelta {
             vertex: vec![(label, 1)],
@@ -579,6 +1133,7 @@ fn label_stats_delta_tracks_per_shard_live_counts() {
         },
     );
     store.apply_label_stats_delta_payload(
+        tenant_main_graph_id(),
         ShardId::new(0),
         &LabelStatsDelta {
             vertex: vec![(label, -1)],
@@ -587,7 +1142,7 @@ fn label_stats_delta_tracks_per_shard_live_counts() {
     );
 
     assert_eq!(
-        store.vertex_label_stats(label),
+        store.vertex_label_stats(tenant_main_graph_id(), label),
         LabelStats {
             live_count: 2,
             total_adds: 3,
@@ -595,11 +1150,11 @@ fn label_stats_delta_tracks_per_shard_live_counts() {
         }
     );
     assert_eq!(
-        store.vertex_label_shard_live_count(ShardId::new(0), label),
+        store.vertex_label_shard_live_count(tenant_main_graph_id(), ShardId::new(0), label),
         1
     );
     assert_eq!(
-        store.vertex_label_shard_live_count(ShardId::new(1), label),
+        store.vertex_label_shard_live_count(tenant_main_graph_id(), ShardId::new(1), label),
         1
     );
 }
@@ -610,8 +1165,9 @@ fn label_stats_projection_applies_delta_once_per_seq() {
     store.init_from_args(&test_init_args());
     let admin = Principal::anonymous();
     crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
     let label = store
-        .admin_intern_vertex_label(admin, "Person")
+        .admin_intern_vertex_label(admin, "tenant.main", "Person")
         .expect("vertex label");
     let shard_id = ShardId::new(0);
     let graph = graph_principal(1);
@@ -625,6 +1181,7 @@ fn label_stats_projection_applies_delta_once_per_seq() {
     }];
 
     futures::executor::block_on(store.advance_label_stats_projection(
+        tenant_main_graph_id(),
         graph,
         shard_id,
         10,
@@ -640,7 +1197,7 @@ fn label_stats_projection_applies_delta_once_per_seq() {
     .expect("first advance");
 
     assert_eq!(
-        store.vertex_label_stats(label),
+        store.vertex_label_stats(tenant_main_graph_id(), label),
         LabelStats {
             live_count: 2,
             total_adds: 2,
@@ -649,6 +1206,7 @@ fn label_stats_projection_applies_delta_once_per_seq() {
     );
 
     futures::executor::block_on(store.advance_label_stats_projection(
+        tenant_main_graph_id(),
         graph,
         shard_id,
         10,
@@ -661,7 +1219,7 @@ fn label_stats_projection_applies_delta_once_per_seq() {
     .expect("second advance");
 
     assert_eq!(
-        store.vertex_label_stats(label),
+        store.vertex_label_stats(tenant_main_graph_id(), label),
         LabelStats {
             live_count: 2,
             total_adds: 2,
@@ -670,6 +1228,7 @@ fn label_stats_projection_applies_delta_once_per_seq() {
     );
 
     futures::executor::block_on(store.advance_label_stats_projection(
+        tenant_main_graph_id(),
         graph,
         ShardId::new(1),
         10,
@@ -685,7 +1244,7 @@ fn label_stats_projection_applies_delta_once_per_seq() {
     .expect("other shard advance");
 
     assert_eq!(
-        store.vertex_label_stats(label),
+        store.vertex_label_stats(tenant_main_graph_id(), label),
         LabelStats {
             live_count: 4,
             total_adds: 4,
@@ -1072,4 +1631,74 @@ fn router_mutation_journal_records_zero_shard_completion() {
         store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
         Some(0)
     );
+}
+
+mod graph_type_catalog_vocabulary {
+    use super::*;
+    use crate::facade::stable::graph_type_catalog::apply_catalog_statement_block;
+    use gleaph_gql::ast::StatementBlock;
+    use gleaph_gql::parser;
+
+    const PERSON_KNOWS: &str = "NODE Person LABEL Person { name STRING }, DIRECTED EDGE KNOWS LABEL KNOWS CONNECTING (Person -> Person)";
+
+    fn catalog_block_from(gql: &str) -> StatementBlock {
+        parser::parse(gql)
+            .expect("parse")
+            .transaction_activity
+            .expect("tx")
+            .body
+            .expect("body")
+    }
+
+    #[test]
+    fn create_graph_inline_ddl_auto_interns_vocabulary() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::anonymous();
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+        let graph_id = lookup_graph_id("g").expect("graph id");
+
+        let ddl = format!("CREATE GRAPH g {{ {PERSON_KNOWS} }}");
+        apply_catalog_statement_block(&catalog_block_from(&ddl)).expect("apply ddl");
+
+        assert!(store.lookup_vertex_label_id(graph_id, "Person").is_ok());
+        assert!(store.lookup_edge_label_id(graph_id, "KNOWS").is_ok());
+        assert!(store.lookup_property_id(graph_id, "name").is_ok());
+    }
+
+    #[test]
+    fn create_graph_typed_ddl_auto_interns_vocabulary() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::anonymous();
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+        let graph_id = lookup_graph_id("g").expect("graph id");
+
+        let ddl = format!("CREATE GRAPH TYPE gt {{ {PERSON_KNOWS} }} NEXT CREATE GRAPH g TYPED gt");
+        apply_catalog_statement_block(&catalog_block_from(&ddl)).expect("apply ddl");
+
+        assert!(store.lookup_vertex_label_id(graph_id, "Person").is_ok());
+        assert!(store.lookup_edge_label_id(graph_id, "KNOWS").is_ok());
+        assert!(store.lookup_property_id(graph_id, "name").is_ok());
+    }
+
+    #[test]
+    fn create_graph_any_skips_vocabulary_intern() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::anonymous();
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(&store, admin, "g");
+        let graph_id = lookup_graph_id("g").expect("graph id");
+
+        apply_catalog_statement_block(&catalog_block_from("CREATE GRAPH g ANY"))
+            .expect("apply ddl");
+
+        assert!(matches!(
+            store.lookup_vertex_label_id(graph_id, "Person"),
+            Err(RouterError::NotFound(_))
+        ));
+    }
 }
