@@ -22,7 +22,7 @@ flowchart TB
 
 | Canister | Crate | State / API / execution boundary |
 |----------|-------|--------------------------------|
-| Router | `crates/router` | RBAC decisions, ad-hoc GQL parse+plan entry, prepared registry, shard registry, **vertex placement authority**, multi-shard `dispatch_plan_blob` |
+| Router | `crates/router` | RBAC decisions, ad-hoc GQL parse+plan entry, prepared registry, shard registry, resolution catalogs, multi-shard `dispatch_plan_blob` |
 | Graph | `crates/graph` | Stable graph state, `execute_plan_*` entrypoints, local indexes |
 | Graph index | `crates/graph-index` | Global property equality postings and lookup APIs returning `PostingHit { shard_id, vertex_id }` |
 
@@ -91,7 +91,7 @@ A composite query must not call graph update methods (`plan_exec.rs` module docs
 | Mode | Configuration | Behavior |
 |------|---------------|----------|
 | **Standalone graph** | No `FederationRouting` in graph metadata | `GlobalVertexId(0, local)`; single-process dev/tests |
-| **Federated graph** | Router + N shards + index (`m` ≥ 1 Principals) | Placement via router; per-shard `index_canister`; index split strategy deferred ([ADR 0010](../adr/0010-index-sharding-extensibility.md)); cross-shard expand deferred |
+| **Federated graph** | Router + N shards + index (`m` ≥ 1 Principals) | Shard routing via router; vertex existence on graph shard ([ADR 0017](../adr/0017-graph-vertex-existence-ssot.md)); per-shard `index_canister`; index split strategy deferred ([ADR 0010](../adr/0010-index-sharding-extensibility.md)); cross-shard expand deferred |
 
 See [federation/model.md](../federation/model.md).
 

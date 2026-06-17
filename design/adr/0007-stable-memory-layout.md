@@ -1,8 +1,8 @@
 # 0007. Stable-memory layout policy and measured consolidation
 
-Date: 2026-06-12  
-Status: accepted  
-Last revised: 2026-06-17  
+Date: 2026-06-12
+Status: accepted
+Last revised: 2026-06-17
 Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
 
 ## Revision history

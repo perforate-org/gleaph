@@ -1,13 +1,16 @@
 # PR1 — `gleaph-router` Candid API
 
 Control-plane canister for federated Gleaph graphs. PR1 establishes the router as metadata authority
-(graph registry, shard registry, logical vertex placement, label/property intern) without GQL execution
-or vertex migration.
+(graph registry, shard registry, label/property intern) without GQL execution or vertex migration.
+
+**Vertex existence:** authoritative on the **graph shard** (CSR tombstone + index sync), not the router
+([ADR 0017](../../../design/adr/0017-graph-vertex-existence-ssot.md)). Placement APIs documented below
+were removed; this file retains PR1 history with strikethrough notes where applicable.
 
 **Related decisions (PR1):**
 
-- `LogicalVertexId = nat64` — stable global vertex identity (router-allocated).
-- `ShardId = nat32` — partition id; not a substitute for logical identity.
+- `GlobalVertexId { shard_id, local_vertex_id }` — canonical global vertex key ([ADR 0005](../../../design/adr/0005-vertex-identity.md)).
+- `ShardId = nat32` — partition id; routing SSOT on router (`resolve_shard`, shard registry).
 - Index posting keys stay **physical**: `(property_id, encoded_value, shard_id, local_vertex_id)`.
 - Shard registry moves from `gleaph-graph-index` to the router; index keeps shard/canister attachment map only.
 - Breaking changes are acceptable (no migration from prior federation v1 wire formats).
@@ -20,20 +23,8 @@ Portable types live in `gleaph-graph-kernel` (`federation`, `index`). Router- an
 records are defined here for Candid export.
 
 ```candid
-type LogicalVertexId = nat64;
 type ShardId = nat32;
 type LocalVertexId = nat32;
-
-type PhysicalVertexLocation = record {
-  shard_id : ShardId;
-  local_vertex_id : LocalVertexId;
-};
-
-type VertexPlacement = variant {
-  Active : PhysicalVertexLocation;
-  // Reserved for PR4; not implemented in PR1.
-  Migrating : record { epoch : nat64 };
-};
 
 // Label and property ids match `gleaph-graph-kernel::entry` (distinct namespaces).
 type VertexLabelId = nat16;
@@ -81,12 +72,13 @@ type RouterError = variant {
   GraphUnavailable;
   ShardNotRegistered;
   ShardAlreadyRegistered;
-  VertexNotFound;
-  PlacementAlreadyCommitted;
-  UnallocatedLogicalVertex;
   Internal : text;
 };
 ```
+
+**Removed (ADR 0017):** `LogicalVertexId`, `PhysicalVertexLocation`, `VertexPlacement`,
+`VertexNotFound`, `PlacementAlreadyCommitted`, `UnallocatedLogicalVertex`, and placement endpoints
+(`resolve_placement`, `allocate_logical_vertex_id`, `commit_vertex_placement`, `release_vertex_placement`).
 
 ---
 
@@ -111,7 +103,6 @@ type RouterInitArgs = record {
 | `whoami` | — | `principal` | public | Same pattern as `gleaph-graph` |
 | `resolve_graph` | `graph_name : text` | `Result<GraphRegistryEntry, RouterError>` | caller | Owner or admin only |
 | `resolve_shard` | `shard_id : ShardId` | `Result<ShardRegistryEntry, RouterError>` | **public** | Replaces index `resolve_shard_principal` |
-| `resolve_placement` | `logical_vertex_id : LogicalVertexId` | `Result<VertexPlacement, RouterError>` | **public** | PR1: `Active` only |
 | `lookup_vertex_label_id` | `name : text` | `Result<VertexLabelId, RouterError>` | public | |
 | `lookup_edge_label_id` | `name : text` | `Result<EdgeLabelId, RouterError>` | public | |
 | `lookup_property_id` | `name : text` | `Result<PropertyId, RouterError>` | public | |
@@ -119,9 +110,9 @@ type RouterInitArgs = record {
 | `reverse_edge_label_name` | `label_id : EdgeLabelId` | `Result<text, RouterError>` | public | Optional; planner/debug |
 | `reverse_property_name` | `property_id : PropertyId` | `Result<text, RouterError>` | public | Optional; planner/debug |
 
-**Public read APIs:** `resolve_shard`, `resolve_placement`, and metadata lookups expose registry and
-placement directory to any caller that can reach the canister (same policy as `gleaph-graph-index`
-lookups today). Gate at a higher layer if needed.
+**Public read APIs:** `resolve_shard` and metadata lookups expose registry directory to any caller that
+can reach the canister (same policy as `gleaph-graph-index` lookups today). Gate at a higher layer if
+needed.
 
 `resolve_graph_canister` is intentionally omitted; use `resolve_graph` and read `canister_id` from the
 entry when graph registry entries include a graph shard principal (future multi-shard graphs may extend
@@ -160,29 +151,10 @@ index.admin_attach_shard_canister(shard_id, graph_canister)
 
 ---
 
-## Update — graph shard
+## Update — graph shard *(removed ADR 0017)*
 
-Caller must be the `graph_canister` principal registered for its shard.
-
-| Method | Args | Returns | Notes |
-|--------|------|---------|-------|
-| `allocate_logical_vertex_id` | — | `Result<LogicalVertexId, RouterError>` | Monotonic counter |
-| `commit_vertex_placement` | `CommitVertexPlacementArgs` | `Result<(), RouterError>` | After local vertex insert |
-
-```candid
-type CommitVertexPlacementArgs = record {
-  logical_vertex_id : LogicalVertexId;
-  local_vertex_id : LocalVertexId;
-};
-```
-
-**Rules:**
-
-- `shard_id` is inferred from the caller principal (not passed in args).
-- `logical_vertex_id` must be the shard's current pending allocation from `allocate_logical_vertex_id`.
-- Router records `logical_vertex_id -> Active { shard_id, local_vertex_id }`.
-
-**Deferred to PR2+:** `release_logical_vertex_id` / tombstone on vertex delete.
+PR1 allocated logical vertex ids and committed placement on the router. **Removed:** vertex existence
+is authoritative on the graph shard; graph shards no longer call router placement endpoints.
 
 ---
 
@@ -195,7 +167,6 @@ init(RouterInitArgs)
 whoami() -> principal
 resolve_graph(text) -> Result<GraphRegistryEntry, RouterError>
 resolve_shard(ShardId) -> Result<ShardRegistryEntry, RouterError>
-resolve_placement(LogicalVertexId) -> Result<VertexPlacement, RouterError>
 lookup_vertex_label_id(text) -> Result<VertexLabelId, RouterError>
 lookup_edge_label_id(text) -> Result<EdgeLabelId, RouterError>
 lookup_property_id(text) -> Result<PropertyId, RouterError>
@@ -211,10 +182,6 @@ admin_unregister_shard(ShardId) -> Result<(), RouterError>
 admin_intern_vertex_label(text) -> Result<VertexLabelId, RouterError>
 admin_intern_edge_label(text) -> Result<EdgeLabelId, RouterError>
 admin_intern_property(text) -> Result<PropertyId, RouterError>
-
-// update — graph shard
-allocate_logical_vertex_id() -> Result<LogicalVertexId, RouterError>
-commit_vertex_placement(CommitVertexPlacementArgs) -> Result<(), RouterError>
 ```
 
 ---
@@ -274,7 +241,7 @@ type IndexInitArgs = record {
 
 | Types | Crate |
 |-------|-------|
-| `ShardId`, `LogicalVertexId`, `PhysicalVertexLocation`, `VertexPlacement` | `gleaph-graph-kernel::federation` |
+| `ShardId`, `GlobalVertexId` | `gleaph-graph-kernel::federation` |
 | `PostingHit`, `PostingRangeRequest` | `gleaph-graph-kernel::index` |
 | `GraphRegistryEntry`, `GraphStatus`, `ProvisioningState` | `gleaph-gql-ic` |
 | `VertexLabelId`, `EdgeLabelId`, `PropertyId` | `gleaph-graph-kernel::entry` |

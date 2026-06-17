@@ -1,7 +1,7 @@
 # 0017. Vertex existence SSOT on graph shard; remove router placement registry
 
-Date: 2026-06-17  
-Status: accepted  
+Date: 2026-06-17
+Status: accepted
 Last revised: 2026-06-17
 
 Supersedes the router placement authority described in [0005](0005-vertex-identity.md) (placement

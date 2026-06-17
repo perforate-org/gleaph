@@ -1,6 +1,6 @@
 # Glossary
 
-Last updated: 2026-06-17  
+Last updated: 2026-06-17
 Anchor timestamp: 2026-06-17 00:16:22 UTC +0000
 
 Terms used across Gleaph design documents. Canonical types live in **`gleaph-graph-kernel`** unless noted.

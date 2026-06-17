@@ -37,7 +37,7 @@ flowchart TB
 - Labeled graphs, bidirectional deferred views
 - **Remote/external edge** insertion at storage level (no shard routing semantics)
 
-LARA does not know `GlobalVertexId`, router placement, or GQL.
+LARA does not know `GlobalVertexId` or GQL.
 
 **Design contract:** [lara.md](./lara.md) (accepted) · [lara-dgap-contract.md](./lara-dgap-contract.md) (DGAP mapping detail).
 
@@ -54,7 +54,7 @@ LARA does not know `GlobalVertexId`, router placement, or GQL.
 
 **Removed:** `remote_vertex_refs`, `remote_forward_in`, `peer_graph_canisters` stable regions.
 
-**GraphStore** is the single entry for plan executor and placement sidecars.
+**GraphStore** is the single entry for plan executor and index sidecars.
 
 ## Identity on shard
 
@@ -63,7 +63,8 @@ LARA does not know `GlobalVertexId`, router placement, or GQL.
 | Federated | `GlobalVertexId { shard_id, local_vertex_id }` derived from routing + local dense id |
 | Standalone | `GlobalVertexId { shard_id: 0, local_vertex_id }` |
 
-Placement client calls router for resolve/commit/release (`index/placement.rs`).
+Vertex liveness is checked on the graph shard (`GraphStore::is_vertex_live`, CSR tombstone). Router
+`resolve_shard` maps `ShardId` → canister for federation routing only.
 
 ## Indexes (local vs global)
 
@@ -72,10 +73,10 @@ Placement client calls router for resolve/commit/release (`index/placement.rs`).
 | Property equality (vertex) | graph-index canister | All shards, `shard_id` in hit |
 | Edge equality | graph stable | Per shard |
 
-## Writes and placement
+## Writes and vertex existence
 
 - Normal writes go through `GraphStore` mutation paths.
-- In federated mode, router placement is active-only and identifies the authoritative shard by `GlobalVertexId`.
+- In federated mode, vertex existence is authoritative on the owning graph shard (tombstone + index sync); router registry routes by `ShardId` only.
 - Vertex migration is future work and has no runtime stable-memory state today ([federation/operations.md](../federation/operations.md)).
 
 ## Related documents
