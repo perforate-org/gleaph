@@ -21,9 +21,11 @@ fn test_router() -> Principal {
 
 fn init_test_store(store: &IndexStore) -> Principal {
     let router = test_router();
-    store.init_from_args(&IndexInitArgs {
-        router_canister: router,
-    });
+    store
+        .init_from_args(&IndexInitArgs {
+            router_canister: router,
+        })
+        .expect("non-anonymous router init");
     router
 }
 
@@ -398,6 +400,81 @@ fn admin_attach_shard_canister_rejects_anonymous_principal() {
             Principal::anonymous(),
         ),
         Err(IndexError::InvalidPrincipalInRegistry)
+    );
+}
+
+#[test]
+fn init_from_args_rejects_anonymous_router_without_clearing_state() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[2]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    // Seed a posting so we can prove postings are not cleared by a rejected re-init.
+    let property_id = 42;
+    let value = index_key(Value::Text("US".into()));
+    store
+        .posting_insert(shard, ShardId::new(0), property_id, value.clone(), 100)
+        .expect("seed posting");
+    assert_eq!(
+        store.lookup_equal(property_id, &value),
+        vec![PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 100
+        }]
+    );
+
+    // A re-init with an anonymous router must be rejected before any state is cleared.
+    assert_eq!(
+        store.init_from_args(&IndexInitArgs {
+            router_canister: Principal::anonymous(),
+        }),
+        Err(IndexError::AnonymousRouter)
+    );
+
+    // Postings, catalog, and router configuration remain intact: the seeded posting is still
+    // queryable, the previously attached shard canister still authorizes, and the anonymous
+    // principal was not persisted as the router.
+    assert_eq!(
+        store.lookup_equal(property_id, &value),
+        vec![PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 100
+        }],
+        "posting must survive a rejected init"
+    );
+    assert_eq!(store.assert_shard_canister(shard, ShardId::new(0)), Ok(()));
+    assert_eq!(
+        store.assert_router_caller(Principal::anonymous()),
+        Err(IndexError::NotAuthorized)
+    );
+    assert_eq!(store.assert_router_caller(router), Ok(()));
+}
+
+#[test]
+fn assert_router_caller_rejects_anonymous_even_if_configured() {
+    let store = IndexStore::new();
+    let _router = init_test_store(&store);
+    assert_eq!(
+        store.assert_router_caller(Principal::anonymous()),
+        Err(IndexError::NotAuthorized)
+    );
+}
+
+#[test]
+fn admin_attach_shard_canister_rejects_anonymous_router_caller() {
+    let store = IndexStore::new();
+    let _router = init_test_store(&store);
+    assert_eq!(
+        store.admin_attach_shard_canister(
+            Principal::anonymous(),
+            GraphId::from_raw(1),
+            1,
+            0,
+            ShardId::new(0),
+            Principal::from_slice(&[2]),
+        ),
+        Err(IndexError::NotAuthorized)
     );
 }
 

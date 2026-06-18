@@ -114,7 +114,7 @@ mod tests {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
         });
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
         let entry = AdminRegisterShardArgs {
@@ -139,7 +139,7 @@ mod tests {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
         });
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
         for (shard_id, graph_byte) in [(ShardId::new(0), 1u8), (ShardId::new(1), 4)] {

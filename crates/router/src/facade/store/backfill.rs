@@ -351,7 +351,7 @@ mod tests {
     fn admin_label_backfill_step_advances_cursor() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
 
@@ -403,7 +403,7 @@ mod tests {
     fn admin_label_backfill_step_rejects_wrong_graph() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
         register_test_graph(&store, admin, "other.graph");
@@ -437,7 +437,7 @@ mod tests {
     fn done_shard_step_is_idempotent() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
 
@@ -483,7 +483,7 @@ mod tests {
     fn admin_vertex_property_backfill_step_advances_cursor() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
 
@@ -535,7 +535,7 @@ mod tests {
     fn admin_edge_backfill_step_advances_cursor() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
 
@@ -590,7 +590,7 @@ mod tests {
     fn backfill_cursors_isolated_per_graph_same_shard_ordinal() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "graph_a");
         register_test_graph(&store, admin, "graph_b");
@@ -704,7 +704,7 @@ mod tests {
 
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
 

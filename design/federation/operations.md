@@ -1,6 +1,6 @@
 # Federation operations
 
-Last updated: 2026-06-13
+Last updated: 2026-06-18
 
 ## Purpose
 
@@ -17,6 +17,8 @@ Document **operational flows**: shard registration, vertex lifecycle, and cross-
 
 1. Register shard in router (`ShardRegistryEntry`: graph + index principals).
 2. Configure graph shard metadata: `FederationRouting { router_canister, shard_id, index_canister }` (`crates/graph/src/facade/stable/metadata.rs`).
+
+**Invariant (anonymous principal):** `FederationRouting` whose `router_canister` or `index_canister` is `Principal::anonymous()` is rejected at `GraphMetadata::validate_for_store` (the persistence boundary shared by init, `set_federation_routing`, and the PocketIC attach path). The graph-index canister likewise rejects an anonymous `router_canister` in `IndexStore::init_from_args` before clearing/writing any stable state. Anonymous is never a trusted federation identity; see [security/rbac-and-prepared.md](../security/rbac-and-prepared.md#anonymous-principal-invariant).
 
 **Removed:** peer graph ACL stable and `bootstrap_graph_peers` / `federated_expand` canister endpoints. Router `peer_sync` is a no-op until cross-shard expand returns in a follow-up ADR.
 

@@ -6,6 +6,9 @@ pub enum IndexError {
     UnknownShard,
     WrongShardCanister,
     InvalidPrincipalInRegistry,
+    /// The configured router principal is the anonymous principal, which can never be the trusted
+    /// router. Distinct from shard-attachment principal errors.
+    AnonymousRouter,
     /// `shard_id` or principal is already attached to a different counterpart.
     ShardCanisterAlreadyAttached,
     GraphOwnershipMismatch,
@@ -22,6 +25,9 @@ impl std::fmt::Display for IndexError {
                 write!(f, "caller is not the attached canister for this shard")
             }
             Self::InvalidPrincipalInRegistry => write!(f, "invalid principal in shard registry"),
+            Self::AnonymousRouter => {
+                write!(f, "router principal must not be the anonymous principal")
+            }
             Self::ShardCanisterAlreadyAttached => {
                 write!(
                     f,

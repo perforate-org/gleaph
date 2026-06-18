@@ -20,9 +20,11 @@ fn setup_index_store() -> (IndexStore, Principal, Principal) {
     let store = IndexStore::new();
     let router = Principal::from_slice(&[9]);
     let owner = Principal::from_slice(&[1]);
-    store.init_from_args(&IndexInitArgs {
-        router_canister: router,
-    });
+    store
+        .init_from_args(&IndexInitArgs {
+            router_canister: router,
+        })
+        .expect("non-anonymous router init");
     store
         .admin_attach_shard_canister(router, GraphId::from_raw(1), 1, 0, ShardId::new(0), owner)
         .expect("attach shard canister");

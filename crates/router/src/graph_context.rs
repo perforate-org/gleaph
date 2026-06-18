@@ -177,7 +177,7 @@ mod tests {
     use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
 
     fn register_graph(store: &RouterStore, name: &str, is_home: bool) {
-        let owner = Principal::anonymous();
+        let owner = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[owner]);
         store
             .admin_register_graph(
@@ -202,9 +202,12 @@ mod tests {
     fn sole_visible_graph_is_default_without_session_set() {
         let store = RouterStore::new();
         register_graph(&store, "gleaph.pocket_ic", false);
-        let ctx =
-            resolve_graph_context_from_query(&store, "MATCH (n) RETURN n", Principal::anonymous())
-                .expect("resolve");
+        let ctx = resolve_graph_context_from_query(
+            &store,
+            "MATCH (n) RETURN n",
+            Principal::from_slice(&[1; 29]),
+        )
+        .expect("resolve");
         assert_eq!(
             graph_catalog::lookup_graph_id("gleaph.pocket_ic"),
             Some(ctx.graph_id)
@@ -216,7 +219,7 @@ mod tests {
         let store = RouterStore::new();
         register_graph(&store, "tenant_a", false);
         register_graph(&store, "tenant_b", false);
-        let caller = Principal::anonymous();
+        let caller = Principal::from_slice(&[1; 29]);
         let ctx = resolve_graph_context_from_query(
             &store,
             "SESSION SET GRAPH tenant_b MATCH (n) RETURN n",
@@ -233,7 +236,7 @@ mod tests {
     fn session_graph_seed_matches_effective_and_home() {
         let store = RouterStore::new();
         register_graph(&store, "gleaph.pocket_ic", false);
-        let caller = Principal::anonymous();
+        let caller = Principal::from_slice(&[1; 29]);
         let ctx = resolve_graph_context_from_query(&store, "MATCH (n) RETURN n", caller)
             .expect("resolve");
         let seed = session_graph_seed(&store, ctx, caller);
@@ -246,7 +249,7 @@ mod tests {
         let store = RouterStore::new();
         register_graph(&store, "tenant_a", false);
         register_graph(&store, "tenant_b", true);
-        let caller = Principal::anonymous();
+        let caller = Principal::from_slice(&[1; 29]);
         let ctx = resolve_graph_context_from_query(&store, "MATCH (n) RETURN n", caller)
             .expect("resolve");
         assert_eq!(
@@ -259,7 +262,7 @@ mod tests {
     fn duplicate_is_home_on_register_conflicts() {
         let store = RouterStore::new();
         register_graph(&store, "tenant_a", true);
-        let owner = Principal::anonymous();
+        let owner = Principal::from_slice(&[1; 29]);
         let err = store
             .admin_register_graph(
                 owner,

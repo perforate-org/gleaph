@@ -612,7 +612,7 @@ mod tests {
     use crate::facade::stable::graph_catalog;
 
     fn register_graph(store: &RouterStore, name: &str, is_home: bool) {
-        let owner = Principal::anonymous();
+        let owner = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[owner]);
         store
             .admin_register_graph(
@@ -648,7 +648,7 @@ mod tests {
         let store = RouterStore::new();
         register_graph(&store, "tenant_a", true);
         register_graph(&store, "tenant_b", false);
-        let caller = Principal::anonymous();
+        let caller = Principal::from_slice(&[1; 29]);
         let query = "SESSION SET GRAPH tenant_a USE tenant_b MATCH (n) RETURN n";
         let (program, block) = block_for_query(query);
         let effective = graph_context::resolve_graph_context(&store, &program, caller)
@@ -678,7 +678,7 @@ mod tests {
         let store = RouterStore::new();
         register_graph(&store, "tenant_a", true);
         register_graph(&store, "tenant_b", false);
-        let caller = Principal::anonymous();
+        let caller = Principal::from_slice(&[1; 29]);
         let query = "USE tenant_a { USE tenant_b { MATCH (n) RETURN n } }";
         let (program, block) = block_for_query(query);
         let effective = graph_context::resolve_graph_context(&store, &program, caller)
@@ -712,7 +712,7 @@ mod tests {
     fn same_graph_use_defocuses_without_mismatch_error() {
         let store = RouterStore::new();
         register_graph(&store, "tenant_a", false);
-        let caller = Principal::anonymous();
+        let caller = Principal::from_slice(&[1; 29]);
         let query = "SESSION SET GRAPH tenant_a USE tenant_a MATCH (n) RETURN n";
         let (program, block) = block_for_query(query);
         let effective = graph_context::resolve_graph_context(&store, &program, caller)
@@ -728,7 +728,7 @@ mod tests {
         register_graph(&store, "tenant_b", false);
         let query = "USE tenant_a MATCH (a) USE tenant_b MATCH (b) RETURN a, b";
         let (program, block) = block_for_query(query);
-        let caller = Principal::anonymous();
+        let caller = Principal::from_slice(&[1; 29]);
         let effective = graph_context::resolve_graph_context(&store, &program, caller)
             .expect("resolve")
             .graph_id;
@@ -770,7 +770,7 @@ mod tests {
         register_graph(&store, "tenant_b", false);
         let query = "USE tenant_a { MATCH (n) RETURN n } NEXT USE tenant_b { MATCH (m) RETURN m }";
         let (program, block) = block_for_query(query);
-        let caller = Principal::anonymous();
+        let caller = Principal::from_slice(&[1; 29]);
         let effective = graph_context::resolve_graph_context(&store, &program, caller)
             .expect("resolve")
             .graph_id;

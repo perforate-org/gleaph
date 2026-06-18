@@ -850,7 +850,11 @@ mod tests {
     fn index_anchor_from_plans_finds_index_intersection() {
         let (store, graph_id) = test_store_with_property("uid");
         store
-            .admin_intern_property(candid::Principal::anonymous(), "tenant.main", "email")
+            .admin_intern_property(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.main",
+                "email",
+            )
             .expect("intern email");
         let plan = PhysicalPlan::from_ops(vec![PlanOp::IndexIntersection {
             variable: Rc::from("n"),

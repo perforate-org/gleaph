@@ -58,7 +58,7 @@ fn tenant_main_graph_id() -> GraphId {
 fn list_shards_for_graph_returns_matching_registrations() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     register_test_graph(&store, admin, "other.graph");
@@ -99,7 +99,7 @@ fn list_shards_for_graph_returns_matching_registrations() {
 fn unregister_shard_removes_registry_and_leaves_siblings() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
@@ -141,7 +141,7 @@ fn unregister_shard_removes_registry_and_leaves_siblings() {
 fn unregister_shard_prunes_graph_index_lookup_targets_to_live_shards() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let graph_id = tenant_main_graph_id();
@@ -188,7 +188,7 @@ fn unregister_shard_prunes_graph_index_lookup_targets_to_live_shards() {
 fn admin_register_graph_with_random_key_persists_runtime_config() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     let entry = GraphRegistryEntry {
         graph_id: GraphId::from_raw(0),
@@ -219,7 +219,7 @@ fn admin_register_graph_with_random_key_persists_runtime_config() {
 fn admin_register_graph_derives_distinct_element_id_keys_per_graph() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
 
     for (name, is_home) in [("graph_a", true), ("graph_b", false)] {
@@ -255,7 +255,7 @@ fn admin_register_graph_derives_distinct_element_id_keys_per_graph() {
 fn register_shard_extends_runtime_index_cluster_by_group() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let graph_id = tenant_main_graph_id();
@@ -295,7 +295,7 @@ fn register_shard_extends_runtime_index_cluster_by_group() {
 fn register_shard_rejects_index_canister_mismatch_within_group() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let graph_id = tenant_main_graph_id();
@@ -333,7 +333,7 @@ fn register_shard_rejects_index_canister_mismatch_within_group() {
 fn unregister_graph_rejects_when_shards_exist() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     futures::executor::block_on(store.admin_register_shard(
@@ -357,7 +357,7 @@ fn unregister_graph_rejects_when_shards_exist() {
 fn unregister_graph_cascades_vocabulary_partitions() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let graph_id = tenant_main_graph_id();
@@ -443,7 +443,7 @@ fn unregister_graph_cascades_vocabulary_partitions() {
 fn registry_invariants_hold_after_graph_and_shard_register() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
@@ -467,7 +467,7 @@ fn list_shards_for_graph_fails_on_stale_shard_index() {
 
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
@@ -502,7 +502,7 @@ fn check_registry_invariants_fails_when_shard_missing_from_index() {
 
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
@@ -532,7 +532,7 @@ fn admin_register_shard_rejects_orphan_catalog_graph() {
 
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     insert_graph_name("orphan.graph", GraphId::from_raw(99)).expect("catalog insert");
 
@@ -553,7 +553,7 @@ fn admin_register_shard_rejects_orphan_catalog_graph() {
 fn admin_register_shard_allows_same_ordinal_under_different_graphs() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     register_test_graph(&store, admin, "other.graph");
@@ -587,7 +587,7 @@ fn admin_register_shard_allows_same_ordinal_under_different_graphs() {
 fn admin_register_shard_rejects_wrong_shard_id_for_existing_graph_canister() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
@@ -624,7 +624,7 @@ fn pending_shard_excluded_from_index_lookup_targets() {
 
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
@@ -663,7 +663,7 @@ fn pending_shard_excluded_from_index_lookup_targets() {
 fn unregister_shard_reconciles_index_cluster_for_retry() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
@@ -703,7 +703,7 @@ fn unregister_shard_reconciles_index_cluster_for_retry() {
 fn admin_register_graph_with_random_key_rejects_duplicate_home_after_first() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
 
     store
@@ -748,7 +748,7 @@ fn admin_register_graph_with_random_key_rejects_duplicate_home_after_first() {
 fn admin_register_shard_rejects_duplicate_graph_local_ordinal() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
@@ -784,7 +784,7 @@ fn list_shards_for_graph_fails_on_duplicate_shard_index() {
 
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
@@ -830,7 +830,7 @@ fn check_registry_invariants_rejects_orphan_catalog_entry() {
 fn resolve_graph_checks_permissions() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     let owner = graph_principal(10);
     let other = graph_principal(11);
@@ -861,7 +861,7 @@ fn resolve_graph_checks_permissions() {
 fn vertex_and_edge_labels_with_same_name_get_distinct_ids() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
 
     register_test_graph(&store, admin, "tenant.main");
@@ -902,7 +902,7 @@ fn vertex_and_edge_labels_with_same_name_get_distinct_ids() {
 fn read_plan_requires_existing_label() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
@@ -922,7 +922,7 @@ fn read_plan_requires_existing_label() {
 fn dml_plan_creates_only_requested_label_namespaces() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
 
@@ -987,7 +987,7 @@ fn dml_plan_creates_only_requested_label_namespaces() {
 fn resolve_plan_attaches_edge_payload_profile() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
 
     register_test_graph(&store, admin, "tenant.main");
@@ -1024,7 +1024,7 @@ fn resolve_plan_attaches_edge_payload_profile() {
 fn label_stats_delta_updates_namespace_separated_stats() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
 
     register_test_graph(&store, admin, "tenant.main");
@@ -1109,7 +1109,7 @@ fn label_stats_delta_updates_namespace_separated_stats() {
 fn label_stats_delta_tracks_per_shard_live_counts() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let label = store
@@ -1163,7 +1163,7 @@ fn label_stats_delta_tracks_per_shard_live_counts() {
 fn label_stats_projection_applies_delta_once_per_seq() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let label = store
@@ -1274,7 +1274,7 @@ fn mutation_id_is_monotonic_and_rejects_exhaustion() {
 fn client_mutation_key_reuses_router_mutation_id() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
@@ -1346,7 +1346,7 @@ fn client_mutation_key_reuses_router_mutation_id() {
 fn client_mutation_key_rejects_different_request() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
@@ -1380,7 +1380,7 @@ fn client_mutation_key_rejects_different_request() {
 fn client_mutation_key_rejects_expired_key() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
@@ -1416,7 +1416,7 @@ fn client_mutation_key_rejects_expired_key() {
 fn client_mutation_key_blocks_concurrent_routing_owner() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
@@ -1474,7 +1474,7 @@ fn client_mutation_key_blocks_concurrent_routing_owner() {
 fn abandoned_routing_reservation_preserves_id_and_allows_new_owner() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
@@ -1516,7 +1516,7 @@ fn abandoned_routing_reservation_preserves_id_and_allows_new_owner() {
 fn router_mutation_journal_tracks_shard_completion() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
@@ -1599,7 +1599,7 @@ fn router_mutation_journal_tracks_shard_completion() {
 fn router_mutation_journal_records_zero_shard_completion() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
-    let admin = Principal::anonymous();
+    let admin = Principal::from_slice(&[1; 29]);
     crate::facade::auth::grant_admins(&[admin]);
     register_test_graph(&store, admin, "tenant.main");
     let caller = graph_principal(42);
@@ -1654,7 +1654,7 @@ mod graph_type_catalog_vocabulary {
     fn create_graph_inline_ddl_auto_interns_vocabulary() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "g");
         let graph_id = lookup_graph_id("g").expect("graph id");
@@ -1671,7 +1671,7 @@ mod graph_type_catalog_vocabulary {
     fn create_graph_typed_ddl_auto_interns_vocabulary() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "g");
         let graph_id = lookup_graph_id("g").expect("graph id");
@@ -1688,7 +1688,7 @@ mod graph_type_catalog_vocabulary {
     fn create_graph_any_skips_vocabulary_intern() {
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "g");
         let graph_id = lookup_graph_id("g").expect("graph id");

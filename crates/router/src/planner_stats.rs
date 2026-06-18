@@ -187,7 +187,7 @@ mod tests {
     #[test]
     fn adapter_resolves_property_name_via_catalog() {
         let store = RouterStore::new();
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         store.init_from_args(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],
@@ -210,7 +210,7 @@ mod tests {
     #[test]
     fn edge_index_subset_rule_uses_direction() {
         let store = RouterStore::new();
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         store.init_from_args(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![],

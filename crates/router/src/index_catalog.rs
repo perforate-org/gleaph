@@ -255,7 +255,7 @@ mod tests {
     use gleaph_graph_kernel::entry::GraphId;
 
     fn register_test_graph(store: &RouterStore, name: &str) -> GraphId {
-        let owner = candid::Principal::anonymous();
+        let owner = candid::Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[owner]);
         store
             .admin_register_graph(
@@ -290,10 +290,18 @@ mod tests {
         let store = RouterStore::new();
         let graph_id = register_test_graph(&store, "tenant.main");
         store
-            .admin_intern_vertex_label(candid::Principal::anonymous(), "tenant.main", "Person")
+            .admin_intern_vertex_label(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.main",
+                "Person",
+            )
             .expect("intern label");
         store
-            .admin_intern_property(candid::Principal::anonymous(), "tenant.main", "age")
+            .admin_intern_property(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.main",
+                "age",
+            )
             .expect("intern property");
         futures::executor::block_on(create_admin_compat_property_index(
             graph_id,
@@ -319,10 +327,18 @@ mod tests {
         let store = RouterStore::new();
         let graph_id = register_test_graph(&store, "tenant.edge");
         store
-            .admin_intern_edge_label(candid::Principal::anonymous(), "tenant.edge", "KNOWS")
+            .admin_intern_edge_label(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.edge",
+                "KNOWS",
+            )
             .expect("intern edge");
         store
-            .admin_intern_property(candid::Principal::anonymous(), "tenant.edge", "weight")
+            .admin_intern_property(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.edge",
+                "weight",
+            )
             .expect("intern property");
         futures::executor::block_on(create_admin_compat_property_index(
             graph_id,

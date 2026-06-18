@@ -25,6 +25,24 @@ Five levels (each includes lower):
 
 Default: unknown principals are **Executor** until `admin_grant_role`.
 
+## Anonymous-principal invariant
+
+**Status: Implemented**
+
+`Principal::anonymous()` remains the **default Executor** so intentionally public prepared-query execution keeps working for unauthenticated callers (`authorize_prepared_execute`). The security invariant is that anonymous can **never** be persisted or made effective as an elevated RBAC role, and can **never** be configured as a trusted Router or Index canister identity. Enforcement lives at the invariant-owning write/configuration boundaries (not only at Candid entrypoints):
+
+| Owner | Boundary (source of truth) | Behavior |
+|-------|----------------------------|----------|
+| `crates/auth` | `AuthState::upsert_record`, `AuthState::bootstrap_admins` | Reject anonymous before any mutation; bootstrap is **all-or-nothing** (anonymous issuer or any anonymous initial admin inserts no rows). Returns `AuthWriteError::AnonymousPrincipal`. |
+| `crates/auth` (read) | `AuthState::role_of` | Defense in depth: anonymous always resolves to `Executor` even if a legacy/corrupt anonymous row exists, so effective authorization is never elevated. |
+| Router | `canister::init` (traps), `admin_grant_role` → `admin_upsert_principal` | Route bootstrap/grant through the checked auth API; anonymous target surfaces `RouterError::InvalidArgument`. |
+| Graph metadata | `GraphMetadata::validate_for_store` | Reject `FederationRouting` whose `router_canister` or `index_canister` is anonymous (`GraphMetadataError::AnonymousFederationPrincipal`). Shared by graph init, `set_federation_routing`, and the PocketIC attach path. |
+| Graph router guard | `guard_router_canister` (graph) | Defense in depth: reject anonymous caller. |
+| Graph Index | `IndexStore::init_from_args` | Reject anonymous `router_canister` **before** clearing/writing any stable state (`IndexError::AnonymousRouter`); a failed init leaves catalog/postings/router untouched. |
+| Graph Index guards | `guard_router_canister` (index), `assert_router_caller` | Defense in depth: reject anonymous caller even if the configured router record named it. |
+
+Prepared-query execution for default Executor callers (including anonymous) is unchanged.
+
 ## Classification pipeline
 
 ```mermaid

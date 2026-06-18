@@ -10,9 +10,15 @@ pub fn guard_router_canister() -> Result<(), String> {
 #[cfg(target_family = "wasm")]
 pub fn guard_router_canister() -> Result<(), String> {
     use crate::facade::GraphStore;
+    use candid::Principal;
     use ic_cdk::api::msg_caller;
 
     let caller = msg_caller();
+    // Defense in depth: never trust the anonymous principal, even if a corrupt routing record
+    // somehow named it as the router.
+    if caller == Principal::anonymous() {
+        return Err("anonymous caller is not the configured router canister".to_string());
+    }
     let routing = GraphStore::new()
         .federation_routing()
         .ok_or("federation routing not configured")?;

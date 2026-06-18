@@ -12,9 +12,14 @@ pub fn guard_router_canister() -> Result<(), String> {
 #[cfg(target_family = "wasm")]
 pub fn guard_router_canister() -> Result<(), String> {
     use crate::facade::stable::INDEX_ROUTER;
+    use candid::Principal;
     use ic_cdk::api::msg_caller;
 
     let caller = msg_caller();
+    // Defense in depth: never accept the anonymous principal as the router.
+    if caller == Principal::anonymous() {
+        return Err("anonymous caller is not the configured router canister".to_string());
+    }
     let router = INDEX_ROUTER.with_borrow(|cell| *cell.get());
     if caller == router {
         Ok(())

@@ -1352,7 +1352,7 @@ mod tests {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
         });
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
         for (shard_id, graph_byte) in [(ShardId::new(0), 1u8), (ShardId::new(1), 4)] {
@@ -1607,7 +1607,7 @@ mod tests {
 
     fn store_with_person_employee_labels() -> RouterStore {
         let store = store_with_shards();
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         store
             .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");
@@ -1809,7 +1809,7 @@ mod tests {
 
     fn store_with_person_and_region_property() -> RouterStore {
         let store = store_with_shards();
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         store
             .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");
@@ -1896,7 +1896,7 @@ mod tests {
 
     fn store_with_shards_and_property() -> RouterStore {
         let store = store_with_shards();
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         store
             .admin_intern_property(admin, "tenant.main", "uid")
             .expect("intern uid");

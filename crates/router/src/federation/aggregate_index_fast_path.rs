@@ -662,7 +662,7 @@ mod tests {
 
     fn store_with_country_and_region() -> (RouterStore, GraphId) {
         let store = RouterStore::new();
-        let admin = candid::Principal::anonymous();
+        let admin = candid::Principal::from_slice(&[1; 29]);
         store.init_from_args(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![admin],
@@ -734,7 +734,7 @@ mod tests {
     #[test]
     fn detects_labeled_node_scan_prefix() {
         let (store, graph_id) = store_with_country_and_region();
-        let admin = candid::Principal::anonymous();
+        let admin = candid::Principal::from_slice(&[1; 29]);
         store
             .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");
@@ -786,7 +786,7 @@ mod tests {
     #[test]
     fn detects_labeled_node_scan_and_index_scan_prefix() {
         let (store, graph_id) = store_with_country_and_region();
-        let admin = candid::Principal::anonymous();
+        let admin = candid::Principal::from_slice(&[1; 29]);
         store
             .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");
@@ -829,7 +829,7 @@ mod tests {
     #[test]
     fn detects_index_scan_with_is_labeled_property_filter_prefix() {
         let (store, graph_id) = store_with_country_and_region();
-        let admin = candid::Principal::anonymous();
+        let admin = candid::Principal::from_slice(&[1; 29]);
         store
             .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");
@@ -871,7 +871,7 @@ mod tests {
     #[test]
     fn detects_label_only_count_star_return() {
         let (store, graph_id) = store_with_country_and_region();
-        let admin = candid::Principal::anonymous();
+        let admin = candid::Principal::from_slice(&[1; 29]);
         store
             .admin_intern_vertex_label(admin, "tenant.main", "Person")
             .expect("intern Person");

@@ -19,8 +19,17 @@ use gleaph_gql_ic::graph_registry::GraphStatus;
 use ic_cdk::api::msg_caller;
 
 pub(crate) fn init(args: RouterInitArgs) {
+    // Preflight: reject invalid bootstrap principals before clearing/writing any Router stable
+    // state, so a failed init never mutates state and never depends on IC trap rollback.
+    if let Err(e) =
+        auth::validate_bootstrap_principals(args.issuing_principal, &args.initial_admins)
+    {
+        ic_cdk::trap(e.to_string());
+    }
     RouterStore::new().init_from_args(&args);
-    auth::bootstrap_canister_auth(args.issuing_principal, &args.initial_admins);
+    if let Err(e) = auth::bootstrap_canister_auth(args.issuing_principal, &args.initial_admins) {
+        ic_cdk::trap(e.to_string());
+    }
 }
 
 pub(crate) fn whoami() -> Principal {

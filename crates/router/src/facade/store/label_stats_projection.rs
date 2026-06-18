@@ -406,7 +406,7 @@ mod tests {
 
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         store
             .admin_register_graph(
@@ -489,7 +489,7 @@ mod tests {
 
         let store = RouterStore::new();
         store.init_from_args(&test_init_args());
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
 
         for (name, graph_byte) in [("graph_a", 11u8), ("graph_b", 12u8)] {

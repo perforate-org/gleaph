@@ -88,6 +88,46 @@ impl FromStr for Role {
     }
 }
 
+/// Failure modes for privileged authorization writes.
+///
+/// The anonymous principal must never receive a persisted privileged role, so write and
+/// bootstrap APIs reject it before mutating stable storage.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AuthWriteError {
+    /// A privileged role write or bootstrap targeted [`Principal::anonymous`].
+    AnonymousPrincipal,
+}
+
+impl fmt::Display for AuthWriteError {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            AuthWriteError::AnonymousPrincipal => {
+                f.write_str("anonymous principal cannot hold a privileged authorization role")
+            }
+        }
+    }
+}
+
+impl std::error::Error for AuthWriteError {}
+
+/// Authoritative, memory-independent validation of bootstrap principals.
+///
+/// This is the single source of truth for the rule "no anonymous bootstrap identity". Both the
+/// stateful [`AuthState::bootstrap_admins`] write path and pre-mutation init preflight (e.g. the
+/// router canister `init`) call this so the rule is enforced before any stable structure is
+/// cleared or written, and is never duplicated.
+pub fn validate_bootstrap_principals(
+    issuing_principal: Principal,
+    initial_admins: &[Principal],
+) -> Result<(), AuthWriteError> {
+    if issuing_principal == Principal::anonymous()
+        || initial_admins.iter().any(|p| *p == Principal::anonymous())
+    {
+        return Err(AuthWriteError::AnonymousPrincipal);
+    }
+    Ok(())
+}
+
 /// Stored authorization row for one principal.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AuthRecord {
@@ -140,7 +180,14 @@ impl<M: Memory> AuthState<M> {
     }
 
     /// Role stored in stable map, if any and valid.
+    ///
+    /// Defense in depth: the anonymous principal is never elevated, even if a legacy or corrupt
+    /// privileged row exists in stable storage. All effective-authorization reads derive from this
+    /// method, so anonymous always resolves to the [`Role::Executor`] default.
     pub fn role_of(&self, p: &Principal) -> Option<Role> {
+        if *p == Principal::anonymous() {
+            return None;
+        }
         self.get_record(p)
             .and_then(|r| Role::from_discriminant(r.role))
     }
@@ -191,22 +238,42 @@ impl<M: Memory> AuthState<M> {
     }
 
     /// Insert or replace the full record (Admin maintenance).
-    pub fn upsert_record(&mut self, p: Principal, record: AuthRecord) {
+    ///
+    /// Rejects [`Principal::anonymous`] before any mutation so a privileged role can never be
+    /// persisted for the anonymous principal.
+    pub fn upsert_record(
+        &mut self,
+        p: Principal,
+        record: AuthRecord,
+    ) -> Result<(), AuthWriteError> {
+        if p == Principal::anonymous() {
+            return Err(AuthWriteError::AnonymousPrincipal);
+        }
         self.map.insert(p, record);
+        Ok(())
     }
 
     /// Bootstrap: grant [`Role::Admin`] to `issuing_principal` and every entry in `initial_admins`.
-    pub fn bootstrap_admins(&mut self, issuing_principal: Principal, initial_admins: &[Principal]) {
+    ///
+    /// All-or-nothing: if the issuing principal or any initial admin is [`Principal::anonymous`],
+    /// no rows are inserted and [`AuthWriteError::AnonymousPrincipal`] is returned.
+    pub fn bootstrap_admins(
+        &mut self,
+        issuing_principal: Principal,
+        initial_admins: &[Principal],
+    ) -> Result<(), AuthWriteError> {
+        validate_bootstrap_principals(issuing_principal, initial_admins)?;
         let admin = AuthRecord {
             role: Role::Admin as u8,
             manager_caps: 0,
         };
-        self.upsert_record(issuing_principal, admin);
+        self.upsert_record(issuing_principal, admin)?;
         for p in initial_admins {
             if *p != issuing_principal {
-                self.upsert_record(*p, admin);
+                self.upsert_record(*p, admin)?;
             }
         }
+        Ok(())
     }
 
     pub fn len(&self) -> u64 {
@@ -251,17 +318,136 @@ mod tests {
                 role: Role::Manager as u8,
                 manager_caps: ManagerCapability::PREPARE_REGISTER.bits(),
             },
-        );
+        )
+        .expect("non-anonymous upsert");
         assert!(auth.can_prepare_register(&p));
 
-        let p2 = Principal::from_text("2vxsx-fae").unwrap();
+        let p2 = Principal::from_slice(&[7; 29]);
         auth.upsert_record(
             p2,
             AuthRecord {
                 role: Role::Manager as u8,
                 manager_caps: 0,
             },
-        );
+        )
+        .expect("non-anonymous upsert");
         assert!(!auth.can_prepare_register(&p2));
+    }
+
+    #[test]
+    fn upsert_record_rejects_anonymous() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut auth = AuthState::init(DefaultMemoryImpl::default());
+        let err = auth
+            .upsert_record(
+                Principal::anonymous(),
+                AuthRecord {
+                    role: Role::Admin as u8,
+                    manager_caps: 0,
+                },
+            )
+            .unwrap_err();
+        assert_eq!(err, AuthWriteError::AnonymousPrincipal);
+        assert!(auth.is_empty());
+        assert_eq!(auth.effective_role(&Principal::anonymous()), Role::Executor);
+    }
+
+    #[test]
+    fn validate_bootstrap_principals_accepts_all_non_anonymous() {
+        let issuer = Principal::from_slice(&[1; 29]);
+        let admin = Principal::from_slice(&[2; 29]);
+        validate_bootstrap_principals(issuer, &[admin]).expect("all non-anonymous is valid");
+    }
+
+    #[test]
+    fn validate_bootstrap_principals_rejects_anonymous_issuer_with_valid_admin() {
+        let valid = Principal::from_slice(&[2; 29]);
+        assert_eq!(
+            validate_bootstrap_principals(Principal::anonymous(), &[valid]),
+            Err(AuthWriteError::AnonymousPrincipal)
+        );
+    }
+
+    #[test]
+    fn validate_bootstrap_principals_rejects_anonymous_initial_admin() {
+        let issuer = Principal::from_slice(&[1; 29]);
+        let valid = Principal::from_slice(&[2; 29]);
+        assert_eq!(
+            validate_bootstrap_principals(issuer, &[valid, Principal::anonymous()]),
+            Err(AuthWriteError::AnonymousPrincipal)
+        );
+    }
+
+    #[test]
+    fn bootstrap_rejects_anonymous_issuer_without_inserting_rows() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut auth = AuthState::init(DefaultMemoryImpl::default());
+        let real_admin = Principal::from_slice(&[1; 29]);
+        let err = auth
+            .bootstrap_admins(Principal::anonymous(), &[real_admin])
+            .unwrap_err();
+        assert_eq!(err, AuthWriteError::AnonymousPrincipal);
+        assert!(auth.is_empty(), "no rows inserted on rejected bootstrap");
+        // The supplied valid initial admin was not elevated.
+        assert_eq!(auth.effective_role(&real_admin), Role::Executor);
+    }
+
+    #[test]
+    fn bootstrap_rejects_anonymous_initial_admin_all_or_nothing() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut auth = AuthState::init(DefaultMemoryImpl::default());
+        let issuer = Principal::from_slice(&[1; 29]);
+        let valid = Principal::from_slice(&[2; 29]);
+        let err = auth
+            .bootstrap_admins(issuer, &[valid, Principal::anonymous()])
+            .unwrap_err();
+        assert_eq!(err, AuthWriteError::AnonymousPrincipal);
+        assert!(
+            auth.is_empty(),
+            "issuer and valid admin must not be inserted when any initial admin is anonymous"
+        );
+        // Neither the issuer nor the valid initial admin from the same request was elevated.
+        assert_eq!(auth.effective_role(&issuer), Role::Executor);
+        assert_eq!(auth.effective_role(&valid), Role::Executor);
+    }
+
+    #[test]
+    fn bootstrap_inserts_only_non_anonymous_admins() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut auth = AuthState::init(DefaultMemoryImpl::default());
+        let issuer = Principal::from_slice(&[1; 29]);
+        let other = Principal::from_slice(&[2; 29]);
+        auth.bootstrap_admins(issuer, &[other]).expect("bootstrap");
+        assert_eq!(auth.effective_role(&issuer), Role::Admin);
+        assert_eq!(auth.effective_role(&other), Role::Admin);
+        assert_eq!(auth.len(), 2);
+    }
+
+    #[test]
+    fn legacy_anonymous_row_does_not_elevate_effective_role() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut auth = AuthState::init(DefaultMemoryImpl::default());
+        // Simulate a legacy/corrupt persisted row by inserting directly into the backing map,
+        // bypassing the guarded write path.
+        auth.map.insert(
+            Principal::anonymous(),
+            AuthRecord {
+                role: Role::Admin as u8,
+                manager_caps: ManagerCapability::PREPARE_REGISTER.bits(),
+            },
+        );
+        assert_eq!(auth.role_of(&Principal::anonymous()), None);
+        assert_eq!(auth.effective_role(&Principal::anonymous()), Role::Executor);
+        assert!(!auth.can_prepare_register(&Principal::anonymous()));
+        assert!(
+            !auth.has_manager_capability(
+                &Principal::anonymous(),
+                ManagerCapability::PREPARE_REGISTER
+            )
+        );
+        assert!(
+            auth.require_at_least(&Principal::anonymous(), Role::Read)
+                .is_err()
+        );
     }
 }

@@ -18,7 +18,14 @@ use crate::facade::stable::{
 
 impl IndexStore {
     /// Clears shard/canister catalog and postings; seeds router principal from init args.
-    pub fn init_from_args(&self, args: &IndexInitArgs) {
+    ///
+    /// Validates `router_canister` before mutating any stable state: an anonymous router is
+    /// rejected up front so a failed init never clears the catalog/postings or persists an
+    /// anonymous (and therefore untrusted) router principal.
+    pub fn init_from_args(&self, args: &IndexInitArgs) -> Result<(), IndexError> {
+        if args.router_canister == Principal::anonymous() {
+            return Err(IndexError::AnonymousRouter);
+        }
         INDEX_SHARD_CANISTER_CATALOG.with_borrow_mut(|catalog| catalog.clear_new());
         INDEX_VERTEX_POSTINGS.with_borrow_mut(|postings| postings.clear());
         INDEX_VERTEX_LABEL_POSTINGS.with_borrow_mut(|postings| postings.clear());
@@ -29,6 +36,7 @@ impl IndexStore {
         INDEX_OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
             cell.set(crate::facade::stable::memory::IndexOwnershipConfig::default());
         });
+        Ok(())
     }
 
     pub(super) fn commit_attach_shard_canister(
@@ -144,6 +152,11 @@ impl IndexStore {
     }
 
     pub(super) fn assert_router_caller(&self, caller: Principal) -> Result<(), IndexError> {
+        // Defense in depth: the anonymous principal is never the trusted router, even if a corrupt
+        // router record named it.
+        if caller == Principal::anonymous() {
+            return Err(IndexError::NotAuthorized);
+        }
         let router = INDEX_ROUTER.with_borrow(|r| *r.get());
         if caller != router {
             return Err(IndexError::NotAuthorized);

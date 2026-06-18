@@ -717,11 +717,7 @@ impl RouterStore {
             index_attached: false,
         };
 
-        commit_index_group_canister_assignment(
-            graph_id,
-            allocated_shard_id,
-            args.index_canister,
-        )?;
+        commit_index_group_canister_assignment(graph_id, allocated_shard_id, args.index_canister)?;
         if let Err(err) = Self::commit_register_shard(entry) {
             let _ = reconcile_index_cluster_after_shard_removal(graph_id);
             return Err(err);

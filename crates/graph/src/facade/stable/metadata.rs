@@ -43,12 +43,19 @@ pub struct FederationRouting {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum GraphMetadataError {
     InvalidLogicalGraphName(String),
+    /// A federation-routing principal (`router_canister` or `index_canister`) was the anonymous
+    /// principal, which can never be a trusted federation identity.
+    AnonymousFederationPrincipal(&'static str),
 }
 
 impl fmt::Display for GraphMetadataError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             GraphMetadataError::InvalidLogicalGraphName(error) => write!(f, "{}", error),
+            GraphMetadataError::AnonymousFederationPrincipal(field) => write!(
+                f,
+                "federation routing {field} must not be the anonymous principal"
+            ),
         }
     }
 }
@@ -66,6 +73,18 @@ impl GraphMetadataV1 {
     pub(crate) fn validate_for_store(&self) -> Result<(), GraphMetadataError> {
         if let Some(name) = &self.logical_graph_name {
             GraphMetadataV1::validate_name(name)?;
+        }
+        if let Some(routing) = &self.federation_routing {
+            if routing.router_canister == Principal::anonymous() {
+                return Err(GraphMetadataError::AnonymousFederationPrincipal(
+                    "router_canister",
+                ));
+            }
+            if routing.index_canister == Principal::anonymous() {
+                return Err(GraphMetadataError::AnonymousFederationPrincipal(
+                    "index_canister",
+                ));
+            }
         }
         Ok(())
     }
@@ -172,13 +191,70 @@ mod tests {
     }
 
     #[test]
+    fn validate_rejects_anonymous_router_canister() {
+        let mut metadata = GraphMetadata::default();
+        metadata.set_federation_routing(Some(FederationRouting {
+            router_canister: Principal::anonymous(),
+            shard_id: ShardId::new(0),
+            index_canister: Principal::from_slice(&[3; 29]),
+        }));
+        assert_eq!(
+            metadata.validate_for_store(),
+            Err(GraphMetadataError::AnonymousFederationPrincipal(
+                "router_canister"
+            ))
+        );
+    }
+
+    #[test]
+    fn validate_rejects_anonymous_index_canister() {
+        let mut metadata = GraphMetadata::default();
+        metadata.set_federation_routing(Some(FederationRouting {
+            router_canister: Principal::management_canister(),
+            shard_id: ShardId::new(0),
+            index_canister: Principal::anonymous(),
+        }));
+        assert_eq!(
+            metadata.validate_for_store(),
+            Err(GraphMetadataError::AnonymousFederationPrincipal(
+                "index_canister"
+            ))
+        );
+    }
+
+    #[test]
+    fn store_set_rejects_anonymous_routing_and_leaves_state_unchanged() {
+        use ic_stable_structures::DefaultMemoryImpl;
+        let mut cell = StableGraphMetadata::new(DefaultMemoryImpl::default());
+        assert!(cell.get().federation_routing().is_none());
+
+        let mut metadata = GraphMetadata::default();
+        metadata.set_federation_routing(Some(FederationRouting {
+            router_canister: Principal::anonymous(),
+            shard_id: ShardId::new(0),
+            index_canister: Principal::from_slice(&[3; 29]),
+        }));
+        let err = cell
+            .set(metadata)
+            .expect_err("anonymous router must be rejected at the persistence boundary");
+        assert_eq!(
+            err,
+            GraphMetadataError::AnonymousFederationPrincipal("router_canister")
+        );
+        assert!(
+            cell.get().federation_routing().is_none(),
+            "rejected routing must not be persisted"
+        );
+    }
+
+    #[test]
     fn metadata_round_trip_storable_encoding() {
         let mut metadata = GraphMetadata::default();
         metadata.set_logical_graph_name(Some("gleaph-test".into()));
         metadata.set_federation_routing(Some(FederationRouting {
             router_canister: Principal::management_canister(),
             shard_id: ShardId::new(0),
-            index_canister: Principal::anonymous(),
+            index_canister: Principal::from_slice(&[3; 29]),
         }));
         metadata.validate_for_store().expect("valid metadata");
 

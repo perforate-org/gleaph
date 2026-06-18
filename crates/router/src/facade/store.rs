@@ -149,7 +149,7 @@ pub(crate) mod catalog_test_support {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
         });
-        let admin = Principal::anonymous();
+        let admin = Principal::from_slice(&[1; 29]);
         auth::grant_admins(&[admin]);
         register_graph(&store, admin, GRAPH);
         let graph_id = store.resolve_graph_id(GRAPH).expect("graph id");

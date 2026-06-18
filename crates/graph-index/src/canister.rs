@@ -16,7 +16,9 @@ fn trap_err(e: IndexError) {
 }
 
 pub(crate) fn init(args: IndexInitArgs) {
-    IndexStore::new().init_from_args(&args);
+    if let Err(e) = IndexStore::new().init_from_args(&args) {
+        trap_err(e);
+    }
 }
 
 pub(crate) fn admin_attach_shard_canister(
