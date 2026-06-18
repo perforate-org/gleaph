@@ -368,7 +368,8 @@ pub fn install_two_graph_federation() -> FederationEnv {
 
     for ((graph, graph_name), shard, index) in [
         ((graph_source, GRAPH_HOME_NAME), SOURCE_SHARD, index_home),
-        ((graph_dest, GRAPH_REMOTE_NAME), DEST_SHARD, index_remote),
+        // Shard ordinals are graph-local: each one-shard logical graph owns shard 0.
+        ((graph_dest, GRAPH_REMOTE_NAME), SOURCE_SHARD, index_remote),
     ] {
         let _: () = update_as_router(
             &env,
@@ -644,7 +645,8 @@ pub fn register_two_graphs_and_shards(
 
     for (shard, graph, graph_name, index) in [
         (SOURCE_SHARD, graph_home, GRAPH_HOME_NAME, home_index),
-        (DEST_SHARD, graph_remote, GRAPH_REMOTE_NAME, remote_index),
+        // Shard ordinals are graph-local: each one-shard logical graph owns shard 0.
+        (SOURCE_SHARD, graph_remote, GRAPH_REMOTE_NAME, remote_index),
     ] {
         let args = AdminRegisterShardArgs {
             shard_id: shard,
