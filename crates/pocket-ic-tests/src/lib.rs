@@ -108,14 +108,6 @@ pub struct GraphInitArgs {
     pub index_canister: Option<Principal>,
 }
 
-#[derive(CandidType, serde::Deserialize)]
-pub struct E2eAttachFederationArgs {
-    pub logical_graph_name: Option<String>,
-    pub router_canister: Principal,
-    pub index_canister: Principal,
-    pub shard_id: ShardId,
-}
-
 #[derive(CandidType)]
 pub struct IndexInitArgs {
     pub router_canister: Principal,
@@ -251,48 +243,34 @@ pub fn install_federation() -> FederationEnv {
         graph_dest,
     );
 
-    for (graph, _shard) in [(graph_source, SOURCE_SHARD), (graph_dest, DEST_SHARD)] {
+    // Install each shard's graph canister with complete, validated federation routing.
+    // Two shards of the same logical graph keep their distinct shard ordinals (0 and 1).
+    for (graph, shard, index) in [
+        (graph_source, SOURCE_SHARD, index_source),
+        (graph_dest, DEST_SHARD, index_dest),
+    ] {
         pic.install_canister(
             graph,
             wasm_bytes("GRAPH_WASM"),
             Encode!(&GraphInitArgs {
                 logical_graph_name: Some(GRAPH_NAME.into()),
-                router_canister: None,
-                shard_id: None,
-                index_canister: None,
+                router_canister: Some(router),
+                shard_id: Some(shard),
+                index_canister: Some(index),
             })
             .expect("encode graph init"),
             None,
         );
     }
 
-    let env = FederationEnv {
+    FederationEnv {
         pic,
         admin,
         router,
         index: index_source,
         graph_source,
         graph_dest,
-    };
-
-    for (graph, shard, index) in [
-        (graph_source, SOURCE_SHARD, index_source),
-        (graph_dest, DEST_SHARD, index_dest),
-    ] {
-        let _: () = update_as_router(
-            &env,
-            graph,
-            "e2e_attach_federation",
-            E2eAttachFederationArgs {
-                logical_graph_name: Some(GRAPH_NAME.into()),
-                router_canister: router,
-                index_canister: index,
-                shard_id: shard,
-            },
-        );
     }
-
-    env
 }
 
 /// Two logical graphs (home + remote), one shard each — ADR 0011 remote `USE` / HOME e2e.
@@ -339,52 +317,34 @@ pub fn install_two_graph_federation() -> FederationEnv {
         graph_dest,
     );
 
-    for (graph, graph_name) in [
-        (graph_source, GRAPH_HOME_NAME),
-        (graph_dest, GRAPH_REMOTE_NAME),
+    // Install each logical graph's single shard with complete, validated federation routing.
+    // Shard ordinals are graph-local: each one-shard logical graph owns shard 0.
+    for (graph, graph_name, index) in [
+        (graph_source, GRAPH_HOME_NAME, index_home),
+        (graph_dest, GRAPH_REMOTE_NAME, index_remote),
     ] {
         pic.install_canister(
             graph,
             wasm_bytes("GRAPH_WASM"),
             Encode!(&GraphInitArgs {
                 logical_graph_name: Some(graph_name.into()),
-                router_canister: None,
-                shard_id: None,
-                index_canister: None,
+                router_canister: Some(router),
+                shard_id: Some(SOURCE_SHARD),
+                index_canister: Some(index),
             })
             .expect("encode graph init"),
             None,
         );
     }
 
-    let env = FederationEnv {
+    FederationEnv {
         pic,
         admin,
         router,
         index: index_home,
         graph_source,
         graph_dest,
-    };
-
-    for ((graph, graph_name), shard, index) in [
-        ((graph_source, GRAPH_HOME_NAME), SOURCE_SHARD, index_home),
-        // Shard ordinals are graph-local: each one-shard logical graph owns shard 0.
-        ((graph_dest, GRAPH_REMOTE_NAME), SOURCE_SHARD, index_remote),
-    ] {
-        let _: () = update_as_router(
-            &env,
-            graph,
-            "e2e_attach_federation",
-            E2eAttachFederationArgs {
-                logical_graph_name: Some(graph_name.into()),
-                router_canister: router,
-                index_canister: index,
-                shard_id: shard,
-            },
-        );
     }
-
-    env
 }
 
 /// Router + index + one federated graph shard (standalone dispatch policy).
@@ -423,36 +383,22 @@ pub fn install_single_shard_federation() -> FederationEnv {
         wasm_bytes("GRAPH_WASM"),
         Encode!(&GraphInitArgs {
             logical_graph_name: Some(GRAPH_NAME.into()),
-            router_canister: None,
-            shard_id: None,
-            index_canister: None,
+            router_canister: Some(router),
+            shard_id: Some(SOURCE_SHARD),
+            index_canister: Some(index),
         })
         .expect("encode graph init"),
         None,
     );
 
-    let env = FederationEnv {
+    FederationEnv {
         pic,
         admin,
         router,
         index,
         graph_source,
         graph_dest: Principal::anonymous(),
-    };
-
-    let _: () = update_as_router(
-        &env,
-        graph_source,
-        "e2e_attach_federation",
-        E2eAttachFederationArgs {
-            logical_graph_name: Some(GRAPH_NAME.into()),
-            router_canister: router,
-            index_canister: index,
-            shard_id: SOURCE_SHARD,
-        },
-    );
-
-    env
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -746,6 +692,8 @@ pub fn install_two_graph_two_index_federation() -> TwoGraphTwoIndexEnv {
         attach_index_shard_canister(&pic, graph_id, 1, 0, router, index, SOURCE_SHARD, graph);
     }
 
+    // Install each logical graph's single shard with complete, validated federation routing.
+    // Both one-shard logical graphs own graph-local shard 0 with distinct index canisters.
     for (graph, graph_name, index) in [
         (graph_home, GRAPH_HOME_NAME, index_home),
         (graph_remote, GRAPH_REMOTE_NAME, index_remote),
@@ -755,32 +703,13 @@ pub fn install_two_graph_two_index_federation() -> TwoGraphTwoIndexEnv {
             wasm_bytes("GRAPH_WASM"),
             Encode!(&GraphInitArgs {
                 logical_graph_name: Some(graph_name.into()),
-                router_canister: None,
-                shard_id: None,
-                index_canister: None,
+                router_canister: Some(router),
+                shard_id: Some(SOURCE_SHARD),
+                index_canister: Some(index),
             })
             .expect("encode graph init"),
             None,
         );
-        let bytes = pic
-            .update_call(
-                graph,
-                router,
-                "e2e_attach_federation",
-                Encode!(&E2eAttachFederationArgs {
-                    logical_graph_name: Some(graph_name.into()),
-                    router_canister: router,
-                    index_canister: index,
-                    shard_id: SOURCE_SHARD,
-                })
-                .expect("encode e2e_attach_federation"),
-            )
-            .expect("e2e_attach_federation");
-        match Decode!(&bytes, Result<(), String>) {
-            Ok(Ok(())) => {}
-            Ok(Err(err)) => panic!("e2e_attach_federation rejected: {err}"),
-            Err(err) => panic!("decode e2e_attach_federation: {err}"),
-        }
     }
 
     TwoGraphTwoIndexEnv {

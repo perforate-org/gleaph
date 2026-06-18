@@ -88,12 +88,6 @@ fn ack_label_stats_deltas_through(through_seq: gleaph_graph_kernel::plan_exec::S
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
-#[update]
-fn e2e_attach_federation(args: canister::types::E2eAttachFederationArgs) -> Result<(), String> {
-    canister::handlers::e2e_attach_federation(args)
-}
-
-#[cfg(feature = "pocket-ic-e2e")]
 #[update(guard = "guard_control_plane_admin")]
 async fn e2e_insert_vertex() -> Result<canister::types::E2eInsertVertexResult, String> {
     canister::handlers::e2e_insert_vertex().await

@@ -188,23 +188,6 @@ pub fn get_mutation_journal_entry(
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
-pub fn e2e_attach_federation(args: super::types::E2eAttachFederationArgs) -> Result<(), String> {
-    if ic_cdk::api::msg_caller() != args.router_canister {
-        return Err("e2e_attach_federation: caller must be the configured router".into());
-    }
-    let mut metadata = GraphMetadata::default();
-    metadata.set_logical_graph_name(args.logical_graph_name);
-    metadata.set_federation_routing(Some(FederationRouting {
-        router_canister: args.router_canister,
-        shard_id: args.shard_id,
-        index_canister: args.index_canister,
-    }));
-    GraphStore::new()
-        .set_metadata(metadata)
-        .map_err(|e| e.to_string())
-}
-
-#[cfg(feature = "pocket-ic-e2e")]
 pub async fn e2e_insert_vertex() -> Result<super::types::E2eInsertVertexResult, String> {
     use crate::index::federation_routing;
     let store = GraphStore::new();

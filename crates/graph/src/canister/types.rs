@@ -12,16 +12,6 @@ pub struct E2eInsertVertexResult {
     pub global_vertex_id: gleaph_graph_kernel::federation::GlobalVertexId,
 }
 
-/// Federation wiring for PocketIC tests (avoids router inter-canister calls during graph init).
-#[cfg(feature = "pocket-ic-e2e")]
-#[derive(CandidType, Deserialize, Clone, Debug)]
-pub struct E2eAttachFederationArgs {
-    pub logical_graph_name: Option<String>,
-    pub router_canister: Principal,
-    pub index_canister: Principal,
-    pub shard_id: gleaph_graph_kernel::federation::ShardId,
-}
-
 /// Arguments for [`super::handlers::e2e_insert_directed_edge`] (PocketIC E2E only).
 #[cfg(feature = "pocket-ic-e2e")]
 #[derive(CandidType, Deserialize, Clone, Debug)]
