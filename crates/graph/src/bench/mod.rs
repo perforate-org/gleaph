@@ -857,6 +857,109 @@ fn bench_expand_payload_skewed(
     })
 }
 
+/// Incoming mirror of [`setup_expand_payload_skewed_graph_scaled`]: `noise`/`match_in` edges point
+/// **into** the hub (`src -> hub`), so the predicate expand walks the hub's reverse adjacency.
+fn setup_expand_payload_skewed_incoming_graph_scaled(
+    store: &GraphStore,
+    noise: u32,
+    match_in: u32,
+) {
+    let label_id = crate::test_labels::edge_label_id_for_name(PAYLOAD_SKEW_EDGE_LABEL);
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        EdgePayloadProfile {
+            byte_width: 2,
+            encoding: EdgePayloadEncoding::WeightRawU16,
+        },
+    );
+    let noise_src = store
+        .insert_vertex_named(["BenchPayloadSkewNoiseSrc"], Vec::<(&str, Value)>::new())
+        .expect("noise src");
+    let target_src = store
+        .insert_vertex_named(["BenchPayloadSkewTargetSrc"], Vec::<(&str, Value)>::new())
+        .expect("target src");
+    let hub = store
+        .insert_vertex_named(["BenchExpandHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    for i in 0..noise {
+        let _ = i;
+        store
+            .insert_directed_edge_with_payload_bytes(
+                noise_src,
+                hub,
+                Some(label_id),
+                &PAYLOAD_SKEW_NOISE_WEIGHT.to_le_bytes(),
+            )
+            .expect("noise edge");
+    }
+    for i in 0..match_in {
+        let _ = i;
+        store
+            .insert_directed_edge_with_payload_bytes(
+                target_src,
+                hub,
+                Some(label_id),
+                &PAYLOAD_SKEW_MATCH_WEIGHT.to_le_bytes(),
+            )
+            .expect("target edge");
+    }
+}
+
+fn expand_payload_predicate_eq_plan_incoming(match_weight: u16) -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "h".into(),
+            label: Some("BenchExpandHub".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "h".into(),
+            edge: "e".into(),
+            dst: "a".into(),
+            direction: EdgeDirection::PointingLeft,
+            label: Some(PAYLOAD_SKEW_EDGE_LABEL.into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_payload_predicate: Some(EdgePayloadPredicate {
+                op: CmpOp::Eq,
+                value: ScanValue::Literal(Value::Uint16(match_weight)),
+            }),
+            edge_vector_predicate: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: false,
+            near_group_var: None,
+            far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("a"), "a")],
+            distinct: false,
+        },
+    ])
+}
+
+fn bench_expand_payload_skewed_incoming(
+    noise: u32,
+    match_in: u32,
+    scope: &'static str,
+) -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    setup_expand_payload_skewed_incoming_graph_scaled(&store, noise, match_in);
+    let plan = expand_payload_predicate_eq_plan_incoming(PAYLOAD_SKEW_MATCH_WEIGHT);
+    let expected = match_in as usize;
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope);
+        let result = execute_expand_plan(black_box(&store), black_box(&plan));
+        assert_eq!(result.rows.len(), expected);
+        black_box(result.rows.len())
+    })
+}
+
 /// Parallel edges on a low-vertex skewed hub (shared noise/target dst); paired indexed vs CSR benches.
 fn setup_expand_skewed_noise_graph_scaled(store: &GraphStore, noise: u32, match_out: u32) {
     let noise_dst = store
@@ -1623,6 +1726,18 @@ fn bench_graph_payload_first_log_backed_selective_match() -> canbench_rs::BenchR
         PAYLOAD_FIRST_LOG_OVERFLOW_NOISE,
         PAYLOAD_FIRST_LOG_MATCH_OUT,
         "payload_first_log_backed_selective_match",
+    )
+}
+
+/// Incoming mirror of `payload_first_log_backed_selective_match`: 48 noise + 24 payload matches
+/// point into one overflow-log hub; `PointingLeft` payload-first expand reuses the reverse phase-1
+/// hybrid replay for phase-2 slot reads (symmetry with the outgoing path).
+#[bench(raw)]
+fn bench_graph_payload_first_incoming_log_backed_selective_match() -> canbench_rs::BenchResult {
+    bench_expand_payload_skewed_incoming(
+        PAYLOAD_FIRST_LOG_OVERFLOW_NOISE,
+        PAYLOAD_FIRST_LOG_MATCH_OUT,
+        "payload_first_incoming_log_backed_selective_match",
     )
 }
 

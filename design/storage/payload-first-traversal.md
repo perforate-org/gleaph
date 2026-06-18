@@ -219,7 +219,11 @@ Overflow predicate expand must scan **all** payload bytes to filter (low match r
 ## Open questions
 
 1. **Tombstones in dense payload-only scan:** Resolved for dense-eligible buckets — `stored_slots == degree` excludes in-slab tombstones; phase 1 reads payload bytes only. Phase 2 skips deleted slots on invariant drift.
-2. **Reverse / in-edges:** Mirror API on in-edge storage; same contract.
+2. **Reverse / in-edges:** Resolved — incoming payload-first expand mirrors the outgoing contract.
+   `read_in_edge_slots_for_label_with_replay` (LARA bidirectional) and
+   `GraphStore::read_in_edge_slots_for_label_reusing_payload_scratch` reuse the reverse phase-1
+   hybrid replay; the executor (`PointingLeft` predicate expand) carries the same `value_scratch`
+   into phase 2. Benchmark: `payload_first_incoming_log_backed_selective_match`.
 3. **Undirected expand:** May require two directed phase-2 reads or a dedicated undirected slot resolver.
 4. **ADR:** Not required for M1–M3 (API addition + executor routing). Consider ADR if sparse payload-first changes overflow log scan contract.
 

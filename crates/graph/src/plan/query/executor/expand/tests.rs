@@ -2703,6 +2703,101 @@ fn overflow_hub_edge_payload_predicate_skips_dense_payload_probe() {
     );
 }
 
+/// Incoming mirror of `overflow_hub_edge_payload_predicate_skips_dense_payload_probe`: many edges
+/// point **into** an overflow-log hub, so `PointingLeft` payload-first expand routes through the
+/// reverse phase-1 replay reuse path. Asserts end-to-end correctness parity with phase-1 selection.
+/// The replay-reuse itself (phase 2 not rebuilding the overflow chain) is proven at the LARA
+/// boundary by `read_in_edge_slots_for_label_with_replay_reuses_reverse_replay` in `ic-stable-lara`,
+/// because the reuse counter is `#[cfg(test)]`-internal to that crate.
+#[test]
+fn incoming_overflow_hub_edge_payload_predicate_reuses_reverse_replay() {
+    let store = GraphStore::new();
+    use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgePayloadEncoding, EdgePayloadProfile};
+    let hub = store
+        .insert_vertex_named(["IncomingOverflowHub"], Vec::<(&str, Value)>::new())
+        .expect("hub");
+    let noise_src = store
+        .insert_vertex_named(["IncomingOverflowNoiseSrc"], Vec::<(&str, Value)>::new())
+        .expect("noise src");
+    let match_src = store
+        .insert_vertex_named(["IncomingOverflowMatchSrc"], Vec::<(&str, Value)>::new())
+        .expect("match src");
+    let label_id = crate::test_labels::edge_label_id_for_name("IncomingOverflowRoad");
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        EdgePayloadProfile {
+            byte_width: 2,
+            encoding: EdgePayloadEncoding::WeightRawU16,
+        },
+    );
+    let storage_label =
+        ic_stable_lara::BucketLabelKey::from_raw(label_id.pack(EdgeDirectedness::Directed).raw());
+    for _ in 0..33 {
+        store
+            .insert_directed_edge_with_payload_bytes(
+                noise_src,
+                hub,
+                Some(label_id),
+                &1u16.to_le_bytes(),
+            )
+            .unwrap();
+    }
+    for _ in 0..3 {
+        store
+            .insert_directed_edge_with_payload_bytes(
+                match_src,
+                hub,
+                Some(label_id),
+                &7u16.to_le_bytes(),
+            )
+            .unwrap();
+    }
+    // Reverse adjacency of the hub must be an overflow-log hybrid bucket on the payload-first path.
+    assert!(
+        !store
+            .in_label_bucket_dense_payload_batch_eligible(hub, storage_label)
+            .expect("dense eligibility")
+    );
+    assert!(
+        store
+            .in_label_bucket_payload_first_predicate_eligible(hub, storage_label)
+            .expect("payload-first eligibility")
+    );
+
+    let equality = PreparedEdgePayloadPredicate::prepare(
+        None,
+        label_id,
+        &EdgePayloadPredicate {
+            op: CmpOp::Eq,
+            value: ScanValue::Literal(Value::Uint16(7)),
+        },
+        &params(),
+    )
+    .expect("prepare")
+    .expect("equality");
+    let mut out = Vec::new();
+    super::candidates::expand_candidates_matching_edge_payload_into(
+        &store,
+        hub,
+        EdgeDirection::PointingLeft,
+        label_id,
+        EdgeSequenceOrder::Descending,
+        &equality,
+        &mut out,
+    )
+    .expect("expand candidates");
+
+    assert_eq!(out.len(), 3);
+    assert!(
+        out.iter()
+            .all(|(dst, _)| matches!(dst, ExpandDst::Local(id) if *id == match_src))
+    );
+    assert!(
+        out.iter()
+            .all(|(_, binding)| binding.payload_bytes_slice() == 7u16.to_le_bytes())
+    );
+}
+
 fn f32_vector_bytes(values: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(values.len() * 4);
     for value in values {

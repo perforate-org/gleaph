@@ -1176,6 +1176,27 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)
     }
 
+    /// Like [`Self::read_in_edge_slots_for_label`], reusing hybrid overflow replay from the reverse
+    /// phase-1 scan (`visit_in_payload_value_batches_for_label`). Mirrors the forward
+    /// [`Self::read_out_edge_slots_for_label_with_replay`] contract on reverse orientation.
+    pub fn read_in_edge_slots_for_label_with_replay<Visit>(
+        &self,
+        dst: VertexId,
+        label_id: BucketLabelKey,
+        slots: &[u32],
+        order: OutEdgeOrder,
+        replay: Option<&crate::labeled::HybridOverflowEdgeReplay>,
+        visit: Visit,
+    ) -> Result<(), DeferredBidirectionalLabeledError>
+    where
+        E: CsrEdgeTombstone,
+        Visit: FnMut(E),
+    {
+        self.reverse
+            .read_out_edge_slots_for_label_with_replay(dst, label_id, slots, order, replay, visit)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)
+    }
+
     /// Visits reverse outgoing edges (incoming edges in the public graph view) and parallel value
     /// bytes for one label in `order`.
     pub fn visit_in_edge_payload_batches_for_label<Visit>(
@@ -2815,5 +2836,91 @@ mod tests {
         };
         assert_eq!(weights_from(VertexId::from(0)), vec![10]);
         assert_eq!(weights_from(VertexId::from(1)), vec![10]);
+    }
+
+    /// Proves the reverse payload-first phase-2 read actually reuses the phase-1 replay: many edges
+    /// point into one hub, so the hub's reverse bucket is an overflow-log hybrid. Reading the
+    /// in-edge slots with the captured replay must avoid the overflow-log chain rebuild (0), while a
+    /// no-replay read takes the sparse fallback (>= 1) — both returning the same incoming edges. This
+    /// guards `read_in_edge_slots_for_label_with_replay`, which the incoming payload-first expand
+    /// executor depends on.
+    #[test]
+    fn read_in_edge_slots_for_label_with_replay_reuses_reverse_replay() {
+        use crate::lara::edge::scan_guard::ScanPathGuard;
+
+        let graph = valued_bidirectional_graph();
+        const SOURCES: u32 = 40;
+        for _ in 0..=SOURCES {
+            graph.push_vertex().unwrap();
+        }
+        let hub = VertexId::from(0);
+        let road = BucketLabelKey::directed_from_index(2);
+        for src in 1..=SOURCES {
+            let bytes = (src as u16).to_le_bytes();
+            graph
+                .ensure_directed_edge_payload_width(VertexId::from(src), hub, road, 2u16)
+                .unwrap();
+            graph
+                .insert_directed_edge(
+                    VertexId::from(src),
+                    hub,
+                    road,
+                    PayloadTestEdge::with_bytes(u32::from(hub), &bytes),
+                    PayloadTestEdge::with_bytes(src, &bytes),
+                )
+                .unwrap();
+        }
+
+        // Phase 1: capture the reverse hybrid replay and the slot order it emits for the hub.
+        let mut scratch = crate::labeled::LabeledPayloadValueBatchScratch::default();
+        let mut slots = Vec::new();
+        graph
+            .visit_in_payload_value_batches_for_label(
+                hub,
+                road,
+                OutEdgeOrder::Ascending,
+                &mut scratch,
+                |batch| slots.extend_from_slice(batch.slot_indices),
+            )
+            .unwrap();
+        assert!(scratch.hybrid_overflow_replay.is_active());
+
+        let read_in = |replay: Option<&crate::labeled::HybridOverflowEdgeReplay>| {
+            let mut sources = Vec::new();
+            graph
+                .read_in_edge_slots_for_label_with_replay(
+                    hub,
+                    road,
+                    &slots,
+                    OutEdgeOrder::Ascending,
+                    replay,
+                    |edge| sources.push(u32::from(edge.neighbor_vid())),
+                )
+                .unwrap();
+            sources.sort_unstable();
+            sources
+        };
+
+        let (with_replay, rebuilds_with_replay) = {
+            let _guard = ScanPathGuard::enter();
+            let sources = read_in(Some(&scratch.hybrid_overflow_replay));
+            (sources, ScanPathGuard::overflow_chain_rebuilds())
+        };
+        let (without_replay, rebuilds_without_replay) = {
+            let _guard = ScanPathGuard::enter();
+            let sources = read_in(None);
+            (sources, ScanPathGuard::overflow_chain_rebuilds())
+        };
+
+        assert_eq!(with_replay, (1..=SOURCES).collect::<Vec<_>>());
+        assert_eq!(with_replay, without_replay);
+        assert_eq!(
+            rebuilds_with_replay, 0,
+            "reverse phase-2 must reuse the reverse phase-1 replay, not rebuild the overflow chain"
+        );
+        assert!(
+            rebuilds_without_replay >= 1,
+            "no-replay reverse read takes the sparse fallback that rebuilds the overflow chain"
+        );
     }
 }

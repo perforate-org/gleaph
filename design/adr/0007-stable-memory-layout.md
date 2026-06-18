@@ -13,7 +13,7 @@ Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
 | 2026-06-12 | Accepted; policy frozen at §2 pending §6 benchmarks and registry follow-up. |
 | 2026-06-12 | Layout registry in `graph-kernel::stable_layout` + per-canister `layout.rs`. |
 | 2026-06-12 | Initial canbench suite in `graph-kernel` (cold touch 5/21/43, router catalog intern). |
-| 2026-06-17 | Router compact: retired controllers + placement slots; auth at 0; **33** regions (0–32). |
+| 2026-06-17 | Router compact: retired controllers + placement slots; auth at 0; **34** regions (0–33). |
 | 2026-06-15 | **Phase 8 closed (8d):** 8a complete; 8b final (P2/P4 retain, P1/P3 done); 8c not required; grouped-catalog prototype not pursued. |
 | 2026-06-12 | Extended canbench to graph/router/graph-index; §8b preliminary retain/defer judgments. |
 | 2026-06-12 | P1 executed: retired `EDGE_WEIGHT_PROFILES`; graph facade repacked to 42 regions (ids 37–41). |
@@ -246,7 +246,7 @@ Any patch that changes `MemoryId` assignment or merges regions must:
 
 ### Negative / cost
 
-- 42 + 21 + 5 regions retain manager overhead until benchmarks prove otherwise.
+- 40 + 34 + 7 regions (graph + router + graph-index) retain manager overhead until benchmarks prove otherwise.
 - P1 weight-profile retirement requires confirming legacy stable read paths in tests/benches.
 - Two-step delivery: policy ADR now, registry and benchmarks before code layout changes.
 

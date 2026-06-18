@@ -1,7 +1,7 @@
 # Stable-memory inventory
 
 Last updated: 2026-06-17
-Status: Implemented (sequential LARA MemoryIds 0–31; facade 32–42; router repack ADR 0011/0018/0019)
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–39 = 40 regions; router repack ADR 0011/0018/0019 = 34 regions, 0–33)
 Anchor timestamp: 2026-06-17 10:45:29 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
@@ -20,6 +20,21 @@ Typed layout registry (descriptive mirror + validation tests): `gleaph_graph_ker
 and per-canister `facade/stable/layout.rs` — [ADR 0007](../adr/0007-stable-memory-layout.md) §7.
 
 Thread-local pairing: `facade/stable.rs` in each crate.
+
+### Region-count doc-sync checklist
+
+Region counts and per-region classes in this document mirror the typed registry, which is the
+mechanical source of truth. The registry tests enforce the counts below; when they change, update
+this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same patch:
+
+| Canister | Regions | Id range | Registry constant + test |
+|----------|---------|----------|--------------------------|
+| Graph | 40 | 0–39 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
+| Router | 34 | 0–33 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
+| Graph-index | 7 | 0–6 | `INDEX_STABLE_LAYOUT` — `index_layout_registry_matches_baseline` |
+
+The canonical/derived split for the router registry projections is pinned by
+`router_registry_canonical_derived_split_matches_inventory`.
 
 ## Classifications
 

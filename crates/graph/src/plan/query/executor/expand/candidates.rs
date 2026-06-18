@@ -179,11 +179,12 @@ fn try_expand_matching_edge_payload_payload_first(
             )
             .map_err(GraphStoreError::from)?,
         EdgeDirection::PointingLeft => store
-            .read_in_edge_slots_for_label(
+            .read_in_edge_slots_for_label_reusing_payload_scratch(
                 src_id,
                 storage_label,
                 &pending_slots,
                 order,
+                &value_scratch,
                 &mut visit_edge,
             )
             .map_err(GraphStoreError::from)?,

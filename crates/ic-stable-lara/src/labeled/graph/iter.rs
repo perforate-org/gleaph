@@ -78,9 +78,21 @@ impl<E> LabeledEdgePayloadBatchScratch<E> {
 /// ascending log chain and re-reading stable memory.
 #[derive(Clone, Debug, Default)]
 pub struct HybridOverflowEdgeReplay {
+    /// Owner vertex this replay was built for. `leaf` alone is ambiguous because
+    /// `leaf = src / segment_size`, so distinct vertices share a leaf; phase 2 matches on `src` to
+    /// reject a replay carried over from a different vertex in the same leaf.
+    pub(super) src: VertexId,
     pub(super) leaf: u32,
     pub(super) label_id: BucketLabelKey,
     pub(super) slab_slots: u32,
+    /// Snapshot of the source bucket at phase-1 capture time. `src` + `label_id` + `slab_slots`
+    /// stay constant across an in-place overflow-log tombstone delete (the log entry is marked
+    /// removed without changing the slab/log split), so phase 2 also re-checks this snapshot and
+    /// falls back to sparse on any bucket mutation between the two phases.
+    pub(super) degree: u32,
+    pub(super) stored_slots: u32,
+    pub(super) overflow_log_head: i32,
+    pub(super) edge_start: u64,
     pub(super) deleted_slab_offsets: Vec<u32>,
     pub(super) log_table: Vec<u8>,
     pub(super) slot_to_log_idx: std::collections::BTreeMap<u32, u32>,
@@ -93,9 +105,14 @@ impl HybridOverflowEdgeReplay {
     }
 
     pub(super) fn clear(&mut self) {
+        self.src = VertexId::default();
         self.leaf = 0;
         self.label_id = BucketLabelKey::from_raw(0);
         self.slab_slots = 0;
+        self.degree = 0;
+        self.stored_slots = 0;
+        self.overflow_log_head = -1;
+        self.edge_start = 0;
         self.deleted_slab_offsets.clear();
         self.log_table.clear();
         self.slot_to_log_idx.clear();

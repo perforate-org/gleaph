@@ -1183,6 +1183,10 @@ where
         E: CsrEdgeTombstone,
         Visit: for<'b> FnMut(LabeledPayloadValueBatch<'b>),
     {
+        // Output contract: a phase-1 call always resets the replay first, so a stale replay from a
+        // previous `(src, label)` can never survive an early return (default vertex, missing bucket,
+        // zero degree / payload width) and be misused by a phase-2 read.
+        scratch.hybrid_overflow_replay.clear();
         self.ensure_vertex(src)?;
         let vertex = self.vertices.get(src);
         if vertex.is_default_edge_labeled() {
@@ -1195,7 +1199,6 @@ where
         if bucket.degree() == 0 || bucket.payload_byte_width() == 0 {
             return Ok(());
         }
-        scratch.hybrid_overflow_replay.clear();
         if super::super::invariants::bucket_dense_payload_batch_eligible(&bucket) {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_visit_dense_out_payload_value_batches");
@@ -1389,10 +1392,25 @@ where
             return Ok(());
         }
 
+        // Reuse the cached phase-1 replay only when it provably belongs to this exact
+        // `(src, bucket)` and the bucket has not mutated since phase 1. `src` is the owner identity:
+        // `leaf = src / segment_size` is shared by many vertices, so matching on `leaf` alone would
+        // wrongly adopt a replay built for a different vertex in the same leaf. `label_id` +
+        // `slab_slots` guard the slab/log split, and the `(degree, stored_slots, overflow_log_head,
+        // edge_start)` snapshot guards against an intervening mutation that keeps the split intact —
+        // notably an in-place overflow-log tombstone delete, which only decrements `degree` while
+        // the cached `log_table` would still decode the now-removed edge. On any mismatch we fall
+        // through to the sparse path, which resolves each slot from canonical state.
         if let Some(replay) = replay
             && replay.is_active()
             && bucket.overflow_log_head() >= 0
+            && replay.src == src
             && replay.label_id == label_id
+            && replay.slab_slots == self.bucket_slab_prefix_slots(src, &bucket)
+            && replay.degree == bucket.degree()
+            && replay.stored_slots == bucket.stored_slots
+            && replay.overflow_log_head == bucket.overflow_log_head()
+            && replay.edge_start == bucket.edge_start()
         {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _bench_scope = bench_scope("labeled_read_hybrid_replay_out_edge_slots");
@@ -1408,6 +1426,8 @@ where
         #[cfg(all(feature = "canbench", target_family = "wasm"))]
         let _bench_scope = bench_scope("labeled_read_sparse_out_edge_slots");
         let overflow_chain = (bucket.overflow_log_head() >= 0).then(|| {
+            #[cfg(test)]
+            crate::lara::edge::scan_guard::record_overflow_chain_rebuild();
             self.edges.overflow_log_chain_asc_indices(
                 self.payload_log_leaf(src),
                 bucket.overflow_log_head(),
@@ -2017,9 +2037,14 @@ where
         );
         let replay = &mut scratch.hybrid_overflow_replay;
         replay.clear();
+        replay.src = src;
         replay.leaf = leaf;
         replay.label_id = label_id;
         replay.slab_slots = slab_slots;
+        replay.degree = bucket.degree();
+        replay.stored_slots = bucket.stored_slots;
+        replay.overflow_log_head = bucket.overflow_log_head();
+        replay.edge_start = bucket.edge_start();
         replay.deleted_slab_offsets = deleted_slab_offsets.clone();
         replay.log_table = log_table;
         replay.slot_to_log_idx = slot_to_log_idx;
@@ -2085,9 +2110,14 @@ where
         );
         let replay = &mut scratch.hybrid_overflow_replay;
         replay.clear();
+        replay.src = src;
         replay.leaf = leaf;
         replay.label_id = label_id;
         replay.slab_slots = slab_slots;
+        replay.degree = bucket.degree();
+        replay.stored_slots = bucket.stored_slots;
+        replay.overflow_log_head = bucket.overflow_log_head();
+        replay.edge_start = bucket.edge_start();
         replay.deleted_slab_offsets = deleted_slab_offsets.clone();
         replay.log_table = log_table;
         replay.slot_to_log_idx = slot_to_log_idx;
@@ -2920,6 +2950,300 @@ mod tests {
                 .unwrap()
                 .len(),
             total
+        );
+    }
+
+    /// A hybrid-overflow replay built for a **different vertex that shares the same payload-log
+    /// leaf** (`leaf = src / segment_size`) must be rejected so phase 2 falls back to the sparse
+    /// path. Reproduced with two real vertices in one leaf (not by mutating replay fields), since
+    /// `leaf` + `label_id` + `slab_slots` alone cannot tell same-leaf vertices apart — only `src`
+    /// can. Guards `read_out_edge_slots_for_label_with_replay`.
+    #[test]
+    fn hybrid_replay_from_other_vertex_in_same_leaf_falls_back_to_sparse() {
+        let graph = payload_test_graph_with_capacity(1 << 16);
+        let a = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let b = graph.push_vertex(LabeledVertex::default()).unwrap();
+        assert_eq!(
+            graph.payload_log_leaf(a),
+            graph.payload_log_leaf(b),
+            "test requires two vertices sharing one payload-log leaf"
+        );
+        let road = BucketLabelKey::from_raw(2);
+        for v in [a, b] {
+            graph
+                .ensure_label_bucket_payload_byte_width(v, road, 2u16)
+                .unwrap();
+        }
+        // Identically-shaped hybrid overflow buckets, but disjoint target ranges so the two
+        // replays decode different overflow-log edges (A: 1..=48, B: 1001..=1048).
+        for target in 1..=48u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    a,
+                    road,
+                    PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                )
+                .unwrap();
+            let bt = 1000 + target;
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    b,
+                    road,
+                    PayloadTestEdge::with_bytes(bt, &(bt as u16).to_le_bytes()),
+                )
+                .unwrap();
+        }
+
+        let bucket_of = |v: VertexId| {
+            let vertex = graph.vertices().get(v);
+            let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+            graph.buckets().read_label_bucket_slot(slot).unwrap()
+        };
+        let bucket_a = bucket_of(a);
+        let bucket_b = bucket_of(b);
+        assert!(bucket_a.overflow_log_head() >= 0 && bucket_b.overflow_log_head() >= 0);
+        // Same leaf, same label, same slab split: only `src` distinguishes the two replays, so
+        // without the `src` check B's replay would be wrongly adopted for A.
+        assert_eq!(
+            graph.bucket_slab_prefix_slots(a, &bucket_a),
+            graph.bucket_slab_prefix_slots(b, &bucket_b),
+        );
+
+        // Phase 1 on A captures A's slot order; phase 1 on B populates a replay owned by B.
+        let mut scratch_a = crate::labeled::LabeledPayloadValueBatchScratch::default();
+        let mut slots_a = Vec::new();
+        graph
+            .visit_out_payload_value_batches_for_label(
+                a,
+                road,
+                OutEdgeOrder::Ascending,
+                &mut scratch_a,
+                |batch| slots_a.extend_from_slice(batch.slot_indices),
+            )
+            .unwrap();
+        let mut scratch_b = crate::labeled::LabeledPayloadValueBatchScratch::default();
+        graph
+            .visit_out_payload_value_batches_for_label(
+                b,
+                road,
+                OutEdgeOrder::Ascending,
+                &mut scratch_b,
+                |_| {},
+            )
+            .unwrap();
+        assert!(scratch_b.hybrid_overflow_replay.is_active());
+        assert!(!scratch_b.hybrid_overflow_replay.slot_to_log_idx.is_empty());
+
+        let read_a = |replay: Option<&crate::labeled::HybridOverflowEdgeReplay>| {
+            let mut targets = Vec::new();
+            graph
+                .read_out_edge_slots_for_label_with_replay(
+                    a,
+                    road,
+                    &slots_a,
+                    OutEdgeOrder::Ascending,
+                    replay,
+                    |edge| targets.push(edge.target),
+                )
+                .unwrap();
+            targets
+        };
+        let expected = read_a(None);
+        assert_eq!(expected.len(), 48);
+        assert!(
+            expected.iter().all(|&t| (1..=48).contains(&t)),
+            "A only owns targets 1..=48"
+        );
+
+        // A's own replay reproduces the ground truth.
+        assert_eq!(read_a(Some(&scratch_a.hybrid_overflow_replay)), expected);
+        // B's replay (same leaf/label/slab split, different vertex) must be rejected → sparse path.
+        assert_eq!(
+            read_a(Some(&scratch_b.hybrid_overflow_replay)),
+            expected,
+            "a replay owned by another vertex in the same leaf must not be reused"
+        );
+    }
+
+    /// Phase-2 reuse of a matching replay must skip the overflow-log chain rebuild that the sparse
+    /// fallback performs. Validates the `overflow_chain_rebuilds` instrumentation (used by the
+    /// executor incoming/outgoing replay-reuse tests) distinguishes the two phase-2 paths.
+    #[test]
+    fn phase2_replay_reuse_avoids_overflow_chain_rebuild() {
+        use crate::lara::edge::scan_guard::ScanPathGuard;
+
+        let graph = payload_test_graph_with_capacity(1 << 16);
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(src, road, 2u16)
+            .unwrap();
+        for target in 1..=48u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    road,
+                    PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                )
+                .unwrap();
+        }
+        let vertex = graph.vertices().get(src);
+        let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+        let bucket = graph.buckets().read_label_bucket_slot(slot).unwrap();
+        assert!(bucket.overflow_log_head() >= 0);
+
+        let mut scratch = crate::labeled::LabeledPayloadValueBatchScratch::default();
+        let mut slots = Vec::new();
+        graph
+            .visit_out_payload_value_batches_for_label(
+                src,
+                road,
+                OutEdgeOrder::Ascending,
+                &mut scratch,
+                |batch| slots.extend_from_slice(batch.slot_indices),
+            )
+            .unwrap();
+        assert!(scratch.hybrid_overflow_replay.is_active());
+
+        let read = |replay: Option<&crate::labeled::HybridOverflowEdgeReplay>| {
+            let mut targets = Vec::new();
+            graph
+                .read_out_edge_slots_for_label_with_replay(
+                    src,
+                    road,
+                    &slots,
+                    OutEdgeOrder::Ascending,
+                    replay,
+                    |edge| targets.push(edge.target),
+                )
+                .unwrap();
+            targets
+        };
+
+        let (with_replay, rebuilds_with_replay) = {
+            let _guard = ScanPathGuard::enter();
+            let targets = read(Some(&scratch.hybrid_overflow_replay));
+            (targets, ScanPathGuard::overflow_chain_rebuilds())
+        };
+        let (without_replay, rebuilds_without_replay) = {
+            let _guard = ScanPathGuard::enter();
+            let targets = read(None);
+            (targets, ScanPathGuard::overflow_chain_rebuilds())
+        };
+
+        assert_eq!(with_replay, without_replay);
+        assert_eq!(
+            rebuilds_with_replay, 0,
+            "a reused replay must not rebuild the overflow-log chain"
+        );
+        assert!(
+            rebuilds_without_replay >= 1,
+            "the sparse fallback rebuilds the overflow-log chain"
+        );
+    }
+
+    /// `phase 1 → delete an overflow edge → phase 2` must fall back to sparse. Removing an
+    /// overflow-log edge tombstones the log entry in place: `src`, `label_id`, and the slab/log
+    /// split are all unchanged, so only the bucket snapshot (`degree`) catches the mutation. Without
+    /// it, the stale cached `log_table` would still decode and return the deleted edge.
+    #[test]
+    fn hybrid_replay_after_overflow_delete_falls_back_to_sparse() {
+        use crate::lara::edge::scan_guard::ScanPathGuard;
+
+        let graph = payload_test_graph_with_capacity(1 << 16);
+        let src = graph.push_vertex(LabeledVertex::default()).unwrap();
+        let road = BucketLabelKey::from_raw(2);
+        graph
+            .ensure_label_bucket_payload_byte_width(src, road, 2u16)
+            .unwrap();
+        for target in 1..=48u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    src,
+                    road,
+                    PayloadTestEdge::with_bytes(target, &(target as u16).to_le_bytes()),
+                )
+                .unwrap();
+        }
+        let bucket_of = |v| {
+            let vertex = graph.vertices().get(v);
+            let slot = graph.find_bucket_slot(&vertex, road).unwrap().unwrap();
+            graph.buckets().read_label_bucket_slot(slot).unwrap()
+        };
+        let bucket = bucket_of(src);
+        assert!(bucket.overflow_log_head() >= 0);
+        let slab_prefix = graph.bucket_slab_prefix_slots(src, &bucket);
+
+        // Phase 1: capture the replay and the slot order, then take a stale snapshot of the replay.
+        let mut scratch = crate::labeled::LabeledPayloadValueBatchScratch::default();
+        let mut slots = Vec::new();
+        graph
+            .visit_out_payload_value_batches_for_label(
+                src,
+                road,
+                OutEdgeOrder::Ascending,
+                &mut scratch,
+                |batch| slots.extend_from_slice(batch.slot_indices),
+            )
+            .unwrap();
+        assert!(scratch.hybrid_overflow_replay.is_active());
+        let stale_replay = scratch.hybrid_overflow_replay.clone();
+
+        // Delete one overflow-log edge (first slot past the slab prefix): an in-place tombstone.
+        let removed = graph
+            .remove_edge_at_slot(src, road, slab_prefix)
+            .unwrap()
+            .expect("removed an overflow-log edge");
+        let deleted_target = removed.target;
+
+        // The slab/log split is unchanged, so the older `src`/`label`/`slab_slots` checks still
+        // match — only the `degree` snapshot distinguishes the mutated bucket.
+        let bucket_after = bucket_of(src);
+        assert_eq!(
+            graph.bucket_slab_prefix_slots(src, &bucket_after),
+            stale_replay.slab_slots,
+            "in-place tombstone delete leaves the slab/log split unchanged"
+        );
+        assert_ne!(
+            bucket_after.degree(),
+            stale_replay.degree,
+            "the delete decrements degree, which the snapshot detects"
+        );
+
+        let read = |replay: Option<&crate::labeled::HybridOverflowEdgeReplay>| {
+            let mut targets = Vec::new();
+            graph
+                .read_out_edge_slots_for_label_with_replay(
+                    src,
+                    road,
+                    &slots,
+                    OutEdgeOrder::Ascending,
+                    replay,
+                    |edge| targets.push(edge.target),
+                )
+                .unwrap();
+            targets
+        };
+
+        // Ground truth: the sparse path resolves canonical state and drops the deleted edge.
+        let expected = read(None);
+        assert_eq!(expected.len(), 47);
+        assert!(!expected.contains(&deleted_target));
+
+        // The stale replay must be rejected (snapshot mismatch) and fall back to sparse: it must not
+        // resurrect the deleted edge from its cached log table.
+        let (with_stale, rebuilds) = {
+            let _guard = ScanPathGuard::enter();
+            let targets = read(Some(&stale_replay));
+            (targets, ScanPathGuard::overflow_chain_rebuilds())
+        };
+        assert_eq!(
+            with_stale, expected,
+            "a replay captured before an overflow delete must not return the deleted edge"
+        );
+        assert!(
+            rebuilds >= 1,
+            "snapshot mismatch must take the sparse fallback"
         );
     }
 }

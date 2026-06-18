@@ -624,9 +624,8 @@ mod tests {
     #[test]
     fn labeled_no_vertex_edge_span_rewrite_on_routine_insert() {
         use super::super::compact::{
-            REWRITE_VERTEX_EDGE_SPAN_CALLS, reset_rewrite_vertex_edge_span_test_metrics,
+            reset_rewrite_vertex_edge_span_test_metrics, rewrite_vertex_edge_span_calls,
         };
-        use std::sync::atomic::Ordering;
 
         reset_rewrite_vertex_edge_span_test_metrics();
         let graph = test_graph();
@@ -639,14 +638,12 @@ mod tests {
                 TestEdge { target: 999 },
             )
             .unwrap();
-        let rewrites_before = REWRITE_VERTEX_EDGE_SPAN_CALLS.load(Ordering::SeqCst);
+        let rewrites_before = rewrite_vertex_edge_span_calls();
         for target in 0..64u32 {
             graph.insert_edge(vid, road, TestEdge { target }).unwrap();
         }
         assert_eq!(
-            REWRITE_VERTEX_EDGE_SPAN_CALLS
-                .load(Ordering::SeqCst)
-                .saturating_sub(rewrites_before),
+            rewrite_vertex_edge_span_calls().saturating_sub(rewrites_before),
             0
         );
     }

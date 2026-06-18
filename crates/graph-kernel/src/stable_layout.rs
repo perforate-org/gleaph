@@ -23,6 +23,13 @@
 //!   canonical graph membership (that is `VERTEX_LABEL_SETS` + index label postings).
 //! - **`ROUTER_LABEL_STATS_PROJECTION`:** `Telemetry` — per-`GraphShardKey` projection cursor (ADR 0015/0019), not
 //!   user mutation idempotency (`ROUTER_MUTATION_BY_CLIENT_KEY` is `Canonical`).
+//!
+//! ## Correction (2026-06-18)
+//!
+//! `ROUTER_SHARD_BY_GRAPH` and `ROUTER_SHARDS_BY_GRAPH_ID` were reclassified `Canonical` → `Derived`
+//! to match `stable-memory-inventory.md` (router registry section). `ROUTER_SHARDS` is the shard
+//! dispatch source of truth; both lookup regions are denormalized projections kept consistent at the
+//! registry commit boundary (`commit_register_shard` / `check_registry_invariants`).
 
 /// How a stable region relates to authoritative graph/router/index state.
 ///
@@ -139,6 +146,41 @@ impl StableMemoryClass {
     }
 }
 
+/// How a region's contents can be reconstructed — or audited for drift — when needed.
+///
+/// Replaces an earlier `Option<&'static str>`. There, `None` was overloaded between "this region
+/// has no rebuild concept" and "derived, but kept consistent inline with no rebuild API", and the
+/// class invariants could only catch the difference for `INDEX_*` / `EDGE_ALIASES`. Making the
+/// sync-co-update case explicit lets [`validate_class_invariants`] forbid an unspecified `None` on
+/// any `Derived` region.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum RebuildPath {
+    /// No rebuild path. The region is authoritative (`Canonical`), physical/admin bookkeeping
+    /// (`Maintenance`), a resolution catalog (`Catalog`), a compatibility view, or a telemetry
+    /// event source/cursor — nothing reconstructs it from other stable state.
+    None,
+    /// Derived state kept consistent with its canonical source inside the same mutation / commit
+    /// boundary; there is no standalone scan-and-rebuild API.
+    ///
+    /// **Gleaph:** LARA reverse orientation (`REV_*`, co-updated on DML) and the router registry
+    /// projections denormalized from `ROUTER_SHARDS` (`ROUTER_SHARD_BY_GRAPH`,
+    /// `ROUTER_SHARDS_BY_GRAPH_ID`, commit-synced).
+    SyncCoUpdate,
+    /// Rebuildable or backfillable from canonical state via a named entry point
+    /// (e.g. `rebuild_edge_aliases`, `backfill_label_postings`, `admin_label_stats_projection_step`).
+    Named(&'static str),
+}
+
+impl RebuildPath {
+    /// The named rebuild/backfill entry point, if this region declares one.
+    pub const fn named(self) -> Option<&'static str> {
+        match self {
+            Self::Named(name) => Some(name),
+            Self::None | Self::SyncCoUpdate => None,
+        }
+    }
+}
+
 /// One stable `VirtualMemory` region assigned via `MemoryManager`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct StableMemoryRegion {
@@ -148,8 +190,8 @@ pub struct StableMemoryRegion {
     pub owner_domain: &'static str,
     /// What this region stores at runtime (functional role, not classification).
     pub role: &'static str,
-    /// Rebuild or backfill entry point when the region is derived or rebuildable.
-    pub rebuild: Option<&'static str>,
+    /// How this region is reconstructed or kept consistent. See [`RebuildPath`].
+    pub rebuild: RebuildPath,
 }
 
 /// Named layout for one canister.
@@ -187,7 +229,7 @@ const fn region(
     class: StableMemoryClass,
     owner_domain: &'static str,
     role: &'static str,
-    rebuild: Option<&'static str>,
+    rebuild: RebuildPath,
 ) -> StableMemoryRegion {
     StableMemoryRegion {
         symbol,
@@ -199,7 +241,7 @@ const fn region(
     }
 }
 
-/// Graph canister — LARA bundle (0–31) + facade (32–40). Baseline: ADR 0007 §2 / ADR 0008.
+/// Graph canister — LARA bundle (0–31) + facade (32–39), 40 regions. Baseline: ADR 0007 §2 / ADR 0008.
 pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph",
     regions: &[
@@ -210,7 +252,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "lara/adjacency",
             "Per-vertex row metadata for forward CSR",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_BUCKETS",
@@ -218,7 +260,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "lara/adjacency",
             "Per-vertex labeled edge bucket roots",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_BUCKET_FREE_SPANS",
@@ -226,7 +268,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/adjacency",
             "Retired forward bucket physical byte ranges",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_BUCKET_FREE_SPAN_BY_START",
@@ -234,7 +276,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/adjacency",
             "Index into forward bucket free-span store",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_EDGE_COUNTS",
@@ -242,7 +284,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "lara/adjacency",
             "Per-vertex forward edge counts by label",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_EDGES",
@@ -250,7 +292,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "lara/adjacency",
             "Forward edge slab (CSR edge rows)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_EDGE_LOG",
@@ -258,7 +300,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "lara/adjacency",
             "Append log for forward edge value updates",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_EDGE_SPAN_META",
@@ -266,7 +308,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/adjacency",
             "Per-vertex forward edge span compaction metadata",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_EDGE_FREE_SPANS",
@@ -274,7 +316,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/adjacency",
             "Retired forward edge physical byte ranges",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_EDGE_FREE_SPAN_BY_START",
@@ -282,7 +324,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/adjacency",
             "Index into forward edge free-span store",
-            None,
+            RebuildPath::None,
         ),
         // Forward payload — canonical bytes
         region(
@@ -291,7 +333,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "lara/payload",
             "Dense labeled edge payload bytes",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_PAYLOAD_FREE_SPANS",
@@ -299,7 +341,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/payload",
             "Retired forward payload physical ranges",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_PAYLOAD_FREE_SPAN_BY_START",
@@ -307,7 +349,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/payload",
             "Index into forward payload free-span store",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_PAYLOAD_LOG",
@@ -315,7 +357,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "lara/payload",
             "Value log for inline payload updates",
-            None,
+            RebuildPath::None,
         ),
         region(
             "FWD_PAYLOAD_BLOBS",
@@ -323,7 +365,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "lara/payload",
             "Out-of-line large payload blobs",
-            None,
+            RebuildPath::None,
         ),
         // Reverse orientation — derived adjacency (sync co-update)
         region(
@@ -332,7 +374,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/adjacency",
             "Reverse CSR vertex rows (mirror of forward)",
-            None,
+            RebuildPath::SyncCoUpdate,
         ),
         region(
             "REV_BUCKETS",
@@ -340,7 +382,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/adjacency",
             "Reverse labeled edge bucket roots",
-            None,
+            RebuildPath::SyncCoUpdate,
         ),
         region(
             "REV_BUCKET_FREE_SPANS",
@@ -348,7 +390,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/adjacency",
             "Retired reverse bucket physical ranges",
-            None,
+            RebuildPath::None,
         ),
         region(
             "REV_BUCKET_FREE_SPAN_BY_START",
@@ -356,7 +398,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/adjacency",
             "Index into reverse bucket free-span store",
-            None,
+            RebuildPath::None,
         ),
         region(
             "REV_EDGE_COUNTS",
@@ -364,7 +406,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/adjacency",
             "Per-vertex reverse edge counts",
-            None,
+            RebuildPath::SyncCoUpdate,
         ),
         region(
             "REV_EDGES",
@@ -372,7 +414,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/adjacency",
             "Reverse edge slab",
-            None,
+            RebuildPath::SyncCoUpdate,
         ),
         region(
             "REV_EDGE_LOG",
@@ -380,7 +422,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/adjacency",
             "Reverse edge value log",
-            None,
+            RebuildPath::SyncCoUpdate,
         ),
         region(
             "REV_EDGE_SPAN_META",
@@ -388,7 +430,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/adjacency",
             "Reverse edge span compaction metadata",
-            None,
+            RebuildPath::None,
         ),
         region(
             "REV_EDGE_FREE_SPANS",
@@ -396,7 +438,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/adjacency",
             "Retired reverse edge physical ranges",
-            None,
+            RebuildPath::None,
         ),
         region(
             "REV_EDGE_FREE_SPAN_BY_START",
@@ -404,7 +446,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/adjacency",
             "Index into reverse edge free-span store",
-            None,
+            RebuildPath::None,
         ),
         region(
             "REV_PAYLOAD_SLAB",
@@ -412,7 +454,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/payload",
             "Reverse payload slab",
-            None,
+            RebuildPath::SyncCoUpdate,
         ),
         region(
             "REV_PAYLOAD_FREE_SPANS",
@@ -420,7 +462,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/payload",
             "Retired reverse payload physical ranges",
-            None,
+            RebuildPath::None,
         ),
         region(
             "REV_PAYLOAD_FREE_SPAN_BY_START",
@@ -428,7 +470,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/payload",
             "Index into reverse payload free-span store",
-            None,
+            RebuildPath::None,
         ),
         region(
             "REV_PAYLOAD_LOG",
@@ -436,7 +478,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/payload",
             "Reverse payload value log",
-            None,
+            RebuildPath::SyncCoUpdate,
         ),
         region(
             "REV_PAYLOAD_BLOBS",
@@ -444,7 +486,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/payload",
             "Reverse out-of-line payload blobs",
-            None,
+            RebuildPath::SyncCoUpdate,
         ),
         // LARA deferred maintenance
         region(
@@ -453,7 +495,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/maintenance",
             "Deferred PMA maintenance work queue",
-            None,
+            RebuildPath::None,
         ),
         region(
             "DIRTY_WORK_ITEMS",
@@ -461,7 +503,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "lara/maintenance",
             "Dirty maintenance work tracking",
-            None,
+            RebuildPath::None,
         ),
         // Graph facade
         region(
@@ -470,7 +512,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "labels",
             "Per-vertex label id sets (membership, not name catalog)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "VERTEX_PROPERTIES",
@@ -478,7 +520,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "properties",
             "Vertex property values keyed by PropertyId",
-            None,
+            RebuildPath::None,
         ),
         region(
             "EDGE_PROPERTIES",
@@ -486,7 +528,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "properties",
             "Edge property values keyed by canonical edge identity",
-            None,
+            RebuildPath::None,
         ),
         region(
             "EDGE_ALIASES",
@@ -494,7 +536,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "adjacency",
             "Undirected/reverse expand alias index",
-            Some("rebuild_edge_aliases"),
+            RebuildPath::Named("rebuild_edge_aliases"),
         ),
         region(
             "GRAPH_METADATA",
@@ -502,7 +544,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "federation metadata",
             "Shard id, router principal, index principal",
-            None,
+            RebuildPath::None,
         ),
         region(
             "LABEL_STATS_DELTA_SEQ",
@@ -510,7 +552,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Telemetry,
             "label stats projection",
             "Monotonic seq for label stats delta log",
-            None,
+            RebuildPath::None,
         ),
         region(
             "LABEL_STATS_DELTA_LOG",
@@ -518,7 +560,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Telemetry,
             "label stats projection",
             "Stable log of LabelStatsDelta events for router projection",
-            None,
+            RebuildPath::None,
         ),
         region(
             "GRAPH_MUTATION_JOURNAL",
@@ -526,7 +568,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "idempotency",
             "Graph mutation journal (outcome + emitted delta seq range)",
-            None,
+            RebuildPath::None,
         ),
     ],
 };
@@ -541,7 +583,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "auth",
             "Per-principal RBAC / prepared-query auth records",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_GRAPHS",
@@ -549,7 +591,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "registry",
             "GraphId → registry entry",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_SHARDS",
@@ -557,23 +599,23 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "registry",
             "(GraphId, ShardId) → shard registry entry (ADR 0019)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_SHARD_BY_GRAPH",
             3,
-            StableMemoryClass::Canonical,
+            StableMemoryClass::Derived,
             "registry",
-            "Graph canister principal → GraphShardKey (ADR 0019)",
-            None,
+            "Graph canister principal → GraphShardKey — denormalized from ROUTER_SHARDS, commit-synced (ADR 0019)",
+            RebuildPath::SyncCoUpdate,
         ),
         region(
             "ROUTER_SHARDS_BY_GRAPH_ID",
             4,
-            StableMemoryClass::Canonical,
+            StableMemoryClass::Derived,
             "registry",
-            "GraphId → shard id list (ADR 0011)",
-            None,
+            "GraphId → shard id list — denormalized fan-out index from ROUTER_SHARDS, commit-synced (ADR 0011)",
+            RebuildPath::SyncCoUpdate,
         ),
         region(
             "ROUTER_GRAPH_RUNTIME_CONFIG",
@@ -581,7 +623,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "runtime config",
             "GraphId → runtime config (element id encoding key, index cluster; ADR 0019 S2b/S3)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_MUTATION_COUNTER",
@@ -589,7 +631,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "idempotency",
             "Monotonic router mutation id allocator",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_MUTATION_BY_CLIENT_KEY",
@@ -597,7 +639,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "idempotency",
             "Client mutation key → router mutation record",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_PREPARED_PLANS",
@@ -605,7 +647,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "prepared queries",
             "PreparedPlanKey → versioned plan wire blob",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_VERTEX_LABEL_BY_NAME",
@@ -613,7 +655,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "resolution",
             "Vertex label (GraphId, name) → VertexLabelId (ADR 0018)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_VERTEX_LABEL_BY_ID",
@@ -621,7 +663,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "resolution",
             "VertexLabelId → (GraphId, label name) (ADR 0018)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_EDGE_LABEL_BY_NAME",
@@ -629,7 +671,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "resolution",
             "Edge label (GraphId, name) → EdgeLabelId (ADR 0018)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_EDGE_LABEL_BY_ID",
@@ -637,7 +679,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "resolution",
             "EdgeLabelId → (GraphId, label name) (ADR 0018)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_PROPERTY_BY_NAME",
@@ -645,7 +687,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "resolution",
             "Property (GraphId, name) → PropertyId (ADR 0018)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_PROPERTY_BY_ID",
@@ -653,7 +695,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "resolution",
             "PropertyId → (GraphId, property name) (ADR 0018)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_GRAPH_BY_NAME",
@@ -661,7 +703,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "resolution",
             "Graph name → GraphId (ADR 0011)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_GRAPH_BY_ID",
@@ -669,7 +711,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "resolution",
             "GraphId → graph name (ADR 0011)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_INDEX_NAME_BY_NAME",
@@ -677,7 +719,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "resolution",
             "Graph-scoped index name → IndexNameId (ADR 0011)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_INDEX_NAME_BY_ID",
@@ -685,7 +727,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "resolution",
             "Graph-scoped IndexNameId → index name (ADR 0011)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_NAMED_INDEXES",
@@ -693,7 +735,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "index planner catalog",
             "(graph_id, index_name_id) → IndexDefRecord (ADR 0009 DDL metadata)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_INDEXED_PROPERTY_SET",
@@ -701,7 +743,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "index planner catalog",
             "(graph_id, kind, property_id) membership for planner + shard fan-out",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_EDGE_PAYLOAD_PROFILES",
@@ -709,7 +751,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "edge payload schema",
             "(GraphId, EdgeLabelId) → EdgePayloadProfile (ADR 0008, ADR 0018)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_GRAPH_TYPE_DEFINITIONS",
@@ -717,7 +759,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "graph type catalog",
             "GraphTypeId → graph type definition (ADR 0014)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_GRAPH_SCHEMA_BINDINGS",
@@ -725,7 +767,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "graph type catalog",
             "GraphId → property graph schema binding (ADR 0013)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_GRAPH_TYPE_BY_NAME",
@@ -733,7 +775,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "graph type name catalog",
             "Graph type name → GraphTypeId (ADR 0014)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_GRAPH_TYPE_BY_ID",
@@ -741,7 +783,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Catalog,
             "graph type name catalog",
             "GraphTypeId → graph type name (ADR 0014)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_VERTEX_LABEL_STATS",
@@ -749,7 +791,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Telemetry,
             "label telemetry",
             "(GraphId, VertexLabelId) aggregated usage stats",
-            Some("admin_label_stats_projection_step"),
+            RebuildPath::Named("admin_label_stats_projection_step"),
         ),
         region(
             "ROUTER_EDGE_LABEL_STATS",
@@ -757,7 +799,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Telemetry,
             "label telemetry",
             "(GraphId, EdgeLabelId) aggregated usage stats",
-            Some("admin_label_stats_projection_step"),
+            RebuildPath::Named("admin_label_stats_projection_step"),
         ),
         region(
             "ROUTER_VERTEX_LABEL_LIVE_BY_SHARD",
@@ -765,7 +807,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Telemetry,
             "label telemetry",
             "(GraphId, ShardId, VertexLabelId) live vertex counts",
-            Some("admin_label_stats_projection_step"),
+            RebuildPath::Named("admin_label_stats_projection_step"),
         ),
         region(
             "ROUTER_EDGE_LABEL_LIVE_BY_SHARD",
@@ -773,7 +815,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Telemetry,
             "label telemetry",
             "(GraphId, ShardId, EdgeLabelId) live edge counts",
-            Some("admin_label_stats_projection_step"),
+            RebuildPath::Named("admin_label_stats_projection_step"),
         ),
         region(
             "ROUTER_LABEL_STATS_PROJECTION",
@@ -781,7 +823,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Telemetry,
             "label stats projection",
             "GraphShardKey → applied_through_seq for graph label stats deltas (ADR 0015, 0019)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_LABEL_BACKFILL_STATE",
@@ -789,7 +831,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "label backfill",
             "GraphShardKey → cursor for label posting backfill admin",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_VERTEX_PROPERTY_BACKFILL_STATE",
@@ -797,7 +839,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "vertex property backfill",
             "GraphShardKey → cursor for vertex property posting backfill admin",
-            None,
+            RebuildPath::None,
         ),
         region(
             "ROUTER_EDGE_BACKFILL_STATE",
@@ -805,7 +847,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Maintenance,
             "edge backfill",
             "GraphShardKey → cursor for edge property posting backfill admin",
-            None,
+            RebuildPath::None,
         ),
     ],
 };
@@ -820,7 +862,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "router authorization",
             "Authorized router canister principal cell",
-            None,
+            RebuildPath::None,
         ),
         region(
             "INDEX_SHARD_CANISTER_BY_SHARD",
@@ -828,7 +870,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "shard canister catalog",
             "ShardId → graph shard canister principal",
-            None,
+            RebuildPath::None,
         ),
         region(
             "INDEX_SHARD_BY_CANISTER",
@@ -836,7 +878,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "shard canister catalog",
             "Graph shard canister principal → ShardId",
-            None,
+            RebuildPath::None,
         ),
         region(
             "INDEX_OWNERSHIP_CONFIG",
@@ -844,7 +886,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Canonical,
             "graph ownership",
             "Index canister graph ownership and shard-group config (ADR 0019 S4)",
-            None,
+            RebuildPath::None,
         ),
         region(
             "INDEX_VERTEX_POSTINGS",
@@ -852,7 +894,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "property postings",
             "Global property equality/range posting set",
-            Some("backfill_vertex_property_postings"),
+            RebuildPath::Named("backfill_vertex_property_postings"),
         ),
         region(
             "INDEX_VERTEX_LABEL_POSTINGS",
@@ -860,7 +902,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "vertex label postings",
             "Global vertex label membership posting set",
-            Some("backfill_label_postings"),
+            RebuildPath::Named("backfill_label_postings"),
         ),
         region(
             "INDEX_EDGE_POSTINGS",
@@ -868,7 +910,7 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "edge property postings",
             "Global edge property equality posting set (ADR 0009)",
-            Some("backfill_edge_property_postings"),
+            RebuildPath::Named("backfill_edge_property_postings"),
         ),
     ],
 };
@@ -942,15 +984,20 @@ pub fn validate_class_invariants(layout: &StableCanisterLayout) -> Result<(), Cl
         let region = &layout.regions[i];
         match region.class {
             StableMemoryClass::Compatibility => {
-                if region.rebuild.is_some() {
+                // Legacy read view: another store owns writes, so it has no rebuild path.
+                if !matches!(region.rebuild, RebuildPath::None) {
                     return Err(ClassInvariantError::CompatibilityWithRebuild {
                         canister: layout.canister,
                         symbol: region.symbol,
                     });
                 }
             }
-            StableMemoryClass::Maintenance | StableMemoryClass::Catalog => {
-                if region.rebuild.is_some() {
+            StableMemoryClass::Canonical
+            | StableMemoryClass::Maintenance
+            | StableMemoryClass::Catalog => {
+                // Authoritative facts, physical bookkeeping, and resolution catalogs are not
+                // reconstructed from other stable state.
+                if !matches!(region.rebuild, RebuildPath::None) {
                     return Err(ClassInvariantError::UnexpectedRebuild {
                         canister: layout.canister,
                         symbol: region.symbol,
@@ -959,21 +1006,26 @@ pub fn validate_class_invariants(layout: &StableCanisterLayout) -> Result<(), Cl
                 }
             }
             StableMemoryClass::Derived => {
-                // LARA reverse regions have no rebuild API; graph/router derived indexes must name one.
-                if region.rebuild.is_none()
-                    && !region.symbol.starts_with("REV_")
-                    && !region.symbol.starts_with("FWD_")
-                {
-                    // INDEX_* and EDGE_* derived stores require rebuild/backfill names.
-                    if region.symbol.starts_with("INDEX_") || region.symbol == "EDGE_ALIASES" {
-                        return Err(ClassInvariantError::DerivedWithoutRebuild {
-                            canister: layout.canister,
-                            symbol: region.symbol,
-                        });
-                    }
+                // Every derived region must declare how it stays consistent: a named rebuild /
+                // backfill, or explicit sync co-update. An unspecified `None` is a layout bug.
+                if matches!(region.rebuild, RebuildPath::None) {
+                    return Err(ClassInvariantError::DerivedWithoutRebuild {
+                        canister: layout.canister,
+                        symbol: region.symbol,
+                    });
                 }
             }
-            StableMemoryClass::Canonical | StableMemoryClass::Telemetry => {}
+            StableMemoryClass::Telemetry => {
+                // Specialized derived state: aggregates name a projection step; event source logs
+                // and cursors carry `None`. Telemetry is never a sync co-update mirror.
+                if matches!(region.rebuild, RebuildPath::SyncCoUpdate) {
+                    return Err(ClassInvariantError::UnexpectedRebuild {
+                        canister: layout.canister,
+                        symbol: region.symbol,
+                        class: region.class,
+                    });
+                }
+            }
         }
         i += 1;
     }
@@ -1035,6 +1087,97 @@ mod tests {
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].symbol,
             "ROUTER_LABEL_STATS_PROJECTION"
+        );
+    }
+
+    /// Registry dispatch SSOT vs denormalized fan-out indexes must keep the canonical/derived
+    /// split documented in `stable-memory-inventory.md` (router registry section, ADR 0011/0019).
+    #[test]
+    fn router_registry_canonical_derived_split_matches_inventory() {
+        let region_of = |symbol: &str| {
+            *ROUTER_STABLE_LAYOUT
+                .regions
+                .iter()
+                .find(|region| region.symbol == symbol)
+                .unwrap_or_else(|| panic!("router layout missing {symbol}"))
+        };
+        // `ROUTER_SHARDS` is the shard dispatch source of truth.
+        let shards = region_of("ROUTER_SHARDS");
+        assert_eq!(shards.class, StableMemoryClass::Canonical);
+        assert_eq!(shards.rebuild, RebuildPath::None);
+        // Both lookup projections are denormalized from `ROUTER_SHARDS`; commit-synced, not SSOT.
+        for symbol in ["ROUTER_SHARD_BY_GRAPH", "ROUTER_SHARDS_BY_GRAPH_ID"] {
+            let projection = region_of(symbol);
+            assert_eq!(projection.class, StableMemoryClass::Derived, "{symbol}");
+            assert_eq!(
+                projection.rebuild,
+                RebuildPath::SyncCoUpdate,
+                "{symbol} is commit-synced, not a named rebuild"
+            );
+        }
+    }
+
+    /// Every `Derived` region must declare a rebuild path (named or sync co-update); an
+    /// unspecified `None` is rejected so the canonical/derived contract cannot silently regress.
+    #[test]
+    fn derived_regions_declare_a_rebuild_path() {
+        for layout in [
+            &GRAPH_STABLE_LAYOUT,
+            &ROUTER_STABLE_LAYOUT,
+            &INDEX_STABLE_LAYOUT,
+        ] {
+            for region in layout.regions {
+                if region.class == StableMemoryClass::Derived {
+                    assert_ne!(
+                        region.rebuild,
+                        RebuildPath::None,
+                        "{}::{} is Derived but declares no rebuild path",
+                        layout.canister,
+                        region.symbol
+                    );
+                }
+            }
+        }
+        // LARA reverse and router projections are sync co-update; index postings name a backfill.
+        let graph = |symbol: &str| {
+            GRAPH_STABLE_LAYOUT
+                .regions
+                .iter()
+                .find(|r| r.symbol == symbol)
+                .unwrap()
+                .rebuild
+        };
+        assert_eq!(graph("REV_VERTICES"), RebuildPath::SyncCoUpdate);
+        assert_eq!(
+            graph("EDGE_ALIASES"),
+            RebuildPath::Named("rebuild_edge_aliases")
+        );
+        assert_eq!(
+            INDEX_STABLE_LAYOUT.regions[4].rebuild,
+            RebuildPath::Named("backfill_vertex_property_postings")
+        );
+    }
+
+    /// A `Derived` region carrying `RebuildPath::None` is a layout bug and must be rejected.
+    #[test]
+    fn derived_without_rebuild_is_rejected() {
+        static BAD: StableCanisterLayout = StableCanisterLayout {
+            canister: "bad",
+            regions: &[region(
+                "BAD_DERIVED",
+                0,
+                StableMemoryClass::Derived,
+                "test",
+                "derived region with no declared rebuild path",
+                RebuildPath::None,
+            )],
+        };
+        assert_eq!(
+            validate_class_invariants(&BAD),
+            Err(ClassInvariantError::DerivedWithoutRebuild {
+                canister: "bad",
+                symbol: "BAD_DERIVED",
+            })
         );
     }
 
