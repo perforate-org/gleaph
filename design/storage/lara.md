@@ -118,6 +118,12 @@ This is the **rope**: the leaf physical interval, not individual vertex rows.
 
 **Labeled note:** per-vertex `release_vertex_edge_span_footprint` on routine growth is **not** this contract; see [ADR 0001](../adr/0001-labeled-segment-slide.md).
 
+**Reopen integrity (composite + paired regions):** a composite store (`EdgeStore`, `LabelBucketStore`, `EdgePayloadStore`) and each graph that owns several of them (`LaraGraph`, `LabeledLaraGraph`) span stable-memory regions that must move together. On `init` the required regions are either **all empty** (create fresh) or **all populated** (reopen); a partially populated set is rejected (`*::InitError::PartialLayout`) instead of silently recreating and overwriting live regions or pairing an empty vertex column with live edge state. The check is applied at the graph-owned boundary too, so all subsystems go Fresh or Reopen together. The `FreeSpanStore` records header and its `free_span_by_start` index are a **paired** region: reopen rejects one-sided loss and re-runs `validate()` plus a `by_start.len() == active_count` check, so a stale or empty index cannot hide live spans and let the allocator hand out the same physical range twice.
+
+**`value_blobs` asymmetry:** the payload blob map is excluded from the required-region set because a populated payload store with no wide-payload blobs legitimately leaves it empty. `EdgePayloadStore::init` still enforces the asymmetric rule: when the required regions are **Fresh**, `value_blobs` must also be empty (a surviving blob region alongside empty required regions is partial loss); when they are **Reopen**, `value_blobs` may be empty or populated.
+
+**Best-fit completeness:** `take_best_fit` / `take_best_fit_whole` / `peek_best_fit` use a bounded per-bin scan to approximate best-fit cheaply, but must never report "no fit" while a fitting span exists in the start size-class bin. When the bounded scan finds nothing, the search continues over the remaining bin entries for the first fit, so allocation never forces an unnecessary slab/`elem_capacity` growth.
+
 ---
 
 ## LARA stores (edge slab side)
@@ -165,6 +171,8 @@ Use this when reviewing LARA PRs:
 - [ ] In-window rebalance does not `release_span`
 - [ ] Segment relocate releases **one** retired leaf footprint after commit
 - [ ] `FreeSpanStore` allocation is best-fit / coalesce, not scan-visible
+- [ ] `FreeSpanStore` allocation never reports "no fit" while a fitting span exists (bounded scan has a first-fit fallback)
+- [ ] Composite/paired stable regions reopen all-or-nothing; partial layouts are rejected, not recreated
 - [ ] Labeled changes do not deepen per-vertex tail-append + peel without ADR exception
 
 ---

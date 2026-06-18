@@ -124,6 +124,9 @@ pub enum InitError {
     Vertices(vertex::InitError),
     /// The edge subsystem could not be reopened.
     Edges(edge::InitError),
+    /// The graph-owned memories are partially initialized (some regions are empty
+    /// while others are populated), so the graph must not be reopened or recreated.
+    PartialLayout,
 }
 
 impl fmt::Display for InitError {
@@ -131,6 +134,12 @@ impl fmt::Display for InitError {
         match self {
             Self::Vertices(e) => write!(f, "vertex init failed: {e}"),
             Self::Edges(e) => write!(f, "edge init failed: {e}"),
+            Self::PartialLayout => {
+                write!(
+                    f,
+                    "graph memories are partially initialized; refusing to reopen"
+                )
+            }
         }
     }
 }
@@ -212,6 +221,23 @@ where
         segment_size: u32,
         initial_vertex_edge_slots: u32,
     ) -> Result<Self, InitError> {
+        // The vertex column and the whole edge subsystem are one graph-owned
+        // composite: they must be created together or reopened together. A mix
+        // (for example empty vertices wired to a populated edge subsystem) would
+        // pair an empty `VertexStore` with live edge state, so reject it instead
+        // of silently combining them.
+        match crate::classify_composite_init([
+            vertices.size(),
+            counts.size(),
+            edges.size(),
+            log.size(),
+            span_meta.size(),
+            free_spans.size(),
+            free_span_by_start.size(),
+        ]) {
+            crate::CompositeInit::Partial => return Err(InitError::PartialLayout),
+            crate::CompositeInit::Fresh | crate::CompositeInit::Reopen => {}
+        }
         Ok(Self {
             vertices: VertexStore::init(vertices).map_err(InitError::Vertices)?,
             edges: EdgeStore::init(
@@ -1518,6 +1544,71 @@ mod tests {
     };
     use ic_stable_structures::{Storable, storable::Bound};
     use std::borrow::Cow;
+
+    #[test]
+    fn init_rejects_partial_layout_when_vertices_wiped() {
+        let graph = LaraGraph::<TestEdge, Vertex, _>::new(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            8,
+            1,
+            0,
+        )
+        .unwrap();
+        let (_vertices, counts, edges, log, span_meta, free_spans, free_span_by_start) =
+            graph.into_memories();
+        // Edge subsystem populated, vertex column wiped (e.g. a miswired MemoryId).
+        let result = LaraGraph::<TestEdge, Vertex, _>::init(
+            vector_memory(),
+            counts,
+            edges,
+            log,
+            span_meta,
+            free_spans,
+            free_span_by_start,
+            8,
+            1,
+            0,
+        );
+        assert!(matches!(result, Err(InitError::PartialLayout)));
+    }
+
+    #[test]
+    fn init_reopens_fully_populated_layout() {
+        let graph = LaraGraph::<TestEdge, Vertex, _>::new(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            8,
+            1,
+            0,
+        )
+        .unwrap();
+        let (vertices, counts, edges, log, span_meta, free_spans, free_span_by_start) =
+            graph.into_memories();
+        let reopened = LaraGraph::<TestEdge, Vertex, _>::init(
+            vertices,
+            counts,
+            edges,
+            log,
+            span_meta,
+            free_spans,
+            free_span_by_start,
+            8,
+            1,
+            0,
+        );
+        assert!(reopened.is_ok());
+    }
 
     #[derive(Clone, Copy, Debug, PartialEq, Eq)]
     struct LargeTestEdge([u8; 80]);

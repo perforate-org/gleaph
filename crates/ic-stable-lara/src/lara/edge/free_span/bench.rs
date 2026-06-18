@@ -7,6 +7,12 @@ use crate::bench as helper;
 
 const MIN_LEN: u64 = 96;
 
+/// Size-class bin `[65, 128]` parameters for the bounded-scan fallback benchmark.
+/// All three lengths share one size class, so the search stays in a single bin.
+const FALLBACK_FIT_LEN: u64 = 120;
+const FALLBACK_MISS_LEN: u64 = 99;
+const FALLBACK_MIN_LEN: u64 = 100;
+
 fn random_span(i: u64) -> FreeSpan {
     let seed = helper::splitmix64(i ^ 0x243F_6A88_85A3_08D3);
     FreeSpan {
@@ -64,6 +70,51 @@ fn bench_lara_free_span_store_take_best_fit_split_1024() -> canbench_rs::BenchRe
 #[bench(raw)]
 fn bench_lara_free_span_store_take_best_fit_split_4096() -> canbench_rs::BenchResult {
     bench_take_best_fit_split(helper::LARGE_N)
+}
+
+/// Builds a store whose start size-class bin holds one fitting span at the
+/// linked-list tail, buried behind `n - 1` shorter, non-fitting spans in the
+/// same bin. This is the layout that defeats the bounded best-fit scan and
+/// forces the first-fit fallback to walk the whole bin.
+fn populate_bin_fallback_store(n: u64) -> FreeSpanStore<helper::BenchMemory> {
+    let mut memories = helper::BenchMemoryFactory::new();
+    let store = FreeSpanStore::new(memories.memory(), memories.memory()).expect("free span store");
+    // Released first, so it ends up at the bin-list tail (releases prepend).
+    store
+        .release_span(0, FALLBACK_FIT_LEN)
+        .expect("release fitting span");
+    for i in 1..n {
+        store
+            .release_span(i.saturating_mul(1_000_000), FALLBACK_MISS_LEN)
+            .expect("release non-fitting span");
+    }
+    store
+}
+
+/// Measures the bounded-scan first-fit fallback: every probe scans past the
+/// non-fitting head window and walks to the tail of the start bin. The stable
+/// read count is expected to grow with bin occupancy, so the 256 and 4096
+/// variants together track that linear cost (the prior best-fit benches never
+/// exercise this path because all their spans fit within the head window).
+fn bench_best_fit_fallback_scan(n: u64) -> canbench_rs::BenchResult {
+    let store = populate_bin_fallback_store(n);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_free_span_store_best_fit_fallback_scan");
+        for _ in 0..16 {
+            let span = store.peek_best_fit(black_box(FALLBACK_MIN_LEN));
+            black_box(span);
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_lara_free_span_store_best_fit_fallback_scan_256() -> canbench_rs::BenchResult {
+    bench_best_fit_fallback_scan(helper::SMALL_N)
+}
+
+#[bench(raw)]
+fn bench_lara_free_span_store_best_fit_fallback_scan_4096() -> canbench_rs::BenchResult {
+    bench_best_fit_fallback_scan(helper::LARGE_N)
 }
 
 /// Measures release-time coalescing of adjacent free spans in the current

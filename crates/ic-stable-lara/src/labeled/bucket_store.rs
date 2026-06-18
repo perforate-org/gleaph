@@ -42,6 +42,9 @@ pub enum InitError {
     Slab(crate::lara::edge::SlabInitError),
     /// Free-span metadata could not be initialized.
     FreeSpan,
+    /// The backing memories are partially initialized (some regions are empty
+    /// while others are populated), so the store must not be reopened or recreated.
+    PartialLayout,
 }
 
 impl fmt::Display for InitError {
@@ -49,6 +52,12 @@ impl fmt::Display for InitError {
         match self {
             Self::Slab(err) => write!(f, "bucket slab init failed: {err}"),
             Self::FreeSpan => write!(f, "bucket free-span init failed"),
+            Self::PartialLayout => {
+                write!(
+                    f,
+                    "bucket store memories are partially initialized; refusing to reopen"
+                )
+            }
         }
     }
 }
@@ -142,15 +151,23 @@ impl<M: Memory> LabelBucketStore<M> {
         elem_capacity: u64,
         slots_per_vertex: u32,
     ) -> Result<Self, InitError> {
-        if slab.size() == 0 {
-            return Self::new(
-                slab,
-                free_spans,
-                free_span_by_start,
-                elem_capacity,
-                slots_per_vertex,
-            )
-            .map_err(|_| InitError::FreeSpan);
+        match crate::classify_composite_init([
+            slab.size(),
+            free_spans.size(),
+            free_span_by_start.size(),
+        ]) {
+            crate::CompositeInit::Fresh => {
+                return Self::new(
+                    slab,
+                    free_spans,
+                    free_span_by_start,
+                    elem_capacity,
+                    slots_per_vertex,
+                )
+                .map_err(|_| InitError::FreeSpan);
+            }
+            crate::CompositeInit::Partial => return Err(InitError::PartialLayout),
+            crate::CompositeInit::Reopen => {}
         }
         let slab = EdgeSlabStore::init(slab).map_err(InitError::Slab)?;
         let free_spans =
@@ -751,6 +768,26 @@ mod tests {
 
     fn store() -> LabelBucketStore<crate::VectorMemory> {
         LabelBucketStore::new(vector_memory(), vector_memory(), vector_memory(), 64, 4).unwrap()
+    }
+
+    #[test]
+    fn init_rejects_partial_layout_when_free_spans_wiped() {
+        let slab = vector_memory();
+        let free_spans = vector_memory();
+        let by_start = vector_memory();
+        LabelBucketStore::new(slab.clone(), free_spans.clone(), by_start.clone(), 64, 4).unwrap();
+        // Slab and by-start populated, free-span records wiped (miswired region).
+        let result = LabelBucketStore::init(slab, vector_memory(), by_start, 64, 4);
+        assert!(matches!(result, Err(InitError::PartialLayout)));
+    }
+
+    #[test]
+    fn init_reopens_fully_populated_layout() {
+        let slab = vector_memory();
+        let free_spans = vector_memory();
+        let by_start = vector_memory();
+        LabelBucketStore::new(slab.clone(), free_spans.clone(), by_start.clone(), 64, 4).unwrap();
+        assert!(LabelBucketStore::init(slab, free_spans, by_start, 64, 4).is_ok());
     }
 
     #[test]

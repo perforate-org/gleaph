@@ -133,6 +133,30 @@ where
         elem_capacity: u64,
         default_label: BucketLabelKey,
     ) -> Result<Self, InitError> {
+        // The vertex column, bucket, edge, and payload subsystems are one
+        // graph-owned composite that must be created or reopened together.
+        // `value_blobs` is excluded: it may legitimately stay empty on reopen
+        // (no wide payloads), and its Fresh-vs-Reopen asymmetry is enforced
+        // inside `EdgePayloadStore::init`.
+        match crate::classify_composite_init([
+            vertices.size(),
+            buckets.size(),
+            bucket_free_spans.size(),
+            bucket_free_span_by_start.size(),
+            edge_counts.size(),
+            edges.size(),
+            edge_log.size(),
+            edge_span_meta.size(),
+            edge_free_spans.size(),
+            edge_free_span_by_start.size(),
+            payload_slab.size(),
+            value_free_spans.size(),
+            value_free_span_by_start.size(),
+            payload_log.size(),
+        ]) {
+            crate::CompositeInit::Partial => return Err(InitError::PartialLayout),
+            crate::CompositeInit::Fresh | crate::CompositeInit::Reopen => {}
+        }
         let edges = EdgeStore::init(
             edge_counts,
             edges,
@@ -281,6 +305,122 @@ where
 mod tests {
     use super::super::test_support::*;
     use super::super::*;
+
+    #[allow(clippy::type_complexity)]
+    fn labeled_memories() -> (
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+        crate::VectorMemory,
+    ) {
+        (
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+            mem(),
+        )
+    }
+
+    #[test]
+    fn init_rejects_partial_layout_when_vertices_wiped() {
+        let label = BucketLabelKey::directed_from_index(1);
+        let (v, bk, bfs, bfsbs, ec, e, el, esm, efs, efsbs, ps, vfs, vfsbs, pl, vb) =
+            labeled_memories();
+        LabeledLaraGraph::<TestEdge, _>::new(
+            v.clone(),
+            bk.clone(),
+            bfs.clone(),
+            bfsbs.clone(),
+            ec.clone(),
+            e.clone(),
+            el.clone(),
+            esm.clone(),
+            efs.clone(),
+            efsbs.clone(),
+            ps.clone(),
+            vfs.clone(),
+            vfsbs.clone(),
+            pl.clone(),
+            vb.clone(),
+            256,
+            label,
+        )
+        .unwrap();
+        // Every subsystem populated, vertex column wiped (e.g. a miswired MemoryId).
+        let result = LabeledLaraGraph::<TestEdge, _>::init(
+            mem(),
+            bk,
+            bfs,
+            bfsbs,
+            ec,
+            e,
+            el,
+            esm,
+            efs,
+            efsbs,
+            ps,
+            vfs,
+            vfsbs,
+            pl,
+            vb,
+            256,
+            label,
+        );
+        assert!(matches!(result, Err(InitError::PartialLayout)));
+    }
+
+    #[test]
+    fn init_reopens_fully_populated_layout() {
+        let label = BucketLabelKey::directed_from_index(1);
+        let (v, bk, bfs, bfsbs, ec, e, el, esm, efs, efsbs, ps, vfs, vfsbs, pl, vb) =
+            labeled_memories();
+        LabeledLaraGraph::<TestEdge, _>::new(
+            v.clone(),
+            bk.clone(),
+            bfs.clone(),
+            bfsbs.clone(),
+            ec.clone(),
+            e.clone(),
+            el.clone(),
+            esm.clone(),
+            efs.clone(),
+            efsbs.clone(),
+            ps.clone(),
+            vfs.clone(),
+            vfsbs.clone(),
+            pl.clone(),
+            vb.clone(),
+            256,
+            label,
+        )
+        .unwrap();
+        let reopened = LabeledLaraGraph::<TestEdge, _>::init(
+            v, bk, bfs, bfsbs, ec, e, el, esm, efs, efsbs, ps, vfs, vfsbs, pl, vb, 256, label,
+        );
+        assert!(reopened.is_ok());
+    }
 
     #[test]
     fn label_edge_span_positioning_rejects_impossible_live_width() {

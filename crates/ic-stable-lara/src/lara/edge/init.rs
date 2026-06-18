@@ -78,19 +78,32 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         segment_size: u32,
         initial_vertex_edge_slots: u32,
     ) -> Result<Self, InitError> {
-        if edges.size() == 0 {
-            return Self::new(
-                counts,
-                edges,
-                log,
-                span_meta,
-                free_spans,
-                free_span_by_start,
-                elem_capacity,
-                segment_size,
-                initial_vertex_edge_slots,
-            )
-            .map_err(|_| InitError::OutOfMemory);
+        match crate::classify_composite_init([
+            counts.size(),
+            edges.size(),
+            log.size(),
+            span_meta.size(),
+            free_spans.size(),
+            free_span_by_start.size(),
+        ]) {
+            crate::CompositeInit::Fresh => {
+                return Self::new(
+                    counts,
+                    edges,
+                    log,
+                    span_meta,
+                    free_spans,
+                    free_span_by_start,
+                    elem_capacity,
+                    segment_size,
+                    initial_vertex_edge_slots,
+                )
+                .map_err(|_| InitError::OutOfMemory);
+            }
+            crate::CompositeInit::Partial => {
+                return Err(InitError::PartialLayout);
+            }
+            crate::CompositeInit::Reopen => {}
         }
         let counts = SegmentEdgeCountsStore::init(counts).map_err(InitError::Counts)?;
         let edges = EdgeSlabStore::init(edges).map_err(InitError::Edges)?;
@@ -255,5 +268,73 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
 
     pub(crate) fn set_count(&self, index: u64, count: SegmentEdgeCounts) {
         self.counts.set(index, &count);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::VectorMemory;
+    use crate::test_support::{TestEdge, vector_memory};
+
+    type Memories = (
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+        VectorMemory,
+    );
+
+    fn populated_memories() -> Memories {
+        let store = EdgeStore::<TestEdge, _>::new(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            8,
+            1,
+            0,
+        )
+        .unwrap();
+        store.into_memories()
+    }
+
+    #[test]
+    fn init_reopens_fully_populated_layout() {
+        let (counts, edges, log, span_meta, free_spans, free_span_by_start) = populated_memories();
+        let reopened = EdgeStore::<TestEdge, _>::init(
+            counts,
+            edges,
+            log,
+            span_meta,
+            free_spans,
+            free_span_by_start,
+            8,
+            1,
+            0,
+        );
+        assert!(reopened.is_ok());
+    }
+
+    #[test]
+    fn init_rejects_partial_layout_when_one_region_is_wiped() {
+        let (counts, _edges, log, span_meta, free_spans, free_span_by_start) = populated_memories();
+        // The edge slab is empty while every other region is populated, e.g. a
+        // miswired MemoryId. Recreating would overwrite the live regions.
+        let result = EdgeStore::<TestEdge, _>::init(
+            counts,
+            vector_memory(),
+            log,
+            span_meta,
+            free_spans,
+            free_span_by_start,
+            8,
+            1,
+            0,
+        );
+        assert!(matches!(result, Err(InitError::PartialLayout)));
     }
 }

@@ -274,6 +274,49 @@ fn safe_write<M: Memory>(memory: &M, offset: u64, bytes: &[u8]) -> Result<(), Gr
     Ok(())
 }
 
+/// How a composite store's backing memories should be opened.
+///
+/// A composite store spans several stable-memory regions that must move
+/// together: either every required region is freshly empty (create), or every
+/// required region is already populated (reopen). A partially populated set
+/// indicates a miswired or partially lost memory configuration; reinitializing
+/// it would silently overwrite live data.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum CompositeInit {
+    /// Every required region is empty; create a fresh store.
+    Fresh,
+    /// Every required region is populated; reopen the existing store.
+    Reopen,
+    /// Some required regions are empty while others are populated.
+    Partial,
+}
+
+/// Classifies a composite store's required backing regions by emptiness.
+///
+/// `region_sizes` are [`Memory::size`] values for the regions that a fresh
+/// create always populates. Regions that may legitimately stay empty in a
+/// populated store (for example a map that allocates lazily) must be excluded
+/// by the caller.
+pub(crate) fn classify_composite_init(
+    region_sizes: impl IntoIterator<Item = u64>,
+) -> CompositeInit {
+    let mut any_empty = false;
+    let mut any_present = false;
+    for size in region_sizes {
+        if size == 0 {
+            any_empty = true;
+        } else {
+            any_present = true;
+        }
+    }
+    match (any_empty, any_present) {
+        (true, true) => CompositeInit::Partial,
+        (false, true) => CompositeInit::Reopen,
+        // All regions empty (or no regions supplied): create fresh.
+        (_, false) => CompositeInit::Fresh,
+    }
+}
+
 /// Like [safe_write], but panics if the memory.grow fails.
 fn write<M: Memory>(memory: &M, offset: u64, bytes: &[u8]) {
     if let Err(GrowFailed {

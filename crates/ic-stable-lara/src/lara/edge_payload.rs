@@ -81,6 +81,9 @@ pub enum InitError {
     PayloadLog(log::InitError),
     /// The payload overflow-log segment count does not match the edge store.
     PayloadLogLayoutMismatch,
+    /// The backing memories are partially initialized (some regions are empty
+    /// while others are populated), so the store must not be reopened or recreated.
+    PartialLayout,
 }
 
 impl fmt::Display for InitError {
@@ -94,6 +97,12 @@ impl fmt::Display for InitError {
             Self::PayloadLog(e) => write!(f, "payload log init failed: {e}"),
             Self::PayloadLogLayoutMismatch => {
                 write!(f, "payload log segment_count does not match edge store")
+            }
+            Self::PartialLayout => {
+                write!(
+                    f,
+                    "payload store memories are partially initialized; refusing to reopen"
+                )
             }
         }
     }
@@ -375,6 +384,25 @@ impl<M: Memory> EdgePayloadStore<M> {
         byte_capacity: u64,
         edge_segment_count: u32,
     ) -> Result<Self, InitError> {
+        // The payload slab, overflow log, and free-span pair must move together.
+        // `value_blobs` is asymmetric: on reopen it may be empty (a populated
+        // store with no wide-payload blobs) or populated, but on a fresh create
+        // it must be empty. A populated blob region alongside empty required
+        // regions is partial loss.
+        match crate::classify_composite_init([
+            slab_memory.size(),
+            payload_log.size(),
+            free_spans.size(),
+            free_span_by_start.size(),
+        ]) {
+            crate::CompositeInit::Partial => return Err(InitError::PartialLayout),
+            crate::CompositeInit::Fresh => {
+                if value_blobs.size() != 0 {
+                    return Err(InitError::PartialLayout);
+                }
+            }
+            crate::CompositeInit::Reopen => {}
+        }
         let slab = if slab_memory.size() == 0 {
             PayloadByteSlabStore::new(slab_memory, HeaderV1::new(byte_capacity))
                 .map_err(|_| InitError::InvalidLayout)?
@@ -987,16 +1015,105 @@ mod tests {
     }
 
     #[test]
-    fn init_rejects_mismatched_log_segment_count() {
-        use super::log::{HeaderV1 as LogHeader, PayloadLogStore};
-
-        let edge_segments = 3u32;
-        let log_mem = mem();
-        let log = PayloadLogStore::new(log_mem, LogHeader::new(2))
-            .expect("log with fewer segments than edge store");
-        let log_mem = log.into_memory();
+    fn init_rejects_partial_layout_when_log_wiped() {
+        let slab = mem();
+        let log = mem();
+        let blobs = mem();
+        let free_spans = mem();
+        let by_start = mem();
+        EdgePayloadStore::new(
+            slab.clone(),
+            log.clone(),
+            blobs.clone(),
+            free_spans.clone(),
+            by_start.clone(),
+            1024,
+            1,
+        )
+        .expect("store");
+        // Slab, free-span pair populated, payload log wiped (miswired region).
         assert!(matches!(
-            EdgePayloadStore::init(mem(), log_mem, mem(), mem(), mem(), 1024, edge_segments),
+            EdgePayloadStore::init(slab, mem(), blobs, free_spans, by_start, 1024, 1),
+            Err(InitError::PartialLayout)
+        ));
+    }
+
+    #[test]
+    fn init_reopens_fully_populated_layout() {
+        let slab = mem();
+        let log = mem();
+        let blobs = mem();
+        let free_spans = mem();
+        let by_start = mem();
+        EdgePayloadStore::new(
+            slab.clone(),
+            log.clone(),
+            blobs.clone(),
+            free_spans.clone(),
+            by_start.clone(),
+            1024,
+            1,
+        )
+        .expect("store");
+        assert!(EdgePayloadStore::init(slab, log, blobs, free_spans, by_start, 1024, 1).is_ok());
+    }
+
+    #[test]
+    fn init_rejects_fresh_when_only_blob_region_populated() {
+        let blobs = mem();
+        // Required regions empty, but a wide-payload blob region survived: this
+        // is partial loss, not a fresh create.
+        crate::safe_write(&blobs, 0, &[1]).expect("populate blob region");
+        assert!(matches!(
+            EdgePayloadStore::init(mem(), mem(), blobs, mem(), mem(), 1024, 1),
+            Err(InitError::PartialLayout)
+        ));
+    }
+
+    #[test]
+    fn init_reopens_when_blob_region_is_empty() {
+        let slab = mem();
+        let log = mem();
+        let free_spans = mem();
+        let by_start = mem();
+        // Populate every required region; leave the blob region untouched.
+        EdgePayloadStore::new(
+            slab.clone(),
+            log.clone(),
+            mem(),
+            free_spans.clone(),
+            by_start.clone(),
+            1024,
+            1,
+        )
+        .expect("store");
+        // Reopen with an empty blob region: valid for a store that never wrote a
+        // wide-payload blob.
+        assert!(EdgePayloadStore::init(slab, log, mem(), free_spans, by_start, 1024, 1).is_ok());
+    }
+
+    #[test]
+    fn init_rejects_mismatched_log_segment_count() {
+        let slab = mem();
+        let log = mem();
+        let blobs = mem();
+        let free_spans = mem();
+        let by_start = mem();
+        // Fully populate every region with a payload-log segment_count of 2.
+        EdgePayloadStore::new(
+            slab.clone(),
+            log.clone(),
+            blobs.clone(),
+            free_spans.clone(),
+            by_start.clone(),
+            1024,
+            2,
+        )
+        .expect("store with two log segments");
+        // Reopen claiming the edge store has three segments: a real layout
+        // mismatch on an otherwise consistent, fully populated memory set.
+        assert!(matches!(
+            EdgePayloadStore::init(slab, log, blobs, free_spans, by_start, 1024, 3),
             Err(InitError::PayloadLogLayoutMismatch)
         ));
     }

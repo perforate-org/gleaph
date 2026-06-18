@@ -160,6 +160,9 @@ pub enum InitError {
     Edges(EdgeInitError),
     /// The edge-payload byte slab could not be reopened.
     Payloads(ValueInitError),
+    /// The graph-owned memories are partially initialized (some regions are empty
+    /// while others are populated), so the graph must not be reopened or recreated.
+    PartialLayout,
 }
 
 impl fmt::Display for InitError {
@@ -169,6 +172,12 @@ impl fmt::Display for InitError {
             Self::Buckets(e) => write!(f, "bucket init failed: {e}"),
             Self::Edges(e) => write!(f, "edge init failed: {e}"),
             Self::Payloads(e) => write!(f, "payload slab init failed: {e}"),
+            Self::PartialLayout => {
+                write!(
+                    f,
+                    "graph memories are partially initialized; refusing to reopen"
+                )
+            }
         }
     }
 }

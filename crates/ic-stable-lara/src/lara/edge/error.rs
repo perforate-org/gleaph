@@ -23,6 +23,9 @@ pub enum InitError {
     LogLayoutMismatch,
     /// Segment span metadata length does not match the edge layout.
     SpanMetaLayoutMismatch,
+    /// The backing memories are partially initialized (some regions are empty
+    /// while others are populated), so the store must not be reopened or recreated.
+    PartialLayout,
 }
 
 impl fmt::Display for InitError {
@@ -36,6 +39,12 @@ impl fmt::Display for InitError {
             Self::LogLayoutMismatch => write!(f, "log layout does not match edge store layout"),
             Self::SpanMetaLayoutMismatch => {
                 write!(f, "segment span metadata length does not match edge layout")
+            }
+            Self::PartialLayout => {
+                write!(
+                    f,
+                    "edge subsystem memories are partially initialized; refusing to reopen"
+                )
             }
         }
     }

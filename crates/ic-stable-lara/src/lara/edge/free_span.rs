@@ -232,18 +232,39 @@ impl<M: Memory> FreeSpanStore<M> {
     }
 
     /// Reopens an existing free-span store and by-start index.
+    ///
+    /// The records header and the by-start index are paired regions: a fresh
+    /// create populates both. Reopening with only one populated (a miswired or
+    /// partially lost memory set) is rejected, because a stale or empty by-start
+    /// index would make overlap checks miss live spans and let the allocator
+    /// hand out the same physical range twice.
     pub fn init(store: M, by_start_ms: M) -> Result<Self, InitError> {
-        if store.size() == 0 {
-            return Self::new(store, by_start_ms).map_err(|_| InitError::OutOfMemory);
+        match crate::classify_composite_init([store.size(), by_start_ms.size()]) {
+            crate::CompositeInit::Fresh => {
+                return Self::new(store, by_start_ms).map_err(|_| InitError::OutOfMemory);
+            }
+            crate::CompositeInit::Partial => return Err(InitError::InvalidLayout),
+            crate::CompositeInit::Reopen => {}
         }
         let header = read_header(&store);
         validate_header(&store, &header)?;
-        Ok(Self {
+        let this = Self {
             store,
             by_start: RefCell::new(
                 StablePagedOrderedMap::init(by_start_ms).map_err(|_| InitError::OutOfMemory)?,
             ),
-        })
+        };
+        // The by-start index must be internally sound, hold exactly one entry per
+        // active span, and agree with the records header and size-class bins.
+        this.by_start
+            .borrow()
+            .validate()
+            .map_err(|_| InitError::InvalidLayout)?;
+        if this.by_start.borrow().len() != header.active_count {
+            return Err(InitError::InvalidLayout);
+        }
+        this.validate().map_err(|_| InitError::InvalidLayout)?;
+        Ok(this)
     }
 
     /// Reads the current free-span store header.
@@ -744,6 +765,22 @@ impl<M: Memory> FreeSpanStore<M> {
             }
             cur = rec.next_bin;
             scanned += 1;
+        }
+        // The bounded scan approximates best-fit within the start bin, whose
+        // members can be shorter than `min_len`. If it found nothing but records
+        // remain unscanned, keep walking for the first fit so a usable span is
+        // not skipped, which would otherwise force an unnecessary slab growth.
+        // Higher bins always fit on their first member, so this only ever
+        // continues within the requested start bin.
+        if best_id == 0 {
+            while cur != 0 {
+                let rec = self.read_record(cur);
+                if rec.flags == FLAG_ACTIVE && rec.len >= min_len {
+                    best_id = cur;
+                    break;
+                }
+                cur = rec.next_bin;
+            }
         }
         if best_id == 0 {
             return Ok(None);
@@ -1263,6 +1300,61 @@ mod tests {
                 len: 80
             })
         );
+        reopened.validate().unwrap();
+    }
+
+    #[test]
+    fn binned_take_best_fit_finds_fit_beyond_bounded_scan() {
+        let s = test_store();
+        // A fitting span in the [65,128] size class, released first so later
+        // releases bury it past the bounded best-fit scan window.
+        s.release_span(0, 120).unwrap();
+        // Eight non-fitting spans (len 99) in the same size class, each linked at
+        // the bin-list head, pushing the 120-length span to the ninth position.
+        for i in 0..8u64 {
+            s.release_span(1000 + i * 200, 99).unwrap();
+        }
+        assert_eq!(
+            s.take_best_fit(100).unwrap(),
+            Some(FreeSpan {
+                start_slot: 0,
+                len: 100
+            })
+        );
+        assert_eq!(
+            s.free_span_starting_at(100),
+            Some(FreeSpan {
+                start_slot: 100,
+                len: 20
+            })
+        );
+        s.validate().unwrap();
+    }
+
+    #[test]
+    fn binned_reopen_rejects_one_sided_region_loss() {
+        let m = MemoryManager::init(DefaultMemoryImpl::default());
+        {
+            let s =
+                FreeSpanStore::init(m.get(MemoryId::new(60)), m.get(MemoryId::new(61))).unwrap();
+            s.release_span(100, 20).unwrap();
+            s.release_span(500, 30).unwrap();
+        }
+        // Records populated (id 60), by-start lost (empty id 62): reopening must
+        // fail rather than open an empty index that hides live spans.
+        assert!(matches!(
+            FreeSpanStore::init(m.get(MemoryId::new(60)), m.get(MemoryId::new(62))),
+            Err(InitError::InvalidLayout)
+        ));
+        // Records lost (empty id 63), by-start populated (id 61): also rejected.
+        assert!(matches!(
+            FreeSpanStore::init(m.get(MemoryId::new(63)), m.get(MemoryId::new(61))),
+            Err(InitError::InvalidLayout)
+        ));
+        // Both original regions still reopen cleanly.
+        let reopened =
+            FreeSpanStore::init(m.get(MemoryId::new(60)), m.get(MemoryId::new(61))).unwrap();
+        assert_eq!(reopened.len(), 2);
         reopened.validate().unwrap();
     }
 
