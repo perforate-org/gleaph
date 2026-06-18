@@ -317,12 +317,35 @@ impl<T: Storable, M: Memory> VecDeque<T, M> {
         }
 
         let head = self.head();
-        for i in 0..len {
-            let phys = (head + i) % cap;
-            let old_off = DATA_OFFSET + phys * slot;
-            let value: T = slot::read_slot::<M, T>(&self.memory, old_off);
-            let new_off = DATA_OFFSET + i * slot;
-            slot::write_slot(&self.memory, new_off, &value)?;
+        if head != 0 {
+            // Rotate the occupied physical slots left by `head`. Moving each logical item
+            // directly to its destination in increasing order would overwrite unread wrapped
+            // slots. Cycle rotation keeps only one decoded item in heap memory and moves every
+            // slot exactly once.
+            let mut a = cap;
+            let mut b = head;
+            while b != 0 {
+                (a, b) = (b, a % b);
+            }
+
+            for cycle_start in 0..a {
+                let first = slot::read_slot::<M, T>(&self.memory, DATA_OFFSET + cycle_start * slot);
+                let mut destination = cycle_start;
+                loop {
+                    let source = if destination >= cap - head {
+                        destination - (cap - head)
+                    } else {
+                        destination + head
+                    };
+                    if source == cycle_start {
+                        break;
+                    }
+                    let value = slot::read_slot::<M, T>(&self.memory, DATA_OFFSET + source * slot);
+                    slot::write_slot(&self.memory, DATA_OFFSET + destination * slot, &value)?;
+                    destination = source;
+                }
+                slot::write_slot(&self.memory, DATA_OFFSET + destination * slot, &first)?;
+            }
         }
         self.set_head(0);
         self.set_capacity(new_cap);
@@ -698,6 +721,29 @@ mod tests {
         y: u32,
     }
 
+    #[derive(Clone, PartialEq, Eq, Debug)]
+    struct VariableTest(String);
+
+    impl Storable for VariableTest {
+        fn to_bytes(&self) -> Cow<'_, [u8]> {
+            Cow::Borrowed(self.0.as_bytes())
+        }
+
+        fn into_bytes(self) -> std::vec::Vec<u8> {
+            self.0.into_bytes()
+        }
+
+        fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+            Self(String::from_utf8(bytes.into_owned()).unwrap())
+        }
+
+        const BOUND: ic_stable_structures::storable::Bound =
+            ic_stable_structures::storable::Bound::Bounded {
+                max_size: 32,
+                is_fixed_size: false,
+            };
+    }
+
     impl Storable for Test {
         fn to_bytes(&self) -> Cow<'_, [u8]> {
             let mut v = vec![0u8; 12];
@@ -791,5 +837,44 @@ mod tests {
         };
         let dq2 = VecDeque::<u64, _>::init(mem).unwrap();
         assert_eq!(dq2.to_vec(), (0u64..50).collect::<std::vec::Vec<_>>());
+    }
+
+    #[test]
+    fn grow_preserves_wrapped_fixed_size_elements() {
+        let mem = ic_stable_structures::DefaultMemoryImpl::default();
+        let dq = VecDeque::<u64, _>::new(mem).unwrap();
+        for value in 0..4 {
+            dq.push_back(&value).unwrap();
+        }
+        assert_eq!(dq.pop_front(), Some(0));
+        assert_eq!(dq.pop_front(), Some(1));
+        dq.push_back(&4).unwrap();
+        dq.push_back(&5).unwrap();
+
+        dq.push_back(&6).unwrap();
+
+        assert_eq!(dq.to_vec(), vec![2, 3, 4, 5, 6]);
+    }
+
+    #[test]
+    fn grow_preserves_wrapped_variable_size_elements() {
+        let mem = ic_stable_structures::DefaultMemoryImpl::default();
+        let dq = VecDeque::<VariableTest, _>::new(mem).unwrap();
+        for value in ["zero", "one", "two", "three"] {
+            dq.push_back(&VariableTest(value.into())).unwrap();
+        }
+        assert_eq!(dq.pop_front(), Some(VariableTest("zero".into())));
+        assert_eq!(dq.pop_front(), Some(VariableTest("one".into())));
+        dq.push_back(&VariableTest("four-four".into())).unwrap();
+        dq.push_back(&VariableTest("five-five-five".into()))
+            .unwrap();
+
+        dq.push_back(&VariableTest("six".into())).unwrap();
+
+        assert_eq!(
+            dq.to_vec(),
+            ["two", "three", "four-four", "five-five-five", "six"]
+                .map(|value| VariableTest(value.into()))
+        );
     }
 }
