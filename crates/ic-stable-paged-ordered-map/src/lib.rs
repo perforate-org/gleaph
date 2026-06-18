@@ -496,6 +496,13 @@ impl<M: Memory> StablePagedOrderedMap<M> {
     }
 
     fn split_page_and_insert(&self, page: u64, key: u64, value: u64) -> Result<Option<u64>, Error> {
+        let dir_len = self.read_dir_len();
+        if dir_len >= DIR_CAP {
+            return Err(Error::DirectoryFull);
+        }
+        let dir_pos = (0..dir_len)
+            .find(|&i| self.read_dir_entry(i).page_id == page)
+            .ok_or(Error::Corrupt)?;
         let header = self.read_page_header(page);
         let mut entries = Vec::with_capacity((PAGE_CAP + 1) as usize);
         let mut inserted = false;
@@ -547,7 +554,6 @@ impl<M: Memory> StablePagedOrderedMap<M> {
         }
         self.write_page_fields(page, |h| h.next = right);
 
-        let dir_pos = self.dir_index_for_page(page).ok_or(Error::Corrupt)?;
         self.update_dir_min(dir_pos, left_entries[0].0);
         self.insert_dir_entry(
             dir_pos + 1,
@@ -1093,5 +1099,36 @@ mod tests {
         assert_eq!(reopened.first(), Some((64, 128)));
         assert_eq!(reopened.len(), 26);
         reopened.validate().unwrap();
+    }
+
+    #[test]
+    fn directory_full_split_is_side_effect_free() {
+        let m = map();
+        for key in 0..PAGE_CAP {
+            m.insert(key, key + 1).unwrap();
+        }
+        let page = m.read_first_page();
+        m.write_dir_len(DIR_CAP);
+        let header_before = m.header();
+        let page_header_before = m.read_page_header(page);
+        let entries_before = (0..PAGE_CAP as u16)
+            .map(|index| m.read_entry(page, index))
+            .collect::<Vec<_>>();
+
+        assert_eq!(
+            m.split_page_and_insert(page, PAGE_CAP, PAGE_CAP + 1),
+            Err(Error::DirectoryFull)
+        );
+
+        assert_eq!(m.header(), header_before);
+        assert_eq!(m.read_page_header(page), page_header_before);
+        assert_eq!(
+            (0..PAGE_CAP as u16)
+                .map(|index| m.read_entry(page, index))
+                .collect::<Vec<_>>(),
+            entries_before
+        );
+        m.write_dir_len(1);
+        m.validate().unwrap();
     }
 }

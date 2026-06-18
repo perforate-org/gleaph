@@ -50,25 +50,25 @@ benches:
   bench_paged_mixed_insert_remove_1024:
     total:
       calls: 1
-      instructions: 377780
+      instructions: 388720
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       paged_mixed_insert_remove:
         calls: 1
-        instructions: 376741
+        instructions: 387681
         heap_increase: 0
         stable_memory_increase: 0
   bench_paged_mixed_insert_remove_4096:
     total:
       calls: 1
-      instructions: 416796
+      instructions: 427736
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       paged_mixed_insert_remove:
         calls: 1
-        instructions: 415757
+        instructions: 426697
         heap_increase: 0
         stable_memory_increase: 0
   bench_paged_predecessor_successor_1024:
