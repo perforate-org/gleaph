@@ -589,9 +589,52 @@ fn bench_graph_large_expand_payload_skewed_50k_a_1k_b() -> canbench_rs::BenchRes
     )
 }
 
+const DELETE_SUPERNODE_IN_L: u32 = 500;
+const DELETE_SUPERNODE_IN_XL: u32 = 1_000;
+
+/// Super-node detach-delete: hub fed by 500 payload-free in-edges. Measures the
+/// full synchronous reverse-adjacency purge under one delete call (ADR 0021).
+#[bench(raw)]
+fn bench_graph_large_detach_delete_supernode_500in() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let hub = setup_delete_hub_in_edges(&store, DELETE_SUPERNODE_IN_L);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("large_detach_delete_supernode_500in");
+        store
+            .detach_delete_vertex(black_box(hub))
+            .expect("detach delete supernode");
+        assert!(!store.is_vertex_live(hub), "hub tombstoned after detach");
+    })
+}
+
+/// Super-node detach-delete: hub fed by 1,000 payload-free in-edges (ADR 0021).
+#[bench(raw)]
+fn bench_graph_large_detach_delete_supernode_1k_in() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let hub = setup_delete_hub_in_edges(&store, DELETE_SUPERNODE_IN_XL);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("large_detach_delete_supernode_1k_in");
+        store
+            .detach_delete_vertex(black_box(hub))
+            .expect("detach delete supernode");
+        assert!(!store.is_vertex_live(hub), "hub tombstoned after detach");
+    })
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn detach_delete_supernode_in_edges_setup_and_purge() {
+        let store = GraphStore::new();
+        let hub = setup_delete_hub_in_edges(&store, 32);
+        store.detach_delete_vertex(hub).expect("detach delete");
+        assert!(!store.is_vertex_live(hub));
+        assert!(!store.vertex_is_pending_purge(hub));
+    }
 
     #[test]
     fn large_feed_page_setup_and_execute() {

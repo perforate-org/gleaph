@@ -2,85 +2,85 @@ benches:
   bench_catalog_apply_32_new_graph_types:
     total:
       calls: 1
-      instructions: 2631874
+      instructions: 1962063
       heap_increase: 0
       stable_memory_increase: 257
     scopes:
       catalog_apply:
         calls: 1
-        instructions: 2552458
+        instructions: 1874320
         heap_increase: 0
         stable_memory_increase: 0
   bench_catalog_apply_or_replace_type_and_graph:
     total:
       calls: 1
-      instructions: 81838
+      instructions: 61919
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       catalog_apply:
         calls: 1
-        instructions: 80799
+        instructions: 60783
         heap_increase: 0
         stable_memory_increase: 0
   bench_catalog_drop_graph_type_cascade_32_graphs:
     total:
       calls: 1
-      instructions: 3670677
+      instructions: 2506296
       heap_increase: 0
       stable_memory_increase: 257
     scopes:
       catalog_drop_type:
         calls: 1
-        instructions: 1363804
+        instructions: 1051147
         heap_increase: 0
         stable_memory_increase: 0
   bench_catalog_parse_small_ddl:
     total:
       calls: 1
-      instructions: 58637
+      instructions: 58535
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       catalog_parse:
         calls: 1
-        instructions: 57564
+        instructions: 57526
         heap_increase: 0
         stable_memory_increase: 0
   bench_catalog_resolve_inline_medium:
     total:
       calls: 1
-      instructions: 97550
+      instructions: 120465
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       catalog_resolve:
         calls: 1
-        instructions: 96505
+        instructions: 119178
         heap_increase: 0
         stable_memory_increase: 0
   bench_catalog_resolve_typed_schema:
     total:
       calls: 1
-      instructions: 37037
+      instructions: 33752
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       catalog_resolve:
         calls: 1
-        instructions: 35903
+        instructions: 32623
         heap_increase: 0
         stable_memory_increase: 0
   bench_catalog_resolve_typed_schema_among_128_graphs:
     total:
       calls: 1
-      instructions: 58968
+      instructions: 45381
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       catalog_resolve:
         calls: 1
-        instructions: 57923
+        instructions: 44344
         heap_increase: 0
         stable_memory_increase: 0
 version: 0.4.0

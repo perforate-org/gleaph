@@ -2,13 +2,13 @@ benches:
   bench_layout_router_stable_reopen_touch:
     total:
       calls: 1
-      instructions: 49209
+      instructions: 101617
       heap_increase: 0
-      stable_memory_increase: 384
+      stable_memory_increase: 1152
     scopes:
       layout_router_reopen:
         calls: 1
-        instructions: 48210
+        instructions: 100613
         heap_increase: 0
-        stable_memory_increase: 384
+        stable_memory_increase: 1152
 version: 0.4.0

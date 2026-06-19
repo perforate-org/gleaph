@@ -1856,6 +1856,82 @@ fn bench_graph_gql_ic_params_blob_decode() -> canbench_rs::BenchResult {
     })
 }
 
+// --- Delete benches (ADR 0021 resumable tombstone-first DETACH DELETE) ---
+
+const DELETE_HUB_DEGREE: u32 = 24;
+
+/// Hub with `in_degree` payload-free directed in-edges (`n -> hub`) from distinct
+/// sources. This is the reverse-adjacency purge path fixed in ADR 0021.
+fn setup_delete_hub_in_edges(store: &GraphStore, in_degree: u32) -> VertexId {
+    let hub = store.insert_vertex().expect("hub");
+    for _ in 0..in_degree {
+        let n = store.insert_vertex().expect("in neighbor");
+        store.insert_directed_edge(n, hub, None).expect("n->hub");
+    }
+    hub
+}
+
+/// Hub with `out_degree` payload-free directed out-edges (`hub -> n`) to distinct
+/// destinations (forward-adjacency purge path).
+fn setup_delete_hub_out_edges(store: &GraphStore, out_degree: u32) -> VertexId {
+    let hub = store.insert_vertex().expect("hub");
+    for _ in 0..out_degree {
+        let n = store.insert_vertex().expect("out neighbor");
+        store.insert_directed_edge(hub, n, None).expect("hub->n");
+    }
+    hub
+}
+
+/// Detach-delete of a hub fed by 24 payload-free in-edges; the measured call
+/// tombstones the row and drains the incident-edge purge (ADR 0021 Stage 2).
+#[bench(raw)]
+fn bench_graph_detach_delete_hub_in_edges_24() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let hub = setup_delete_hub_in_edges(&store, DELETE_HUB_DEGREE);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("detach_delete_hub_in_edges_24");
+        store
+            .detach_delete_vertex(black_box(hub))
+            .expect("detach delete hub");
+        assert!(!store.is_vertex_live(hub), "hub tombstoned after detach");
+    })
+}
+
+/// Detach-delete of a hub with 24 out-edges (forward-adjacency purge path).
+#[bench(raw)]
+fn bench_graph_detach_delete_hub_out_edges_24() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let hub = setup_delete_hub_out_edges(&store, DELETE_HUB_DEGREE);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("detach_delete_hub_out_edges_24");
+        store
+            .detach_delete_vertex(black_box(hub))
+            .expect("detach delete hub");
+        assert!(!store.is_vertex_live(hub), "hub tombstoned after detach");
+    })
+}
+
+/// Baseline: delete a detached vertex (no incident edges); isolates the row-removal
+/// and sidecar-clear cost without any edge-purge work.
+#[bench(raw)]
+fn bench_graph_delete_detached_vertex() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let vertex = store.insert_vertex().expect("vertex");
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("delete_detached_vertex");
+        store
+            .delete_vertex(black_box(vertex))
+            .expect("delete detached vertex");
+        assert!(
+            !store.is_vertex_live(vertex),
+            "vertex tombstoned after delete"
+        );
+    })
+}
+
 #[cfg(test)]
 mod bench_setup_tests {
     use super::*;
