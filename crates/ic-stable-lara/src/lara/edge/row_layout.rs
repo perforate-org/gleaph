@@ -56,7 +56,15 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             let cap = span_rec
                 .physical_start
                 .saturating_add(c.total.max(0) as u64);
-            return Self::max_slab_window_for_vertex(v, base, next_base.min(cap));
+            // The leaf physical-block cap only bounds rows whose edges actually live
+            // inside this leaf's block. A synthetic single-bucket access
+            // (`LabelEdgeSpanAccess`) exposes `v_ord == 0` while its edge bytes may sit
+            // in a *different* physical leaf; reading leaf-0's cap then yields
+            // `cap < base`, and `next_base.min(cap)` would place the window end before
+            // `base` (underflowing the on-slab span). When `base` is past the cap, the
+            // next-bucket boundary is authoritative and the leaf cap must not apply.
+            let end = if base < cap { next_base.min(cap) } else { next_base };
+            return Self::max_slab_window_for_vertex(v, base, end);
         }
 
         let w = edge_layout.initial_vertex_edge_slots;

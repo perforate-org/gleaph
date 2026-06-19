@@ -417,8 +417,18 @@ Documents to update when this ADR is implemented:
 | `design/storage/payload-first-traversal.md` | **Updated 2026-06-16:** bucket-derived log attach; edge replay filters dead log ordinals |
 | `design/storage/stable-memory-inventory.md` | Note `LVL` layout version 1 when revisiting region docs |
 
+## Amendments
+
+- **2026-06-19 (ADR 0022):** A labeled bucket with an active overflow log
+  (`log_head >= 0`) is scanned through the synthetic `LabelEdgeSpanAccess`. Its
+  on-slab window end is bounded by the next bucket's `successor_start`, **not** by
+  leaf-0's physical cap; `EdgeStore::slab_window_exclusive_end` must not clamp the
+  window end below the bucket base when the base sits past the indexed leaf's cap.
+  See [ADR 0022](0022-degree-driven-hub-edge-storage.md).
+
 ## Related
 
+- [ADR 0022: Labeled overflow-log read-window fix](0022-degree-driven-hub-edge-storage.md)
 - [ADR 0001: Labeled edge physical layer uses PMA leaf segment slide](0001-labeled-segment-slide.md)
 - [ADR 0007: Stable-memory layout policy and measured consolidation](0007-stable-memory-layout.md)
 - [ADR 0008: Edge payload profile schema: router SSOT](0008-edge-payload-profile-router-ssot.md)

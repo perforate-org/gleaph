@@ -648,22 +648,14 @@ mod tests {
         assert_eq!(result.rows.len(), FEED_LIMIT as usize);
     }
 
-    // Validates the friends-of-friends setup + two-hop expand at a reduced scale.
-    // The full bench scale (256x64) is exercised by the canbench bench; running it
-    // here wedges the native test-only unlimited post-insert compaction
-    // (`CollectAllocationOverflow` from tightly packed PMA leaves). Production wasm
-    // uses the bounded maintenance budget and is unaffected.
-    const FOF_TEST_FIRST_HOP: u32 = 16;
-    const FOF_TEST_SECOND_HOP: u32 = 8;
-
     #[test]
     fn large_friends_of_friends_setup_and_execute() {
         let store = GraphStore::new();
-        build_friends_of_friends_graph(&store, FOF_TEST_FIRST_HOP, FOF_TEST_SECOND_HOP);
+        build_friends_of_friends_graph(&store, FOF_FIRST_HOP, FOF_SECOND_HOP);
         let result = execute_expand_plan(&store, &large_friends_of_friends_plan());
         assert_eq!(
             result.rows.len(),
-            (FOF_TEST_FIRST_HOP * FOF_TEST_SECOND_HOP) as usize
+            (FOF_FIRST_HOP * FOF_SECOND_HOP) as usize
         );
     }
 

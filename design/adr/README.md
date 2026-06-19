@@ -56,5 +56,6 @@ Last revised: YYYY-MM-DD
 | [0019](0019-graph-local-shard-id-and-index-clusters.md) | Graph-local dense `ShardId`; per-graph index cluster; commit `GROUP_SIZE` routing | accepted |
 | [0020](0020-deferred-maintenance-timer-drain.md) | Timer-driven (`ic-cdk-timers`) adaptive drain of the deferred LARA maintenance queue; event-driven re-arm | accepted |
 | [0021](0021-resumable-supernode-detach-delete.md) | Resumable super-node `DETACH DELETE` via tombstone-first + phased incident-edge purge on the maintenance timer; gated read-time neighbor visibility | proposed |
+| [0022](0022-degree-driven-hub-edge-storage.md) | Fix labeled overflow-log read-window underflow (`CollectAllocationOverflow`) for buckets past leaf-0's cap now; degree-driven hub edge storage (dedicated span / B-tree) deferred | accepted |
 
 When adding an ADR, link it from the relevant design doc and update this table.

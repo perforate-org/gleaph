@@ -2095,6 +2095,71 @@ mod tests {
     };
     use crate::VertexId;
 
+    /// ADR 0022 Stage 1 regression: a labeled bucket whose edge bytes live past the
+    /// edge-slab leaf-0 physical block and which has spilled into the per-leaf overflow
+    /// log must be readable in descending order.
+    ///
+    /// `LabelEdgeSpanAccess` exposes the bucket as a synthetic `v_ord == 0` row, so
+    /// `slab_window_exclusive_end` would read leaf-0's physical cap. When the bucket
+    /// base is past that cap, `next_base.min(cap)` placed the window end *before* the
+    /// base and `on_slab_edges_with_layout` underflowed into `CollectAllocationOverflow`
+    /// — the wedge that broke the 256x64 friends-of-friends build during the descending
+    /// edge-handle lookup `insert_directed_edge` runs.
+    #[test]
+    fn overflow_log_bucket_past_leaf0_cap_reads_descending() {
+        let default = BucketLabelKey::directed_from_index(1);
+        let graph = test_graph_with_default(default);
+        let label = BucketLabelKey::directed_from_index(5);
+
+        // Need leaves 0, 1, 2 (segment_size == 32) plus destination vertices.
+        const FAR_VID: u32 = 64; // first vertex of leaf 2
+        const EDGES: u32 = 48; // > per-vertex leaf quota (32) so the overflow log activates
+        for _ in 1..=(FAR_VID + EDGES) {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+
+        // Pin leaf 0 and leaf 1 with labeled edges so their physical blocks sit before
+        // leaf 2's block; this pushes the far vertex's edge_start past leaf-0's cap.
+        graph
+            .insert_edge_skip_leaf_cascade(VertexId::from(0), label, TestEdge { target: 1 })
+            .unwrap();
+        graph
+            .insert_edge_skip_leaf_cascade(VertexId::from(32), label, TestEdge { target: 2 })
+            .unwrap();
+
+        // Fill the far vertex past its leaf quota so excess edges land in the per-leaf
+        // overflow log (`log_head >= 0`) without relocating the block.
+        for i in 0..EDGES {
+            graph
+                .insert_edge_skip_leaf_cascade(
+                    VertexId::from(FAR_VID),
+                    label,
+                    TestEdge {
+                        target: FAR_VID + i,
+                    },
+                )
+                .unwrap_or_else(|e| panic!("far insert {i}: {e:?}"));
+        }
+
+        let mut descending = Vec::new();
+        graph
+            .for_each_edges_for_label_ordered(
+                VertexId::from(FAR_VID),
+                label,
+                OutEdgeOrder::Descending,
+                |edge| descending.push(edge.target),
+            )
+            .expect("descending read over overflow-log bucket must succeed");
+        assert_eq!(
+            descending.len(),
+            EDGES as usize,
+            "descending read must yield every inserted edge"
+        );
+
+        let ascending = graph.iter_edges_for_label(VertexId::from(FAR_VID), label).unwrap();
+        assert_eq!(ascending.len(), EDGES as usize);
+    }
+
     #[test]
     fn homogeneous_bypass_append_rejects_degree_overflow() {
         let default = BucketLabelKey::from_raw(7);
