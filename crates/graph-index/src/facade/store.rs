@@ -14,7 +14,31 @@ mod property_postings;
 #[cfg(test)]
 mod tests;
 
+use crate::state::IndexError;
 use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::index::{
+    IndexEqualSpec, PostingRangeRequest, validate_index_value_key_bytes,
+};
+
+pub(super) fn ensure_index_value_key(value: &[u8]) -> Result<(), IndexError> {
+    validate_index_value_key_bytes(value).map_err(|_| IndexError::IndexValueKeyTooLarge)
+}
+
+pub(super) fn ensure_posting_range_request(req: &PostingRangeRequest) -> Result<(), IndexError> {
+    match req {
+        PostingRangeRequest::Ge(b)
+        | PostingRangeRequest::Gt(b)
+        | PostingRangeRequest::Le(b)
+        | PostingRangeRequest::Lt(b) => ensure_index_value_key(b),
+    }
+}
+
+pub(super) fn ensure_intersection_specs(specs: &[IndexEqualSpec]) -> Result<(), IndexError> {
+    for spec in specs {
+        ensure_index_value_key(&spec.value)?;
+    }
+    Ok(())
+}
 
 /// Default cap on groups returned by [`IndexStore::count_postings_by_value`].
 pub const DEFAULT_COUNT_POSTINGS_MAX_GROUPS: usize = 10_000;

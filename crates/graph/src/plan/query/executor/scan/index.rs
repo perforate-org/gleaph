@@ -3,7 +3,9 @@ use std::collections::BTreeMap;
 use gleaph_gql::ast::CmpOp;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{ConditionalScanCandidate, IndexScanSpec, ScanValue, Str};
-use gleaph_graph_kernel::index::{IndexEqualSpec, IndexIntersectionRequest, PostingRangeRequest};
+use gleaph_graph_kernel::index::{
+    IndexEqualSpec, IndexIntersectionRequest, PostingRangeRequest, validate_index_value_key_bytes,
+};
 
 use crate::facade::GraphStore;
 use crate::federation::FederationPort;
@@ -36,9 +38,21 @@ pub(crate) fn resolve_scan_payload_bytes(
             }
         })?,
     };
-    value_to_index_key_bytes(&v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-        expression: "index scan value encoding".to_owned(),
-    })
+    value_to_index_key_bytes(&v)
+        .map_err(|_| PlanQueryError::InvalidExpressionValue {
+            expression: "index scan value encoding".to_owned(),
+        })
+        .and_then(|bytes| {
+            let Some(bytes) = bytes else {
+                return Ok(None);
+            };
+            validate_index_value_key_bytes(&bytes).map_err(|_| {
+                PlanQueryError::InvalidExpressionValue {
+                    expression: "index value key exceeds maximum encoded size".to_owned(),
+                }
+            })?;
+            Ok(Some(bytes))
+        })
 }
 
 fn cmp_to_posting_range_request(
@@ -102,6 +116,9 @@ pub(crate) async fn execute_conditional_index_scan(
             let Some(bytes) = value_to_index_key_bytes(&pv).ok().flatten() else {
                 break;
             };
+            if validate_index_value_key_bytes(&bytes).is_err() {
+                break;
+            }
             let Some(ix) = ctx.index else {
                 return Err(PlanQueryError::UnsupportedOp(
                     "ConditionalIndexScan(no index client)",

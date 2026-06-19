@@ -1,6 +1,37 @@
 //! Shared property-index API transport types.
 
 use crate::federation::ShardId;
+use std::fmt;
+
+/// Maximum encoded sortable index value key size (`V` in index capacity planning).
+pub const MAX_INDEX_VALUE_KEY_BYTES: usize = 4096;
+
+/// Returned when encoded index value key bytes exceed [`MAX_INDEX_VALUE_KEY_BYTES`].
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct IndexValueKeyTooLarge {
+    pub len: usize,
+}
+
+impl fmt::Display for IndexValueKeyTooLarge {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(
+            f,
+            "index value key length {} exceeds maximum {} bytes",
+            self.len, MAX_INDEX_VALUE_KEY_BYTES
+        )
+    }
+}
+
+impl std::error::Error for IndexValueKeyTooLarge {}
+
+/// Validates that encoded index value key bytes are within [`MAX_INDEX_VALUE_KEY_BYTES`].
+pub fn validate_index_value_key_bytes(value: &[u8]) -> Result<(), IndexValueKeyTooLarge> {
+    if value.len() <= MAX_INDEX_VALUE_KEY_BYTES {
+        Ok(())
+    } else {
+        Err(IndexValueKeyTooLarge { len: value.len() })
+    }
+}
 
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
@@ -176,6 +207,15 @@ mod tests {
         let bytes = Encode!(&req).expect("encode");
         let decoded: IndexIntersectionRequest = Decode!(&bytes, IndexIntersectionRequest).unwrap();
         assert_eq!(decoded, req);
+    }
+
+    #[test]
+    fn validate_index_value_key_bytes_at_and_over_limit() {
+        let at_limit = vec![0u8; MAX_INDEX_VALUE_KEY_BYTES];
+        validate_index_value_key_bytes(&at_limit).expect("at limit");
+        let over = vec![0u8; MAX_INDEX_VALUE_KEY_BYTES + 1];
+        let err = validate_index_value_key_bytes(&over).expect_err("over limit");
+        assert_eq!(err.len, MAX_INDEX_VALUE_KEY_BYTES + 1);
     }
 
     #[test]

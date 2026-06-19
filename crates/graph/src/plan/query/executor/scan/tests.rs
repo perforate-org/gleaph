@@ -686,6 +686,64 @@ fn index_scan_rejects_unsupported_parameter_value() {
 }
 
 #[test]
+fn index_scan_rejects_oversized_index_key_before_index_call() {
+    use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
+
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let index = MockPropertyIndex::default();
+    let oversized = Value::Bytes(vec![1u8; MAX_INDEX_VALUE_KEY_BYTES - 2]);
+    let plan = plan(vec![PlanOp::IndexScan {
+        variable: "n".into(),
+        property: "country".into(),
+        value: ScanValue::Literal(oversized),
+        cmp: CmpOp::Eq,
+        property_projection: None,
+    }]);
+
+    let err = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect_err("oversized index key should fail before index call");
+
+    assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
+    assert!(index.equal_calls.borrow().is_empty());
+}
+
+#[test]
+fn range_index_scan_rejects_oversized_bound_before_index_call() {
+    use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
+
+    let store = GraphStore::new();
+    configure_test_index(&store);
+    let index = MockPropertyIndex::default();
+    let oversized = Value::Bytes(vec![1u8; MAX_INDEX_VALUE_KEY_BYTES - 2]);
+    let plan = plan(vec![PlanOp::IndexScan {
+        variable: "n".into(),
+        property: "country".into(),
+        value: ScanValue::Literal(oversized),
+        cmp: CmpOp::Ge,
+        property_projection: None,
+    }]);
+
+    let err = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+    ))
+    .expect_err("oversized range bound should fail before index call");
+
+    assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
+    assert!(index.range_calls.borrow().is_empty());
+}
+
+#[test]
 fn index_scan_rejects_non_orderable_extension_parameter_value() {
     let store = GraphStore::new();
     configure_test_index(&store);

@@ -17,7 +17,9 @@ use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::plan::{PlanOp, ScanValue};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::{EdgePostingHit, IndexEqualSpec, PostingHit};
+use gleaph_graph_kernel::index::{
+    EdgePostingHit, IndexEqualSpec, PostingHit, validate_index_value_key_bytes,
+};
 use gleaph_graph_kernel::plan_exec::{LocalEdgePosting, SeedBindingEntry, SeedBindingsWire};
 
 use crate::edge_index_direction::wire_labels_for_query;
@@ -224,7 +226,7 @@ fn edge_equal_anchor(
     edge_label: Option<&str>,
     query_direction: Option<EdgeDirection>,
 ) -> Result<IndexAnchor, RouterError> {
-    let payload_bytes = resolve_scan_value(value, params)
+    let payload_bytes = resolve_scan_value(value, params)?
         .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
     let property_id = store
         .lookup_property_id(graph_id, property.as_ref())
@@ -323,7 +325,7 @@ pub(crate) fn parse_seed_anchor_prefix(
                 let mut specs = Vec::with_capacity(scans.len());
                 for scan in scans {
                     let payload_bytes =
-                        resolve_scan_value(&scan.value, params).ok_or_else(|| {
+                        resolve_scan_value(&scan.value, params)?.ok_or_else(|| {
                             RouterError::InvalidArgument("missing seed parameter".into())
                         })?;
                     let property_id = store
@@ -475,7 +477,7 @@ fn equal_anchor(
     property: &str,
     value: &ScanValue,
 ) -> Result<IndexAnchor, RouterError> {
-    let payload_bytes = resolve_scan_value(value, params)
+    let payload_bytes = resolve_scan_value(value, params)?
         .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
     let property_id = store
         .lookup_property_id(graph_id, property)
@@ -531,6 +533,9 @@ fn anchor_from_property_predicate(
                     RouterError::InvalidArgument("seed filter value is not indexable".into())
                 })?
                 .ok_or_else(|| RouterError::InvalidArgument("seed filter rejects null".into()))?;
+            validate_index_value_key_bytes(&payload_bytes).map_err(|_| {
+                RouterError::InvalidArgument("index value key exceeds maximum encoded size".into())
+            })?;
             let property_id = store
                 .lookup_property_id(stats.graph_id(), &property)
                 .map_err(|_| RouterError::NotFound(format!("property {property}")))?
@@ -644,7 +649,7 @@ fn extract_from_op(
                 if scan.cmp != CmpOp::Eq {
                     return Ok(None);
                 }
-                let payload_bytes = resolve_scan_value(&scan.value, parameters)
+                let payload_bytes = resolve_scan_value(&scan.value, parameters)?
                     .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
                 let property_id = store
                     .lookup_property_id(graph_id, scan.property.as_ref())
@@ -674,7 +679,7 @@ fn extract_from_op(
             cmp,
             ..
         } if *cmp == CmpOp::Eq => {
-            let payload_bytes = resolve_scan_value(value, parameters)
+            let payload_bytes = resolve_scan_value(value, parameters)?
                 .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
             let property_id = store
                 .lookup_property_id(graph_id, property.as_ref())
@@ -733,16 +738,28 @@ fn extract_from_op(
 pub(crate) fn resolve_scan_value(
     value: &ScanValue,
     parameters: &BTreeMap<String, Value>,
-) -> Option<Vec<u8>> {
-    match value {
-        ScanValue::Literal(v) => value_to_index_key_bytes(v).ok()?,
+) -> Result<Option<Vec<u8>>, RouterError> {
+    let bytes = match value {
+        ScanValue::Literal(v) => value_to_index_key_bytes(v).map_err(|_| {
+            RouterError::InvalidArgument("seed filter value is not indexable".into())
+        })?,
         ScanValue::Parameter(name) => {
             let key = name.strip_prefix('$').unwrap_or(name.as_ref());
-            parameters
+            let v = parameters
                 .get(key)
-                .and_then(|v| value_to_index_key_bytes(v).ok()?)
+                .ok_or_else(|| RouterError::InvalidArgument("missing seed parameter".into()))?;
+            value_to_index_key_bytes(v).map_err(|_| {
+                RouterError::InvalidArgument("seed filter value is not indexable".into())
+            })?
         }
-    }
+    };
+    let Some(bytes) = bytes else {
+        return Ok(None);
+    };
+    validate_index_value_key_bytes(&bytes).map_err(|_| {
+        RouterError::InvalidArgument("index value key exceeds maximum encoded size".into())
+    })?;
+    Ok(Some(bytes))
 }
 
 /// Encode local vertex ids for one shard into `ExecutePlanArgs.seed_bindings_blob`.
@@ -1171,5 +1188,18 @@ mod tests {
         assert_eq!(wire.entries[0].local_edge_postings.len(), 1);
         assert_eq!(wire.entries[0].local_edge_postings[0].owner_vertex_id, 3);
         assert_eq!(wire.entries[0].local_edge_postings[0].slot_index, 2);
+    }
+
+    #[test]
+    fn resolve_scan_value_rejects_oversized_index_key() {
+        use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
+
+        let oversized = Value::Bytes(vec![1u8; MAX_INDEX_VALUE_KEY_BYTES - 2]);
+        let err = super::resolve_scan_value(&ScanValue::Literal(oversized), &BTreeMap::new())
+            .expect_err("oversized key");
+        assert!(
+            err.to_string()
+                .contains("index value key exceeds maximum encoded size")
+        );
     }
 }

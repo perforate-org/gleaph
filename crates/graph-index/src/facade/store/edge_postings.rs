@@ -1,6 +1,6 @@
 //! Edge property equality postings (ADR 0009 §1).
 
-use super::IndexStore;
+use super::{IndexStore, ensure_index_value_key};
 use crate::edge_key::EdgePostingKey;
 use crate::facade::stable::INDEX_EDGE_POSTINGS;
 use crate::state::IndexError;
@@ -19,6 +19,7 @@ impl IndexStore {
         owner_vertex_id: u32,
         slot_index: u32,
     ) -> Result<(), IndexError> {
+        ensure_index_value_key(&value)?;
         self.assert_shard_canister(caller, shard_id)?;
         let key = EdgePostingKey {
             property_id,
@@ -106,7 +107,8 @@ impl IndexStore {
         property_id: u32,
         value: &[u8],
         label_id: Option<u16>,
-    ) -> Vec<EdgePostingHit> {
+    ) -> Result<Vec<EdgePostingHit>, IndexError> {
+        ensure_index_value_key(value)?;
         let (lo, hi) = match label_id {
             Some(label) => (
                 EdgePostingKey::prefix_lower_labeled(property_id, value, label),
@@ -117,7 +119,7 @@ impl IndexStore {
                 EdgePostingKey::prefix_upper(property_id, value),
             ),
         };
-        INDEX_EDGE_POSTINGS.with_borrow(|postings| {
+        Ok(INDEX_EDGE_POSTINGS.with_borrow(|postings| {
             postings
                 .range(lo..=hi)
                 .map(|k| EdgePostingHit {
@@ -127,6 +129,6 @@ impl IndexStore {
                     slot_index: k.slot_index,
                 })
                 .collect()
-        })
+        }))
     }
 }

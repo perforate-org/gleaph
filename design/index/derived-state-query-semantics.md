@@ -1,7 +1,7 @@
 # Derived-state query semantics
 
-Last updated: 2026-06-17  
-Anchor timestamp: 2026-06-17 02:53:19 UTC +0000
+Last updated: 2026-06-19
+Anchor timestamp: 2026-06-19 01:02:52 UTC +0000
 
 ## Status
 
@@ -23,7 +23,8 @@ not paper over sync gaps with graph-side tombstone filtering at the index layer.
    postings are a sync or backfill problem, not a query-time filter.
 3. **Intentional index-only miss ≠ staleness.** Unindexable or null property values are omitted by
    design ([property-index.md](property-index.md)); equality/range scans will not find them without a
-   full-scan path.
+   full-scan path. Encoded index keys longer than `MAX_INDEX_VALUE_KEY_BYTES` (4096) are treated as
+   non-indexable on write and rejected on index read/query derivation — not as stale postings.
 4. **Maintenance cursors are not data.** Router `BackfillShardState` and graph pending queues track
    repair progress; they must not be read as membership or count truth.
 
@@ -132,7 +133,7 @@ count completeness is required.
 
 | Symptom | Likely cause | Remediation |
 |---------|--------------|-------------|
-| Index miss for known property value | Unindexable value, pending not flushed, or backfill incomplete | Check `property_indexability`; flush pending; run property backfill |
+| Index miss for known property value | Unindexable value, oversized encoded key (>4096 B), pending not flushed, or backfill incomplete | Check `property_indexability` and key size; flush pending; run property backfill |
 | Extra index hit for deleted vertex | Remove posting not synced | Flush/retry pending; verify DML index path |
 | `COUNT(*)` under-counts for label after router restart | Projection lag on read path (DML would have failed instead) | Drain `admin_label_stats_projection_step` per shard until `done`; verify cursor vs log head |
 | DML fails with `label stats projection lag` | Inline advance could not reach journal `emitted_delta_last_seq` | Drain projection for that shard; retry mutation |

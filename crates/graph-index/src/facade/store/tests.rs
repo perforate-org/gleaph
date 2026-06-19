@@ -1,4 +1,5 @@
 use super::*;
+use crate::facade::stable::{INDEX_EDGE_POSTINGS, INDEX_VERTEX_POSTINGS};
 use crate::init::IndexInitArgs;
 use crate::state::IndexError;
 use candid::Principal;
@@ -123,7 +124,7 @@ fn insert_and_lookup_equal() {
         .posting_insert(shard_principal, ShardId::new(0), 42, b"v".to_vec(), 100)
         .expect("insert");
 
-    let hits = store.lookup_equal(42, b"v");
+    let hits = store.lookup_equal(42, b"v").expect("lookup_equal");
     assert_eq!(
         hits,
         vec![PostingHit {
@@ -147,7 +148,7 @@ fn insert_and_lookup_equal_principal_value_index_key() {
         .posting_insert(shard_principal, ShardId::new(0), 42, key.clone(), 100)
         .expect("insert");
 
-    let hits = store.lookup_equal(42, &key);
+    let hits = store.lookup_equal(42, &key).expect("lookup_equal");
     assert_eq!(
         hits,
         vec![PostingHit {
@@ -176,6 +177,7 @@ fn lookup_range_ge_and_lt_use_encoded_lex_order() {
 
     let mut ge2: Vec<u32> = store
         .lookup_range(42, &PostingRangeRequest::Ge(vec![2]))
+        .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
         .collect();
@@ -184,6 +186,7 @@ fn lookup_range_ge_and_lt_use_encoded_lex_order() {
 
     let mut lt2: Vec<u32> = store
         .lookup_range(42, &PostingRangeRequest::Lt(vec![2]))
+        .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
         .collect();
@@ -212,6 +215,7 @@ fn lookup_range_respects_sortable_value_key_boundaries() {
     let five = index_key(gleaph_gql::Value::Uint8(5));
     let mut ge5: Vec<u32> = store
         .lookup_range(42, &PostingRangeRequest::Ge(five.clone()))
+        .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
         .collect();
@@ -220,6 +224,7 @@ fn lookup_range_respects_sortable_value_key_boundaries() {
 
     let mut lt5: Vec<u32> = store
         .lookup_range(42, &PostingRangeRequest::Lt(five))
+        .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
         .collect();
@@ -245,10 +250,14 @@ fn lookup_range_text_prefix_boundaries_are_exact() {
     }
 
     let a = index_key(gleaph_gql::Value::Text("a".into()));
-    assert_eq!(store.lookup_equal(77, &a)[0].vertex_id, 1);
+    assert_eq!(
+        store.lookup_equal(77, &a).expect("lookup_equal")[0].vertex_id,
+        1
+    );
 
     let mut gt_a: Vec<u32> = store
         .lookup_range(77, &PostingRangeRequest::Gt(a))
+        .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
         .collect();
@@ -292,6 +301,7 @@ fn lookup_range_respects_list_value_key_boundaries() {
 
     let mut ge_one: Vec<u32> = store
         .lookup_range(88, &PostingRangeRequest::Ge(one))
+        .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
         .collect();
@@ -300,6 +310,7 @@ fn lookup_range_respects_list_value_key_boundaries() {
 
     let mut lt_two: Vec<u32> = store
         .lookup_range(88, &PostingRangeRequest::Lt(two))
+        .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
         .collect();
@@ -351,6 +362,7 @@ fn lookup_range_respects_record_value_key_boundaries() {
     )]));
     let mut ge_bound: Vec<u32> = store
         .lookup_range(99, &PostingRangeRequest::Ge(bound))
+        .expect("lookup_range")
         .into_iter()
         .map(|h| h.vertex_id)
         .collect();
@@ -417,7 +429,9 @@ fn init_from_args_rejects_anonymous_router_without_clearing_state() {
         .posting_insert(shard, ShardId::new(0), property_id, value.clone(), 100)
         .expect("seed posting");
     assert_eq!(
-        store.lookup_equal(property_id, &value),
+        store
+            .lookup_equal(property_id, &value)
+            .expect("lookup_equal"),
         vec![PostingHit {
             shard_id: ShardId::new(0),
             vertex_id: 100
@@ -436,7 +450,9 @@ fn init_from_args_rejects_anonymous_router_without_clearing_state() {
     // queryable, the previously attached shard canister still authorizes, and the anonymous
     // principal was not persisted as the router.
     assert_eq!(
-        store.lookup_equal(property_id, &value),
+        store
+            .lookup_equal(property_id, &value)
+            .expect("lookup_equal"),
         vec![PostingHit {
             shard_id: ShardId::new(0),
             vertex_id: 100
@@ -560,9 +576,19 @@ fn admin_detach_shard_canister_purges_shard_postings() {
         .admin_detach_shard_canister(router, ShardId::new(0))
         .expect("detach shard 0");
 
-    assert!(store.lookup_equal(42, b"v").is_empty());
+    assert!(
+        store
+            .lookup_equal(42, b"v")
+            .expect("lookup_equal")
+            .is_empty()
+    );
     assert!(store.lookup_label(7).is_empty());
-    assert!(store.lookup_edge_equal(88, b"e", Some(3)).is_empty());
+    assert!(
+        store
+            .lookup_edge_equal(88, b"e", Some(3))
+            .expect("lookup_edge_equal")
+            .is_empty()
+    );
 }
 
 #[test]
@@ -585,12 +611,14 @@ fn lookup_intersection_returns_vertices_in_all_specs() {
         .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), 30)
         .expect("email v30");
 
-    let result = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
-        specs: vec![
-            IndexEqualSpec::vertex(1, b"alice".to_vec()),
-            IndexEqualSpec::vertex(2, b"a@b.c".to_vec()),
-        ],
-    });
+    let result = store
+        .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+            specs: vec![
+                IndexEqualSpec::vertex(1, b"alice".to_vec()),
+                IndexEqualSpec::vertex(2, b"a@b.c".to_vec()),
+            ],
+        })
+        .expect("lookup_intersection");
     assert_eq!(
         result,
         IndexIntersectionResult::Vertices(vec![PostingHit {
@@ -614,21 +642,25 @@ fn lookup_intersection_empty_when_disjoint() {
         .posting_insert(shard_principal, ShardId::new(0), 2, b"bob".to_vec(), 20)
         .expect("email");
 
-    let result = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
-        specs: vec![
-            IndexEqualSpec::vertex(1, b"alice".to_vec()),
-            IndexEqualSpec::vertex(2, b"bob".to_vec()),
-        ],
-    });
+    let result = store
+        .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+            specs: vec![
+                IndexEqualSpec::vertex(1, b"alice".to_vec()),
+                IndexEqualSpec::vertex(2, b"bob".to_vec()),
+            ],
+        })
+        .expect("lookup_intersection");
     assert_eq!(result, IndexIntersectionResult::Vertices(vec![]));
 }
 
 #[test]
 fn lookup_intersection_requires_two_specs() {
     let store = IndexStore::new();
-    let result = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
-        specs: vec![IndexEqualSpec::vertex(1, b"x".to_vec())],
-    });
+    let result = store
+        .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+            specs: vec![IndexEqualSpec::vertex(1, b"x".to_vec())],
+        })
+        .expect("lookup_intersection");
     assert_eq!(result, IndexIntersectionResult::Vertices(vec![]));
 }
 
@@ -649,12 +681,14 @@ fn lookup_intersection_mixed_vertex_and_edge_projects_owners() {
         .edge_posting_insert(owner, ShardId::new(0), 20, b"5".to_vec(), 7, 101, 0)
         .expect("other owner");
 
-    let result = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
-        specs: vec![
-            IndexEqualSpec::vertex(10, b"30".to_vec()),
-            IndexEqualSpec::edge(20, b"5".to_vec(), Some(7)),
-        ],
-    });
+    let result = store
+        .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+            specs: vec![
+                IndexEqualSpec::vertex(10, b"30".to_vec()),
+                IndexEqualSpec::edge(20, b"5".to_vec(), Some(7)),
+            ],
+        })
+        .expect("lookup_intersection");
     assert_eq!(
         result,
         IndexIntersectionResult::Vertices(vec![PostingHit {
@@ -678,12 +712,14 @@ fn lookup_intersection_all_edge_arms_returns_edge_hits() {
         .edge_posting_insert(owner, ShardId::new(0), 31, b"2".to_vec(), 9, 50, 1)
         .expect("prop b");
 
-    let result = store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
-        specs: vec![
-            IndexEqualSpec::edge(30, b"1".to_vec(), Some(9)),
-            IndexEqualSpec::edge(31, b"2".to_vec(), Some(9)),
-        ],
-    });
+    let result = store
+        .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+            specs: vec![
+                IndexEqualSpec::edge(30, b"1".to_vec(), Some(9)),
+                IndexEqualSpec::edge(31, b"2".to_vec(), Some(9)),
+            ],
+        })
+        .expect("lookup_intersection");
     assert_eq!(
         result,
         IndexIntersectionResult::Edges(vec![EdgePostingHit {
@@ -947,7 +983,9 @@ fn edge_posting_insert_remove_and_lookup_equal() {
         )
         .expect("insert other slot");
 
-    let hits = store.lookup_edge_equal(property_id, &value, Some(9));
+    let hits = store
+        .lookup_edge_equal(property_id, &value, Some(9))
+        .expect("lookup_edge_equal");
     assert_eq!(hits.len(), 2);
     assert!(
         hits.iter()
@@ -969,7 +1007,9 @@ fn edge_posting_insert_remove_and_lookup_equal() {
             2,
         )
         .expect("remove");
-    let remaining = store.lookup_edge_equal(property_id, &value, None);
+    let remaining = store
+        .lookup_edge_equal(property_id, &value, None)
+        .expect("lookup_edge_equal");
     assert_eq!(remaining.len(), 1);
     assert_eq!(remaining[0].owner_vertex_id, 101);
 }
@@ -991,8 +1031,173 @@ fn edge_posting_lookup_filters_by_label_prefix() {
         .expect("label 2");
 
     assert_eq!(
-        store.lookup_edge_equal(property_id, &value, Some(1)).len(),
+        store
+            .lookup_edge_equal(property_id, &value, Some(1))
+            .expect("lookup_edge_equal")
+            .len(),
         1
     );
-    assert_eq!(store.lookup_edge_equal(property_id, &value, None).len(), 2);
+    assert_eq!(
+        store
+            .lookup_edge_equal(property_id, &value, None)
+            .expect("lookup_edge_equal")
+            .len(),
+        2
+    );
+}
+
+fn bytes_index_key_of_len(len: usize) -> Vec<u8> {
+    assert!(len >= 3);
+    index_key(Value::Bytes(vec![1u8; len - 3]))
+}
+
+#[test]
+fn posting_insert_accepts_at_limit_key_and_rejects_over_limit_without_stable_mutation() {
+    use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
+
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    let at_limit = bytes_index_key_of_len(MAX_INDEX_VALUE_KEY_BYTES);
+    let over_limit = bytes_index_key_of_len(MAX_INDEX_VALUE_KEY_BYTES + 1);
+    assert_eq!(at_limit.len(), MAX_INDEX_VALUE_KEY_BYTES);
+    assert_eq!(over_limit.len(), MAX_INDEX_VALUE_KEY_BYTES + 1);
+
+    store
+        .posting_insert(shard, ShardId::new(0), 1, at_limit.clone(), 10)
+        .expect("at-limit insert");
+    assert_eq!(
+        store
+            .lookup_equal(1, &at_limit)
+            .expect("lookup_equal")
+            .len(),
+        1
+    );
+
+    assert_eq!(
+        store.posting_insert(shard, ShardId::new(0), 1, over_limit.clone(), 11),
+        Err(IndexError::IndexValueKeyTooLarge)
+    );
+    assert_eq!(
+        store.lookup_equal(1, &over_limit),
+        Err(IndexError::IndexValueKeyTooLarge)
+    );
+    assert_eq!(
+        store
+            .lookup_equal(1, &at_limit)
+            .expect("lookup_equal")
+            .len(),
+        1
+    );
+}
+
+#[test]
+fn edge_posting_insert_rejects_over_limit_without_stable_mutation() {
+    use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
+
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let owner = Principal::from_slice(&[2]);
+    attach_shard_canister(&store, router, ShardId::new(0), owner);
+
+    let over_limit = bytes_index_key_of_len(MAX_INDEX_VALUE_KEY_BYTES + 1);
+    assert_eq!(
+        store.edge_posting_insert(owner, ShardId::new(0), 9, over_limit.clone(), 3, 10, 0),
+        Err(IndexError::IndexValueKeyTooLarge)
+    );
+    assert_eq!(
+        store.lookup_edge_equal(9, &over_limit, None),
+        Err(IndexError::IndexValueKeyTooLarge)
+    );
+}
+
+#[test]
+fn posting_remove_accepts_oversized_key_for_legacy_cleanup() {
+    use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
+
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[3]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    let oversized = bytes_index_key_of_len(MAX_INDEX_VALUE_KEY_BYTES + 1);
+    let legacy_key = crate::key::PostingKey {
+        property_id: 5,
+        value: oversized.clone(),
+        shard_id: ShardId::new(0),
+        vertex_id: 7,
+    };
+    INDEX_VERTEX_POSTINGS.with_borrow_mut(|postings| {
+        postings.insert(legacy_key.clone());
+    });
+
+    store
+        .posting_remove(shard, ShardId::new(0), 5, oversized.clone(), 7)
+        .expect("remove oversized legacy posting");
+    assert!(!INDEX_VERTEX_POSTINGS.with_borrow(|postings| postings.contains(&legacy_key)));
+    assert_eq!(
+        store.lookup_equal(5, &oversized),
+        Err(IndexError::IndexValueKeyTooLarge)
+    );
+}
+
+#[test]
+fn edge_posting_remove_accepts_oversized_key_for_legacy_cleanup() {
+    use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
+
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[5]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    let oversized = bytes_index_key_of_len(MAX_INDEX_VALUE_KEY_BYTES + 1);
+    let legacy_key = crate::edge_key::EdgePostingKey {
+        property_id: 9,
+        value: oversized.clone(),
+        label_id: 3,
+        shard_id: ShardId::new(0),
+        owner_vertex_id: 10,
+        slot_index: 0,
+    };
+    INDEX_EDGE_POSTINGS.with_borrow_mut(|postings| {
+        postings.insert(legacy_key.clone());
+    });
+
+    store
+        .edge_posting_remove(shard, ShardId::new(0), 9, oversized, 3, 10, 0)
+        .expect("remove oversized legacy edge posting");
+    assert!(!INDEX_EDGE_POSTINGS.with_borrow(|postings| postings.contains(&legacy_key)));
+}
+
+#[test]
+fn read_boundaries_reject_oversized_keys_without_false_empty_range() {
+    use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
+
+    let store = IndexStore::new();
+    init_test_store(&store);
+    let oversized = bytes_index_key_of_len(MAX_INDEX_VALUE_KEY_BYTES + 1);
+
+    assert_eq!(
+        store.lookup_equal(1, &oversized),
+        Err(IndexError::IndexValueKeyTooLarge)
+    );
+    assert_eq!(
+        store.lookup_edge_equal(2, &oversized, None),
+        Err(IndexError::IndexValueKeyTooLarge)
+    );
+    assert_eq!(
+        store.lookup_range(3, &PostingRangeRequest::Ge(oversized.clone())),
+        Err(IndexError::IndexValueKeyTooLarge)
+    );
+    assert_eq!(
+        store.lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+            specs: vec![
+                IndexEqualSpec::vertex(1, b"ok".to_vec()),
+                IndexEqualSpec::vertex(2, oversized),
+            ],
+        }),
+        Err(IndexError::IndexValueKeyTooLarge)
+    );
 }

@@ -143,4 +143,15 @@ mod tests {
         let ops = index_ops_for_value_change(PropertyId::from_raw(1), None, Some(&nan));
         assert!(ops.is_empty());
     }
+
+    #[test]
+    fn oversized_sortable_value_produces_no_index_ops() {
+        use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
+
+        let payload_len = MAX_INDEX_VALUE_KEY_BYTES - 2;
+        let oversized = Value::Bytes(vec![1u8; payload_len]);
+        crate::property::ensure_persistable(&oversized).expect("stored in primary map");
+        let ops = index_ops_for_value_change(PropertyId::from_raw(1), None, Some(&oversized));
+        assert!(ops.is_empty());
+    }
 }

@@ -1,11 +1,11 @@
 # Index and catalog capacity planning
 
-Last updated: 2026-06-17  
-Anchor timestamp: 2026-06-17 14:00:46 UTC +0000
+Last updated: 2026-06-19
+Anchor timestamp: 2026-06-19 01:02:52 UTC +0000
 
 ## Status
 
-**Planned** — capacity model, split thresholds, and inverted posting-list optimization for operators and future index work. No automated enforcement in canisters yet. Current flat `PostingKey` layouts and region inventory match **Implemented** code (`graph-index`, ADR 0007).
+**Planned** — capacity model, split thresholds, and inverted posting-list optimization for operators and future index work. **Implemented:** per-value encoded index key cap (`MAX_INDEX_VALUE_KEY_BYTES = 4096` in `gleaph-graph-kernel`) enforced at graph indexability, graph-index write/read APIs, and router/graph query key derivation. Current flat `PostingKey` layouts and region inventory match **Implemented** code (`graph-index`, ADR 0007).
 
 ## Purpose
 
@@ -92,6 +92,28 @@ Layout: **`23 + V` bytes** (property, value, label_id, shard, owner, slot).
 | `text` long | 80–256+ | free text indexed (discouraged at scale) |
 
 Use measured `V` from a sample of `value_to_index_key_bytes` when available.
+
+### Enforced maximum `V` (**Implemented**)
+
+Gleaph owns a single cap on encoded sortable index value keys:
+
+```text
+MAX_INDEX_VALUE_KEY_BYTES = 4096   // gleaph_graph_kernel::index
+```
+
+Aligned with stable-structure 4 KiB pages: ordinary sortable values are far smaller; this bounds
+worst-case B-tree key amplification from write-authorized graph mutations.
+
+| Boundary | Behavior |
+|----------|----------|
+| Graph `property_indexability` / `sortable_index_key` | Encoded key `len > 4096` → `NotIndexable`; no pending/backfill posting enqueue |
+| graph-index `posting_insert` / `edge_posting_insert` | Reject with `IndexError::IndexValueKeyTooLarge` before stable mutation |
+| graph-index `posting_remove` / `edge_posting_remove` | No size check (legacy oversized postings may still be removed) |
+| graph-index `lookup_equal`, `lookup_edge_equal`, `lookup_range`, `lookup_intersection` | Reject oversized query keys; range predicates do **not** return empty |
+| Router `resolve_scan_value` / graph `resolve_scan_payload_bytes` | Reject before inter-canister call; conditional index scan falls back to `NodeScan` when oversized |
+
+Oversized values remain **persistable** on graph shards but are **non-indexable**, consistent with
+other unindexable property values ([property-index.md](property-index.md)).
 
 ### B-tree overhead factor **η**
 

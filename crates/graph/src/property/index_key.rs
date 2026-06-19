@@ -1,6 +1,7 @@
 //! Sortable property-index keys for equality and range postings.
 
 use gleaph_gql::{Value, value_to_index_key_bytes};
+use gleaph_graph_kernel::index::{MAX_INDEX_VALUE_KEY_BYTES, validate_index_value_key_bytes};
 
 /// Whether a property value participates in equality or range index postings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -16,7 +17,13 @@ pub(crate) enum PropertyIndexability {
 /// Classifies index participation for `value`.
 pub(crate) fn property_indexability(value: &Value) -> PropertyIndexability {
     match value_to_index_key_bytes(value) {
-        Ok(Some(_)) => PropertyIndexability::Indexable,
+        Ok(Some(key)) => {
+            if validate_index_value_key_bytes(&key).is_ok() {
+                PropertyIndexability::Indexable
+            } else {
+                PropertyIndexability::NotIndexable
+            }
+        }
         Ok(None) => PropertyIndexability::Absent,
         Err(_) => PropertyIndexability::NotIndexable,
     }
@@ -53,5 +60,30 @@ mod tests {
             PropertyIndexability::NotIndexable
         );
         assert_eq!(sortable_index_key(&Value::Float64(f64::NAN)), None);
+    }
+
+    fn bytes_index_key_of_len(len: usize) -> Vec<u8> {
+        assert!(len >= 3);
+        value_to_index_key_bytes(&Value::Bytes(vec![1u8; len - 3]))
+            .expect("encode")
+            .expect("non-null")
+    }
+
+    #[test]
+    fn oversized_sortable_key_is_not_indexable() {
+        let at_limit = bytes_index_key_of_len(MAX_INDEX_VALUE_KEY_BYTES);
+        assert_eq!(at_limit.len(), MAX_INDEX_VALUE_KEY_BYTES);
+        assert_eq!(
+            property_indexability(&Value::Bytes(vec![1u8; MAX_INDEX_VALUE_KEY_BYTES - 3])),
+            PropertyIndexability::Indexable
+        );
+        assert_eq!(
+            property_indexability(&Value::Bytes(vec![1u8; MAX_INDEX_VALUE_KEY_BYTES - 2])),
+            PropertyIndexability::NotIndexable
+        );
+        assert_eq!(
+            sortable_index_key(&Value::Bytes(vec![1u8; MAX_INDEX_VALUE_KEY_BYTES - 2])),
+            None
+        );
     }
 }

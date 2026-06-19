@@ -1,6 +1,8 @@
 //! Property equality postings: shard-canister writes and posting-local reads.
 
-use super::{IndexStore, pack_posting_vertex};
+use super::{
+    IndexStore, ensure_index_value_key, ensure_posting_range_request, pack_posting_vertex,
+};
 use crate::facade::stable::{INDEX_VERTEX_LABEL_POSTINGS, INDEX_VERTEX_POSTINGS};
 use crate::key::PostingKey;
 use crate::label_key::LabelPostingKey;
@@ -19,6 +21,7 @@ impl IndexStore {
         value: Vec<u8>,
         vertex_id: u32,
     ) -> Result<(), IndexError> {
+        ensure_index_value_key(&value)?;
         self.assert_shard_canister(caller, shard_id)?;
         let key = PostingKey {
             property_id,
@@ -75,10 +78,15 @@ impl IndexStore {
         self.commit_posting_remove(caller, shard_id, property_id, value, vertex_id)
     }
 
-    pub fn lookup_equal(&self, property_id: u32, value: &[u8]) -> Vec<PostingHit> {
+    pub fn lookup_equal(
+        &self,
+        property_id: u32,
+        value: &[u8],
+    ) -> Result<Vec<PostingHit>, IndexError> {
+        ensure_index_value_key(value)?;
         let lo = PostingKey::prefix_lower(property_id, value);
         let hi = PostingKey::prefix_upper(property_id, value);
-        INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
+        Ok(INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
             postings
                 .range(lo..=hi)
                 .map(|k| PostingHit {
@@ -86,7 +94,7 @@ impl IndexStore {
                     vertex_id: k.vertex_id,
                 })
                 .collect()
-        })
+        }))
     }
 
     /// Walk the property bucket and return `(encoded_value, global_count)` groups with `count >= min_count`.
@@ -218,14 +226,19 @@ impl IndexStore {
     }
 
     /// Half-open `[low, high)` scan over postings for `property_id` using encoded-value [`PostingRangeRequest`].
-    pub fn lookup_range(&self, property_id: u32, req: &PostingRangeRequest) -> Vec<PostingHit> {
+    pub fn lookup_range(
+        &self,
+        property_id: u32,
+        req: &PostingRangeRequest,
+    ) -> Result<Vec<PostingHit>, IndexError> {
+        ensure_posting_range_request(req)?;
         let Some((low, high)) = posting_key_half_open_range(property_id, req) else {
-            return Vec::new();
+            return Ok(Vec::new());
         };
         if low >= high {
-            return Vec::new();
+            return Ok(Vec::new());
         }
-        INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
+        Ok(INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
             postings
                 .range(low..high)
                 .map(|k| PostingHit {
@@ -233,6 +246,6 @@ impl IndexStore {
                     vertex_id: k.vertex_id,
                 })
                 .collect()
-        })
+        }))
     }
 }

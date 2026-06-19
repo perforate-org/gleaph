@@ -1,9 +1,10 @@
 //! Multi-property equality intersection across vertex and edge posting stores (ADR 0009 §3).
 
-use super::{IndexStore, pack_edge_identity, pack_posting_vertex};
+use super::{IndexStore, ensure_intersection_specs, pack_edge_identity, pack_posting_vertex};
 use crate::edge_key::EdgePostingKey;
 use crate::facade::stable::{INDEX_EDGE_POSTINGS, INDEX_VERTEX_POSTINGS};
 use crate::key::PostingKey;
+use crate::state::IndexError;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
@@ -12,8 +13,12 @@ use gleaph_graph_kernel::index::{
 use std::collections::HashSet;
 
 impl IndexStore {
-    pub fn lookup_intersection(&self, req: &IndexIntersectionRequest) -> IndexIntersectionResult {
-        lookup_property_intersection(req)
+    pub fn lookup_intersection(
+        &self,
+        req: &IndexIntersectionRequest,
+    ) -> Result<IndexIntersectionResult, IndexError> {
+        ensure_intersection_specs(&req.specs)?;
+        Ok(lookup_property_intersection(req))
     }
 }
 

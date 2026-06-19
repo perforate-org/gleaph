@@ -144,7 +144,12 @@ pub(crate) fn lookup_label_page(
 }
 
 pub(crate) fn lookup_equal(property_id: u32, value: Vec<u8>) -> Vec<PostingHit> {
-    IndexStore::new().lookup_equal(property_id, &value)
+    IndexStore::new()
+        .lookup_equal(property_id, &value)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
 }
 
 pub(crate) fn lookup_edge_equal(
@@ -152,13 +157,23 @@ pub(crate) fn lookup_edge_equal(
     value: Vec<u8>,
     label_id: Option<u16>,
 ) -> Vec<EdgePostingHit> {
-    IndexStore::new().lookup_edge_equal(property_id, &value, label_id)
+    IndexStore::new()
+        .lookup_edge_equal(property_id, &value, label_id)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
 }
 
 pub(crate) fn lookup_intersection(
     req: gleaph_graph_kernel::index::IndexIntersectionRequest,
 ) -> IndexIntersectionResult {
-    IndexStore::new().lookup_intersection(&req)
+    IndexStore::new()
+        .lookup_intersection(&req)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
 }
 
 pub(crate) fn lookup_label_intersection(
@@ -168,7 +183,12 @@ pub(crate) fn lookup_label_intersection(
 }
 
 pub(crate) fn lookup_range(property_id: u32, req: PostingRangeRequest) -> Vec<PostingHit> {
-    IndexStore::new().lookup_range(property_id, &req)
+    IndexStore::new()
+        .lookup_range(property_id, &req)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
 }
 
 pub(crate) fn count_postings_by_value(

@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-06-17
-Anchor timestamp: 2026-06-17 10:34:31 UTC +0000
+Last updated: 2026-06-19
+Anchor timestamp: 2026-06-19 01:02:52 UTC +0000
 
 ## Status
 
@@ -126,8 +126,11 @@ Graph centralizes both paths in `crates/graph/src/property/`:
 
 **Index-only miss:** A value can be stored but omitted from indexes when `property_indexability`
 is `NotIndexable` (non-finite floats, unsupported composite shapes, extensions without a sortable
-key) or `Absent` (null). Equality and range scans will not find those vertices or edges until a
-full scan path is used.
+key, or encoded index key length above `MAX_INDEX_VALUE_KEY_BYTES` — see
+[capacity-planning.md](capacity-planning.md)) or `Absent` (null). Equality and range scans will not
+find those vertices or edges until a full scan path is used. Router and graph reject oversized query
+keys before graph-index calls; graph-index read APIs reject them as `IndexValueKeyTooLarge` (no
+silent empty range).
 
 ## Index maintenance
 

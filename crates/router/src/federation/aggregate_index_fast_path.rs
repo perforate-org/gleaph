@@ -12,7 +12,7 @@ use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_gql_planner::GraphStats;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::VertexLabelId;
-use gleaph_graph_kernel::index::ValuePostingCount;
+use gleaph_graph_kernel::index::{ValuePostingCount, validate_index_value_key_bytes};
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 
 use crate::facade::store::RouterStore;
@@ -411,7 +411,7 @@ fn equal_anchor(
     property: &str,
     value: &gleaph_gql_planner::plan::ScanValue,
 ) -> Result<IndexAnchor, crate::state::RouterError> {
-    let payload_bytes = resolve_scan_value(value, params).ok_or_else(|| {
+    let payload_bytes = resolve_scan_value(value, params)?.ok_or_else(|| {
         crate::state::RouterError::InvalidArgument("missing fast path parameter".into())
     })?;
     let property_id = store
@@ -474,6 +474,11 @@ fn anchor_from_property_predicate(
                         "fast path filter rejects null".into(),
                     )
                 })?;
+            validate_index_value_key_bytes(&payload_bytes).map_err(|_| {
+                crate::state::RouterError::InvalidArgument(
+                    "index value key exceeds maximum encoded size".into(),
+                )
+            })?;
             let property_id = store
                 .lookup_property_id(stats.graph_id(), &property)
                 .map_err(|_| crate::state::RouterError::NotFound(format!("property {property}")))?

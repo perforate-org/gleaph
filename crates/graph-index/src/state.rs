@@ -14,6 +14,7 @@ pub enum IndexError {
     GraphOwnershipMismatch,
     InvalidIndexGroupConfig,
     ShardOutOfRangeForGroup,
+    IndexValueKeyTooLarge,
 }
 
 impl std::fmt::Display for IndexError {
@@ -46,6 +47,11 @@ impl std::fmt::Display for IndexError {
             Self::ShardOutOfRangeForGroup => {
                 write!(f, "shard id is outside the attached index group range")
             }
+            Self::IndexValueKeyTooLarge => write!(
+                f,
+                "index value key exceeds maximum encoded size ({} bytes)",
+                gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES
+            ),
         }
     }
 }
