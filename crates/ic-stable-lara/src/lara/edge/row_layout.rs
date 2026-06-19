@@ -63,7 +63,11 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             // `cap < base`, and `next_base.min(cap)` would place the window end before
             // `base` (underflowing the on-slab span). When `base` is past the cap, the
             // next-bucket boundary is authoritative and the leaf cap must not apply.
-            let end = if base < cap { next_base.min(cap) } else { next_base };
+            let end = if base < cap {
+                next_base.min(cap)
+            } else {
+                next_base
+            };
             return Self::max_slab_window_for_vertex(v, base, end);
         }
 

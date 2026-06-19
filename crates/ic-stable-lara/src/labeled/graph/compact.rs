@@ -2156,7 +2156,9 @@ mod tests {
             "descending read must yield every inserted edge"
         );
 
-        let ascending = graph.iter_edges_for_label(VertexId::from(FAR_VID), label).unwrap();
+        let ascending = graph
+            .iter_edges_for_label(VertexId::from(FAR_VID), label)
+            .unwrap();
         assert_eq!(ascending.len(), EDGES as usize);
     }
 
