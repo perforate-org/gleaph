@@ -497,6 +497,34 @@ necessity and the thresholds of *each* tier (the dedicated span included).
   ~8.7K/slot constant; (b) the source-keyed reverse mirror index (algorithmic, heavier).
   Consistent with the 2a/2b verdicts: measure first, build only when a benchmark breaches.
 
+  **Overflow-log index/segment re-examined — premise corrected, thread closed
+  (2026-06-20).** Earlier notes called the unindexed overflow log the "higher-leverage
+  fix" and the residual-cost dominator. Re-reading the storage layer shows that premise
+  does not hold for the measured paths: the per-segment log is **capped at
+  `max_log_entries` (170)** (`SegmentLogFull` then forces a fold), so the
+  `overflow_log_chain_asc_indices` walk is O(min(degree, 170)) — bounded, not O(degree) —
+  and maintenance folds the log into the slab, after which `log_head < 0` and reads/deletes
+  skip the log entirely (`scan.rs` clean-row fast path). The detach benches settle with
+  `maintenance` before deleting, so the drained hub is **pure slab**: the ~53M owner-drain
+  cost at 4096 is per-slab-edge bookkeeping in `remove_edge_at_slot` (re-`find_bucket` +
+  tombstone + count decrement), not log handling. Indexing/segmenting the log therefore
+  would not improve any measured path; it would only touch an unfolded churn regime that is
+  itself bounded at 170. Verdict: **not warranted.**
+
+  **Production delete routing + batch-drain verdict (2026-06-20).** Tracing the facade:
+  GQL `DELETE` → `detach_delete_vertex` → `commit_detach_delete_vertex` → the **stepped**
+  resumable purge (`begin_vertex_delete_deferred`); the synchronous `delete_vertex_deferred`
+  is reached only via `delete_vertex` → `commit_delete_detached_vertex`, which *rejects*
+  vertices that still have incident edges. So in production the edge-draining delete is
+  always the stepped path (already O(D), 110.56M at 4096 ≈ 0.27% of the 40B update limit),
+  and the synchronous drain only ever runs on already-isolated vertices (nothing to drain).
+  Batching the synchronous `drain_out_edges_for_label` would speed up only the
+  `detach_delete_hub_{1024,4096}` micro-benches, not any production path. **Verdict: not
+  warranted.** With the O(D²)→O(D) fixes landed, the data-loss bug fixed, and deletion both
+  correct and far under the instruction limits, the delete-path optimization thread is
+  **closed**; remaining ideas (stepped per-step constant shave; the two dual-case levers
+  above) stay benchmark-gated future work.
+
   **Pre-existing data-loss bug found and fixed (2026-06-19, separate from this ADR).** While
   building the drain regression test, `directed_out_edges` was observed to silently drop a
   hub's forward edge at index 32 (the 33rd edge) after a **leaf-mate insert** while the hub
