@@ -472,11 +472,30 @@ necessity and the thresholds of *each* tier (the dedicated span included).
   removed. Measured (new stepped benches, enqueue + maintenance drain): **stepped-1024
   26.71M; stepped-4096 110.56M** — ≈4× instructions for 4× degree, i.e. O(D) (an O(D²)
   path would be ≈16×). Slightly above the synchronous drain (79–86M) due to per-step
-  maintenance bookkeeping, but far under the 40B update limit. Regression tests:
+  maintenance bookkeeping, but far under the 40B update limit.   Regression tests:
   `stepped_delete_vertex_drains_hub_one_edge_per_step`,
-  `stepped_delete_bypass_vertex_with_interior_tombstone`. The reverse store's
-  source-keyed mirror index remains the separate, benchmark-gated lever for the *dual*
-  case (deleting a small vertex adjacent to hubs).
+  `stepped_delete_bypass_vertex_with_interior_tombstone`.
+
+  **Dual case measured — reverse mirror index not warranted (2026-06-20).** The dual of
+  the hub delete is deleting a *small* vertex that points into a high-degree hub: the
+  satellite drains in O(1), but removing its single mirror in the hub's reverse row uses
+  a `remove_edge_matching` predicate scan over the hub's in-adjacency — O(hub in-degree).
+  New benches `detach_delete_satellite_of_hub_{1024,4096}` (satellite inserted last,
+  then deleted) measure a *single* such mirror removal: **1024 8.99M; 4096 1.54M**
+  instructions total — both dominated by the one `labeled_remove_edge_skip_leaf` scan,
+  and both ~3-4 orders of magnitude under the 40B update limit. (The count is
+  non-monotonic in degree: the satellite's post-compaction slot, not the row length,
+  sets how far the scan walks, so 4096 happened to find it earlier than 1024.) Verdict:
+  the source-keyed reverse-store locator / mirror index is **not warranted** — a single
+  small-vertex delete is cheap even against multi-thousand-degree neighbours, and the
+  total only approaches the cliff when a vertex is adjacent to a *multi-million-degree*
+  neighbour (degree × ~8.7K instr/slot). That extreme is the supernode regime already
+  bounded by ADR 0021's resumable detach, with the residual caveat that one mirror step
+  is an indivisible O(neighbour-degree) scan. Two cheaper, benchmark-gated levers are
+  recorded if that regime ever bites: (a) skip `attach_edge_payload` in
+  neighbour-only predicate scans (the predicate reads only `neighbor_vid`), cutting the
+  ~8.7K/slot constant; (b) the source-keyed reverse mirror index (algorithmic, heavier).
+  Consistent with the 2a/2b verdicts: measure first, build only when a benchmark breaches.
 
   **Pre-existing data-loss bug found and fixed (2026-06-19, separate from this ADR).** While
   building the drain regression test, `directed_out_edges` was observed to silently drop a

@@ -1352,3 +1352,70 @@ macro_rules! detach_delete_hub_stepped_bench {
 
 detach_delete_hub_stepped_bench!(bench_labeled_stage2_detach_delete_hub_stepped_1024, 1024u32);
 detach_delete_hub_stepped_bench!(bench_labeled_stage2_detach_delete_hub_stepped_4096, 4096u32);
+
+/// ADR 0022 *dual* DETACH DELETE: delete a **small** satellite vertex that points
+/// into a high-in-degree hub. Draining the satellite is O(1), but removing its
+/// single mirror in the hub's reverse row uses a `remove_edge_matching` predicate
+/// scan over the hub's whole in-adjacency — O(hub in-degree). The satellite's edge
+/// is inserted last, so the scan walks the full row (worst case). This measures the
+/// cost a source-keyed reverse-store locator / mirror index would remove. Compare
+/// 1024 vs 4096 to see whether the single-vertex delete scales with the *neighbour's*
+/// degree (the dual of the hub-delete quadratic).
+macro_rules! detach_delete_satellite_bench {
+    ($name:ident, $hub_in_deg:expr) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            let graph = bidirectional_bench_graph();
+            let hub = graph.push_vertex().expect("hub");
+            let label = BucketLabelKey::directed_from_index(2);
+            for _ in 0..$hub_in_deg {
+                let source = graph.push_vertex().expect("source");
+                graph
+                    .insert_directed_edge(
+                        source,
+                        hub,
+                        label,
+                        BenchEdge(u32::from(hub)),
+                        BenchEdge(u32::from(source)),
+                    )
+                    .expect("source -> hub");
+            }
+            // Satellite inserted last: its mirror sits at the tail of the hub's
+            // reverse in-adjacency, so the predicate scan walks the entire row.
+            let satellite = graph.push_vertex().expect("satellite");
+            graph
+                .insert_directed_edge(
+                    satellite,
+                    hub,
+                    label,
+                    BenchEdge(u32::from(hub)),
+                    BenchEdge(u32::from(satellite)),
+                )
+                .expect("satellite -> hub");
+            let budget = MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            };
+            graph.maintenance(budget).expect("settle inserts");
+            bench_fn(|| {
+                let removed = graph
+                    .delete_vertex_deferred(satellite)
+                    .expect("detach delete satellite");
+                black_box(removed);
+            })
+        }
+    };
+}
+
+detach_delete_satellite_bench!(
+    bench_labeled_stage2_detach_delete_satellite_of_hub_1024,
+    1024u32
+);
+detach_delete_satellite_bench!(
+    bench_labeled_stage2_detach_delete_satellite_of_hub_4096,
+    4096u32
+);
