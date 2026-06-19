@@ -277,9 +277,39 @@ than the "single LARA traverse chokepoint" this ADR first assumed:
 
 Conclusion: the gate belongs at the **graph facade edge-read entry points** (the
 layer that already owns ADR-0017 liveness via `is_vertex_live`), applied at
-edge-yield, gated on the pending-purge set. `_unchecked` variants used by the
-purge/maintenance itself must **not** filter. This is the correctness-critical,
+edge-yield, gated on the pending-purge set. This is the correctness-critical,
 test-heavy part of the change and is sequenced last.
+
+### Consolidation: closure-wrap vs iterator-direct (2026-06-19)
+
+The scattered yield sites can be reduced to **one policy predicate + a small set
+of thin per-visit-shape wrappers**, because every facade read funnels a closure
+into LARA:
+
+- **Verdict: closure-wrap at the facade, not iterator-direct.** Query execution
+  uses the `for_each_*` closure family exclusively (`for_each_csr_expand_edge` for
+  expand; `path.rs` for path finding; payload-batch visitors) — there is **no
+  `_edges_iter` usage in the executor**. Switching to iterator-direct filtering
+  would require rewriting expand/path execution **and** would lose the for_each
+  family's payload-batching / scratch-reuse optimizations (`_with_payloads`,
+  `_with_payload_slices_reusing`, edge/value batch paths), making
+  property-projecting traversals slower. The wrapper adds only ~1 inlined,
+  gated branch per edge in steady state (off when `has_pending_vertex_purges()`).
+- **One predicate, few wrappers.** Visit shapes that carry the edge —
+  `FnMut(Edge)`, `FnMut(&Edge, &[u8])`, `FnMut(LabeledEdgePayloadBatch<Edge>)` —
+  all expose `edge.neighbor_vid()` (always the counterpart relative to the queried
+  vertex), so one direction-agnostic predicate
+  `edge_hidden_by_purge(counterpart)` serves all of them.
+- **Value-only batches need a fallback.** `FnMut(LabeledPayloadValueBatch)`
+  yields property values without edge identity, so it cannot filter by neighbor.
+  While `has_pending_vertex_purges()` is true, bypass this fast path in favor of
+  the edge-bearing batch path (purges are rare; this is an acceptable, localized
+  fallback).
+- **`_unchecked` ≠ "do not filter".** The suffix means "skip vertex-range
+  validation"; some `_topology_unchecked` reads in `path.rs` are query-visible and
+  **must** filter. The real discriminator is "is this a query-visible read?" The
+  purge itself does **not** go through the facade (it uses LARA-internal
+  `asc_out_edges`), so it is naturally exempt without special-casing suffixes.
 
 ## Migration (staged)
 
@@ -313,9 +343,12 @@ early, deferring the wide read-gate to last:
   pending set, runs one bounded inline pass, arms the ADR-0020 timer; move
   per-edge sidecar clearing into the graph-side delete-edge observer, which also
   clears the pending set on `on_vertex_purge_completed`.
-- Add the gated edge-yield neighbor filter to **all** graph-facade edge-read
-  entry points (checked variants), leaving `_unchecked` (purge/maintenance)
-  unfiltered.
+- Add the gated edge-yield neighbor filter as **one predicate
+  (`edge_hidden_by_purge`) + thin per-visit-shape closure wrappers** applied to
+  the query-visible facade reads (`FnMut(Edge)`, `FnMut(&Edge, &[u8])`,
+  `FnMut(LabeledEdgePayloadBatch<Edge>)`); during a purge, bypass the value-only
+  batch fast path. Filter by "query-visible read", not by the `_unchecked`
+  suffix; the purge bypasses the facade and is exempt.
 - **Visibility test matrix** across expand (out/in/undirected), anonymous-target
   patterns, WCOJ, edge-property reads, label-scoped reads, and payload-first
   batched reads — during an in-flight purge and after completion.
