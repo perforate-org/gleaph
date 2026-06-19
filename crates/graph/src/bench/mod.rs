@@ -1937,6 +1937,20 @@ mod bench_setup_tests {
     use super::*;
     use ic_stable_lara::CsrEdge;
 
+    /// Installs the `BenchWspWgtEdge` weight payload profile (`RawU16`, 2 bytes) in
+    /// the process-global test registry. The probe tests below build partial
+    /// converging-hub fixtures directly, so they cannot rely on
+    /// [`setup_repeated_edge_cost_cache_graph`] having installed it first.
+    fn install_bench_wsp_wgt_profile() {
+        let label_id = crate::test_labels::edge_label_id_for_name("BenchWspWgtEdge");
+        crate::test_labels::install_test_edge_payload_profile(
+            label_id,
+            EdgePayloadProfile::from(EdgeWeightProfile {
+                encoding: WeightEncoding::RawU16,
+            }),
+        );
+    }
+
     #[test]
     fn expand_hub_graph_two_prefix_named_edges_native() {
         let store = GraphStore::new();
@@ -2113,7 +2127,7 @@ mod bench_setup_tests {
         let dst = store
             .insert_vertex_named(["BenchWspCacheDst"], Vec::<(&str, Value)>::new())
             .expect("dst");
-        crate::test_labels::edge_label_id_for_name("BenchWspWgtEdge");
+        install_bench_wsp_wgt_profile();
         let road = catalog_edge_label("BenchWspWgtEdge");
         let mut prefixes = Vec::new();
         for _ in 0..CACHE_PREFIX_COUNT {
@@ -2161,7 +2175,7 @@ mod bench_setup_tests {
         let hub = store
             .insert_vertex_named(["BenchWspHub"], Vec::<(&str, Value)>::new())
             .expect("hub");
-        crate::test_labels::edge_label_id_for_name("BenchWspWgtEdge");
+        install_bench_wsp_wgt_profile();
         let road = catalog_edge_label("BenchWspWgtEdge");
         for i in 0..3usize {
             let prefix = store
@@ -2192,7 +2206,7 @@ mod bench_setup_tests {
         let src = store
             .insert_vertex_named(["BenchWspCacheSrc"], Vec::<(&str, Value)>::new())
             .expect("src");
-        crate::test_labels::edge_label_id_for_name("BenchWspWgtEdge");
+        install_bench_wsp_wgt_profile();
         let road = catalog_edge_label("BenchWspWgtEdge");
         for i in 0..3usize {
             let prefix = store
