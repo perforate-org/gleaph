@@ -281,6 +281,15 @@ necessity and the thresholds of *each* tier (the dedicated span included).
 1. Benchmark shared-leaf vs dedicated-span vs B-tree backing for skewed buckets:
    insert/update/delete churn, point lookup, full-bucket scan locality,
    `DETACH DELETE` cost (ADR 0021), and slab fragmentation.
+   - **Status-quo (shared-leaf) baselines landed** in `labeled/bench.rs` for a
+     1024-edge single `(vertex, label)` hub (canbench, persisted):
+     `bench_labeled_stage2_hub_delete_half_then_compact_1024` (~308.66M ins;
+     ~597K ins/delete via `remove_edge_skip_leaf` — the O(degree) delete the
+     B-tree tier targets), `bench_labeled_stage2_hub_point_lookup_descending_1024`
+     and `bench_labeled_stage2_hub_scan_descending_1024` (~16.61M ins each; point
+     lookup == full scan, confirming O(degree) target lookup).
+   - **Still to measure:** the dedicated-span and B-tree backings themselves (need
+     prototypes), plus facade-level `DETACH DELETE` cost and slab fragmentation.
 2. Decide, per tier, **whether it is warranted at all** and, if so, its promote /
    demote degree thresholds (with hysteresis).
 3. If the dedicated-span tier is warranted: add the per-bucket pin→unpin
