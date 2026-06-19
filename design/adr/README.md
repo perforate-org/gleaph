@@ -54,6 +54,7 @@ Last revised: YYYY-MM-DD
 | [0017](0017-graph-vertex-existence-ssot.md) | Vertex existence SSOT on graph shard; remove router placement registry | accepted |
 | [0018](0018-graph-scoped-label-property-catalogs.md) | Graph-scoped `PropertyId` / label catalogs per `GraphId`; supersede 0011 global vocabulary policy | accepted |
 | [0019](0019-graph-local-shard-id-and-index-clusters.md) | Graph-local dense `ShardId`; per-graph index cluster; commit `GROUP_SIZE` routing | accepted |
-| [0020](0020-deferred-maintenance-timer-drain.md) | Timer-driven (`ic-cdk-timers`) adaptive drain of the deferred LARA maintenance queue; event-driven re-arm | proposed |
+| [0020](0020-deferred-maintenance-timer-drain.md) | Timer-driven (`ic-cdk-timers`) adaptive drain of the deferred LARA maintenance queue; event-driven re-arm | accepted |
+| [0021](0021-resumable-supernode-detach-delete.md) | Resumable super-node `DETACH DELETE` via tombstone-first + phased incident-edge purge on the maintenance timer; gated read-time neighbor visibility | proposed |
 
 When adding an ADR, link it from the relevant design doc and update this table.
