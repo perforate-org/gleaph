@@ -202,16 +202,37 @@ B-tree tier (high degree, Terrace-style).
 
    Recorded design constraints for the eventual B-tree tier (contingent, not yet
    implemented):
-   - **Key shape `(VertexId, BucketLabelKey, target)`** — the natural clustered
-     order; a `(VertexId, BucketLabelKey)` prefix range scan yields one bucket's
-     edges, forward = `OutEdgeOrder::Ascending`, reverse = `Descending`.
+   - **The edge order contract is CSR slot order = insertion (append) order, not
+     target order** (`OutEdgeOrder::Ascending` = "CSR slots low→high", the stable
+     materialization order; `insert_edge` appends). Worse, the **`slot_index` is an
+     edge's stable identity**: `EdgeHandle { owner_vertex_id, label_id, slot_index }`
+     keys the edge-property sidecar (`EDGE_PROPERTIES`), the undirected alias store
+     (`EDGE_ALIASES`), and postings. A target-keyed map would both reorder edges
+     *and* destroy this positional identity — so **the B-tree key must NOT be the
+     target.** (This corrects the earlier `(VertexId, BucketLabelKey, target)`
+     sketch.)
+   - **Key shape `(VertexId, BucketLabelKey, seq)`** where `seq` is a monotonic,
+     never-shifting per-bucket sequence id that *is* the `slot_index` analog.
+     Forward range scan over the `(VertexId, BucketLabelKey)` prefix = seq ascending
+     = `OutEdgeOrder::Ascending` (insertion order); reverse = `Descending`. This
+     preserves both the order contract and stable edge identity. The dedicated-span
+     tier needs no such care — it is still a CSR span, so slot order/identity carry
+     over unchanged.
    - **Use storage-local `VertexId`, not the federation `LocalVertexId`.** Keep
      `LocalVertexId ↔ VertexId` translation above the LARA boundary so the general
      storage crate stays free of federation concepts.
-   - **Define a total order on the target (`VertexRef`) that matches the existing
-     slab/overflow-log scan order**, and pin it with tests (the Stage 1 defect was
-     a scan-order bug). Tombstones are never keys — a B-tree delete removes the
-     key (O(log d)), avoiding slab tombstone + compaction.
+   - **Target lives in the value, not the key.** A dedicated target struct holding
+     only `{ remote flag, id }` (tombstone/payload bits stripped from `VertexRef`,
+     `Ord` derived with an order matching the existing scan order, pinned by tests)
+     is appropriate either as the value's target field or as the key of an optional
+     secondary index `target → seq`. Tombstones are never keys — a B-tree delete
+     removes the `seq` key (O(log d)), avoiding slab tombstone + compaction.
+   - **Point lookup by target stays O(degree)** with a seq-keyed map — but that is
+     exactly today's cost (`find_first_forward_handle_descending` already scans).
+     The B-tree's real win is O(log d) delete-by-`seq` with no compaction and no
+     O(degree) contiguous-span relocation (the ADR-0021 super-node pain). An
+     optional `target → seq` secondary index buys O(log d) target lookup at ~2×
+     entries; **whether that index is warranted is itself a benchmark decision.**
    - **One shared ordered map, not one map per vertex/bucket.** A literal
      per-vertex/per-bucket `StableBTreeMap` is infeasible (each instance needs its
      own `MemoryId`; the memory manager caps virtual memories at 255). "Per-bucket
@@ -266,9 +287,11 @@ necessity and the thresholds of *each* tier (the dedicated span included).
    transition (evacuate the bucket to a span, release leaf footprint, update
    `span_meta`/segment counts and the bucket descriptor's backing state).
 4. If the B-tree tier is warranted: prototype the single shared ordered map keyed
-   by `(VertexId, BucketLabelKey, target)` (see recorded design constraints in the
-   Decision), measure scan regression vs the span tiers, and wire the per-vertex
-   scan to union slab/log/span/tree buckets in label order.
+   by `(VertexId, BucketLabelKey, seq)` — a stable monotonic sequence id, NOT the
+   target, to preserve insertion order and the `slot_index` stable identity (see
+   recorded design constraints in the Decision). Measure scan regression vs the
+   span tiers, decide whether a `target → seq` secondary index is warranted, and
+   wire the per-vertex scan to union slab/log/span/tree buckets in label order.
 5. Capture the outcome in a separate ADR or an amendment here.
 
 ## Design Documentation Impact
