@@ -312,6 +312,29 @@ fn seed_single_label_parallel_edges(
     label
 }
 
+/// ADR 0022 Stage 2 baseline: a single skewed `(vertex, label)` hub bucket grown
+/// far past the per-vertex leaf quota so the per-leaf overflow log is active —
+/// the status-quo shape a dedicated-span / B-tree tier would replace. Seeds via
+/// `insert_edge_skip_leaf_cascade` so the cost being measured later (delete,
+/// lookup, scan) is isolated from leaf-cascade maintenance during seeding.
+fn seed_single_label_hub(
+    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    edge_count: u32,
+) -> (VertexId, BucketLabelKey) {
+    graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    let vid = VertexId::from(0);
+    let label = BucketLabelKey::from_raw(2);
+    for i in 0..edge_count {
+        graph
+            .insert_edge_skip_leaf_cascade(vid, label, BenchEdge(i))
+            .expect("hub insert");
+    }
+    (vid, label)
+}
+
+/// Hub degree for the ADR 0022 Stage 2 baselines (single skewed bucket).
+const STAGE2_HUB_DEGREE: u32 = 1024;
+
 /// Phase 6 hub regression: 33 labels × 50 edges (span-release cliff shape).
 const MIXED_LABEL_HUB_LABELS: u16 = 33;
 const MIXED_LABEL_HUB_EDGES_PER_LABEL: u32 = 50;
@@ -725,5 +748,72 @@ fn bench_labeled_tombstone_log_rewrite_maintenance() -> canbench_rs::BenchResult
             .for_each_edges_for_label(vid, label, |_| count += 1)
             .expect("for_each");
         black_box(count);
+    })
+}
+
+/// ADR 0022 Stage 2 baseline (delete churn): remove half of a 1024-edge skewed hub
+/// bucket by match, then compact the vertex edge span. This is the O(degree)
+/// tombstone-plus-compaction cost that a B-tree tier's O(log d) delete-by-`seq`
+/// (no compaction) would replace; the hub is seeded outside the measured region.
+#[bench(raw)]
+fn bench_labeled_stage2_hub_delete_half_then_compact_1024() -> canbench_rs::BenchResult {
+    let graph = bench_graph(1 << 20);
+    let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
+    bench_fn(|| {
+        for target in (0..STAGE2_HUB_DEGREE).step_by(2) {
+            graph
+                .remove_edge_matching(vid, label, |edge| edge.0 == target)
+                .expect("remove")
+                .expect("removed");
+        }
+        compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
+        let mut count = 0usize;
+        graph
+            .for_each_edges_for_label(vid, label, |_| count += 1)
+            .expect("for_each");
+        black_box(count);
+    })
+}
+
+/// ADR 0022 Stage 2 baseline (point lookup): scan a 1024-edge skewed hub bucket in
+/// the hot descending order to locate one target. Today this is O(degree) (the
+/// `find_first_forward_handle_descending` walk); an optional `target -> seq`
+/// secondary index would make it O(log d). Worst case: the first-inserted target
+/// (target `0`) is reached last in descending order.
+#[bench(raw)]
+fn bench_labeled_stage2_hub_point_lookup_descending_1024() -> canbench_rs::BenchResult {
+    let graph = bench_graph(1 << 20);
+    let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
+    bench_fn(|| {
+        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
+            let needle = black_box(0u32);
+            let mut hits = 0usize;
+            graph
+                .for_each_edges_for_label_ordered(vid, label, OutEdgeOrder::Descending, |edge| {
+                    hits += usize::from(edge.0 == needle);
+                })
+                .expect("descending lookup");
+            black_box(hits);
+        }
+    })
+}
+
+/// ADR 0022 Stage 2 baseline (scan locality): full descending scan of a 1024-edge
+/// skewed hub bucket — the contiguous-scan cost the span/B-tree tiers must not
+/// regress relative to the shared-leaf slab.
+#[bench(raw)]
+fn bench_labeled_stage2_hub_scan_descending_1024() -> canbench_rs::BenchResult {
+    let graph = bench_graph(1 << 20);
+    let (vid, label) = seed_single_label_hub(&graph, STAGE2_HUB_DEGREE);
+    bench_fn(|| {
+        for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
+            let mut count = 0usize;
+            graph
+                .for_each_edges_for_label_ordered(vid, label, OutEdgeOrder::Descending, |edge| {
+                    count += usize::from(edge.0 < STAGE2_HUB_DEGREE);
+                })
+                .expect("descending scan");
+            black_box(count);
+        }
     })
 }
