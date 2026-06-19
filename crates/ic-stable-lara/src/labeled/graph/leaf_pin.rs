@@ -60,17 +60,133 @@ where
         Some((span_rec.physical_start, block_len))
     }
 
-    /// Ensures the PMA leaf containing `vid` owns a contiguous edge-slab block and
-    /// returns the first edge slot for that vertex's quota inside the block.
-    pub(super) fn ensure_labeled_leaf_edge_physical_pin(
+    /// Edge-slab spans `[base, base + stored_slots)` owned by other labeled vertices in
+    /// `vid`'s PMA leaf. Used to place a new vertex's edge span without overlapping a
+    /// leaf-mate whose weighted span exceeds the fixed per-vertex quota.
+    fn labeled_leaf_occupied_spans(&self, vid: VertexId, exclude: VertexId) -> Vec<(u64, u64)> {
+        let header = self.edges.header();
+        let seg = header.segment_size.max(1);
+        let leaf = Self::leaf_index_for_vid(vid, seg);
+        let start_vid = leaf.saturating_mul(seg);
+        let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
+        let mut spans = Vec::new();
+        for vid_u in start_vid..end_vid {
+            let other = VertexId::from(vid_u);
+            if other == exclude {
+                continue;
+            }
+            let vertex = self.vertices.get(other);
+            if vertex.is_default_edge_labeled() || vertex.stored_slots == 0 {
+                continue;
+            }
+            let Ok(buckets) = self.read_vertex_label_buckets(&vertex) else {
+                continue;
+            };
+            let Some(first) = buckets.first() else {
+                continue;
+            };
+            let base = first.edge_start();
+            let Some(end) = checked_add_slot_index(base, u64::from(vertex.stored_slots)) else {
+                continue;
+            };
+            spans.push((base, end));
+        }
+        spans
+    }
+
+    /// `true` when some labeled vertex in `vid`'s PMA leaf reserves more than `quota`
+    /// slots, i.e. the fixed-quota leaf layout no longer holds and a new vertex's quota
+    /// offset may overlap a leaf-mate. Cheap: reads only vertex records, not buckets.
+    fn labeled_leaf_has_oversized_vertex(&self, vid: VertexId, quota: u64) -> bool {
+        let header = self.edges.header();
+        let seg = header.segment_size.max(1);
+        let leaf = Self::leaf_index_for_vid(vid, seg);
+        let start_vid = leaf.saturating_mul(seg);
+        let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
+        for vid_u in start_vid..end_vid {
+            let vertex = self.vertices.get(VertexId::from(vid_u));
+            if vertex.is_default_edge_labeled() {
+                continue;
+            }
+            if u64::from(vertex.stored_slots) > quota {
+                return true;
+            }
+        }
+        false
+    }
+
+    /// Lowest base offering `need` contiguous free slots in `vid`'s pinned leaf block that
+    /// does not overlap any leaf-mate's span. Prefers the fixed per-vertex quota offset.
+    pub(super) fn find_free_labeled_leaf_edge_base(
         &self,
         vid: VertexId,
-    ) -> Result<u64, LabeledOperationError> {
+        leaf_start: u64,
+        leaf_len: u64,
+        need: u64,
+    ) -> Option<u64> {
+        if need == 0 || need > leaf_len {
+            return None;
+        }
+        let header = self.edges.header();
+        let seg = header.segment_size.max(1);
+        let leaf_end = checked_add_slot_index(leaf_start, leaf_len)?;
+        let quota = u64::from(labeled_leaf_vertex_edge_quota());
+        let preferred =
+            checked_add_slot_index(leaf_start, labeled_vertex_edge_offset_in_leaf(vid, seg));
+
+        // Fast path: when no leaf-mate's span exceeds the fixed per-vertex quota, the
+        // fixed-quota layout is intact and the requesting vertex's quota offset is free.
+        // This avoids reading every leaf-mate's buckets on the common (sparse) insert.
+        if need <= quota && !self.labeled_leaf_has_oversized_vertex(vid, quota) {
+            if let Some(preferred) = preferred {
+                if checked_add_slot_index(preferred, need)? <= leaf_end {
+                    return Some(preferred);
+                }
+            }
+        }
+
+        let mut spans = self.labeled_leaf_occupied_spans(vid, vid);
+        spans.sort_by_key(|(start, _)| *start);
+
+        let fits = |base: u64| -> bool {
+            match checked_add_slot_index(base, need) {
+                Some(end) if end <= leaf_end => spans.iter().all(|(s, e)| end <= *s || base >= *e),
+                _ => false,
+            }
+        };
+
+        if let Some(preferred) = preferred {
+            if fits(preferred) {
+                return Some(preferred);
+            }
+        }
+
+        let mut cursor = leaf_start;
+        for (start, end) in &spans {
+            if *start > cursor && start.saturating_sub(cursor) >= need {
+                return Some(cursor);
+            }
+            if *end > cursor {
+                cursor = *end;
+            }
+        }
+        if checked_add_slot_index(cursor, need)? <= leaf_end {
+            Some(cursor)
+        } else {
+            None
+        }
+    }
+
+    /// Ensures the PMA leaf containing `vid` owns a contiguous edge-slab block, returning
+    /// `(physical_start, block_len)`. Allocates the block on first use.
+    pub(super) fn ensure_labeled_leaf_block_pinned(
+        &self,
+        vid: VertexId,
+    ) -> Result<(u64, u64), LabeledOperationError> {
         let header = self.edges.header();
         let seg = header.segment_size.max(1);
         let leaf = Self::leaf_index_for_vid(vid, seg);
         let block_len = labeled_leaf_physical_block_len(seg);
-        let vertex_offset = labeled_vertex_edge_offset_in_leaf(vid, seg);
 
         let span_rec = self.edges.span_meta_store().get(u64::from(leaf));
         let physical_start = if span_rec.physical_start == SPAN_PHYSICAL_UNASSIGNED {
@@ -88,6 +204,32 @@ where
         } else {
             span_rec.physical_start
         };
+
+        Ok(self
+            .labeled_leaf_physical_range(vid)
+            .unwrap_or((physical_start, block_len)))
+    }
+
+    /// Ensures the PMA leaf containing `vid` owns a contiguous edge-slab block and
+    /// returns a free, non-overlapping first edge slot for that vertex's quota.
+    pub(super) fn ensure_labeled_leaf_edge_physical_pin(
+        &self,
+        vid: VertexId,
+    ) -> Result<u64, LabeledOperationError> {
+        let header = self.edges.header();
+        let seg = header.segment_size.max(1);
+        let vertex_offset = labeled_vertex_edge_offset_in_leaf(vid, seg);
+
+        let (leaf_start, leaf_len) = self.ensure_labeled_leaf_block_pinned(vid)?;
+        let physical_start = leaf_start;
+        if let Some(base) = self.find_free_labeled_leaf_edge_base(
+            vid,
+            leaf_start,
+            leaf_len,
+            u64::from(labeled_leaf_vertex_edge_quota()),
+        ) {
+            return Ok(base);
+        }
 
         checked_add_slot_index(physical_start, vertex_offset)
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
@@ -159,11 +301,12 @@ where
         let base = if vertex.is_default_edge_labeled() || vertex.degree() == 0 {
             self.ensure_labeled_leaf_edge_physical_pin(vid)?
         } else {
-            let buckets = self.read_vertex_label_buckets(&vertex)?;
-            buckets
-                .first()
-                .map(|bucket| bucket.edge_start())
-                .unwrap_or(self.ensure_labeled_leaf_edge_physical_pin(vid)?)
+            // `unwrap_or` would eagerly run the (now occupancy-aware) pin on every call;
+            // only resolve a pin when the vertex genuinely has no first bucket.
+            match self.read_vertex_label_buckets(&vertex)?.first() {
+                Some(bucket) => bucket.edge_start(),
+                None => self.ensure_labeled_leaf_edge_physical_pin(vid)?,
+            }
         };
         let fit = leaf_end.saturating_sub(base);
         u32::try_from(fit).map_err(|_| LaraOperationError::CollectAllocationOverflow.into())

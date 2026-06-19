@@ -274,6 +274,17 @@ where
         if self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
             return Ok(());
         }
+        // A fresh single-bucket vertex has no placed span yet, so the span-rebalance path
+        // below (which trusts an existing base) cannot site it. Grow the leaf block via a
+        // relocate and retry placement, which now finds room in the enlarged block.
+        if vertex.stored_slots == 0 && self.labeled_leaf_physical_range(src).is_some() {
+            self.relocate_labeled_leaf_physical_block(src)?;
+            let vertex = self.vertices.get(src);
+            let slot = Self::labeled_vertex_bucket_slot(&vertex, bucket_index)?;
+            if self.try_place_new_bucket_edge_span(src, &vertex, slot, bucket_index)? {
+                return Ok(());
+            }
+        }
         if self.labeled_leaf_physical_range(src).is_some() {
             let buckets = self.read_vertex_label_buckets(&vertex)?;
             if buckets.iter().any(|bucket| bucket.overflow_log_head() >= 0) {
@@ -345,7 +356,19 @@ where
         }
         if vertex.degree() == 1 {
             let new_alloc = DEFAULT_SEGMENT_SIZE;
-            let edge_start = self.ensure_labeled_leaf_edge_physical_pin(src)?;
+            // Ensure the leaf block exists, then place this vertex's first span in a free,
+            // non-overlapping slot. A leaf-mate's weighted span can exceed the fixed quota,
+            // so the fixed offset is not guaranteed free; fall back to the caller's
+            // relocate-and-retry path when the current block has no room.
+            let (leaf_start, leaf_len) = self.ensure_labeled_leaf_block_pinned(src)?;
+            let Some(edge_start) = self.find_free_labeled_leaf_edge_base(
+                src,
+                leaf_start,
+                leaf_len,
+                u64::from(new_alloc),
+            ) else {
+                return Ok(false);
+            };
             let bucket = self
                 .buckets
                 .read_label_bucket_slot(slot)

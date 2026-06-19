@@ -137,6 +137,77 @@ mod tests {
     }
 
     #[test]
+    fn leaf_mate_insert_does_not_corrupt_oversized_hub_span() {
+        // Regression: a vertex whose weighted edge span exceeds the fixed per-vertex
+        // leaf quota (DEFAULT_SEGMENT_SIZE) used to be overwritten when a leaf-mate's
+        // first edge was pinned at the (now occupied) fixed quota offset.
+        let graph = graph();
+        // Leaf-mates: hub (vertex 0) and vertices 1..=8.
+        for _ in 0..9 {
+            graph
+                .inner()
+                .push_vertex(crate::labeled::record::LabeledVertex::default())
+                .unwrap();
+        }
+        let label = BucketLabelKey::from_raw(2);
+        let hub = VertexId::from(0);
+        let hub_edges = || -> Vec<u32> {
+            graph
+                .inner()
+                .out_edges(hub)
+                .unwrap()
+                .iter()
+                .map(|e| e.0)
+                .collect()
+        };
+        let hub_missing =
+            |edges: &[u32]| -> Vec<u32> { (1..=300u32).filter(|t| !edges.contains(t)).collect() };
+
+        for target in 1..=300u32 {
+            graph.insert_edge(hub, label, TestEdge(target)).unwrap();
+        }
+        drain_vertex_edge_span_compact_queue(&graph);
+        assert!(
+            hub_missing(&hub_edges()).is_empty(),
+            "hub missing edges before any leaf-mate insert"
+        );
+
+        // Each leaf-mate's first edge lands at the fixed quota offset, which now overlaps
+        // the hub's oversized span; placement must instead find free, non-overlapping room.
+        for mate in 1..=8u32 {
+            let value = 10_000 + mate;
+            graph
+                .insert_edge(VertexId::from(mate), label, TestEdge(value))
+                .unwrap();
+            drain_vertex_edge_span_compact_queue(&graph);
+
+            let edges = hub_edges();
+            assert!(
+                hub_missing(&edges).is_empty(),
+                "leaf-mate {mate} insert dropped hub edges: {:?}",
+                hub_missing(&edges)
+            );
+            for leaked in 10_001..=10_008u32 {
+                assert!(
+                    !edges.contains(&leaked),
+                    "leaf-mate value {leaked} leaked into hub row after inserting mate {mate}"
+                );
+            }
+            let mate_edges: Vec<u32> = graph
+                .inner()
+                .out_edges(VertexId::from(mate))
+                .unwrap()
+                .iter()
+                .map(|e| e.0)
+                .collect();
+            assert!(
+                mate_edges.contains(&value),
+                "leaf-mate {mate} lost its own edge {value}"
+            );
+        }
+    }
+
+    #[test]
     fn dense_maintenance_enqueue_deduplicates_per_vertex() {
         let graph = graph();
         graph

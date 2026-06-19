@@ -2209,36 +2209,57 @@ where
         vid: VertexId,
     ) -> Result<bool, DeferredBidirectionalLabeledError>
     where
-        E: PartialEq,
+        E: PartialEq + CsrEdgeTombstone,
     {
-        while self.has_incident_edges(vid)? {
-            if let Some(edge) = self
-                .forward
-                .asc_out_edges(vid)
-                .map_err(DeferredBidirectionalLabeledError::Forward)?
-                .into_iter()
-                .next()
-            {
-                let dst = edge.neighbor_vid();
-                if self.remove_undirected_deferred(vid, dst, edge.clone())?
-                    || self.remove_directed_deferred(vid, dst, edge)?
-                {
+        // Drain `vid`'s own rows in O(degree) (descending-slot removal, no per-edge
+        // predicate re-scan), then remove only the counterpart row at each neighbour.
+        // The owner side never re-scans, so the cost is O(degree + sum of neighbour
+        // degrees) instead of the prior O(degree^2) owner predicate re-scan.
+        let forward_labels = self
+            .forward
+            .out_edge_label_ids(vid)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        for label_id in forward_labels {
+            let mut neighbors: Vec<VertexId> = Vec::new();
+            self.forward
+                .drain_out_edges_for_label(vid, label_id, |edge| {
+                    neighbors.push(edge.neighbor_vid())
+                })
+                .map_err(DeferredBidirectionalLabeledError::Forward)?;
+            for neighbor in neighbors {
+                if neighbor == vid {
                     continue;
                 }
-            }
-            if let Some(edge) = self
-                .reverse
-                .asc_out_edges(vid)
-                .map_err(DeferredBidirectionalLabeledError::Reverse)?
-                .into_iter()
-                .next()
-            {
-                let src = edge.neighbor_vid();
-                if self.purge_one_directed_in_edge(src, vid)? {
-                    continue;
+                if label_id.is_undirected() {
+                    self.forward
+                        .remove_edge_matching(neighbor, label_id, |cand| cand.neighbor_vid() == vid)
+                        .map_err(DeferredBidirectionalLabeledError::Forward)?;
+                } else {
+                    self.reverse
+                        .remove_edge_matching(neighbor, label_id, |cand| cand.neighbor_vid() == vid)
+                        .map_err(DeferredBidirectionalLabeledError::Reverse)?;
                 }
             }
-            break;
+        }
+        // Reverse-store out-edges are directed in-edges `src -> vid`; drain them and
+        // remove the surviving forward record at each `src`.
+        let reverse_labels = self
+            .reverse
+            .out_edge_label_ids(vid)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        for label_id in reverse_labels {
+            let mut sources: Vec<VertexId> = Vec::new();
+            self.reverse
+                .drain_out_edges_for_label(vid, label_id, |edge| sources.push(edge.neighbor_vid()))
+                .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+            for src in sources {
+                if src == vid {
+                    continue;
+                }
+                self.forward
+                    .remove_edge_matching(src, label_id, |cand| cand.neighbor_vid() == vid)
+                    .map_err(DeferredBidirectionalLabeledError::Forward)?;
+            }
         }
         self.finalize_vertex_delete(vid)?;
         Ok(true)
@@ -2531,6 +2552,12 @@ mod tests {
     use crate::VectorMemory;
 
     fn graph() -> DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory> {
+        sized_graph(128)
+    }
+
+    fn sized_graph(
+        elem_capacity: u64,
+    ) -> DeferredBidirectionalLabeledLaraGraph<TestEdge, VectorMemory> {
         let (
             fv,
             fb,
@@ -2598,10 +2625,125 @@ mod tests {
             rvblobs,
             vector_memory(),
             vector_memory(),
-            128,
+            elem_capacity,
             BucketLabelKey::from_raw(1),
         )
         .expect("graph")
+    }
+
+    #[test]
+    fn sync_delete_vertex_drains_hub_and_preserves_neighbor_edges() {
+        // Directed hub 0 -> neighbors 1..=DEG (exercises slab growth + overflow),
+        // plus a directed in-edge, a self-loop, and a neighbour that keeps an edge to
+        // a survivor vertex. The drain rewrite must remove every owner row and every
+        // mirror at neighbours, while leaving unrelated edges (and counts) intact.
+        const DEG: u32 = 300;
+        let graph = sized_graph(1 << 16);
+        let hub = graph.push_vertex().expect("hub"); // 0
+        let label = BucketLabelKey::directed_from_index(7);
+        for _ in 0..DEG {
+            let neighbor = graph.push_vertex().expect("neighbor");
+            graph
+                .insert_directed_edge(
+                    hub,
+                    neighbor,
+                    label,
+                    TestEdge(u32::from(neighbor)),
+                    TestEdge(u32::from(hub)),
+                )
+                .expect("hub -> neighbor");
+        }
+        // Survivor vertex with an edge from a neighbour that must outlive the hub delete.
+        // Use a neighbour in a far leaf (not a leaf-mate of the hub) so its insert does
+        // not rebalance the hub's own leaf.
+        let survivor = graph.push_vertex().expect("survivor");
+        let keeper = VertexId::from(250);
+        graph
+            .insert_directed_edge(
+                survivor,
+                hub,
+                label,
+                TestEdge(u32::from(hub)),
+                TestEdge(u32::from(survivor)),
+            )
+            .expect("survivor -> hub");
+        graph
+            .insert_directed_edge(
+                keeper,
+                survivor,
+                label,
+                TestEdge(u32::from(survivor)),
+                TestEdge(u32::from(keeper)),
+            )
+            .expect("keeper -> survivor");
+        graph
+            .maintenance(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            })
+            .expect("settle inserts");
+
+        // Sanity: before deletion the hub stores a forward out-edge to every neighbour.
+        let pre_out = graph.directed_out_edges(hub).expect("hub out pre-delete");
+        let mut pre_targets: Vec<u32> = pre_out
+            .iter()
+            .map(|e| u32::from(e.neighbor_vid()))
+            .collect();
+        pre_targets.sort_unstable();
+        let missing: Vec<u32> = (1..=DEG).filter(|n| !pre_targets.contains(n)).collect();
+        assert!(
+            missing.is_empty(),
+            "hub missing forward edges pre-delete: {missing:?}"
+        );
+
+        graph.delete_vertex_deferred(hub).expect("detach delete");
+        graph
+            .maintenance(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            })
+            .expect("drain");
+
+        // Hub fully drained.
+        assert!(!graph.has_incident_edges(hub).expect("hub incident"));
+        // Every neighbour lost its back-edge from the hub...
+        let mut still_linked: Vec<u32> = Vec::new();
+        for n in 1..=DEG {
+            let nbr = VertexId::from(n);
+            let in_edges = graph.directed_in_edges(nbr).expect("neighbor in-edges");
+            if in_edges.iter().any(|e| e.neighbor_vid() == hub) {
+                still_linked.push(n);
+            }
+        }
+        assert!(
+            still_linked.is_empty(),
+            "neighbors still linked to hub: {still_linked:?}"
+        );
+        // ...but the keeper retains its edge to the survivor, and the survivor keeps it.
+        assert_eq!(
+            graph.incident_degree(keeper).expect("keeper degree"),
+            1,
+            "keeper should retain exactly its survivor edge"
+        );
+        let survivor_in = graph.directed_in_edges(survivor).expect("survivor in");
+        assert!(
+            survivor_in.iter().any(|e| e.neighbor_vid() == keeper),
+            "survivor lost keeper edge"
+        );
+        // Survivor's out-edge to the hub was a mirror that must be gone.
+        let survivor_out = graph.directed_out_edges(survivor).expect("survivor out");
+        assert!(
+            survivor_out.iter().all(|e| e.neighbor_vid() != hub),
+            "survivor still points at deleted hub"
+        );
     }
 
     #[test]

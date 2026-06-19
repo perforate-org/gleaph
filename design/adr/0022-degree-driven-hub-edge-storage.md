@@ -427,17 +427,57 @@ necessity and the thresholds of *each* tier (the dedicated span included).
    free-scan advantages. That is the recommended direction; the B-tree tier (2b)
    remains not warranted.
 
-   **DETACH DELETE verdict (2026-06-19).** The real vertex delete (both orientations
-   + per-neighbour mirror removal) is O(D²) on the slab (646.45M at 1024, 7.41B at
-   4096) and would breach the 40B update limit near ~10K degree — already mitigated
-   by ADR 0021's resumable/deferred purge. A B-tree could reduce the hub-side work
-   to O(D·log d) for a full-bucket drain, but the mirror step is **target-keyed
-   lookup at each neighbour**, the B-tree's weakest axis (no `target → seq` index;
-   6.3× slower scans). So DETACH DELETE is the *same* high-degree-delete story as the
-   crossover: it favours fixing the slab (index/segment the overflow log, and give
-   the reverse store a source-keyed locator so mirror removal stops being O(degree))
-   over paying the B-tree's insert and free-scan tax. Verdict unchanged: 2b not
-   warranted; index/segment the slab.
+  **DETACH DELETE verdict (2026-06-19).** The real vertex delete (both orientations
+  + per-neighbour mirror removal) measured O(D²) on the slab (646.45M at 1024, 7.41B at
+  4096) and would breach the 40B update limit near ~10K degree — already mitigated
+  by ADR 0021's resumable/deferred purge. A B-tree could reduce the hub-side work
+  to O(D·log d) for a full-bucket drain, but the mirror step is **target-keyed
+  lookup at each neighbour**, the B-tree's weakest axis (no `target → seq` index;
+  6.3× slower scans). So DETACH DELETE is the *same* high-degree-delete story as the
+  crossover: it favours fixing the slab over paying the B-tree's insert and free-scan
+  tax. Verdict unchanged: 2b not warranted; fix the slab.
+
+  **Owner-side attribution correction + drain fix (2026-06-19).** Reading
+  `delete_vertex_deferred` / `remove_directed_deferred` showed the measured O(D²) was
+  **not** the per-neighbour mirror step (neighbours in the bench are degree-1, so mirror
+  removal is O(1)). It was the **owner side**: each incident-edge removal re-found the
+  edge in the *owner's own* bucket via an O(remaining-degree) `remove_edge_matching`
+  predicate scan (compounded by `asc_out_edges` re-materialising the whole adjacency per
+  step). Two coupled O(D²) sources — owner predicate re-scan and leading-tombstone
+  re-scan (`after_slab_tombstone_delete` decrements `degree` but never trims
+  `stored_slots`). Fix: a `LabeledLaraGraph::drain_out_edges_for_label` primitive that
+  removes a bucket's edges by **descending reserved slot index** via the existing
+  `remove_edge_at_slot` (identical per-edge count/span bookkeeping, no predicate scan, no
+  find re-scan), and a rewrite of the synchronous `delete_vertex_deferred` to drain the
+  owner rows and remove only the counterpart at each neighbour. Measured: detach-delete
+  **1024: 646.45M → 86.21M (−86.7%); 4096: 7.41B → 79.35M (−98.9%)** — the quadratic blow-up
+  is gone and the 40B cliff is removed. Residual cost is dominated by overflow-log handling
+  (option (b) territory). The reverse store's source-keyed locator / mirror index is the
+  separate lever for the *dual* case (deleting a small vertex adjacent to hubs), still
+  benchmark-gated. The resumable/stepped path (`process_delete_vertex_step`, used by the
+  production `detach_delete_vertex`) shares the owner predicate scan and is **pending** the
+  same drain treatment (constrained by the one-edge-per-step contract; needs a top-slot /
+  cursor primitive).
+
+  **Pre-existing data-loss bug found and fixed (2026-06-19, separate from this ADR).** While
+  building the drain regression test, `directed_out_edges` was observed to silently drop a
+  hub's forward edge at index 32 (the 33rd edge) after a **leaf-mate insert** while the hub
+  held a large (>32) out-edge span. Reproduces with pure `insert_edge` + `maintenance` + read
+  (no delete involved). Root cause: the labeled leaf physical layout reserves a **fixed
+  per-vertex quota** of `DEFAULT_SEGMENT_SIZE` (32) slots — vertex `v`'s edges pin at
+  `leaf_start + (v % seg) * 32`. But the weighted leaf relocation packs vertices by *actual*
+  size, letting one vertex's contiguous span exceed its 32-slot quota. When a leaf-mate then
+  inserted its first edge, `ensure_labeled_leaf_edge_physical_pin` returned the fixed quota
+  offset with no overlap guard, siting the new vertex's span *inside* the oversized
+  neighbour's span and overwriting one of its edges (confirmed: hub `[1024,1226)`, vertex 1
+  pinned at `1024+32=1056`, overwriting the hub's slot-32 edge). Fix: occupancy-aware
+  placement — `find_free_labeled_leaf_edge_base` returns the lowest non-overlapping base
+  (preferring the quota offset; a cheap `stored_slots`-only fast path keeps the common sparse
+  case O(1)-ish), and `ensure_labeled_bucket_edge_span_room` relocates-and-retries when a
+  fresh vertex finds no room. Also fixed an eager `unwrap_or(ensure_pin(...)?)` that ran the
+  (now heavier) pin on every `labeled_vertex_stored_slots_max_in_leaf` call. Regression test:
+  `leaf_mate_insert_does_not_corrupt_oversized_hub_span`. Realistic insert benchmarks return
+  to baseline; only tiny single-vertex microbench overhead remains.
 2. Decide, per tier, **whether it is warranted at all** and, if so, its promote /
    demote degree thresholds (with hysteresis).
 3. If the dedicated-span tier is warranted: add the per-bucket pin→unpin

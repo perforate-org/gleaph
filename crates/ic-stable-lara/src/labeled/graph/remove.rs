@@ -608,6 +608,49 @@ where
         Ok(out)
     }
 
+    /// Removes every live out-edge for `label_id` at `src`, visiting each removed edge.
+    ///
+    /// Addresses slots by **descending reserved index** and delegates each removal to
+    /// [`Self::remove_edge_at_slot`]. This issues exactly the same per-edge removals (and
+    /// therefore the same edge-count/span bookkeeping) as draining the bucket one edge at a
+    /// time with [`Self::remove_edge_matching`], but without the O(degree) predicate scan or
+    /// the leading-tombstone re-scan that a "find first live, remove, repeat" loop incurs
+    /// (tombstones are not trimmed from `stored_slots`; see
+    /// [`crate::traits::CsrVertex::after_slab_tombstone_delete`]). Cost is O(reserved slots)
+    /// for the slab prefix; overflow-log slots remain O(chain) per removal.
+    pub fn drain_out_edges_for_label<F>(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        mut visit: F,
+    ) -> Result<u32, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+        F: FnMut(E),
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        let reserved = if vertex.is_default_edge_labeled() {
+            if label_id != self.bypass_storage_label_for(&vertex) {
+                return Ok(0);
+            }
+            vertex.stored_degree()
+        } else {
+            match self.find_bucket(src, &vertex, label_id)? {
+                BucketSearch::Found { bucket, .. } => self.bucket_reserved_edge_slots(src, &bucket),
+                BucketSearch::Missing { .. } => return Ok(0),
+            }
+        };
+        let mut removed = 0u32;
+        for slot_index in (0..reserved).rev() {
+            if let Some(edge) = self.remove_edge_at_slot(src, label_id, slot_index)? {
+                visit(edge);
+                removed = removed.saturating_add(1);
+            }
+        }
+        Ok(removed)
+    }
+
     /// Removes the first edge in `label_id` for `src` that satisfies `matches`.
     pub fn remove_edge_matching<F>(
         &self,
