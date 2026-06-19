@@ -21,8 +21,9 @@ maintenance), and [ADR 0021](0021-resumable-supernode-detach-delete.md)
 > synthetic single-bucket access used to scan a labeled bucket that has spilled
 > into the per-leaf overflow log. The sections below record the corrected
 > diagnosis and the implemented fix (Stage 1). The degree-driven hub-storage idea
-> (dedicated spans / per-vertex B-tree) survives only as *deferred* Stage 2 work
-> for true super-node isolation, which is a separate concern from this defect.
+> (per-bucket dedicated spans, then a B-tree tier) survives only as *deferred*
+> Stage 2 work for skewed-bucket isolation, which is a separate concern from this
+> defect; each tier's necessity and thresholds are benchmark-gated.
 
 ## Context
 
@@ -153,14 +154,30 @@ Carry the real `v_ord`/leaf so `slab_window_exclusive_end` reads the right cap.
   nothing for a single-bucket view.
 - Verdict: rejected (over-engineered).
 
-### D. Degree-driven hub edge storage (dedicated spans, then per-vertex B-tree)
-The original Stage 1/Stage 2 idea: promote high-degree vertices out of the shared
-leaf into a dedicated span, and later into a per-vertex B-tree (Terrace-style).
+### D. Degree-driven hub edge storage (dedicated spans, then a B-tree tier)
+The original Stage 1/Stage 2 idea: escalate skewed edge sets out of the shared
+leaf into a dedicated span (medium degree), and above a higher threshold into a
+B-tree tier (high degree, Terrace-style).
 
 - Status: **does not fix this defect** (the wedge is a read-geometry bug, not a
-  growth-capacity bug). It remains valuable for *true super-node* isolation
+  growth-capacity bug). It remains valuable for isolating skewed edge sets
   (memory locality, cheaper `DETACH DELETE` per ADR 0021) and is retained as a
-  **deferred Stage 2**, gated on benchmark evidence — not pursued now.
+  **deferred Stage 2** — not pursued now.
+- **Granularity (decided): per labeled bucket `(vertex, label)`, not per vertex.**
+  Skew in real graphs lives at the `(vertex, label)` level (e.g. one celebrity's
+  `FOLLOWED_BY` bucket), so promoting the whole vertex would needlessly move its
+  small buckets off the cache-friendly slab. Per-bucket also matches the existing
+  iteration boundary — edges are already scanned bucket-by-bucket via
+  `LabelEdgeSpanAccess`, and `LabelBucket` already carries a backing-store state
+  machine (slab prefix → per-bucket overflow log). Both escalations add a *third*
+  and *fourth* backing state to that same per-bucket descriptor (slab → log →
+  dedicated span → B-tree), rather than a new vertex-level concept.
+- **Gating (decided): benchmarks decide *both the necessity and the thresholds*
+  of each tier — the dedicated-span tier included, not only the B-tree tier.**
+  Neither escalation is assumed beneficial a priori; each is justified only by
+  measured update/delete churn, `DETACH DELETE` cost, scan locality, and
+  fragmentation. The promotion (and demotion) degree thresholds are tuned from the
+  same measurements, with hysteresis to avoid promote/demote thrash.
 
 ## Decision
 
@@ -170,11 +187,40 @@ leaf into a dedicated span, and later into a per-vertex B-tree (Terrace-style).
    (and ascending) scan of any overflow-log labeled bucket whose edge bytes live
    past leaf-0's physical block.
 
-2. **Stage 2 (deferred): degree-driven hub edge storage (Alternative D).** If and
-   when measurements show shared-leaf placement is a bottleneck for true
-   super-nodes (update/delete churn, `DETACH DELETE` cost, or scan locality),
-   evaluate dedicated-span promotion and a per-vertex B-tree tier
-   (`StableBTreeMap`). Gated on benchmark evidence; a separate ADR or amendment.
+2. **Stage 2 (deferred): degree-driven hub edge storage (Alternative D).**
+   Escalate at **labeled-bucket granularity `(vertex, label)`**, in two tiers:
+   - **Medium degree → dedicated span:** evacuate a hot bucket from the shared
+     leaf block into its own PMA-managed span.
+   - **High degree → B-tree tier:** above a higher threshold, store the bucket's
+     edges in an ordered map tier.
+
+   **Both tiers' necessity and degree thresholds are decided by benchmarks** — the
+   dedicated-span tier is *not* assumed; it must earn its place on measured
+   update/delete churn, `DETACH DELETE` cost, scan locality, and fragmentation,
+   exactly like the B-tree tier. Thresholds carry hysteresis. Pursued only on
+   benchmark evidence; via a separate ADR or amendment.
+
+   Recorded design constraints for the eventual B-tree tier (contingent, not yet
+   implemented):
+   - **Key shape `(VertexId, BucketLabelKey, target)`** — the natural clustered
+     order; a `(VertexId, BucketLabelKey)` prefix range scan yields one bucket's
+     edges, forward = `OutEdgeOrder::Ascending`, reverse = `Descending`.
+   - **Use storage-local `VertexId`, not the federation `LocalVertexId`.** Keep
+     `LocalVertexId ↔ VertexId` translation above the LARA boundary so the general
+     storage crate stays free of federation concepts.
+   - **Define a total order on the target (`VertexRef`) that matches the existing
+     slab/overflow-log scan order**, and pin it with tests (the Stage 1 defect was
+     a scan-order bug). Tombstones are never keys — a B-tree delete removes the
+     key (O(log d)), avoiding slab tombstone + compaction.
+   - **One shared ordered map, not one map per vertex/bucket.** A literal
+     per-vertex/per-bucket `StableBTreeMap` is infeasible (each instance needs its
+     own `MemoryId`; the memory manager caps virtual memories at 255). "Per-bucket
+     B-tree" is *logical*, realized by the `(VertexId, BucketLabelKey)` key prefix
+     over a single map. Candidates: `ic-stable-structures::StableBTreeMap` or the
+     in-repo `ic-stable-paged-ordered-map`.
+   - **Value reuses the existing edge-payload representation / `EdgePayloadStore`
+     indirection** (single source of truth for payload schema), not a new
+     variable-length value format; large blobs stay referenced by handle.
 
 ## Consequences
 
@@ -190,7 +236,8 @@ leaf into a dedicated span, and later into a per-vertex B-tree (Terrace-style).
 - Stage 1 does not change placement policy: a medium-degree bucket may transiently
   keep edges in the overflow log until maintenance relocates it. That is the
   existing ADR-0016 design and is now correctly readable.
-- True super-node isolation (Stage 2) remains future work behind measurement.
+- Per-bucket skew isolation (Stage 2: dedicated span and B-tree tiers) remains
+  future work; each tier's necessity and thresholds are benchmark-gated.
 
 ## Migration
 
@@ -207,9 +254,22 @@ leaf into a dedicated span, and later into a per-vertex B-tree (Terrace-style).
    `large_friends_of_friends_setup_and_execute` to 256 × 64 (undo `f4c93bc3`).
 
 ### Stage 2 — degree-driven hub edge storage (deferred; separate ADR on evidence)
-- Benchmark span-based vs B-tree hub update/delete and `DETACH DELETE` cost;
-  define a promotion threshold; prototype a `StableBTreeMap`-backed per-vertex
-  tier; measure scan regression. Only then decide.
+Escalation is per labeled bucket `(vertex, label)`; benchmarks decide both the
+necessity and the thresholds of *each* tier (the dedicated span included).
+
+1. Benchmark shared-leaf vs dedicated-span vs B-tree backing for skewed buckets:
+   insert/update/delete churn, point lookup, full-bucket scan locality,
+   `DETACH DELETE` cost (ADR 0021), and slab fragmentation.
+2. Decide, per tier, **whether it is warranted at all** and, if so, its promote /
+   demote degree thresholds (with hysteresis).
+3. If the dedicated-span tier is warranted: add the per-bucket pin→unpin
+   transition (evacuate the bucket to a span, release leaf footprint, update
+   `span_meta`/segment counts and the bucket descriptor's backing state).
+4. If the B-tree tier is warranted: prototype the single shared ordered map keyed
+   by `(VertexId, BucketLabelKey, target)` (see recorded design constraints in the
+   Decision), measure scan regression vs the span tiers, and wire the per-vertex
+   scan to union slab/log/span/tree buckets in label order.
+5. Capture the outcome in a separate ADR or an amendment here.
 
 ## Design Documentation Impact
 
