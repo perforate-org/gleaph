@@ -1,7 +1,8 @@
 # 0021. Resumable super-node DETACH DELETE (deferred incident-edge purge)
 
 Date: 2026-06-19
-Status: proposed
+Status: proposed (revised 2026-06-19 after a read-gate breadth finding; see
+"Implementation finding" and the staged Migration)
 Last revised: 2026-06-19
 
 Builds on [ADR 0020](0020-deferred-maintenance-timer-drain.md) (timer-driven
@@ -170,40 +171,63 @@ Per-edge **sidecar clearing** moves into the purge step via a delete-edge
 observer (mirroring the non-labeled `DeleteEdgeObserver`), so the graph facade no
 longer collects an O(degree) `Vec` up front.
 
-### 2. Source-tombstone read gate (strengthen)
+### 2. Source-tombstone read gate (not required — analysis)
 
-A tombstoned vertex must yield **no** out-edges regardless of `stored_degree`
-(today the early-return in `lara/edge/scan.rs` also requires `stored_degree == 0
-&& log_head < 0`). This makes `v`'s own outgoing/reverse edges invisible in O(1)
-the instant `v` is tombstoned, without touching them.
+`v`'s **own** out-edges do not need an extra source gate: a tombstoned `v` can
+never be *bound* as a traversal element (node scans already gate on the start
+tombstone; `resolve_local_vertex` rejects tombstoned ids; and the neighbor gate
+in §3 filters every edge whose destination is `v`, so `v` is never reached as an
+expand destination either). With `v` never bound, hop-`n+1` never expands from
+`v`, so `v`'s out-edges are never yielded to a reader. Strengthening the
+`lara/edge/scan.rs` early-return would additionally **break the purge itself**,
+which must iterate the (tombstoned) `v`'s buckets to find neighbor back-edges.
+The neighbor gate (§3) is therefore the single necessary visibility mechanism.
 
 ### 3. Neighbor read gate (new, gated)
 
-When iterating edges, skip any edge whose **neighbor** vertex row is a tombstone,
-**but only while the pending-purge set is non-empty**. The filter lives at the
-single LARA traverse chokepoint where edges are yielded, so every consumer
-(expand, WCOJ, edge-property reads, federation expand) is covered with one
-change. In steady state (no in-flight super-node delete) the gate short-circuits
-on `pending_purge.is_empty()` and the per-edge check is never paid.
+When iterating edges, skip any edge whose **neighbor** (destination) vertex is in
+the pending-purge set, **but only while that set is non-empty** (steady state
+short-circuits on `is_empty()` and pays nothing). The filter must run at
+**edge-yield time**, not only at destination binding — see the Implementation
+finding below for why binding-time filtering is insufficient and where the gate
+must live.
 
 ### 4. Pending-purge set (new stable state)
 
 A stable `StableRoaringBitmap` of local `VertexId`s that are tombstoned but not
-yet fully purged. It is the **canonical** "mid-delete" set: insert on delete
-commit, remove when the `DeleteVertex` job finishes its last phase. It both
-drives the read gate and survives upgrades (a super-node purge in progress must
-resume after upgrade — the ADR-0020 timer is re-armed in `post_upgrade`). The
-maintenance queue holds the *work*; the bitmap is the *fast membership index*
-for reads, maintained on the same single update path as the work item to avoid a
-second source of truth.
+yet fully purged: insert on delete commit, remove when the `DeleteVertex` job
+finishes. It drives the read gate and survives upgrades (an in-flight purge must
+resume after upgrade — the ADR-0020 timer is re-armed in `post_upgrade`, and the
+queue + bitmap are stable).
+
+**Ownership (revised):** because the read gate lives in the **graph facade**
+(see the Implementation finding), the bitmap is owned by the **graph crate** (new
+`MemoryId`, empty on existing canisters), not by `ic-stable-lara`. This avoids
+threading a new memory through LARA's 30-argument graph constructor. Completion
+is propagated from LARA to the graph via a `on_vertex_purge_completed(vid)`
+callback on the delete-edge observer, which clears the bitmap. Insert happens on
+the graph delete path. The queue (stable, in LARA) holds the *work*; the
+graph-side bitmap is the membership index for reads, updated on the same logical
+delete/complete path.
 
 ### 5. Labeled purge work item
 
-Add `MaintenanceWorkItem::DeleteVertex` to the labeled enum and a phased
-`process_delete_vertex` mirroring the non-labeled implementation
-(`RemoveOutgoing → ClearForwardRow → RemoveIncoming → ClearReverseRow`), bounded
-by `max_delete_edge_steps`, invoking the delete-edge observer per removed edge,
-and removing `vid` from the pending-purge set on completion.
+Add `MaintenanceWorkItem::DeleteVertex { vid, removed_edges }` to the labeled
+enum (16-byte fixed encoding: tag + `vid` + `removed_edges`). The labeled path
+needs **no positional cursor or explicit phases** (unlike the non-labeled
+reference): each step removes the *current first* incident edge (forward out
+first, else reverse in), which also tombstones the neighbor's counterpart, so the
+"first" advances naturally as the set shrinks. One edge is processed per queue
+pop (matching the existing `Compact*` one-step pattern), so the existing
+instruction / work-item budget bounds the work; no `max_delete_edge_steps`
+handling is added to the labeled loop. When no incident edges remain, the step
+clears `v`'s label buckets, writes the empty tombstone row, fires
+`on_vertex_purge_completed(vid)`, and completes.
+
+Because the dedup `dirty` bitmap key is a lossy hash (acceptable for compaction,
+not for a correctness-critical delete), `DeleteVertex` items bypass the dirty
+gate: `pop_next` treats a popped `DeleteVertex` as always valid, and idempotency
+is guaranteed by the vertex tombstone (a vertex cannot be deleted twice).
 
 ## Consequences
 
@@ -214,35 +238,89 @@ and removing `vid` from the pending-purge set on completion.
   no new execution trigger or subsystem.
 - Small deletes are unchanged (finish in the first bounded pass; no pending entry,
   no read-filter cost, immediate consistency).
-- One read-filter chokepoint (LARA traverse) keeps visibility correct for all
-  query operators via a single, testable gate.
+- Visibility stays correct for all query operators via the gated edge-yield
+  filter at the graph facade edge-read entry points (see Implementation finding).
 
 ### Trade-offs
 - **New stable state** (pending-purge bitmap) and a **new stable work-item
   variant** — additive, no repack, but a stable-format addition that must be
   initialized on existing canisters (empty set / no in-flight jobs).
-- **Read-path gate**: a branch per expand call always; a per-edge neighbor
-  tombstone check only while a super-node purge is in flight. Net steady-state
-  cost ≈ one bool check; bounded worst case during purge windows.
+- **Read-path gate breadth** (revised): the gate is **not** a single chokepoint;
+  it spans the graph facade's edge-read entry points and must apply at edge-yield
+  (not only destination binding). It is gated on `pending_purge.is_empty()` so
+  steady-state cost is ~one branch, but the *implementation surface and test
+  matrix are wide* — this is the dominant cost/risk of the change.
 - **Invariant refinement**: ADR 0017's "tombstoned ⇒ no incident edges" becomes
   "tombstoned ⇒ no *visible* incident edges"; the read-time gate is now part of
   the existence SSOT. ADR 0017 must be updated.
 - Reclamation is eventually-consistent for super-nodes: between commit and the
   final tick, dangling back-edges physically exist (but are filtered).
 
-## Migration
+## Implementation finding (2026-06-19): read-gate breadth
 
-1. Add the labeled `MaintenanceWorkItem::DeleteVertex` variant + phased
-   `process_delete_vertex` + delete-edge observer (mirror non-labeled).
-2. Add the stable pending-purge `StableRoaringBitmap` (new MemoryId; empty on
-   existing canisters) and `has_pending_vertex_purges()` / membership accessors.
-3. Strengthen the source-tombstone early-return in `lara/edge/scan.rs`.
-4. Add the gated neighbor-tombstone filter at the LARA traverse yield points.
-5. Rewrite labeled `delete_vertex_deferred` to tombstone-first + enqueue +
-   bounded inline pass; move per-edge sidecar clearing into the observer in the
-   graph facade.
-6. Keep a bounded **safety-floor** error if a single purge step cannot advance.
-7. Re-arm in `post_upgrade` already covers resuming in-flight purges (ADR 0020).
+Investigation during implementation showed the read gate is **wider and riskier**
+than the "single LARA traverse chokepoint" this ADR first assumed:
+
+- **No single LARA yield point.** `labeled/graph/traverse.rs` (~3250 lines)
+  yields edges from ~10 sites across dense-prefix, hybrid/overflow-replay, point
+  lookup, and descending paths, *including batched payload-first paths* that do
+  not pass through a per-edge `next()`. Filtering inside LARA core would touch all
+  of them and the batch builders — high regression risk in the storage core.
+- **~12 graph-facade entry points.** `facade/store/edge_scan.rs` exposes
+  `for_each_directed_out_edges`, `…_in_edges`, `…_undirected` (each with
+  `_for_label` and `_unchecked` variants), plus Vec and iterator forms.
+- **Binding-time filtering is insufficient.** Filtering only when an expand
+  destination is bound/projected misses **anonymous-target patterns**
+  (`(n)-[e]->()`), which bind the edge without projecting the destination; a
+  dangling back-edge to a pending-delete vertex would remain observable. Full
+  correctness therefore requires filtering at **edge yield**.
+
+Conclusion: the gate belongs at the **graph facade edge-read entry points** (the
+layer that already owns ADR-0017 liveness via `is_vertex_live`), applied at
+edge-yield, gated on the pending-purge set. `_unchecked` variants used by the
+purge/maintenance itself must **not** filter. This is the correctness-critical,
+test-heavy part of the change and is sequenced last.
+
+## Migration (staged)
+
+Sequenced so each stage is independently committable and the trap is removed
+early, deferring the wide read-gate to last:
+
+### Stage 0 — Safety floor (eliminates the trap; invariant-preserving)
+- In `commit_detach_delete_vertex` / `commit_delete_detached_vertex`, bound the
+  synchronous incident-edge work; if a vertex's degree exceeds a safe budget,
+  return a deterministic **`VertexDeleteTooLarge`-style error** instead of risking
+  a trap. Converts an unrecoverable trap into a recoverable, testable error.
+- No new stable state, no read-path change, no invariant change. Ships the
+  vulnerability fix immediately.
+
+### Stage 1 — Resumable purge machinery (no visibility change yet)
+- Add labeled `MaintenanceWorkItem::DeleteVertex { vid, removed_edges }` +
+  serialization + the one-edge-per-step processing arm in the labeled maintenance
+  loop; `pop_next` bypasses the dirty gate for `DeleteVertex`.
+- Add a labeled `DeleteEdgeObserver` (`on_delete_outgoing_edge`,
+  `on_delete_incoming_edge`, `on_vertex_purge_completed`) threaded through a new
+  `maintenance_with_observers`; keep the existing method delegating with a Noop.
+- LARA unit tests for phased purge + idempotency (still gated behind the Stage-0
+  budget so production behavior is unchanged until Stage 2).
+
+### Stage 2 — Tombstone-first + read gate (enables resumable visibility)
+- Add the graph-crate stable pending-purge `StableRoaringBitmap` (new `MemoryId`,
+  empty on existing canisters) + `has_pending_vertex_purges()` / membership
+  accessors; init in `init_graph`.
+- Rewrite labeled `delete_vertex_deferred` to tombstone-first (per orientation,
+  preserving buckets) + enqueue `DeleteVertex`; graph delete inserts into the
+  pending set, runs one bounded inline pass, arms the ADR-0020 timer; move
+  per-edge sidecar clearing into the graph-side delete-edge observer, which also
+  clears the pending set on `on_vertex_purge_completed`.
+- Add the gated edge-yield neighbor filter to **all** graph-facade edge-read
+  entry points (checked variants), leaving `_unchecked` (purge/maintenance)
+  unfiltered.
+- **Visibility test matrix** across expand (out/in/undirected), anonymous-target
+  patterns, WCOJ, edge-property reads, label-scoped reads, and payload-first
+  batched reads — during an in-flight purge and after completion.
+
+Re-arm in `post_upgrade` already covers resuming in-flight purges (ADR 0020).
 
 ## Design Documentation Impact
 
@@ -255,17 +333,19 @@ and removing `vid` from the pending-purge set on completion.
 
 ## Required Axes Impact (adr-review)
 
-- **Encapsulation:** purge logic stays inside the LARA deferred graph (owner of
-  tombstones and the queue); the graph facade only supplies the sidecar-clear
-  observer. No internal state is exposed across APIs.
+- **Encapsulation:** purge *execution* stays inside the LARA deferred graph
+  (owner of tombstones, adjacency, and the queue); the graph facade owns
+  *visibility* (pending-purge set + edge-yield gate) and supplies the
+  delete-edge/sidecar-clear observer. No internal LARA state is exposed across
+  APIs beyond the observer callbacks.
 - **Separation of concerns:** execution trigger (timer) and reclamation (queue)
-  are reused as-is; the new concern (mid-delete visibility) is localized to one
-  read gate + one membership set.
+  are reused as-is; the new concern (mid-delete visibility) lives at the graph
+  facade read boundary — the same layer that already owns ADR-0017 liveness.
 - **Invariants:** the existence invariant is *refined*, not duplicated; it stays
-  owned by the graph CSR (tombstone) plus the LARA read gate. The pending-purge
-  set has a single update path co-located with the work item.
-- **Consistency:** canonical state = CSR tombstone + queue; the bitmap is the
-  membership index updated on the same path (no drift surface).
+  owned by the graph CSR (tombstone) plus the graph-facade read gate.
+- **Consistency:** canonical state = CSR tombstone + LARA queue; the graph-side
+  pending-purge bitmap is the membership index, inserted on delete and cleared on
+  the observer's purge-completed callback (single logical update path).
 - **Fitness for purpose:** solves the concrete super-node trap by extending the
   deferred-maintenance domain; no general-purpose crate gains Gleaph/ICP
   specifics (the gate uses only LARA's own tombstone bit).
