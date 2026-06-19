@@ -21,7 +21,7 @@ Anchor timestamp: 2026-06-19 01:02:52 UTC +0000
 
 **ADR 0018 — Implemented:** property and label **name → id** catalogs are **graph-scoped** per `GraphId` on the router. Plan build, DDL, and `admin_intern_*` resolve names in the effective graph context. Posting keys are unchanged — numeric `property_id` on the wire is already scoped by dispatch `GraphId`.
 
-**ADR 0019 — Partially Implemented:** per-graph index clusters and graph-local `ShardId`; router `graph_index_lookup_targets` derives from **live shard registry**; shard unregister detaches auth and purges postings for the detached shard. See [0019-graph-local-shard-id-and-index-clusters.md](../adr/0019-graph-local-shard-id-and-index-clusters.md).
+**ADR 0019 — Partially Implemented:** per-graph index clusters and graph-local `ShardId`; router `graph_index_lookup_targets` derives from **live shard registry**; shard unregister detaches auth and purges postings for the detached shard in **bounded, resumable steps** (`admin_detach_shard_canister` returns a `ShardDetachCursor`; the router resumes until `done`) so a large index cannot trap on the per-message instruction / stable read-write limit. See [0019-graph-local-shard-id-and-index-clusters.md](../adr/0019-graph-local-shard-id-and-index-clusters.md).
 
 Property **name → `property_id`** assignment is **router SSOT per `GraphId`** ([ADR 0006](../adr/0006-pre-federation-foundation.md) §2, scope amended by [ADR 0018](../adr/0018-graph-scoped-label-property-catalogs.md)). Graph shards no longer maintain `PROPERTY_CATALOG` stable; DML and plan execution use router-resolved `PropertyId` on the wire (`ResolvedPropertyTable`).
 

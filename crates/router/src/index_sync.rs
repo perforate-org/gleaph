@@ -3,6 +3,8 @@
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
+#[cfg(target_family = "wasm")]
+use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult};
 
 #[cfg_attr(
     feature = "pocket-ic-e2e",
@@ -69,12 +71,22 @@ pub async fn admin_detach_shard_canister(
 ) -> Result<(), String> {
     use ic_cdk::call::Call;
 
-    Call::unbounded_wait(index_canister, "admin_detach_shard_canister")
-        .with_args(&(shard_id.raw(),))
-        .await
-        .map_err(|e| format!("index admin_detach_shard_canister call failed: {e}"))?
-        .candid()
-        .map_err(|e| format!("index admin_detach_shard_canister decode failed: {e}"))?
+    // The index purges shard postings in bounded steps so a single message stays
+    // within instruction/stable limits; drive resume cursors until done.
+    let mut resume: Option<ShardDetachCursor> = None;
+    loop {
+        let step: ShardDetachStepResult =
+            Call::unbounded_wait(index_canister, "admin_detach_shard_canister")
+                .with_args(&(shard_id.raw(), &resume))
+                .await
+                .map_err(|e| format!("index admin_detach_shard_canister call failed: {e}"))?
+                .candid::<Result<ShardDetachStepResult, String>>()
+                .map_err(|e| format!("index admin_detach_shard_canister decode failed: {e}"))??;
+        match step.next {
+            Some(cursor) => resume = Some(cursor),
+            None => return Ok(()),
+        }
+    }
 }
 
 #[cfg_attr(

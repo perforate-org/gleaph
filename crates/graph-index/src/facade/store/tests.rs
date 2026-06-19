@@ -6,7 +6,7 @@ use candid::Principal;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_ic::PrincipalValue;
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::federation::{ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionResult, LabelLookupPageRequest,
     LabelPostingCursor, PostingHit, PostingRangeRequest,
@@ -572,9 +572,7 @@ fn admin_detach_shard_canister_purges_shard_postings() {
         .edge_posting_insert(shard_a, ShardId::new(0), 88, b"e".to_vec(), 3, 10, 0)
         .expect("insert shard0 edge posting");
 
-    store
-        .admin_detach_shard_canister(router, ShardId::new(0))
-        .expect("detach shard 0");
+    drive_detach_to_completion(&store, router, ShardId::new(0));
 
     assert!(
         store
@@ -589,6 +587,87 @@ fn admin_detach_shard_canister_purges_shard_postings() {
             .expect("lookup_edge_equal")
             .is_empty()
     );
+}
+
+/// Drives the bounded shard detach steps to completion using the production
+/// budget, returning the total keys removed across steps.
+fn drive_detach_to_completion(store: &IndexStore, router: Principal, shard_id: ShardId) -> u32 {
+    let mut resume = None;
+    let mut removed_total = 0u32;
+    loop {
+        let step: ShardDetachStepResult = store
+            .admin_detach_shard_canister(router, shard_id, resume)
+            .expect("detach step");
+        removed_total += step.removed;
+        match step.next {
+            Some(cursor) => resume = Some(cursor),
+            None => {
+                assert!(step.done);
+                return removed_total;
+            }
+        }
+    }
+}
+
+#[test]
+fn admin_detach_shard_canister_requires_router_caller() {
+    let store = IndexStore::new();
+    let _router = init_test_store(&store);
+    let intruder = Principal::from_slice(&[0xAB]);
+    assert_eq!(
+        store
+            .admin_detach_shard_canister(intruder, ShardId::new(0), None)
+            .err(),
+        Some(IndexError::NotAuthorized)
+    );
+}
+
+#[test]
+fn bounded_detach_resumes_and_only_purges_target_shard() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let graph_id = GraphId::from_raw(1);
+    let shard0 = Principal::from_slice(&[1]);
+    let shard1 = Principal::from_slice(&[2]);
+    store
+        .admin_attach_shard_canister(router, graph_id, 4, 0, ShardId::new(0), shard0)
+        .expect("attach shard 0");
+    store
+        .admin_attach_shard_canister(router, graph_id, 4, 0, ShardId::new(1), shard1)
+        .expect("attach shard 1");
+
+    // Several vertex postings on each shard under the same property.
+    for vid in 0..5u32 {
+        store
+            .posting_insert(shard0, ShardId::new(0), 42, b"v".to_vec(), vid)
+            .expect("insert shard0 posting");
+        store
+            .posting_insert(shard1, ShardId::new(1), 42, b"v".to_vec(), vid)
+            .expect("insert shard1 posting");
+    }
+
+    // Budget of 1 examined key per step forces resume across the scan.
+    let mut resume = None;
+    let mut steps = 0u32;
+    let mut removed_total = 0u32;
+    loop {
+        let step = store.detach_shard_step_for_test(ShardId::new(0), resume, 1);
+        steps += 1;
+        removed_total += step.removed;
+        assert!(step.examined <= 1);
+        match step.next {
+            Some(cursor) => resume = Some(cursor),
+            None => break,
+        }
+        assert!(steps < 1000, "bounded detach did not converge");
+    }
+
+    assert_eq!(removed_total, 5, "all shard 0 postings purged");
+    assert!(steps > 5, "scan was actually bounded across multiple steps");
+    // Shard 1 postings survive the targeted detach.
+    let survivors = store.lookup_equal(42, b"v").expect("lookup_equal");
+    assert_eq!(survivors.len(), 5);
+    assert!(survivors.iter().all(|hit| hit.shard_id == ShardId::new(1)));
 }
 
 #[test]

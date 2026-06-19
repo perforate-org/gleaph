@@ -300,8 +300,8 @@ With [ADR 0018](0018-graph-scoped-label-property-catalogs.md), **`property_id` /
 
 | Effect | Policy |
 |--------|--------|
-| Auth catalog | Remove `shard_id` ↔ graph-canister mapping |
-| Postings | Purge vertex, label, and edge postings for that **graph-local `shard_id`** so unregister does not leave stale index hits |
+| Auth catalog | Remove `shard_id` ↔ graph-canister mapping on the first step, before any purge, so the shard canister can no longer insert postings while the purge runs |
+| Postings | Purge vertex, label, and edge postings for that **graph-local `shard_id`** so unregister does not leave stale index hits. Posting keys order `shard_id` after `(property_id, value, …)`, so the purge is a **full scan** of each set; it runs as **bounded, resumable steps** (`≤ MAX_DETACH_EXAMINE_PER_STEP` keys examined per message) returning a `ShardDetachCursor` until `done`. The router drives the cursor to completion so a large index cannot exceed the per-message instruction / stable read-write budget and trap |
 | Router read path | `RouterIndexLookup` also filters index hits to **live registered shards** before merge |
 
 ### 8. Supersede ADR 0006 §1 and amend ADR 0010 / 0005 (semantics only)
@@ -414,6 +414,19 @@ S2 confirms graph context ownership at router dispatch boundaries; no element wi
 - **`admin_register_graph_with_random_key`:** fetch `raw_rand()` entropy **before** `intern_graph_name` so a failed entropy call cannot leave an orphan `ROUTER_GRAPH_CATALOG` row.
 - **Index lookup targets:** `graph_index_lookup_targets` derives from **live shard registry** (`ShardRegistryEntry.index_canister`), not a stale `index_cluster` vector left over after unregister.
 - **Shard unregister:** `admin_detach_shard_canister` purges postings for the detached `shard_id`; router `RouterIndexLookup` filters merged hits to registered shards.
+
+### Bounded shard detach (2026-06-19)
+
+`admin_detach_shard_canister` is a **bounded, resumable step** rather than a single
+unbounded purge. Because posting keys order `shard_id` after `(property_id, value, …)`,
+removing a shard's postings is an O(total postings) scan of each set. A single update
+message cannot scan an arbitrarily large index within the instruction / 2 GiB
+stable read-write limits, so the index examines at most `MAX_DETACH_EXAMINE_PER_STEP`
+keys per call and returns a `ShardDetachCursor` (phase + last-examined key); the router
+(`index_sync::admin_detach_shard_canister`) resumes until `done`. The auth mapping is
+dropped on the first step so the shard cannot re-insert postings mid-purge. This closes
+a liveness/DoS gap where detach of a large shard would trap and the shard could never be
+unregistered, permanently leaking stale index hits.
 
 **Sequencing:** S0–S1 before multi-graph federation tests; S2 is docs + call-site audit (no element wire bump); land with [0018](0018-graph-scoped-label-property-catalogs.md) V0–V2 when possible (shared router repack gate per [0007](0007-stable-memory-layout.md)).
 

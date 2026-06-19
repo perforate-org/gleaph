@@ -41,7 +41,7 @@ pub use state::IndexError;
 use crate::guards::{guard_router_canister, guard_shard_canister};
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use ic_cdk_macros::{init, query, update};
 
 fn guard_shard_canister_or_trap(shard_id: ShardId) {
@@ -73,8 +73,11 @@ fn admin_attach_shard_canister(
 }
 
 #[update(guard = "guard_router_canister")]
-fn admin_detach_shard_canister(shard_id: ShardId) -> Result<(), String> {
-    canister::admin_detach_shard_canister(shard_id)
+fn admin_detach_shard_canister(
+    shard_id: ShardId,
+    resume: Option<ShardDetachCursor>,
+) -> Result<ShardDetachStepResult, String> {
+    canister::admin_detach_shard_canister(shard_id, resume)
 }
 
 #[update]

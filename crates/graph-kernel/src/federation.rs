@@ -11,6 +11,7 @@ mod graph_shard_key;
 mod peer_sync;
 mod posting_backfill;
 mod router_error;
+mod shard_detach;
 mod shard_id;
 
 pub use backfill_shard_state::BackfillShardState;
@@ -34,6 +35,7 @@ pub use graph_shard_key::GraphShardKey;
 pub use peer_sync::{AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs};
 pub use posting_backfill::{PostingBackfillArgs, PostingBackfillResult};
 pub use router_error::RouterError;
+pub use shard_detach::{ShardDetachCursor, ShardDetachPhase, ShardDetachStepResult};
 pub use shard_id::ShardId;
 
 use crate::entry::GraphId;

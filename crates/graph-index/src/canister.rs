@@ -5,7 +5,7 @@ use crate::init::IndexInitArgs;
 use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexIntersectionResult, PostingHit, PostingRangeRequest, ValuePostingCount,
 };
@@ -40,9 +40,12 @@ pub(crate) fn admin_attach_shard_canister(
         .map_err(|e| e.to_string())
 }
 
-pub(crate) fn admin_detach_shard_canister(shard_id: ShardId) -> Result<(), String> {
+pub(crate) fn admin_detach_shard_canister(
+    shard_id: ShardId,
+    resume: Option<ShardDetachCursor>,
+) -> Result<ShardDetachStepResult, String> {
     IndexStore::new()
-        .admin_detach_shard_canister(msg_caller(), shard_id)
+        .admin_detach_shard_canister(msg_caller(), shard_id, resume)
         .map_err(|e| e.to_string())
 }
 
