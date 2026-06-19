@@ -250,6 +250,32 @@ where
         VertexCount::from(self.vertices.len())
     }
 
+    /// Total live logical edges stored for `vid` across all of its label buckets.
+    ///
+    /// O(number of distinct labels on the vertex), not O(edges): the vertex row's
+    /// own `degree()` is a bucket count in labeled mode (and the edge count in
+    /// default-edge/bypass mode), so the labeled case sums each bucket's logical
+    /// degree.
+    pub(crate) fn vertex_live_edge_count(
+        &self,
+        vid: VertexId,
+    ) -> Result<u64, LabeledOperationError> {
+        self.ensure_vertex(vid)?;
+        let vertex = self.vertices.get(vid);
+        if vertex.is_default_edge_labeled() {
+            return Ok(u64::from(vertex.degree()));
+        }
+        let bucket_count = vertex.degree();
+        let mut total = 0u64;
+        for index in 0..bucket_count {
+            let slot = Self::labeled_vertex_bucket_slot(&vertex, index)?;
+            if let Some(bucket) = self.buckets.read_label_bucket_slot(slot) {
+                total = total.saturating_add(u64::from(bucket.degree()));
+            }
+        }
+        Ok(total)
+    }
+
     pub(super) fn set_labeled_vertex(
         &self,
         vid: VertexId,

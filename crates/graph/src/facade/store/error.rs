@@ -17,6 +17,16 @@ pub enum GraphStoreError {
     VertexNotDetached {
         vertex_id: VertexId,
     },
+    /// `DETACH DELETE` on a vertex whose incident degree exceeds the synchronous
+    /// safety floor ([`GRAPH_MAX_SYNC_DETACH_DELETE_DEGREE`]). Returned instead of
+    /// risking an instruction-limit trap (ADR 0021, Stage 0).
+    ///
+    /// [`GRAPH_MAX_SYNC_DETACH_DELETE_DEGREE`]: crate::facade::GRAPH_MAX_SYNC_DETACH_DELETE_DEGREE
+    VertexDeleteTooLarge {
+        vertex_id: VertexId,
+        incident_degree: u64,
+        limit: u64,
+    },
     /// No outgoing edge record matches the handle on the owner's forward row.
     EdgeNotFound {
         owner_vertex_id: VertexId,
@@ -53,6 +63,14 @@ impl fmt::Display for GraphStoreError {
             Self::VertexNotDetached { vertex_id } => write!(
                 f,
                 "cannot delete vertex {vertex_id:?} without DETACH while it still has incident edges"
+            ),
+            Self::VertexDeleteTooLarge {
+                vertex_id,
+                incident_degree,
+                limit,
+            } => write!(
+                f,
+                "cannot DETACH DELETE vertex {vertex_id:?} synchronously: incident degree {incident_degree} exceeds the safety limit {limit}"
             ),
             Self::EdgeNotFound {
                 owner_vertex_id,
@@ -104,6 +122,7 @@ impl std::error::Error for GraphStoreError {
             Self::VertexLabel(err) => Some(err),
             Self::PropertyValue(err) => Some(err),
             Self::VertexNotDetached { .. }
+            | Self::VertexDeleteTooLarge { .. }
             | Self::EdgeNotFound { .. }
             | Self::InvalidEdgeLabelId(_)
             | Self::InvalidEdgePayloadWidth(_)

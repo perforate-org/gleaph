@@ -1847,6 +1847,85 @@ mod tests {
     }
 
     #[test]
+    fn detach_delete_over_sync_limit_errors_without_mutation() {
+        let store = GraphStore::new();
+        let before_a = store.vertex_count();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("c".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: None,
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: None,
+                    src: "a".into(),
+                    dst: "c".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec![],
+                    properties: vec![],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+        store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("setup hub");
+        let before_a_u32: u32 = before_a.into();
+        let a = VertexId::from(before_a_u32);
+
+        // Incident degree is 2 (two outgoing edges); a ceiling of 1 must refuse.
+        let err = store
+            .detach_delete_vertex_bounded(a, 1)
+            .expect_err("over-limit detach delete should error, not trap");
+        assert!(matches!(
+            err,
+            GraphStoreError::VertexDeleteTooLarge {
+                incident_degree: 2,
+                limit: 1,
+                ..
+            }
+        ));
+        // Guard fires before any mutation: the hub and its edges are untouched.
+        assert_eq!(
+            store.directed_out_edges(a).expect("out edges intact").len(),
+            2
+        );
+
+        // At the ceiling (degree == limit) the delete proceeds.
+        store
+            .detach_delete_vertex_bounded(a, 2)
+            .expect("within limit detach delete");
+        assert!(
+            store
+                .directed_out_edges(a)
+                .map(|edges| edges.is_empty())
+                .unwrap_or(true),
+            "deleted hub should expose no outgoing edges"
+        );
+    }
+
+    #[test]
     fn detach_delete_vertex_clears_incident_edge_sidecars() {
         let store = GraphStore::new();
         let before_a = store.vertex_count();

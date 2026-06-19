@@ -20,6 +20,14 @@ impl GraphStore {
         GRAPH.with_borrow(|graph| graph.has_incident_edges(vertex_id))
     }
 
+    /// Total incident logical degree (forward + reverse) of `vertex_id`.
+    pub(super) fn vertex_incident_degree(
+        &self,
+        vertex_id: VertexId,
+    ) -> Result<u64, DeferredBidirectionalLabeledError> {
+        GRAPH.with_borrow(|graph| graph.incident_degree(vertex_id))
+    }
+
     pub(super) fn edge_sidecar_owner_from_out_row(
         &self,
         endpoint: VertexId,

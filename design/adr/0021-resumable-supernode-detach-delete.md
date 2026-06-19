@@ -316,13 +316,30 @@ into LARA:
 Sequenced so each stage is independently committable and the trap is removed
 early, deferring the wide read-gate to last:
 
-### Stage 0 — Safety floor (eliminates the trap; invariant-preserving)
-- In `commit_detach_delete_vertex` / `commit_delete_detached_vertex`, bound the
-  synchronous incident-edge work; if a vertex's degree exceeds a safe budget,
-  return a deterministic **`VertexDeleteTooLarge`-style error** instead of risking
-  a trap. Converts an unrecoverable trap into a recoverable, testable error.
-- No new stable state, no read-path change, no invariant change. Ships the
-  vulnerability fix immediately.
+### Stage 0 — Safety floor (eliminates the trap; invariant-preserving) — implemented 2026-06-19
+- In `commit_detach_delete_vertex`, bound the synchronous incident-edge work; if a
+  vertex's incident degree exceeds a safe budget, return a deterministic
+  `GraphStoreError::VertexDeleteTooLarge` instead of risking a trap. Converts an
+  unrecoverable trap into a recoverable, testable error. (Plain
+  `commit_delete_detached_vertex` already requires zero incident edges via
+  `VertexNotDetached`, so only the detach path needs the bound.)
+- Implemented as:
+  - LARA `LabeledLaraGraph::vertex_live_edge_count` (sums bucket degrees;
+    O(#labels), since the vertex row's `degree()` is a bucket count in labeled
+    mode) and `DeferredBidirectionalLabeledLaraGraph::incident_degree`
+    (forward + reverse).
+  - `GRAPH_MAX_SYNC_DETACH_DELETE_DEGREE` (provisional, conservative — 250_000) in
+    `facade::ic_budget`.
+  - `commit_detach_delete_vertex_bounded(vid, max_incident_degree)` performs the
+    pre-mutation check; the public path passes the production constant.
+  - `GraphStoreError::VertexDeleteTooLarge { vertex_id, incident_degree, limit }`,
+    propagating through `PlanMutationError::Store` like `VertexNotDetached`.
+- Tests: LARA `incident_degree_counts_forward_and_reverse`; graph
+  `detach_delete_over_sync_limit_errors_without_mutation` (over-limit errors with
+  no mutation; at-ceiling succeeds).
+- No new stable state, no read-path change, no invariant change. The limit is
+  provisional pending a Stage 1 delete benchmark and is removed entirely in
+  Stage 2.
 
 ### Stage 1 — Resumable purge machinery (no visibility change yet)
 - Add labeled `MaintenanceWorkItem::DeleteVertex { vid, removed_edges }` +

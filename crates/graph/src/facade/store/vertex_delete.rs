@@ -9,6 +9,7 @@ use ic_stable_lara::{
 use super::GraphStore;
 use super::error::GraphStoreError;
 use super::handle::EdgeHandle;
+use crate::facade::GRAPH_MAX_SYNC_DETACH_DELETE_DEGREE;
 
 impl GraphStore {
     /// Detached vertex delete: clear sidecars, remove CSR row, drain maintenance.
@@ -32,9 +33,33 @@ impl GraphStore {
         &self,
         vertex_id: VertexId,
     ) -> Result<(), GraphStoreError> {
+        self.commit_detach_delete_vertex_bounded(vertex_id, GRAPH_MAX_SYNC_DETACH_DELETE_DEGREE)
+    }
+
+    /// Detach-delete with an explicit synchronous incident-degree ceiling.
+    ///
+    /// ADR 0021 Stage 0 safety floor: incident-edge removal here is O(degree) and
+    /// synchronous (each removal also touches the neighbour's counterpart row and
+    /// clears that edge's sidecars). Above `max_incident_degree` we return a
+    /// recoverable error *before any mutation* rather than risk an instruction
+    /// trap that would leave the vertex permanently undeletable. Stage 2 makes
+    /// this resumable and removes the ceiling.
+    pub(crate) fn commit_detach_delete_vertex_bounded(
+        &self,
+        vertex_id: VertexId,
+        max_incident_degree: u64,
+    ) -> Result<(), GraphStoreError> {
         self.assert_local_vertex_writable(vertex_id)?;
         self.ensure_vertex_id(vertex_id)
             .map_err(GraphStoreError::from)?;
+        let incident_degree = self.vertex_incident_degree(vertex_id)?;
+        if incident_degree > max_incident_degree {
+            return Err(GraphStoreError::VertexDeleteTooLarge {
+                vertex_id,
+                incident_degree,
+                limit: max_incident_degree,
+            });
+        }
         self.commit_prepare_vertex_sidecars_for_delete(vertex_id)?;
 
         let to_clear = self.collect_incident_edge_handles_for_delete(vertex_id)?;

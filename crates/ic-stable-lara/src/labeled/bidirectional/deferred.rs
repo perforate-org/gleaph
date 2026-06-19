@@ -1923,6 +1923,25 @@ where
             || self.reverse.vertices().get(vid).degree() > 0)
     }
 
+    /// Total incident logical degree of `vid` (forward out-adjacency + reverse
+    /// in-adjacency). This is the synchronous work proxy for a detach-delete: each
+    /// incident edge removal also touches its neighbor's counterpart row.
+    pub fn incident_degree(&self, vid: VertexId) -> Result<u64, DeferredBidirectionalLabeledError> {
+        let len = self.vertex_count_checked()?;
+        if u32::from(vid) >= len.0 {
+            return Err(DeferredBidirectionalLabeledError::VertexOutOfRange { vid, len });
+        }
+        let forward = self
+            .forward
+            .vertex_live_edge_count(vid)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        let reverse = self
+            .reverse
+            .vertex_live_edge_count(vid)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        Ok(forward.saturating_add(reverse))
+    }
+
     /// Removes one directed logical edge by scanning every forward label bucket.
     pub fn remove_directed_deferred(
         &self,
@@ -2450,6 +2469,60 @@ mod tests {
             .unwrap();
         assert_eq!(asc, vec![TestEdge(1), TestEdge(2)]);
         assert_eq!(desc, vec![TestEdge(2), TestEdge(1)]);
+    }
+
+    #[test]
+    fn incident_degree_counts_forward_and_reverse() {
+        let graph = graph();
+        graph.push_vertex().expect("a");
+        graph.push_vertex().expect("b");
+        graph.push_vertex().expect("c");
+        let label = BucketLabelKey::UNLABELED_DIRECTED;
+        // a(0) -> b(1), a(0) -> c(2): two forward out-edges at a.
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(1),
+                label,
+                TestEdge(1),
+                TestEdge(0),
+            )
+            .expect("a->b");
+        graph
+            .insert_directed_edge(
+                VertexId::from(0),
+                VertexId::from(2),
+                label,
+                TestEdge(2),
+                TestEdge(0),
+            )
+            .expect("a->c");
+        // c(2) -> a(0): one reverse in-edge at a.
+        graph
+            .insert_directed_edge(
+                VertexId::from(2),
+                VertexId::from(0),
+                label,
+                TestEdge(0),
+                TestEdge(2),
+            )
+            .expect("c->a");
+        // Vertex-row degree (read by both `has_incident_edges` and `incident_degree`)
+        // is materialized during maintenance; drain it as the facade path does.
+        graph
+            .maintenance(MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            })
+            .expect("drain");
+        assert_eq!(graph.incident_degree(VertexId::from(0)).expect("a"), 3);
+        assert_eq!(graph.incident_degree(VertexId::from(1)).expect("b"), 1);
+        assert_eq!(graph.incident_degree(VertexId::from(2)).expect("c"), 2);
+        assert!(graph.incident_degree(VertexId::from(99)).is_err());
     }
 
     #[test]
