@@ -293,8 +293,39 @@ necessity and the thresholds of *each* tier (the dedicated span included).
      ~4.90M ins inside a saturated leaf vs ~3.23M ins isolated (leaf-mates empty ≈
      a dedicated span). The ~1.67M-ins delta (~6.5K ins/insert, driven by
      `rebalance_leaf_cascade`) is the cost a dedicated span would recover.
-   - **Still to measure:** the B-tree backing itself (needs a prototype), plus
-     facade-level `DETACH DELETE` cost and slab fragmentation.
+   - **B-tree (2b) prototype landed** (`labeled/hub_tree_prototype.rs`, evidence-only,
+     not wired into the graph; benches `bench_labeled_stage2b_btree_hub_*`). A shared
+     `StableBTreeMap` keyed by `(vertex, label, seq)` holds one 1024-edge hub bucket
+     and is exercised on the same three operations as the slab baselines (canbench,
+     persisted): delete-half-by-`seq` + survivor scan **45.65M ins** (vs slab
+     308.66M, **6.76× faster**); point lookup descending **103.76M ins** and full
+     descending scan **104.65M ins** (vs slab ~16.61M each, **~6.3× slower**,
+     ≈2004 ins/edge vs ≈318 ins/edge on the slab).
+   - **Value-layout experiment landed** (`bench_labeled_stage2b_narrow_*` and
+     `..._scan_descending_keyonly_*`), testing whether the read regression is a
+     value-width problem. The persisted edge row is 4 bytes (`Edge::BYTES`; payloads
+     already externalized to `EdgePayloadStore`/`EdgePropertyStore`), so the value is
+     never variable-length. Results: shrinking the B-tree value 10B → 4B changes
+     nothing (scan 104.40M → 104.96M; delete 45.56M → 44.70M; lookup 103.51M →
+     104.12M, all within noise). Reading **only the key** (value never deserialized,
+     i.e. the best case of moving `target` into the key) cuts scan to 71.74M — still
+     **~4.3× the slab** (≈1373 vs ≈318 ins/edge). Value-deser is ≈626 ins/edge;
+     B-tree node traversal + key-deser is the dominant, irreducible-by-layout cost.
+   - **Fair delete-by-handle baseline + insert costs landed**, and they change the
+     conclusion. The original `..._delete_half_then_compact_1024` (~308.66M) deletes
+     by `remove_edge_matching`, which pays an O(degree) **find-scan** production never
+     pays — edges are deleted by `EdgeHandle{owner,label,slot_index}` via
+     `remove_edge_at_slot` (O(1) slab tombstone for prefix slots; O(chain) only for
+     overflow-log slots). The honest baseline
+     `bench_labeled_stage2_hub_delete_half_by_slot_then_compact_1024` is **36.93M**
+     (compaction scopes total only ~0.25M; the rest is overflow-log chain walks). And
+     insert on the paid path: slab `insert_edge` grow 0→1024 = **15.53M**
+     (`bench_labeled_stage2_hub_insert_grow_1024`) vs B-tree **56.37M**
+     (`bench_labeled_stage2b_narrow_hub_insert_1024`), i.e. the B-tree insert is
+     **3.6× slower**.
+   - **Still to measure:** crossover degree where the slab's O(degree) overflow-log
+     delete loses to B-tree O(log d); facade-level `DETACH DELETE` cost; slab
+     fragmentation.
 
    **Warrant verdict (2026-06-19):** the dedicated-span tier (2a) shows only a
    *modest* benefit — ~6.5K ins/insert of recovered growth contention — while the
@@ -303,6 +334,58 @@ necessity and the thresholds of *each* tier (the dedicated span included).
    dedicated-span tier is not warranted on growth contention alone (its remaining
    case is fragmentation/locality, still unmeasured). The high-value, high-risk
    2b prototype is the next implementation candidate, not 2a.
+
+   **2b prototype verdict (2026-06-19):** the B-tree tier is a **conditional**, not
+   a free, win. It cuts delete churn ~6.76× (the dominant cost), but a naive
+   whole-bucket move **regresses the read paths ~6.3×** (descending scan and point
+   lookup), because the slab scans contiguous bytes (~318 ins/edge) while the B-tree
+   pays node traversal + per-entry key/value deserialization (~2004 ins/edge). So 2b
+   is only net-positive for **delete/insert-churn-dominated** hubs; for read-heavy
+   (traversal-scan) hubs it loses. This means the promotion trigger must be
+   **churn-aware, not degree-alone**, and the tier must keep scans cheap before it is
+   production-warranted. A `target → seq` index would help lookup but not full scans.
+
+   **Value-layout experiment verdict (2026-06-19):** the read regression is **not** a
+   value-width problem and is **not fixable by value layout**. Shrinking the value to
+   4 bytes (the real `Edge` width) or splitting target/payload into separate trees
+   gives no scan benefit, because production edge payloads are already external (the
+   slab row is target-only). Moving `target` into the key (value-free scan) is the
+   only layout change that helps, and only by ~31% (to ~4.3× the slab); B-tree node
+   traversal + key deserialization dominate. Therefore do **not** pursue the
+   two-tree / payload-split idea for the hub tier, and do not expect a packed value to
+   rescue scans. The viable path is to keep the contiguous slab as the read path and
+   confine the B-tree (or another structure) to churn-heavy, scan-light hubs under a
+   churn-aware trigger — or to reconsider whether a non-B-tree structure (e.g. a slab
+   "target column" plus a small free/index map) better fits the
+   delete-win-without-scan-loss goal.
+
+   **IC cost-structure verdict (2026-06-19) — supersedes the "6.76× delete win"
+   above.** Weighing the tiers in Internet Computer economics (query calls: free,
+   5B-instruction limit; update calls: metered at ~$0.00137/1B, 40B limit) flips the
+   conclusion, because only **update** (mutating) work costs money and the B-tree's
+   regressions land mostly on **free** reads:
+   - **Paid update path, degree 1024** (the only dollar-bearing ops): the slab wins
+     **both** mutations once delete is measured fairly by handle. Insert grow 0→1024:
+     slab **15.53M** vs B-tree **56.37M** (B-tree **3.6× more expensive**).
+     Delete-half by handle + compact + scan: slab **36.93M** vs B-tree **44.70M**
+     (B-tree **~1.2× more expensive**). The prior 6.76× "win" was entirely an
+     artifact of charging the slab an O(degree) find-scan (`remove_edge_matching`)
+     that production never pays.
+   - **Free query path**: the B-tree's 6.3× scan/lookup regression costs **no money**
+     and stays well within the 5B/call limit at hub scales (a single 1024-edge
+     descending scan is ~2.0M ins ≈ 0.04% of 5B; the slab is ~0.0065%). The slab also
+     keeps ~6× more single-call scan headroom before the 5B limit bites (~15.7M vs
+     ~2.5M edges/call), but neither is a practical constraint at realistic degrees.
+   - **Conclusion: the Stage 2b B-tree tier is NOT warranted at hub degrees up to
+     ~1024.** It increases metered cost on every mutation and worsens (free) reads.
+     The remaining open question is the **crossover degree**: the slab's overflow-log
+     delete is O(degree) per log-resident edge (chain walk), so at degrees ≫1024 the
+     slab delete eventually loses to B-tree O(log d) — but the slab would still win
+     insert and (free) scan there, so even then 2b is at best a narrow,
+     degree-and-churn-gated optimization. The higher-leverage fix is the slab's
+     unindexed **overflow log** itself (index/segment the log so log deletes and
+     scans stop being O(degree)), which preserves cheap inserts and free-query scans
+     instead of paying the B-tree tax on every write.
 2. Decide, per tier, **whether it is warranted at all** and, if so, its promote /
    demote degree thresholds (with hysteresis).
 3. If the dedicated-span tier is warranted: add the per-bucket pin→unpin
