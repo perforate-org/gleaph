@@ -47,6 +47,23 @@ impl EdgeSlotMoveObserver for NoopEdgeSlotMoveObserver {
     }
 }
 
+/// Observer for edges removed by resumable [`MaintenanceWorkItem::DeleteVertex`]
+/// jobs, and for the completion of a vertex purge (ADR 0021).
+pub trait DeleteEdgeObserver<E> {
+    /// Called when a delete step removes one outgoing edge of the deleted vertex.
+    fn on_delete_outgoing_edge(&mut self, _source: VertexId, _edge: E) {}
+
+    /// Called when a delete step removes one incoming edge of the deleted vertex.
+    fn on_delete_incoming_edge(&mut self, _destination: VertexId, _edge: E) {}
+
+    /// Called once after the deleted vertex's rows are cleared and it is tombstoned.
+    fn on_vertex_purge_completed(&mut self, _vid: VertexId) {}
+}
+
+struct NoopDeleteEdgeObserver;
+
+impl<E> DeleteEdgeObserver<E> for NoopDeleteEdgeObserver {}
+
 impl BidirectionalMaintenanceReport {
     /// Returns total remaining queued work items.
     pub fn remaining_queue_len(self) -> u64 {
@@ -102,6 +119,14 @@ pub enum MaintenanceWorkItem {
         vid: VertexId,
         anchor_bucket_index: u32,
         resume_bucket_index: u32,
+    },
+    /// Incrementally remove all incident edges of a deleted vertex, one edge per
+    /// step, then clear its rows. Resumable across maintenance calls (ADR 0021).
+    DeleteVertex {
+        /// Deleted vertex id.
+        vid: VertexId,
+        /// Incident edges already removed (informational; threaded across steps).
+        removed_edges: u32,
     },
 }
 
@@ -162,6 +187,11 @@ fn maintenance_work_item_bytes(item: &MaintenanceWorkItem) -> [u8; 16] {
             b[8..12].copy_from_slice(&anchor_bucket_index.to_le_bytes());
             b[12..16].copy_from_slice(&resume_bucket_index.to_le_bytes());
         }
+        MaintenanceWorkItem::DeleteVertex { vid, removed_edges } => {
+            b[0] = 5;
+            b[4..8].copy_from_slice(&u32::from(vid).to_le_bytes());
+            b[8..12].copy_from_slice(&removed_edges.to_le_bytes());
+        }
     }
     b
 }
@@ -202,6 +232,10 @@ impl Storable for MaintenanceWorkItem {
                 vid,
                 anchor_bucket_index: u32::from_le_bytes(b[8..12].try_into().unwrap()),
                 resume_bucket_index: u32::from_le_bytes(b[12..16].try_into().unwrap()),
+            },
+            5 => Self::DeleteVertex {
+                vid,
+                removed_edges: u32::from_le_bytes(b[8..12].try_into().unwrap()),
             },
             _ => Self::CompactLabelBucketVertexSegment { orientation, vid },
         }
@@ -254,9 +288,26 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
         Ok(true)
     }
 
+    /// Enqueues a `DeleteVertex` job. Delete jobs bypass the dirty gate (see
+    /// [`Self::pop_next`]), so this pushes directly without a dirty key.
+    fn enqueue_delete_vertex(
+        &self,
+        item: MaintenanceWorkItem,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        self.queue
+            .push_back(&item)
+            .map_err(DeferredBidirectionalLabeledError::MaintenanceQueue)
+    }
+
     fn pop_next(&self) -> Result<Option<MaintenanceWorkItem>, DeferredBidirectionalLabeledError> {
         while let Some(item) = self.queue.pop_front() {
-            if self.dirty.contains(work_item_key(item)) {
+            // DeleteVertex bypasses the dirty gate: its `work_item_key` would land
+            // in the same high-bit ranges as the compaction keys, so a colliding
+            // compaction `complete` could clear it and silently drop a delete
+            // mid-job. Delete jobs are never deduped via the dirty bitmap.
+            if matches!(item, MaintenanceWorkItem::DeleteVertex { .. })
+                || self.dirty.contains(work_item_key(item))
+            {
                 return Ok(Some(item));
             }
         }
@@ -264,6 +315,9 @@ impl<M: Memory> BidirectionalMaintenanceQueue<M> {
     }
 
     fn complete(&self, item: MaintenanceWorkItem) -> Result<(), DeferredBidirectionalLabeledError> {
+        if matches!(item, MaintenanceWorkItem::DeleteVertex { .. }) {
+            return Ok(());
+        }
         self.dirty
             .clear(work_item_key(item))
             .map_err(DeferredBidirectionalLabeledError::MaintenanceDirtyBitmap)
@@ -338,6 +392,9 @@ fn work_item_key(item: MaintenanceWorkItem) -> u32 {
             };
             0xA000_0000 | anchor_bucket_index ^ (u32::from(vid) << 1) ^ orient
         }
+        // DeleteVertex bypasses the dirty gate, so this key is never inserted,
+        // checked, or cleared; it exists only to keep the match exhaustive.
+        MaintenanceWorkItem::DeleteVertex { vid, .. } => 0xE000_0000 | u32::from(vid),
     }
 }
 
@@ -1595,8 +1652,15 @@ where
     pub fn maintenance(
         &self,
         budget: MaintenanceBudget,
-    ) -> Result<BidirectionalMaintenanceReport, DeferredBidirectionalLabeledError> {
-        self.maintenance_with_edge_slot_move_observer(budget, &mut NoopEdgeSlotMoveObserver)
+    ) -> Result<BidirectionalMaintenanceReport, DeferredBidirectionalLabeledError>
+    where
+        E: PartialEq,
+    {
+        self.maintenance_with_observers(
+            budget,
+            &mut NoopEdgeSlotMoveObserver,
+            &mut NoopDeleteEdgeObserver,
+        )
     }
 
     /// Processes queued maintenance work and reports edge slot relocations to `observer`.
@@ -1607,7 +1671,37 @@ where
     ) -> Result<BidirectionalMaintenanceReport, DeferredBidirectionalLabeledError>
     where
         O: EdgeSlotMoveObserver,
-        E: CsrEdgeTombstone,
+        E: CsrEdgeTombstone + PartialEq,
+    {
+        self.maintenance_with_observers(budget, observer, &mut NoopDeleteEdgeObserver)
+    }
+
+    /// Processes queued maintenance work and reports removed edges of resumable
+    /// vertex-delete jobs to `delete_observer`.
+    pub fn maintenance_with_delete_observer<D>(
+        &self,
+        budget: MaintenanceBudget,
+        delete_observer: &mut D,
+    ) -> Result<BidirectionalMaintenanceReport, DeferredBidirectionalLabeledError>
+    where
+        D: DeleteEdgeObserver<E>,
+        E: CsrEdgeTombstone + PartialEq,
+    {
+        self.maintenance_with_observers(budget, &mut NoopEdgeSlotMoveObserver, delete_observer)
+    }
+
+    /// Processes queued maintenance work, threading both the compaction edge-slot
+    /// move observer and the resumable vertex-delete edge observer.
+    pub fn maintenance_with_observers<O, D>(
+        &self,
+        budget: MaintenanceBudget,
+        observer: &mut O,
+        delete_observer: &mut D,
+    ) -> Result<BidirectionalMaintenanceReport, DeferredBidirectionalLabeledError>
+    where
+        O: EdgeSlotMoveObserver,
+        D: DeleteEdgeObserver<E>,
+        E: CsrEdgeTombstone + PartialEq,
     {
         use crate::labeled::graph::VertexEdgeSpanCompactOneStep;
 
@@ -1617,6 +1711,12 @@ where
         let mut checkpoint_tick = 0u32;
 
         while report.work.processed_work_items < max_items {
+            if budget
+                .max_delete_edge_steps
+                .is_some_and(|max| report.work.processed_delete_edge_steps >= max)
+            {
+                break;
+            }
             checkpoint_tick = checkpoint_tick.wrapping_add(1);
             let should_check = budget.checkpoint_every <= 1
                 || checkpoint_tick.is_multiple_of(budget.checkpoint_every);
@@ -1754,6 +1854,19 @@ where
                             Err(_) => None,
                         }
                     }
+                }
+                MaintenanceWorkItem::DeleteVertex { vid, removed_edges } => {
+                    let (next, did_step, completed) =
+                        self.process_delete_vertex_step(vid, removed_edges, delete_observer)?;
+                    if did_step {
+                        report.work.processed_delete_edge_steps =
+                            report.work.processed_delete_edge_steps.saturating_add(1);
+                    }
+                    if completed {
+                        report.work.completed_vertex_deletes =
+                            report.work.completed_vertex_deletes.saturating_add(1);
+                    }
+                    next
                 }
             };
             if let Some(next) = requeue {
@@ -2070,6 +2183,18 @@ where
             }
             break;
         }
+        self.finalize_vertex_delete(vid)?;
+        Ok(true)
+    }
+
+    /// Clears both orientation rows of `vid` and tombstones the shared vertex row.
+    ///
+    /// Shared by the synchronous [`Self::delete_vertex_deferred`] and the resumable
+    /// [`MaintenanceWorkItem::DeleteVertex`] finalize step (ADR 0021).
+    fn finalize_vertex_delete(
+        &self,
+        vid: VertexId,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
         let forward_row = self.forward.vertices().get(vid);
         if !forward_row.is_default_edge_labeled() {
             self.forward
@@ -2087,7 +2212,85 @@ where
             let cleared = crate::labeled::record::LabeledVertex::default().with_tombstone(true);
             self.set_vertex_row(vid, &cleared)?;
         }
-        Ok(true)
+        Ok(())
+    }
+
+    /// Enqueues a resumable [`MaintenanceWorkItem::DeleteVertex`] purge of `vid`.
+    ///
+    /// The job removes incident edges one per maintenance step and tombstones the
+    /// vertex when drained. Stage 1 (ADR 0021) ships the machinery; the production
+    /// delete path stays synchronous until Stage 2.
+    pub fn enqueue_vertex_delete(
+        &self,
+        vid: VertexId,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let len = self.vertex_count_checked()?;
+        if u32::from(vid) >= len.0 {
+            return Err(DeferredBidirectionalLabeledError::VertexOutOfRange { vid, len });
+        }
+        self.maintenance
+            .enqueue_delete_vertex(MaintenanceWorkItem::DeleteVertex {
+                vid,
+                removed_edges: 0,
+            })
+    }
+
+    /// Performs one step of a resumable vertex-delete job: removes a single
+    /// incident edge (and its counterpart) if any remain, else finalizes.
+    ///
+    /// Returns `(next_work_item, did_edge_step, completed)`.
+    fn process_delete_vertex_step<D>(
+        &self,
+        vid: VertexId,
+        removed_edges: u32,
+        delete_observer: &mut D,
+    ) -> Result<(Option<MaintenanceWorkItem>, bool, bool), DeferredBidirectionalLabeledError>
+    where
+        D: DeleteEdgeObserver<E>,
+        E: PartialEq,
+    {
+        let next_item = |removed: u32| {
+            Some(MaintenanceWorkItem::DeleteVertex {
+                vid,
+                removed_edges: removed.saturating_add(1),
+            })
+        };
+
+        if let Some(edge) = self
+            .forward
+            .asc_out_edges_iter(vid)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?
+            .next()
+            .transpose()
+            .map_err(DeferredBidirectionalLabeledError::Forward)?
+        {
+            let dst = edge.neighbor_vid();
+            if self.remove_undirected_deferred(vid, dst, edge.clone())?
+                || self.remove_directed_deferred(vid, dst, edge.clone())?
+            {
+                delete_observer.on_delete_outgoing_edge(vid, edge);
+                return Ok((next_item(removed_edges), true, false));
+            }
+        }
+
+        if let Some(edge) = self
+            .reverse
+            .asc_out_edges_iter(vid)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?
+            .next()
+            .transpose()
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?
+        {
+            let src = edge.neighbor_vid();
+            let rev = edge.with_neighbor_vid(vid);
+            let _ = self.remove_directed_deferred(src, vid, rev)?;
+            delete_observer.on_delete_incoming_edge(vid, edge);
+            return Ok((next_item(removed_edges), true, false));
+        }
+
+        self.finalize_vertex_delete(vid)?;
+        delete_observer.on_vertex_purge_completed(vid);
+        Ok((None, false, true))
     }
 
     /// Inserts an undirected edge on forward out-adjacency at both endpoints (no reverse rows).
@@ -2523,6 +2726,134 @@ mod tests {
         assert_eq!(graph.incident_degree(VertexId::from(1)).expect("b"), 1);
         assert_eq!(graph.incident_degree(VertexId::from(2)).expect("c"), 2);
         assert!(graph.incident_degree(VertexId::from(99)).is_err());
+    }
+
+    #[test]
+    fn delete_vertex_job_purges_incident_edges_phased() {
+        let graph = graph();
+        for _ in 0..4 {
+            graph.push_vertex().expect("vertex");
+        }
+        let hub = VertexId::from(0);
+        let label = BucketLabelKey::UNLABELED_DIRECTED;
+        graph
+            .insert_directed_edge(hub, VertexId::from(1), label, TestEdge(1), TestEdge(0))
+            .expect("hub->1");
+        graph
+            .insert_directed_edge(hub, VertexId::from(2), label, TestEdge(2), TestEdge(0))
+            .expect("hub->2");
+        graph
+            .insert_directed_edge(VertexId::from(3), hub, label, TestEdge(0), TestEdge(3))
+            .expect("3->hub");
+
+        let full = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        // Drain pre-existing compaction work so the phased drain only sees the job.
+        graph.maintenance(full).expect("pre-drain");
+        assert_eq!(graph.incident_degree(hub).expect("degree"), 3);
+
+        graph.enqueue_vertex_delete(hub).expect("enqueue");
+
+        let one_step = MaintenanceBudget {
+            max_delete_edge_steps: Some(1),
+            ..full
+        };
+        let mut edge_steps = 0u32;
+        let mut completed = 0u32;
+        let mut calls = 0u32;
+        for _ in 0..16 {
+            let report = graph.maintenance(one_step).expect("step");
+            edge_steps = edge_steps.saturating_add(report.work.processed_delete_edge_steps);
+            completed = completed.saturating_add(report.work.completed_vertex_deletes);
+            calls += 1;
+            if report.remaining_queue_len() == 0 {
+                break;
+            }
+        }
+        // 3 incident edges removed one per step, plus a final finalize step.
+        assert_eq!(edge_steps, 3, "one removal per incident edge");
+        assert_eq!(completed, 1, "vertex purge completes exactly once");
+        assert_eq!(
+            calls, 4,
+            "3 edge steps + 1 finalize, one delete step per call"
+        );
+        assert_eq!(graph.incident_degree(hub).expect("degree after"), 0);
+        assert!(!graph.has_incident_edges(hub).expect("incident after"));
+        assert!(
+            graph
+                .directed_in_edges(VertexId::from(1))
+                .expect("in 1")
+                .is_empty(),
+            "neighbor 1 keeps no dangling in-edge"
+        );
+        assert!(
+            graph
+                .directed_in_edges(VertexId::from(2))
+                .expect("in 2")
+                .is_empty()
+        );
+        assert!(
+            graph
+                .directed_out_edges(VertexId::from(3))
+                .expect("out 3")
+                .is_empty(),
+            "neighbor 3 keeps no dangling out-edge"
+        );
+    }
+
+    #[test]
+    fn delete_vertex_work_item_round_trips() {
+        use ic_stable_structures::Storable;
+        let item = MaintenanceWorkItem::DeleteVertex {
+            vid: VertexId::from(7),
+            removed_edges: 12_345,
+        };
+        let bytes = item.to_bytes();
+        assert_eq!(
+            bytes.len(),
+            16,
+            "delete work item fits the fixed 16-byte format"
+        );
+        assert_eq!(MaintenanceWorkItem::from_bytes(bytes), item);
+    }
+
+    #[test]
+    fn delete_vertex_job_is_idempotent() {
+        let graph = graph();
+        for _ in 0..2 {
+            graph.push_vertex().expect("vertex");
+        }
+        let hub = VertexId::from(0);
+        let label = BucketLabelKey::UNLABELED_DIRECTED;
+        graph
+            .insert_directed_edge(hub, VertexId::from(1), label, TestEdge(1), TestEdge(0))
+            .expect("hub->1");
+        let full = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+
+        graph.enqueue_vertex_delete(hub).expect("enqueue");
+        let first = graph.maintenance(full).expect("drain 1");
+        assert_eq!(first.work.completed_vertex_deletes, 1);
+        assert!(!graph.has_incident_edges(hub).expect("incident"));
+
+        // Re-enqueuing an already-purged vertex finalizes safely with no edge work.
+        graph.enqueue_vertex_delete(hub).expect("enqueue again");
+        let second = graph.maintenance(full).expect("drain 2");
+        assert_eq!(second.work.completed_vertex_deletes, 1);
+        assert_eq!(second.work.processed_delete_edge_steps, 0);
+        assert!(!graph.has_incident_edges(hub).expect("incident again"));
     }
 
     #[test]

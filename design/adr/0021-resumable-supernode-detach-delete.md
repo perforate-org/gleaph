@@ -341,15 +341,35 @@ early, deferring the wide read-gate to last:
   provisional pending a Stage 1 delete benchmark and is removed entirely in
   Stage 2.
 
-### Stage 1 — Resumable purge machinery (no visibility change yet)
-- Add labeled `MaintenanceWorkItem::DeleteVertex { vid, removed_edges }` +
-  serialization + the one-edge-per-step processing arm in the labeled maintenance
-  loop; `pop_next` bypasses the dirty gate for `DeleteVertex`.
-- Add a labeled `DeleteEdgeObserver` (`on_delete_outgoing_edge`,
-  `on_delete_incoming_edge`, `on_vertex_purge_completed`) threaded through a new
-  `maintenance_with_observers`; keep the existing method delegating with a Noop.
-- LARA unit tests for phased purge + idempotency (still gated behind the Stage-0
-  budget so production behavior is unchanged until Stage 2).
+### Stage 1 — Resumable purge machinery (no visibility change yet) — implemented 2026-06-19
+- Added labeled `MaintenanceWorkItem::DeleteVertex { vid, removed_edges }` packed
+  into the existing fixed 16-byte work-item format (no stable-format migration;
+  `removed_edges` is a `u32`), with `from_bytes`/`to_bytes` round-trip test.
+- `pop_next` and `complete` bypass the dirty gate for `DeleteVertex`: the labeled
+  `work_item_key` ranges share high bits with compaction keys, so a colliding
+  compaction `complete` could otherwise clear a delete's dirty bit and drop it
+  mid-job. Delete jobs are enqueued directly (`enqueue_delete_vertex`) and never
+  deduped via the dirty bitmap.
+- Added `DeleteEdgeObserver` (`on_delete_outgoing_edge`, `on_delete_incoming_edge`,
+  `on_vertex_purge_completed`) + `NoopDeleteEdgeObserver`. The maintenance loop was
+  refactored into `maintenance_with_observers(budget, slot_move_observer,
+  delete_observer)`; `maintenance`, `maintenance_with_edge_slot_move_observer`, and
+  a new `maintenance_with_delete_observer` delegate with Noops.
+- One-edge-per-step processing arm (`process_delete_vertex_step`) removes a single
+  incident edge per step via the existing `remove_undirected_deferred` /
+  `remove_directed_deferred` primitives, then `finalize_vertex_delete` (factored out
+  of `delete_vertex_deferred`, the single source of truth for row clear +
+  tombstone). The loop honors `MaintenanceBudget::max_delete_edge_steps` and reports
+  `processed_delete_edge_steps` / `completed_vertex_deletes`. `enqueue_vertex_delete`
+  is the public entry point.
+- `maintenance` now requires `E: PartialEq` (already satisfied — the facade already
+  calls `delete_vertex_deferred`/`remove_*_deferred`, which require it).
+- Tests: `delete_vertex_job_purges_incident_edges_phased` (one removal per incident
+  edge, neighbors left with no dangling counterparts, vertex tombstoned),
+  `delete_vertex_job_is_idempotent`, `delete_vertex_work_item_round_trips`.
+- Still gated behind the Stage-0 budget: the production delete path stays
+  synchronous (`delete_vertex_deferred`); the new job is exercised only by tests
+  until Stage 2 wires it into the delete path.
 
 ### Stage 2 — Tombstone-first + read gate (enables resumable visibility)
 - Add the graph-crate stable pending-purge `StableRoaringBitmap` (new `MemoryId`,
