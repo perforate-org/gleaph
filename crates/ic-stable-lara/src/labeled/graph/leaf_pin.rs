@@ -137,9 +137,29 @@ where
         // Fast path: when no leaf-mate's span exceeds the fixed per-vertex quota, the
         // fixed-quota layout is intact and the requesting vertex's quota offset is free.
         // This avoids reading every leaf-mate's buckets on the common (sparse) insert.
+        //
+        // Soundness rests on the weighted-slide invariant: a relocate/slide tiles the
+        // *entire* leaf block across its active vertices (each `stored_slots` spans up to
+        // the next vertex, the last to `leaf_end`). So a leaf with `k < seg` active
+        // vertices — i.e. one that still has a free degree-0 slot to place — has an
+        // average tile width `leaf_len / k > quota`, forcing at least one oversized
+        // vertex and bypassing this fast path. When the fast path *does* fire, the leaf
+        // is in the untiled fixed-quota layout where each vertex sits in its own quota
+        // slot, so `preferred` is genuinely free. The debug check below pins that down.
         if need <= quota && !self.labeled_leaf_has_oversized_vertex(vid, quota) {
             if let Some(preferred) = preferred {
                 if checked_add_slot_index(preferred, need)? <= leaf_end {
+                    #[cfg(debug_assertions)]
+                    {
+                        let preferred_end = checked_add_slot_index(preferred, need)?;
+                        let occupied = self.labeled_leaf_occupied_spans(vid, vid);
+                        debug_assert!(
+                            occupied
+                                .iter()
+                                .all(|(s, e)| preferred_end <= *s || preferred >= *e),
+                            "fixed-quota fast path returned base {preferred} (end {preferred_end}) overlapping a leaf-mate; layout is not fixed-quota intact"
+                        );
+                    }
                     return Some(preferred);
                 }
             }
