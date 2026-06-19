@@ -288,8 +288,21 @@ necessity and the thresholds of *each* tier (the dedicated span included).
      B-tree tier targets), `bench_labeled_stage2_hub_point_lookup_descending_1024`
      and `bench_labeled_stage2_hub_scan_descending_1024` (~16.61M ins each; point
      lookup == full scan, confirming O(degree) target lookup).
-   - **Still to measure:** the dedicated-span and B-tree backings themselves (need
-     prototypes), plus facade-level `DETACH DELETE` cost and slab fragmentation.
+   - **Dedicated-span warrant probe landed** (`..._saturated_leaf_grow_one_256`
+     vs `..._isolated_vertex_grow_one_256`): growing one vertex to 256 edges costs
+     ~4.90M ins inside a saturated leaf vs ~3.23M ins isolated (leaf-mates empty ≈
+     a dedicated span). The ~1.67M-ins delta (~6.5K ins/insert, driven by
+     `rebalance_leaf_cascade`) is the cost a dedicated span would recover.
+   - **Still to measure:** the B-tree backing itself (needs a prototype), plus
+     facade-level `DETACH DELETE` cost and slab fragmentation.
+
+   **Warrant verdict (2026-06-19):** the dedicated-span tier (2a) shows only a
+   *modest* benefit — ~6.5K ins/insert of recovered growth contention — while the
+   B-tree tier (2b) addresses the *dominant* cost, ~597K ins/**delete** (≈90×
+   larger per operation). Evidence therefore prioritizes **2b over 2a**; the
+   dedicated-span tier is not warranted on growth contention alone (its remaining
+   case is fragmentation/locality, still unmeasured). The high-value, high-risk
+   2b prototype is the next implementation candidate, not 2a.
 2. Decide, per tier, **whether it is warranted at all** and, if so, its promote /
    demote degree thresholds (with hysteresis).
 3. If the dedicated-span tier is warranted: add the per-bucket pin→unpin

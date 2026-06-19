@@ -335,6 +335,38 @@ fn seed_single_label_hub(
 /// Hub degree for the ADR 0022 Stage 2 baselines (single skewed bucket).
 const STAGE2_HUB_DEGREE: u32 = 1024;
 
+/// One PMA leaf worth of vertices (matches `DEFAULT_SEGMENT_SIZE`).
+const STAGE2_LEAF: u32 = 32;
+/// Per-leaf-mate degree that near-saturates the leaf block (quota is 32/vertex).
+const STAGE2_LEAF_MATE_DEGREE: u32 = 28;
+/// Target degree to grow the probed vertex to during the warrant benches.
+const STAGE2_GROW_DEGREE: u32 = 256;
+
+/// Seeds `STAGE2_LEAF` vertices in one leaf; when `saturate_mates` is set, fills
+/// every leaf-mate (vids `1..STAGE2_LEAF`) to `STAGE2_LEAF_MATE_DEGREE` on the
+/// shared label so the leaf physical block is near-full. Uses the full
+/// `insert_edge` path so the measured growth exercises the real leaf
+/// slide/relocate cascade. Returns the shared label.
+fn seed_stage2_leaf(
+    graph: &LabeledLaraGraph<BenchEdge, crate::VectorMemory>,
+    saturate_mates: bool,
+) -> BucketLabelKey {
+    for _ in 0..STAGE2_LEAF {
+        graph.push_vertex(LabeledVertex::default()).expect("vertex");
+    }
+    let label = BucketLabelKey::from_raw(2);
+    if saturate_mates {
+        for v in 1..STAGE2_LEAF {
+            for e in 0..STAGE2_LEAF_MATE_DEGREE {
+                graph
+                    .insert_edge(VertexId::from(v), label, BenchEdge(v * 10_000 + e))
+                    .expect("leaf-mate seed");
+            }
+        }
+    }
+    label
+}
+
 /// Phase 6 hub regression: 33 labels × 50 edges (span-release cliff shape).
 const MIXED_LABEL_HUB_LABELS: u16 = 33;
 const MIXED_LABEL_HUB_EDGES_PER_LABEL: u32 = 50;
@@ -815,5 +847,45 @@ fn bench_labeled_stage2_hub_scan_descending_1024() -> canbench_rs::BenchResult {
                 .expect("descending scan");
             black_box(count);
         }
+    })
+}
+
+/// ADR 0022 Stage 2 *warrant* (dedicated-span tier): grow one vertex to 256 edges
+/// inside a **saturated** PMA leaf (31 leaf-mates near the per-vertex quota), so
+/// growth repeatedly fights the shared leaf block via slide/relocate. Pair with
+/// `..._isolated_vertex_grow_one_256`; the delta estimates the cost a per-bucket
+/// dedicated span (which isolates the hot vertex) would recover — the evidence
+/// that gates whether the dedicated-span tier is warranted.
+#[bench(raw)]
+fn bench_labeled_stage2_saturated_leaf_grow_one_256() -> canbench_rs::BenchResult {
+    let graph = bench_graph(1 << 20);
+    let label = seed_stage2_leaf(&graph, true);
+    bench_fn(|| {
+        for e in 0..STAGE2_GROW_DEGREE {
+            let e = black_box(e);
+            graph
+                .insert_edge(VertexId::from(0), label, BenchEdge(e))
+                .expect("saturated grow insert");
+        }
+        black_box(STAGE2_GROW_DEGREE);
+    })
+}
+
+/// ADR 0022 Stage 2 *warrant* (dedicated-span tier): grow one vertex to 256 edges
+/// with its leaf-mates **empty**, i.e. the vertex effectively owns its leaf block
+/// — the lower bound a dedicated span approximates. Compare against
+/// `..._saturated_leaf_grow_one_256` for the 2a benefit estimate.
+#[bench(raw)]
+fn bench_labeled_stage2_isolated_vertex_grow_one_256() -> canbench_rs::BenchResult {
+    let graph = bench_graph(1 << 20);
+    let label = seed_stage2_leaf(&graph, false);
+    bench_fn(|| {
+        for e in 0..STAGE2_GROW_DEGREE {
+            let e = black_box(e);
+            graph
+                .insert_edge(VertexId::from(0), label, BenchEdge(e))
+                .expect("isolated grow insert");
+        }
+        black_box(STAGE2_GROW_DEGREE);
     })
 }
