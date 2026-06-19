@@ -216,12 +216,7 @@ where
         &self,
         vid: VertexId,
     ) -> Result<u64, LabeledOperationError> {
-        let header = self.edges.header();
-        let seg = header.segment_size.max(1);
-        let vertex_offset = labeled_vertex_edge_offset_in_leaf(vid, seg);
-
         let (leaf_start, leaf_len) = self.ensure_labeled_leaf_block_pinned(vid)?;
-        let physical_start = leaf_start;
         if let Some(base) = self.find_free_labeled_leaf_edge_base(
             vid,
             leaf_start,
@@ -231,8 +226,12 @@ where
             return Ok(base);
         }
 
-        checked_add_slot_index(physical_start, vertex_offset)
-            .ok_or(LaraOperationError::CollectAllocationOverflow.into())
+        // No free, non-overlapping quota-sized region exists: the leaf block is full.
+        // Returning the fixed quota offset here would land on a leaf-mate's span (the
+        // data-loss bug class). The first-edge placement path never reaches this — it
+        // uses `find_free` directly and relocates on `None` — so fail loud instead of
+        // handing back an overlapping base. Callers needing room must relocate first.
+        Err(LaraOperationError::CollectAllocationOverflow.into())
     }
 
     pub(super) fn labeled_leaf_geometry_stored_slots(&self, leaf: u32) -> u64 {
