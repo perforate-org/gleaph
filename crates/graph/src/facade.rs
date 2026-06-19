@@ -3,6 +3,7 @@
 pub(crate) mod derived_state;
 mod ic_budget;
 mod ic_gql_extensions;
+pub(crate) mod maintenance_timer;
 mod stable;
 
 mod store;
@@ -15,9 +16,7 @@ pub use stable::vertex_labels::VertexLabelStoreError;
 pub use stable::vertex_properties::VertexPropertyStoreError;
 
 pub use ic_budget::{bulk_ingest_finalize_maintenance_budget, timer_lara_maintenance_budget};
-pub(crate) use ic_budget::{
-    post_edge_insert_maintenance_budget, unlimited_lara_maintenance_budget,
-};
+pub(crate) use ic_budget::{delete_maintenance_budget, post_edge_insert_maintenance_budget};
 pub use ic_gql_extensions::{ic_extension_type_names, init_ic_gql_extensions};
 pub use store::{
     BulkIngestFinalizeReport, BulkIngestFinalizeSpec, EdgeHandle, GraphStore, GraphStoreError,

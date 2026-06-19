@@ -49,6 +49,7 @@ half = "2"
 ic-cdk = "0.20"
 ic-cdk-management-canister = "0.1.1"
 ic-cdk-macros = "0.20"
+ic-cdk-timers = "1.0"
 ic-stable-roaring = { path = "../ic-stable-roaring" }
 ic-stable-structures = "0.7.2"
 nohash-hasher = "0.2"

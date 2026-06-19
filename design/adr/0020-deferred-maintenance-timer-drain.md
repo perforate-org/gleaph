@@ -1,7 +1,7 @@
 # 0020. Timer-driven drain of the deferred LARA maintenance queue
 
 Date: 2026-06-19
-Status: proposed
+Status: accepted (implemented)
 Last revised: 2026-06-19
 
 ## Context
@@ -187,8 +187,28 @@ ADR bounds and schedules only the **physical reclamation queue**.
 
 | Document | Update | Status |
 |----------|--------|--------|
-| [adr/README.md](README.md) | Index ADR 0020 | this patch |
-| [index/capacity-planning.md](../index/capacity-planning.md) | Note timer-driven bounded drain of the deferred maintenance queue | on acceptance |
-| [storage/bulk-ingest-finalize.md](../storage/bulk-ingest-finalize.md) | Finalize leftover work is drained by the maintenance timer | on acceptance |
-| [architecture/overview.md](../architecture/overview.md) | Graph canister maintenance-timer execution path | on acceptance |
+| [adr/README.md](README.md) | Index ADR 0020 | done |
+| [storage/bulk-ingest-finalize.md](../storage/bulk-ingest-finalize.md) | Delete/finalize use the bounded timer budget; leftover work drained by the maintenance timer | done |
+| [architecture/overview.md](../architecture/overview.md) | Graph canister maintenance-timer execution path | done |
+| [index/capacity-planning.md](../index/capacity-planning.md) | Note timer-driven bounded drain of the deferred maintenance queue | deferred (no maintenance section yet) |
 | Future ADR | Resumable super-node `DETACH DELETE` (logical edge removal) | deferred |
+
+## Implementation (2026-06-19)
+
+Implemented in the graph canister:
+
+- `facade/maintenance_timer.rs` — single tracked `TimerId`, `arm_if_needed()`
+  (self-guarding on queue length, no-op off-canister), and an adaptive
+  self-rescheduling one-shot whose successor delay comes from `next_delay()`.
+- `facade/ic_budget.rs` — `delete_maintenance_budget()` (timer budget on wasm,
+  unlimited natively) and the floor/relaxed `Duration` constants.
+- Arm sites: `#[init]`, new `#[post_upgrade]` (also re-installs the rkyv
+  extension decode hook, which previously was not re-run after upgrade), and the
+  enqueue paths `drain_deferred_maintenance` (vertex/edge delete),
+  `run_post_edge_insert_maintenance`, `enqueue_bulk_ingest_finalize`, and
+  `run_bulk_ingest_finalize_drain`.
+- Delete/finalize inline drains switched from `unlimited_*` to the bounded timer
+  budget on canisters (native still drains fully for deterministic tests).
+- `ic-cdk-timers = "1.0"` added (workspace + graph crate); `set_timer` in 1.0
+  takes a future, so the synchronous tick is wrapped in a non-suspending async
+  block.

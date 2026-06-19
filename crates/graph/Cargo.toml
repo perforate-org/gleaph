@@ -42,6 +42,7 @@ gleaph-graph-kernel.workspace = true
 half.workspace = true
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
+ic-cdk-timers.workspace = true
 ic-stable-lara.workspace = true
 ic-stable-structures.workspace = true
 nohash-hasher.workspace = true

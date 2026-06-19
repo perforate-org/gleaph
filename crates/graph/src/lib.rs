@@ -40,7 +40,7 @@ mod canister;
 
 // --- Canister surface (ic-cdk macros stay here; logic lives in `canister::`) ---
 
-use ic_cdk_macros::{init, query, update};
+use ic_cdk_macros::{init, post_upgrade, query, update};
 
 #[cfg(feature = "pocket-ic-e2e")]
 use crate::canister::guards::guard_control_plane_admin;
@@ -49,6 +49,14 @@ use crate::canister::{GraphInitArgs, guards::guard_router_canister};
 #[init]
 async fn init(args: GraphInitArgs) {
     canister::handlers::init(args).await;
+}
+
+/// Rebuilds non-stable process state after an upgrade: re-installs the rkyv
+/// extension decode hook and re-arms the deferred-maintenance timer if the
+/// (stable) queue is non-empty (timers do not survive upgrades; ADR 0020).
+#[post_upgrade]
+fn post_upgrade() {
+    canister::handlers::post_upgrade();
 }
 
 /// Router → graph: read-only plan wire (may call index / federated expand).

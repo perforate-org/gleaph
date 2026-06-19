@@ -22,12 +22,29 @@ pub const GRAPH_TIMER_LARA_MAX_INSTRUCTIONS: u64 = 32_000_000_000;
 /// inside LARA's maintenance loop (see `ic-stable-lara` `MaintenanceBudget`).
 pub const GRAPH_TIMER_LARA_RESERVE_INSTRUCTIONS: u64 = 100_000_000;
 
-/// [`MaintenanceBudget`] suited for **timer / heartbeat** draining of the
-/// deferred LARA queue in production canisters.
+/// Delay before the next deferred-maintenance tick when a tick filled its
+/// instruction budget (backlog under pressure). Floor set by single-threaded
+/// fairness, not the platform: `ic-cdk-timers` resolution is block-rate, so
+/// sub-second delays are not meaningful. See [ADR 0020].
 ///
-/// Delete paths call [`crate::GraphStore::drain_deferred_maintenance`] with
-/// [`unlimited_lara_maintenance_budget`]. Edge inserts use
-/// [`post_edge_insert_maintenance_budget`] instead (timer cap on canisters).
+/// [ADR 0020]: ../../../../design/adr/0020-deferred-maintenance-timer-drain.md
+#[cfg(any(test, target_family = "wasm"))]
+pub const MAINTENANCE_TIMER_FLOOR_DELAY: core::time::Duration = core::time::Duration::from_secs(1);
+
+/// Delay before the next deferred-maintenance tick when a backlog remains but
+/// the tick did not exhaust its budget (small tail). See [ADR 0020].
+///
+/// [ADR 0020]: ../../../../design/adr/0020-deferred-maintenance-timer-drain.md
+#[cfg(any(test, target_family = "wasm"))]
+pub const MAINTENANCE_TIMER_RELAXED_DELAY: core::time::Duration =
+    core::time::Duration::from_secs(5);
+
+/// [`MaintenanceBudget`] suited for **timer** draining of the deferred LARA
+/// queue in production canisters (ADR 0020).
+///
+/// On canisters, the delete, edge-insert, and finalize paths all bound their
+/// inline drain with this budget and arm the maintenance timer to finish the
+/// remainder. Native builds drain fully via `unlimited_lara_maintenance_budget`.
 #[inline]
 pub const fn timer_lara_maintenance_budget() -> MaintenanceBudget {
     MaintenanceBudget {
@@ -42,8 +59,10 @@ pub const fn timer_lara_maintenance_budget() -> MaintenanceBudget {
 
 /// Drains the full deferred maintenance queue (no instruction cap).
 ///
-/// Used after destructive mutations on native targets and in tests where the
-/// instruction counter is unused.
+/// Native-only: tests and local benches drain fully (the instruction counter is
+/// unused off-canister). On canisters, bounded budgets plus the maintenance
+/// timer (ADR 0020) replace unbounded inline drains.
+#[cfg(not(target_family = "wasm"))]
 #[inline]
 pub const fn unlimited_lara_maintenance_budget() -> MaintenanceBudget {
     MaintenanceBudget {
@@ -69,6 +88,23 @@ pub const fn bulk_ingest_finalize_maintenance_budget() -> MaintenanceBudget {
 #[cfg(not(target_family = "wasm"))]
 #[inline]
 pub const fn bulk_ingest_finalize_maintenance_budget() -> MaintenanceBudget {
+    unlimited_lara_maintenance_budget()
+}
+
+/// Maintenance budget for delete-style mutations (vertex/edge delete).
+///
+/// On canisters, bounded by the timer budget so a single delete message cannot
+/// trap on a large reclamation backlog; the maintenance timer (ADR 0020) drains
+/// the remainder. Native builds drain fully so tests observe reclaimed state.
+#[cfg(target_family = "wasm")]
+#[inline]
+pub const fn delete_maintenance_budget() -> MaintenanceBudget {
+    timer_lara_maintenance_budget()
+}
+
+#[cfg(not(target_family = "wasm"))]
+#[inline]
+pub const fn delete_maintenance_budget() -> MaintenanceBudget {
     unlimited_lara_maintenance_budget()
 }
 

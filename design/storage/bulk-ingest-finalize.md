@@ -37,10 +37,12 @@ See [payload-first-traversal.md](./payload-first-traversal.md).
 | Path | `mark_compact_vertex_edge_span` | Drain budget |
 |------|--------------------------------|--------------|
 | Edge insert (all `GraphStore` insert APIs) | No (LARA may queue `mark_compact_dense` only) | `post_edge_insert_maintenance_budget` — timer cap on wasm, unlimited on native |
-| Edge / vertex delete | Via LARA queue | `unlimited_lara_maintenance_budget` |
+| Edge / vertex delete | Via LARA queue | `delete_maintenance_budget` — timer cap on wasm, unlimited on native (ADR 0020) |
 | Timer tick | No | `timer_lara_maintenance_budget` |
 
-**Source:** `crates/graph/src/facade/store/maintenance.rs`, `crates/graph/src/facade/ic_budget.rs`.
+On canisters the delete/insert/finalize inline drains are **bounded** (timer budget) and **arm the deferred-maintenance timer** so any leftover reclamation is finished between messages without trapping; see [ADR 0020](../adr/0020-deferred-maintenance-timer-drain.md). Native builds drain fully (timer arm is a no-op) so tests observe reclaimed state.
+
+**Source:** `crates/graph/src/facade/store/maintenance.rs`, `crates/graph/src/facade/ic_budget.rs`, `crates/graph/src/facade/maintenance_timer.rs`.
 
 Forcing `mark_compact_vertex_edge_span` on **every** insert breaks buckets with live tombstones (`valued_insert_after_delete_*` tests). Therefore aggressive span compaction is **not** on the insert hot path.
 
@@ -95,7 +97,7 @@ pub struct BulkIngestFinalizeReport {
 
 | Method | Behavior |
 |--------|----------|
-| `enqueue_bulk_ingest_finalize(spec)` | **Implemented** — `mark_compact_vertex_edge_span(Forward\|Reverse, vid, 0)` for each listed vertex; dedupe via LARA `vertex_edge_span_maintenance_pending` |
+| `enqueue_bulk_ingest_finalize(spec)` | **Implemented** — `mark_compact_vertex_edge_span(Forward\|Reverse, vid, 0)` for each listed vertex; dedupe via LARA `vertex_edge_span_maintenance_pending`; arms the maintenance timer (enqueue-only, no inline drain — ADR 0020) |
 | `run_bulk_ingest_finalize_drain()` | **Implemented** — `run_maintenance_best_effort(bulk_ingest_finalize_maintenance_budget())` |
 | `finalize_bulk_ingest(spec)` | **Implemented** — enqueue + one drain pass |
 

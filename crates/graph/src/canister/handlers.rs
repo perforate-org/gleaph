@@ -63,6 +63,16 @@ pub async fn init(args: GraphInitArgs) {
     }
     // Before any router `GPL` plan decode (rkyv expr pools may contain `Value::Extension`).
     crate::facade::init_ic_gql_extensions();
+    // Drains any maintenance the init path enqueued (normally none on a fresh graph).
+    crate::facade::maintenance_timer::arm_if_needed();
+}
+
+/// Post-upgrade: a fresh Wasm instance loses process-global state, so re-install
+/// the rkyv extension decode hook and re-arm the deferred-maintenance timer when
+/// the stable queue still has pending reclamation (ADR 0020).
+pub fn post_upgrade() {
+    crate::facade::init_ic_gql_extensions();
+    crate::facade::maintenance_timer::arm_if_needed();
 }
 
 pub(crate) fn decode_gql_param_map(params: Vec<u8>) -> Result<BTreeMap<String, Value>, String> {

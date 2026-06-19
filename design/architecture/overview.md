@@ -61,6 +61,8 @@ flowchart LR
 
 Update path uses `GqlExecutionMode::Update` and DML operators; graph performs posting maintenance where configured.
 
+Deferred physical reclamation (tombstone compaction, span rebalance) is drained by a graph-canister **maintenance timer** (`ic-cdk-timers`): mutations bound their inline drain and arm an adaptive self-rescheduling one-shot, which is also armed from `#[init]` / `#[post_upgrade]` and stops when the stable queue empties. Tombstones gate reads synchronously, so deferral is visibility-neutral. See [ADR 0020](../adr/0020-deferred-maintenance-timer-drain.md).
+
 ## Crate boundaries (important)
 
 From `AGENT.md`:

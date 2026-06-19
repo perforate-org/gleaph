@@ -50,11 +50,20 @@ impl GraphStore {
         self.run_maintenance_best_effort(crate::facade::timer_lara_maintenance_budget())
     }
 
-    /// Drains all queued LARA maintenance work (used after delete-style mutations).
+    /// Number of pending deferred-maintenance work items in the stable queue.
+    pub(crate) fn maintenance_queue_len(&self) -> u64 {
+        GRAPH.with_borrow(|graph| graph.maintenance_queue_len())
+    }
+
+    /// Drains queued LARA maintenance after delete-style mutations under the
+    /// delete budget, then arms the maintenance timer if work remains (ADR 0020).
+    ///
+    /// On non-wasm builds the budget is unlimited (full drain) and the arm is a
+    /// no-op, so tests observe fully reclaimed state.
     pub(crate) fn drain_deferred_maintenance(&self) -> Result<(), GraphStoreError> {
-        self.drain_deferred_maintenance_with_budget(
-            crate::facade::unlimited_lara_maintenance_budget(),
-        )
+        self.drain_deferred_maintenance_with_budget(crate::facade::delete_maintenance_budget())?;
+        crate::facade::maintenance_timer::arm_if_needed();
+        Ok(())
     }
 
     pub(crate) fn drain_deferred_maintenance_with_budget(
@@ -72,7 +81,9 @@ impl GraphStore {
     pub(crate) fn run_post_edge_insert_maintenance(&self) -> Result<(), GraphStoreError> {
         self.drain_deferred_maintenance_with_budget(
             crate::facade::post_edge_insert_maintenance_budget(),
-        )
+        )?;
+        crate::facade::maintenance_timer::arm_if_needed();
+        Ok(())
     }
 
     /// Enqueues `CompactVertexEdgeSpan` for tombstone-free bulk ingest vertices.
@@ -84,6 +95,9 @@ impl GraphStore {
         spec: &BulkIngestFinalizeSpec,
     ) -> Result<BulkIngestFinalizeReport, GraphStoreError> {
         let (queued_forward, queued_reverse) = self.enqueue_bulk_ingest_finalize_vertices(spec)?;
+        // Enqueue-only path: no inline drain, so arm the timer to drain the
+        // queued compaction even if no explicit finalize drain follows (ADR 0020).
+        crate::facade::maintenance_timer::arm_if_needed();
         Ok(BulkIngestFinalizeReport {
             maintenance: LabeledBidirectionalMaintenanceReport::default(),
             queued_forward,
@@ -91,11 +105,15 @@ impl GraphStore {
         })
     }
 
-    /// Drains the deferred maintenance queue under the bulk-ingest finalize budget.
+    /// Drains the deferred maintenance queue under the bulk-ingest finalize budget,
+    /// then arms the maintenance timer if work remains (ADR 0020).
     pub fn run_bulk_ingest_finalize_drain(
         &self,
     ) -> Result<LabeledBidirectionalMaintenanceReport, GraphStoreError> {
-        self.run_maintenance_best_effort(crate::facade::bulk_ingest_finalize_maintenance_budget())
+        let report = self
+            .run_maintenance_best_effort(crate::facade::bulk_ingest_finalize_maintenance_budget())?;
+        crate::facade::maintenance_timer::arm_if_needed();
+        Ok(report)
     }
 
     /// Enqueues span compaction for listed vertices, then runs one finalize drain pass.
