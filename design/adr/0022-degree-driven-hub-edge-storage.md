@@ -323,9 +323,21 @@ necessity and the thresholds of *each* tier (the dedicated span included).
      (`bench_labeled_stage2_hub_insert_grow_1024`) vs B-tree **56.37M**
      (`bench_labeled_stage2b_narrow_hub_insert_1024`), i.e. the B-tree insert is
      **3.6× slower**.
-   - **Still to measure:** crossover degree where the slab's O(degree) overflow-log
-     delete loses to B-tree O(log d); facade-level `DETACH DELETE` cost; slab
-     fragmentation.
+   - **Crossover sweep landed** (`stage2b_crossover_benches!` at degrees 4096 and
+     16384, paired with the 1024 benches), paid-path instructions:
+
+     | degree | slab delete-half (by handle) | B-tree delete-half | slab insert | B-tree insert |
+     |--------|------------------------------|--------------------|-------------|---------------|
+     | 1024   | 36.93M                       | 44.84M             | 15.53M      | 56.39M        |
+     | 4096   | 1.07B                        | 201.20M            | 45.51M      | 252.02M       |
+     | 16384  | 16.88B                       | 858.07M            | 136.67M     | 1.11B         |
+
+     Delete: the slab is **O(degree²)** over a delete-half (per-edge delete walks the
+     unindexed overflow-log chain, O(degree)), so it crosses B-tree delete between
+     1024 and 4096 and is 19.7× more expensive by 16384. Insert: the slab is
+     sub-quadratic (~8.8× for 16× degree) and **always** beats the B-tree (3.6× →
+     8.1× as degree grows).
+   - **Still to measure:** facade-level `DETACH DELETE` cost; slab fragmentation.
 
    **Warrant verdict (2026-06-19):** the dedicated-span tier (2a) shows only a
    *modest* benefit — ~6.5K ins/insert of recovered growth contention — while the
@@ -386,6 +398,20 @@ necessity and the thresholds of *each* tier (the dedicated span included).
      unindexed **overflow log** itself (index/segment the log so log deletes and
      scans stop being O(degree)), which preserves cheap inserts and free-query scans
      instead of paying the B-tree tax on every write.
+
+   **Crossover verdict (2026-06-19).** The 4096/16384 sweep refines the threshold:
+   the slab beats the B-tree on delete only up to ~1–4K degree; above that, the
+   slab's **O(degree²)** bulk delete (unindexed overflow-log chain walk) loses
+   decisively (19.7× by 16384), and a delete-half of a ~25K-degree hub would exceed
+   the 40B update-call instruction limit — an **availability cliff**, not just a cost
+   one. But this is a property of the *unindexed log*, not a reason to adopt the
+   B-tree: insert stays slab-favored at every degree (3.6× → 8.1×) and scans are free
+   and cheaper on the slab. **Indexing/segmenting the overflow log** (ordinal → entry
+   directory, or a per-bucket contiguous segment) turns the per-edge delete from
+   O(degree) chain walk into O(1), making slab bulk delete O(degree) — which beats
+   the B-tree's O(degree·log d) on delete **and** keeps the slab's insert and
+   free-scan advantages. That is the recommended direction; the B-tree tier (2b)
+   remains not warranted.
 2. Decide, per tier, **whether it is warranted at all** and, if so, its promote /
    demote degree thresholds (with hysteresis).
 3. If the dedicated-span tier is warranted: add the per-bucket pin→unpin

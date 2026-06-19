@@ -1101,3 +1101,90 @@ fn bench_labeled_stage2b_narrow_hub_insert_1024() -> canbench_rs::BenchResult {
         }
     })
 }
+
+/// ADR 0022 Stage 2b *crossover* (paid update path): the same insert and fair
+/// delete-by-handle pair as the `..._1024` benches, parameterized by degree, to
+/// locate where the slab's unindexed overflow-log delete (O(degree) chain walk
+/// per log-resident slot; O(degree²) over a delete-half) loses to the B-tree's
+/// O(log d) delete — and to confirm insert stays slab-favored at scale.
+macro_rules! stage2b_crossover_benches {
+    ($deg:expr, $slab_del:ident, $bt_del:ident, $slab_ins:ident, $bt_ins:ident) => {
+        #[bench(raw)]
+        fn $slab_del() -> canbench_rs::BenchResult {
+            let graph = bench_graph(1 << 20);
+            let (vid, label) = seed_single_label_hub(&graph, $deg);
+            bench_fn(|| {
+                for slot in (0..$deg).step_by(2) {
+                    graph
+                        .remove_edge_at_slot(vid, label, slot)
+                        .expect("remove")
+                        .expect("removed");
+                }
+                compact_vertex_edge_span_until_overflow_or_done(&graph, vid);
+                let mut count = 0usize;
+                graph
+                    .for_each_edges_for_label(vid, label, |_| count += 1)
+                    .expect("for_each");
+                black_box(count);
+            })
+        }
+
+        #[bench(raw)]
+        fn $bt_del() -> canbench_rs::BenchResult {
+            let mut tree = seed_stage2b_narrow_tree($deg);
+            bench_fn(|| {
+                for seq in (0..$deg).step_by(2) {
+                    let removed = tree.remove_by_seq(STAGE2B_VERTEX, STAGE2B_LABEL, seq);
+                    debug_assert!(removed);
+                }
+                let mut count = 0usize;
+                tree.for_each_descending(STAGE2B_VERTEX, STAGE2B_LABEL, |_seq, _target| count += 1);
+                black_box(count);
+            })
+        }
+
+        #[bench(raw)]
+        fn $slab_ins() -> canbench_rs::BenchResult {
+            let graph = bench_graph(1 << 20);
+            graph.push_vertex(LabeledVertex::default()).expect("vertex");
+            let vid = VertexId::from(0);
+            let label = BucketLabelKey::from_raw(2);
+            bench_fn(|| {
+                for target in 0..$deg {
+                    let target = black_box(target);
+                    graph
+                        .insert_edge(vid, label, BenchEdge(target))
+                        .expect("hub grow insert");
+                }
+                black_box::<u32>($deg);
+            })
+        }
+
+        #[bench(raw)]
+        fn $bt_ins() -> canbench_rs::BenchResult {
+            bench_fn(|| {
+                let mut tree = HubTargetTree::new(vector_memory());
+                for target in 0..$deg {
+                    let seq = tree.insert(STAGE2B_VERTEX, STAGE2B_LABEL, black_box(target));
+                    black_box(seq);
+                }
+            })
+        }
+    };
+}
+
+stage2b_crossover_benches!(
+    4096u32,
+    bench_labeled_stage2_hub_delete_half_by_slot_then_compact_4096,
+    bench_labeled_stage2b_narrow_hub_delete_half_4096,
+    bench_labeled_stage2_hub_insert_grow_4096,
+    bench_labeled_stage2b_narrow_hub_insert_4096
+);
+
+stage2b_crossover_benches!(
+    16384u32,
+    bench_labeled_stage2_hub_delete_half_by_slot_then_compact_16384,
+    bench_labeled_stage2b_narrow_hub_delete_half_16384,
+    bench_labeled_stage2_hub_insert_grow_16384,
+    bench_labeled_stage2b_narrow_hub_insert_16384
+);
