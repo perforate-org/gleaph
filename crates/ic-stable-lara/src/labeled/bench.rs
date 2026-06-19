@@ -6,8 +6,8 @@
 use crate::bench as helper;
 use crate::labeled::hub_tree_prototype::{HubBucketTree, HubTargetTree};
 use crate::labeled::{
-    BucketLabelKey, DeferredLabeledLaraGraph, LabeledPayloadValueBatchScratch, LabeledVertex,
-    OutEdgeOrder,
+    BucketLabelKey, DeferredBidirectionalLabeledLaraGraph, DeferredLabeledLaraGraph,
+    LabeledPayloadValueBatchScratch, LabeledVertex, OutEdgeOrder,
     graph::{LabeledLaraGraph, VertexEdgeSpanCompactOneStep},
 };
 use crate::{
@@ -1188,3 +1188,120 @@ stage2b_crossover_benches!(
     bench_labeled_stage2_hub_insert_grow_16384,
     bench_labeled_stage2b_narrow_hub_insert_16384
 );
+
+/// Builds an empty bidirectional (forward + reverse store) deferred labeled graph
+/// for `BenchEdge`, mirroring the `valued_bidirectional_graph` test fixture. Used
+/// by the real DETACH DELETE benches, which need both orientations.
+fn bidirectional_bench_graph()
+-> DeferredBidirectionalLabeledLaraGraph<BenchEdge, crate::VectorMemory> {
+    let (
+        fv,
+        fb,
+        fbfs,
+        fbfsbs,
+        fec,
+        fe,
+        fel,
+        fesm,
+        fefs,
+        fefsbs,
+        fvs,
+        fvffs,
+        fvffsbs,
+        fvlog,
+        fvblobs,
+    ) = labeled_lara_memories();
+    let (
+        rv,
+        rb,
+        rbfs,
+        rbfsbs,
+        rec,
+        re,
+        rel,
+        resm,
+        refs,
+        refsbs,
+        rvs,
+        rvffs,
+        rvffsbs,
+        rvlog,
+        rvblobs,
+    ) = labeled_lara_memories();
+    DeferredBidirectionalLabeledLaraGraph::new(
+        fv,
+        fb,
+        fbfs,
+        fbfsbs,
+        fec,
+        fe,
+        fel,
+        fesm,
+        fefs,
+        fefsbs,
+        fvs,
+        fvffs,
+        fvffsbs,
+        fvlog,
+        fvblobs,
+        rv,
+        rb,
+        rbfs,
+        rbfsbs,
+        rec,
+        re,
+        rel,
+        resm,
+        refs,
+        refsbs,
+        rvs,
+        rvffs,
+        rvffsbs,
+        rvlog,
+        rvblobs,
+        vector_memory(),
+        vector_memory(),
+        1 << 20,
+        BucketLabelKey::UNLABELED_DIRECTED,
+    )
+    .expect("bidirectional bench graph")
+}
+
+/// ADR 0022 Stage 2b *real DETACH DELETE* (paid update path): delete a degree-D
+/// hub from the bidirectional graph via `delete_vertex_deferred` — the true
+/// vertex-delete cost the single-bucket benches omit. It removes both
+/// orientations (forward + reverse stores) and, for every incident edge, locates
+/// and removes the mirror at the neighbour by target predicate scan
+/// (`remove_edge_matching`). Neighbours have degree 1, so the cost is dominated by
+/// re-scanning the hub's own shrinking adjacency: O(D²) on the slab. This is the
+/// operation a B-tree hub tier would have to beat — and it requires the same
+/// target-based mirror lookups, the B-tree's weakest axis.
+macro_rules! detach_delete_hub_bench {
+    ($name:ident, $deg:expr) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            let graph = bidirectional_bench_graph();
+            let hub = graph.push_vertex().expect("hub");
+            let label = BucketLabelKey::directed_from_index(2);
+            for _ in 0..$deg {
+                let neighbor = graph.push_vertex().expect("neighbor");
+                graph
+                    .insert_directed_edge(
+                        hub,
+                        neighbor,
+                        label,
+                        BenchEdge(u32::from(neighbor)),
+                        BenchEdge(u32::from(hub)),
+                    )
+                    .expect("insert directed");
+            }
+            bench_fn(|| {
+                let removed = graph.delete_vertex_deferred(hub).expect("detach delete");
+                black_box(removed);
+            })
+        }
+    };
+}
+
+detach_delete_hub_bench!(bench_labeled_stage2_detach_delete_hub_1024, 1024u32);
+detach_delete_hub_bench!(bench_labeled_stage2_detach_delete_hub_4096, 4096u32);

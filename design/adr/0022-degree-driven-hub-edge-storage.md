@@ -337,7 +337,21 @@ necessity and the thresholds of *each* tier (the dedicated span included).
      1024 and 4096 and is 19.7× more expensive by 16384. Insert: the slab is
      sub-quadratic (~8.8× for 16× degree) and **always** beats the B-tree (3.6× →
      8.1× as degree grows).
-   - **Still to measure:** facade-level `DETACH DELETE` cost; slab fragmentation.
+   - **Real DETACH DELETE landed** (`bench_labeled_stage2_detach_delete_hub_*`),
+     closing the biggest fairness gap: the single-bucket delete benches above model
+     only one orientation of one vertex and omit the mirror cleanup. The real
+     vertex delete (`delete_vertex_deferred` on the **bidirectional** graph) removes
+     both orientations (forward + reverse stores) and, for every incident edge,
+     locates and removes the neighbour's mirror by **target predicate scan**
+     (`remove_edge_matching`). Deleting a degree-D hub (neighbours degree 1): **D=1024
+     → 646.45M**, **D=4096 → 7.41B** (~11.5× for 4× degree, super-linear, ≈O(D^1.8)).
+     A ~10K-degree hub would exceed the 40B update-call limit in one message — which
+     is exactly why ADR 0021 made vertex delete resumable/deferred. This is ~17.5×
+     the single-bucket half-delete bench, confirming those benches understate real
+     delete cost for both backings.
+   - **Still to measure:** a *fair* B-tree DETACH DELETE (requires modelling forward
+     + reverse trees and target-based mirror removal — the B-tree's weak axis); slab
+     fragmentation.
 
    **Warrant verdict (2026-06-19):** the dedicated-span tier (2a) shows only a
    *modest* benefit — ~6.5K ins/insert of recovered growth contention — while the
@@ -412,6 +426,18 @@ necessity and the thresholds of *each* tier (the dedicated span included).
    the B-tree's O(degree·log d) on delete **and** keeps the slab's insert and
    free-scan advantages. That is the recommended direction; the B-tree tier (2b)
    remains not warranted.
+
+   **DETACH DELETE verdict (2026-06-19).** The real vertex delete (both orientations
+   + per-neighbour mirror removal) is O(D²) on the slab (646.45M at 1024, 7.41B at
+   4096) and would breach the 40B update limit near ~10K degree — already mitigated
+   by ADR 0021's resumable/deferred purge. A B-tree could reduce the hub-side work
+   to O(D·log d) for a full-bucket drain, but the mirror step is **target-keyed
+   lookup at each neighbour**, the B-tree's weakest axis (no `target → seq` index;
+   6.3× slower scans). So DETACH DELETE is the *same* high-degree-delete story as the
+   crossover: it favours fixing the slab (index/segment the overflow log, and give
+   the reverse store a source-keyed locator so mirror removal stops being O(degree))
+   over paying the B-tree's insert and free-scan tax. Verdict unchanged: 2b not
+   warranted; index/segment the slab.
 2. Decide, per tier, **whether it is warranted at all** and, if so, its promote /
    demote degree thresholds (with hysteresis).
 3. If the dedicated-span tier is warranted: add the per-bucket pin→unpin
