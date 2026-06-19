@@ -205,9 +205,26 @@ pub(crate) enum ExpandDst {
 }
 
 impl ExpandDst {
+    /// Resolves an edge's counterpart endpoint into an expand destination.
+    ///
+    /// This is the single edge-yield chokepoint for the query executor (every
+    /// expand/WCOJ/var-len/path candidate routes through it), so it also enforces
+    /// the ADR-0021 read gate: a local counterpart that is tombstoned and still
+    /// mid-purge resolves to `Ok(None)` (skip), hiding dangling back-edges to a
+    /// `DETACH DELETE`d super-node. Callers already treat `Ok(None)` as "no
+    /// candidate", so no call-site changes are needed. Steady state (no in-flight
+    /// purge) costs one branch via `vertex_hidden_by_pending_purge`'s empty-set
+    /// short-circuit. Edge-binding scans that bypass this chokepoint (the
+    /// edge-property index scan) gate explicitly.
     pub(crate) fn from_edge(edge: &Edge) -> Result<Option<Self>, PlanQueryError> {
         match edge.edge_target() {
-            Some(EdgeTarget::Local(vertex_id)) => Ok(Some(Self::Local(vertex_id))),
+            Some(EdgeTarget::Local(vertex_id)) => {
+                if crate::facade::vertex_hidden_by_pending_purge(vertex_id) {
+                    Ok(None)
+                } else {
+                    Ok(Some(Self::Local(vertex_id)))
+                }
+            }
             Some(EdgeTarget::Remote(_)) => Err(PlanQueryError::UnsupportedOp(
                 "expand across remote CSR edge endpoints",
             )),

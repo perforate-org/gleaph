@@ -7,6 +7,7 @@ use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{ScanValue, Str};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
+use ic_stable_lara::CsrEdge;
 
 use crate::facade::catalog_edge_label_from_wire;
 use crate::facade::{EdgeHandle, GraphStore};
@@ -47,6 +48,14 @@ fn edge_binding_from_posting(
     let Some(edge) = store.find_outgoing_edge_record(handle)? else {
         return Ok(None);
     };
+    // ADR-0021 read gate: an edge-property index scan binds the edge directly
+    // (no `ExpandDst::from_edge` chokepoint), so gate both endpoints here. Hide
+    // the edge while either endpoint is a tombstoned vertex mid-purge.
+    if crate::facade::vertex_hidden_by_pending_purge(owner_vertex_id)
+        || crate::facade::vertex_hidden_by_pending_purge(edge.neighbor_vid())
+    {
+        return Ok(None);
+    }
     Ok(Some(EdgeBinding::from_edge(handle, edge)))
 }
 
@@ -55,6 +64,12 @@ fn expand_endpoints_for_direction(
     edge: &Edge,
     direction: EdgeDirection,
 ) -> Result<Option<(ExpandDst, ExpandDst)>, PlanQueryError> {
+    // `from_edge` gates the neighbor endpoint (ADR 0021); gate the owner endpoint
+    // here too, so an edge bound before its owner entered the pending-purge set is
+    // hidden once the purge is in flight.
+    if crate::facade::vertex_hidden_by_pending_purge(handle.owner_vertex_id) {
+        return Ok(None);
+    }
     let neighbor = ExpandDst::from_edge(edge)?;
     let owner = ExpandDst::Local(handle.owner_vertex_id);
     let Some(neighbor) = neighbor else {

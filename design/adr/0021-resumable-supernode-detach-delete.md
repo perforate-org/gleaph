@@ -372,9 +372,48 @@ early, deferring the wide read-gate to last:
   until Stage 2 wires it into the delete path.
 
 ### Stage 2 — Tombstone-first + read gate (enables resumable visibility)
+
+Sub-staged so the inert pieces (pending set + read gate) land before the delete
+path is flipped to populate the set:
+
+#### Stage 2a — Pending-purge set (inert) — implemented 2026-06-19
+- Added the graph-crate stable `PENDING_VERTEX_PURGES` `StableRoaringBitmap`
+  (`MemoryId` 40, empty on existing canisters; `GRAPH_STABLE_LAYOUT` region 41,
+  class `maintenance`) + `GraphStore` accessors (`has_pending_vertex_purges`,
+  `vertex_is_pending_purge`, `mark_vertex_pending_purge`,
+  `clear_vertex_pending_purge`); init in `init_pending_vertex_purges`. Inventory
+  + ADR 0007 registry updated. Inert until 2b/2c consume it.
+
+#### Stage 2c — Read gate (inert while set empty) — implemented 2026-06-19
+- **Refinement vs the "facade wrappers" plan above:** the facade `for_each_*` /
+  `directed_*_edges` methods are **shared** with internal machinery
+  (`derived_state/edge_alias.rs` alias rebuild, `vertex_delete.rs` incident-edge
+  collection), which must *not* be gated — gating there would hide the very
+  back-edges the purge needs to remove and corrupt alias rebuild. So the gate
+  lives at the **query executor's edge-yield chokepoint**, not the facade methods.
+- **One predicate, one chokepoint.** `ExpandDst::from_edge` is the single point
+  every expand / WCOJ / var-len / weighted-path / path / equality-index candidate
+  routes through; it now returns `Ok(None)` for a local counterpart that is in the
+  pending-purge set (callers already treat `Ok(None)` as "skip", so zero call-site
+  churn). This filters at edge-yield, covering anonymous-target patterns
+  (`(n)-[e]->()`) — verified by test. Steady-state cost is one branch via
+  `vertex_hidden_by_pending_purge`'s `is_empty()` short-circuit (single
+  thread-local borrow per edge).
+- **Edge-index scan** (`scan/edge_index.rs`) binds edges directly without the
+  `from_edge` chokepoint, so it gates explicitly on **both** endpoints
+  (`edge_binding_from_posting`) plus a defensive owner-endpoint gate in
+  `expand_endpoints_for_direction`.
+- Tests (gate exercised by manually populating the pending set):
+  `from_edge_gate_hides_pending_purge_local_destination` (+ internal facade reads
+  unaffected), `expand_candidates_skip_pending_purge_neighbor`,
+  `expand_query_hides_pending_purge_neighbor`,
+  `expand_anonymous_target_hides_pending_purge_edge`.
+- No production behavior change yet: nothing populates the set until 2b.
+
+#### Stage 2b/2d — remaining
 - Add the graph-crate stable pending-purge `StableRoaringBitmap` (new `MemoryId`,
   empty on existing canisters) + `has_pending_vertex_purges()` / membership
-  accessors; init in `init_graph`.
+  accessors; init in `init_graph`. *(done in 2a)*
 - Rewrite labeled `delete_vertex_deferred` to tombstone-first (per orientation,
   preserving buckets) + enqueue `DeleteVertex`; graph delete inserts into the
   pending set, runs one bounded inline pass, arms the ADR-0020 timer; move

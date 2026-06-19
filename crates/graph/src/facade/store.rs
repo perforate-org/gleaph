@@ -49,6 +49,7 @@ pub use error::GraphStoreError;
 pub use handle::EdgeHandle;
 pub use helpers::{canonical_undirected_owner, catalog_edge_label_from_wire};
 pub use maintenance::{BulkIngestFinalizeReport, BulkIngestFinalizeSpec};
+pub(crate) use pending_purge::vertex_hidden_by_pending_purge;
 
 /// Stateless facade over graph storage thread-locals.
 #[derive(Clone, Copy, Debug, Default)]

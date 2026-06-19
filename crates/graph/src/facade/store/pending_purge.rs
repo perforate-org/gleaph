@@ -38,3 +38,14 @@ impl GraphStore {
         });
     }
 }
+
+/// Read-gate predicate: whether an edge whose counterpart is `vertex_id` must be
+/// hidden because that vertex is tombstoned and still mid-purge (ADR 0021).
+///
+/// A single thread-local borrow per call, short-circuiting on the empty set so
+/// steady state (no in-flight purge) costs one branch. Stateless entry point so
+/// the query executor's `ExpandDst::from_edge` chokepoint can gate every
+/// edge-yield without threading a `GraphStore`.
+pub(crate) fn vertex_hidden_by_pending_purge(vertex_id: VertexId) -> bool {
+    PENDING_VERTEX_PURGES.with_borrow(|set| !set.is_empty() && set.contains(u32::from(vertex_id)))
+}

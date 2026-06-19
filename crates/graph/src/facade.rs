@@ -21,6 +21,7 @@ pub(crate) use ic_budget::{
 };
 pub use ic_budget::{bulk_ingest_finalize_maintenance_budget, timer_lara_maintenance_budget};
 pub use ic_gql_extensions::{ic_extension_type_names, init_ic_gql_extensions};
+pub(crate) use store::vertex_hidden_by_pending_purge;
 pub use store::{
     BulkIngestFinalizeReport, BulkIngestFinalizeSpec, EdgeHandle, GraphStore, GraphStoreError,
     canonical_undirected_owner, catalog_edge_label_from_wire,

@@ -3015,3 +3015,192 @@ fn federated_neighbor_hit_preserves_remote_payload_bytes() {
     assert_eq!(binding.payload_len(), 2);
     assert_eq!(binding.payload_bytes_slice(), &[42, 0]);
 }
+
+// --- ADR 0021 Stage 2c: pending-purge read gate ---
+
+#[test]
+fn from_edge_gate_hides_pending_purge_local_destination() {
+    use ic_stable_lara::traits::CsrEdge;
+
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["PurgeGateSrc"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let b = store
+        .insert_vertex_named(["PurgeGateDst"], Vec::<(&str, Value)>::new())
+        .expect("b");
+    store
+        .insert_directed_edge_named(a, b, Some("PurgeGateRel"), Vec::<(&str, Value)>::new())
+        .expect("edge a->b");
+    let edge = store
+        .directed_out_edges(a)
+        .expect("out edges")
+        .into_iter()
+        .find(|e| e.neighbor_vid() == b)
+        .expect("edge to b");
+
+    assert!(matches!(
+        ExpandDst::from_edge(&edge),
+        Ok(Some(ExpandDst::Local(v))) if v == b
+    ));
+
+    store.mark_vertex_pending_purge(b);
+    assert!(
+        matches!(ExpandDst::from_edge(&edge), Ok(None)),
+        "edge to a pending-purge vertex must resolve to no candidate"
+    );
+    // Internal facade reads (alias rebuild, delete-edge collection) must still
+    // see the back-edge so the purge can remove it.
+    assert!(
+        store
+            .directed_out_edges(a)
+            .expect("out edges")
+            .iter()
+            .any(|e| e.neighbor_vid() == b),
+        "internal facade reads must not be gated by the pending-purge set"
+    );
+
+    store.clear_vertex_pending_purge(b);
+    assert!(matches!(
+        ExpandDst::from_edge(&edge),
+        Ok(Some(ExpandDst::Local(v))) if v == b
+    ));
+}
+
+#[test]
+fn expand_candidates_skip_pending_purge_neighbor() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["PurgeCandSrc"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let kept = store
+        .insert_vertex_named(["PurgeCandDst"], Vec::<(&str, Value)>::new())
+        .expect("kept");
+    let purged = store
+        .insert_vertex_named(["PurgeCandDst"], Vec::<(&str, Value)>::new())
+        .expect("purged");
+    let label_id = crate::test_labels::edge_label_id_for_name("PurgeCandRel");
+    store
+        .insert_directed_edge_named(a, kept, Some("PurgeCandRel"), Vec::<(&str, Value)>::new())
+        .expect("a->kept");
+    store
+        .insert_directed_edge_named(a, purged, Some("PurgeCandRel"), Vec::<(&str, Value)>::new())
+        .expect("a->purged");
+
+    store.mark_vertex_pending_purge(purged);
+
+    let mut out = Vec::new();
+    super::expand_candidates_into(
+        &store,
+        &GqlExecutionContext::default(),
+        a,
+        EdgeDirection::PointingRight,
+        Some(label_id),
+        EdgeSequenceOrder::Ascending,
+        None,
+        None,
+        None,
+        &params(),
+        &mut out,
+    )
+    .expect("expand candidates");
+
+    assert_eq!(out.len(), 1, "the pending-purge neighbor must be skipped");
+    assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == kept));
+}
+
+#[test]
+fn expand_query_hides_pending_purge_neighbor() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["PurgeQSrc"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let bob = store
+        .insert_vertex_named(["PurgeQDst"], [("name", Value::Text("Bob".into()))])
+        .expect("bob");
+    let carol = store
+        .insert_vertex_named(["PurgeQDst"], [("name", Value::Text("Carol".into()))])
+        .expect("carol");
+    store
+        .insert_directed_edge_named(a, bob, Some("PurgeQKnows"), Vec::<(&str, Value)>::new())
+        .expect("a->bob");
+    store
+        .insert_directed_edge_named(a, carol, Some("PurgeQKnows"), Vec::<(&str, Value)>::new())
+        .expect("a->carol");
+
+    let plan = plan_gql(
+        "MATCH (a:PurgeQSrc)-[:PurgeQKnows]->(b:PurgeQDst) RETURN b.name AS b_name ORDER BY b_name",
+    );
+
+    let before = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute before purge");
+    assert_eq!(before.rows.len(), 2);
+
+    store.mark_vertex_pending_purge(bob);
+    let during = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute during purge");
+    assert_eq!(
+        during.rows.len(),
+        1,
+        "expand must hide the pending neighbor"
+    );
+    assert_eq!(
+        during.rows[0].get("b_name"),
+        Some(&Value::Text("Carol".into()))
+    );
+
+    store.clear_vertex_pending_purge(bob);
+    let after = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute after purge");
+    assert_eq!(
+        after.rows.len(),
+        2,
+        "edge reappears once the purge completes"
+    );
+}
+
+#[test]
+fn expand_anonymous_target_hides_pending_purge_edge() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["PurgeAnonSrc"], Vec::<(&str, Value)>::new())
+        .expect("a");
+    let bob = store
+        .insert_vertex_named(["PurgeAnonDst"], Vec::<(&str, Value)>::new())
+        .expect("bob");
+    let carol = store
+        .insert_vertex_named(["PurgeAnonDst"], Vec::<(&str, Value)>::new())
+        .expect("carol");
+    store
+        .insert_directed_edge_named(a, bob, Some("PurgeAnonKnows"), [("since", Value::Int64(1))])
+        .expect("a->bob");
+    store
+        .insert_directed_edge_named(
+            a,
+            carol,
+            Some("PurgeAnonKnows"),
+            [("since", Value::Int64(2))],
+        )
+        .expect("a->carol");
+
+    // Anonymous target: the destination is not projected, only the edge is bound.
+    let plan = plan_gql("MATCH (a:PurgeAnonSrc)-[e:PurgeAnonKnows]->() RETURN e.since AS since");
+
+    let before = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute before purge");
+    assert_eq!(before.rows.len(), 2);
+
+    store.mark_vertex_pending_purge(bob);
+    let during = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute during purge");
+    assert_eq!(
+        during.rows.len(),
+        1,
+        "anonymous-target edge to a pending-purge vertex must be hidden"
+    );
+}
