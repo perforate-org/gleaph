@@ -2158,51 +2158,6 @@ where
     /// per call keeps forward/reverse counts balanced (ADR 0021). Removing the
     /// reverse record independently guarantees forward progress even if the forward
     /// record is already gone.
-    fn purge_one_directed_in_edge(
-        &self,
-        src: VertexId,
-        dst: VertexId,
-    ) -> Result<bool, DeferredBidirectionalLabeledError> {
-        let mut removed_any = false;
-        let forward_labels = self
-            .forward
-            .out_edge_label_ids(src)
-            .map_err(DeferredBidirectionalLabeledError::Forward)?;
-        for label_id in forward_labels {
-            if !label_id.is_directed() {
-                continue;
-            }
-            if self
-                .forward
-                .remove_edge_matching(src, label_id, |cand| cand.neighbor_vid() == dst)
-                .map_err(DeferredBidirectionalLabeledError::Forward)?
-                .is_some()
-            {
-                removed_any = true;
-                break;
-            }
-        }
-        let reverse_labels = self
-            .reverse
-            .out_edge_label_ids(dst)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
-        for label_id in reverse_labels {
-            if !label_id.is_directed() {
-                continue;
-            }
-            if self
-                .reverse
-                .remove_edge_matching(dst, label_id, |cand| cand.neighbor_vid() == src)
-                .map_err(DeferredBidirectionalLabeledError::Reverse)?
-                .is_some()
-            {
-                removed_any = true;
-                break;
-            }
-        }
-        Ok(removed_any)
-    }
-
     /// Queued incremental vertex deletion: removes all incident edges then clears the row.
     pub fn delete_vertex_deferred(
         &self,
@@ -2364,7 +2319,7 @@ where
     ) -> Result<(Option<MaintenanceWorkItem>, bool, bool), DeferredBidirectionalLabeledError>
     where
         D: DeleteEdgeObserver<E>,
-        E: PartialEq,
+        E: PartialEq + CsrEdgeTombstone,
     {
         let next_item = |removed: u32| {
             Some(MaintenanceWorkItem::DeleteVertex {
@@ -2373,33 +2328,57 @@ where
             })
         };
 
-        if let Some(edge) = self
+        // First step: compact both orientation rows once so each later removal hits a
+        // front-packed slab slot in O(1) (folds overflow logs, drops tombstone gaps).
+        // This converts the owner-side drain from O(degree^2) (the prior per-step
+        // `asc_out_edges` re-scan that skipped a growing tombstone prefix, plus the
+        // per-edge predicate re-find) to O(degree). Bypass rows are left as-is and
+        // drained by a bounded descending scan.
+        if removed_edges == 0 {
+            self.forward
+                .compact_vertex_edge_span(vid, 0)
+                .map_err(DeferredBidirectionalLabeledError::Forward)?;
+            self.reverse
+                .compact_vertex_edge_span(vid, 0)
+                .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        }
+
+        // Drain one owner out-edge (forward) and remove only its counterpart row at the
+        // neighbour, mirroring the synchronous `delete_vertex_deferred` per edge.
+        if let Some((edge, label)) = self
             .forward
-            .asc_out_edges_iter(vid)
-            .map_err(DeferredBidirectionalLabeledError::Forward)?
-            .next()
-            .transpose()
+            .remove_top_out_edge(vid)
             .map_err(DeferredBidirectionalLabeledError::Forward)?
         {
             let dst = edge.neighbor_vid();
-            if self.remove_undirected_deferred(vid, dst, edge.clone())?
-                || self.remove_directed_deferred(vid, dst, edge.clone())?
-            {
-                delete_observer.on_delete_outgoing_edge(vid, edge);
-                return Ok((next_item(removed_edges), true, false));
+            if dst != vid {
+                if label.is_undirected() {
+                    self.forward
+                        .remove_edge_matching(dst, label, |cand| cand.neighbor_vid() == vid)
+                        .map_err(DeferredBidirectionalLabeledError::Forward)?;
+                } else {
+                    self.reverse
+                        .remove_edge_matching(dst, label, |cand| cand.neighbor_vid() == vid)
+                        .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+                }
             }
+            delete_observer.on_delete_outgoing_edge(vid, edge);
+            return Ok((next_item(removed_edges), true, false));
         }
 
-        if let Some(edge) = self
+        // Then one directed in-edge: the owner record lives in the reverse store; remove
+        // the surviving forward record at the source.
+        if let Some((edge, label)) = self
             .reverse
-            .asc_out_edges_iter(vid)
-            .map_err(DeferredBidirectionalLabeledError::Reverse)?
-            .next()
-            .transpose()
+            .remove_top_out_edge(vid)
             .map_err(DeferredBidirectionalLabeledError::Reverse)?
         {
             let src = edge.neighbor_vid();
-            let _ = self.purge_one_directed_in_edge(src, vid)?;
+            if src != vid {
+                self.forward
+                    .remove_edge_matching(src, label, |cand| cand.neighbor_vid() == vid)
+                    .map_err(DeferredBidirectionalLabeledError::Forward)?;
+            }
             delete_observer.on_delete_incoming_edge(vid, edge);
             return Ok((next_item(removed_edges), true, false));
         }
@@ -2744,6 +2723,171 @@ mod tests {
             survivor_out.iter().all(|e| e.neighbor_vid() != hub),
             "survivor still points at deleted hub"
         );
+    }
+
+    #[test]
+    fn stepped_delete_vertex_drains_hub_one_edge_per_step() {
+        // Same supernode shape as the sync drain, but driven through the resumable
+        // `MaintenanceWorkItem::DeleteVertex` step path with a one-edge-per-step budget.
+        // Each maintenance call must remove exactly one incident edge (owner + mirror)
+        // until the row is empty, then finalize once.
+        const DEG: u32 = 300;
+        let graph = sized_graph(1 << 16);
+        let hub = graph.push_vertex().expect("hub"); // 0
+        let label = BucketLabelKey::directed_from_index(7);
+        for _ in 0..DEG {
+            let neighbor = graph.push_vertex().expect("neighbor");
+            graph
+                .insert_directed_edge(
+                    hub,
+                    neighbor,
+                    label,
+                    TestEdge(u32::from(neighbor)),
+                    TestEdge(u32::from(hub)),
+                )
+                .expect("hub -> neighbor");
+        }
+        let survivor = graph.push_vertex().expect("survivor");
+        let keeper = VertexId::from(250);
+        graph
+            .insert_directed_edge(
+                survivor,
+                hub,
+                label,
+                TestEdge(u32::from(hub)),
+                TestEdge(u32::from(survivor)),
+            )
+            .expect("survivor -> hub");
+        graph
+            .insert_directed_edge(
+                keeper,
+                survivor,
+                label,
+                TestEdge(u32::from(survivor)),
+                TestEdge(u32::from(keeper)),
+            )
+            .expect("keeper -> survivor");
+        let full = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        graph.maintenance(full).expect("settle inserts");
+
+        let incident_before = graph.incident_degree(hub).expect("incident before");
+        assert_eq!(
+            incident_before,
+            u64::from(DEG + 1),
+            "hub owns DEG out + 1 in"
+        );
+
+        graph.enqueue_vertex_delete(hub).expect("enqueue");
+        let one_step = MaintenanceBudget {
+            max_delete_edge_steps: Some(1),
+            ..full
+        };
+        let mut edge_steps = 0u32;
+        let mut completed = 0u32;
+        for _ in 0..(DEG + 8) {
+            let report = graph.maintenance(one_step).expect("step");
+            assert!(
+                report.work.processed_delete_edge_steps <= 1,
+                "step budget exceeded"
+            );
+            edge_steps = edge_steps.saturating_add(report.work.processed_delete_edge_steps);
+            completed = completed.saturating_add(report.work.completed_vertex_deletes);
+            if report.remaining_queue_len() == 0 {
+                break;
+            }
+        }
+        assert_eq!(
+            u64::from(edge_steps),
+            incident_before,
+            "one removal per incident edge"
+        );
+        assert_eq!(completed, 1, "vertex purge completes exactly once");
+        assert!(!graph.has_incident_edges(hub).expect("hub incident"));
+
+        let mut still_linked: Vec<u32> = Vec::new();
+        for n in 1..=DEG {
+            let nbr = VertexId::from(n);
+            let in_edges = graph.directed_in_edges(nbr).expect("neighbor in-edges");
+            if in_edges.iter().any(|e| e.neighbor_vid() == hub) {
+                still_linked.push(n);
+            }
+        }
+        assert!(
+            still_linked.is_empty(),
+            "neighbors still linked to hub: {still_linked:?}"
+        );
+        assert_eq!(
+            graph.incident_degree(keeper).expect("keeper degree"),
+            1,
+            "keeper should retain exactly its survivor edge"
+        );
+        let survivor_out = graph.directed_out_edges(survivor).expect("survivor out");
+        assert!(
+            survivor_out.iter().all(|e| e.neighbor_vid() != hub),
+            "survivor still points at deleted hub"
+        );
+    }
+
+    #[test]
+    fn stepped_delete_bypass_vertex_with_interior_tombstone() {
+        // A small (bypass-stored) vertex with an interior tombstone: removing a middle
+        // edge first leaves a gap that the bypass row does not compact. The stepped
+        // drain's top-slot primitive must still drain every live edge via its
+        // descending fallback scan and clean up each neighbour.
+        let graph = graph();
+        let center = graph.push_vertex().expect("center"); // 0
+        let label = BucketLabelKey::directed_from_index(3);
+        let mut neighbors = Vec::new();
+        for _ in 0..5u32 {
+            neighbors.push(graph.push_vertex().expect("neighbor"));
+        }
+        for &n in &neighbors {
+            graph
+                .insert_directed_edge(
+                    center,
+                    n,
+                    label,
+                    TestEdge(u32::from(n)),
+                    TestEdge(u32::from(center)),
+                )
+                .expect("center -> neighbor");
+        }
+        let full = MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        };
+        graph.maintenance(full).expect("settle");
+
+        // Tombstone the middle edge (center -> neighbors[2]) before deleting the vertex.
+        let gap = neighbors[2];
+        assert!(
+            graph
+                .remove_directed_deferred(center, gap, TestEdge(u32::from(gap)))
+                .expect("remove middle edge")
+        );
+
+        graph.enqueue_vertex_delete(center).expect("enqueue");
+        graph.maintenance(full).expect("drain");
+
+        assert!(!graph.has_incident_edges(center).expect("center incident"));
+        for &n in &neighbors {
+            let in_edges = graph.directed_in_edges(n).expect("neighbor in");
+            assert!(
+                in_edges.iter().all(|e| e.neighbor_vid() != center),
+                "neighbor {n:?} still linked to deleted center"
+            );
+        }
     }
 
     #[test]

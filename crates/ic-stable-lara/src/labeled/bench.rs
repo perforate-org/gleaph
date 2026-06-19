@@ -1305,3 +1305,50 @@ macro_rules! detach_delete_hub_bench {
 
 detach_delete_hub_bench!(bench_labeled_stage2_detach_delete_hub_1024, 1024u32);
 detach_delete_hub_bench!(bench_labeled_stage2_detach_delete_hub_4096, 4096u32);
+
+/// Same DETACH DELETE as above, but through the **resumable/stepped** path
+/// (`enqueue_vertex_delete` + maintenance drain) that the production
+/// `detach_delete_vertex` uses. Validates that the stepped step removes incident
+/// edges in O(degree) (front-packed top-slot removal after a one-time compaction)
+/// rather than the prior O(degree^2) per-step `asc_out_edges` + predicate re-scan.
+macro_rules! detach_delete_hub_stepped_bench {
+    ($name:ident, $deg:expr) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            let graph = bidirectional_bench_graph();
+            let hub = graph.push_vertex().expect("hub");
+            let label = BucketLabelKey::directed_from_index(2);
+            for _ in 0..$deg {
+                let neighbor = graph.push_vertex().expect("neighbor");
+                graph
+                    .insert_directed_edge(
+                        hub,
+                        neighbor,
+                        label,
+                        BenchEdge(u32::from(neighbor)),
+                        BenchEdge(u32::from(hub)),
+                    )
+                    .expect("insert directed");
+            }
+            let budget = MaintenanceBudget {
+                max_instructions: 0,
+                reserve_instructions: 0,
+                checkpoint_every: 1,
+                max_work_items: None,
+                max_segments: None,
+                max_delete_edge_steps: None,
+            };
+            graph.maintenance(budget).expect("settle inserts");
+            bench_fn(|| {
+                graph.enqueue_vertex_delete(hub).expect("enqueue");
+                while graph.maintenance_queue_len() > 0 {
+                    let report = graph.maintenance(budget).expect("drain");
+                    black_box(report.work.processed_delete_edge_steps);
+                }
+            })
+        }
+    };
+}
+
+detach_delete_hub_stepped_bench!(bench_labeled_stage2_detach_delete_hub_stepped_1024, 1024u32);
+detach_delete_hub_stepped_bench!(bench_labeled_stage2_detach_delete_hub_stepped_4096, 4096u32);

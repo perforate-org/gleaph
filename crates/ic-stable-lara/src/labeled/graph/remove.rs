@@ -651,6 +651,89 @@ where
         Ok(removed)
     }
 
+    /// Removes one live out-edge from `src` (the highest-index live slot of its
+    /// first non-empty label bucket / bypass region) and returns it with `slot_index`
+    /// and `label_id` set, plus the bucket label. Returns `None` when `src` has no
+    /// live out-edge.
+    ///
+    /// This is the single-edge counterpart of [`Self::drain_out_edges_for_label`],
+    /// used by the resumable vertex-delete step (one edge per maintenance step).
+    /// When the caller front-packs the live edges first (the delete drain compacts
+    /// the row once before draining), each call is O(1): the top slab slot is
+    /// `live - 1`. If tombstones interleave the reserved span, it falls back to a
+    /// descending scan of that bucket.
+    pub fn remove_top_out_edge(
+        &self,
+        src: VertexId,
+    ) -> Result<Option<(E, BucketLabelKey)>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        self.ensure_vertex(src)?;
+        let vertex = self.vertices.get(src);
+        if vertex.is_default_edge_labeled() {
+            let live = vertex.degree();
+            if live == 0 {
+                return Ok(None);
+            }
+            let label = self.bypass_storage_label_for(&vertex);
+            let reserved = vertex.stored_degree();
+            return Ok(self
+                .remove_highest_live_edge_in_bucket(src, label, reserved, live)?
+                .map(|edge| (edge, label)));
+        }
+        let buckets = self.read_vertex_label_buckets(&vertex)?;
+        for bucket in buckets {
+            let live = bucket.degree();
+            if live == 0 {
+                continue;
+            }
+            let label = bucket.bucket_label_key();
+            let reserved = self.bucket_reserved_edge_slots(src, &bucket);
+            if let Some(edge) =
+                self.remove_highest_live_edge_in_bucket(src, label, reserved, live)?
+            {
+                return Ok(Some((edge, label)));
+            }
+        }
+        Ok(None)
+    }
+
+    /// Removes the highest-index live edge in `src`'s `label_id` bucket. Tries the
+    /// front-packed top slot (`live - 1`) first, then scans the reserved span
+    /// descending for any surviving edge. The returned edge carries its slot index
+    /// and label for sidecar cleanup by the delete observer.
+    fn remove_highest_live_edge_in_bucket(
+        &self,
+        src: VertexId,
+        label_id: BucketLabelKey,
+        reserved: u32,
+        live: u32,
+    ) -> Result<Option<E>, LabeledOperationError>
+    where
+        E: CsrEdgeTombstone,
+    {
+        if live == 0 || reserved == 0 {
+            return Ok(None);
+        }
+        let tag = |edge: E, slot: u32| edge.with_slot_index(slot).with_label_id(label_id.raw());
+        if live <= reserved {
+            let top = live - 1;
+            if let Some(edge) = self.remove_edge_at_slot(src, label_id, top)? {
+                return Ok(Some(tag(edge, top)));
+            }
+        }
+        for slot in (0..reserved).rev() {
+            if live <= reserved && slot == live - 1 {
+                continue;
+            }
+            if let Some(edge) = self.remove_edge_at_slot(src, label_id, slot)? {
+                return Ok(Some(tag(edge, slot)));
+            }
+        }
+        Ok(None)
+    }
+
     /// Removes the first edge in `label_id` for `src` that satisfies `matches`.
     pub fn remove_edge_matching<F>(
         &self,

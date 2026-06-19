@@ -454,10 +454,29 @@ necessity and the thresholds of *each* tier (the dedicated span included).
   is gone and the 40B cliff is removed. Residual cost is dominated by overflow-log handling
   (option (b) territory). The reverse store's source-keyed locator / mirror index is the
   separate lever for the *dual* case (deleting a small vertex adjacent to hubs), still
-  benchmark-gated. The resumable/stepped path (`process_delete_vertex_step`, used by the
-  production `detach_delete_vertex`) shares the owner predicate scan and is **pending** the
-  same drain treatment (constrained by the one-edge-per-step contract; needs a top-slot /
-  cursor primitive).
+  benchmark-gated.
+
+  **Stepped/production path drained (2026-06-19).** The resumable
+  `process_delete_vertex_step` (the path the production `detach_delete_vertex` runs)
+  previously shared the same two O(D²) sources: the per-step `asc_out_edges().next()`
+  skipped a growing leading-tombstone prefix, and the per-edge removal re-found the edge
+  via a predicate scan. Because the work-item contract removes exactly **one edge per
+  step**, the synchronous bucket-drain primitive cannot be reused directly. Fix: a
+  `LabeledLaraGraph::remove_top_out_edge` primitive (single-edge counterpart of
+  `drain_out_edges_for_label`) that removes the highest-index live slot of the first
+  non-empty bucket/bypass region, plus a one-time `compact_vertex_edge_span` on the first
+  step so each later removal targets a front-packed slab slot in O(1) (the top live slot
+  is `degree − 1`; a descending fallback scan covers bypass rows that the compactor
+  skips). The step now removes one owner edge and only its counterpart at the neighbour,
+  mirroring the synchronous rewrite. The dead `purge_one_directed_in_edge` helper was
+  removed. Measured (new stepped benches, enqueue + maintenance drain): **stepped-1024
+  26.71M; stepped-4096 110.56M** — ≈4× instructions for 4× degree, i.e. O(D) (an O(D²)
+  path would be ≈16×). Slightly above the synchronous drain (79–86M) due to per-step
+  maintenance bookkeeping, but far under the 40B update limit. Regression tests:
+  `stepped_delete_vertex_drains_hub_one_edge_per_step`,
+  `stepped_delete_bypass_vertex_with_interior_tombstone`. The reverse store's
+  source-keyed mirror index remains the separate, benchmark-gated lever for the *dual*
+  case (deleting a small vertex adjacent to hubs).
 
   **Pre-existing data-loss bug found and fixed (2026-06-19, separate from this ADR).** While
   building the drain regression test, `directed_out_edges` was observed to silently drop a
