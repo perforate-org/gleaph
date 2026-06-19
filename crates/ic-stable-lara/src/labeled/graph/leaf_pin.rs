@@ -419,6 +419,52 @@ where
             .ok_or(LaraOperationError::CollectAllocationOverflow.into())
     }
 
+    /// Debug-only: asserts no two labeled vertices sharing `vid`'s PMA leaf reserve
+    /// overlapping edge-slab spans.
+    ///
+    /// Guards the leaf-mate overlap bug class (ADR 0022): fixed-quota placement must
+    /// never site a vertex's edge span on top of a leaf-mate's reservation. Each
+    /// vertex's reserved span is `[first_bucket.edge_start(), + stored_slots)` — the
+    /// same occupancy model [`Self::labeled_leaf_occupied_spans`] uses for placement —
+    /// so adjacency (`a.end == b.start`) is allowed but any true overlap is a bug.
+    /// Reads only vertex records and first buckets; gated to debug builds.
+    #[cfg(debug_assertions)]
+    pub(crate) fn assert_no_labeled_leaf_mate_overlap(&self, vid: VertexId) {
+        let header = self.edges.header();
+        let seg = header.segment_size.max(1);
+        let leaf = Self::leaf_index_for_vid(vid, seg);
+        let start_vid = leaf.saturating_mul(seg);
+        let end_vid = start_vid.saturating_add(seg).min(self.vertices.len());
+        let mut spans: Vec<(VertexId, u64, u64)> = Vec::new();
+        for vid_u in start_vid..end_vid {
+            let other = VertexId::from(vid_u);
+            let vertex = self.vertices.get(other);
+            if vertex.is_default_edge_labeled() || vertex.stored_slots == 0 {
+                continue;
+            }
+            let Ok(buckets) = self.read_vertex_label_buckets(&vertex) else {
+                continue;
+            };
+            let Some(first) = buckets.first() else {
+                continue;
+            };
+            let base = first.edge_start();
+            let Some(end) = checked_add_slot_index(base, u64::from(vertex.stored_slots)) else {
+                continue;
+            };
+            spans.push((other, base, end));
+        }
+        spans.sort_by_key(|(_, base, _)| *base);
+        for win in spans.windows(2) {
+            let (a, _a_base, a_end) = win[0];
+            let (b, b_base, _b_end) = win[1];
+            assert!(
+                a_end <= b_base,
+                "leaf-mate edge spans overlap in leaf {leaf}: vid {a:?} reserves up to {a_end} but vid {b:?} starts at {b_base}"
+            );
+        }
+    }
+
     pub(crate) fn assert_labeled_buckets_within_leaf_physical(
         &self,
         vid: VertexId,
@@ -668,6 +714,68 @@ mod tests {
             .unwrap();
         assert_eq!(edges_out.len(), 1);
         assert_eq!(edges_out[0].target, u32::from(dst));
+    }
+
+    #[test]
+    fn leaf_mate_overlap_guard_passes_for_normal_inserts() {
+        let graph = hub_graph();
+        for _ in 0..3 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        let label = BucketLabelKey::from_raw(7);
+        for vid_u in 0..3u32 {
+            for t in 0..40u32 {
+                graph
+                    .insert_edge_skip_leaf_cascade(
+                        VertexId::from(vid_u),
+                        label,
+                        TestEdge { target: t },
+                    )
+                    .unwrap();
+            }
+            // Settled per vertex: leaf-mates must never reserve overlapping spans.
+            graph.assert_no_labeled_leaf_mate_overlap(VertexId::from(vid_u));
+        }
+    }
+
+    #[test]
+    fn leaf_mate_overlap_guard_detects_injected_overlap() {
+        let graph = hub_graph();
+        for _ in 0..2 {
+            graph.push_vertex(LabeledVertex::default()).unwrap();
+        }
+        let label = BucketLabelKey::from_raw(7);
+        for vid_u in 0..2u32 {
+            graph
+                .insert_edge_skip_leaf_cascade(VertexId::from(vid_u), label, TestEdge { target: 1 })
+                .unwrap();
+        }
+        graph.assert_no_labeled_leaf_mate_overlap(VertexId::from(0));
+
+        // Corrupt vid 1's reservation to start on top of vid 0's span, then confirm the
+        // guard fires. This simulates the data-loss bug class the guard exists to catch.
+        let v0 = graph.vertices().get(VertexId::from(0));
+        let base0 = graph
+            .read_vertex_label_buckets(&v0)
+            .unwrap()
+            .first()
+            .unwrap()
+            .edge_start();
+        let v1 = graph.vertices().get(VertexId::from(1));
+        let slot1 = v1.base_slot_start();
+        let bucket1 = graph.buckets().read_label_bucket_slot(slot1).unwrap();
+        graph
+            .buckets()
+            .write_label_bucket_slot(slot1, bucket1.with_edge_range(base0, bucket1.degree()))
+            .unwrap();
+
+        let result = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            graph.assert_no_labeled_leaf_mate_overlap(VertexId::from(0));
+        }));
+        assert!(
+            result.is_err(),
+            "guard must panic on injected leaf-mate overlap"
+        );
     }
 
     #[test]

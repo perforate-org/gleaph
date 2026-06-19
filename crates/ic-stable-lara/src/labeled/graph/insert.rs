@@ -84,6 +84,8 @@ where
         if self.labeled_leaf_segment_is_dense(src) {
             self.rebalance_cascade_after_labeled_mutation(src)?;
         }
+        #[cfg(debug_assertions)]
+        self.assert_no_labeled_leaf_mate_overlap(src);
         Ok(())
     }
 
