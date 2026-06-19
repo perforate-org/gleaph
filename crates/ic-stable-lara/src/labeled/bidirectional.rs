@@ -4,6 +4,6 @@ pub(crate) mod deferred;
 
 pub use deferred::{
     BidirectionalMaintenanceReport as LabeledBidirectionalMaintenanceReport,
-    DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, EdgeSlotMoveObserver,
-    Orientation,
+    DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, DeleteEdgeObserver,
+    EdgeSlotMoveObserver, Orientation,
 };

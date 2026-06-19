@@ -18,24 +18,6 @@ pub const IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT: u64 = 40_000_000_000;
 /// non-LARA work in the same message (serialization, logging, etc.).
 pub const GRAPH_TIMER_LARA_MAX_INSTRUCTIONS: u64 = 32_000_000_000;
 
-/// Safety floor for synchronous `DETACH DELETE` of a single vertex (ADR 0021,
-/// Stage 0).
-///
-/// `commit_detach_delete_vertex` removes every incident edge synchronously and,
-/// per edge, scans/tombstones the neighbour's counterpart row and clears that
-/// edge's sidecars — O(incident degree) work in one message. Beyond this degree
-/// the operation risks exceeding [`IC_CANISTER_MESSAGE_INSTRUCTION_LIMIT`] and
-/// trapping (an unrecoverable rollback that makes the vertex permanently
-/// undeletable). Above the floor we return a deterministic, recoverable error
-/// instead of trapping.
-///
-/// This is a **provisional, conservative** bound: chosen as a super-node-scale
-/// degree (normal vertices are far smaller) with wide instruction headroom under
-/// a pessimistic per-edge cost. ADR 0021 Stage 1 validates it with a delete
-/// benchmark, and Stage 2 removes the limit entirely via a resumable,
-/// timer-driven incident-edge purge.
-pub const GRAPH_MAX_SYNC_DETACH_DELETE_DEGREE: u64 = 250_000;
-
 /// Reserved instruction headroom checked against [`GRAPH_TIMER_LARA_MAX_INSTRUCTIONS`]
 /// inside LARA's maintenance loop (see `ic-stable-lara` `MaintenanceBudget`).
 pub const GRAPH_TIMER_LARA_RESERVE_INSTRUCTIONS: u64 = 100_000_000;

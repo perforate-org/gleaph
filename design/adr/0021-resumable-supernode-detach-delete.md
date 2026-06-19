@@ -1,7 +1,8 @@
 # 0021. Resumable super-node DETACH DELETE (deferred incident-edge purge)
 
 Date: 2026-06-19
-Status: proposed (revised 2026-06-19 after a read-gate breadth finding; see
+Status: accepted (all stages 0–2 implemented 2026-06-19; revised after a
+read-gate breadth finding and a payload-free in-edge purge-bug finding — see
 "Implementation finding" and the staged Migration)
 Last revised: 2026-06-19
 
@@ -410,24 +411,47 @@ path is flipped to populate the set:
   `expand_anonymous_target_hides_pending_purge_edge`.
 - No production behavior change yet: nothing populates the set until 2b.
 
-#### Stage 2b/2d — remaining
-- Add the graph-crate stable pending-purge `StableRoaringBitmap` (new `MemoryId`,
-  empty on existing canisters) + `has_pending_vertex_purges()` / membership
-  accessors; init in `init_graph`. *(done in 2a)*
-- Rewrite labeled `delete_vertex_deferred` to tombstone-first (per orientation,
-  preserving buckets) + enqueue `DeleteVertex`; graph delete inserts into the
-  pending set, runs one bounded inline pass, arms the ADR-0020 timer; move
-  per-edge sidecar clearing into the graph-side delete-edge observer, which also
-  clears the pending set on `on_vertex_purge_completed`.
-- Add the gated edge-yield neighbor filter as **one predicate
-  (`edge_hidden_by_purge`) + thin per-visit-shape closure wrappers** applied to
-  the query-visible facade reads (`FnMut(Edge)`, `FnMut(&Edge, &[u8])`,
-  `FnMut(LabeledEdgePayloadBatch<Edge>)`); during a purge, bypass the value-only
-  batch fast path. Filter by "query-visible read", not by the `_unchecked`
-  suffix; the purge bypasses the facade and is exempt.
-- **Visibility test matrix** across expand (out/in/undirected), anonymous-target
-  patterns, WCOJ, edge-property reads, label-scoped reads, and payload-first
-  batched reads — during an in-flight purge and after completion.
+#### Stage 2b — Tombstone-first delete + observer-driven purge — implemented 2026-06-19
+- New labeled `begin_vertex_delete_deferred`: sets the tombstone bit on both
+  orientation rows **in place** (preserving each side's label buckets so the purge
+  can still iterate the incident edges) then enqueues the `DeleteVertex` job. O(1)
+  before returning. The vertex is immediately invisible via the existing
+  `is_tombstone` checks (node scans, `is_vertex_live`); no node-scan gating needed.
+- `commit_detach_delete_vertex` now: clears the vertex's own sidecars,
+  `mark_vertex_pending_purge`, `begin_vertex_delete_deferred`, then drains under the
+  delete budget (unlimited on native, instruction-bounded on wasm → spills to the
+  ADR-0020 timer). The synchronous degree ceiling (`GraphStoreError::VertexDeleteTooLarge`,
+  `GRAPH_MAX_SYNC_DETACH_DELETE_DEGREE`, the `*_bounded` paths) is **removed** — the
+  resumable inline pass cannot trap, so the Stage-0 floor is obsolete.
+- `GraphDeleteEdgeObserver` (wired into `run_maintenance_best_effort` alongside the
+  compaction `GraphSidecarMoveObserver`) clears each removed edge's sidecars
+  (properties, local indexes, aliases) incrementally and drops the vertex from the
+  pending set on `on_vertex_purge_completed`. It runs **inside** the `GRAPH` borrow
+  but only touches the edge-sidecar / pending-purge thread-locals, never `GRAPH`;
+  sidecar owner + directedness are derived from the edge's bucket `label_id` (set by
+  the maintenance iterator), mirroring `edge_sidecar_owner_from_*` without re-reading
+  `GRAPH`.
+- **LARA purge-bug fix (uncovered here):** the reverse (in-edge) purge branch of
+  both `process_delete_vertex_step` and `delete_vertex_deferred` reconstructed the
+  forward edge from the reverse record, but `edge_matches_remove_target` matches a
+  **payload-free** edge by *slot index* — and the reverse-store slot never equals the
+  neighbor's forward slot, so the forward removal silently failed and the purge spun
+  forever (latent in the old synchronous path too; only exposed once a node with
+  payload-free in-edges from distinct sources is deleted — prior tests used a
+  payload-carrying `TestEdge` that masked it). New `purge_one_directed_in_edge`
+  removes one forward record at `src` and one reverse record at `dst` by **neighbor
+  identity** across directed label buckets; removing the reverse record independently
+  guarantees forward progress.
+
+#### Stage 2d — Visibility / purge tests — implemented 2026-06-19
+- `partial_purge_gates_surviving_back_edges_then_full_drain_reconciles`: a one-step
+  budgeted purge leaves back-edges physically present but pending-gated
+  (`vertex_hidden_by_pending_purge` true), then a full drain clears the pending set
+  and removes every back-edge.
+- `detach_delete_hub_with_no_payload_in_edges_drains_every_back_edge`: end-to-end
+  public-API regression for the payload-free in-edge purge bug (8 distinct sources).
+- Combined with the Stage 2c gate tests (anonymous targets, expand candidates,
+  end-to-end queries), this covers in-flight and post-completion visibility.
 
 Re-arm in `post_upgrade` already covers resuming in-flight purges (ADR 0020).
 

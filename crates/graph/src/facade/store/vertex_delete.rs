@@ -1,15 +1,9 @@
 //! Vertex delete domain: clear derived sidecars and commit graph row removal.
 
-use gleaph_graph_kernel::entry::Edge;
-use ic_stable_lara::{
-    BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
-    labeled::OutEdgeOrder,
-};
+use ic_stable_lara::{DeferredBidirectionalLabeledError, VertexId};
 
 use super::GraphStore;
 use super::error::GraphStoreError;
-use super::handle::EdgeHandle;
-use crate::facade::GRAPH_MAX_SYNC_DETACH_DELETE_DEGREE;
 
 impl GraphStore {
     /// Detached vertex delete: clear sidecars, remove CSR row, drain maintenance.
@@ -28,45 +22,30 @@ impl GraphStore {
         self.drain_deferred_maintenance()
     }
 
-    /// Detach-delete: clear vertex sidecars, remove CSR row, clear incident edge sidecars.
+    /// Detach-delete: resumable tombstone-first vertex purge (ADR 0021 Stage 2).
+    ///
+    /// Clears the vertex's own sidecars, marks it pending-purge so the read gate
+    /// hides its surviving back-edges, tombstones both orientation rows in O(1)
+    /// (preserving buckets), then enqueues a [`MaintenanceWorkItem::DeleteVertex`]
+    /// purge and drains it under the delete budget. The incident-edge sidecars are
+    /// cleared incrementally by [`GraphDeleteEdgeObserver`] as the purge drains
+    /// each edge, and the vertex leaves the pending-purge set when the purge
+    /// completes. Super-node deletes that exceed the per-message budget spill to
+    /// the maintenance timer instead of trapping, so the legacy synchronous
+    /// degree ceiling is gone.
+    ///
+    /// [`MaintenanceWorkItem::DeleteVertex`]: ic_stable_lara::labeled::MaintenanceWorkItem
+    /// [`GraphDeleteEdgeObserver`]: super::helpers::GraphDeleteEdgeObserver
     pub(super) fn commit_detach_delete_vertex(
         &self,
         vertex_id: VertexId,
     ) -> Result<(), GraphStoreError> {
-        self.commit_detach_delete_vertex_bounded(vertex_id, GRAPH_MAX_SYNC_DETACH_DELETE_DEGREE)
-    }
-
-    /// Detach-delete with an explicit synchronous incident-degree ceiling.
-    ///
-    /// ADR 0021 Stage 0 safety floor: incident-edge removal here is O(degree) and
-    /// synchronous (each removal also touches the neighbour's counterpart row and
-    /// clears that edge's sidecars). Above `max_incident_degree` we return a
-    /// recoverable error *before any mutation* rather than risk an instruction
-    /// trap that would leave the vertex permanently undeletable. Stage 2 makes
-    /// this resumable and removes the ceiling.
-    pub(crate) fn commit_detach_delete_vertex_bounded(
-        &self,
-        vertex_id: VertexId,
-        max_incident_degree: u64,
-    ) -> Result<(), GraphStoreError> {
         self.assert_local_vertex_writable(vertex_id)?;
         self.ensure_vertex_id(vertex_id)
             .map_err(GraphStoreError::from)?;
-        let incident_degree = self.vertex_incident_degree(vertex_id)?;
-        if incident_degree > max_incident_degree {
-            return Err(GraphStoreError::VertexDeleteTooLarge {
-                vertex_id,
-                incident_degree,
-                limit: max_incident_degree,
-            });
-        }
         self.commit_prepare_vertex_sidecars_for_delete(vertex_id)?;
-
-        let to_clear = self.collect_incident_edge_handles_for_delete(vertex_id)?;
-        self.with_graph_mut(|graph| graph.delete_vertex_deferred(vertex_id))?;
-        for handle in to_clear {
-            self.commit_clear_edge_sidecars(handle);
-        }
+        self.mark_vertex_pending_purge(vertex_id);
+        self.with_graph_mut(|graph| graph.begin_vertex_delete_deferred(vertex_id))?;
         self.drain_deferred_maintenance()
     }
 
@@ -88,38 +67,118 @@ impl GraphStore {
         // reverse-only locator state for this `VertexId`.
         self.commit_clear_vertex_labels(vertex_id, vertex)
     }
+}
 
-    fn collect_incident_edge_handles_for_delete(
-        &self,
-        vertex_id: VertexId,
-    ) -> Result<Vec<EdgeHandle>, GraphStoreError> {
-        let mut to_clear = Vec::new();
-        let mut push_out = |edge: Edge| {
-            let owner = self.edge_sidecar_owner_from_out_row(vertex_id, &edge);
-            to_clear.push(EdgeHandle {
-                owner_vertex_id: owner,
-                label_id: LaraLabelId::from_raw(edge.label_id),
-                slot_index: edge.edge_slot_index.raw(),
-            });
-        };
-        self.for_each_directed_out_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
-            push_out(edge);
-        })?;
-        self.for_each_undirected_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
-            push_out(edge);
-        })?;
-        self.for_each_directed_in_edges(vertex_id, OutEdgeOrder::Ascending, |edge| {
-            let owner = self.edge_sidecar_owner_from_in_row(vertex_id, &edge);
-            to_clear.push(EdgeHandle {
-                owner_vertex_id: owner,
-                label_id: LaraLabelId::from_raw(edge.label_id),
-                slot_index: edge.edge_slot_index.raw(),
-            });
-        })?;
-        to_clear.sort_unstable_by_key(|h| {
-            (u32::from(h.owner_vertex_id), h.label_id.raw(), h.slot_index)
-        });
-        to_clear.dedup_by_key(|h| (u32::from(h.owner_vertex_id), h.label_id.raw(), h.slot_index));
-        Ok(to_clear)
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::facade::vertex_hidden_by_pending_purge;
+    use ic_stable_lara::{MaintenanceBudget, traits::CsrEdge};
+
+    fn one_step_delete_budget() -> MaintenanceBudget {
+        MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: Some(1),
+            max_segments: None,
+            max_delete_edge_steps: Some(1),
+        }
+    }
+
+    fn neighbors_pointing_to(store: &GraphStore, neighbors: &[VertexId], hub: VertexId) -> usize {
+        neighbors
+            .iter()
+            .filter(|&&n| {
+                store
+                    .directed_out_edges(n)
+                    .expect("out edges")
+                    .iter()
+                    .any(|e| e.neighbor_vid() == hub)
+            })
+            .count()
+    }
+
+    /// ADR 0021 Stage 2: a tombstone-first `DETACH DELETE` whose purge is only
+    /// partially drained must keep its surviving back-edges *physically present*
+    /// yet *gated out* of reads, then reconcile both once fully drained.
+    #[test]
+    fn partial_purge_gates_surviving_back_edges_then_full_drain_reconciles() {
+        let store = GraphStore::new();
+        let hub = store.insert_vertex().expect("hub");
+        let neighbors: Vec<VertexId> = (0..6)
+            .map(|_| {
+                let n = store.insert_vertex().expect("n");
+                store.insert_directed_edge(n, hub, None).expect("n->hub");
+                n
+            })
+            .collect();
+        assert_eq!(neighbors_pointing_to(&store, &neighbors, hub), 6);
+
+        // Tombstone-first start without draining the purge to completion.
+        store
+            .commit_prepare_vertex_sidecars_for_delete(hub)
+            .expect("prepare hub sidecars");
+        store.mark_vertex_pending_purge(hub);
+        store
+            .with_graph_mut(|graph| graph.begin_vertex_delete_deferred(hub))
+            .expect("begin resumable delete");
+
+        // One delete step: at least one back-edge survives physically.
+        store
+            .run_maintenance_best_effort(one_step_delete_budget())
+            .expect("partial purge step");
+        assert!(
+            store.vertex_is_pending_purge(hub),
+            "hub stays pending while incident edges drain"
+        );
+        assert!(
+            neighbors_pointing_to(&store, &neighbors, hub) > 0,
+            "partial purge must leave surviving back-edges physically present"
+        );
+        // The read gate keys off the pending set, so the executor hides hub.
+        assert!(vertex_hidden_by_pending_purge(hub));
+
+        // Drain the rest: pending clears and every back-edge is purged.
+        store
+            .drain_deferred_maintenance_with_budget(
+                crate::facade::bulk_ingest_finalize_maintenance_budget(),
+            )
+            .expect("full drain");
+        assert!(!store.vertex_is_pending_purge(hub));
+        assert!(!vertex_hidden_by_pending_purge(hub));
+        assert_eq!(
+            neighbors_pointing_to(&store, &neighbors, hub),
+            0,
+            "full purge removes every incident back-edge"
+        );
+    }
+
+    /// Regression: deleting a vertex whose incident edges are payload-free directed
+    /// in-edges from distinct sources must drain every back-edge. The reverse-branch
+    /// purge previously matched the neighbor's forward edge by slot and spun forever
+    /// (ADR 0021).
+    #[test]
+    fn detach_delete_hub_with_no_payload_in_edges_drains_every_back_edge() {
+        let store = GraphStore::new();
+        let hub = store.insert_vertex().expect("hub");
+        let neighbors: Vec<VertexId> = (0..8)
+            .map(|_| {
+                let n = store.insert_vertex().expect("n");
+                store.insert_directed_edge(n, hub, None).expect("n->hub");
+                n
+            })
+            .collect();
+        assert_eq!(neighbors_pointing_to(&store, &neighbors, hub), 8);
+
+        store.detach_delete_vertex(hub).expect("detach delete hub");
+
+        assert!(!store.is_vertex_live(hub), "hub is tombstoned after purge");
+        assert!(!store.vertex_is_pending_purge(hub));
+        assert_eq!(
+            neighbors_pointing_to(&store, &neighbors, hub),
+            0,
+            "no neighbor keeps a dangling forward edge to the deleted hub"
+        );
     }
 }

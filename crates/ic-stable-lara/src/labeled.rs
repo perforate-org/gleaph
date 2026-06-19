@@ -103,8 +103,8 @@ pub mod slot_index;
 pub(crate) mod traits;
 
 pub use bidirectional::{
-    DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, EdgeSlotMoveObserver,
-    LabeledBidirectionalMaintenanceReport, Orientation as LabeledOrientation,
+    DeferredBidirectionalLabeledError, DeferredBidirectionalLabeledLaraGraph, DeleteEdgeObserver,
+    EdgeSlotMoveObserver, LabeledBidirectionalMaintenanceReport, Orientation as LabeledOrientation,
 };
 pub use bucket_label_key::{
     BUCKET_LABEL_DIRECTED_BIT, BUCKET_LABEL_INDEX_MASK, BucketDirectedness, BucketLabelKey,

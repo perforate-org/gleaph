@@ -8,7 +8,7 @@ use ic_stable_lara::{
 
 use super::GraphStore;
 use super::error::GraphStoreError;
-use super::helpers::GraphSidecarMoveObserver;
+use super::helpers::{GraphDeleteEdgeObserver, GraphSidecarMoveObserver};
 
 /// Caller-supplied vertices to compact after a tombstone-free bulk ingest batch.
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -35,10 +35,11 @@ impl GraphStore {
         &self,
         budget: MaintenanceBudget,
     ) -> Result<LabeledBidirectionalMaintenanceReport, GraphStoreError> {
-        let mut observer = GraphSidecarMoveObserver;
+        let mut move_observer = GraphSidecarMoveObserver;
+        let mut delete_observer = GraphDeleteEdgeObserver { store: *self };
         let report = GRAPH
             .with_borrow(|graph| {
-                graph.maintenance_with_edge_slot_move_observer(budget, &mut observer)
+                graph.maintenance_with_observers(budget, &mut move_observer, &mut delete_observer)
             })
             .map_err(GraphStoreError::from)?;
         Ok(report)

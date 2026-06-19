@@ -15,16 +15,6 @@ impl GraphStore {
         self.commit_detach_delete_vertex(vertex_id)
     }
 
-    /// `detach_delete_vertex` with an explicit synchronous incident-degree ceiling
-    /// (ADR 0021 Stage 0). The public path uses the production limit.
-    pub(crate) fn detach_delete_vertex_bounded(
-        &self,
-        vertex_id: VertexId,
-        max_incident_degree: u64,
-    ) -> Result<(), GraphStoreError> {
-        self.commit_detach_delete_vertex_bounded(vertex_id, max_incident_degree)
-    }
-
     pub fn delete_edge_by_handle(&self, handle: EdgeHandle) -> Result<(), GraphStoreError> {
         self.commit_delete_edge_by_handle(handle)
     }

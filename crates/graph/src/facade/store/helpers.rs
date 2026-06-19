@@ -7,13 +7,15 @@ use gleaph_graph_kernel::entry::{
 use ic_stable_lara::{
     VertexId,
     labeled::{
-        BucketLabelKey as LaraLabelId, EdgeSlotMove, EdgeSlotMoveObserver, LabeledOrientation,
+        BucketLabelKey as LaraLabelId, DeleteEdgeObserver, EdgeSlotMove, EdgeSlotMoveObserver,
+        LabeledOrientation,
     },
     traits::CsrEdge,
 };
 
 use super::GraphStore;
 use super::error::GraphStoreError;
+use super::handle::EdgeHandle;
 
 /// Tag bit for reverse-IN alias keys so they do not collide with forward-OUT slot indices
 /// on the same vertex (both CSR stores use independent slot counters).
@@ -48,6 +50,53 @@ impl EdgeSlotMoveObserver for GraphSidecarMoveObserver {
         moved: EdgeSlotMove,
     ) {
         GraphStore::move_edge_sidecars_for_compaction(orientation, vid, moved);
+    }
+}
+
+/// Observes incremental incident-edge removal during a resumable
+/// [`MaintenanceWorkItem::DeleteVertex`] purge (ADR 0021 Stage 2).
+///
+/// Clears each removed edge's derived sidecars (edge properties, local indexes,
+/// aliases) as the purge drains them, then drops the vertex from the pending-purge
+/// set when its purge completes. Runs inside the `GRAPH` borrow held by
+/// `maintenance_with_observers`, so it only touches the edge-sidecar and
+/// pending-purge thread-locals — never `GRAPH` itself. Sidecar owner and
+/// directedness are derived from the edge's bucket `label_id` (set by the
+/// maintenance iterator), mirroring `edge_sidecar_owner_from_*` without re-reading
+/// `GRAPH`.
+///
+/// [`MaintenanceWorkItem::DeleteVertex`]: ic_stable_lara::labeled::MaintenanceWorkItem
+pub(super) struct GraphDeleteEdgeObserver {
+    pub(super) store: GraphStore,
+}
+
+impl DeleteEdgeObserver<Edge> for GraphDeleteEdgeObserver {
+    fn on_delete_outgoing_edge(&mut self, source: VertexId, edge: Edge) {
+        let owner = if TaggedEdgeLabelId::from_raw(edge.label_id).is_undirected() {
+            canonical_undirected_owner(source, edge.neighbor_vid())
+        } else {
+            source
+        };
+        self.store.clear_edge_sidecars(EdgeHandle {
+            owner_vertex_id: owner,
+            label_id: LaraLabelId::from_raw(edge.label_id),
+            slot_index: edge.edge_slot_index.raw(),
+        });
+    }
+
+    fn on_delete_incoming_edge(&mut self, _destination: VertexId, edge: Edge) {
+        // Reverse out-edges are always directed (undirected edges live only in the
+        // forward store), so the sidecar owner is the forward source. The reverse
+        // slot is canonicalized to the forward handle inside `clear_edge_sidecars`.
+        self.store.clear_edge_sidecars(EdgeHandle {
+            owner_vertex_id: edge.neighbor_vid(),
+            label_id: LaraLabelId::from_raw(edge.label_id),
+            slot_index: edge.edge_slot_index.raw(),
+        });
+    }
+
+    fn on_vertex_purge_completed(&mut self, vid: VertexId) {
+        self.store.clear_vertex_pending_purge(vid);
     }
 }
 

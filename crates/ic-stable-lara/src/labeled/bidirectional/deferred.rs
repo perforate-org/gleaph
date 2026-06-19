@@ -2146,6 +2146,63 @@ where
         Ok(false)
     }
 
+    /// Drains one directed in-edge `src -> dst` while `dst` is being deleted:
+    /// removes one forward record at `src` and one reverse record at `dst`, matched
+    /// by neighbor identity across directed label buckets.
+    ///
+    /// A reverse-store record only carries `dst`'s reverse slot, which does not
+    /// match `src`'s forward slot, so a payload-free directed edge cannot be located
+    /// by the `edge`-identity removal used elsewhere (it would match by slot and
+    /// silently fail, spinning the purge). Because `dst` is being deleted every
+    /// `src -> dst` edge is removed eventually, so draining an arbitrary parallel
+    /// per call keeps forward/reverse counts balanced (ADR 0021). Removing the
+    /// reverse record independently guarantees forward progress even if the forward
+    /// record is already gone.
+    fn purge_one_directed_in_edge(
+        &self,
+        src: VertexId,
+        dst: VertexId,
+    ) -> Result<bool, DeferredBidirectionalLabeledError> {
+        let mut removed_any = false;
+        let forward_labels = self
+            .forward
+            .out_edge_label_ids(src)
+            .map_err(DeferredBidirectionalLabeledError::Forward)?;
+        for label_id in forward_labels {
+            if !label_id.is_directed() {
+                continue;
+            }
+            if self
+                .forward
+                .remove_edge_matching(src, label_id, |cand| cand.neighbor_vid() == dst)
+                .map_err(DeferredBidirectionalLabeledError::Forward)?
+                .is_some()
+            {
+                removed_any = true;
+                break;
+            }
+        }
+        let reverse_labels = self
+            .reverse
+            .out_edge_label_ids(dst)
+            .map_err(DeferredBidirectionalLabeledError::Reverse)?;
+        for label_id in reverse_labels {
+            if !label_id.is_directed() {
+                continue;
+            }
+            if self
+                .reverse
+                .remove_edge_matching(dst, label_id, |cand| cand.neighbor_vid() == src)
+                .map_err(DeferredBidirectionalLabeledError::Reverse)?
+                .is_some()
+            {
+                removed_any = true;
+                break;
+            }
+        }
+        Ok(removed_any)
+    }
+
     /// Queued incremental vertex deletion: removes all incident edges then clears the row.
     pub fn delete_vertex_deferred(
         &self,
@@ -2177,9 +2234,9 @@ where
                 .next()
             {
                 let src = edge.neighbor_vid();
-                let rev = edge.with_neighbor_vid(vid);
-                let _ = self.remove_directed_deferred(src, vid, rev)?;
-                continue;
+                if self.purge_one_directed_in_edge(src, vid)? {
+                    continue;
+                }
             }
             break;
         }
@@ -2235,6 +2292,45 @@ where
             })
     }
 
+    /// Tombstone-first start of a resumable vertex delete (ADR 0021 Stage 2).
+    ///
+    /// Sets the tombstone bit on both orientation rows **in place** so the vertex
+    /// is immediately invisible to node scans, while preserving each side's label
+    /// buckets so the deferred [`MaintenanceWorkItem::DeleteVertex`] purge can still
+    /// iterate and drain the incident edges. The dangling back-edges that survive
+    /// at neighbours until the purge completes are hidden by the graph-facade read
+    /// gate, preserving the refined "tombstoned ⇒ no *visible* incident edges"
+    /// invariant.
+    ///
+    /// Unlike [`Self::delete_vertex_deferred`] (synchronous, O(degree) in one
+    /// message) this does only O(1) work before returning, then enqueues the purge.
+    pub fn begin_vertex_delete_deferred(
+        &self,
+        vid: VertexId,
+    ) -> Result<(), DeferredBidirectionalLabeledError> {
+        let len = self.vertex_count_checked()?;
+        if u32::from(vid) >= len.0 {
+            return Err(DeferredBidirectionalLabeledError::VertexOutOfRange { vid, len });
+        }
+        let forward_row = self.forward.vertices().get(vid);
+        if !forward_row.is_tombstone() {
+            self.forward
+                .vertices()
+                .set(vid, &forward_row.with_tombstone(true));
+        }
+        let reverse_row = self.reverse.vertices().get(vid);
+        if !reverse_row.is_tombstone() {
+            self.reverse
+                .vertices()
+                .set(vid, &reverse_row.with_tombstone(true));
+        }
+        self.maintenance
+            .enqueue_delete_vertex(MaintenanceWorkItem::DeleteVertex {
+                vid,
+                removed_edges: 0,
+            })
+    }
+
     /// Performs one step of a resumable vertex-delete job: removes a single
     /// incident edge (and its counterpart) if any remain, else finalizes.
     ///
@@ -2282,8 +2378,7 @@ where
             .map_err(DeferredBidirectionalLabeledError::Reverse)?
         {
             let src = edge.neighbor_vid();
-            let rev = edge.with_neighbor_vid(vid);
-            let _ = self.remove_directed_deferred(src, vid, rev)?;
+            let _ = self.purge_one_directed_in_edge(src, vid)?;
             delete_observer.on_delete_incoming_edge(vid, edge);
             return Ok((next_item(removed_edges), true, false));
         }
