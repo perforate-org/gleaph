@@ -11,6 +11,7 @@ use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledLaraGraph,
     lara::maintenance::DeferredConfig,
 };
+use ic_stable_roaring::StableRoaringBitmap;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{DefaultMemoryImpl, StableCell};
 use std::cell::RefCell;
@@ -67,6 +68,9 @@ const LABEL_STATS_DELTA_SEQ: MemoryId = MemoryId::new(37);
 const LABEL_STATS_DELTA_LOG: MemoryId = MemoryId::new(38);
 const GRAPH_MUTATION_JOURNAL: MemoryId = MemoryId::new(39);
 
+// --- Resumable super-node vertex purge (ADR 0021) (1 memory) ---
+const PENDING_VERTEX_PURGES: MemoryId = MemoryId::new(40);
+
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
 /// Initial slab capacity for both labeled orientations (grows as needed).
@@ -83,6 +87,8 @@ pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
 pub(crate) type StableLabelStatsDeltaSeq = StableCell<u64, Memory>;
 pub(crate) type StableLabelStatsDeltaLog = super::label_stats_delta::LabelStatsDeltaLog<Memory>;
 pub(crate) type StableGraphMutationJournal = super::label_stats_delta::GraphMutationJournal<Memory>;
+/// Vertices mid-purge after a tombstone-first `DETACH DELETE` (ADR 0021).
+pub(crate) type StablePendingPurges = StableRoaringBitmap<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -174,4 +180,9 @@ pub(crate) fn init_graph_mutation_journal() -> StableGraphMutationJournal {
     super::label_stats_delta::GraphMutationJournal::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(GRAPH_MUTATION_JOURNAL)),
     )
+}
+
+pub(crate) fn init_pending_vertex_purges() -> StablePendingPurges {
+    StableRoaringBitmap::init(MEMORY_MANAGER.with(|m| m.borrow().get(PENDING_VERTEX_PURGES)))
+        .expect("init pending vertex purge bitmap")
 }

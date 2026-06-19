@@ -570,6 +570,15 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "Graph mutation journal (outcome + emitted delta seq range)",
             RebuildPath::None,
         ),
+        // Resumable super-node purge (ADR 0021)
+        region(
+            "PENDING_VERTEX_PURGES",
+            40,
+            StableMemoryClass::Maintenance,
+            "vertex delete",
+            "Vertices tombstoned by DETACH DELETE whose incident edges are still draining",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1062,12 +1071,16 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 40);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(39));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 41);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(40));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,
             "GRAPH_MUTATION_JOURNAL"
+        );
+        assert_eq!(
+            GRAPH_STABLE_LAYOUT.regions[40].symbol,
+            "PENDING_VERTEX_PURGES"
         );
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[35].class,

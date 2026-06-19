@@ -44,6 +44,7 @@ ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 ic-cdk-timers.workspace = true
 ic-stable-lara.workspace = true
+ic-stable-roaring.workspace = true
 ic-stable-structures.workspace = true
 nohash-hasher.workspace = true
 pollster = "0.4"

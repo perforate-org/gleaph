@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-06-17
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–39 = 40 regions; router repack ADR 0011/0018/0019 = 34 regions, 0–33)
-Anchor timestamp: 2026-06-17 10:45:29 UTC +0000
+Last updated: 2026-06-19
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–40 = 41 regions; router repack ADR 0011/0018/0019 = 34 regions, 0–33)
+Anchor timestamp: 2026-06-19 06:41:57 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -29,7 +29,7 @@ this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same pa
 
 | Canister | Regions | Id range | Registry constant + test |
 |----------|---------|----------|--------------------------|
-| Graph | 40 | 0–39 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
+| Graph | 41 | 0–40 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
 | Router | 34 | 0–33 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
 | Graph-index | 7 | 0–6 | `INDEX_STABLE_LAYOUT` — `index_layout_registry_matches_baseline` |
 
@@ -135,8 +135,9 @@ Repacked 2026-06-11. **Removed:** property name catalog, `VERTEX_LOGICAL_IDS`, f
 | 37 | `LABEL_STATS_DELTA_SEQ` | `LABEL_STATS_DELTA_SEQ` | `init_label_stats_delta_seq` | telemetry | label stats projection | Monotonic seq allocator |
 | 38 | `LABEL_STATS_DELTA_LOG` | `LABEL_STATS_DELTA_LOG` | `init_label_stats_delta_log` | telemetry | label stats projection | Delta replay to router |
 | 39 | `GRAPH_MUTATION_JOURNAL` | `GRAPH_MUTATION_JOURNAL` | `init_graph_mutation_journal` | canonical | idempotency | Mutation outcome + emitted delta seq range |
+| 40 | `PENDING_VERTEX_PURGES` | `PENDING_VERTEX_PURGES` | `init_pending_vertex_purges` | maintenance | vertex delete | Tombstoned vertices mid-purge (ADR 0021); rebuildable by scanning tombstoned vertices with surviving incident edges (no API) |
 
-Graph facade **40 regions** total (32 LARA + 8 facade). Retired 2026-06-12: `EDGE_PAYLOAD_PROFILES` → router SSOT ([ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md)); `EDGE_EQUALITY_POSTINGS` → graph-index ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)).
+Graph facade **41 regions** total (32 LARA + 9 facade). Retired 2026-06-12: `EDGE_PAYLOAD_PROFILES` → router SSOT ([ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md)); `EDGE_EQUALITY_POSTINGS` → graph-index ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)).
 
 Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores values by `PropertyId` only.
 

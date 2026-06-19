@@ -1059,6 +1059,7 @@ dependencies = [
  "ic-cdk-macros",
  "ic-cdk-timers",
  "ic-stable-lara",
+ "ic-stable-roaring",
  "ic-stable-structures",
  "nohash-hasher",
  "pollster",

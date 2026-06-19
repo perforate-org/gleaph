@@ -34,6 +34,7 @@ mod local_indexes;
 mod lookup;
 mod maintenance;
 mod metadata;
+mod pending_purge;
 mod properties;
 mod sidecar;
 #[cfg(test)]

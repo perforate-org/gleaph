@@ -52,4 +52,7 @@ thread_local! {
 
     pub(crate) static GRAPH_MUTATION_JOURNAL: RefCell<memory::StableGraphMutationJournal> =
         RefCell::new(memory::init_graph_mutation_journal());
+
+    pub(crate) static PENDING_VERTEX_PURGES: RefCell<memory::StablePendingPurges> =
+        RefCell::new(memory::init_pending_vertex_purges());
 }
