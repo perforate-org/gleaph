@@ -295,6 +295,18 @@ impl<'a> BinaryCursor<'a> {
         Ok(u32::from_le_bytes(self.read_array()?) as usize)
     }
 
+    /// Clamps an untrusted element count to a capacity safe to pre-allocate.
+    ///
+    /// A length prefix is attacker-controlled, so pre-allocating
+    /// `Vec::with_capacity(len)` directly is a memory-amplification DoS: a tiny
+    /// input can declare billions of elements and abort the canister with an
+    /// out-of-memory trap before any element is read. Every element consumes at
+    /// least one byte, so the number of bytes still in the buffer is a sound
+    /// upper bound; the `Vec` still grows if the real count is genuinely large.
+    fn bounded_capacity(&self, len: usize) -> usize {
+        len.min(self.remaining())
+    }
+
     fn read_len_prefixed_bytes(&mut self) -> Result<&'a [u8], ValueBinaryError> {
         let len = self.read_len()?;
         self.read_exact_slice(len)
@@ -716,7 +728,7 @@ impl Value {
             )),
             28 => {
                 let len = cursor.read_len()?;
-                let mut items = Vec::with_capacity(len);
+                let mut items = Vec::with_capacity(cursor.bounded_capacity(len));
                 for _ in 0..len {
                     items.push(Self::decode_binary_from(cursor, decode)?);
                 }
@@ -724,7 +736,7 @@ impl Value {
             }
             29 => {
                 let len = cursor.read_len()?;
-                let mut items = Vec::with_capacity(len);
+                let mut items = Vec::with_capacity(cursor.bounded_capacity(len));
                 for _ in 0..len {
                     let tag = cursor.read_u8()?;
                     let item = match tag {
@@ -738,7 +750,7 @@ impl Value {
             }
             30 => {
                 let len = cursor.read_len()?;
-                let mut fields = Vec::with_capacity(len);
+                let mut fields = Vec::with_capacity(cursor.bounded_capacity(len));
                 for _ in 0..len {
                     let key = cursor.read_string()?;
                     let value = Self::decode_binary_from(cursor, decode)?;
@@ -1057,6 +1069,48 @@ mod tests {
         assert_eq!(Value::from(42i32), Value::Int32(42));
         assert_eq!(Value::from("hello"), Value::Text("hello".into()));
         assert_eq!(Value::from(true), Value::Bool(true));
+    }
+
+    // ── Binary decode: untrusted length must not amplify allocation ───────
+    //
+    // A length-prefixed collection (List/Path/Record) declares its element
+    // count up front. Pre-allocating that count blindly is a memory-blowup DoS:
+    // a 5-byte input can request billions of elements and abort the canister.
+    // Decoding must instead fail gracefully (EOF) without a giant allocation.
+
+    #[test]
+    fn decode_list_with_huge_declared_length_errors_without_oom() {
+        // tag 28 (List) + u32 length 0xFFFF_FFFF, but no element bytes follow.
+        let bytes = [28u8, 0xFF, 0xFF, 0xFF, 0xFF];
+        assert_eq!(
+            Value::from_binary_bytes(&bytes),
+            Err(ValueBinaryError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn decode_record_with_huge_declared_length_errors_without_oom() {
+        let bytes = [30u8, 0xFF, 0xFF, 0xFF, 0xFF];
+        assert_eq!(
+            Value::from_binary_bytes(&bytes),
+            Err(ValueBinaryError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn decode_path_with_huge_declared_length_errors_without_oom() {
+        let bytes = [29u8, 0xFF, 0xFF, 0xFF, 0xFF];
+        assert_eq!(
+            Value::from_binary_bytes(&bytes),
+            Err(ValueBinaryError::UnexpectedEof)
+        );
+    }
+
+    #[test]
+    fn decode_list_roundtrips_after_capacity_bound() {
+        let value = Value::List(vec![Value::Int64(1), Value::Text("x".into())]);
+        let bytes = value.to_binary_bytes().expect("encode");
+        assert_eq!(Value::from_binary_bytes(&bytes), Ok(value));
     }
 
     #[test]
