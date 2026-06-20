@@ -146,23 +146,23 @@ where
         // vertex and bypassing this fast path. When the fast path *does* fire, the leaf
         // is in the untiled fixed-quota layout where each vertex sits in its own quota
         // slot, so `preferred` is genuinely free. The debug check below pins that down.
-        if need <= quota && !self.labeled_leaf_has_oversized_vertex(vid, quota) {
-            if let Some(preferred) = preferred {
-                if checked_add_slot_index(preferred, need)? <= leaf_end {
-                    #[cfg(debug_assertions)]
-                    {
-                        let preferred_end = checked_add_slot_index(preferred, need)?;
-                        let occupied = self.labeled_leaf_occupied_spans(vid, vid);
-                        debug_assert!(
-                            occupied
-                                .iter()
-                                .all(|(s, e)| preferred_end <= *s || preferred >= *e),
-                            "fixed-quota fast path returned base {preferred} (end {preferred_end}) overlapping a leaf-mate; layout is not fixed-quota intact"
-                        );
-                    }
-                    return Some(preferred);
-                }
+        if need <= quota
+            && !self.labeled_leaf_has_oversized_vertex(vid, quota)
+            && let Some(preferred) = preferred
+            && checked_add_slot_index(preferred, need)? <= leaf_end
+        {
+            #[cfg(debug_assertions)]
+            {
+                let preferred_end = checked_add_slot_index(preferred, need)?;
+                let occupied = self.labeled_leaf_occupied_spans(vid, vid);
+                debug_assert!(
+                    occupied
+                        .iter()
+                        .all(|(s, e)| preferred_end <= *s || preferred >= *e),
+                    "fixed-quota fast path returned base {preferred} (end {preferred_end}) overlapping a leaf-mate; layout is not fixed-quota intact"
+                );
             }
+            return Some(preferred);
         }
 
         let mut spans = self.labeled_leaf_occupied_spans(vid, vid);
@@ -175,10 +175,10 @@ where
             }
         };
 
-        if let Some(preferred) = preferred {
-            if fits(preferred) {
-                return Some(preferred);
-            }
+        if let Some(preferred) = preferred
+            && fits(preferred)
+        {
+            return Some(preferred);
         }
 
         let mut cursor = leaf_start;
