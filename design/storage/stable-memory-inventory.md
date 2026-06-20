@@ -134,7 +134,7 @@ Repacked 2026-06-11. **Removed:** property name catalog, `VERTEX_LOGICAL_IDS`, f
 | 36 | `GRAPH_METADATA` | `METADATA` | `init_metadata` | canonical | federation metadata | — |
 | 37 | `LABEL_STATS_DELTA_SEQ` | `LABEL_STATS_DELTA_SEQ` | `init_label_stats_delta_seq` | telemetry | label stats projection | Monotonic seq allocator |
 | 38 | `LABEL_STATS_DELTA_LOG` | `LABEL_STATS_DELTA_LOG` | `init_label_stats_delta_log` | telemetry | label stats projection | Delta replay to router |
-| 39 | `GRAPH_MUTATION_JOURNAL` | `GRAPH_MUTATION_JOURNAL` | `init_graph_mutation_journal` | canonical | idempotency | Mutation outcome + emitted delta seq range |
+| 39 | `GRAPH_MUTATION_JOURNAL` | `GRAPH_MUTATION_JOURNAL` | `init_graph_mutation_journal` | canonical | idempotency | Mutation outcome + emitted delta seq range. A single-DML mutation is recorded `Completed` even when its index flush is deferred to the repair journal (region 41), since the store mutation + deltas are durable and the index converges async (ADR 0024) |
 | 40 | `PENDING_VERTEX_PURGES` | `PENDING_VERTEX_PURGES` | `init_pending_vertex_purges` | maintenance | vertex delete | Tombstoned vertices mid-purge (ADR 0021); rebuildable by scanning tombstoned vertices with surviving incident edges (no API) |
 | 41 | `INDEX_REPAIR_JOURNAL` | `INDEX_REPAIR_JOURNAL` | `init_index_repair_journal` | maintenance | federated index repair | Failed-flush index postings persisted on compensation-success (ADR 0023 D5); re-applied by the maintenance driver each tick and on `post_upgrade`, removed on success |
 

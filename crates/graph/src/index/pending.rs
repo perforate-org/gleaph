@@ -192,20 +192,24 @@ pub(crate) async fn flush_pending(
                 Ok(()) => {
                     // Index is back at its pre-batch state; persist the whole
                     // batch durably (ADR 0023 D5) so the delta survives upgrade /
-                    // trap, and arm the timer to re-apply it.
+                    // trap, and arm the timer to re-apply it. The batch is durable
+                    // and the index converges asynchronously (ADR 0024).
                     GraphStore::new().repair_journal_append(ops.iter().map(to_repair_op));
                     crate::facade::maintenance_timer::arm_if_needed();
-                    return Err(primary);
+                    return Err(PlanQueryError::IndexFlushDeferred {
+                        op: "vertex_flush",
+                        detail: primary.to_string(),
+                    });
                 }
                 Err(rollback_err) => {
                     // Compensation failed: the index is in an unknown partial
                     // state for this batch. Do not trap (ADR 0023 P4) — persist
                     // the full batch so idempotent re-application converges the
-                    // index to the store, then surface the error with context.
+                    // index to the store (ADR 0024), then surface the deferred error.
                     GraphStore::new().repair_journal_append(ops.iter().map(to_repair_op));
                     crate::facade::maintenance_timer::arm_if_needed();
-                    return Err(PlanQueryError::FederatedIndexCall {
-                        op: "compensate",
+                    return Err(PlanQueryError::IndexFlushDeferred {
+                        op: "vertex_compensate",
                         detail: format!(
                             "primary: {primary}; rollback: {rollback_err}; batch journaled for repair"
                         ),

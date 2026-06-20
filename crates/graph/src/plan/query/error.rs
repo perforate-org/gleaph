@@ -12,6 +12,15 @@ pub enum PlanQueryError {
         op: &'static str,
         detail: String,
     },
+    /// A pending-posting flush failed mid-batch, but the whole batch was durably journaled
+    /// for repair and the maintenance timer was armed (ADR 0023). The store mutation and
+    /// label-stats deltas are already durable; the index converges asynchronously. The
+    /// idempotency-journal path finalizes the mutation instead of leaving it `Incomplete`
+    /// (ADR 0024); other callers treat it as a recoverable error.
+    IndexFlushDeferred {
+        op: &'static str,
+        detail: String,
+    },
     UnsupportedOp(&'static str),
     UnsupportedDirection(EdgeDirection),
     UnsupportedExpression {
@@ -80,6 +89,9 @@ impl fmt::Display for PlanQueryError {
             Self::Store(err) => write!(f, "{err}"),
             Self::FederatedIndexCall { op, detail } => {
                 write!(f, "federated index {op} failed: {detail}")
+            }
+            Self::IndexFlushDeferred { op, detail } => {
+                write!(f, "index flush deferred for repair ({op}): {detail}")
             }
             Self::UnsupportedOp(op) => write!(f, "unsupported plan query operator: {op}"),
             Self::UnsupportedDirection(direction) => {

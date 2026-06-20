@@ -400,6 +400,16 @@ provable.
 No stable graph/index posting wire change; the new repair journal is additive
 stable state.
 
+## Interaction with the mutation journal (ADR 0024)
+
+A flush failure that is journaled here is **not** a mutation failure: the store mutation
+and emitted label-stats deltas are already durable, and the index converges via the
+maintenance timer. ADR 0024 uses this guarantee to record the ADR 0015 mutation journal
+`Completed` on a repair-journaled (deferred) flush — surfaced as
+`PlanQueryError::IndexFlushDeferred` from the three `flush_pending` functions — instead of
+leaving the mutation wedged `Incomplete`. See
+[adr/0024-mutation-journal-completion-vs-index-flush.md](0024-mutation-journal-completion-vs-index-flush.md).
+
 ## Design documentation impact
 
 | Document | Update | Status |

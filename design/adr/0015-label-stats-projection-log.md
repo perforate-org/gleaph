@@ -413,3 +413,15 @@ Single patch (or at most two: kernel/graph/router code, then docs/tests if split
 |------|--------|
 | ADR accepted (no-compat policy) | Done — 2026-06-15 |
 | Implementation | Done — 2026-06-15 |
+
+---
+
+## Addendum (ADR 0024, 2026-06-20)
+
+The `Incomplete` state in this ADR predates ADR 0023's durable index repair journal. A
+post-mutation index flush that fails but is journaled for repair is **not** a mutation
+failure: the store mutation and the emitted label-stats deltas are already durable, and
+the index converges asynchronously. ADR 0024 therefore decouples mutation-journal
+completion from synchronous flush success — a single-statement DML mutation is recorded
+`Completed` even when its index flush was deferred, so the entry is no longer wedged
+`Incomplete` forever. See `design/adr/0024-mutation-journal-completion-vs-index-flush.md`.

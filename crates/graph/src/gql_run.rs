@@ -602,7 +602,7 @@ async fn run_wire_plans_inner(
         (Vec::new(), false)
     };
 
-    for plan in plans {
+    for (plan_idx, plan) in plans.iter().enumerate() {
         if plan_needs_mutation_executor(plan) {
             let mutation = match execute_plan_mutations_async(store, plan, execution.clone()).await
             {
@@ -642,9 +642,60 @@ async fn run_wire_plans_inner(
                 &mut last_read_row_count,
                 &mut last_read_plan_rows,
             );
-            pending::flush_pending(index).await?;
-            crate::index::edge_pending::flush_pending(index).await?;
-            label_pending::flush_pending(index).await?;
+            // Flush all three pending buffers (forward / edge / label). They are evaluated
+            // even when an earlier one defers, so every posting is either applied or durably
+            // journaled for repair before we consider completing the mutation (ADR 0024).
+            let mut index_deferred = false;
+            for flush_result in [
+                pending::flush_pending(index).await,
+                crate::index::edge_pending::flush_pending(index).await,
+                label_pending::flush_pending(index).await,
+            ] {
+                match flush_result {
+                    Ok(()) => {}
+                    Err(crate::plan::PlanQueryError::IndexFlushDeferred { .. }) => {
+                        index_deferred = true;
+                    }
+                    Err(other) => return Err(other.into()),
+                }
+            }
+            if index_deferred {
+                // ADR 0024: a repair-journaled flush is not a mutation failure. The store
+                // mutation and label-stats deltas are durable and the index converges via
+                // the maintenance timer (ADR 0023). Finalize the mutation journal now so it
+                // is not wedged Incomplete forever — but only when no unexecuted DML remains
+                // (completing early would silently drop later writes on idempotent replay).
+                if plans[plan_idx + 1..]
+                    .iter()
+                    .any(plan_needs_mutation_executor)
+                {
+                    return Err(GqlRunError::Plan(
+                        "index flush deferred for repair with unexecuted DML remaining; \
+                         mutation left incomplete for retry"
+                            .into(),
+                    ));
+                }
+                // Trailing read-only plans are intentionally skipped: their index-served
+                // reads could observe the pre-repair index state.
+                if let Some(mutation_id) = mutation_id {
+                    store.commit_record_completed_mutation_journal(
+                        mutation_id,
+                        last_read_row_count as u64,
+                        emitted_delta_first_seq,
+                        emitted_delta_last_seq,
+                        hot_forward_vertices.clone(),
+                    );
+                }
+                return Ok(TransactionBlockRun {
+                    last_query_rows,
+                    last_read_row_count,
+                    last_read_plan_rows,
+                    label_stats_delta,
+                    emitted_delta_first_seq,
+                    emitted_delta_last_seq,
+                    hot_forward_vertices,
+                });
+            }
             skip_index = false;
             seed_rows.clear();
         } else {
@@ -885,6 +936,102 @@ mod tests {
         }
     }
 
+    /// Index whose label-membership posting inserts always fail (compensating removes
+    /// succeed), so `label_pending::flush_pending` compensates the batch to its pre-batch
+    /// state, journals it for repair, and returns `IndexFlushDeferred` (ADR 0023/0024).
+    struct DeferLabelFlushIndex;
+
+    #[async_trait::async_trait(?Send)]
+    impl crate::index::lookup::PropertyIndexLookup for DeferLabelFlushIndex {
+        fn local_shard_id(&self) -> gleaph_graph_kernel::federation::ShardId {
+            gleaph_graph_kernel::federation::ShardId::new(0)
+        }
+        async fn lookup_equal(
+            &self,
+            _: u32,
+            _: Vec<u8>,
+        ) -> Result<Vec<gleaph_graph_kernel::index::PostingHit>, crate::plan::PlanQueryError>
+        {
+            unimplemented!("reads are not exercised by this test")
+        }
+        async fn lookup_range(
+            &self,
+            _: u32,
+            _: &gleaph_graph_kernel::index::PostingRangeRequest,
+        ) -> Result<Vec<gleaph_graph_kernel::index::PostingHit>, crate::plan::PlanQueryError>
+        {
+            unimplemented!("reads are not exercised by this test")
+        }
+        async fn lookup_intersection(
+            &self,
+            _: &gleaph_graph_kernel::index::IndexIntersectionRequest,
+        ) -> Result<gleaph_graph_kernel::index::IndexIntersectionResult, crate::plan::PlanQueryError>
+        {
+            unimplemented!("reads are not exercised by this test")
+        }
+        async fn posting_insert_at(
+            &self,
+            _: gleaph_graph_kernel::federation::ShardId,
+            _: u32,
+            _: Vec<u8>,
+            _: u32,
+        ) -> Result<(), crate::plan::PlanQueryError> {
+            Ok(())
+        }
+        async fn posting_remove_at(
+            &self,
+            _: gleaph_graph_kernel::federation::ShardId,
+            _: u32,
+            _: Vec<u8>,
+            _: u32,
+        ) -> Result<(), crate::plan::PlanQueryError> {
+            Ok(())
+        }
+        async fn label_posting_insert_at(
+            &self,
+            _: gleaph_graph_kernel::federation::ShardId,
+            _: u32,
+            _: u32,
+        ) -> Result<(), crate::plan::PlanQueryError> {
+            Err(crate::plan::PlanQueryError::FederatedIndexCall {
+                op: "label_posting_insert",
+                detail: "injected label flush failure".into(),
+            })
+        }
+        async fn label_posting_remove_at(
+            &self,
+            _: gleaph_graph_kernel::federation::ShardId,
+            _: u32,
+            _: u32,
+        ) -> Result<(), crate::plan::PlanQueryError> {
+            Ok(())
+        }
+    }
+
+    fn insert_vertex_plan(label: &str) -> PhysicalPlan {
+        PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some("n".into()),
+            labels: vec![label.into()],
+            properties: vec![],
+        }])
+    }
+
+    fn with_federation_routing(store: GraphStore) {
+        store
+            .set_federation_routing(Some(crate::facade::FederationRouting {
+                router_canister: candid::Principal::management_canister(),
+                index_canister: candid::Principal::management_canister(),
+                shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+            }))
+            .expect("set routing");
+    }
+
+    fn drain_repair_journal(store: GraphStore) {
+        for (seq, _) in store.repair_journal_peek(usize::MAX) {
+            store.repair_journal_remove(seq);
+        }
+    }
+
     #[test]
     fn transaction_gleaph_drain_deferred_maintenance_uses_mutation_path() {
         let store = GraphStore::new();
@@ -1052,6 +1199,106 @@ mod tests {
         ))
         .expect("query inserted vertex");
         assert_eq!(q.rows.len(), 1);
+    }
+
+    // ADR 0024: a single-DML mutation whose post-mutation index flush is deferred to the
+    // repair journal must still be recorded `Completed` (store mutation + deltas are durable
+    // and the index converges via the maintenance timer), not wedged `Incomplete` forever.
+    #[test]
+    fn deferred_index_flush_completes_single_dml_mutation_journal() {
+        let store = GraphStore::new();
+        with_federation_routing(store);
+        drain_repair_journal(store);
+
+        let blob =
+            encode_block_plans(&[insert_vertex_plan("DeferFlushSolo")], true).expect("encode plan");
+        let params = BTreeMap::new();
+
+        pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::Update,
+            Some(&DeferLabelFlushIndex),
+            GqlExecutionContext::default(),
+            None,
+            Some(701),
+        ))
+        .expect("deferred flush still completes the single-DML mutation");
+
+        let journal = store
+            .mutation_journal_entry(701)
+            .expect("journal entry recorded");
+        assert!(
+            journal.is_completed(),
+            "single-DML mutation must complete despite a repair-journaled flush"
+        );
+        assert!(
+            !store.repair_journal_is_empty(),
+            "the deferred label batch must be journaled for repair"
+        );
+
+        // Retry is idempotent: the early guard returns the cached Completed outcome.
+        pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::Update,
+            Some(&DeferLabelFlushIndex),
+            GqlExecutionContext::default(),
+            None,
+            Some(701),
+        ))
+        .expect("retry of a completed mutation is idempotent");
+
+        drain_repair_journal(store);
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    // ADR 0024: a deferred flush with unexecuted DML still ahead must NOT complete (that would
+    // silently drop the later writes on idempotent replay); it errors and stays Incomplete.
+    #[test]
+    fn deferred_index_flush_leaves_multi_dml_mutation_incomplete() {
+        let store = GraphStore::new();
+        with_federation_routing(store);
+        drain_repair_journal(store);
+
+        let blob = encode_block_plans(
+            &[
+                insert_vertex_plan("DeferFlushFirst"),
+                insert_vertex_plan("DeferFlushSecond"),
+            ],
+            true,
+        )
+        .expect("encode plan");
+        let params = BTreeMap::new();
+
+        let err = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::Update,
+            Some(&DeferLabelFlushIndex),
+            GqlExecutionContext::default(),
+            None,
+            Some(702),
+        ))
+        .expect_err("mid-bundle deferred flush with remaining DML must error");
+        assert!(
+            err.to_string().contains("unexecuted DML remaining"),
+            "unexpected error: {err}"
+        );
+
+        let journal = store
+            .mutation_journal_entry(702)
+            .expect("incomplete entry recorded before the deferred flush");
+        assert!(
+            !journal.is_completed(),
+            "a partial multi-DML bundle must stay Incomplete"
+        );
+
+        drain_repair_journal(store);
+        store.set_federation_routing(None).expect("clear routing");
     }
 
     #[test]
