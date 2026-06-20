@@ -23,6 +23,7 @@ Anchor timestamp: 2026-06-20 02:10:05 UTC +0000
 | 2026-06-13 | Phase E PocketIC e2e: edge `CREATE INDEX` / `DROP INDEX` via `e2e_insert_directed_edge_with_property`; standalone scan fallback and federated anchor loss for `()-[e:L {p: v}]->` queries. |
 | 2026-06-13 | [ADR 0012](0012-edge-index-direction-in-ddl.md) accepted: GQL `EdgeDirection` in edge `FOR`; graph-index `wire_label_id` keys; planner storage-class subset rule; slash `FOR` rejected (amends §1 `label_id`, §4 edge DDL). |
 | 2026-06-20 | Vertex-only intersection streamed via server-side `lookup_intersection_page` (paged walk + in-heap merge-join sieve); see [lookup-intersection.md](../index/lookup-intersection.md). **Edge / mixed intersection (§3) marked dormant** — implemented at store/wire layer but unreachable from GQL/planner; streaming intentionally not applied (see §3 status note). |
+| 2026-06-20 | [ADR 0023](0023-federated-index-consistency-upgrade-compaction.md) accepted: the Phase A shard index registry (`registry.rs`) is a **volatile** derived gate that does not survive the upgrade boundary or the router-less timer-compaction context (stale/orphan postings). 0023 removes it in favour of a router-sourced **ephemeral per-operation catalog**, precise emit, and a failure-only durable repair journal. |
 
 ## Context
 
