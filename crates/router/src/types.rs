@@ -9,11 +9,37 @@ pub use gleaph_graph_kernel::federation::{
     GlobalVertexId, GraphShardKey, LocalVertexId, ShardId, ShardRegistryEntry,
 };
 
+pub use crate::facade::stable::label_stats::ClientMutationKey;
+
 #[derive(CandidType, Deserialize)]
 pub struct GrantRoleArgs {
     pub target: Principal,
     pub role: String,
     pub manager_caps: u64,
+}
+
+/// Arguments for one expired client-mutation-key sweep step. The sweep is
+/// operator-driven (like backfill / label-stats projection): call repeatedly,
+/// feeding `next_cursor` back as `start_after`, until `done` is true.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminSweepMutationKeysStepArgs {
+    /// Resume scanning strictly after this key; `None` starts from the beginning.
+    pub start_after: Option<ClientMutationKey>,
+    /// Maximum journal entries to scan in this step (must be > 0).
+    pub max_scan: u32,
+}
+
+/// Progress from one expired client-mutation-key sweep step.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminSweepMutationKeysStepResult {
+    /// Entries examined in this step.
+    pub scanned: u32,
+    /// Expired entries removed in this step.
+    pub removed: u32,
+    /// Feed back as `start_after` to continue; `None` when the scan reached the end.
+    pub next_cursor: Option<ClientMutationKey>,
+    /// True when the whole journal has been scanned in this step.
+    pub done: bool,
 }
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]

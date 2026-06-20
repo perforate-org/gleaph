@@ -8,11 +8,11 @@ use crate::state::RouterError;
 use crate::types::{
     AdminEdgeBackfillStepArgs, AdminEdgeBackfillStepResult, AdminLabelBackfillStepArgs,
     AdminLabelBackfillStepResult, AdminLabelStatsProjectionStepArgs,
-    AdminLabelStatsProjectionStepResult, AdminRegisterShardArgs,
-    AdminVertexPropertyBackfillStepArgs, AdminVertexPropertyBackfillStepResult,
-    EdgeBackfillShardStatus, EdgeLabelId, GrantRoleArgs, GraphRegistryEntry,
-    LabelBackfillShardStatus, PropertyId, ShardId, ShardRegistryEntry, VertexLabelId,
-    VertexPropertyBackfillShardStatus,
+    AdminLabelStatsProjectionStepResult, AdminRegisterShardArgs, AdminSweepMutationKeysStepArgs,
+    AdminSweepMutationKeysStepResult, AdminVertexPropertyBackfillStepArgs,
+    AdminVertexPropertyBackfillStepResult, EdgeBackfillShardStatus, EdgeLabelId, GrantRoleArgs,
+    GraphRegistryEntry, LabelBackfillShardStatus, PropertyId, ShardId, ShardRegistryEntry,
+    VertexLabelId, VertexPropertyBackfillShardStatus,
 };
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
@@ -185,6 +185,18 @@ pub(crate) fn admin_check_registry_invariants() -> Result<(), RouterError> {
     RouterStore::new()
         .check_registry_invariants()
         .map_err(RouterError::Internal)
+}
+
+/// Evict expired client-mutation idempotency records in a bounded, paginated pass.
+/// Call repeatedly, feeding `next_cursor` back as `start_after`, until `done`.
+pub(crate) fn admin_sweep_expired_client_mutation_keys(
+    args: AdminSweepMutationKeysStepArgs,
+) -> Result<AdminSweepMutationKeysStepResult, RouterError> {
+    RouterStore::new().admin_sweep_expired_client_mutation_keys(
+        msg_caller(),
+        args.start_after,
+        args.max_scan,
+    )
 }
 
 pub(crate) fn admin_intern_vertex_label(

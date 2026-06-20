@@ -198,6 +198,14 @@ fn admin_check_registry_invariants() -> Result<(), RouterError> {
     canister::admin_check_registry_invariants()
 }
 
+/// Evict expired client-mutation idempotency records (`Role::Admin`; call in a loop).
+#[update]
+fn admin_sweep_expired_client_mutation_keys(
+    args: types::AdminSweepMutationKeysStepArgs,
+) -> Result<types::AdminSweepMutationKeysStepResult, RouterError> {
+    canister::admin_sweep_expired_client_mutation_keys(args)
+}
+
 #[update]
 fn admin_intern_vertex_label(
     logical_graph_name: String,

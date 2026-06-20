@@ -1412,6 +1412,118 @@ fn client_mutation_key_rejects_expired_key() {
     );
 }
 
+fn insert_mutation_record(
+    caller: Principal,
+    client_key: &str,
+    created_at_ns: u64,
+    routing_in_progress: bool,
+) -> ClientMutationKey {
+    let key = ClientMutationKey::new(caller, tenant_main_graph_id(), client_key.into());
+    let mut record = RouterMutationRecord::new(1, created_at_ns, b"fp".to_vec());
+    record.routing_in_progress = routing_in_progress;
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+        m.insert(key.clone(), record);
+    });
+    key
+}
+
+fn mutation_journal_len() -> u64 {
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.len())
+}
+
+#[test]
+fn sweep_removes_expired_but_keeps_fresh_and_in_progress() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let now = CLIENT_MUTATION_KEY_TTL_NS * 2;
+    let expired = insert_mutation_record(graph_principal(1), "expired", 0, false);
+    let fresh = insert_mutation_record(graph_principal(2), "fresh", now, false);
+    // Expired in wall-clock terms but still actively routing: must not be yanked.
+    let expired_in_progress = insert_mutation_record(graph_principal(3), "stuck", 0, true);
+    assert_eq!(mutation_journal_len(), 3);
+
+    let result = store
+        .admin_sweep_expired_client_mutation_keys_at(admin, None, 100, now)
+        .expect("sweep");
+    assert_eq!(result.scanned, 3);
+    assert_eq!(result.removed, 1);
+    assert!(result.done);
+    assert!(result.next_cursor.is_none());
+
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| {
+        assert!(m.get(&expired).is_none(), "expired record must be evicted");
+        assert!(
+            m.get(&fresh).is_some(),
+            "within-TTL record must be retained"
+        );
+        assert!(
+            m.get(&expired_in_progress).is_some(),
+            "in-progress reservation must never be yanked"
+        );
+    });
+}
+
+#[test]
+fn sweep_paginates_with_cursor_until_done() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let now = CLIENT_MUTATION_KEY_TTL_NS * 2;
+    for i in 0..5u8 {
+        insert_mutation_record(graph_principal(100 + i), "expired", 0, false);
+    }
+    assert_eq!(mutation_journal_len(), 5);
+
+    // Budgeted slices must collectively scan the whole keyspace and evict all
+    // expired records (bounded growth guarantee).
+    let mut cursor = None;
+    let mut total_scanned = 0u32;
+    let mut total_removed = 0u32;
+    loop {
+        let result = store
+            .admin_sweep_expired_client_mutation_keys_at(admin, cursor.clone(), 2, now)
+            .expect("sweep step");
+        total_scanned += result.scanned;
+        total_removed += result.removed;
+        if result.done {
+            break;
+        }
+        cursor = result.next_cursor;
+        assert!(cursor.is_some(), "non-done step must yield a resume cursor");
+    }
+    assert_eq!(total_scanned, 5);
+    assert_eq!(total_removed, 5);
+    assert_eq!(mutation_journal_len(), 0, "journal must be fully bounded");
+}
+
+#[test]
+fn sweep_requires_admin_and_nonzero_budget() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let non_admin = graph_principal(7);
+    assert_eq!(
+        store.admin_sweep_expired_client_mutation_keys_at(non_admin, None, 10, 0),
+        Err(RouterError::NotAuthorized)
+    );
+    assert_eq!(
+        store.admin_sweep_expired_client_mutation_keys_at(admin, None, 0, 0),
+        Err(RouterError::InvalidArgument(
+            "max_scan must be greater than zero".into()
+        ))
+    );
+}
+
 #[test]
 fn client_mutation_key_blocks_concurrent_routing_owner() {
     let store = RouterStore::new();
@@ -1593,6 +1705,52 @@ fn router_mutation_journal_tracks_shard_completion() {
         store.router_mutation_completed_row_count(caller, tenant_main_graph_id(), "client-key-1"),
         Some(5)
     );
+
+    // ADR 0025 (E): once fully completed + projected, the heavy fields are dropped and
+    // the final row count is pinned, so replay still returns Some(5) from a small record.
+    let compacted = store
+        .router_mutation_record(caller, tenant_main_graph_id(), "client-key-1")
+        .expect("record");
+    assert_eq!(compacted.completed_row_count, Some(5));
+    assert!(compacted.shards.is_empty(), "shard fan-out must be dropped");
+    assert!(
+        compacted.resolved_labels.is_none() && compacted.resolved_properties.is_none(),
+        "resolved tables must be dropped after completion"
+    );
+}
+
+#[test]
+fn amortized_gc_evicts_expired_and_keeps_fresh() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    crate::facade::store::idempotency::reset_mutation_gc_cursor_for_test();
+
+    let now = CLIENT_MUTATION_KEY_TTL_NS * 2;
+    for i in 0..5u8 {
+        insert_mutation_record(graph_principal(50 + i), "old", 0, false);
+    }
+    let fresh = insert_mutation_record(graph_principal(200), "fresh", now, false);
+    assert_eq!(mutation_journal_len(), 6);
+
+    // The heap round-robin cursor laps the keyspace; a bounded number of GC steps
+    // (budget 2 each) must evict every expired record while retaining the fresh one.
+    for _ in 0..8 {
+        store.gc_expired_client_mutation_keys(now);
+    }
+    assert_eq!(
+        mutation_journal_len(),
+        1,
+        "all expired records must be evicted by amortized GC"
+    );
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| {
+        assert!(
+            m.get(&fresh).is_some(),
+            "within-TTL record must be retained"
+        );
+    });
 }
 
 #[test]
