@@ -36,6 +36,7 @@ mod maintenance;
 mod metadata;
 mod pending_purge;
 mod properties;
+mod repair_journal;
 mod sidecar;
 #[cfg(test)]
 mod tests;

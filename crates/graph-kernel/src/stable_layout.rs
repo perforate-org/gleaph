@@ -579,6 +579,15 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "Vertices tombstoned by DETACH DELETE whose incident edges are still draining",
             RebuildPath::None,
         ),
+        // Federated index repair journal (ADR 0023 D5)
+        region(
+            "INDEX_REPAIR_JOURNAL",
+            41,
+            StableMemoryClass::Maintenance,
+            "federated index repair",
+            "Failed-flush index postings persisted on compensation-success, re-applied by the maintenance driver and on post_upgrade",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1071,8 +1080,8 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 41);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(40));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 42);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(41));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,
@@ -1081,6 +1090,10 @@ mod tests {
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[40].symbol,
             "PENDING_VERTEX_PURGES"
+        );
+        assert_eq!(
+            GRAPH_STABLE_LAYOUT.regions[41].symbol,
+            "INDEX_REPAIR_JOURNAL"
         );
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[35].class,

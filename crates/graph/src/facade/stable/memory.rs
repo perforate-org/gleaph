@@ -71,6 +71,9 @@ const GRAPH_MUTATION_JOURNAL: MemoryId = MemoryId::new(39);
 // --- Resumable super-node vertex purge (ADR 0021) (1 memory) ---
 const PENDING_VERTEX_PURGES: MemoryId = MemoryId::new(40);
 
+// --- Federated index repair journal (ADR 0023 D5) (1 memory) ---
+const INDEX_REPAIR_JOURNAL: MemoryId = MemoryId::new(41);
+
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
 /// Initial slab capacity for both labeled orientations (grows as needed).
@@ -89,6 +92,8 @@ pub(crate) type StableLabelStatsDeltaLog = super::label_stats_delta::LabelStatsD
 pub(crate) type StableGraphMutationJournal = super::label_stats_delta::GraphMutationJournal<Memory>;
 /// Vertices mid-purge after a tombstone-first `DETACH DELETE` (ADR 0021).
 pub(crate) type StablePendingPurges = StableRoaringBitmap<Memory>;
+/// Durable failed-flush index postings awaiting re-application (ADR 0023 D5).
+pub(crate) type StableRepairJournal = super::repair_journal::RepairJournal<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -185,4 +190,10 @@ pub(crate) fn init_graph_mutation_journal() -> StableGraphMutationJournal {
 pub(crate) fn init_pending_vertex_purges() -> StablePendingPurges {
     StableRoaringBitmap::init(MEMORY_MANAGER.with(|m| m.borrow().get(PENDING_VERTEX_PURGES)))
         .expect("init pending vertex purge bitmap")
+}
+
+pub(crate) fn init_index_repair_journal() -> StableRepairJournal {
+    super::repair_journal::RepairJournal::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_REPAIR_JOURNAL)),
+    )
 }

@@ -1,6 +1,6 @@
 //! Record vertex label membership changes for the federated label index.
 
-use crate::facade::GraphStore;
+use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use gleaph_graph_kernel::entry::VertexLabelId;
@@ -26,6 +26,27 @@ fn push(op: PendingLabelOp) {
         return;
     }
     PENDING.with(|p| p.borrow_mut().push(op));
+}
+
+fn to_repair_op(op: &PendingLabelOp) -> RepairPostingOp {
+    match op {
+        PendingLabelOp::Insert {
+            label_id,
+            vertex_id,
+        } => RepairPostingOp::Label {
+            remove: false,
+            label_id: *label_id,
+            vertex_id: *vertex_id,
+        },
+        PendingLabelOp::Remove {
+            label_id,
+            vertex_id,
+        } => RepairPostingOp::Label {
+            remove: true,
+            label_id: *label_id,
+            vertex_id: *vertex_id,
+        },
+    }
 }
 
 pub(crate) fn record_vertex_label_set(
@@ -109,7 +130,10 @@ pub(crate) async fn flush_pending(
         if let Err(primary) = result {
             match compensate_label_ops(ix, &applied).await {
                 Ok(()) => {
-                    PENDING.with(|p| p.borrow_mut().extend(ops.iter().cloned()));
+                    // Index is back at its pre-batch state; persist the whole
+                    // batch durably (ADR 0023 D5) and arm the timer to re-apply.
+                    GraphStore::new().repair_journal_append(ops.iter().map(to_repair_op));
+                    crate::facade::maintenance_timer::arm_if_needed();
                     return Err(primary);
                 }
                 Err(rollback_err) => {

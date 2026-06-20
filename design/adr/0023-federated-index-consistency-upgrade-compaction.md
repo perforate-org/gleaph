@@ -14,6 +14,7 @@ Anchor timestamp: 2026-06-20 04:15:12 UTC +0000
 | 2026-06-20 | Accepted; policy frozen pending implementation per §Migration (phases 1–6). |
 | 2026-06-20 | Phases 1–2 implemented: removed shard `registry.rs`; added router-sourced `IndexedPropertyCatalog` on `ExecutePlanArgs` + backfill requests, consulted via ephemeral `catalog_context`. Implementation carries the full per-graph catalog (safe superset of label-scoped). PocketIC P1 repro (`adr0023_index_store_consistency`) now green. Phases 3–6 (async tick/in-tick flush, durable repair journal, `DROP INDEX` purge, INV oracle) pending. |
 | 2026-06-20 | Phase 3 implemented (P2): maintenance tick is now `async` (`facade/maintenance_timer.rs`) — it fetches the router catalog via the new shard-callable `indexed_property_catalog` query, installs it ephemerally for the pass so compaction's `EdgeSlotMove` observers enqueue posting re-keys, runs the budgeted compaction, then flushes `pending`/`edge_pending`/`label_pending` in-tick. Defers (floor-delay retry) when the router catalog is unavailable instead of re-keying the store blind; a `MAINTENANCE_RUNNING` flag prevents duplicate overlapping passes across the tick's awaits. Phases 4–6 pending. |
+| 2026-06-20 | Phase 4a implemented (P3 part): durable repair journal (`facade/stable/repair_journal.rs`, new stable `MemoryId 41`). Flush failure with successful compensation now persists the whole batch to stable memory (all three posting kinds) rather than the volatile queue, so the store-ahead delta survives upgrade/trap; `arm_if_needed` arms on a non-empty journal, `post_upgrade` replays it, and the async tick re-applies entries in-tick (`index/repair_journal.rs`) and reschedules at the relaxed delay while non-empty. Stable-memory inventory + typed layout registry updated (graph: 42 regions). Phase 4b (dirty marker + catalog-driven rebuild + retire compensation trap), 5, 6 pending. |
 
 ## Context
 
@@ -283,9 +284,15 @@ provable.
    the timer fetch needed a shard-callable endpoint, so a dedicated
    `indexed_property_catalog` query was added (the existing catalog had no
    shard-facing read).
-4. Add the durable repair journal + dirty marker (extending the existing pending
-   queues); replay on `post_upgrade`; drive rebuild from the router catalog;
-   retire the compensation-failure trap.
+4. **(partially implemented)** Durable repair journal landed
+   (`facade/stable/repair_journal.rs`, `MemoryId 41`): on flush failure with
+   successful compensation, the whole batch is persisted to stable memory instead
+   of the volatile queue (all three posting kinds), `arm_if_needed` arms on a
+   non-empty journal, `post_upgrade` replays it (the timer re-arms and drains),
+   and the async tick re-applies entries in-tick (`index/repair_journal.rs`),
+   rescheduling at the relaxed delay while the journal is non-empty. **Pending
+   (4b):** the durable `index-dirty` marker, the catalog-driven rebuild backstop,
+   and retiring the compensation-failure trap (P4).
 5. **Implement `DROP INDEX` posting purge (D6)** as a scoped catalog-driven
    rebuild/purge; add a test asserting no orphan postings remain after drop.
 6. Land the verification suite (start with the PocketIC red repro in step 0 as a

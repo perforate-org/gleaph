@@ -25,6 +25,7 @@ pub use store::{
 };
 
 pub use stable::metadata::{FederationRouting, GraphMetadata, GraphMetadataError};
+pub(crate) use stable::repair_journal::RepairPostingOp;
 
 /// Phase 8 edge-profile read benches (ADR 0007).
 #[cfg(feature = "canbench")]

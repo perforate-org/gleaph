@@ -33,7 +33,7 @@
 //! retry. If compensation itself fails, the canister **traps** on Wasm (there is no safe automatic
 //! recovery across two canisters).
 
-use crate::facade::GraphStore;
+use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use crate::property::PropertyIndexOp;
@@ -69,6 +69,31 @@ fn push(op: PendingPostingOp) {
         return;
     }
     PENDING.with(|p| p.borrow_mut().push(op));
+}
+
+fn to_repair_op(op: &PendingPostingOp) -> RepairPostingOp {
+    match op {
+        PendingPostingOp::Insert {
+            property_id,
+            payload_bytes,
+            vertex_id,
+        } => RepairPostingOp::VertexProperty {
+            remove: false,
+            property_id: *property_id,
+            payload_bytes: payload_bytes.clone(),
+            vertex_id: *vertex_id,
+        },
+        PendingPostingOp::Remove {
+            property_id,
+            payload_bytes,
+            vertex_id,
+        } => RepairPostingOp::VertexProperty {
+            remove: true,
+            property_id: *property_id,
+            payload_bytes: payload_bytes.clone(),
+            vertex_id: *vertex_id,
+        },
+    }
 }
 
 pub(crate) fn push_vertex_index_op(vertex_id: VertexId, op: PropertyIndexOp) {
@@ -163,7 +188,11 @@ pub(crate) async fn flush_pending(
         if let Err(primary) = result {
             match compensate_index_ops(ix, &applied).await {
                 Ok(()) => {
-                    PENDING.with(|p| p.borrow_mut().extend(ops.iter().cloned()));
+                    // Index is back at its pre-batch state; persist the whole
+                    // batch durably (ADR 0023 D5) so the delta survives upgrade /
+                    // trap, and arm the timer to re-apply it.
+                    GraphStore::new().repair_journal_append(ops.iter().map(to_repair_op));
+                    crate::facade::maintenance_timer::arm_if_needed();
                     return Err(primary);
                 }
                 Err(rollback_err) => {
@@ -286,7 +315,7 @@ mod tests {
     }
 
     #[test]
-    fn flush_requeues_full_batch_after_partial_insert_failure() {
+    fn flush_journals_full_batch_after_partial_insert_failure() {
         let index = FlakyIndex::new(2);
         let graph = GraphStore::new();
         graph
@@ -296,6 +325,8 @@ mod tests {
                 shard_id: ShardId::new(0),
             }))
             .expect("set routing");
+        // Start from an empty journal so the assertions below are exact.
+        drain_test_journal(&graph);
 
         PENDING.with(|p| {
             p.borrow_mut().extend([
@@ -318,26 +349,40 @@ mod tests {
         assert_eq!(index.insert_calls.load(Ordering::SeqCst), 2);
         assert_eq!(index.remove_calls.load(Ordering::SeqCst), 1);
 
-        let restored = PENDING.with(|p| p.borrow().clone());
-        assert_eq!(restored.len(), 2);
-        assert!(matches!(
-            &restored[0],
-            PendingPostingOp::Insert {
-                property_id: 1,
-                payload_bytes,
-                vertex_id: 1
-            } if payload_bytes == &[10]
-        ));
-        assert!(matches!(
-            &restored[1],
-            PendingPostingOp::Insert {
-                property_id: 1,
-                payload_bytes,
-                vertex_id: 2
-            } if payload_bytes == &[11]
-        ));
+        // Compensation succeeded, so the whole batch is persisted to the durable
+        // repair journal (not the volatile queue) for later re-application.
+        assert!(PENDING.with(|p| p.borrow().is_empty()));
+        let journaled: Vec<RepairPostingOp> = graph
+            .repair_journal_peek(16)
+            .into_iter()
+            .map(|(_, op)| op)
+            .collect();
+        assert_eq!(
+            journaled,
+            vec![
+                RepairPostingOp::VertexProperty {
+                    remove: false,
+                    property_id: 1,
+                    payload_bytes: vec![10],
+                    vertex_id: 1,
+                },
+                RepairPostingOp::VertexProperty {
+                    remove: false,
+                    property_id: 1,
+                    payload_bytes: vec![11],
+                    vertex_id: 2,
+                },
+            ]
+        );
 
+        drain_test_journal(&graph);
         graph.set_federation_routing(None).expect("clear routing");
         clear_pending();
+    }
+
+    fn drain_test_journal(graph: &GraphStore) {
+        for (seq, _) in graph.repair_journal_peek(usize::MAX) {
+            graph.repair_journal_remove(seq);
+        }
     }
 }

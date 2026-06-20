@@ -14,6 +14,7 @@ pub(crate) mod edge_properties;
 pub(crate) mod label_stats_delta;
 pub(crate) mod metadata;
 pub(crate) mod property_catalog;
+pub(crate) mod repair_journal;
 pub(crate) mod vertex_labels;
 pub(crate) mod vertex_properties;
 
@@ -55,4 +56,7 @@ thread_local! {
 
     pub(crate) static PENDING_VERTEX_PURGES: RefCell<memory::StablePendingPurges> =
         RefCell::new(memory::init_pending_vertex_purges());
+
+    pub(crate) static INDEX_REPAIR_JOURNAL: RefCell<memory::StableRepairJournal> =
+        RefCell::new(memory::init_index_repair_journal());
 }

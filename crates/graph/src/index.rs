@@ -10,6 +10,7 @@ pub mod label_backfill;
 pub mod label_pending;
 pub mod lookup;
 pub mod pending;
+pub mod repair_journal;
 pub mod router;
 mod router_call;
 pub mod vertex_property_backfill;

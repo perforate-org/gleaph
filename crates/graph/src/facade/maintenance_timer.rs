@@ -62,7 +62,8 @@ fn next_delay(
 pub(crate) fn arm_if_needed() {
     #[cfg(target_family = "wasm")]
     {
-        if GraphStore::new().maintenance_queue_len() == 0 {
+        let store = GraphStore::new();
+        if store.maintenance_queue_len() == 0 && store.repair_journal_is_empty() {
             return;
         }
         if MAINTENANCE_RUNNING.with(std::cell::Cell::get) {
@@ -118,15 +119,23 @@ async fn run_maintenance_pass() -> Option<core::time::Duration> {
     };
 
     let report = store.run_timer_maintenance_tick();
-    flush_pending_postings(&store).await;
+    flush_and_repair(&store).await;
 
-    match report {
+    let base = match report {
         Ok(report) => next_delay(
             report.remaining_queue_len(),
             report.instruction_budget_exhausted,
         ),
         // A Rust-level error leaves the stable queue intact; retry at the floor.
         Err(_) => Some(MAINTENANCE_TIMER_FLOOR_DELAY),
+    };
+    // Keep ticking while the durable repair journal still holds failed-flush
+    // postings (ADR 0023 D5); a persistently unavailable index backs off to the
+    // relaxed delay rather than hot-looping.
+    match base {
+        Some(delay) => Some(delay),
+        None if !store.repair_journal_is_empty() => Some(MAINTENANCE_TIMER_RELAXED_DELAY),
+        None => None,
     }
 }
 
@@ -152,11 +161,11 @@ async fn acquire_catalog_guard(
     }
 }
 
-/// Flushes the postings the compaction observers enqueued during this pass, in
-/// the same tick, so the index converges with the re-keyed store. A no-op on a
-/// non-federated shard.
+/// Flushes the postings the compaction observers enqueued during this pass and
+/// re-applies any durable repair-journal entries, in the same tick, so the index
+/// converges with the re-keyed store. A no-op on a non-federated shard.
 #[cfg(target_family = "wasm")]
-async fn flush_pending_postings(store: &GraphStore) {
+async fn flush_and_repair(store: &GraphStore) {
     let Some(routing) = store.federation_routing() else {
         return;
     };
@@ -168,6 +177,7 @@ async fn flush_pending_postings(store: &GraphStore) {
     let _ = crate::index::pending::flush_pending(Some(ix)).await;
     let _ = crate::index::edge_pending::flush_pending(Some(ix)).await;
     let _ = crate::index::label_pending::flush_pending(Some(ix)).await;
+    let _ = crate::index::repair_journal::drain_once(ix).await;
 }
 
 #[cfg(test)]

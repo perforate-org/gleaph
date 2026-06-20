@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-06-19
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–40 = 41 regions; router repack ADR 0011/0018/0019 = 34 regions, 0–33)
-Anchor timestamp: 2026-06-19 06:41:57 UTC +0000
+Last updated: 2026-06-20
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–41 = 42 regions; router repack ADR 0011/0018/0019 = 34 regions, 0–33)
+Anchor timestamp: 2026-06-20 05:00:00 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -29,7 +29,7 @@ this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same pa
 
 | Canister | Regions | Id range | Registry constant + test |
 |----------|---------|----------|--------------------------|
-| Graph | 41 | 0–40 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
+| Graph | 42 | 0–41 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
 | Router | 34 | 0–33 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
 | Graph-index | 7 | 0–6 | `INDEX_STABLE_LAYOUT` — `index_layout_registry_matches_baseline` |
 
@@ -136,8 +136,9 @@ Repacked 2026-06-11. **Removed:** property name catalog, `VERTEX_LOGICAL_IDS`, f
 | 38 | `LABEL_STATS_DELTA_LOG` | `LABEL_STATS_DELTA_LOG` | `init_label_stats_delta_log` | telemetry | label stats projection | Delta replay to router |
 | 39 | `GRAPH_MUTATION_JOURNAL` | `GRAPH_MUTATION_JOURNAL` | `init_graph_mutation_journal` | canonical | idempotency | Mutation outcome + emitted delta seq range |
 | 40 | `PENDING_VERTEX_PURGES` | `PENDING_VERTEX_PURGES` | `init_pending_vertex_purges` | maintenance | vertex delete | Tombstoned vertices mid-purge (ADR 0021); rebuildable by scanning tombstoned vertices with surviving incident edges (no API) |
+| 41 | `INDEX_REPAIR_JOURNAL` | `INDEX_REPAIR_JOURNAL` | `init_index_repair_journal` | maintenance | federated index repair | Failed-flush index postings persisted on compensation-success (ADR 0023 D5); re-applied by the maintenance driver each tick and on `post_upgrade`, removed on success |
 
-Graph facade **41 regions** total (32 LARA + 9 facade). Retired 2026-06-12: `EDGE_PAYLOAD_PROFILES` → router SSOT ([ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md)); `EDGE_EQUALITY_POSTINGS` → graph-index ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)).
+Graph facade **42 regions** total (32 LARA + 10 facade). Retired 2026-06-12: `EDGE_PAYLOAD_PROFILES` → router SSOT ([ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md)); `EDGE_EQUALITY_POSTINGS` → graph-index ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)).
 
 Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores values by `PropertyId` only.
 
@@ -145,8 +146,9 @@ Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores va
 
 | Symbol | Location | Role | Reopen behavior |
 |--------|----------|------|-----------------|
-| `PENDING` (property postings) | `graph/src/index/pending.rs` | Queued property index ops | Lost on upgrade; `backfill_vertex_property_postings` covers historical vertex properties |
-| `PENDING` (label postings) | `graph/src/index/label_pending.rs` | Queued label index ops | Lost on upgrade; `backfill_label_postings` covers historical labels |
+| `PENDING` (property postings) | `graph/src/index/pending.rs` | Queued property index ops | In-flight batch lost on upgrade; failed batches persist to `INDEX_REPAIR_JOURNAL` (ADR 0023 D5); `backfill_vertex_property_postings` covers historical vertex properties |
+| `PENDING` (edge postings) | `graph/src/index/edge_pending.rs` | Queued edge property index ops | In-flight batch lost on upgrade; failed batches persist to `INDEX_REPAIR_JOURNAL` (ADR 0023 D5); `backfill_edge_property_postings` covers historical edge properties |
+| `PENDING` (label postings) | `graph/src/index/label_pending.rs` | Queued label index ops | In-flight batch lost on upgrade; failed batches persist to `INDEX_REPAIR_JOURNAL` (ADR 0023 D5); `backfill_label_postings` covers historical labels |
 
 ---
 

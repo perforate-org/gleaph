@@ -1,6 +1,6 @@
 //! Pending federated edge property index postings (ADR 0009 §1).
 
-use crate::facade::GraphStore;
+use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
 use crate::plan::PlanQueryError;
 use crate::property::PropertyIndexOp;
@@ -38,6 +38,47 @@ fn push(op: PendingEdgePostingOp) {
         return;
     }
     PENDING.with(|p| p.borrow_mut().push(op));
+}
+
+fn to_repair_op(op: &PendingEdgePostingOp) -> RepairPostingOp {
+    let (remove, property_id, payload_bytes, label_id, owner_vertex_id, slot_index) = match op {
+        PendingEdgePostingOp::Insert {
+            property_id,
+            payload_bytes,
+            label_id,
+            owner_vertex_id,
+            slot_index,
+        } => (
+            false,
+            *property_id,
+            payload_bytes.clone(),
+            *label_id,
+            *owner_vertex_id,
+            *slot_index,
+        ),
+        PendingEdgePostingOp::Remove {
+            property_id,
+            payload_bytes,
+            label_id,
+            owner_vertex_id,
+            slot_index,
+        } => (
+            true,
+            *property_id,
+            payload_bytes.clone(),
+            *label_id,
+            *owner_vertex_id,
+            *slot_index,
+        ),
+    };
+    RepairPostingOp::EdgeProperty {
+        remove,
+        property_id,
+        payload_bytes,
+        label_id,
+        owner_vertex_id,
+        slot_index,
+    }
 }
 
 /// Queue removals for every indexed property on an edge being deleted (federated index sync).
@@ -197,7 +238,10 @@ pub(crate) async fn flush_pending(
         if let Err(primary) = result {
             match compensate_index_ops(ix, shard_id, &applied).await {
                 Ok(()) => {
-                    PENDING.with(|p| p.borrow_mut().extend(ops.iter().cloned()));
+                    // Index is back at its pre-batch state; persist the whole
+                    // batch durably (ADR 0023 D5) and arm the timer to re-apply.
+                    GraphStore::new().repair_journal_append(ops.iter().map(to_repair_op));
+                    crate::facade::maintenance_timer::arm_if_needed();
                     return Err(primary);
                 }
                 Err(rollback_err) => {
