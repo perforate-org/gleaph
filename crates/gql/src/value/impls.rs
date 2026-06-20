@@ -249,6 +249,16 @@ fn write_len_prefixed_bytes(out: &mut Vec<u8>, bytes: &[u8]) {
     out.extend_from_slice(bytes);
 }
 
+/// Maximum nesting depth for the binary value decoder.
+///
+/// Each nested list/record adds one stack frame in [`Value::decode_binary_from`].
+/// Without a bound, a small adversarial blob describing thousands of nested
+/// collections (≈5 bytes per level) overflows the stack and traps the canister.
+/// The bound also caps the nesting of the resulting [`Value`], protecting every
+/// downstream recursive operation on it (comparison, index-key encoding,
+/// display). Legitimate parameter records nest far below this.
+const MAX_BINARY_NESTING_DEPTH: usize = 64;
+
 struct BinaryCursor<'a> {
     bytes: &'a [u8],
     offset: usize,
@@ -469,7 +479,7 @@ impl Value {
         decode: &dyn ExtensionBinaryDecode,
     ) -> Result<Self, ValueBinaryError> {
         let mut cursor = BinaryCursor::new(bytes);
-        let value = Self::decode_binary_from(&mut cursor, decode)?;
+        let value = Self::decode_binary_from(&mut cursor, decode, 0)?;
         if cursor.remaining() == 0 {
             Ok(value)
         } else {
@@ -663,7 +673,11 @@ impl Value {
     fn decode_binary_from(
         cursor: &mut BinaryCursor<'_>,
         decode: &dyn ExtensionBinaryDecode,
+        depth: usize,
     ) -> Result<Self, ValueBinaryError> {
+        if depth >= MAX_BINARY_NESTING_DEPTH {
+            return Err(ValueBinaryError::NestingTooDeep);
+        }
         match cursor.read_u8()? {
             0 => Ok(Self::Null),
             1 => Ok(Self::Bool(cursor.read_u8()? != 0)),
@@ -730,7 +744,7 @@ impl Value {
                 let len = cursor.read_len()?;
                 let mut items = Vec::with_capacity(cursor.bounded_capacity(len));
                 for _ in 0..len {
-                    items.push(Self::decode_binary_from(cursor, decode)?);
+                    items.push(Self::decode_binary_from(cursor, decode, depth + 1)?);
                 }
                 Ok(Self::List(items))
             }
@@ -753,7 +767,7 @@ impl Value {
                 let mut fields = Vec::with_capacity(cursor.bounded_capacity(len));
                 for _ in 0..len {
                     let key = cursor.read_string()?;
-                    let value = Self::decode_binary_from(cursor, decode)?;
+                    let value = Self::decode_binary_from(cursor, decode, depth + 1)?;
                     fields.push((key, value));
                 }
                 Ok(Self::Record(fields))
@@ -1109,6 +1123,33 @@ mod tests {
     #[test]
     fn decode_list_roundtrips_after_capacity_bound() {
         let value = Value::List(vec![Value::Int64(1), Value::Text("x".into())]);
+        let bytes = value.to_binary_bytes().expect("encode");
+        assert_eq!(Value::from_binary_bytes(&bytes), Ok(value));
+    }
+
+    #[test]
+    fn decode_deeply_nested_collections_error_without_stack_overflow() {
+        // Each level is a single-element List (tag 28, u32 len = 1); the leaf is
+        // Null. Far more levels than MAX_BINARY_NESTING_DEPTH, in a few hundred
+        // bytes — must be rejected rather than overflowing the stack.
+        let mut bytes = Vec::new();
+        for _ in 0..(MAX_BINARY_NESTING_DEPTH * 4) {
+            bytes.push(28u8);
+            bytes.extend_from_slice(&1u32.to_le_bytes());
+        }
+        bytes.push(0u8); // Null leaf
+        assert_eq!(
+            Value::from_binary_bytes(&bytes),
+            Err(ValueBinaryError::NestingTooDeep)
+        );
+    }
+
+    #[test]
+    fn decode_shallow_nested_collections_still_roundtrip() {
+        let mut value = Value::Int64(7);
+        for _ in 0..(MAX_BINARY_NESTING_DEPTH / 2) {
+            value = Value::List(vec![value]);
+        }
         let bytes = value.to_binary_bytes().expect("encode");
         assert_eq!(Value::from_binary_bytes(&bytes), Ok(value));
     }

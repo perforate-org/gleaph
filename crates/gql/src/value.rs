@@ -43,6 +43,11 @@ pub enum ValueBinaryError {
     UnknownEncodedExtension,
     /// Extension payload bytes could not be parsed (decoder-specific, e.g. invalid length).
     InvalidExtensionPayload,
+    /// Nested collections (list/record/path) exceed the maximum decode depth.
+    ///
+    /// Bounds recursion so a small adversarial blob describing deeply nested
+    /// collections cannot overflow the stack and trap the canister.
+    NestingTooDeep,
 }
 
 impl fmt::Display for ValueBinaryError {
@@ -59,6 +64,9 @@ impl fmt::Display for ValueBinaryError {
                 write!(f, "unknown or unsupported extension wire type")
             }
             Self::InvalidExtensionPayload => write!(f, "invalid extension payload"),
+            Self::NestingTooDeep => {
+                write!(f, "binary value nesting exceeds maximum decode depth")
+            }
         }
     }
 }
