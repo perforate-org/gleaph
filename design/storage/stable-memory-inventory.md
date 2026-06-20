@@ -60,7 +60,7 @@ Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layo
 
 | Derived store | Canonical source | Update path | Rebuild / backfill |
 |---------------|------------------|-------------|-------------------|
-| LARA reverse orientation | Forward edges + payloads | Co-updated on edge insert/delete | No standalone API; theoretical full-graph scan |
+| LARA reverse orientation | Forward edges + payloads | Co-updated on edge insert/delete | **Check:** `check_reverse_adjacency` (`facade/derived_state/reverse_adjacency.rs`) detects forward/reverse divergence over local directed edges. Rebuild deferred: reconstructing reverse reassigns reverse slot indices, cascade-invalidating `EDGE_ALIASES` keys + reverse payload sidecars (future ADR). |
 | Edge aliases | Forward/reverse adjacency in `GRAPH` | Sync: `commit_insert_edge_alias` on edge insert | **Implemented:** `check_edge_aliases` + `rebuild_edge_aliases` (`facade/derived_state/edge_alias.rs`) |
 | Edge property postings (graph-index) | `EDGE_PROPERTIES` (registered props) | DML + `edge_pending` flush | **Implemented:** `backfill_edge_property_postings` + router `admin_edge_backfill_step` ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md); retired shard-local `EDGE_EQUALITY_POSTINGS` 2026-06-12) |
 | Vertex property postings (graph-index) | Vertex properties (indexable) | DML + `pending.rs` flush | **Implemented:** `backfill_vertex_property_postings` + router `admin_vertex_property_backfill_step` |
@@ -98,7 +98,7 @@ Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layo
 
 | MemoryId | Symbol | Role | Class | Rebuild |
 |--------|--------|------|-------|---------|
-| 15 | `REV_VERTICES` | Reverse vertex rows | derived | Sync co-update; no scan API |
+| 15 | `REV_VERTICES` | Reverse vertex rows | derived | Sync co-update; `check_reverse_adjacency` oracle |
 | 16 | `REV_BUCKETS` | Reverse buckets | derived | Sync co-update |
 | 17–18 | `REV_BUCKET_FREE_SPANS`, `REV_BUCKET_FREE_SPAN_BY_START` | Reverse bucket maintenance | maintenance | — |
 | 19 | `REV_EDGE_COUNTS` | Reverse edge counts | derived | Sync co-update |
