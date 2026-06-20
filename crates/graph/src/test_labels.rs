@@ -102,13 +102,10 @@ pub(crate) fn property_id_for_name(name: &str) -> PropertyId {
 }
 
 #[cfg(test)]
-pub(crate) fn register_indexed_vertex_property_named(name: &str) {
-    crate::index::registry::register_vertex_property(property_id_for_name(name));
-}
-
-#[cfg(test)]
-pub(crate) fn register_indexed_edge_property_named(name: &str) {
-    crate::index::registry::register_edge_property(property_id_for_name(name));
+pub(crate) fn enter_indexed_edge_property_named(
+    name: &str,
+) -> crate::index::catalog_context::CatalogGuard {
+    crate::index::catalog_context::enter_edge_indexed(&[property_id_for_name(name)])
 }
 
 fn nonzero_hash_u32(name: &str) -> u32 {

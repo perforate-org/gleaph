@@ -124,6 +124,12 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
             args.target_shard_id, routing.shard_id
         ));
     }
+    // ADR 0023 D1/D3: install the router-sourced indexed catalog for this
+    // operation. The guard clears it on return, so the shard never persists
+    // derived index state. Held until after plan execution and posting flush.
+    let _catalog_guard = args
+        .indexed_properties
+        .map(crate::index::catalog_context::enter);
     let pmap = decode_gql_param_map(args.params_blob)?;
     let seeds = match args.seed_bindings_blob {
         Some(blob) => {
@@ -228,6 +234,13 @@ pub async fn e2e_insert_vertex_with_property(
         .await
         .map_err(|e| e.to_string())?;
     let property_id = PropertyId::from_raw(args.property_id);
+    // E2E scaffolding stands in for the router: supply the indexed catalog for the
+    // property under test so DML emits its posting (ADR 0023 D1/D3).
+    let _catalog =
+        crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
+            vertex_property_ids: vec![args.property_id],
+            ..Default::default()
+        });
     store
         .set_vertex_property(vertex_id, property_id, Value::Int64(args.value))
         .map_err(|e| e.to_string())?;
@@ -259,6 +272,11 @@ pub async fn e2e_insert_vertex_with_two_properties(
         .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
         .await
         .map_err(|e| e.to_string())?;
+    let _catalog =
+        crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
+            vertex_property_ids: vec![args.property_a, args.property_b],
+            ..Default::default()
+        });
     store
         .set_vertex_property(
             vertex_id,
@@ -319,6 +337,11 @@ pub async fn e2e_insert_directed_edge_with_property(
         .map_err(|e| e.to_string())?;
     let canonical = store.canonical_edge_handle(handle);
     let property_id = PropertyId::from_raw(args.property_id);
+    let _catalog =
+        crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
+            edge_property_ids: vec![args.property_id],
+            ..Default::default()
+        });
     store
         .set_edge_property(canonical, property_id, Value::Int64(args.value))
         .map_err(|e| e.to_string())?;
@@ -351,6 +374,11 @@ pub async fn e2e_insert_undirected_edge_with_property(
         .map_err(|e| e.to_string())?;
     let canonical = store.canonical_edge_handle(handle);
     let property_id = PropertyId::from_raw(args.property_id);
+    let _catalog =
+        crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
+            edge_property_ids: vec![args.property_id],
+            ..Default::default()
+        });
     store
         .set_edge_property(canonical, property_id, Value::Int64(args.value))
         .map_err(|e| e.to_string())?;
@@ -376,52 +404,29 @@ pub async fn backfill_label_postings(
 }
 
 pub async fn backfill_vertex_property_postings(
-    args: gleaph_graph_kernel::federation::PostingBackfillArgs,
+    req: gleaph_graph_kernel::federation::VertexPropertyBackfillRequest,
 ) -> Result<gleaph_graph_kernel::federation::PostingBackfillResult, String> {
     let store = GraphStore::new();
     let Some(index) = wasm_index_client_holder() else {
         return Err("federation not configured".into());
     };
-    crate::index::vertex_property_backfill::backfill_vertex_property_postings(&store, &index, args)
-        .await
-}
-
-pub fn register_indexed_property(
-    args: gleaph_graph_kernel::index::RegisterIndexedPropertyArgs,
-) -> Result<(), String> {
-    crate::index::registry::apply_register(args);
-    Ok(())
-}
-
-pub fn unregister_indexed_property(
-    args: gleaph_graph_kernel::index::RegisterIndexedPropertyArgs,
-) -> Result<(), String> {
-    crate::index::registry::apply_unregister(args);
-    Ok(())
-}
-
-pub fn register_indexed_edge_index(
-    args: gleaph_graph_kernel::index::RegisterIndexedEdgeIndexArgs,
-) -> Result<(), String> {
-    crate::index::registry::apply_register_edge_index(args);
-    Ok(())
-}
-
-pub fn unregister_indexed_edge_index(
-    args: gleaph_graph_kernel::index::RegisterIndexedEdgeIndexArgs,
-) -> Result<(), String> {
-    crate::index::registry::apply_unregister_edge_index(args);
-    Ok(())
+    // ADR 0023 D1/D5: the router supplies the indexed catalog per backfill step.
+    let _catalog = crate::index::catalog_context::enter(req.catalog);
+    crate::index::vertex_property_backfill::backfill_vertex_property_postings(
+        &store, &index, req.args,
+    )
+    .await
 }
 
 pub async fn backfill_edge_property_postings(
-    args: gleaph_graph_kernel::federation::EdgePostingBackfillArgs,
+    req: gleaph_graph_kernel::federation::EdgePropertyBackfillRequest,
 ) -> Result<gleaph_graph_kernel::federation::EdgePostingBackfillResult, String> {
     let store = GraphStore::new();
     let Some(index) = wasm_index_client_holder() else {
         return Err("federation not configured".into());
     };
-    crate::index::edge_property_backfill::backfill_edge_property_postings(&store, &index, args)
+    let _catalog = crate::index::catalog_context::enter(req.catalog);
+    crate::index::edge_property_backfill::backfill_edge_property_postings(&store, &index, req.args)
         .await
 }
 
@@ -583,6 +588,7 @@ mod tests {
             seed_bindings_blob: Some(seed_blob),
             resolved_labels: None,
             resolved_properties: None,
+            indexed_properties: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -640,6 +646,7 @@ mod tests {
             seed_bindings_blob: Some(seed_blob),
             resolved_labels: None,
             resolved_properties: None,
+            indexed_properties: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -682,6 +689,7 @@ mod tests {
             seed_bindings_blob: None,
             resolved_labels: None,
             resolved_properties: None,
+            indexed_properties: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("missing seeds");
@@ -711,6 +719,7 @@ mod tests {
             seed_bindings_blob: Some(seed_blob),
             resolved_labels: None,
             resolved_properties: None,
+            indexed_properties: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("shard mismatch");

@@ -76,6 +76,27 @@ impl RouterGraphStats {
         )
     }
 
+    /// Export the per-graph indexed catalog in the wire form consumed by graph
+    /// shards (ADR 0023 D1). Carries the same `(vertex, edge, edge-index)`
+    /// membership the shard registry used to hold, sourced fresh per operation.
+    pub(crate) fn to_indexed_property_catalog(
+        &self,
+    ) -> gleaph_graph_kernel::index::IndexedPropertyCatalog {
+        gleaph_graph_kernel::index::IndexedPropertyCatalog {
+            vertex_property_ids: self.vertex_property_ids.iter().map(|p| p.raw()).collect(),
+            edge_property_ids: self.edge_property_ids.iter().map(|p| p.raw()).collect(),
+            edge_indexes: self
+                .edge_indexes
+                .iter()
+                .map(|m| gleaph_graph_kernel::index::IndexedEdgeMembership {
+                    label_id: m.label_id,
+                    property_id: m.property_id.raw(),
+                    direction_tag: m.direction as u8,
+                })
+                .collect(),
+        }
+    }
+
     pub(crate) fn is_vertex_property_id_indexed(&self, property_id: PropertyId) -> bool {
         self.vertex_property_ids.contains(&property_id)
     }

@@ -81,10 +81,10 @@ impl GraphStore {
         expected: &[u8],
         label_id: Option<u16>,
     ) -> Vec<(ic_stable_lara::VertexId, u16, u32)> {
-        use crate::index::registry;
+        use crate::index::catalog_context;
         use crate::property::sortable_index_key;
 
-        if !registry::is_edge_property_indexed(property_id) {
+        if !catalog_context::is_edge_property_indexed(property_id) {
             return Vec::new();
         }
         let mut out = Vec::new();
@@ -115,7 +115,7 @@ impl GraphStore {
         slot_index: u32,
         mut f: impl FnMut(PropertyId, Vec<u8>),
     ) {
-        use crate::index::registry;
+        use crate::index::catalog_context;
         use crate::property::sortable_index_key;
 
         EDGE_PROPERTIES.with_borrow(|properties| {
@@ -124,7 +124,7 @@ impl GraphStore {
                 label_id,
                 slot_index,
                 |pid, value| {
-                    if !registry::is_edge_property_indexed(pid) {
+                    if !catalog_context::is_edge_property_indexed(pid) {
                         return;
                     }
                     let Some(payload_bytes) = sortable_index_key(&value) else {

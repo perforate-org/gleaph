@@ -212,11 +212,19 @@ pub(crate) fn admin_list_label_backfill_status(
 pub(crate) async fn admin_vertex_property_backfill_step(
     args: AdminVertexPropertyBackfillStepArgs,
 ) -> Result<AdminVertexPropertyBackfillStepResult, RouterError> {
+    let catalog = RouterStore::new()
+        .resolve_graph_id(&args.logical_graph_name)
+        .map(|graph_id| {
+            crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog()
+        })
+        .unwrap_or_default();
     crate::vertex_property_backfill::admin_vertex_property_backfill_step(
         &RouterStore::new(),
         msg_caller(),
         args,
-        crate::graph_client::backfill_vertex_property_postings,
+        move |graph, bargs| {
+            crate::graph_client::backfill_vertex_property_postings(graph, bargs, catalog.clone())
+        },
     )
     .await
 }
@@ -234,11 +242,19 @@ pub(crate) fn admin_list_vertex_property_backfill_status(
 pub(crate) async fn admin_edge_backfill_step(
     args: AdminEdgeBackfillStepArgs,
 ) -> Result<AdminEdgeBackfillStepResult, RouterError> {
+    let catalog = RouterStore::new()
+        .resolve_graph_id(&args.logical_graph_name)
+        .map(|graph_id| {
+            crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog()
+        })
+        .unwrap_or_default();
     crate::edge_backfill::admin_edge_backfill_step(
         &RouterStore::new(),
         msg_caller(),
         args,
-        crate::graph_client::backfill_edge_property_postings,
+        move |graph, bargs| {
+            crate::graph_client::backfill_edge_property_postings(graph, bargs, catalog.clone())
+        },
     )
     .await
 }

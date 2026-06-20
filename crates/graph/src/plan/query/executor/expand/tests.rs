@@ -1187,7 +1187,7 @@ fn expand_filter_applies_destination_predicate() {
 #[test]
 fn expand_indexed_edge_equality_filters_candidates() {
     let store = GraphStore::new();
-    crate::test_labels::register_indexed_edge_property_named("weight");
+    let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
     let a = store
         .insert_vertex_named(["IdxEqA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1243,7 +1243,7 @@ fn expand_indexed_edge_equality_filters_candidates() {
 #[test]
 fn indexed_edge_equality_expand_return_gleaph_weight() {
     let store = GraphStore::new();
-    crate::test_labels::register_indexed_edge_property_named("weight");
+    let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
     use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
     let a = store
         .insert_vertex_named(["IdxEqWgtA"], Vec::<(&str, Value)>::new())

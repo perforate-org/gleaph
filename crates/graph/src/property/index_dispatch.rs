@@ -8,10 +8,13 @@ use super::{PropertyValueChange, index_ops_for_value_change};
 pub(crate) fn dispatch_property_index_ops(change: PropertyValueChange<'_>) {
     let indexed = match change.entity {
         PropertyEntity::Vertex(_) => {
-            crate::index::registry::is_vertex_property_indexed(change.property_id)
+            crate::index::catalog_context::is_vertex_property_indexed(change.property_id)
         }
         PropertyEntity::Edge { label_id, .. } => {
-            crate::index::registry::should_maintain_edge_posting(label_id, change.property_id)
+            crate::index::catalog_context::should_maintain_edge_posting(
+                label_id,
+                change.property_id,
+            )
         }
     };
     if !indexed {

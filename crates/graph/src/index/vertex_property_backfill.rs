@@ -34,7 +34,7 @@ pub async fn backfill_vertex_property_postings(
         }
         let local_raw = u32::from_le_bytes(vertex_id.to_le_bytes());
         for (property_id, value) in store.vertex_properties(vertex_id) {
-            if !crate::index::registry::is_vertex_property_indexed(property_id) {
+            if !crate::index::catalog_context::is_vertex_property_indexed(property_id) {
                 continue;
             }
             let Some(payload_bytes) = sortable_index_key(&value) else {
@@ -172,7 +172,7 @@ mod tests {
         let vid = store.insert_vertex().expect("vertex");
         let name = crate::test_labels::property_id_for_name("backfill_name");
         let score = crate::test_labels::property_id_for_name("backfill_score");
-        crate::test_labels::register_indexed_vertex_property_named("backfill_name");
+        let _catalog = crate::index::catalog_context::enter_vertex_indexed(&[name]);
         store
             .set_vertex_property(vid, name, Value::Int64(42))
             .expect("name");

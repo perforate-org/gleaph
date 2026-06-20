@@ -20,7 +20,9 @@ pub use bulk_ingest_finalize::{
     HOT_FORWARD_EDGE_INSERT_THRESHOLD, is_gleaph_finalize_procedure_name,
 };
 pub use edge_backfill_shard_state::{EDGE_PROPERTY_KEY_BYTES, EdgeBackfillShardState};
-pub use edge_posting_backfill::{EdgePostingBackfillArgs, EdgePostingBackfillResult};
+pub use edge_posting_backfill::{
+    EdgePostingBackfillArgs, EdgePostingBackfillResult, EdgePropertyBackfillRequest,
+};
 pub use encoded::{
     ENCODED_EDGE_ID_BYTES, ENCODED_VERTEX_ID_BYTES, ElementIdEncodingKey, EncodedEdgeId,
     EncodedVertexId, decode_global_edge_id, decode_global_vertex_id, encode_global_edge_id,
@@ -33,7 +35,9 @@ pub use expand::{
 pub use global_edge_id::GlobalEdgeId;
 pub use graph_shard_key::GraphShardKey;
 pub use peer_sync::{AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs};
-pub use posting_backfill::{PostingBackfillArgs, PostingBackfillResult};
+pub use posting_backfill::{
+    PostingBackfillArgs, PostingBackfillResult, VertexPropertyBackfillRequest,
+};
 pub use router_error::RouterError;
 pub use shard_detach::{ShardDetachCursor, ShardDetachPhase, ShardDetachStepResult};
 pub use shard_id::ShardId;

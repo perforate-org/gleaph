@@ -275,6 +275,10 @@ pub(crate) fn drop_named_index(
     Ok(Some(def))
 }
 
+#[allow(
+    dead_code,
+    reason = "reused by ADR 0023 D6 DROP INDEX posting purge (phase 5)"
+)]
 pub(crate) fn is_property_registered(
     graph_id: GraphId,
     kind: IndexedPropertyKind,

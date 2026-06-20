@@ -135,43 +135,19 @@ pub async fn backfill_label_postings(
 pub async fn backfill_vertex_property_postings(
     graph: Principal,
     args: PostingBackfillArgs,
+    catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog,
 ) -> Result<PostingBackfillResult, String> {
-    call_graph_result(graph, "backfill_vertex_property_postings", args).await
-}
-
-pub async fn register_indexed_property(
-    graph: Principal,
-    args: gleaph_graph_kernel::index::RegisterIndexedPropertyArgs,
-) -> Result<(), String> {
-    call_graph_result(graph, "register_indexed_property", args).await
-}
-
-pub async fn unregister_indexed_property(
-    graph: Principal,
-    args: gleaph_graph_kernel::index::RegisterIndexedPropertyArgs,
-) -> Result<(), String> {
-    call_graph_result(graph, "unregister_indexed_property", args).await
-}
-
-pub async fn register_indexed_edge_index(
-    graph: Principal,
-    args: gleaph_graph_kernel::index::RegisterIndexedEdgeIndexArgs,
-) -> Result<(), String> {
-    call_graph_result(graph, "register_indexed_edge_index", args).await
-}
-
-pub async fn unregister_indexed_edge_index(
-    graph: Principal,
-    args: gleaph_graph_kernel::index::RegisterIndexedEdgeIndexArgs,
-) -> Result<(), String> {
-    call_graph_result(graph, "unregister_indexed_edge_index", args).await
+    let req = gleaph_graph_kernel::federation::VertexPropertyBackfillRequest { args, catalog };
+    call_graph_result(graph, "backfill_vertex_property_postings", req).await
 }
 
 pub async fn backfill_edge_property_postings(
     graph: Principal,
     args: gleaph_graph_kernel::federation::EdgePostingBackfillArgs,
+    catalog: gleaph_graph_kernel::index::IndexedPropertyCatalog,
 ) -> Result<gleaph_graph_kernel::federation::EdgePostingBackfillResult, String> {
-    call_graph_result(graph, "backfill_edge_property_postings", args).await
+    let req = gleaph_graph_kernel::federation::EdgePropertyBackfillRequest { args, catalog };
+    call_graph_result(graph, "backfill_edge_property_postings", req).await
 }
 
 pub async fn finalize_bulk_ingest(
@@ -202,6 +178,7 @@ mod tests {
                 seed_bindings_blob: None,
                 resolved_labels: None,
                 resolved_properties: None,
+                indexed_properties: None,
             },
         );
         let err = futures::executor::block_on(fut).expect_err("native unavailable");

@@ -44,6 +44,9 @@ pub struct ExecutePlanArgs {
     pub resolved_labels: Option<ResolvedLabelTable>,
     /// Router-resolved property names referenced by the physical plan.
     pub resolved_properties: Option<ResolvedPropertyTable>,
+    /// Router-sourced indexed-property catalog for this operation (ADR 0023 D1/D3).
+    /// Consulted ephemerally by shard DML to decide which postings to maintain.
+    pub indexed_properties: Option<crate::index::IndexedPropertyCatalog>,
 }
 
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
@@ -270,6 +273,7 @@ mod tests {
                     id: PropertyId::from_raw(1),
                 }],
             }),
+            indexed_properties: None,
         };
         let bytes = Encode!(&args).expect("encode");
         let decoded: ExecutePlanArgs = Decode!(&bytes, ExecutePlanArgs).expect("decode");

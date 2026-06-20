@@ -26,8 +26,10 @@ pub async fn backfill_edge_property_postings(
     let mut postings_synced = 0u32;
 
     for (key, value) in batch {
-        if !crate::index::registry::should_maintain_edge_posting(key.label_id(), key.property_id())
-        {
+        if !crate::index::catalog_context::should_maintain_edge_posting(
+            key.label_id(),
+            key.property_id(),
+        ) {
             continue;
         }
         let Some(payload_bytes) = sortable_index_key(&value) else {
@@ -192,7 +194,7 @@ mod tests {
             .expect("edge");
         let canonical = store.canonical_edge_handle(handle);
         let weight = PropertyId::from_raw(55);
-        crate::index::registry::register_edge_property(weight);
+        let _catalog = crate::index::catalog_context::enter_edge_indexed(&[weight]);
         store
             .set_edge_property(canonical, weight, Value::Int64(9))
             .expect("weight");

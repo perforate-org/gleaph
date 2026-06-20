@@ -260,6 +260,39 @@ pub struct RegisterIndexedEdgeIndexArgs {
     pub direction_tag: u8,
 }
 
+/// One edge index membership `(label, property, direction)` in [`IndexedPropertyCatalog`].
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
+)]
+pub struct IndexedEdgeMembership {
+    pub label_id: u16,
+    pub property_id: u32,
+    pub direction_tag: u8,
+}
+
+/// Router-sourced snapshot of which properties are indexed (ADR 0023 D1/D3).
+///
+/// The router (definitions SSOT) supplies this per operation so the graph shard
+/// never persists derived index state. It is consulted ephemerally (set at the
+/// start of an operation, cleared at the end) and is therefore immune to the
+/// upgrade boundary that made the former shard-local registry stale.
+#[derive(
+    Clone, Debug, Default, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
+)]
+pub struct IndexedPropertyCatalog {
+    pub vertex_property_ids: Vec<u32>,
+    pub edge_property_ids: Vec<u32>,
+    pub edge_indexes: Vec<IndexedEdgeMembership>,
+}
+
+impl IndexedPropertyCatalog {
+    pub fn is_empty(&self) -> bool {
+        self.vertex_property_ids.is_empty()
+            && self.edge_property_ids.is_empty()
+            && self.edge_indexes.is_empty()
+    }
+}
+
 /// One edge equality posting hit from graph-index (ADR 0009 §1).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,

@@ -979,6 +979,10 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         }
     }
     let element_id_encoding_key = store.graph_element_id_encoding_key(graph_id)?.0;
+    // ADR 0023 D1: the router (index definitions SSOT) supplies the indexed-property
+    // catalog per operation so the shard never persists derived index state.
+    let indexed_properties =
+        crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
 
     let mut merged = empty_execute_plan_result();
     for dispatch in dispatches {
@@ -994,6 +998,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 seed_bindings_blob: dispatch.seed_bindings_blob.clone(),
                 resolved_labels: Some(resolved_labels.clone()),
                 resolved_properties: Some(resolved_properties.clone()),
+                indexed_properties: Some(indexed_properties.clone()),
             },
         )
         .await

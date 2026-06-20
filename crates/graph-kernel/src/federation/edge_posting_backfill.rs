@@ -10,6 +10,14 @@ pub struct EdgePostingBackfillArgs {
     pub max_entries: u32,
 }
 
+/// Router → graph shard edge-property backfill request carrying the
+/// router-sourced indexed catalog for the operation (ADR 0023 D1/D5).
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct EdgePropertyBackfillRequest {
+    pub args: EdgePostingBackfillArgs,
+    pub catalog: crate::index::IndexedPropertyCatalog,
+}
+
 /// Progress from one edge posting backfill batch.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct EdgePostingBackfillResult {

@@ -12,6 +12,7 @@ Anchor timestamp: 2026-06-20 04:15:12 UTC +0000
 | 2026-06-20 | Proposed; follow-up to [0009](0009-edge-property-index-and-index-ddl.md) (Phase A shard index registry) and [0020](0020-deferred-maintenance-timer-drain.md) (timer drain). |
 | 2026-06-20 | `adr-review` pass (APPROVE WITH CHANGES): added P7 + D6 (`DROP INDEX` does not purge postings today; make purge real, load-bearing for D4); framed repair journal as durable extension of existing pending queues; marked async tick as amending ADR 0020; prefer reusing the existing router indexed-catalog surface for the timer fetch. |
 | 2026-06-20 | Accepted; policy frozen pending implementation per §Migration (phases 1–6). |
+| 2026-06-20 | Phases 1–2 implemented: removed shard `registry.rs`; added router-sourced `IndexedPropertyCatalog` on `ExecutePlanArgs` + backfill requests, consulted via ephemeral `catalog_context`. Implementation carries the full per-graph catalog (safe superset of label-scoped). PocketIC P1 repro (`adr0023_index_store_consistency`) now green. Phases 3–6 (async tick/in-tick flush, durable repair journal, `DROP INDEX` purge, INV oracle) pending. |
 
 ## Context
 
@@ -254,13 +255,20 @@ provable.
 
 ## Migration / phases
 
-1. Extend `ExecutePlanArgs` with the label-scoped indexed-property set; add the
-   ephemeral per-operation catalog context. For the timer fetch, **reuse the
-   existing router indexed catalog** (`ROUTER_INDEXED_PROPERTY_SET` / planner
-   stats path) rather than a new endpoint where possible; add a new query only if
-   no existing surface fits.
-2. Switch `dispatch_property_index_ops` and enqueue sites from the registry to
-   the ephemeral context; delete `registry.rs`.
+1. **(implemented)** Extend `ExecutePlanArgs` with the indexed-property catalog
+   (`indexed_properties`) and the backfill requests
+   (`VertexPropertyBackfillRequest` / `EdgePropertyBackfillRequest`); add the
+   ephemeral per-operation catalog context (`graph/src/index/catalog_context.rs`).
+   The router builds the catalog from its existing per-graph stats
+   (`RouterGraphStats::to_indexed_property_catalog`). Implementation passes the
+   **full per-graph catalog** (a safe superset of the label-scoped set; label
+   scoping remains a future wire-size optimization). For the timer fetch, **reuse
+   the existing router indexed catalog** rather than a new endpoint where possible.
+2. **(implemented)** Switch `dispatch_property_index_ops`, the edge-property store
+   scans, and backfill from the registry to the ephemeral context; install the
+   context at `execute_plan_impl` / e2e / backfill entrypoints; delete
+   `registry.rs` and the `register/unregister_indexed_*` fan-out, endpoints, and
+   graph-client calls.
 3. Make the maintenance tick `async`; fetch catalog per drain; flush in-tick;
    add the defer-on-unavailable rule. (Amends ADR 0020.)
 4. Add the durable repair journal + dirty marker (extending the existing pending
@@ -280,6 +288,6 @@ is additive stable state.
 |----------|--------|--------|
 | [adr/README.md](README.md) | Index ADR 0023 | done |
 | [adr/0009-edge-property-index-and-index-ddl.md](0009-edge-property-index-and-index-ddl.md) | Note: shard index registry superseded by router-sourced ephemeral catalog (0023) | done |
-| [index/property-index.md](../index/property-index.md) | Replace shard-registry gate with router-sourced ephemeral catalog; precise emit; repair journal | pending |
+| [index/property-index.md](../index/property-index.md) | Replace shard-registry gate with router-sourced ephemeral catalog; precise emit; repair journal | done (registry→ephemeral catalog); repair journal pending |
 | [adr/0020-deferred-maintenance-timer-drain.md](0020-deferred-maintenance-timer-drain.md) | Tick becomes async; per-drain catalog fetch; in-tick flush; defer-on-router-unavailable | pending |
 | [index/derived-state-query-semantics.md](../index/derived-state-query-semantics.md) | INV statement and eventual-consistency/repair model | pending |
