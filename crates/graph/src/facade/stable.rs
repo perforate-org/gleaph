@@ -60,3 +60,10 @@ thread_local! {
     pub(crate) static INDEX_REPAIR_JOURNAL: RefCell<memory::StableRepairJournal> =
         RefCell::new(memory::init_index_repair_journal());
 }
+
+/// Forces the stable graph to initialize now. Called from `post_upgrade` so a
+/// layout/version skew (LARA magic/version/stride mismatch) traps at the upgrade
+/// boundary with an actionable message, instead of lazily on the first query.
+pub(crate) fn ensure_graph_initialized() {
+    GRAPH.with_borrow(|_| {});
+}

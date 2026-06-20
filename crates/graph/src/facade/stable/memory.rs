@@ -138,7 +138,16 @@ pub(crate) fn init_graph() -> StableGraph {
         GRAPH_DEFAULT_EDGE_LABEL,
         DeferredConfig::default(),
     )
-    .unwrap();
+    .unwrap_or_else(|err| {
+        // The LARA stores validate magic/version/stride against this build's fixed-width
+        // rows, so the only way init fails on a populated canister is a layout-changing
+        // upgrade shipped without a stable-memory migration. Trap with an actionable
+        // message instead of serving corrupted reads from a mismatched layout.
+        panic!(
+            "graph stable layout is incompatible with this canister build ({err:?}); \
+             a stable-memory migration is required before this upgrade"
+        )
+    });
 
     crate::facade::init_ic_gql_extensions();
 

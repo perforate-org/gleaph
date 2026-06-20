@@ -71,6 +71,9 @@ pub async fn init(args: GraphInitArgs) {
 /// the rkyv extension decode hook and re-arm the deferred-maintenance timer when
 /// the stable queue still has pending reclamation (ADR 0020).
 pub fn post_upgrade() {
+    // Force stable-graph init at the upgrade boundary so a layout/version skew traps
+    // here with an actionable message rather than lazily on the first query.
+    crate::facade::ensure_graph_initialized();
     crate::facade::init_ic_gql_extensions();
     crate::facade::maintenance_timer::arm_if_needed();
 }

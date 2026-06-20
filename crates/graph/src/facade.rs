@@ -24,6 +24,7 @@ pub use store::{
     canonical_undirected_owner, catalog_edge_label_from_wire,
 };
 
+pub(crate) use stable::ensure_graph_initialized;
 pub use stable::metadata::{FederationRouting, GraphMetadata, GraphMetadataError};
 pub(crate) use stable::repair_journal::RepairPostingOp;
 
