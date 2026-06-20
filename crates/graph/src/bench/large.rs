@@ -653,10 +653,7 @@ mod tests {
         let store = GraphStore::new();
         build_friends_of_friends_graph(&store, FOF_FIRST_HOP, FOF_SECOND_HOP);
         let result = execute_expand_plan(&store, &large_friends_of_friends_plan());
-        assert_eq!(
-            result.rows.len(),
-            (FOF_FIRST_HOP * FOF_SECOND_HOP) as usize
-        );
+        assert_eq!(result.rows.len(), (FOF_FIRST_HOP * FOF_SECOND_HOP) as usize);
     }
 
     #[test]

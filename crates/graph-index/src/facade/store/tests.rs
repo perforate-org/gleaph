@@ -716,7 +716,10 @@ fn bounded_vertex_purge_removes_only_target_property() {
         "all property-42 postings purged across shards"
     );
     // budget 1 over the 8-key property range ⇒ one key per step (bounded/resumed).
-    assert!(steps >= 8, "scan was actually bounded across multiple steps");
+    assert!(
+        steps >= 8,
+        "scan was actually bounded across multiple steps"
+    );
     assert!(store.lookup_equal(42, b"v").expect("lookup 42").is_empty());
     assert_eq!(store.lookup_equal(41, b"v").expect("lookup 41").len(), 8);
     assert_eq!(store.lookup_equal(43, b"v").expect("lookup 43").len(), 8);
