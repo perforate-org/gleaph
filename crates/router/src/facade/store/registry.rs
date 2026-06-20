@@ -385,6 +385,14 @@ impl RouterStore {
         Ok(())
     }
 
+    /// Read-only check of all registry denormalization invariants across regions
+    /// 1–5 and 15–16. Per-commit verification is disabled in production for cost,
+    /// so this is the on-demand oracle (admin endpoint) used to confirm registry
+    /// consistency at any point, including across a canister upgrade.
+    pub(crate) fn check_registry_invariants(&self) -> Result<(), String> {
+        super::registry_invariants::check_registry_invariants()
+    }
+
     pub fn resolve_graph(
         &self,
         graph_name: &str,

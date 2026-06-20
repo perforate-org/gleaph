@@ -192,6 +192,12 @@ async fn admin_unregister_shard(
     canister::admin_unregister_shard(logical_graph_name, shard_id).await
 }
 
+/// Read-only oracle: verify router registry denormalization invariants (`Role::Admin`).
+#[query]
+fn admin_check_registry_invariants() -> Result<(), RouterError> {
+    canister::admin_check_registry_invariants()
+}
+
 #[update]
 fn admin_intern_vertex_label(
     logical_graph_name: String,

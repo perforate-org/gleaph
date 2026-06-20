@@ -177,6 +177,16 @@ pub(crate) async fn admin_unregister_shard(
         .await
 }
 
+/// Verify router registry denormalization invariants (regions 1–5, 15–16). `Ok(())`
+/// means consistent; `Err(Internal(detail))` reports the first divergence. Read-only
+/// oracle so registry consistency can be checked on demand, including across upgrades.
+pub(crate) fn admin_check_registry_invariants() -> Result<(), RouterError> {
+    auth::require_admin(&msg_caller())?;
+    RouterStore::new()
+        .check_registry_invariants()
+        .map_err(RouterError::Internal)
+}
+
 pub(crate) fn admin_intern_vertex_label(
     logical_graph_name: String,
     name: String,

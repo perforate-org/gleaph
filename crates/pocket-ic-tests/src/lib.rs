@@ -964,6 +964,26 @@ pub fn gql_execute_idempotent_as_admin(
     }
 }
 
+/// Call the router's read-only registry-invariant oracle as admin. Returns the raw
+/// `Result` so callers can assert both the consistent and divergent outcomes.
+pub fn router_check_registry_invariants(
+    env: &FederationEnv,
+) -> Result<(), gleaph_graph_kernel::federation::RouterError> {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "admin_check_registry_invariants",
+            Encode!().expect("encode admin_check_registry_invariants"),
+        )
+        .unwrap_or_else(|e| panic!("admin_check_registry_invariants on router: {e:?}"));
+    Decode!(&bytes, Result<(), RouterError>)
+        .unwrap_or_else(|err| panic!("decode admin_check_registry_invariants: {err}"))
+}
+
 /// Register an edge property index via `CREATE INDEX` (ADR 0009 phase E).
 pub fn create_edge_property_index(
     env: &FederationEnv,
