@@ -13,13 +13,15 @@ use gleaph_pocket_ic_tests::{
     create_undirected_edge_property_index, create_vertex_property_index,
     drop_vertex_property_index, e2e_insert_directed_edge_with_property,
     e2e_insert_undirected_edge_with_property, e2e_insert_vertex, e2e_insert_vertex_with_property,
-    gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
-    gql_query_as_admin, gql_query_as_admin_expect_err, install_federation,
-    install_single_shard_federation, knowledge_map_live_query, seed_knowledge_map_graph,
+    e2e_insert_vertex_with_two_properties, gql_execute_idempotent_as_admin,
+    gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin, gql_query_as_admin_expect_err,
+    install_federation, install_single_shard_federation, knowledge_map_live_query,
+    seed_knowledge_map_graph,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
 const INDEX_AGE_NAME: &str = "pocket_ic_vertex_age";
+const INDEX_SCORE_NAME: &str = "pocket_ic_vertex_score";
 const INDEX_EDGE_LABEL: &str = "KNOWS";
 const INDEX_WEIGHT_NAME: &str = "pocket_ic_edge_weight";
 const INDEX_WEIGHT_RIGHT_NAME: &str = "pocket_ic_edge_weight_right";
@@ -237,6 +239,76 @@ fn federated_gql_query_index_seeded_routes_to_hit_shard_only() {
     let result = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
 
     assert_eq!(result.row_count, 1);
+}
+
+/// Two indexed equality predicates on one variable produce a `PlanOp::IndexIntersection`, now
+/// served by the streaming `lookup_equal_page` + `filter_hits_by_equal` path on graph-index.
+#[test]
+fn standalone_gql_query_index_intersection_two_properties() {
+    let env = install_single_shard_federation();
+    let age = admin_intern_property(&env, "age");
+    let score = admin_intern_property(&env, "score");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "standalone_intersection_age",
+    );
+    create_vertex_property_index(
+        &env,
+        INDEX_SCORE_NAME,
+        INDEX_VERTEX_LABEL,
+        "score",
+        "standalone_intersection_score",
+    );
+    // Matches both arms.
+    let _ =
+        e2e_insert_vertex_with_two_properties(&env, env.graph_source, age.raw(), 5, score.raw(), 9);
+    // Matches only the age arm — must be sieved out by the score `contains` check.
+    let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
+
+    let result = gql_query_as_admin(&env, "MATCH (n {age: 5, score: 9}) RETURN n");
+
+    assert_eq!(
+        result.row_count, 1,
+        "intersection should return only the vertex matching both arms"
+    );
+}
+
+#[test]
+fn federated_gql_query_index_intersection_merges_matching_shards() {
+    let env = install_federation();
+    let age = admin_intern_property(&env, "age");
+    let score = admin_intern_property(&env, "score");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "federated_intersection_age",
+    );
+    create_vertex_property_index(
+        &env,
+        INDEX_SCORE_NAME,
+        INDEX_VERTEX_LABEL,
+        "score",
+        "federated_intersection_score",
+    );
+    // Full match on each shard.
+    let _ =
+        e2e_insert_vertex_with_two_properties(&env, env.graph_source, age.raw(), 5, score.raw(), 9);
+    let _ =
+        e2e_insert_vertex_with_two_properties(&env, env.graph_dest, age.raw(), 5, score.raw(), 9);
+    // Partial match (age only) on dest — must be excluded.
+    let _ = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 5);
+
+    let result = gql_query_as_admin(&env, "MATCH (n {age: 5, score: 9}) RETURN n");
+
+    assert_eq!(
+        result.row_count, 2,
+        "streamed intersection should merge full matches across both shards"
+    );
 }
 
 fn decode_single_value_row(

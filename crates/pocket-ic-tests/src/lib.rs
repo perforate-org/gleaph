@@ -132,6 +132,14 @@ pub struct E2eInsertVertexWithPropertyArgs {
 }
 
 #[derive(CandidType, Clone, Debug)]
+pub struct E2eInsertVertexWithTwoPropertiesArgs {
+    pub property_a: u32,
+    pub value_a: i64,
+    pub property_b: u32,
+    pub value_b: i64,
+}
+
+#[derive(CandidType, Clone, Debug)]
 pub struct E2eInsertDirectedEdgeWithPropertyArgs {
     pub source_local_vertex_id: u32,
     pub target_local_vertex_id: u32,
@@ -805,6 +813,27 @@ pub fn e2e_insert_vertex_with_property(
         graph,
         "e2e_insert_vertex_with_property",
         E2eInsertVertexWithPropertyArgs { property_id, value },
+    )
+}
+
+pub fn e2e_insert_vertex_with_two_properties(
+    env: &FederationEnv,
+    graph: Principal,
+    property_a: u32,
+    value_a: i64,
+    property_b: u32,
+    value_b: i64,
+) -> E2eInsertVertexResult {
+    update_as_router(
+        env,
+        graph,
+        "e2e_insert_vertex_with_two_properties",
+        E2eInsertVertexWithTwoPropertiesArgs {
+            property_a,
+            value_a,
+            property_b,
+            value_b,
+        },
     )
 }
 

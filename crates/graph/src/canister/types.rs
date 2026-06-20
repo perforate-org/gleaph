@@ -28,6 +28,16 @@ pub struct E2eInsertVertexWithPropertyArgs {
     pub value: i64,
 }
 
+/// Arguments for [`super::handlers::e2e_insert_vertex_with_two_properties`] (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eInsertVertexWithTwoPropertiesArgs {
+    pub property_a: u32,
+    pub value_a: i64,
+    pub property_b: u32,
+    pub value_b: i64,
+}
+
 /// Arguments for [`super::handlers::e2e_insert_directed_edge_with_property`] (PocketIC E2E only).
 #[cfg(feature = "pocket-ic-e2e")]
 #[derive(CandidType, Deserialize, Clone, Debug)]

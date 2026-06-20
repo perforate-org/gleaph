@@ -1,14 +1,50 @@
 benches:
+  bench_filter_hits_by_equal_page:
+    total:
+      calls: 1
+      instructions: 173112152
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      filter_hits_by_equal_page:
+        calls: 1
+        instructions: 173111097
+        heap_increase: 0
+        stable_memory_increase: 0
   bench_layout_index_posting_insert_64:
     total:
       calls: 1
-      instructions: 3461307
+      instructions: 3462347
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       layout_index_posting_insert:
         calls: 1
-        instructions: 3460306
+        instructions: 3461346
         heap_increase: 0
+        stable_memory_increase: 0
+  bench_lookup_equal_page_walk_arm:
+    total:
+      calls: 1
+      instructions: 15834362
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lookup_equal_page_walk_arm:
+        calls: 1
+        instructions: 15833321
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lookup_intersection_two_arms:
+    total:
+      calls: 1
+      instructions: 36392894
+      heap_increase: 3
+      stable_memory_increase: 0
+    scopes:
+      lookup_intersection_two_arms:
+        calls: 1
+        instructions: 36391854
+        heap_increase: 3
         stable_memory_increase: 0
 version: 0.4.0

@@ -247,6 +247,48 @@ pub async fn e2e_insert_vertex_with_property(
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_insert_vertex_with_two_properties(
+    args: super::types::E2eInsertVertexWithTwoPropertiesArgs,
+) -> Result<super::types::E2eInsertVertexResult, String> {
+    use crate::index::pending;
+    use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::PropertyId;
+
+    let store = GraphStore::new();
+    let vertex_id = store
+        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
+        .await
+        .map_err(|e| e.to_string())?;
+    store
+        .set_vertex_property(
+            vertex_id,
+            PropertyId::from_raw(args.property_a),
+            Value::Int64(args.value_a),
+        )
+        .map_err(|e| e.to_string())?;
+    store
+        .set_vertex_property(
+            vertex_id,
+            PropertyId::from_raw(args.property_b),
+            Value::Int64(args.value_b),
+        )
+        .map_err(|e| e.to_string())?;
+    let index = wasm_index_client_holder().ok_or("federation not configured")?;
+    pending::flush_pending(Some(
+        &index as &dyn crate::index::lookup::PropertyIndexLookup,
+    ))
+    .await
+    .map_err(|e| e.to_string())?;
+    let global_vertex_id = store
+        .global_vertex_id(vertex_id)
+        .ok_or_else(|| "global id missing after insert".to_string())?;
+    Ok(super::types::E2eInsertVertexResult {
+        local_vertex_id: crate::index::federation_routing::local_vertex_id_raw(vertex_id),
+        global_vertex_id,
+    })
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
 pub fn e2e_insert_directed_edge(
     args: super::types::E2eInsertDirectedEdgeArgs,
 ) -> Result<(), String> {
