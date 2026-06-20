@@ -2,7 +2,7 @@
 
 use candid::Principal;
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, EdgePostingHitPage, IndexIntersectionRequest, IndexIntersectionResult,
+    EdgePostingHitPage, IndexIntersectionRequest, IndexIntersectionResult,
     IndexLabelIntersectionRequest, LabelLookupPageRequest, LabelLookupPageResult,
     LookupEdgeEqualPageRequest, LookupEqualPageRequest, PostingHit, PostingHitPage,
     ValuePostingCount,
@@ -16,30 +16,6 @@ pub struct RouterIndexClient {
 impl RouterIndexClient {
     pub fn new(index_canister: Principal) -> Self {
         Self { index_canister }
-    }
-
-    pub async fn lookup_equal(
-        &self,
-        property_id: u32,
-        value: Vec<u8>,
-    ) -> Result<Vec<PostingHit>, String> {
-        #[cfg(target_family = "wasm")]
-        {
-            use ic_cdk::call::Call;
-
-            let hits: Vec<PostingHit> = Call::bounded_wait(self.index_canister, "lookup_equal")
-                .with_args(&(property_id, value))
-                .await
-                .map_err(|e| format!("lookup_equal: {e}"))?
-                .candid()
-                .map_err(|e| format!("lookup_equal decode: {e}"))?;
-            Ok(hits)
-        }
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let _ = (property_id, value);
-            Err("lookup_equal unavailable in native builds".into())
-        }
     }
 
     pub async fn lookup_equal_page(
@@ -293,29 +269,4 @@ impl RouterIndexClient {
         }
     }
 
-    pub async fn lookup_edge_equal(
-        &self,
-        property_id: u32,
-        value: Vec<u8>,
-        label_id: Option<u16>,
-    ) -> Result<Vec<EdgePostingHit>, String> {
-        #[cfg(target_family = "wasm")]
-        {
-            use ic_cdk::call::Call;
-
-            let hits: Vec<EdgePostingHit> =
-                Call::bounded_wait(self.index_canister, "lookup_edge_equal")
-                    .with_args(&(property_id, value, label_id))
-                    .await
-                    .map_err(|e| format!("lookup_edge_equal: {e}"))?
-                    .candid()
-                    .map_err(|e| format!("lookup_edge_equal decode: {e}"))?;
-            Ok(hits)
-        }
-        #[cfg(not(target_family = "wasm"))]
-        {
-            let _ = (property_id, value, label_id);
-            Err("lookup_edge_equal unavailable in native builds".into())
-        }
-    }
 }

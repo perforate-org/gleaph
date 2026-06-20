@@ -1,7 +1,7 @@
 //! Sortable property-index keys for equality and range postings.
 
 use gleaph_gql::{Value, value_to_index_key_bytes};
-use gleaph_graph_kernel::index::{MAX_INDEX_VALUE_KEY_BYTES, validate_index_value_key_bytes};
+use gleaph_graph_kernel::index::validate_index_value_key_bytes;
 
 /// Whether a property value participates in equality or range index postings.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -41,6 +41,7 @@ pub(crate) fn sortable_index_key(value: &Value) -> Option<Vec<u8>> {
 mod tests {
     use super::*;
     use gleaph_gql::Value;
+    use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
 
     #[test]
     fn null_values_are_not_indexable() {
