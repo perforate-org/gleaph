@@ -44,7 +44,10 @@ impl GraphStore {
         self.ensure_vertex_id(vertex_id)
             .map_err(GraphStoreError::from)?;
         self.commit_prepare_vertex_sidecars_for_delete(vertex_id)?;
-        self.mark_vertex_pending_purge(vertex_id);
+        // Gate before tombstone: if marking fails we must not tombstone, or the
+        // vertex's surviving incident edges would be visible as ghost edges
+        // (ADR 0021).
+        self.mark_vertex_pending_purge(vertex_id)?;
         self.with_graph_mut(|graph| graph.begin_vertex_delete_deferred(vertex_id))?;
         self.drain_deferred_maintenance()
     }
@@ -119,7 +122,9 @@ mod tests {
         store
             .commit_prepare_vertex_sidecars_for_delete(hub)
             .expect("prepare hub sidecars");
-        store.mark_vertex_pending_purge(hub);
+        store
+            .mark_vertex_pending_purge(hub)
+            .expect("mark pending purge");
         store
             .with_graph_mut(|graph| graph.begin_vertex_delete_deferred(hub))
             .expect("begin resumable delete");

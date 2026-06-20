@@ -482,3 +482,24 @@ Re-arm in `post_upgrade` already covers resuming in-flight purges (ADR 0020).
 - **Fitness for purpose:** solves the concrete super-node trap by extending the
   deferred-maintenance domain; no general-purpose crate gains Gleaph/ICP
   specifics (the gate uses only LARA's own tombstone bit).
+
+## Addendum: pending-purge insert must succeed before the tombstone
+
+The membership index and the tombstone are two stores, so their write order is
+load-bearing. The implementation inserts `v` into the pending-purge bitmap
+**before** tombstoning the CSR row (`commit_detach_delete_vertex`), and the
+insert is **fail-closed**: a `BitmapError` (e.g. stable-memory `GrowFailed`)
+aborts the whole detach-delete via `GraphStoreError::PendingPurgeTracking`, so no
+tombstone is written.
+
+Previously the insert error was dropped (`let _ = set.insert(..)`). A tombstone
+written after a silently-failed insert would leave `v` invisible as a vertex but
+**absent from the read gate**, so any incident back-edge that survives a purge
+spilled to the timer would be a visible *ghost edge* — a violation of the refined
+ADR 0017 invariant. Surfacing the error keeps the two stores agreeing: either `v`
+is both tracked and tombstoned, or neither.
+
+The complementary `clear` (purge-completed observer) stays infallible: it runs in
+a `()`-returning callback, clearing an already-set bit never grows the bitmap,
+and a failed clear can only over-hide an already-tombstoned vertex (safe), never
+expose a ghost edge.

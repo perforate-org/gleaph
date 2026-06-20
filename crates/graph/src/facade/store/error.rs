@@ -5,6 +5,7 @@ use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::{
     DeferredBidirectionalLabeledError, VertexId, labeled::BucketLabelKey as LaraLabelId,
 };
+use ic_stable_roaring::BitmapError;
 use std::fmt;
 
 #[derive(Debug)]
@@ -41,6 +42,10 @@ pub enum GraphStoreError {
     },
     /// Shard-local CSR row is tombstoned.
     VertexTombstoned,
+    /// Recording a vertex in the pending-purge set failed (ADR 0021). Surfaced
+    /// before the vertex is tombstoned so a tracking failure can never leave a
+    /// tombstoned vertex with ungated, visible incident edges.
+    PendingPurgeTracking(BitmapError),
 }
 
 impl fmt::Display for GraphStoreError {
@@ -92,6 +97,9 @@ impl fmt::Display for GraphStoreError {
                 write!(f, "invalid federated expand edge payload: {detail}")
             }
             Self::VertexTombstoned => write!(f, "vertex row is tombstoned on this shard"),
+            Self::PendingPurgeTracking(err) => {
+                write!(f, "failed to record vertex pending-purge: {err}")
+            }
         }
     }
 }
@@ -103,6 +111,7 @@ impl std::error::Error for GraphStoreError {
             Self::PropertyCatalog(err) => Some(err),
             Self::VertexLabel(err) => Some(err),
             Self::PropertyValue(err) => Some(err),
+            Self::PendingPurgeTracking(err) => Some(err),
             Self::VertexNotDetached { .. }
             | Self::EdgeNotFound { .. }
             | Self::InvalidEdgeLabelId(_)

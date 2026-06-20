@@ -9,6 +9,7 @@
 use ic_stable_lara::VertexId;
 
 use super::GraphStore;
+use super::error::GraphStoreError;
 use crate::facade::stable::PENDING_VERTEX_PURGES;
 
 impl GraphStore {
@@ -24,14 +25,27 @@ impl GraphStore {
     }
 
     /// Marks `vertex_id` as mid-purge. Idempotent.
-    pub(crate) fn mark_vertex_pending_purge(&self, vertex_id: VertexId) {
-        PENDING_VERTEX_PURGES.with_borrow(|set| {
-            let _ = set.insert(u32::from(vertex_id));
-        });
+    ///
+    /// Fallible on purpose: callers must propagate the error *before* tombstoning
+    /// the vertex. If the bit insert silently failed, the vertex would be
+    /// tombstoned yet absent from the read gate, leaving its surviving incident
+    /// edges visible as ghost edges until the purge drained (ADR 0021).
+    pub(crate) fn mark_vertex_pending_purge(
+        &self,
+        vertex_id: VertexId,
+    ) -> Result<(), GraphStoreError> {
+        PENDING_VERTEX_PURGES
+            .with_borrow(|set| set.insert(u32::from(vertex_id)))
+            .map_err(GraphStoreError::PendingPurgeTracking)
     }
 
     /// Clears `vertex_id` from the pending-purge set once its purge completes.
     /// Idempotent.
+    ///
+    /// Infallible by design: this runs from the `()`-returning purge-completed
+    /// observer, and clearing an already-set bit never grows the bitmap. A failed
+    /// clear can only over-hide an already-tombstoned vertex (safe), never expose
+    /// a ghost edge, so the error is intentionally not surfaced.
     pub(crate) fn clear_vertex_pending_purge(&self, vertex_id: VertexId) {
         PENDING_VERTEX_PURGES.with_borrow(|set| {
             let _ = set.clear(u32::from(vertex_id));

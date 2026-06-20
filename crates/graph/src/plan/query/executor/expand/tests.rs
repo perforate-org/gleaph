@@ -3046,7 +3046,9 @@ fn from_edge_gate_hides_pending_purge_local_destination() {
         Ok(Some(ExpandDst::Local(v))) if v == b
     ));
 
-    store.mark_vertex_pending_purge(b);
+    store
+        .mark_vertex_pending_purge(b)
+        .expect("mark pending purge");
     assert!(
         matches!(ExpandDst::from_edge(&edge), Ok(None)),
         "edge to a pending-purge vertex must resolve to no candidate"
@@ -3089,7 +3091,9 @@ fn expand_candidates_skip_pending_purge_neighbor() {
         .insert_directed_edge_named(a, purged, Some("PurgeCandRel"), Vec::<(&str, Value)>::new())
         .expect("a->purged");
 
-    store.mark_vertex_pending_purge(purged);
+    store
+        .mark_vertex_pending_purge(purged)
+        .expect("mark pending purge");
 
     let mut out = Vec::new();
     super::expand_candidates_into(
@@ -3139,7 +3143,9 @@ fn expand_query_hides_pending_purge_neighbor() {
         .expect("execute before purge");
     assert_eq!(before.rows.len(), 2);
 
-    store.mark_vertex_pending_purge(bob);
+    store
+        .mark_vertex_pending_purge(bob)
+        .expect("mark pending purge");
     let during = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
         .expect("execute during purge");
@@ -3196,7 +3202,9 @@ fn expand_anonymous_target_hides_pending_purge_edge() {
         .expect("execute before purge");
     assert_eq!(before.rows.len(), 2);
 
-    store.mark_vertex_pending_purge(bob);
+    store
+        .mark_vertex_pending_purge(bob)
+        .expect("mark pending purge");
     let during = store
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
         .expect("execute during purge");
