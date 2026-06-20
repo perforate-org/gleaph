@@ -43,7 +43,15 @@ impl Parser<'_> {
     }
 
     /// Pratt parser core: parse an expression with the given minimum precedence.
+    ///
+    /// Guards recursion depth so deeply nested expressions (e.g. thousands of
+    /// parentheses or `NOT`/unary chains) fail with a bounded parse error
+    /// instead of overflowing the stack.
     fn parse_expr_prec(&mut self, min_prec: Prec) -> Result<Expr, GqlError> {
+        self.recurse(|p| p.parse_expr_prec_inner(min_prec))
+    }
+
+    fn parse_expr_prec_inner(&mut self, min_prec: Prec) -> Result<Expr, GqlError> {
         let start = self.save();
 
         // ── Prefix operators ────────────────────────────────────────────

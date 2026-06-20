@@ -115,4 +115,58 @@ mod tests {
         let program = parse("// comment\nMATCH (n) RETURN n").unwrap();
         assert!(program.transaction_activity.is_some());
     }
+
+    // ── Recursion-depth guard (stack-overflow DoS hardening) ─────────────
+    //
+    // A recursive-descent parser fed deeply nested input would otherwise
+    // overflow the (wasm) stack and trap the canister. The guard converts that
+    // into a bounded parse error. Each negative case uses far more nesting than
+    // `Parser::MAX_RECURSION_DEPTH`.
+
+    fn assert_depth_error(input: &str) {
+        match parse(input) {
+            Err(GqlError::Parse(msg)) => assert!(
+                msg.contains("nesting depth"),
+                "expected a nesting-depth error, got: {msg}"
+            ),
+            Err(other) => panic!("expected a nesting-depth parse error, got: {other:?}"),
+            Ok(_) => panic!("deeply nested input should be rejected, not parsed"),
+        }
+    }
+
+    #[test]
+    fn deeply_nested_parentheses_are_rejected_not_overflowing() {
+        let depth = 10_000;
+        let input = format!("RETURN {}1{}", "(".repeat(depth), ")".repeat(depth));
+        assert_depth_error(&input);
+    }
+
+    #[test]
+    fn deeply_nested_not_chain_is_rejected_not_overflowing() {
+        let input = format!("RETURN {}true", "NOT ".repeat(10_000));
+        assert_depth_error(&input);
+    }
+
+    #[test]
+    fn deeply_nested_subqueries_are_rejected_not_overflowing() {
+        let input = format!(
+            "RETURN {}1{}",
+            "VALUE { RETURN ".repeat(2_000),
+            " }".repeat(2_000)
+        );
+        // Either the subquery guard or the expression guard fires first; both
+        // are nesting-depth errors.
+        assert_depth_error(&input);
+    }
+
+    #[test]
+    fn moderately_nested_expression_still_parses() {
+        // Comfortably below MAX_RECURSION_DEPTH: must not be falsely rejected.
+        let depth = Parser::MAX_RECURSION_DEPTH / 4;
+        let input = format!("RETURN {}1{}", "(".repeat(depth), ")".repeat(depth));
+        assert!(
+            parse(&input).is_ok(),
+            "nesting below the limit must still parse"
+        );
+    }
 }

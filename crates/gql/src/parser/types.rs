@@ -60,6 +60,10 @@ impl Parser<'_> {
 
     /// Parses a primary (non-union, non-postfix-list) value type.
     fn parse_value_type_primary(&mut self) -> Result<ValueType, GqlError> {
+        self.recurse(Self::parse_value_type_primary_inner)
+    }
+
+    fn parse_value_type_primary_inner(&mut self) -> Result<ValueType, GqlError> {
         match self.peek() {
             // ── Boolean ────────────────────────────────────────────────────
             Some(Token::Ident(s)) if kw_eq(s, "BOOL") || kw_eq(s, "BOOLEAN") => {

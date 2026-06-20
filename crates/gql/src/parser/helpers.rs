@@ -11,12 +11,55 @@ pub use gleaph_gql_keywords::{is_prereserved_keyword, is_reserved_keyword};
 pub struct Parser<'a> {
     tokens: &'a [Spanned],
     pos: usize,
+    /// Current nesting depth across all recursive-descent productions
+    /// (expressions, patterns, value types, and nested queries). Bounded by
+    /// [`Parser::MAX_RECURSION_DEPTH`] via [`Parser::recurse`] so a maliciously
+    /// nested input cannot overflow the native/wasm stack.
+    depth: usize,
 }
 
 impl<'a> Parser<'a> {
+    /// Maximum recursive-descent nesting depth.
+    ///
+    /// Recursive productions (parenthesized expressions, `NOT`/unary chains,
+    /// nested path patterns, nested value types, and subqueries) each consume
+    /// one unit of depth. Legitimate queries nest far below this bound; the
+    /// limit exists purely to convert an unbounded-recursion stack overflow
+    /// (a denial-of-service trap on the canister) into a graceful parse error.
+    pub const MAX_RECURSION_DEPTH: usize = 64;
+
     /// Creates a new parser over the given token stream.
     pub fn new(tokens: &'a [Spanned]) -> Self {
-        Self { tokens, pos: 0 }
+        Self {
+            tokens,
+            pos: 0,
+            depth: 0,
+        }
+    }
+
+    /// Runs `f` one level deeper in the recursion, rejecting input that nests
+    /// beyond [`Parser::MAX_RECURSION_DEPTH`].
+    ///
+    /// All recursive-descent entry points that can be re-entered for nested
+    /// syntax route through this helper so that adversarial input (e.g.
+    /// thousands of nested parentheses) fails with a bounded parse error
+    /// instead of exhausting the stack. The depth counter is restored on every
+    /// path, including the error path, so backtracking parsers keep an accurate
+    /// count.
+    pub fn recurse<T>(
+        &mut self,
+        f: impl FnOnce(&mut Self) -> Result<T, GqlError>,
+    ) -> Result<T, GqlError> {
+        if self.depth >= Self::MAX_RECURSION_DEPTH {
+            return Err(self.error(format!(
+                "query exceeds maximum nesting depth of {}",
+                Self::MAX_RECURSION_DEPTH
+            )));
+        }
+        self.depth += 1;
+        let result = f(self);
+        self.depth -= 1;
+        result
     }
 
     // ── Position ─────────────────────────────────────────────────────────

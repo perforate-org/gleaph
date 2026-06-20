@@ -176,6 +176,10 @@ impl Parser<'_> {
     /// Parses a composite query expression: linear queries joined by
     /// UNION / EXCEPT / INTERSECT / OTHERWISE.
     pub fn parse_composite_query_expr(&mut self) -> Result<CompositeQueryExpr, GqlError> {
+        self.recurse(Self::parse_composite_query_expr_inner)
+    }
+
+    fn parse_composite_query_expr_inner(&mut self) -> Result<CompositeQueryExpr, GqlError> {
         let start = self.save();
         let (at_schema, prefix_bindings) = self.parse_procedure_prefix()?;
         let mut left = self.parse_linear_query()?;

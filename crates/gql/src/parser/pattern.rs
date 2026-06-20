@@ -352,6 +352,10 @@ impl Parser<'_> {
     ///   pathTerm ( '|+|' pathTerm )* — multiset alternation
     ///   pathTerm — single term
     fn parse_path_pattern_expr(&mut self) -> Result<PathPatternExpr, GqlError> {
+        self.recurse(Self::parse_path_pattern_expr_inner)
+    }
+
+    fn parse_path_pattern_expr_inner(&mut self) -> Result<PathPatternExpr, GqlError> {
         let first = self.parse_path_term()?;
 
         if self.at_token(&Token::MultisetAlt) {
