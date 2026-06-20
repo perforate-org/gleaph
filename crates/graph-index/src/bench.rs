@@ -10,7 +10,8 @@ use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    IndexEqualSpec, IndexIntersectionRequest, LookupEqualPageRequest, PostingHit,
+    IndexEqualSpec, IndexIntersectionRequest, LookupEqualPageRequest,
+    LookupIntersectionPageRequest, PostingHit,
 };
 use std::cell::Cell;
 use std::hint::black_box;
@@ -159,5 +160,28 @@ fn bench_filter_hits_by_equal_page() -> canbench_rs::BenchResult {
             .filter_hits_by_equal(INTERSECTION_SIEVE_PROPERTY, black_box(&sieve_value), hits)
             .expect("filter_hits_by_equal");
         black_box(survivors);
+    })
+}
+
+/// One server-side `lookup_intersection_page` call (walk one full page + merge-join sieve in-heap) —
+/// the single inter-canister message the streaming consumers now loop over per page, replacing the
+/// previous `lookup_equal_page` + N `filter_hits_by_equal` round trips.
+#[bench(raw)]
+fn bench_lookup_intersection_page() -> canbench_rs::BenchResult {
+    let (store, walk_value, sieve_value) = setup_two_arm_store();
+    let req = LookupIntersectionPageRequest {
+        specs: vec![
+            IndexEqualSpec::vertex(INTERSECTION_WALK_PROPERTY, walk_value),
+            IndexEqualSpec::vertex(INTERSECTION_SIEVE_PROPERTY, sieve_value),
+        ],
+        after: None,
+        limit: INTERSECTION_ARM_LEN,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_intersection_page");
+        let page = store
+            .lookup_intersection_page(black_box(&req))
+            .expect("lookup_intersection_page");
+        black_box(page);
     })
 }

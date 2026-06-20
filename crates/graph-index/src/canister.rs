@@ -8,8 +8,8 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexIntersectionResult, LookupEdgeEqualPageRequest,
-    LookupEqualPageRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
-    PostingRangeRequest, ValuePostingCount,
+    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangePageRequest, PostingHit,
+    PostingHitPage, PostingRangeRequest, ValuePostingCount,
 };
 use ic_cdk::api::msg_caller;
 
@@ -241,13 +241,9 @@ pub(crate) fn filter_hits_by_label(vertex_label_id: u32, hits: Vec<PostingHit>) 
     IndexStore::new().filter_hits_by_label(vertex_label_id, &hits)
 }
 
-pub(crate) fn filter_hits_by_equal(
-    property_id: u32,
-    value: Vec<u8>,
-    hits: Vec<PostingHit>,
-) -> Vec<PostingHit> {
+pub(crate) fn lookup_intersection_page(req: LookupIntersectionPageRequest) -> PostingHitPage {
     IndexStore::new()
-        .filter_hits_by_equal(property_id, &value, hits)
+        .lookup_intersection_page(&req)
         .unwrap_or_else(|e| {
             trap_err(e);
             unreachable!()

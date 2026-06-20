@@ -32,8 +32,8 @@ pub use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, IndexEqualSpec,
     IndexIntersectionRequest, IndexIntersectionResult, IndexLabelIntersectionRequest, IndexSubject,
     LabelLookupPageRequest, LabelLookupPageResult, LabelPostingCursor, LookupEdgeEqualPageRequest,
-    LookupEqualPageRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
-    PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
+    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangePageRequest, PostingHit,
+    PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
@@ -220,12 +220,8 @@ fn filter_hits_by_label(vertex_label_id: u32, hits: Vec<PostingHit>) -> Vec<Post
 }
 
 #[query(guard = "guard_router_canister")]
-fn filter_hits_by_equal(
-    property_id: u32,
-    value: Vec<u8>,
-    hits: Vec<PostingHit>,
-) -> Vec<PostingHit> {
-    canister::filter_hits_by_equal(property_id, value, hits)
+fn lookup_intersection_page(req: LookupIntersectionPageRequest) -> PostingHitPage {
+    canister::lookup_intersection_page(req)
 }
 
 #[query(guard = "guard_router_canister")]

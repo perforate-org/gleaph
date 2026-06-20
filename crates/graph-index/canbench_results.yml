@@ -2,13 +2,13 @@ benches:
   bench_filter_hits_by_equal_page:
     total:
       calls: 1
-      instructions: 8410080
+      instructions: 8428511
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       filter_hits_by_equal_page:
         calls: 1
-        instructions: 8409015
+        instructions: 8427446
         heap_increase: 0
         stable_memory_increase: 0
   bench_layout_index_posting_insert_64:
@@ -26,25 +26,37 @@ benches:
   bench_lookup_equal_page_walk_arm:
     total:
       calls: 1
-      instructions: 15834362
+      instructions: 15871225
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_equal_page_walk_arm:
         calls: 1
-        instructions: 15833321
+        instructions: 15870184
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lookup_intersection_page:
+    total:
+      calls: 1
+      instructions: 24318761
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lookup_intersection_page:
+        calls: 1
+        instructions: 24317712
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_intersection_two_arms:
     total:
       calls: 1
-      instructions: 36392894
+      instructions: 36448179
       heap_increase: 3
       stable_memory_increase: 0
     scopes:
       lookup_intersection_two_arms:
         calls: 1
-        instructions: 36391854
+        instructions: 36447139
         heap_increase: 3
         stable_memory_increase: 0
 version: 0.4.0

@@ -200,6 +200,19 @@ pub struct LookupEqualPageRequest {
     pub limit: u32,
 }
 
+/// Paginated all-vertex equality intersection (the planner's `IndexIntersection` shape).
+///
+/// The index walks the first arm (`specs[0]`) in pages and sieves each page against the remaining
+/// arms server-side, returning at most `limit` surviving hits plus a [`PropertyPostingCursor`] over
+/// the walk arm. This keeps the per-message heap bounded (no per-arm set is materialized) and folds
+/// the walk + sieve into a single inter-canister call per page (vs one call per arm per page).
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupIntersectionPageRequest {
+    pub specs: Vec<IndexEqualSpec>,
+    pub after: Option<PropertyPostingCursor>,
+    pub limit: u32,
+}
+
 /// Paginated range export over encoded values for one vertex property.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct LookupRangePageRequest {
@@ -321,11 +334,25 @@ mod tests {
                 shard_id: ShardId::new(2),
                 vertex_id: 7,
             }],
-            next: Some(cursor),
+            next: Some(cursor.clone()),
             done: false,
         };
         let bytes = Encode!(&page).expect("encode page");
         assert_eq!(Decode!(&bytes, PostingHitPage).expect("decode page"), page);
+
+        let intersection = LookupIntersectionPageRequest {
+            specs: vec![
+                IndexEqualSpec::vertex(1, vec![1]),
+                IndexEqualSpec::vertex(2, vec![2]),
+            ],
+            after: Some(cursor),
+            limit: 256,
+        };
+        let bytes = Encode!(&intersection).expect("encode intersection page");
+        assert_eq!(
+            Decode!(&bytes, LookupIntersectionPageRequest).expect("decode intersection page"),
+            intersection
+        );
     }
 
     #[test]

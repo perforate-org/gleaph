@@ -10,7 +10,8 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
     IndexLabelIntersectionRequest, IndexSubject, LabelLookupPageRequest, LabelLookupPageResult,
-    LookupEdgeEqualPageRequest, LookupEqualPageRequest, PostingHit, ValuePostingCount,
+    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupIntersectionPageRequest, PostingHit,
+    ValuePostingCount,
 };
 
 use crate::facade::store::RouterStore;
@@ -85,38 +86,26 @@ fn all_vertex_specs(specs: &[IndexEqualSpec]) -> bool {
             .all(|s| matches!(s.subject, IndexSubject::VertexProperty))
 }
 
-/// Streaming all-vertex intersection on one index canister: page the first arm
-/// ([`RouterIndexClient::lookup_equal_page`]) and sieve each page against the remaining arms via
-/// [`RouterIndexClient::filter_hits_by_equal`] (`contains`). No arm's full bucket is materialized in
-/// the index heap. Mirrors `collect_label_intersection_hits_for_shards` for labels.
+/// Streaming all-vertex intersection on one index canister via the server-side
+/// [`RouterIndexClient::lookup_intersection_page`]: the index walks the first arm one page at a time
+/// and sieves each page against the remaining arms in-heap, so no arm's full bucket is materialized
+/// and the walk + sieve fold into a single inter-canister call per page (vs one call per arm per
+/// page). Mirrors `collect_label_intersection_hits_for_shards` for labels.
 async fn collect_vertex_intersection_hits_paged(
     client: &RouterIndexClient,
     specs: &[IndexEqualSpec],
 ) -> Result<Vec<PostingHit>, String> {
-    let (walk, sieve) = specs
-        .split_first()
-        .expect("all_vertex_specs guarantees >= 2 arms");
     let mut hits = Vec::new();
     let mut after = None;
     loop {
         let page = client
-            .lookup_equal_page(LookupEqualPageRequest {
-                property_id: walk.property_id,
-                value: walk.value.clone(),
+            .lookup_intersection_page(LookupIntersectionPageRequest {
+                specs: specs.to_vec(),
                 after,
                 limit: INDEX_LOOKUP_PAGE_LIMIT,
             })
             .await?;
-        let mut survivors = page.hits;
-        for arm in sieve {
-            if survivors.is_empty() {
-                break;
-            }
-            survivors = client
-                .filter_hits_by_equal(arm.property_id, arm.value.clone(), survivors)
-                .await?;
-        }
-        hits.extend(survivors);
+        hits.extend(page.hits);
         if page.done {
             break;
         }

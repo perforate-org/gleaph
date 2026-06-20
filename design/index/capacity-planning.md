@@ -1,7 +1,7 @@
 # Index and catalog capacity planning
 
 Last updated: 2026-06-20
-Anchor timestamp: 2026-06-20 00:35:44 UTC +0000
+Anchor timestamp: 2026-06-20 01:27:36 UTC +0000
 
 ## Status
 
@@ -28,7 +28,7 @@ Source: [IC resource limits](https://docs.internetcomputer.org/references/resour
 |-------|-------|----------------|
 | Stable memory per canister | **500 GiB** | Hard upper bound for `INDEX_*` regions + future catalog stable |
 | Stable read/write per replicated update | **2 GiB** | Backfill and large range scans must batch (`admin_*_backfill_step`) |
-| Wasm heap (wasm64 / EOP) | 6 GiB | Query paths must not materialize full buckets in heap (**Implemented** for label, property, and edge equality/range exports via paginated `*_page` reads, and for **all-vertex equality intersection** via paged walk + `filter_hits_by_equal` `contains` sieve; **edge / mixed intersection** still materializes per-arm sets server-side — see [lookup-intersection.md](lookup-intersection.md#streaming-intersection-status)) |
+| Wasm heap (wasm64 / EOP) | 6 GiB | Query paths must not materialize full buckets in heap (**Implemented** for label, property, and edge equality/range exports via paginated `*_page` reads, and for **all-vertex equality intersection** via the paged `lookup_intersection_page` (walk-arm page + in-heap merge-join sieve); **edge / mixed intersection** still materializes per-arm sets server-side — see [lookup-intersection.md](lookup-intersection.md#streaming-intersection-status)) |
 
 **Operational headroom (recommended):**
 

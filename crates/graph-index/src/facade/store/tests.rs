@@ -10,7 +10,8 @@ use gleaph_graph_kernel::federation::{ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, IndexEqualSpec, IndexIntersectionResult,
     LabelLookupPageRequest, LabelPostingCursor, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
-    LookupRangePageRequest, PostingHit, PostingRangeRequest, PropertyPostingCursor,
+    LookupIntersectionPageRequest, LookupRangePageRequest, PostingHit, PostingRangeRequest,
+    PropertyPostingCursor,
 };
 
 fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
@@ -818,14 +819,18 @@ fn paged_walk_plus_equal_sieve_matches_lookup_intersection() {
             .expect("arm 2");
     }
 
-    let expected = store
+    let IndexIntersectionResult::Vertices(mut expected) = store
         .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
             specs: vec![
                 IndexEqualSpec::vertex(1, b"alice".to_vec()),
                 IndexEqualSpec::vertex(2, b"a@b.c".to_vec()),
             ],
         })
-        .expect("lookup_intersection");
+        .expect("lookup_intersection")
+    else {
+        panic!("expected vertex intersection");
+    };
+    expected.sort_by_key(|hit| (hit.shard_id, hit.vertex_id));
 
     // Stream the first arm in pages of 1 and sieve the second arm via `contains`,
     // mirroring the router/graph streaming composition (no full-bucket materialization).
@@ -850,7 +855,86 @@ fn paged_walk_plus_equal_sieve_matches_lookup_intersection() {
         after = page.next;
     }
 
-    assert_eq!(IndexIntersectionResult::Vertices(streamed), expected);
+    // The paged walk emits hits in `(shard, vertex)` order; the materializing baseline is unordered.
+    assert_eq!(streamed, expected);
+}
+
+#[test]
+fn lookup_intersection_page_paginates_and_matches_lookup_intersection() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_principal = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
+
+    for v in [10u32, 20, 30, 40] {
+        store
+            .posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), v)
+            .expect("arm 1");
+    }
+    for v in [20u32, 30] {
+        store
+            .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), v)
+            .expect("arm 2");
+    }
+
+    let IndexIntersectionResult::Vertices(mut expected) = store
+        .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+            specs: vec![
+                IndexEqualSpec::vertex(1, b"alice".to_vec()),
+                IndexEqualSpec::vertex(2, b"a@b.c".to_vec()),
+            ],
+        })
+        .expect("lookup_intersection")
+    else {
+        panic!("expected vertex intersection");
+    };
+    expected.sort_by_key(|hit| (hit.shard_id, hit.vertex_id));
+
+    // Drive the server-side paged endpoint with a 1-hit page so the walk arm spans multiple
+    // pages, including pages that yield zero survivors after the sieve.
+    let mut streamed = Vec::new();
+    let mut after = None;
+    loop {
+        let page = store
+            .lookup_intersection_page(&LookupIntersectionPageRequest {
+                specs: vec![
+                    IndexEqualSpec::vertex(1, b"alice".to_vec()),
+                    IndexEqualSpec::vertex(2, b"a@b.c".to_vec()),
+                ],
+                after,
+                limit: 1,
+            })
+            .expect("lookup_intersection_page");
+        streamed.extend(page.hits);
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+
+    // The paged walk emits hits in `(shard, vertex)` order; the materializing baseline is unordered.
+    assert_eq!(streamed, expected);
+}
+
+#[test]
+fn lookup_intersection_page_empty_for_fewer_than_two_specs() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_principal = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
+    store
+        .posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), 10)
+        .expect("arm");
+
+    let page = store
+        .lookup_intersection_page(&LookupIntersectionPageRequest {
+            specs: vec![IndexEqualSpec::vertex(1, b"alice".to_vec())],
+            after: None,
+            limit: 16,
+        })
+        .expect("lookup_intersection_page");
+    assert!(page.done);
+    assert!(page.hits.is_empty());
 }
 
 #[test]

@@ -86,20 +86,24 @@ The equality export reads (`lookup_equal` / `lookup_range` / `lookup_edge_equal`
 
 **All-vertex intersection is streamed (Implemented).** The planner's `IndexIntersection` is
 vertex-only, and the query consumers no longer call the materializing `lookup_intersection` for that
-shape. Instead they page the first arm (`lookup_equal_page`) and sieve each page against the
-remaining arms with `filter_hits_by_equal` (a per-hit `contains` check), so the index never builds an
-in-heap set for any arm. This mirrors the label path
-(`collect_label_intersection_hits_for_shards` in `router/src/federation/label_export.rs`). The
-streaming composition lives in:
+shape. Instead they loop the server-side **`lookup_intersection_page`** query: the index walks the
+first arm one page at a time (`lookup_equal_page` bounds) and sieves each page against the remaining
+arms in-heap via the merge-join `filter_hits_by_equal`, returning a bounded page of survivors plus
+the walk-arm cursor. The index never builds an in-heap set for any arm, and the walk + sieve fold
+into **one inter-canister message per page** instead of one `lookup_equal_page` call plus one
+`filter_hits_by_equal` call per arm per page. The consumers are:
 
-- Router: `collect_vertex_intersection_hits_paged` in `router/src/index_lookup.rs`, used by both
-  `IndexLookup::lookup_intersection` impls (`RouterIndexClient`, `RouterIndexLookup`) when
-  `all_vertex_specs(&specs)` holds.
+- Router: `collect_vertex_intersection_hits_paged` in `router/src/index_lookup.rs` loops
+  `RouterIndexClient::lookup_intersection_page`, used by both `IndexLookup::lookup_intersection`
+  impls (`RouterIndexClient`, `RouterIndexLookup`) when `all_vertex_specs(&specs)` holds.
 - Standalone graph: `IcPropertyIndexClient::collect_vertex_intersection_hits` in
-  `graph/src/index/ic.rs`.
+  `graph/src/index/ic.rs` loops the same `lookup_intersection_page` query.
 
-The walk arm is the first spec (callers order arms; matches the label precedent — no size-based
-smallest-arm selection yet, since there is no cheap per-`(property,value)` cardinality signal).
+`lookup_intersection_page` returns an empty terminal page for fewer than two specs or any non-vertex
+spec; callers guard with `all_vertex_specs` and fall back to the materializing `lookup_intersection`
+otherwise. The walk arm is the first spec (callers order arms; matches the label precedent — no
+size-based smallest-arm selection yet, since there is no cheap per-`(property,value)` cardinality
+signal). `filter_hits_by_equal` remains an internal store method (no longer a canister endpoint).
 
 **Remaining gap (edge / mixed intersection):** the server-side `lookup_intersection` still
 **materializes one in-heap set per arm** for all-edge and mixed vertex+edge intersection (used by
@@ -116,16 +120,18 @@ sieve arm = the 2048 even ids; `canbench_results.yml` baseline):
 | Benchmark | Instructions | Heap increase |
 |-----------|--------------|---------------|
 | `bench_lookup_intersection_two_arms` (materializing, server-side) | 36.4 M | 3 pages |
+| `bench_lookup_intersection_page` (server-side paged walk + merge-join sieve) | 24.3 M | 0 pages |
 | `bench_lookup_equal_page_walk_arm` (one streamed walk page) | 15.8 M | 0 pages |
 | `bench_filter_hits_by_equal_page` (merge-join sieve over a 4096-hit page) | 8.4 M | 0 pages |
 
-**Result:** the streamed path (walk + per-page sieve ≈ 24 M for this shape) is now **both
-heap-bounded and fewer instructions** than the single materializing call (36 M). `filter_hits_by_equal`
-runs a **bounded sorted merge-join**: the page hits and the `(property_id, value)` bucket are both
-ordered by `(shard_id, vertex_id)`, so it scans the bucket range `[min(hits), max(hits)]` once in
-lockstep with the page instead of doing one stable point lookup per hit. This replaced a per-hit
-`contains` sieve that cost 173 M for the same page (−95%) by turning random tree descents into a
-sequential scan. Heap stays bounded (0 pages: no arm set is materialized; `hits` is sorted in place).
+**Result:** the streamed `lookup_intersection_page` (walk + per-page sieve = 24.3 M for this shape,
+≈ walk 15.8 M + sieve 8.4 M) is now **both heap-bounded and fewer instructions** than the single
+materializing call (36.4 M, 3 heap pages), in **one message per page**. `filter_hits_by_equal` runs a
+**bounded sorted merge-join**: the page hits and the `(property_id, value)` bucket are both ordered by
+`(shard_id, vertex_id)`, so it scans the bucket range `[min(hits), max(hits)]` once in lockstep with
+the page instead of doing one stable point lookup per hit. This replaced a per-hit `contains` sieve
+that cost 173 M for the same page (−95%) by turning random tree descents into a sequential scan. Heap
+stays bounded (0 pages: no arm set is materialized; `hits` is sorted in place).
 
 **Caveat / future work:** the merge-join scans every bucket posting within the page's key span, so a
 sparse walk page spanning a dense sieve arm can still scan many sieve postings in one message (no

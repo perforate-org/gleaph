@@ -12,8 +12,8 @@ use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    LookupEqualPageRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
-    PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
+    IndexSubject, LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangePageRequest,
+    PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
 };
 use std::ops::Bound;
 
@@ -121,6 +121,48 @@ impl IndexStore {
             None => Bound::Included(PostingKey::prefix_lower(req.property_id, &req.value)),
         };
         Ok(collect_vertex_posting_page(lower, upper, limit))
+    }
+
+    /// Paginated all-vertex equality intersection: walk `specs[0]` one page at a time and sieve each
+    /// page against the remaining arms in-heap. Server-side composition of [`Self::lookup_equal_page`]
+    /// and [`Self::filter_hits_by_equal`], so one inter-canister call returns a bounded page of
+    /// survivors plus the walk-arm cursor — no per-arm set is ever materialized, and the walk + sieve
+    /// fold into a single message per page instead of one message per arm per page.
+    ///
+    /// Returns an empty terminal page when given fewer than two specs or any non-vertex spec; the
+    /// router only routes all-vertex requests here and falls back to the materializing
+    /// [`Self::lookup_intersection`] otherwise.
+    pub fn lookup_intersection_page(
+        &self,
+        req: &LookupIntersectionPageRequest,
+    ) -> Result<PostingHitPage, IndexError> {
+        if req.specs.len() < 2
+            || !req
+                .specs
+                .iter()
+                .all(|spec| matches!(spec.subject, IndexSubject::VertexProperty))
+        {
+            return Ok(empty_posting_page());
+        }
+        let walk = &req.specs[0];
+        let walk_page = self.lookup_equal_page(&LookupEqualPageRequest {
+            property_id: walk.property_id,
+            value: walk.value.clone(),
+            after: req.after.clone(),
+            limit: req.limit,
+        })?;
+        let mut survivors = walk_page.hits;
+        for arm in &req.specs[1..] {
+            if survivors.is_empty() {
+                break;
+            }
+            survivors = self.filter_hits_by_equal(arm.property_id, &arm.value, survivors)?;
+        }
+        Ok(PostingHitPage {
+            hits: survivors,
+            next: walk_page.next,
+            done: walk_page.done,
+        })
     }
 
     /// Walk the property bucket and return `(encoded_value, global_count)` groups with `count >= min_count`.

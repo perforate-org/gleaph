@@ -7,7 +7,8 @@ use candid::Principal;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexEqualSpec, IndexIntersectionRequest,
     IndexIntersectionResult, IndexSubject, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
-    LookupRangePageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
+    LookupIntersectionPageRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
+    PostingRangeRequest,
 };
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
@@ -45,44 +46,29 @@ fn all_vertex_specs(specs: &[IndexEqualSpec]) -> bool {
 }
 
 impl IcPropertyIndexClient {
-    /// Streaming all-vertex intersection: page the first arm (`lookup_equal_page`) and sieve each
-    /// page against the remaining arms via `filter_hits_by_equal` (`contains`), so no arm's full
-    /// bucket is materialized in the index heap.
+    /// Streaming all-vertex intersection via the server-side `lookup_intersection_page`: the index
+    /// walks the first arm one page at a time and sieves each page against the remaining arms
+    /// in-heap, so no arm's full bucket is materialized and the walk + sieve fold into a single
+    /// inter-canister call per page (vs one call per arm per page).
     async fn collect_vertex_intersection_hits(
         &self,
         specs: &[IndexEqualSpec],
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
-        let (walk, sieve) = specs
-            .split_first()
-            .expect("all_vertex_specs guarantees >= 2 arms");
         let mut hits = Vec::new();
         let mut after = None;
         loop {
             let page: PostingHitPage =
-                Call::bounded_wait(self.index_principal, "lookup_equal_page")
-                    .with_args(&(LookupEqualPageRequest {
-                        property_id: walk.property_id,
-                        value: walk.value.clone(),
+                Call::bounded_wait(self.index_principal, "lookup_intersection_page")
+                    .with_args(&(LookupIntersectionPageRequest {
+                        specs: specs.to_vec(),
                         after,
                         limit: INDEX_PAGE_LIMIT,
                     },))
                     .await
-                    .map_err(|e| ic_wait_err("lookup_equal_page", e))?
+                    .map_err(|e| ic_wait_err("lookup_intersection_page", e))?
                     .candid()
-                    .map_err(|_| ic_candid_decode_err("lookup_equal_page"))?;
-            let mut survivors = page.hits;
-            for arm in sieve {
-                if survivors.is_empty() {
-                    break;
-                }
-                survivors = Call::bounded_wait(self.index_principal, "filter_hits_by_equal")
-                    .with_args(&(arm.property_id, arm.value.clone(), survivors))
-                    .await
-                    .map_err(|e| ic_wait_err("filter_hits_by_equal", e))?
-                    .candid()
-                    .map_err(|_| ic_candid_decode_err("filter_hits_by_equal"))?;
-            }
-            hits.extend(survivors);
+                    .map_err(|_| ic_candid_decode_err("lookup_intersection_page"))?;
+            hits.extend(page.hits);
             if page.done {
                 break;
             }
@@ -160,10 +146,10 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         &self,
         req: &IndexIntersectionRequest,
     ) -> Result<IndexIntersectionResult, PlanQueryError> {
-        // All-vertex intersection (the planner's `IndexIntersection` shape) streams the first arm in
-        // pages and sieves the remaining arms via `filter_hits_by_equal` (`contains`), so the index
-        // never materializes a full posting bucket per arm. Edge / mixed arms still use the
-        // server-side `lookup_intersection`.
+        // All-vertex intersection (the planner's `IndexIntersection` shape) uses the server-side
+        // paged `lookup_intersection_page`, which walks the first arm in pages and sieves the
+        // remaining arms in-heap, so the index never materializes a full posting bucket per arm.
+        // Edge / mixed arms still use the server-side `lookup_intersection`.
         if all_vertex_specs(&req.specs) {
             let hits = self.collect_vertex_intersection_hits(&req.specs).await?;
             return Ok(IndexIntersectionResult::Vertices(hits));

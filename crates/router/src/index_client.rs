@@ -4,8 +4,8 @@ use candid::Principal;
 use gleaph_graph_kernel::index::{
     EdgePostingHitPage, IndexIntersectionRequest, IndexIntersectionResult,
     IndexLabelIntersectionRequest, LabelLookupPageRequest, LabelLookupPageResult,
-    LookupEdgeEqualPageRequest, LookupEqualPageRequest, PostingHit, PostingHitPage,
-    ValuePostingCount,
+    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupIntersectionPageRequest, PostingHit,
+    PostingHitPage, ValuePostingCount,
 };
 
 #[derive(Clone, Debug)]
@@ -116,29 +116,27 @@ impl RouterIndexClient {
         }
     }
 
-    pub async fn filter_hits_by_equal(
+    pub async fn lookup_intersection_page(
         &self,
-        property_id: u32,
-        value: Vec<u8>,
-        hits: Vec<PostingHit>,
-    ) -> Result<Vec<PostingHit>, String> {
+        req: LookupIntersectionPageRequest,
+    ) -> Result<PostingHitPage, String> {
         #[cfg(target_family = "wasm")]
         {
             use ic_cdk::call::Call;
 
-            let filtered: Vec<PostingHit> =
-                Call::bounded_wait(self.index_canister, "filter_hits_by_equal")
-                    .with_args(&(property_id, value, hits))
+            let page: PostingHitPage =
+                Call::bounded_wait(self.index_canister, "lookup_intersection_page")
+                    .with_args(&(req,))
                     .await
-                    .map_err(|e| format!("filter_hits_by_equal: {e}"))?
+                    .map_err(|e| format!("lookup_intersection_page: {e}"))?
                     .candid()
-                    .map_err(|e| format!("filter_hits_by_equal decode: {e}"))?;
-            Ok(filtered)
+                    .map_err(|e| format!("lookup_intersection_page decode: {e}"))?;
+            Ok(page)
         }
         #[cfg(not(target_family = "wasm"))]
         {
-            let _ = (property_id, value, hits);
-            Err("filter_hits_by_equal unavailable in native builds".into())
+            let _ = req;
+            Err("lookup_intersection_page unavailable in native builds".into())
         }
     }
 
@@ -268,5 +266,4 @@ impl RouterIndexClient {
             Err("lookup_intersection unavailable in native builds".into())
         }
     }
-
 }

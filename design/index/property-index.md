@@ -1,7 +1,7 @@
 # Property index
 
 Last updated: 2026-06-20
-Anchor timestamp: 2026-06-20 00:35:44 UTC +0000
+Anchor timestamp: 2026-06-20 01:27:36 UTC +0000
 
 ## Status
 
@@ -75,8 +75,8 @@ An index canister holds postings for shards attached to **one graph's index clus
 | `lookup_equal_page` | Implemented | Paginated equality export (`after` + `limit`); the seed-routing read path |
 | `lookup_range_page` | Implemented | Paginated range export over encoded values (`after` + `limit`) |
 | `lookup_edge_equal_page` | Implemented | Paginated edge equality export (`after` + `limit`) |
-| `lookup_intersection` | Implemented | Intersect multiple equality arms (edge/mixed; vertex-only is streamed by consumers — [lookup-intersection.md](lookup-intersection.md)) |
-| `filter_hits_by_equal` | Implemented | `contains` sieve: keep hits with a posting for `(property_id, value)`; per-page arm sieve for streaming vertex intersection |
+| `lookup_intersection` | Implemented | Intersect multiple equality arms (edge/mixed; vertex-only is streamed via `lookup_intersection_page` — [lookup-intersection.md](lookup-intersection.md)) |
+| `lookup_intersection_page` | Implemented | Paginated all-vertex equality intersection (`after` + `limit`): server-side walk-arm page + in-heap merge-join sieve; the streamed vertex-intersection read path |
 | `count_postings_by_value` | Implemented | Walk one property bucket; return `(encoded_value, count)` groups ([ADR 0003](../adr/0003-federated-aggregate-merge.md)) |
 
 All read APIs run entirely inside graph-index (no graph canister calls).
@@ -90,9 +90,10 @@ per-message heap on the index canister. The router (`RouterIndexLookup` /
 non-paginated `lookup_equal` / `lookup_range` / `lookup_edge_equal` endpoints are retained for small
 buckets and tests, mirroring `lookup_label` vs `lookup_label_page` ([label-index.md](label-index.md)
 path A). **All-vertex equality intersection** (the planner's `IndexIntersection`) is now **streamed**:
-consumers page the first arm via `lookup_equal_page` and sieve the rest via `filter_hits_by_equal`
-(`contains`), so no arm's full bucket is materialized. **Edge / mixed** intersection still builds
-per-arm posting sets in heap server-side — see
+consumers loop the server-side `lookup_intersection_page`, which walks the first arm one page at a
+time and sieves the rest in-heap via a bounded merge-join, so no arm's full bucket is materialized and
+the walk + sieve fold into one message per page. **Edge / mixed** intersection still builds per-arm
+posting sets in heap server-side — see
 [lookup-intersection.md](lookup-intersection.md#streaming-intersection-status).
 
 **Planned:** `count_postings_by_value_for_label` — same bucket walk with label membership sieve
