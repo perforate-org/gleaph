@@ -140,6 +140,32 @@ impl RouterIndexClient {
         }
     }
 
+    pub async fn filter_hits_by_equal(
+        &self,
+        property_id: u32,
+        value: Vec<u8>,
+        hits: Vec<PostingHit>,
+    ) -> Result<Vec<PostingHit>, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            let filtered: Vec<PostingHit> =
+                Call::bounded_wait(self.index_canister, "filter_hits_by_equal")
+                    .with_args(&(property_id, value, hits))
+                    .await
+                    .map_err(|e| format!("filter_hits_by_equal: {e}"))?
+                    .candid()
+                    .map_err(|e| format!("filter_hits_by_equal decode: {e}"))?;
+            Ok(filtered)
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = (property_id, value, hits);
+            Err("filter_hits_by_equal unavailable in native builds".into())
+        }
+    }
+
     pub async fn count_postings_by_value_for_label(
         &self,
         property_id: u32,

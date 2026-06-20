@@ -241,6 +241,19 @@ pub(crate) fn filter_hits_by_label(vertex_label_id: u32, hits: Vec<PostingHit>) 
     IndexStore::new().filter_hits_by_label(vertex_label_id, &hits)
 }
 
+pub(crate) fn filter_hits_by_equal(
+    property_id: u32,
+    value: Vec<u8>,
+    hits: Vec<PostingHit>,
+) -> Vec<PostingHit> {
+    IndexStore::new()
+        .filter_hits_by_equal(property_id, &value, &hits)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
+}
+
 pub(crate) fn count_postings_by_value_for_label(
     property_id: u32,
     vertex_label_id: u32,

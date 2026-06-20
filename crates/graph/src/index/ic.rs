@@ -5,9 +5,9 @@ use crate::plan::PlanQueryError;
 use async_trait::async_trait;
 use candid::Principal;
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, EdgePostingHitPage, IndexIntersectionRequest, IndexIntersectionResult,
-    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupRangePageRequest, PostingHit,
-    PostingHitPage, PostingRangeRequest,
+    EdgePostingHit, EdgePostingHitPage, IndexEqualSpec, IndexIntersectionRequest,
+    IndexIntersectionResult, IndexSubject, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
+    LookupRangePageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
 };
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
@@ -33,6 +33,62 @@ fn ic_candid_decode_err(op: &'static str) -> PlanQueryError {
     PlanQueryError::FederatedIndexCall {
         op,
         detail: "candid decode failed".into(),
+    }
+}
+
+/// `true` when every arm targets a vertex property (the planner's vertex-only `IndexIntersection`).
+fn all_vertex_specs(specs: &[IndexEqualSpec]) -> bool {
+    specs.len() >= 2
+        && specs
+            .iter()
+            .all(|s| matches!(s.subject, IndexSubject::VertexProperty))
+}
+
+impl IcPropertyIndexClient {
+    /// Streaming all-vertex intersection: page the first arm (`lookup_equal_page`) and sieve each
+    /// page against the remaining arms via `filter_hits_by_equal` (`contains`), so no arm's full
+    /// bucket is materialized in the index heap.
+    async fn collect_vertex_intersection_hits(
+        &self,
+        specs: &[IndexEqualSpec],
+    ) -> Result<Vec<PostingHit>, PlanQueryError> {
+        let (walk, sieve) = specs
+            .split_first()
+            .expect("all_vertex_specs guarantees >= 2 arms");
+        let mut hits = Vec::new();
+        let mut after = None;
+        loop {
+            let page: PostingHitPage =
+                Call::bounded_wait(self.index_principal, "lookup_equal_page")
+                    .with_args(&(LookupEqualPageRequest {
+                        property_id: walk.property_id,
+                        value: walk.value.clone(),
+                        after,
+                        limit: INDEX_PAGE_LIMIT,
+                    },))
+                    .await
+                    .map_err(|e| ic_wait_err("lookup_equal_page", e))?
+                    .candid()
+                    .map_err(|_| ic_candid_decode_err("lookup_equal_page"))?;
+            let mut survivors = page.hits;
+            for arm in sieve {
+                if survivors.is_empty() {
+                    break;
+                }
+                survivors = Call::bounded_wait(self.index_principal, "filter_hits_by_equal")
+                    .with_args(&(arm.property_id, arm.value.clone(), survivors))
+                    .await
+                    .map_err(|e| ic_wait_err("filter_hits_by_equal", e))?
+                    .candid()
+                    .map_err(|_| ic_candid_decode_err("filter_hits_by_equal"))?;
+            }
+            hits.extend(survivors);
+            if page.done {
+                break;
+            }
+            after = page.next;
+        }
+        Ok(hits)
     }
 }
 
@@ -104,6 +160,14 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         &self,
         req: &IndexIntersectionRequest,
     ) -> Result<IndexIntersectionResult, PlanQueryError> {
+        // All-vertex intersection (the planner's `IndexIntersection` shape) streams the first arm in
+        // pages and sieves the remaining arms via `filter_hits_by_equal` (`contains`), so the index
+        // never materializes a full posting bucket per arm. Edge / mixed arms still use the
+        // server-side `lookup_intersection`.
+        if all_vertex_specs(&req.specs) {
+            let hits = self.collect_vertex_intersection_hits(&req.specs).await?;
+            return Ok(IndexIntersectionResult::Vertices(hits));
+        }
         let result: IndexIntersectionResult =
             Call::bounded_wait(self.index_principal, "lookup_intersection")
                 .with_args(&(req.clone(),))

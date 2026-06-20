@@ -2,7 +2,7 @@
 
 ## Status
 
-**Implemented** — graph-index `lookup_intersection` returns `IndexIntersectionResult` (vertex, mixed, and all-edge arms per ADR 0009). Router seeds vertices (`PostingHit`) and edges (`LocalEdgePosting` via `EdgeIndexScan` / all-edge intersection). Graph skips leading `IndexIntersection` / `EdgeIndexScan` when seeded. Shard-local `EDGE_EQUALITY_POSTINGS` retired (ADR 0009 phase D).
+**Implemented** — graph-index `lookup_intersection` returns `IndexIntersectionResult` (vertex, mixed, and all-edge arms per ADR 0009). Router seeds vertices (`PostingHit`) and edges (`LocalEdgePosting` via `EdgeIndexScan` / all-edge intersection). Graph skips leading `IndexIntersection` / `EdgeIndexScan` when seeded. Shard-local `EDGE_EQUALITY_POSTINGS` retired (ADR 0009 phase D). The vertex-only intersection query path is **streamed** (paged walk + `filter_hits_by_equal` `contains` sieve) so it no longer materializes a full posting bucket per arm; edge/mixed intersection still materializes server-side — see [Streaming intersection status](#streaming-intersection-status).
 
 ## Purpose
 
@@ -84,14 +84,29 @@ The equality export reads (`lookup_equal` / `lookup_range` / `lookup_edge_equal`
 `*_page` APIs so query paths honor the **no full-bucket heap materialization** invariant
 ([capacity-planning.md](capacity-planning.md), [property-index.md](property-index.md#read-apis)).
 
-`lookup_intersection` (and the label analog `lookup_label_intersection`) still **materializes one
-in-heap set per arm** to compute the intersection, so it is not yet bounded by that invariant. The
-established bounded alternative is a streaming smallest-arm walk plus per-hit `contains` sieve — the
-router already uses this shape for label intersection
-(`collect_label_intersection_hits_for_shards` in `router/src/federation/label_export.rs`, paging the
-walk label and sieving others with `filter_hits_by_label`). Applying the same smallest-arm walk +
-equality `contains` sieve to property/edge intersection is the remaining work to extend the invariant
-to intersection; it is **not yet implemented**.
+**All-vertex intersection is streamed (Implemented).** The planner's `IndexIntersection` is
+vertex-only, and the query consumers no longer call the materializing `lookup_intersection` for that
+shape. Instead they page the first arm (`lookup_equal_page`) and sieve each page against the
+remaining arms with `filter_hits_by_equal` (a per-hit `contains` check), so the index never builds an
+in-heap set for any arm. This mirrors the label path
+(`collect_label_intersection_hits_for_shards` in `router/src/federation/label_export.rs`). The
+streaming composition lives in:
+
+- Router: `collect_vertex_intersection_hits_paged` in `router/src/index_lookup.rs`, used by both
+  `IndexLookup::lookup_intersection` impls (`RouterIndexClient`, `RouterIndexLookup`) when
+  `all_vertex_specs(&specs)` holds.
+- Standalone graph: `IcPropertyIndexClient::collect_vertex_intersection_hits` in
+  `graph/src/index/ic.rs`.
+
+The walk arm is the first spec (callers order arms; matches the label precedent — no size-based
+smallest-arm selection yet, since there is no cheap per-`(property,value)` cardinality signal).
+
+**Remaining gap (edge / mixed intersection):** the server-side `lookup_intersection` still
+**materializes one in-heap set per arm** for all-edge and mixed vertex+edge intersection (used by
+`EdgeIndexScan` / all-edge arms, not the vertex-only planner op), and `lookup_label_intersection`
+retains its materializing server impl (the router label query path already streams via
+`filter_hits_by_label`). Extending the same walk + `contains` sieve to edge owners (a prefix-existence
+check per arm) is the remaining work; it is **not yet implemented**.
 
 ### Validation
 

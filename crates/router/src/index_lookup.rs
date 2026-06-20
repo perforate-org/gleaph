@@ -8,8 +8,8 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, IndexIntersectionRequest, IndexIntersectionResult,
-    IndexLabelIntersectionRequest, LabelLookupPageRequest, LabelLookupPageResult,
+    EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
+    IndexLabelIntersectionRequest, IndexSubject, LabelLookupPageRequest, LabelLookupPageResult,
     LookupEdgeEqualPageRequest, LookupEqualPageRequest, PostingHit, ValuePostingCount,
 };
 
@@ -68,6 +68,55 @@ async fn collect_edge_equal_hits_paged(
             })
             .await?;
         hits.extend(page.hits);
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+    Ok(hits)
+}
+
+/// `true` when every arm targets a vertex property (the planner's `IndexIntersection` shape, which
+/// is vertex-only). Edge / mixed intersection still uses the server-side `lookup_intersection`.
+fn all_vertex_specs(specs: &[IndexEqualSpec]) -> bool {
+    specs.len() >= 2
+        && specs
+            .iter()
+            .all(|s| matches!(s.subject, IndexSubject::VertexProperty))
+}
+
+/// Streaming all-vertex intersection on one index canister: page the first arm
+/// ([`RouterIndexClient::lookup_equal_page`]) and sieve each page against the remaining arms via
+/// [`RouterIndexClient::filter_hits_by_equal`] (`contains`). No arm's full bucket is materialized in
+/// the index heap. Mirrors `collect_label_intersection_hits_for_shards` for labels.
+async fn collect_vertex_intersection_hits_paged(
+    client: &RouterIndexClient,
+    specs: &[IndexEqualSpec],
+) -> Result<Vec<PostingHit>, String> {
+    let (walk, sieve) = specs
+        .split_first()
+        .expect("all_vertex_specs guarantees >= 2 arms");
+    let mut hits = Vec::new();
+    let mut after = None;
+    loop {
+        let page = client
+            .lookup_equal_page(LookupEqualPageRequest {
+                property_id: walk.property_id,
+                value: walk.value.clone(),
+                after,
+                limit: INDEX_LOOKUP_PAGE_LIMIT,
+            })
+            .await?;
+        let mut survivors = page.hits;
+        for arm in sieve {
+            if survivors.is_empty() {
+                break;
+            }
+            survivors = client
+                .filter_hits_by_equal(arm.property_id, arm.value.clone(), survivors)
+                .await?;
+        }
+        hits.extend(survivors);
         if page.done {
             break;
         }
@@ -244,7 +293,13 @@ impl IndexLookup for RouterIndexClient {
         &self,
         req: IndexIntersectionRequest,
     ) -> Pin<Box<dyn Future<Output = Result<IndexIntersectionResult, String>> + '_>> {
-        Box::pin(self.lookup_intersection(req))
+        Box::pin(async move {
+            if all_vertex_specs(&req.specs) {
+                let hits = collect_vertex_intersection_hits_paged(self, &req.specs).await?;
+                return Ok(IndexIntersectionResult::Vertices(merge_posting_hits(hits)));
+            }
+            self.lookup_intersection(req).await
+        })
     }
 
     fn lookup_edge_equal(
@@ -334,9 +389,14 @@ impl IndexLookup for RouterIndexLookup {
             Err(err) => return Box::pin(async move { Err(err) }),
         };
         Box::pin(async move {
-            let result = RouterIndexClient::new(principal)
-                .lookup_intersection(req)
-                .await?;
+            let client = RouterIndexClient::new(principal);
+            if all_vertex_specs(&req.specs) {
+                let hits = collect_vertex_intersection_hits_paged(&client, &req.specs).await?;
+                return Ok(IndexIntersectionResult::Vertices(merge_posting_hits(
+                    self.retain_live_vertex_hits(hits),
+                )));
+            }
+            let result = client.lookup_intersection(req).await?;
             Ok(match result {
                 IndexIntersectionResult::Vertices(hits) => IndexIntersectionResult::Vertices(
                     merge_posting_hits(self.retain_live_vertex_hits(hits)),

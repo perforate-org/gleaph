@@ -251,6 +251,37 @@ impl IndexStore {
         out
     }
 
+    /// Keep only hits whose `(shard_id, vertex_id)` has a posting for `(property_id, value)`.
+    ///
+    /// Equality-arm `contains` sieve for streaming property intersection: the caller walks one arm
+    /// in pages ([`Self::lookup_equal_page`]) and sieves each page against the other arms here, so
+    /// the index never materializes a full posting bucket for any arm. Cost ∝ `len(hits)`.
+    pub fn filter_hits_by_equal(
+        &self,
+        property_id: u32,
+        value: &[u8],
+        hits: &[PostingHit],
+    ) -> Result<Vec<PostingHit>, IndexError> {
+        ensure_index_value_key(value)?;
+        let mut probe = PostingKey {
+            property_id,
+            value: value.to_vec(),
+            shard_id: ShardId::new(0),
+            vertex_id: 0,
+        };
+        let mut out = Vec::new();
+        INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
+            for hit in hits {
+                probe.shard_id = hit.shard_id;
+                probe.vertex_id = hit.vertex_id;
+                if postings.contains(&probe) {
+                    out.push(*hit);
+                }
+            }
+        });
+        Ok(out)
+    }
+
     /// Half-open `[low, high)` scan over postings for `property_id` using encoded-value [`PostingRangeRequest`].
     pub fn lookup_range(
         &self,

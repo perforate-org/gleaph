@@ -709,6 +709,105 @@ fn lookup_intersection_returns_vertices_in_all_specs() {
 }
 
 #[test]
+fn filter_hits_by_equal_keeps_arm_members_only() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_principal = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
+
+    store
+        .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), 20)
+        .expect("email v20");
+    store
+        .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), 30)
+        .expect("email v30");
+
+    let hits = vec![
+        PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 10,
+        },
+        PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 20,
+        },
+        PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 30,
+        },
+    ];
+    let filtered = store
+        .filter_hits_by_equal(2, b"a@b.c", &hits)
+        .expect("filter_hits_by_equal");
+    assert_eq!(
+        filtered,
+        vec![
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 20
+            },
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 30
+            },
+        ]
+    );
+}
+
+#[test]
+fn paged_walk_plus_equal_sieve_matches_lookup_intersection() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_principal = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
+
+    for v in [10u32, 20, 30, 40] {
+        store
+            .posting_insert(shard_principal, ShardId::new(0), 1, b"alice".to_vec(), v)
+            .expect("arm 1");
+    }
+    for v in [20u32, 30] {
+        store
+            .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), v)
+            .expect("arm 2");
+    }
+
+    let expected = store
+        .lookup_intersection(&gleaph_graph_kernel::index::IndexIntersectionRequest {
+            specs: vec![
+                IndexEqualSpec::vertex(1, b"alice".to_vec()),
+                IndexEqualSpec::vertex(2, b"a@b.c".to_vec()),
+            ],
+        })
+        .expect("lookup_intersection");
+
+    // Stream the first arm in pages of 1 and sieve the second arm via `contains`,
+    // mirroring the router/graph streaming composition (no full-bucket materialization).
+    let mut streamed = Vec::new();
+    let mut after = None;
+    loop {
+        let page = store
+            .lookup_equal_page(&LookupEqualPageRequest {
+                property_id: 1,
+                value: b"alice".to_vec(),
+                after,
+                limit: 1,
+            })
+            .expect("lookup_equal_page");
+        let survivors = store
+            .filter_hits_by_equal(2, b"a@b.c", &page.hits)
+            .expect("filter_hits_by_equal");
+        streamed.extend(survivors);
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+
+    assert_eq!(IndexIntersectionResult::Vertices(streamed), expected);
+}
+
+#[test]
 fn lookup_intersection_empty_when_disjoint() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
