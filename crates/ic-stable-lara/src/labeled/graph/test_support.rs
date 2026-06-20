@@ -354,6 +354,73 @@ pub fn count_free_spans(graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>)
     graph.edges().free_span_store().spans().len()
 }
 
+/// Fifteen fresh stable memories in [`LabeledLaraGraph`] constructor order.
+///
+/// Kept as owned handles so a graph can be built into them, dropped, and then
+/// re-opened from the same bytes — the storage-engine analogue of a canister
+/// upgrade boundary.
+pub fn labeled_memories() -> [crate::VectorMemory; 15] {
+    std::array::from_fn(|_| mem())
+}
+
+/// Builds a fresh [`LabeledLaraGraph`] over `mems` (clones the handles so the
+/// caller retains them for a later [`reopen_labeled_graph`]).
+pub fn open_labeled_graph(
+    mems: &[crate::VectorMemory; 15],
+    elem_capacity: u64,
+    default_label: BucketLabelKey,
+) -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
+    LabeledLaraGraph::new(
+        mems[0].clone(),
+        mems[1].clone(),
+        mems[2].clone(),
+        mems[3].clone(),
+        mems[4].clone(),
+        mems[5].clone(),
+        mems[6].clone(),
+        mems[7].clone(),
+        mems[8].clone(),
+        mems[9].clone(),
+        mems[10].clone(),
+        mems[11].clone(),
+        mems[12].clone(),
+        mems[13].clone(),
+        mems[14].clone(),
+        elem_capacity,
+        default_label,
+    )
+    .unwrap()
+}
+
+/// Re-opens a [`LabeledLaraGraph`] from already-populated `mems`, modelling the
+/// implicit stable-memory reattach a canister performs on `post_upgrade`.
+pub fn reopen_labeled_graph(
+    mems: &[crate::VectorMemory; 15],
+    elem_capacity: u64,
+    default_label: BucketLabelKey,
+) -> LabeledLaraGraph<TestEdge, crate::VectorMemory> {
+    LabeledLaraGraph::init(
+        mems[0].clone(),
+        mems[1].clone(),
+        mems[2].clone(),
+        mems[3].clone(),
+        mems[4].clone(),
+        mems[5].clone(),
+        mems[6].clone(),
+        mems[7].clone(),
+        mems[8].clone(),
+        mems[9].clone(),
+        mems[10].clone(),
+        mems[11].clone(),
+        mems[12].clone(),
+        mems[13].clone(),
+        mems[14].clone(),
+        elem_capacity,
+        default_label,
+    )
+    .unwrap()
+}
+
 /// Exercises common labeled scan iterators and batch readers for one hub vertex.
 pub fn exercise_labeled_hub_scan_paths(
     graph: &LabeledLaraGraph<TestEdge, crate::VectorMemory>,

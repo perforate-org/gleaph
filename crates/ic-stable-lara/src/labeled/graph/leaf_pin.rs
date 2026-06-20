@@ -797,6 +797,100 @@ mod tests {
         );
     }
 
+    /// Upgrade-boundary corruption guard for the labeled engine (highest-risk
+    /// relocation surface): drive multi-vertex, multi-label churn that forces
+    /// overflow-log folds, leaf rebalances, and leaf/bucket relocations; reopen
+    /// the same stable memories (as `post_upgrade` does); and require every
+    /// per-label adjacency plus every structural invariant to survive — then
+    /// mutate again to prove the reopened graph is fully operational.
+    #[test]
+    fn labeled_heavy_relocation_survives_reopen_without_corruption() {
+        const VERTICES: u32 = 3;
+        const LABELS: u16 = 4;
+        const PER_LABEL: u32 = 20;
+        let default_label = BucketLabelKey::from_raw(1);
+        let elem_capacity = 1u64 << 20;
+
+        let mems = labeled_memories();
+        let graph = open_labeled_graph(&mems, elem_capacity, default_label);
+        let mut ids = Vec::new();
+        for _ in 0..VERTICES {
+            ids.push(graph.push_vertex(LabeledVertex::default()).unwrap());
+        }
+
+        // Model: per vertex, per label, an ascending set of unique targets.
+        let labels: Vec<BucketLabelKey> = (0..LABELS)
+            .map(|l| BucketLabelKey::from_raw(10_000 + l))
+            .collect();
+        let mut expected: Vec<Vec<(BucketLabelKey, Vec<u32>)>> =
+            vec![Vec::new(); VERTICES as usize];
+        for (vi, &vid) in ids.iter().enumerate() {
+            for (li, &label) in labels.iter().enumerate() {
+                let mut targets = Vec::new();
+                for i in 0..PER_LABEL {
+                    let target = (vi as u32) * 100_000 + (li as u32) * 1_000 + i;
+                    graph
+                        .insert_edge(vid, label, TestEdge { target })
+                        .unwrap_or_else(|e| panic!("insert v{vi} l{li} i{i}: {e:?}"));
+                    targets.push(target);
+                }
+                expected[vi].push((label, targets));
+            }
+        }
+
+        let check = |g: &LabeledLaraGraph<TestEdge, crate::VectorMemory>,
+                     expected: &[Vec<(BucketLabelKey, Vec<u32>)>],
+                     phase: &str| {
+            crate::labeled::invariants::assert_labeled_layout_invariants(
+                g.vertices(),
+                g.buckets(),
+                g.edges(),
+            );
+            crate::labeled::invariants::assert_labeled_edge_store_pma_counts(
+                g.vertices(),
+                g.buckets(),
+                g.edges(),
+            );
+            for (vi, &vid) in ids.iter().enumerate() {
+                g.assert_no_labeled_leaf_mate_overlap(vid);
+                g.assert_labeled_buckets_within_leaf_physical(vid).unwrap();
+                for (label, want) in &expected[vi] {
+                    let mut got: Vec<u32> = g
+                        .iter_edges_for_label(vid, *label)
+                        .unwrap()
+                        .into_iter()
+                        .map(|e| e.target)
+                        .collect();
+                    got.sort_unstable();
+                    let mut want = want.clone();
+                    want.sort_unstable();
+                    assert_eq!(
+                        got, want,
+                        "{phase}: v{vi} label {label:?} adjacency diverged"
+                    );
+                }
+            }
+        };
+        check(&graph, &expected, "pre-reopen");
+
+        // Cross the upgrade boundary: drop the in-memory graph, reopen the bytes.
+        drop(graph);
+        let reopened = reopen_labeled_graph(&mems, elem_capacity, default_label);
+        check(&reopened, &expected, "post-reopen");
+
+        // Continued inserts after reopen must relocate without corrupting state.
+        for (vi, &vid) in ids.iter().enumerate() {
+            for (li, &label) in labels.iter().enumerate() {
+                let target = (vi as u32) * 100_000 + (li as u32) * 1_000 + PER_LABEL;
+                reopened
+                    .insert_edge(vid, label, TestEdge { target })
+                    .unwrap();
+                expected[vi][li].1.push(target);
+            }
+        }
+        check(&reopened, &expected, "post-reopen-mutation");
+    }
+
     #[test]
     fn labeled_leaf_pma_density_matches_counts_store_when_pinned() {
         let graph = hub_graph();

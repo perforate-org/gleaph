@@ -983,6 +983,197 @@ mod tests {
         );
     }
 
+    /// Upgrade-boundary corruption guard for the forward+reverse store pair:
+    /// build a dense directed graph (parallel labelled edges per pair) that forces
+    /// relocation in both orientations, delete a subset to exercise reverse-sync
+    /// under tombstones, reopen the stable memories, and require the forward
+    /// out-adjacency and reverse in-adjacency to stay mutually consistent and
+    /// match the model across the boundary and through further mutation.
+    #[test]
+    fn bidirectional_heavy_relocation_survives_reopen_consistently() {
+        use std::collections::BTreeSet;
+
+        const VERTICES: u32 = 4;
+        const PARALLEL: u32 = 12;
+        const CAP: u64 = 128;
+        const SEG: u32 = 32;
+
+        fn build(
+            mems: &[crate::VectorMemory; 14],
+        ) -> crate::test_support::TestBidirectionalLaraGraph<LabelledTestEdge> {
+            BidirectionalLaraGraph::new(
+                mems[0].clone(),
+                mems[1].clone(),
+                mems[2].clone(),
+                mems[3].clone(),
+                mems[4].clone(),
+                mems[5].clone(),
+                mems[6].clone(),
+                mems[7].clone(),
+                mems[8].clone(),
+                mems[9].clone(),
+                mems[10].clone(),
+                mems[11].clone(),
+                mems[12].clone(),
+                mems[13].clone(),
+                CAP,
+                SEG,
+                0,
+            )
+            .unwrap()
+        }
+        fn reopen(
+            mems: &[crate::VectorMemory; 14],
+        ) -> crate::test_support::TestBidirectionalLaraGraph<LabelledTestEdge> {
+            BidirectionalLaraGraph::init(
+                mems[0].clone(),
+                mems[1].clone(),
+                mems[2].clone(),
+                mems[3].clone(),
+                mems[4].clone(),
+                mems[5].clone(),
+                mems[6].clone(),
+                mems[7].clone(),
+                mems[8].clone(),
+                mems[9].clone(),
+                mems[10].clone(),
+                mems[11].clone(),
+                mems[12].clone(),
+                mems[13].clone(),
+                CAP,
+                SEG,
+                0,
+            )
+            .unwrap()
+        }
+
+        let mems: [crate::VectorMemory; 14] =
+            std::array::from_fn(|_| crate::test_support::vector_memory());
+        let graph = build(&mems);
+        for _ in 0..VERTICES {
+            graph
+                .push_vertex(Vertex::from_parts(0, 0, 0, -1, false))
+                .unwrap();
+        }
+
+        // Model: (neighbor, label) sets per vertex for both orientations.
+        let mut out: Vec<BTreeSet<(u32, u32)>> = vec![BTreeSet::new(); VERTICES as usize];
+        let mut inc: Vec<BTreeSet<(u32, u32)>> = vec![BTreeSet::new(); VERTICES as usize];
+        for src in 0..VERTICES {
+            for dst in 0..VERTICES {
+                if src == dst {
+                    continue;
+                }
+                for l in 0..PARALLEL {
+                    let label = dst * 100 + l;
+                    graph
+                        .insert_directed(
+                            VertexId::from(src),
+                            VertexId::from(dst),
+                            LabelledTestEdge::new(dst, label),
+                        )
+                        .unwrap();
+                    out[src as usize].insert((dst, label));
+                    inc[dst as usize].insert((src, label));
+                }
+            }
+        }
+
+        // Delete the highest label of each ordered pair: exercises tombstones and
+        // forward/reverse co-deletion before the boundary.
+        for src in 0..VERTICES {
+            for dst in 0..VERTICES {
+                if src == dst {
+                    continue;
+                }
+                let label = dst * 100 + (PARALLEL - 1);
+                assert!(
+                    graph
+                        .remove_directed(
+                            VertexId::from(src),
+                            VertexId::from(dst),
+                            LabelledTestEdge::new(dst, label),
+                        )
+                        .unwrap()
+                );
+                out[src as usize].remove(&(dst, label));
+                inc[dst as usize].remove(&(src, label));
+            }
+        }
+
+        let check = |g: &crate::test_support::TestBidirectionalLaraGraph<LabelledTestEdge>,
+                     out: &[BTreeSet<(u32, u32)>],
+                     inc: &[BTreeSet<(u32, u32)>],
+                     phase: &str| {
+            for v in 0..VERTICES {
+                let got_out: BTreeSet<(u32, u32)> = g
+                    .directed_out_edges(VertexId::from(v))
+                    .unwrap()
+                    .into_iter()
+                    .map(|e| (e.neighbor, e.label))
+                    .collect();
+                assert_eq!(
+                    got_out, out[v as usize],
+                    "{phase}: vertex {v} out-adjacency diverged"
+                );
+                let got_in: BTreeSet<(u32, u32)> = g
+                    .directed_in_edges(VertexId::from(v))
+                    .unwrap()
+                    .into_iter()
+                    .map(|e| (e.neighbor, e.label))
+                    .collect();
+                assert_eq!(
+                    got_in, inc[v as usize],
+                    "{phase}: vertex {v} in-adjacency diverged"
+                );
+            }
+            // Forward/reverse must describe exactly the same edge multiset.
+            let fwd: BTreeSet<(u32, u32, u32)> = (0..VERTICES)
+                .flat_map(|s| {
+                    g.directed_out_edges(VertexId::from(s))
+                        .unwrap()
+                        .into_iter()
+                        .map(move |e| (s, e.neighbor, e.label))
+                })
+                .collect();
+            let rev: BTreeSet<(u32, u32, u32)> = (0..VERTICES)
+                .flat_map(|d| {
+                    g.directed_in_edges(VertexId::from(d))
+                        .unwrap()
+                        .into_iter()
+                        .map(move |e| (e.neighbor, d, e.label))
+                })
+                .collect();
+            assert_eq!(fwd, rev, "{phase}: forward and reverse stores disagree");
+        };
+        check(&graph, &out, &inc, "pre-reopen");
+
+        drop(graph);
+        let reopened = reopen(&mems);
+        check(&reopened, &out, &inc, "post-reopen");
+
+        // Re-insert the deleted labels after reopen: must reuse freed space and
+        // keep both orientations consistent.
+        for src in 0..VERTICES {
+            for dst in 0..VERTICES {
+                if src == dst {
+                    continue;
+                }
+                let label = dst * 100 + (PARALLEL - 1);
+                reopened
+                    .insert_directed(
+                        VertexId::from(src),
+                        VertexId::from(dst),
+                        LabelledTestEdge::new(dst, label),
+                    )
+                    .unwrap();
+                out[src as usize].insert((dst, label));
+                inc[dst as usize].insert((src, label));
+            }
+        }
+        check(&reopened, &out, &inc, "post-reopen-mutation");
+    }
+
     #[test]
     fn insert_directed_rejects_out_of_range_src() {
         let graph = bidirectional_test_graph::<TestEdge>(&[0, 4]);

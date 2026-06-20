@@ -979,6 +979,96 @@ mod tests {
         );
     }
 
+    /// Upgrade-boundary corruption guard for deferred maintenance: queue work by
+    /// inserting into multiple segments, cross the boundary with that work still
+    /// pending (the queue + dirty items + unfolded logs all live in stable
+    /// memory), confirm reads stay correct before maintenance runs, then drain
+    /// maintenance post-reopen and require every adjacency to fold cleanly with
+    /// invariants intact.
+    #[test]
+    fn deferred_pending_maintenance_survives_reopen_then_folds_cleanly() {
+        const VERTICES: u32 = 4;
+        let starts: Vec<u64> = (0..u64::from(VERTICES)).map(|i| i * 2).collect();
+        let graph = deferred_test_graph(8, 2, &starts);
+
+        let mut expected: Vec<Vec<TestEdge>> = vec![Vec::new(); VERTICES as usize];
+        for v in 0..VERTICES {
+            for k in 0..3u32 {
+                let target = 10 + v * 10 + k;
+                graph
+                    .insert_edge_deferred(VertexId::from(v), TestEdge(target))
+                    .unwrap();
+                expected[v as usize].push(TestEdge(target));
+            }
+        }
+        let pending_before = graph.maintenance_queue().len();
+        assert!(pending_before > 0, "inserts should queue maintenance work");
+        for v in 0..VERTICES {
+            assert_eq!(
+                graph.asc_out_edges(VertexId::from(v)).unwrap(),
+                expected[v as usize]
+            );
+        }
+
+        // Cross the upgrade boundary with maintenance still pending.
+        let m = graph.into_memories();
+        let reopened = DeferredLaraGraph::<TestEdge, Vertex, _>::init(
+            m.0, m.1, m.2, m.3, m.4, m.5, m.6, m.7, m.8, 8, 2, 0,
+        )
+        .unwrap();
+        assert_eq!(
+            reopened.maintenance_queue().len(),
+            pending_before,
+            "pending maintenance queue must survive the upgrade"
+        );
+        for v in 0..VERTICES {
+            assert_eq!(
+                reopened.asc_out_edges(VertexId::from(v)).unwrap(),
+                expected[v as usize],
+                "reads must stay correct before post-upgrade maintenance runs"
+            );
+        }
+
+        // Drain maintenance after reopen: logs fold and segments relocate as needed.
+        for _ in 0..64 {
+            if reopened.maintenance_queue().is_empty() {
+                break;
+            }
+            reopened
+                .maintenance(MaintenanceBudget {
+                    max_instructions: 0,
+                    max_segments: Some(VERTICES),
+                    reserve_instructions: 0,
+                    checkpoint_every: 1,
+                    max_work_items: None,
+                    max_delete_edge_steps: None,
+                })
+                .unwrap();
+        }
+        assert_eq!(
+            reopened.maintenance_queue().len(),
+            0,
+            "maintenance must drain after the upgrade"
+        );
+        for v in 0..VERTICES {
+            assert_eq!(
+                reopened.asc_out_edges(VertexId::from(v)).unwrap(),
+                expected[v as usize],
+                "post-maintenance adjacency must match the model"
+            );
+            assert_eq!(
+                reopened
+                    .graph()
+                    .vertices()
+                    .get(VertexId::from(v))
+                    .log_head(),
+                -1,
+                "overflow logs must be folded after maintenance"
+            );
+        }
+        crate::test_support::assert_vertex_capacity_invariants(reopened.graph());
+    }
+
     #[test]
     fn deferred_insert_skips_dirty_when_slab_insert_is_below_soft_threshold() {
         let graph = deferred_test_graph(16, 4, &[0, 4, 8, 12]);

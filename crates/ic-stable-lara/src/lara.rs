@@ -2698,4 +2698,80 @@ mod tests {
         assert_eq!(reopened.edges().counts_store().get(2).total, 6);
         assert_vertex_capacity_invariants(&reopened);
     }
+
+    /// Upgrade-boundary corruption guard: drive heavy relocation/rebalance/resize
+    /// churn, reopen the same stable memories (as a canister upgrade does), and
+    /// require every adjacency to be byte-identical with all invariants intact —
+    /// then keep mutating to prove the reopened graph is fully operational.
+    #[test]
+    fn lara_heavy_relocation_survives_reopen_without_corruption() {
+        const VERTICES: u32 = 4;
+        const PER_VERTEX: u32 = 24;
+        const SEGMENT_SIZE: u32 = 16;
+
+        let starts: Vec<u64> = (0..u64::from(VERTICES))
+            .map(|i| i * u64::from(SEGMENT_SIZE))
+            .collect();
+        let graph = test_graph(
+            u64::from(VERTICES) * u64::from(SEGMENT_SIZE),
+            SEGMENT_SIZE,
+            &starts,
+        );
+
+        // Deterministic model: vertex v owns ascending, globally-unique targets.
+        let mut expected: Vec<Vec<TestEdge>> = vec![Vec::new(); VERTICES as usize];
+        for round in 0..PER_VERTEX {
+            for v in 0..VERTICES {
+                let target = v * 1000 + round;
+                graph
+                    .insert_edge(VertexId::from(v), TestEdge(target))
+                    .unwrap();
+                expected[v as usize].push(TestEdge(target));
+            }
+        }
+
+        let check =
+            |g: &LaraGraph<TestEdge, Vertex, _>, expected: &[Vec<TestEdge>], phase: &str| {
+                assert_vertex_capacity_invariants(g);
+                for v in 0..VERTICES {
+                    assert_eq!(
+                        g.asc_out_edges(VertexId::from(v)).unwrap(),
+                        expected[v as usize],
+                        "{phase}: vertex {v} adjacency diverged"
+                    );
+                }
+            };
+        check(&graph, &expected, "pre-reopen");
+
+        // Simulate the upgrade boundary: tear down the in-memory graph and reopen
+        // the persisted stable memories with the grown header geometry.
+        let elem_capacity = graph.edges().header().elem_capacity;
+        let segment_size = graph.edges().header().segment_size;
+        let m = graph.into_memories();
+        let reopened = LaraGraph::<TestEdge, Vertex, _>::init(
+            m.0,
+            m.1,
+            m.2,
+            m.3,
+            m.4,
+            m.5,
+            m.6,
+            elem_capacity,
+            segment_size,
+            0,
+        )
+        .unwrap();
+        check(&reopened, &expected, "post-reopen");
+
+        // Continued mutation after reopen must trigger fresh relocation without
+        // corrupting any restored adjacency.
+        for v in 0..VERTICES {
+            let target = v * 1000 + PER_VERTEX;
+            reopened
+                .insert_edge(VertexId::from(v), TestEdge(target))
+                .unwrap();
+            expected[v as usize].push(TestEdge(target));
+        }
+        check(&reopened, &expected, "post-reopen-mutation");
+    }
 }
