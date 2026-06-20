@@ -138,12 +138,21 @@ fn decode_plan_bundle_owned(bytes: &[u8]) -> Result<(bool, Vec<PhysicalPlan>), P
         ));
     }
     let mut offset = HEADER_LEN;
-    let mut plans = Vec::with_capacity(stmt_count);
+    // Each statement is at least a 4-byte length prefix, so the declared
+    // `stmt_count` cannot legitimately exceed `bytes.len() / 4`. Clamp the
+    // pre-allocation to that bound: a malformed header otherwise requests an
+    // arbitrarily large allocation (memory-amplification DoS) before any
+    // statement is read.
+    let mut plans = Vec::with_capacity(stmt_count.min(bytes.len() / 4));
     for i in 0..stmt_count {
         if i > 0 {
             advance_to_next_statement_len(bytes, &mut offset)?;
         }
-        if offset + 4 > bytes.len() {
+        // `checked_add` guards against `usize` overflow on 32-bit (wasm32):
+        // a near-`u32::MAX` length would otherwise wrap past the bounds check
+        // and panic on the slice range.
+        let len_end = offset.checked_add(4).ok_or(PlanBundleError::Truncated)?;
+        if len_end > bytes.len() {
             return Err(PlanBundleError::Truncated);
         }
         let len = u32::from_le_bytes([
@@ -152,12 +161,13 @@ fn decode_plan_bundle_owned(bytes: &[u8]) -> Result<(bool, Vec<PhysicalPlan>), P
             bytes[offset + 2],
             bytes[offset + 3],
         ]) as usize;
-        offset += 4;
-        if offset + len > bytes.len() {
+        offset = len_end;
+        let payload_end = offset.checked_add(len).ok_or(PlanBundleError::Truncated)?;
+        if payload_end > bytes.len() {
             return Err(PlanBundleError::Truncated);
         }
-        let slice = &bytes[offset..offset + len];
-        offset += len;
+        let slice = &bytes[offset..payload_end];
+        offset = payload_end;
         let wire: super::convert::PhysicalPlanWire =
             rkyv_from_wire_bytes(slice).map_err(PlanBundleError::Wire)?;
         plans.push(physical_plan_from_wire(&wire).map_err(PlanBundleError::Wire)?);
@@ -238,6 +248,39 @@ mod tests {
         let blob = encode_statement_plans(&[minimal_read_plan()], false).expect("encode");
         assert!(matches!(
             decode_plan_bundle(&blob[..HEADER_LEN - 1]),
+            Err(PlanBundleError::Truncated)
+        ));
+    }
+
+    #[test]
+    fn rejects_huge_statement_count_without_oom() {
+        // Header declares u32::MAX statements but carries no payloads. Must fail
+        // gracefully rather than pre-allocating billions of entries.
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&PLAN_WIRE_MAGIC);
+        blob.push(PLAN_WIRE_VERSION);
+        blob.extend_from_slice(&0u16.to_le_bytes()); // flags
+        blob.extend_from_slice(&u32::MAX.to_le_bytes()); // stmt_count
+        blob.extend_from_slice(&[0u8; 2]); // reserved
+        assert!(matches!(
+            decode_plan_bundle(&blob),
+            Err(PlanBundleError::Truncated)
+        ));
+    }
+
+    #[test]
+    fn rejects_huge_payload_length_without_overflow() {
+        // One statement whose declared payload length is u32::MAX; the bounds
+        // check must reject it instead of overflowing the offset on wasm32.
+        let mut blob = Vec::new();
+        blob.extend_from_slice(&PLAN_WIRE_MAGIC);
+        blob.push(PLAN_WIRE_VERSION);
+        blob.extend_from_slice(&0u16.to_le_bytes()); // flags
+        blob.extend_from_slice(&1u32.to_le_bytes()); // stmt_count = 1
+        blob.extend_from_slice(&[0u8; 2]); // reserved
+        blob.extend_from_slice(&u32::MAX.to_le_bytes()); // payload len
+        assert!(matches!(
+            decode_plan_bundle(&blob),
             Err(PlanBundleError::Truncated)
         ));
     }
