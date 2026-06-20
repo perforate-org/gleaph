@@ -5,7 +5,10 @@ use crate::init::IndexInitArgs;
 use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
+use gleaph_graph_kernel::federation::{
+    IndexPostingPurgeCursor, IndexPostingPurgeStepResult, IndexPurgeKind, ShardDetachCursor,
+    ShardDetachStepResult, ShardId,
+};
 use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexIntersectionResult, LookupEdgeEqualPageRequest,
     LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangePageRequest, PostingHit,
@@ -48,6 +51,17 @@ pub(crate) fn admin_detach_shard_canister(
 ) -> Result<ShardDetachStepResult, String> {
     IndexStore::new()
         .admin_detach_shard_canister(msg_caller(), shard_id, resume)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_purge_property_postings(
+    kind: IndexPurgeKind,
+    property_id: u32,
+    label_id: u16,
+    resume: Option<IndexPostingPurgeCursor>,
+) -> Result<IndexPostingPurgeStepResult, String> {
+    IndexStore::new()
+        .admin_purge_property_postings(msg_caller(), kind, property_id, label_id, resume)
         .map_err(|e| e.to_string())
 }
 

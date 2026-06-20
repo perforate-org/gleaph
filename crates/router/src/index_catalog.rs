@@ -3,10 +3,13 @@
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::index::IndexedPropertyKind;
 
+use gleaph_graph_kernel::federation::IndexPurgeKind;
+
 use crate::edge_index_direction::direction_tag;
 use crate::facade::stable::index_name_catalog::{intern_index_name, lookup_index_name_id};
 use crate::facade::stable::indexed_catalog::{
-    create_named_index, drop_named_index, load_graph_stats,
+    create_named_index, drop_named_index, edge_index_uses_property_label, is_property_registered,
+    load_graph_stats,
 };
 use crate::facade::store::RouterStore;
 use crate::index_ddl::{IndexDdlStatement, IndexTarget};
@@ -111,13 +114,55 @@ async fn drop_index(
     };
     let removed = drop_named_index(graph_id, index_name_id, if_exists)?;
 
-    let Some(_def) = removed else {
+    let Some(def) = removed else {
         return Ok(());
     };
 
-    // ADR 0023 D6 (pending): DROP INDEX must also purge the dropped property's
-    // postings from graph-index. That purge is implemented in a later phase; for
-    // now the router catalog entry is removed (shards no longer hold a registry).
+    // ADR 0023 D6: DROP INDEX must also purge the dropped property's postings from
+    // graph-index (closes P7). Purge only when no remaining index still needs them:
+    // - vertex postings carry no label, so they are shared by every vertex index on
+    //   the property → purge once the property is fully unregistered.
+    // - edge postings carry the catalog label_id → purge the (property, label) scope
+    //   once no remaining edge index references it.
+    let purge =
+        match def.kind {
+            IndexedPropertyKind::Vertex => (!is_property_registered(
+                graph_id,
+                def.kind,
+                def.property_id,
+            ))
+            .then_some((IndexPurgeKind::Vertex, def.property_id.raw(), 0u16)),
+            IndexedPropertyKind::Edge => {
+                (!edge_index_uses_property_label(graph_id, def.property_id, def.label_id))
+                    .then_some((IndexPurgeKind::Edge, def.property_id.raw(), def.label_id))
+            }
+        };
+
+    if let Some((kind, property_id, label_id)) = purge {
+        purge_property_postings(graph_id, kind, property_id, label_id).await?;
+    }
+    Ok(())
+}
+
+/// Fans the bounded posting purge out to every index canister backing `graph_id`'s
+/// live shards (ADR 0023 D6). A no-op on native builds (`index_sync` stubs out).
+async fn purge_property_postings(
+    graph_id: GraphId,
+    kind: IndexPurgeKind,
+    property_id: u32,
+    label_id: u16,
+) -> Result<(), RouterError> {
+    let targets = RouterStore::new().graph_index_lookup_targets(graph_id)?;
+    for index_canister in targets {
+        crate::index_sync::admin_purge_property_postings(
+            index_canister,
+            kind,
+            property_id,
+            label_id,
+        )
+        .await
+        .map_err(RouterError::Internal)?;
+    }
     Ok(())
 }
 

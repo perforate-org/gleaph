@@ -43,7 +43,10 @@ pub use state::IndexError;
 use crate::guards::{guard_router_canister, guard_shard_canister};
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
+use gleaph_graph_kernel::federation::{
+    IndexPostingPurgeCursor, IndexPostingPurgeStepResult, IndexPurgeKind, ShardDetachCursor,
+    ShardDetachStepResult, ShardId,
+};
 use ic_cdk_macros::{init, query, update};
 
 fn guard_shard_canister_or_trap(shard_id: ShardId) {
@@ -80,6 +83,16 @@ fn admin_detach_shard_canister(
     resume: Option<ShardDetachCursor>,
 ) -> Result<ShardDetachStepResult, String> {
     canister::admin_detach_shard_canister(shard_id, resume)
+}
+
+#[update(guard = "guard_router_canister")]
+fn admin_purge_property_postings(
+    kind: IndexPurgeKind,
+    property_id: u32,
+    label_id: u16,
+    resume: Option<IndexPostingPurgeCursor>,
+) -> Result<IndexPostingPurgeStepResult, String> {
+    canister::admin_purge_property_postings(kind, property_id, label_id, resume)
 }
 
 #[update]

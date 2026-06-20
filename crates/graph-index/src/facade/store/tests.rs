@@ -6,7 +6,7 @@ use candid::Principal;
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_ic::PrincipalValue;
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::{ShardDetachStepResult, ShardId};
+use gleaph_graph_kernel::federation::{IndexPurgeKind, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, IndexEqualSpec, IndexIntersectionResult,
     LabelLookupPageRequest, LabelPostingCursor, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
@@ -670,6 +670,132 @@ fn bounded_detach_resumes_and_only_purges_target_shard() {
     let survivors = store.lookup_equal(42, b"v").expect("lookup_equal");
     assert_eq!(survivors.len(), 5);
     assert!(survivors.iter().all(|hit| hit.shard_id == ShardId::new(1)));
+}
+
+#[test]
+fn bounded_vertex_purge_removes_only_target_property() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard0 = Principal::from_slice(&[1]);
+    let shard1 = Principal::from_slice(&[2]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard0);
+    attach_shard_canister(&store, router, ShardId::new(1), shard1);
+
+    // Postings on the dropped property (42) across shards plus a neighbour (43)
+    // bracketing it on either side (41, 43) to prove the range is scoped.
+    for vid in 0..4u32 {
+        for pid in [41u32, 42, 43] {
+            store
+                .posting_insert(shard0, ShardId::new(0), pid, b"v".to_vec(), vid)
+                .expect("insert shard0 posting");
+            store
+                .posting_insert(shard1, ShardId::new(1), pid, b"v".to_vec(), vid)
+                .expect("insert shard1 posting");
+        }
+    }
+
+    // Budget of 1 examined key per step forces resume across the scan.
+    let mut resume = None;
+    let mut steps = 0u32;
+    let mut removed_total = 0u32;
+    loop {
+        let step =
+            store.purge_property_postings_step_for_test(IndexPurgeKind::Vertex, 42, 0, resume, 1);
+        steps += 1;
+        removed_total += step.removed;
+        assert!(step.examined <= 1);
+        match step.next {
+            Some(cursor) => resume = Some(cursor),
+            None => break,
+        }
+        assert!(steps < 1000, "bounded purge did not converge");
+    }
+
+    assert_eq!(
+        removed_total, 8,
+        "all property-42 postings purged across shards"
+    );
+    // budget 1 over the 8-key property range ⇒ one key per step (bounded/resumed).
+    assert!(steps >= 8, "scan was actually bounded across multiple steps");
+    assert!(store.lookup_equal(42, b"v").expect("lookup 42").is_empty());
+    assert_eq!(store.lookup_equal(41, b"v").expect("lookup 41").len(), 8);
+    assert_eq!(store.lookup_equal(43, b"v").expect("lookup 43").len(), 8);
+}
+
+#[test]
+fn bounded_edge_purge_removes_only_target_label() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard0 = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard0);
+
+    // Two edge indexes share property 88 under different labels (3 and 7); a
+    // third property (89) brackets the range. Dropping the (88, label 3) index
+    // must purge only its postings.
+    for owner in 0..4u32 {
+        store
+            .edge_posting_insert(shard0, ShardId::new(0), 88, b"e".to_vec(), 3, owner, 0)
+            .expect("insert label 3");
+        store
+            .edge_posting_insert(shard0, ShardId::new(0), 88, b"e".to_vec(), 7, owner, 0)
+            .expect("insert label 7");
+        store
+            .edge_posting_insert(shard0, ShardId::new(0), 89, b"e".to_vec(), 3, owner, 0)
+            .expect("insert other property");
+    }
+
+    let mut resume = None;
+    let mut removed_total = 0u32;
+    let mut steps = 0u32;
+    loop {
+        let step =
+            store.purge_property_postings_step_for_test(IndexPurgeKind::Edge, 88, 3, resume, 1);
+        steps += 1;
+        removed_total += step.removed;
+        match step.next {
+            Some(cursor) => resume = Some(cursor),
+            None => break,
+        }
+        assert!(steps < 1000, "bounded edge purge did not converge");
+    }
+
+    assert_eq!(
+        removed_total, 4,
+        "only (property 88, label 3) postings purged"
+    );
+    assert!(
+        store
+            .lookup_edge_equal(88, b"e", Some(3))
+            .expect("lookup label 3")
+            .is_empty()
+    );
+    assert_eq!(
+        store
+            .lookup_edge_equal(88, b"e", Some(7))
+            .expect("lookup label 7")
+            .len(),
+        4
+    );
+    assert_eq!(
+        store
+            .lookup_edge_equal(89, b"e", Some(3))
+            .expect("lookup property 89")
+            .len(),
+        4
+    );
+}
+
+#[test]
+fn admin_purge_property_postings_requires_router_caller() {
+    let store = IndexStore::new();
+    let _router = init_test_store(&store);
+    let intruder = Principal::from_slice(&[200]);
+    assert_eq!(
+        store
+            .admin_purge_property_postings(intruder, IndexPurgeKind::Vertex, 42, 0, None)
+            .err(),
+        Some(IndexError::NotAuthorized)
+    );
 }
 
 #[test]

@@ -171,6 +171,19 @@ drain path. If compensation itself fails, the canister no longer traps (P4) — 
 journaled all the same, since idempotent re-application converges the index to the store regardless
 of the partial compensation state.
 
+**`DROP INDEX` posting purge (ADR 0023 D6):** dropping an index removes the dropped property's
+postings from graph-index, not just the router catalog entry (closing P7, where dropped indexes
+orphaned their postings). The index exposes a router-guarded, bounded, resumable
+`admin_purge_property_postings(kind, property_id, label_id, resume)`
+(`graph-index/src/facade/store/posting_purge.rs`) mirroring `admin_detach_shard_canister`: posting
+keys order `property_id` first, so each scope is a contiguous range — **vertex** keys carry no label
+(purge the whole `property_id` range); **edge** keys carry the catalog `label_id` (direction
+stripped), so the purge filters to `(property_id, label_id)`. `router::drop_index` purges only when
+the postings are no longer referenced (`is_property_registered` for a shared vertex property;
+`edge_index_uses_property_label` for a per-`(property, label)` edge scope), fanning the resume loop
+out to every index canister backing the graph's live shards (`graph_index_lookup_targets`). The
+purge is stateless (no new stable region).
+
 ## Derived-state lag
 
 See [derived-state-query-semantics.md](derived-state-query-semantics.md) for query behavior when

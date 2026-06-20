@@ -2,9 +2,12 @@
 
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
+use gleaph_graph_kernel::federation::IndexPurgeKind;
 use gleaph_graph_kernel::federation::ShardId;
 #[cfg(target_family = "wasm")]
-use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult};
+use gleaph_graph_kernel::federation::{
+    IndexPostingPurgeCursor, IndexPostingPurgeStepResult, ShardDetachCursor, ShardDetachStepResult,
+};
 
 #[cfg_attr(
     feature = "pocket-ic-e2e",
@@ -100,6 +103,44 @@ pub async fn admin_detach_shard_canister(
 pub async fn admin_detach_shard_canister(
     _index_canister: Principal,
     _shard_id: ShardId,
+) -> Result<(), String> {
+    Ok(())
+}
+
+/// Drives a bounded, resumable `DROP INDEX` posting purge (ADR 0023 D6) on one
+/// index canister until it reports `done`. For vertex purges `label_id` is
+/// ignored by the index.
+#[cfg(target_family = "wasm")]
+pub async fn admin_purge_property_postings(
+    index_canister: Principal,
+    kind: IndexPurgeKind,
+    property_id: u32,
+    label_id: u16,
+) -> Result<(), String> {
+    use ic_cdk::call::Call;
+
+    let mut resume: Option<IndexPostingPurgeCursor> = None;
+    loop {
+        let step: IndexPostingPurgeStepResult =
+            Call::unbounded_wait(index_canister, "admin_purge_property_postings")
+                .with_args(&(kind, property_id, label_id, &resume))
+                .await
+                .map_err(|e| format!("index admin_purge_property_postings call failed: {e}"))?
+                .candid::<Result<IndexPostingPurgeStepResult, String>>()
+                .map_err(|e| format!("index admin_purge_property_postings decode failed: {e}"))??;
+        match step.next {
+            Some(cursor) => resume = Some(cursor),
+            None => return Ok(()),
+        }
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn admin_purge_property_postings(
+    _index_canister: Principal,
+    _kind: IndexPurgeKind,
+    _property_id: u32,
+    _label_id: u16,
 ) -> Result<(), String> {
     Ok(())
 }

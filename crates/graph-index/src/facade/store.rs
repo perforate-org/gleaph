@@ -9,6 +9,7 @@ mod authorization;
 mod edge_postings;
 mod intersection;
 mod label_postings;
+mod posting_purge;
 mod property_postings;
 
 #[cfg(test)]

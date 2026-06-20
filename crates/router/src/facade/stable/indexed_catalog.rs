@@ -275,10 +275,6 @@ pub(crate) fn drop_named_index(
     Ok(Some(def))
 }
 
-#[allow(
-    dead_code,
-    reason = "reused by ADR 0023 D6 DROP INDEX posting purge (phase 5)"
-)]
 pub(crate) fn is_property_registered(
     graph_id: GraphId,
     kind: IndexedPropertyKind,
@@ -286,6 +282,27 @@ pub(crate) fn is_property_registered(
 ) -> bool {
     let key = IndexedPropertyKey::new(graph_id, kind, property_id);
     ROUTER_INDEXED_PROPERTY_SET.with_borrow(|set| set.contains(&key))
+}
+
+/// Whether any remaining edge index references `(property_id, label_id)` for the
+/// graph (any direction). Edge postings carry the catalog `label_id`, so this is
+/// the granularity at which a `DROP INDEX` posting purge is safe (ADR 0023 D6).
+pub(crate) fn edge_index_uses_property_label(
+    graph_id: GraphId,
+    property_id: PropertyId,
+    label_id: u16,
+) -> bool {
+    ROUTER_NAMED_INDEXES.with_borrow(|map| {
+        let start = NamedIndexKey::new(graph_id, IndexNameId::from_raw(0));
+        let end = NamedIndexKey::new(graph_id_upper_bound(graph_id), IndexNameId::from_raw(0));
+        map.range((Bound::Included(start), Bound::Excluded(end)))
+            .any(|entry| {
+                let def = entry.value();
+                def.kind == IndexedPropertyKind::Edge
+                    && def.property_id == property_id
+                    && def.label_id == label_id
+            })
+    })
 }
 
 pub(crate) fn purge_graph_indexes(graph_id: GraphId) {
@@ -423,5 +440,109 @@ mod tests {
         };
         let decoded = IndexDefRecord::from_bytes(Cow::Owned(record.into_bytes()));
         assert_eq!(decoded, record);
+    }
+
+    fn vertex_entry() -> crate::planner_stats::IndexCatalogEntry {
+        crate::planner_stats::IndexCatalogEntry {
+            kind: IndexedPropertyKind::Vertex,
+            vertex_label: Some("Person".into()),
+            edge_label: None,
+            property: "age".into(),
+            edge_direction: None,
+        }
+    }
+
+    fn edge_entry() -> crate::planner_stats::IndexCatalogEntry {
+        crate::planner_stats::IndexCatalogEntry {
+            kind: IndexedPropertyKind::Edge,
+            vertex_label: None,
+            edge_label: Some("KNOWS".into()),
+            property: "weight".into(),
+            edge_direction: Some(gleaph_gql::types::EdgeDirection::AnyDirection),
+        }
+    }
+
+    #[test]
+    fn vertex_drop_unregisters_property_only_when_last_index_gone() {
+        let graph = GraphId::from_raw(700_001);
+        let property = PropertyId::from_raw(11);
+        // Two vertex indexes on the same property (different labels) share postings.
+        create_named_index(
+            graph,
+            IndexNameId::from_raw(1),
+            vertex_entry(),
+            property,
+            1,
+            0,
+            false,
+        )
+        .expect("create idx1");
+        create_named_index(
+            graph,
+            IndexNameId::from_raw(2),
+            vertex_entry(),
+            property,
+            2,
+            0,
+            false,
+        )
+        .expect("create idx2");
+        assert!(is_property_registered(
+            graph,
+            IndexedPropertyKind::Vertex,
+            property
+        ));
+
+        drop_named_index(graph, IndexNameId::from_raw(1), false).expect("drop idx1");
+        // A vertex index still references the property → no purge yet.
+        assert!(is_property_registered(
+            graph,
+            IndexedPropertyKind::Vertex,
+            property
+        ));
+
+        drop_named_index(graph, IndexNameId::from_raw(2), false).expect("drop idx2");
+        assert!(!is_property_registered(
+            graph,
+            IndexedPropertyKind::Vertex,
+            property
+        ));
+    }
+
+    #[test]
+    fn edge_drop_scopes_purge_to_property_label() {
+        let graph = GraphId::from_raw(700_002);
+        let property = PropertyId::from_raw(21);
+        let knows = 3u16;
+        let likes = 4u16;
+        create_named_index(
+            graph,
+            IndexNameId::from_raw(1),
+            edge_entry(),
+            property,
+            knows,
+            1,
+            false,
+        )
+        .expect("create KNOWS idx");
+        create_named_index(
+            graph,
+            IndexNameId::from_raw(2),
+            edge_entry(),
+            property,
+            likes,
+            1,
+            false,
+        )
+        .expect("create LIKES idx");
+
+        let def = drop_named_index(graph, IndexNameId::from_raw(1), false)
+            .expect("drop KNOWS idx")
+            .expect("removed def");
+        assert_eq!(def.label_id, knows);
+        // (property, KNOWS) has no remaining index → its postings can be purged.
+        assert!(!edge_index_uses_property_label(graph, property, knows));
+        // (property, LIKES) is still indexed → must not be purged.
+        assert!(edge_index_uses_property_label(graph, property, likes));
     }
 }

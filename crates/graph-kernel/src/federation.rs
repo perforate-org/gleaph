@@ -8,6 +8,7 @@ mod encoded;
 mod expand;
 mod global_edge_id;
 mod graph_shard_key;
+mod index_posting_purge;
 mod peer_sync;
 mod posting_backfill;
 mod router_error;
@@ -34,6 +35,9 @@ pub use expand::{
 };
 pub use global_edge_id::GlobalEdgeId;
 pub use graph_shard_key::GraphShardKey;
+pub use index_posting_purge::{
+    IndexPostingPurgeCursor, IndexPostingPurgeStepResult, IndexPurgeKind,
+};
 pub use peer_sync::{AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerArgs};
 pub use posting_backfill::{
     PostingBackfillArgs, PostingBackfillResult, VertexPropertyBackfillRequest,

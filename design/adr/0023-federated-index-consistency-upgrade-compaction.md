@@ -16,6 +16,7 @@ Anchor timestamp: 2026-06-20 04:15:12 UTC +0000
 | 2026-06-20 | Phase 3 implemented (P2): maintenance tick is now `async` (`facade/maintenance_timer.rs`) — it fetches the router catalog via the new shard-callable `indexed_property_catalog` query, installs it ephemerally for the pass so compaction's `EdgeSlotMove` observers enqueue posting re-keys, runs the budgeted compaction, then flushes `pending`/`edge_pending`/`label_pending` in-tick. Defers (floor-delay retry) when the router catalog is unavailable instead of re-keying the store blind; a `MAINTENANCE_RUNNING` flag prevents duplicate overlapping passes across the tick's awaits. Phases 4–6 pending. |
 | 2026-06-20 | Phase 4a implemented (P3 part): durable repair journal (`facade/stable/repair_journal.rs`, new stable `MemoryId 41`). Flush failure with successful compensation now persists the whole batch to stable memory (all three posting kinds) rather than the volatile queue, so the store-ahead delta survives upgrade/trap; `arm_if_needed` arms on a non-empty journal, `post_upgrade` replays it, and the async tick re-applies entries in-tick (`index/repair_journal.rs`) and reschedules at the relaxed delay while non-empty. Stable-memory inventory + typed layout registry updated (graph: 42 regions). Phase 4b (dirty marker + catalog-driven rebuild + retire compensation trap), 5, 6 pending. |
 | 2026-06-20 | Phase 4 completed (P4): the compensation-failure trap is retired across all three flush paths (`index/pending.rs`, `edge_pending.rs`, `label_pending.rs`) — the branch now journals the full batch and returns an error instead of `ic_cdk::trap`, since idempotent journal re-application converges the index to the store regardless of partial compensation state (store becomes the source of truth; no whole-message rollback). Refinement: the durable `index-dirty` marker + the catalog-driven *scan* rebuild from the original D5 wording are re-sequenced into phase 5 (they need D6's index-side posting-purge primitive and share its machinery); the journal alone closes P4. Phases 5–6 pending. |
+| 2026-06-20 | Phase 5 completed (P7 / D6): `DROP INDEX` now purges postings. Added a bounded, resumable index-side primitive `admin_purge_property_postings` (`graph-index`, `facade/store/posting_purge.rs`) with kernel wire types (`federation/index_posting_purge.rs`), scoped to a contiguous `property_id` range (vertex: whole range; edge: filtered by catalog `label_id` → `(property_id, label_id)`). `router::drop_index` drives the purge fan-out across `graph_index_lookup_targets` only when no remaining index needs the postings (`is_property_registered` for vertex; new `edge_index_uses_property_label` for edge). Stateless (no new stable region). PocketIC `drop_index_purges_postings_from_graph_index` is green. The `index-dirty` marker + catalog-driven scan-rebuild (re-sequenced from phase 4) are dropped as unneeded — the phase-4 journal already provides idempotent repair. Phase 6 (INV oracle) pending. |
 
 ## Context
 
@@ -82,7 +83,7 @@ state) and the store-ahead delta is durably recorded and eventually repaired.**
 | P4 | Medium | Compensation failure traps with acknowledged unrepairable divergence | `index/pending.rs:169-173` (comment self-admits) |
 | P5 | Medium | INV has no test oracle; wasm-only timer path uncovered | Non-wasm builds drain maintenance inline and unbounded (`facade/store/maintenance.rs:62-63`), masking the wasm timer gap |
 | P6 | Design | Indexed-ness decision sits in a shard-local volatile gate | `registry.rs`; decision authority should be the router (definitions SSOT) |
-| P7 | High | `DROP INDEX` leaves orphan postings on graph-index | `router/src/index_catalog.rs:112-143` drops the catalog entry and clears the shard registry but issues no graph-index posting removal (pre-existing) |
+| P7 | High | `DROP INDEX` leaves orphan postings on graph-index — **fixed (D6, phase 5)** | `router::drop_index` now fans the bounded `admin_purge_property_postings` primitive out across the graph's index canisters once the postings are unreferenced |
 
 These share one disease: **volatile derived state (registry, pending queues)
 cannot cross the upgrade boundary or the router-less timer context.**
@@ -153,16 +154,44 @@ No blind idempotent ops and no new graph-index `move-if-exists` primitive.
 compaction or delete — see D6, which makes that purge real (it does not exist
 today, P7).
 
-### D6. `DROP INDEX` purges postings (closes P7; load-bearing for D4)
+### D6. `DROP INDEX` purges postings (closes P7; load-bearing for D4) — implemented
 
 `DROP INDEX` must remove the dropped property's postings from graph-index, not
 only clear the catalog/registry. Because precise emit (D4) deliberately does not
 clean orphans and the per-drain snapshot can briefly lag a concurrent drop, this
 purge is the **single owner** of orphan removal and a load-bearing prerequisite
-for D4's correctness. Implement it as a **scoped, catalog-driven rebuild/purge**
-for the dropped `(kind, label, property[, direction])`, reusing the D5 rebuild
-machinery rather than a new mechanism. Until D6 lands, dropped indexes orphan
-their postings (status quo).
+for D4's correctness.
+
+Implemented as a **bounded, resumable, scoped purge** mirroring the shard-detach
+primitive (`graph-kernel/src/federation/index_posting_purge.rs`):
+
+- **Index-side primitive** (`graph-index`): a router-guarded
+  `admin_purge_property_postings(kind, property_id, label_id, resume)` deletes a
+  bounded slice of one posting set per call and returns a resume cursor until
+  `done` (`facade/store/posting_purge.rs`). Posting keys order `property_id`
+  first, so each scope is a contiguous `property_id` range: **vertex** keys carry
+  no label (purge the whole `property_id` range); **edge** keys carry the catalog
+  `label_id` (direction stripped), so the purge filters by `label_id` →
+  `(property_id, label_id)` scope.
+- **Router orchestration** (`router/src/index_catalog.rs::drop_index`): after
+  removing the catalog entry, the router purges only when no remaining index
+  still needs the postings — vertex postings are shared across a property's
+  indexes (purge once `is_property_registered` is false); edge postings are
+  per-`(property, label)` (purge once `edge_index_uses_property_label` is false).
+  The purge fans out to every index canister backing the graph's live shards
+  (`graph_index_lookup_targets`), driving each resume loop to `done`
+  (`index_sync::admin_purge_property_postings`).
+
+The purge is stateless (no new stable region). PocketIC
+`drop_index_purges_postings_from_graph_index` asserts zero orphan postings
+remain after drop.
+
+**Re-sequenced out of phase 5:** the `index-dirty` marker + catalog-driven full
+*scan* rebuild (folded in from D5/phase 4) are **not** implemented. The durable
+repair journal (D5, phase 4) already provides idempotent eventual-consistency
+repair on the failure path, so the scan rebuild is an unneeded escalation; the
+purge primitive built here is the machinery a future rebuild would reuse if one
+is ever justified.
 
 ### D5. Failure-only durable repair journal + catalog-driven rebuild backstop (§5-3 = option a)
 
@@ -314,12 +343,14 @@ provable.
    catalog-driven rebuild are **re-sequenced into phase 5 alongside D6**, where
    they share that purge/rebuild machinery (D5/D6 explicitly share it). This is a
    simplicity-driven refinement, not a change to the decision's correctness goal.
-5. **Implement `DROP INDEX` posting purge (D6)** as a scoped catalog-driven
-   rebuild/purge (adds the index-side purge primitive); add a test asserting no
-   orphan postings remain after drop. **Folded in from phase 4:** the durable
-   `index-dirty` marker + the catalog-driven full rebuild backstop (escalation for
-   when journal re-application cannot converge), reusing the same purge/rebuild
-   machinery.
+5. **Implement `DROP INDEX` posting purge (D6)** — done. Added the bounded,
+   resumable index-side purge primitive (`admin_purge_property_postings`) and the
+   router fan-out from `drop_index`, scoped to `property_id` (vertex) or
+   `(property_id, label_id)` (edge); the PocketIC repro asserts no orphan postings
+   remain after drop. The `index-dirty` marker + catalog-driven full scan-rebuild
+   (folded in from phase 4) are **dropped as unneeded** — the phase-4 repair
+   journal already provides idempotent eventual-consistency repair; the purge
+   primitive is the reusable machinery a future rebuild would need.
 6. Land the verification suite (start with the PocketIC red repro in step 0 as a
    regression guard).
 
