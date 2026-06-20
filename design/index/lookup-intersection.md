@@ -78,6 +78,21 @@ Intersect sets starting from the smallest set. Emit `PostingHit` for surviving k
 
 **Complexity:** O(Σ |postings_i|) time; no graph access.
 
+### Streaming intersection status
+
+The equality export reads (`lookup_equal` / `lookup_range` / `lookup_edge_equal`) are paginated via
+`*_page` APIs so query paths honor the **no full-bucket heap materialization** invariant
+([capacity-planning.md](capacity-planning.md), [property-index.md](property-index.md#read-apis)).
+
+`lookup_intersection` (and the label analog `lookup_label_intersection`) still **materializes one
+in-heap set per arm** to compute the intersection, so it is not yet bounded by that invariant. The
+established bounded alternative is a streaming smallest-arm walk plus per-hit `contains` sieve — the
+router already uses this shape for label intersection
+(`collect_label_intersection_hits_for_shards` in `router/src/federation/label_export.rs`, paging the
+walk label and sieving others with `filter_hits_by_label`). Applying the same smallest-arm walk +
+equality `contains` sieve to property/edge intersection is the remaining work to extend the invariant
+to intersection; it is **not yet implemented**.
+
 ### Validation
 
 - `specs.len() < 2` → return empty vec (caller should use `lookup_equal`).

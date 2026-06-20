@@ -8,8 +8,9 @@ use gleaph_gql_ic::PrincipalValue;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, IndexEqualSpec, IndexIntersectionResult, LabelLookupPageRequest,
-    LabelPostingCursor, PostingHit, PostingRangeRequest,
+    EdgePostingCursor, EdgePostingHit, IndexEqualSpec, IndexIntersectionResult,
+    LabelLookupPageRequest, LabelPostingCursor, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
+    LookupRangePageRequest, PostingHit, PostingRangeRequest, PropertyPostingCursor,
 };
 
 fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
@@ -965,6 +966,143 @@ fn lookup_label_page_paginates_within_shard() {
         limit: 2,
     });
     assert_eq!(page2.hits.len(), 1);
+    assert!(page2.done);
+}
+
+#[test]
+fn lookup_equal_page_paginates_and_resumes() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    for vid in [1u32, 2, 3] {
+        store
+            .posting_insert(shard_a, ShardId::new(0), 42, b"v".to_vec(), vid)
+            .expect("insert");
+    }
+
+    let page1 = store
+        .lookup_equal_page(&LookupEqualPageRequest {
+            property_id: 42,
+            value: b"v".to_vec(),
+            after: None,
+            limit: 2,
+        })
+        .expect("page1");
+    assert_eq!(page1.hits.len(), 2);
+    assert!(!page1.done);
+    assert_eq!(
+        page1.next,
+        Some(PropertyPostingCursor {
+            value: b"v".to_vec(),
+            shard_id: ShardId::new(0),
+            vertex_id: 2,
+        })
+    );
+
+    let page2 = store
+        .lookup_equal_page(&LookupEqualPageRequest {
+            property_id: 42,
+            value: b"v".to_vec(),
+            after: page1.next,
+            limit: 2,
+        })
+        .expect("page2");
+    assert_eq!(
+        page2.hits,
+        vec![PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 3,
+        }]
+    );
+    assert!(page2.done);
+    assert_eq!(page2.next, None);
+}
+
+#[test]
+fn lookup_range_page_walks_values_across_pages() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    for (vid, val) in [
+        (100u32, vec![1u8]),
+        (200u32, vec![2u8]),
+        (300u32, vec![3u8]),
+    ] {
+        store
+            .posting_insert(shard_a, ShardId::new(0), 42, val, vid)
+            .expect("insert");
+    }
+
+    let mut seen = Vec::new();
+    let mut after = None;
+    loop {
+        let page = store
+            .lookup_range_page(&LookupRangePageRequest {
+                property_id: 42,
+                range: PostingRangeRequest::Ge(vec![1]),
+                after,
+                limit: 1,
+            })
+            .expect("range page");
+        seen.extend(page.hits.iter().map(|h| h.vertex_id));
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+    assert_eq!(seen, vec![100, 200, 300]);
+}
+
+#[test]
+fn lookup_edge_equal_page_paginates_and_resumes() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    for slot in [0u32, 1, 2] {
+        store
+            .edge_posting_insert(shard_a, ShardId::new(0), 88, b"e".to_vec(), 3, 10, slot)
+            .expect("insert edge posting");
+    }
+
+    let page1 = store
+        .lookup_edge_equal_page(&LookupEdgeEqualPageRequest {
+            property_id: 88,
+            value: b"e".to_vec(),
+            label_id: Some(3),
+            after: None,
+            limit: 2,
+        })
+        .expect("page1");
+    assert_eq!(page1.hits.len(), 2);
+    assert!(!page1.done);
+    assert_eq!(
+        page1.next,
+        Some(EdgePostingCursor {
+            value: b"e".to_vec(),
+            label_id: 3,
+            shard_id: ShardId::new(0),
+            owner_vertex_id: 10,
+            slot_index: 1,
+        })
+    );
+
+    let page2 = store
+        .lookup_edge_equal_page(&LookupEdgeEqualPageRequest {
+            property_id: 88,
+            value: b"e".to_vec(),
+            label_id: Some(3),
+            after: page1.next,
+            limit: 2,
+        })
+        .expect("page2");
+    assert_eq!(page2.hits.len(), 1);
+    assert_eq!(page2.hits[0].slot_index, 2);
     assert!(page2.done);
 }
 

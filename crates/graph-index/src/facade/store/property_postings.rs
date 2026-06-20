@@ -1,7 +1,8 @@
 //! Property equality postings: shard-canister writes and posting-local reads.
 
 use super::{
-    IndexStore, ensure_index_value_key, ensure_posting_range_request, pack_posting_vertex,
+    IndexStore, clamp_posting_page_limit, ensure_index_value_key, ensure_posting_range_request,
+    pack_posting_vertex,
 };
 use crate::facade::stable::{INDEX_VERTEX_LABEL_POSTINGS, INDEX_VERTEX_POSTINGS};
 use crate::key::PostingKey;
@@ -10,7 +11,11 @@ use crate::posting_range::{posting_key_half_open_range, property_posting_bucket}
 use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::{PostingHit, PostingRangeRequest, ValuePostingCount};
+use gleaph_graph_kernel::index::{
+    LookupEqualPageRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
+    PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
+};
+use std::ops::Bound;
 
 impl IndexStore {
     pub(super) fn commit_posting_insert(
@@ -95,6 +100,27 @@ impl IndexStore {
                 })
                 .collect()
         }))
+    }
+
+    /// Bounded equality export for one `(property_id, value)` bucket (no full-bucket heap
+    /// materialization). Returns at most `limit` hits plus a resume cursor.
+    pub fn lookup_equal_page(
+        &self,
+        req: &LookupEqualPageRequest,
+    ) -> Result<PostingHitPage, IndexError> {
+        ensure_index_value_key(&req.value)?;
+        let limit = clamp_posting_page_limit(req.limit);
+        let upper = Bound::Included(PostingKey::prefix_upper(req.property_id, &req.value));
+        let lower = match &req.after {
+            Some(cursor) => Bound::Excluded(PostingKey {
+                property_id: req.property_id,
+                value: cursor.value.clone(),
+                shard_id: cursor.shard_id,
+                vertex_id: cursor.vertex_id,
+            }),
+            None => Bound::Included(PostingKey::prefix_lower(req.property_id, &req.value)),
+        };
+        Ok(collect_vertex_posting_page(lower, upper, limit))
     }
 
     /// Walk the property bucket and return `(encoded_value, global_count)` groups with `count >= min_count`.
@@ -247,5 +273,84 @@ impl IndexStore {
                 })
                 .collect()
         }))
+    }
+
+    /// Bounded range export over encoded values for one property (no full-bucket heap
+    /// materialization). Returns at most `limit` hits plus a resume cursor.
+    pub fn lookup_range_page(
+        &self,
+        req: &LookupRangePageRequest,
+    ) -> Result<PostingHitPage, IndexError> {
+        ensure_posting_range_request(&req.range)?;
+        let limit = clamp_posting_page_limit(req.limit);
+        let Some((low, high)) = posting_key_half_open_range(req.property_id, &req.range) else {
+            return Ok(empty_posting_page());
+        };
+        if low >= high {
+            return Ok(empty_posting_page());
+        }
+        let upper = Bound::Excluded(high);
+        let lower = match &req.after {
+            Some(cursor) => Bound::Excluded(PostingKey {
+                property_id: req.property_id,
+                value: cursor.value.clone(),
+                shard_id: cursor.shard_id,
+                vertex_id: cursor.vertex_id,
+            }),
+            None => Bound::Included(low),
+        };
+        Ok(collect_vertex_posting_page(lower, upper, limit))
+    }
+}
+
+fn empty_posting_page() -> PostingHitPage {
+    PostingHitPage {
+        hits: Vec::new(),
+        next: None,
+        done: true,
+    }
+}
+
+/// Collect at most `limit` vertex posting hits over `(lower, upper)`, reading one extra key to
+/// detect a further page. The resume cursor is the last retained hit's full key.
+fn collect_vertex_posting_page(
+    lower: Bound<PostingKey>,
+    upper: Bound<PostingKey>,
+    limit: usize,
+) -> PostingHitPage {
+    let mut hits = Vec::with_capacity(limit.min(256));
+    let mut next: Option<PropertyPostingCursor> = None;
+    let mut overflow = false;
+    INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
+        for key in postings.range((lower, upper)).take(limit + 1) {
+            if hits.len() == limit {
+                overflow = true;
+                break;
+            }
+            let shard_id = key.shard_id;
+            let vertex_id = key.vertex_id;
+            hits.push(PostingHit {
+                shard_id,
+                vertex_id,
+            });
+            next = Some(PropertyPostingCursor {
+                value: key.value,
+                shard_id,
+                vertex_id,
+            });
+        }
+    });
+    if overflow {
+        PostingHitPage {
+            hits,
+            next,
+            done: false,
+        }
+    } else {
+        PostingHitPage {
+            hits,
+            next: None,
+            done: true,
+        }
     }
 }

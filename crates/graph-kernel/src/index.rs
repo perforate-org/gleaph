@@ -152,6 +152,73 @@ pub struct ValuePostingCount {
     pub count: u64,
 }
 
+/// Resume cursor for paginated vertex property exports (last posting from the prior page).
+///
+/// Carries `value` because range scans span multiple encoded values; equality scans repeat the
+/// fixed request value.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct PropertyPostingCursor {
+    pub value: Vec<u8>,
+    pub shard_id: ShardId,
+    pub vertex_id: u32,
+}
+
+/// Resume cursor for paginated edge property exports (last posting from the prior page).
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct EdgePostingCursor {
+    pub value: Vec<u8>,
+    pub label_id: u16,
+    pub shard_id: ShardId,
+    pub owner_vertex_id: u32,
+    pub slot_index: u32,
+}
+
+/// One page of vertex property postings (equality or range export).
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct PostingHitPage {
+    pub hits: Vec<PostingHit>,
+    /// Last hit in this page; pass as `after` on the next request when `done` is false.
+    pub next: Option<PropertyPostingCursor>,
+    pub done: bool,
+}
+
+/// One page of edge property postings (equality export).
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct EdgePostingHitPage {
+    pub hits: Vec<EdgePostingHit>,
+    /// Last hit in this page; pass as `after` on the next request when `done` is false.
+    pub next: Option<EdgePostingCursor>,
+    pub done: bool,
+}
+
+/// Paginated equality export for one `(property_id, value)` vertex bucket.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupEqualPageRequest {
+    pub property_id: u32,
+    pub value: Vec<u8>,
+    pub after: Option<PropertyPostingCursor>,
+    pub limit: u32,
+}
+
+/// Paginated range export over encoded values for one vertex property.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupRangePageRequest {
+    pub property_id: u32,
+    pub range: PostingRangeRequest,
+    pub after: Option<PropertyPostingCursor>,
+    pub limit: u32,
+}
+
+/// Paginated equality export for one edge property `(property_id, value[, label_id])` bucket.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupEdgeEqualPageRequest {
+    pub property_id: u32,
+    pub value: Vec<u8>,
+    pub label_id: Option<u16>,
+    pub after: Option<EdgePostingCursor>,
+    pub limit: u32,
+}
+
 /// Host entity for an administrator-registered property index (ADR 0009).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize,
@@ -216,6 +283,88 @@ mod tests {
         let over = vec![0u8; MAX_INDEX_VALUE_KEY_BYTES + 1];
         let err = validate_index_value_key_bytes(&over).expect_err("over limit");
         assert_eq!(err.len, MAX_INDEX_VALUE_KEY_BYTES + 1);
+    }
+
+    #[test]
+    fn paginated_property_requests_candid_roundtrip() {
+        let cursor = PropertyPostingCursor {
+            value: vec![1, 2, 3],
+            shard_id: ShardId::new(2),
+            vertex_id: 7,
+        };
+        let equal = LookupEqualPageRequest {
+            property_id: 4,
+            value: vec![9, 9],
+            after: Some(cursor.clone()),
+            limit: 256,
+        };
+        let bytes = Encode!(&equal).expect("encode equal");
+        assert_eq!(
+            Decode!(&bytes, LookupEqualPageRequest).expect("decode equal"),
+            equal
+        );
+
+        let range = LookupRangePageRequest {
+            property_id: 4,
+            range: PostingRangeRequest::Ge(vec![5]),
+            after: Some(cursor.clone()),
+            limit: 256,
+        };
+        let bytes = Encode!(&range).expect("encode range");
+        assert_eq!(
+            Decode!(&bytes, LookupRangePageRequest).expect("decode range"),
+            range
+        );
+
+        let page = PostingHitPage {
+            hits: vec![PostingHit {
+                shard_id: ShardId::new(2),
+                vertex_id: 7,
+            }],
+            next: Some(cursor),
+            done: false,
+        };
+        let bytes = Encode!(&page).expect("encode page");
+        assert_eq!(Decode!(&bytes, PostingHitPage).expect("decode page"), page);
+    }
+
+    #[test]
+    fn paginated_edge_request_candid_roundtrip() {
+        let cursor = EdgePostingCursor {
+            value: vec![1],
+            label_id: 5,
+            shard_id: ShardId::new(0),
+            owner_vertex_id: 4,
+            slot_index: 1,
+        };
+        let req = LookupEdgeEqualPageRequest {
+            property_id: 2,
+            value: vec![3, 4],
+            label_id: Some(5),
+            after: Some(cursor.clone()),
+            limit: 128,
+        };
+        let bytes = Encode!(&req).expect("encode edge req");
+        assert_eq!(
+            Decode!(&bytes, LookupEdgeEqualPageRequest).expect("decode edge req"),
+            req
+        );
+
+        let page = EdgePostingHitPage {
+            hits: vec![EdgePostingHit {
+                shard_id: ShardId::new(0),
+                owner_vertex_id: 4,
+                label_id: 5,
+                slot_index: 1,
+            }],
+            next: Some(cursor),
+            done: true,
+        };
+        let bytes = Encode!(&page).expect("encode edge page");
+        assert_eq!(
+            Decode!(&bytes, EdgePostingHitPage).expect("decode edge page"),
+            page
+        );
     }
 
     #[test]

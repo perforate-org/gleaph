@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-06-19
-Anchor timestamp: 2026-06-19 01:02:52 UTC +0000
+Last updated: 2026-06-20
+Anchor timestamp: 2026-06-20 00:16:17 UTC +0000
 
 ## Status
 
@@ -70,12 +70,26 @@ An index canister holds postings for shards attached to **one graph's index clus
 
 | API | Status | Role |
 |-----|--------|------|
-| `lookup_equal` | Implemented | Equality postings for one `(property_id, value)` |
-| `lookup_range` | Implemented | Range over encoded values for one property |
+| `lookup_equal` | Implemented | Equality postings for one `(property_id, value)` — full bucket (small buckets / tests) |
+| `lookup_range` | Implemented | Range over encoded values for one property — full range (small ranges / tests) |
+| `lookup_equal_page` | Implemented | Paginated equality export (`after` + `limit`); the seed-routing read path |
+| `lookup_range_page` | Implemented | Paginated range export over encoded values (`after` + `limit`) |
+| `lookup_edge_equal_page` | Implemented | Paginated edge equality export (`after` + `limit`) |
 | `lookup_intersection` | Implemented | Intersect multiple equality arms ([lookup-intersection.md](lookup-intersection.md)) |
 | `count_postings_by_value` | Implemented | Walk one property bucket; return `(encoded_value, count)` groups ([ADR 0003](../adr/0003-federated-aggregate-merge.md)) |
 
 All read APIs run entirely inside graph-index (no graph canister calls).
+
+**No full-bucket heap materialization invariant** ([capacity-planning.md](capacity-planning.md):
+"Query paths must not materialize full buckets in heap"). Query consumers read postings through the
+paginated `*_page` APIs, which return at most `limit` hits plus a resume cursor — bounding the
+per-message heap on the index canister. The router (`RouterIndexLookup` /
+`RouterIndexClient::lookup_equal_page` / `lookup_edge_equal_page`) and the standalone graph client
+(`IcPropertyIndexClient`) loop pages for `lookup_equal` / `lookup_range` / `lookup_edge_equal`. The
+non-paginated `lookup_equal` / `lookup_range` / `lookup_edge_equal` endpoints are retained for small
+buckets and tests, mirroring `lookup_label` vs `lookup_label_page` ([label-index.md](label-index.md)
+path A). Vertex/edge equality **intersection** (`lookup_intersection`) still builds per-arm posting
+sets in heap — see [lookup-intersection.md](lookup-intersection.md#streaming-intersection-status).
 
 **Planned:** `count_postings_by_value_for_label` — same bucket walk with label membership sieve
 per posting ([label-index.md](label-index.md) Tier 3).

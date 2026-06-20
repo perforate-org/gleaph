@@ -46,6 +46,16 @@ pub const DEFAULT_COUNT_POSTINGS_MAX_GROUPS: usize = 10_000;
 /// Default page size for [`IndexStore::lookup_label_page`].
 pub const DEFAULT_LABEL_LOOKUP_PAGE_LIMIT: usize = 10_000;
 
+/// Default page size for paginated property / edge posting exports.
+pub const DEFAULT_POSTING_LOOKUP_PAGE_LIMIT: usize = 10_000;
+
+/// Clamp a client-supplied page limit into `1..=DEFAULT_POSTING_LOOKUP_PAGE_LIMIT`.
+pub(super) fn clamp_posting_page_limit(limit: u32) -> usize {
+    usize::try_from(limit)
+        .unwrap_or(DEFAULT_POSTING_LOOKUP_PAGE_LIMIT)
+        .clamp(1, DEFAULT_POSTING_LOOKUP_PAGE_LIMIT)
+}
+
 /// Stateless facade over index stable structures initialized in [`super::stable`].
 #[derive(Clone, Copy, Debug, Default)]
 pub struct IndexStore;

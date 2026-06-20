@@ -5,11 +5,16 @@ use crate::plan::PlanQueryError;
 use async_trait::async_trait;
 use candid::Principal;
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, IndexIntersectionRequest, IndexIntersectionResult, PostingHit,
-    PostingRangeRequest,
+    EdgePostingHit, EdgePostingHitPage, IndexIntersectionRequest, IndexIntersectionResult,
+    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupRangePageRequest, PostingHit,
+    PostingHitPage, PostingRangeRequest,
 };
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
+
+/// Page size for paginated property / edge equality exports. Bounds per-message materialization on
+/// the index canister so query reads never build a full bucket in heap.
+const INDEX_PAGE_LIMIT: u32 = 10_000;
 
 #[derive(Clone, Debug)]
 pub struct IcPropertyIndexClient {
@@ -42,12 +47,27 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         property_id: u32,
         value: Vec<u8>,
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
-        let hits: Vec<PostingHit> = Call::bounded_wait(self.index_principal, "lookup_equal")
-            .with_args(&(property_id, value))
-            .await
-            .map_err(|e| ic_wait_err("lookup_equal", e))?
-            .candid()
-            .map_err(|_| ic_candid_decode_err("lookup_equal"))?;
+        let mut hits = Vec::new();
+        let mut after = None;
+        loop {
+            let page: PostingHitPage =
+                Call::bounded_wait(self.index_principal, "lookup_equal_page")
+                    .with_args(&(LookupEqualPageRequest {
+                        property_id,
+                        value: value.clone(),
+                        after,
+                        limit: INDEX_PAGE_LIMIT,
+                    },))
+                    .await
+                    .map_err(|e| ic_wait_err("lookup_equal_page", e))?
+                    .candid()
+                    .map_err(|_| ic_candid_decode_err("lookup_equal_page"))?;
+            hits.extend(page.hits);
+            if page.done {
+                break;
+            }
+            after = page.next;
+        }
         Ok(hits)
     }
 
@@ -56,12 +76,27 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         property_id: u32,
         req: &PostingRangeRequest,
     ) -> Result<Vec<PostingHit>, PlanQueryError> {
-        let hits: Vec<PostingHit> = Call::bounded_wait(self.index_principal, "lookup_range")
-            .with_args(&(property_id, req.clone()))
-            .await
-            .map_err(|e| ic_wait_err("lookup_range", e))?
-            .candid()
-            .map_err(|_| ic_candid_decode_err("lookup_range"))?;
+        let mut hits = Vec::new();
+        let mut after = None;
+        loop {
+            let page: PostingHitPage =
+                Call::bounded_wait(self.index_principal, "lookup_range_page")
+                    .with_args(&(LookupRangePageRequest {
+                        property_id,
+                        range: req.clone(),
+                        after,
+                        limit: INDEX_PAGE_LIMIT,
+                    },))
+                    .await
+                    .map_err(|e| ic_wait_err("lookup_range_page", e))?
+                    .candid()
+                    .map_err(|_| ic_candid_decode_err("lookup_range_page"))?;
+            hits.extend(page.hits);
+            if page.done {
+                break;
+            }
+            after = page.next;
+        }
         Ok(hits)
     }
 
@@ -85,13 +120,28 @@ impl PropertyIndexLookup for IcPropertyIndexClient {
         value: Vec<u8>,
         label_id: Option<u16>,
     ) -> Result<Vec<EdgePostingHit>, PlanQueryError> {
-        let hits: Vec<EdgePostingHit> =
-            Call::bounded_wait(self.index_principal, "lookup_edge_equal")
-                .with_args(&(property_id, value, label_id))
-                .await
-                .map_err(|e| ic_wait_err("lookup_edge_equal", e))?
-                .candid()
-                .map_err(|_| ic_candid_decode_err("lookup_edge_equal"))?;
+        let mut hits = Vec::new();
+        let mut after = None;
+        loop {
+            let page: EdgePostingHitPage =
+                Call::bounded_wait(self.index_principal, "lookup_edge_equal_page")
+                    .with_args(&(LookupEdgeEqualPageRequest {
+                        property_id,
+                        value: value.clone(),
+                        label_id,
+                        after,
+                        limit: INDEX_PAGE_LIMIT,
+                    },))
+                    .await
+                    .map_err(|e| ic_wait_err("lookup_edge_equal_page", e))?
+                    .candid()
+                    .map_err(|_| ic_candid_decode_err("lookup_edge_equal_page"))?;
+            hits.extend(page.hits);
+            if page.done {
+                break;
+            }
+            after = page.next;
+        }
         Ok(hits)
     }
 

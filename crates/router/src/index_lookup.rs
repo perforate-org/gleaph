@@ -9,12 +9,72 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexIntersectionRequest, IndexIntersectionResult,
-    IndexLabelIntersectionRequest, LabelLookupPageRequest, LabelLookupPageResult, PostingHit,
-    ValuePostingCount,
+    IndexLabelIntersectionRequest, LabelLookupPageRequest, LabelLookupPageResult,
+    LookupEdgeEqualPageRequest, LookupEqualPageRequest, PostingHit, ValuePostingCount,
 };
 
 use crate::facade::store::RouterStore;
 use crate::index_client::RouterIndexClient;
+
+/// Page size for paginated property / edge equality exports during seed routing. Bounds the
+/// per-message materialization on the index canister (no full-bucket heap materialization).
+const INDEX_LOOKUP_PAGE_LIMIT: u32 = 10_000;
+
+/// Collect all equality hits for `(property_id, value)` on one index canister by paging, so the
+/// index never builds a full-bucket `Vec` in a single query message.
+async fn collect_equal_hits_paged(
+    client: &RouterIndexClient,
+    property_id: u32,
+    value: Vec<u8>,
+) -> Result<Vec<PostingHit>, String> {
+    let mut hits = Vec::new();
+    let mut after = None;
+    loop {
+        let page = client
+            .lookup_equal_page(LookupEqualPageRequest {
+                property_id,
+                value: value.clone(),
+                after,
+                limit: INDEX_LOOKUP_PAGE_LIMIT,
+            })
+            .await?;
+        hits.extend(page.hits);
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+    Ok(hits)
+}
+
+/// Collect all edge equality hits for `(property_id, value[, label_id])` on one index canister by
+/// paging (no full-bucket heap materialization).
+async fn collect_edge_equal_hits_paged(
+    client: &RouterIndexClient,
+    property_id: u32,
+    value: Vec<u8>,
+    label_id: Option<u16>,
+) -> Result<Vec<EdgePostingHit>, String> {
+    let mut hits = Vec::new();
+    let mut after = None;
+    loop {
+        let page = client
+            .lookup_edge_equal_page(LookupEdgeEqualPageRequest {
+                property_id,
+                value: value.clone(),
+                label_id,
+                after,
+                limit: INDEX_LOOKUP_PAGE_LIMIT,
+            })
+            .await?;
+        hits.extend(page.hits);
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+    Ok(hits)
+}
 
 /// Federated index reader: resolves one or more index canisters from shard registry (ADR 0010).
 #[derive(Clone, Debug)]
@@ -177,7 +237,7 @@ impl IndexLookup for RouterIndexClient {
         property_id: u32,
         value: Vec<u8>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<PostingHit>, String>> + '_>> {
-        Box::pin(self.lookup_equal(property_id, value))
+        Box::pin(collect_equal_hits_paged(self, property_id, value))
     }
 
     fn lookup_intersection(
@@ -193,7 +253,12 @@ impl IndexLookup for RouterIndexClient {
         value: Vec<u8>,
         label_id: Option<u16>,
     ) -> Pin<Box<dyn Future<Output = Result<Vec<EdgePostingHit>, String>> + '_>> {
-        Box::pin(self.lookup_edge_equal(property_id, value, label_id))
+        Box::pin(collect_edge_equal_hits_paged(
+            self,
+            property_id,
+            value,
+            label_id,
+        ))
     }
 
     fn count_postings_by_value(
@@ -248,9 +313,12 @@ impl IndexLookup for RouterIndexLookup {
             let mut merged = Vec::new();
             for principal in targets {
                 merged.extend(
-                    RouterIndexClient::new(principal)
-                        .lookup_equal(property_id, value.clone())
-                        .await?,
+                    collect_equal_hits_paged(
+                        &RouterIndexClient::new(principal),
+                        property_id,
+                        value.clone(),
+                    )
+                    .await?,
                 );
             }
             Ok(merge_posting_hits(self.retain_live_vertex_hits(merged)))
@@ -291,9 +359,13 @@ impl IndexLookup for RouterIndexLookup {
             let mut merged = Vec::new();
             for principal in targets {
                 merged.extend(
-                    RouterIndexClient::new(principal)
-                        .lookup_edge_equal(property_id, value.clone(), label_id)
-                        .await?,
+                    collect_edge_equal_hits_paged(
+                        &RouterIndexClient::new(principal),
+                        property_id,
+                        value.clone(),
+                        label_id,
+                    )
+                    .await?,
                 );
             }
             Ok(merge_edge_posting_hits(self.retain_live_edge_hits(merged)))

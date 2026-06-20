@@ -7,7 +7,9 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::index::{
-    EdgePostingHit, IndexIntersectionResult, PostingHit, PostingRangeRequest, ValuePostingCount,
+    EdgePostingHit, EdgePostingHitPage, IndexIntersectionResult, LookupEdgeEqualPageRequest,
+    LookupEqualPageRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
+    PostingRangeRequest, ValuePostingCount,
 };
 use ic_cdk::api::msg_caller;
 
@@ -162,6 +164,33 @@ pub(crate) fn lookup_edge_equal(
 ) -> Vec<EdgePostingHit> {
     IndexStore::new()
         .lookup_edge_equal(property_id, &value, label_id)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
+}
+
+pub(crate) fn lookup_equal_page(req: LookupEqualPageRequest) -> PostingHitPage {
+    IndexStore::new()
+        .lookup_equal_page(&req)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
+}
+
+pub(crate) fn lookup_range_page(req: LookupRangePageRequest) -> PostingHitPage {
+    IndexStore::new()
+        .lookup_range_page(&req)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
+}
+
+pub(crate) fn lookup_edge_equal_page(req: LookupEdgeEqualPageRequest) -> EdgePostingHitPage {
+    IndexStore::new()
+        .lookup_edge_equal_page(&req)
         .unwrap_or_else(|e| {
             trap_err(e);
             unreachable!()

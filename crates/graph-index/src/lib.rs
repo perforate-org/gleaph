@@ -29,9 +29,11 @@ mod guards;
 pub use edge_key::EdgePostingKey;
 pub use facade::IndexStore;
 pub use gleaph_graph_kernel::index::{
-    EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
-    IndexLabelIntersectionRequest, IndexSubject, LabelLookupPageRequest, LabelLookupPageResult,
-    LabelPostingCursor, PostingHit, PostingRangeRequest, ValuePostingCount,
+    EdgePostingCursor, EdgePostingHit, EdgePostingHitPage, IndexEqualSpec,
+    IndexIntersectionRequest, IndexIntersectionResult, IndexLabelIntersectionRequest, IndexSubject,
+    LabelLookupPageRequest, LabelLookupPageResult, LabelPostingCursor, LookupEdgeEqualPageRequest,
+    LookupEqualPageRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
+    PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
 };
 pub use init::IndexInitArgs;
 pub use key::PostingKey;
@@ -156,6 +158,21 @@ fn lookup_edge_equal(
     label_id: Option<u16>,
 ) -> Vec<EdgePostingHit> {
     canister::lookup_edge_equal(property_id, value, label_id)
+}
+
+#[query(guard = "guard_router_canister")]
+fn lookup_equal_page(req: LookupEqualPageRequest) -> PostingHitPage {
+    canister::lookup_equal_page(req)
+}
+
+#[query(guard = "guard_router_canister")]
+fn lookup_range_page(req: LookupRangePageRequest) -> PostingHitPage {
+    canister::lookup_range_page(req)
+}
+
+#[query(guard = "guard_router_canister")]
+fn lookup_edge_equal_page(req: LookupEdgeEqualPageRequest) -> EdgePostingHitPage {
+    canister::lookup_edge_equal_page(req)
 }
 
 #[query(guard = "guard_router_canister")]
