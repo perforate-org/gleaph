@@ -476,6 +476,56 @@ pub fn e2e_maintenance_queue_len() -> u64 {
     GraphStore::new().maintenance_queue_len()
 }
 
+/// Reads the `property_id` value of the directed edge `source -> target` through
+/// the **reverse** in-edge → edge-alias → canonical-forward path (PocketIC E2E
+/// only). Returns `None` when no such in-edge or property is found.
+///
+/// This is the alias-resolved read seam for ADR 0023 compaction re-keying: a
+/// forward-span compaction moves the canonical forward slot and must re-key both
+/// the edge-alias canonical target (`move_canonical_target`) and the property
+/// sidecar (`EDGE_PROPERTIES`). Resolving the property from the reverse side
+/// (`edge_property` → `canonical_edge_handle_for_sidecar` → alias lookup) reads
+/// at the *moved* canonical slot, so a stale alias or un-moved sidecar surfaces
+/// here as a missing/wrong value — unlike the forward index-served lookup, which
+/// only proves the posting was re-keyed.
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_reverse_resolved_edge_property(
+    args: super::types::E2eReverseResolvedEdgePropertyArgs,
+) -> Result<Option<i64>, String> {
+    use crate::facade::EdgeHandle;
+    use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::PropertyId;
+    use ic_stable_lara::traits::CsrEdge;
+    use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
+
+    let store = GraphStore::new();
+    let source = VertexId::from(args.source_local_vertex_id);
+    let target = VertexId::from(args.target_local_vertex_id);
+    let property_id = PropertyId::from_raw(args.property_id);
+
+    // Locate the reverse in-edge `target <- source` and rebuild its reverse
+    // handle (target row, reverse CSR slot), symmetric to the forward lookup in
+    // `e2e_delete_directed_edge_with_property`.
+    let Some(in_edge) = store
+        .directed_in_edges(target)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|edge| edge.neighbor_vid() == source)
+    else {
+        return Ok(None);
+    };
+    let reverse_handle = EdgeHandle::at_slot(
+        target,
+        LaraLabelId::from_raw(in_edge.label_id),
+        in_edge.edge_slot_index.raw(),
+    );
+    match store.edge_property(reverse_handle, property_id) {
+        Some(Value::Int64(v)) => Ok(Some(v)),
+        Some(other) => Err(format!("unexpected edge property value: {other:?}")),
+        None => Ok(None),
+    }
+}
+
 pub async fn backfill_label_postings(
     args: gleaph_graph_kernel::federation::PostingBackfillArgs,
 ) -> Result<gleaph_graph_kernel::federation::PostingBackfillResult, String> {

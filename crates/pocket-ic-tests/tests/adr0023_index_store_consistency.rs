@@ -26,8 +26,8 @@ use gleaph_pocket_ic_tests::{
     create_vertex_property_index, drain_maintenance_via_timer, drop_vertex_property_index,
     e2e_delete_directed_edge_with_property, e2e_enqueue_forward_compaction,
     e2e_insert_directed_edge_with_property, e2e_insert_vertex, e2e_maintenance_queue_len,
-    gql_execute_idempotent_as_admin, gql_query_as_admin, install_single_shard_federation,
-    wasm_bytes,
+    e2e_reverse_resolved_edge_property, gql_execute_idempotent_as_admin, gql_query_as_admin,
+    install_single_shard_federation, wasm_bytes,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -232,6 +232,12 @@ fn unique_edge_target(
 /// flushes the re-keyed edge postings in the same tick (P2). After the timer
 /// drains, index-served edge equality lookups must still resolve to the correct
 /// targets (INV holds: postings track the re-keyed slots, no stale/orphan slots).
+///
+/// The move re-keys three sidecars off the same `EdgeSlotMove`: the edge index
+/// postings (forward index-served lookups, above), the edge-alias canonical
+/// target, and the property sidecar (`EDGE_PROPERTIES`). The alias + property
+/// sidecars are exercised by reading each surviving edge's weight through the
+/// reverse in-edge -> alias -> canonical path, which resolves at the moved slot.
 #[test]
 fn timer_compaction_after_upgrade_rekeys_edge_postings_consistently() {
     let env = install_single_shard_federation();
@@ -292,6 +298,19 @@ fn timer_compaction_after_upgrade_rekeys_edge_postings_consistently() {
         target_b.global_vertex_id,
         "weight 20 must resolve to B before compaction"
     );
+    // The same edge resolved from the reverse side (in-edge -> alias -> canonical)
+    // reads its weight at the canonical forward slot 1 before any move.
+    assert_eq!(
+        e2e_reverse_resolved_edge_property(
+            &env,
+            env.graph_source,
+            source.local_vertex_id,
+            target_b.local_vertex_id,
+            weight.raw(),
+        ),
+        Some(20),
+        "weight 20 must resolve through the reverse alias path before compaction"
+    );
 
     // Enqueue forward-span compaction WITHOUT an inline drain so the work is left
     // for the maintenance timer, then upgrade the shard before the timer fires.
@@ -343,5 +362,36 @@ fn timer_compaction_after_upgrade_rekeys_edge_postings_consistently() {
         gql_query_as_admin(&env, "MATCH (a)-[e:KNOWS]->(b) RETURN e").row_count,
         2,
         "exactly the two surviving edges remain in the store after compaction"
+    );
+
+    // INV for the alias/property sidecars that ride the SAME EdgeSlotMove as the
+    // index postings: forward compaction re-keys the edge-alias canonical target
+    // (`move_canonical_target`) and physically moves the property sidecar
+    // (`EDGE_PROPERTIES`) to the new forward slot. Reading each surviving edge's
+    // weight through the reverse in-edge -> alias -> canonical path must still
+    // return the correct value at the *moved* slot. A stale alias would resolve to
+    // a sibling's slot (returning the wrong weight) and an un-moved sidecar would
+    // return nothing, so this catches a re-key gap the forward index lookup cannot.
+    assert_eq!(
+        e2e_reverse_resolved_edge_property(
+            &env,
+            env.graph_source,
+            source.local_vertex_id,
+            target_b.local_vertex_id,
+            weight.raw(),
+        ),
+        Some(20),
+        "weight 20 must resolve through the reverse alias path after the slot moved 1 -> 0"
+    );
+    assert_eq!(
+        e2e_reverse_resolved_edge_property(
+            &env,
+            env.graph_source,
+            source.local_vertex_id,
+            target_c.local_vertex_id,
+            weight.raw(),
+        ),
+        Some(30),
+        "weight 30 must resolve through the reverse alias path after the slot moved 2 -> 1"
     );
 }

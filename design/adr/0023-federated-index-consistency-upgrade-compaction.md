@@ -18,6 +18,7 @@ Anchor timestamp: 2026-06-20 04:15:12 UTC +0000
 | 2026-06-20 | Phase 4 completed (P4): the compensation-failure trap is retired across all three flush paths (`index/pending.rs`, `edge_pending.rs`, `label_pending.rs`) — the branch now journals the full batch and returns an error instead of `ic_cdk::trap`, since idempotent journal re-application converges the index to the store regardless of partial compensation state (store becomes the source of truth; no whole-message rollback). Refinement: the durable `index-dirty` marker + the catalog-driven *scan* rebuild from the original D5 wording are re-sequenced into phase 5 (they need D6's index-side posting-purge primitive and share its machinery); the journal alone closes P4. Phases 5–6 pending. |
 | 2026-06-20 | Phase 6 (P5): INV test oracle added. `graph/src/index/inv_oracle.rs` drives vertex/edge/label posting ops through the real flush paths (incl. an edge compaction re-key) with a mid-batch index failure, then asserts `recorded postings == projection(store over indexed properties)` exactly after compensation + repair-journal drain (verification items 1–2). PocketIC P1 is now green for edges too (`post_upgrade_indexed_edge_write_stays_consistent_with_store`). Remaining gap: the wasm-only timer-driven compaction+upgrade e2e (item 3) needs a PocketIC time-advance/timer-fire harness and is tracked as a follow-up; relocation slot-invariance (item 4) stays covered by existing ic-stable-lara tests. |
 | 2026-06-20 | Phase 6 completed (P5, item 3): added the wasm-only timer-driven compaction+upgrade e2e (`timer_compaction_after_upgrade_rekeys_edge_postings_consistently`). New PocketIC time-advance/timer-fire harness (`drain_maintenance_via_timer`) plus feature-gated (`pocket-ic-e2e`) graph-shard admin hooks — `e2e_enqueue_forward_compaction` (enqueue `CompactVertexEdgeSpan` + arm timer, no inline drain), `e2e_delete_directed_edge_with_property`, `e2e_maintenance_queue_len`. The enqueue-only hook is required because production delete/insert budgets fully reclaim inline at test scale. The test deletes a slot-0 edge, upgrades the shard (asserting the queued compaction survives the stable queue), then fires the re-armed timer; the async tick runs the real slot-moving LARA compaction and re-keys postings in-tick, after which index-served lookups still resolve each weight to the correct target. Verification plan item 3 is now done. |
+| 2026-06-20 | Item 3 widened: the timer-driven compaction+upgrade e2e now also asserts the **alias/property sidecars** that ride the same `EdgeSlotMove` as the index postings. Forward compaction re-keys the edge-alias canonical target (`move_canonical_target`) and physically moves the property sidecar (`EDGE_PROPERTIES`); the test reads each surviving edge's weight through the reverse in-edge → alias → canonical path via a new feature-gated query hook `e2e_reverse_resolved_edge_property`, which resolves at the moved slot and catches a stale alias (wrong sibling weight) or an un-moved sidecar (missing value) that the forward index lookup alone cannot. |
 | 2026-06-20 | Phase 5 completed (P7 / D6): `DROP INDEX` now purges postings. Added a bounded, resumable index-side primitive `admin_purge_property_postings` (`graph-index`, `facade/store/posting_purge.rs`) with kernel wire types (`federation/index_posting_purge.rs`), scoped to a contiguous `property_id` range (vertex: whole range; edge: filtered by catalog `label_id` → `(property_id, label_id)`). `router::drop_index` drives the purge fan-out across `graph_index_lookup_targets` only when no remaining index needs the postings (`is_property_registered` for vertex; new `edge_index_uses_property_label` for edge). Stateless (no new stable region). PocketIC `drop_index_purges_postings_from_graph_index` is green. The `index-dirty` marker + catalog-driven scan-rebuild (re-sequenced from phase 4) are dropped as unneeded — the phase-4 journal already provides idempotent repair. Phase 6 (INV oracle) pending. |
 
 ## Context
@@ -303,13 +304,21 @@ provable.
    tick fetches the router catalog, runs the real LARA compaction (moving the
    surviving edges' `slot_index`), and flushes the re-keyed postings in-tick;
    index-served equality lookups then still resolve each weight to the correct
-   target. The reclaimable-state setup and the time-advance / timer-fire harness
+   target. The same `EdgeSlotMove` also re-keys the **edge-alias canonical
+   target** (`move_canonical_target`) and physically moves the **property
+   sidecar** (`EDGE_PROPERTIES`); the test widens its assertion to read each
+   surviving edge's weight through the reverse in-edge → alias → canonical path
+   (the `e2e_reverse_resolved_edge_property` hook), which resolves at the moved
+   slot and so catches a stale alias (wrong sibling weight) or an un-moved
+   sidecar (missing value) that the forward index lookup alone cannot. The
+   reclaimable-state setup and the time-advance / timer-fire harness
    (`drain_maintenance_via_timer`) live in the `pocket-ic-tests` crate, driven by
    feature-gated (`pocket-ic-e2e`) admin hooks on the graph shard
    (`e2e_enqueue_forward_compaction`, `e2e_delete_directed_edge_with_property`,
-   `e2e_maintenance_queue_len`); the enqueue-only hook is required because the
-   production delete/insert budgets fully reclaim inline at test scale, so the
-   timer never arms through the normal path.
+   `e2e_maintenance_queue_len`, `e2e_reverse_resolved_edge_property`); the
+   enqueue-only hook is required because the production delete/insert budgets
+   fully reclaim inline at test scale, so the timer never arms through the normal
+   path.
 4. **Relocation/rebalance regression** — slot-invariance under physical
    relocation/rebalance is an established fact backed by the existing
    `ic-stable-lara` tests (posting keys carry the bucket-relative `slot_index`,

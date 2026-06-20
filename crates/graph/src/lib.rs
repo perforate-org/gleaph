@@ -163,6 +163,14 @@ fn e2e_maintenance_queue_len() -> u64 {
     canister::handlers::e2e_maintenance_queue_len()
 }
 
+#[cfg(feature = "pocket-ic-e2e")]
+#[query(guard = "guard_control_plane_admin")]
+fn e2e_reverse_resolved_edge_property(
+    args: canister::types::E2eReverseResolvedEdgePropertyArgs,
+) -> Result<Option<i64>, String> {
+    canister::handlers::e2e_reverse_resolved_edge_property(args)
+}
+
 #[update(guard = "guard_router_canister")]
 async fn backfill_label_postings(
     args: gleaph_graph_kernel::federation::PostingBackfillArgs,

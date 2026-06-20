@@ -161,6 +161,13 @@ pub struct E2eDeleteDirectedEdgeArgs {
 }
 
 #[derive(CandidType, Clone, Debug)]
+pub struct E2eReverseResolvedEdgePropertyArgs {
+    pub source_local_vertex_id: u32,
+    pub target_local_vertex_id: u32,
+    pub property_id: u32,
+}
+
+#[derive(CandidType, Clone, Debug)]
 pub struct E2eInsertUndirectedEdgeWithPropertyArgs {
     pub source_local_vertex_id: u32,
     pub target_local_vertex_id: u32,
@@ -1151,6 +1158,38 @@ pub fn e2e_delete_directed_edge_with_property(
             property_id,
         },
     );
+}
+
+/// Reads the directed edge `source -> target`'s `property_id` value through the
+/// reverse in-edge → edge-alias → canonical-forward path on `graph` (E2E hook).
+///
+/// Resolves at the *moved* canonical slot, so it surfaces a stale edge-alias
+/// canonical target or an un-moved property sidecar after compaction — the
+/// alias-resolved counterpart to the forward index-served lookup.
+pub fn e2e_reverse_resolved_edge_property(
+    env: &FederationEnv,
+    graph: Principal,
+    source_local: u32,
+    target_local: u32,
+    property_id: u32,
+) -> Option<i64> {
+    let bytes = env
+        .pic
+        .query_call(
+            graph,
+            env.router,
+            "e2e_reverse_resolved_edge_property",
+            Encode!(&E2eReverseResolvedEdgePropertyArgs {
+                source_local_vertex_id: source_local,
+                target_local_vertex_id: target_local,
+                property_id,
+            })
+            .expect("encode e2e_reverse_resolved_edge_property"),
+        )
+        .unwrap_or_else(|e| panic!("e2e_reverse_resolved_edge_property on {graph}: {e:?}"));
+    Decode!(&bytes, Result<Option<i64>, String>)
+        .expect("decode e2e_reverse_resolved_edge_property")
+        .expect("e2e_reverse_resolved_edge_property handler error")
 }
 
 /// Pending deferred-maintenance work items in `graph`'s stable queue (E2E hook).
