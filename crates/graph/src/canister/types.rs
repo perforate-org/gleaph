@@ -49,6 +49,22 @@ pub struct E2eInsertDirectedEdgeWithPropertyArgs {
     pub value: i64,
 }
 
+/// Arguments for [`super::handlers::e2e_enqueue_forward_compaction`] (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eEnqueueForwardCompactionArgs {
+    pub local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+}
+
+/// Arguments for [`super::handlers::e2e_delete_directed_edge_with_property`] (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eDeleteDirectedEdgeArgs {
+    pub source_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    pub target_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    pub property_id: u32,
+}
+
 /// Arguments for [`super::handlers::e2e_insert_undirected_edge_with_property`] (PocketIC E2E only).
 #[cfg(feature = "pocket-ic-e2e")]
 #[derive(CandidType, Deserialize, Clone, Debug)]

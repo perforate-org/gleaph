@@ -393,6 +393,89 @@ pub async fn e2e_insert_undirected_edge_with_property(
     Ok(())
 }
 
+/// Enqueues forward-span compaction for `local_vertex_id` and arms the maintenance
+/// timer **without** an inline drain (PocketIC E2E only).
+///
+/// Production delete/insert paths bound their inline drain with a 32B-instruction
+/// budget that fully reclaims at test scale, so the maintenance timer never arms
+/// in a PocketIC test through the normal path. This enqueue-only hook leaves a
+/// `CompactVertexEdgeSpan` work item in the (stable) deferred queue so a test can
+/// exercise the wasm async timer tick (catalog fetch + in-tick posting re-key,
+/// ADR 0023 P2) across the upgrade boundary.
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_enqueue_forward_compaction(
+    args: super::types::E2eEnqueueForwardCompactionArgs,
+) -> Result<(), String> {
+    use crate::facade::BulkIngestFinalizeSpec;
+    use ic_stable_lara::VertexId;
+
+    GraphStore::new()
+        .enqueue_bulk_ingest_finalize(&BulkIngestFinalizeSpec {
+            forward_vertices: vec![VertexId::from(args.local_vertex_id)],
+            reverse_vertices: vec![],
+        })
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Deletes the directed edge `source -> target` and flushes the resulting index
+/// posting removal (PocketIC E2E only).
+///
+/// Leaves a tombstone at the deleted edge's slot without compacting the span, so
+/// a subsequent [`e2e_enqueue_forward_compaction`] yields a slot-moving
+/// compaction. Used in place of GQL `DELETE` because the federated index-served
+/// edge `DELETE` plan does not carry the edge element binding to the shard.
+#[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_delete_directed_edge_with_property(
+    args: super::types::E2eDeleteDirectedEdgeArgs,
+) -> Result<(), String> {
+    use crate::facade::EdgeHandle;
+    use crate::index::{edge_pending, pending};
+    use ic_stable_lara::traits::CsrEdge;
+    use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
+
+    let store = GraphStore::new();
+    let source = VertexId::from(args.source_local_vertex_id);
+    let target = VertexId::from(args.target_local_vertex_id);
+    let edge = store
+        .directed_out_edges(source)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|edge| edge.neighbor_vid() == target)
+        .ok_or("directed edge source -> target not found")?;
+    let handle = EdgeHandle::at_slot(
+        source,
+        LaraLabelId::from_raw(edge.label_id),
+        edge.edge_slot_index.raw(),
+    );
+    let _catalog =
+        crate::index::catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
+            edge_property_ids: vec![args.property_id],
+            ..Default::default()
+        });
+    store
+        .delete_edge_by_handle(handle)
+        .map_err(|e| e.to_string())?;
+    let index = wasm_index_client_holder().ok_or("federation not configured")?;
+    let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
+    pending::flush_pending(Some(ix))
+        .await
+        .map_err(|e| e.to_string())?;
+    edge_pending::flush_pending(Some(ix))
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+/// Pending deferred-maintenance work items in the stable queue (PocketIC E2E only).
+///
+/// Lets a test poll for timer-driven drain quiescence after advancing PocketIC
+/// time to fire the maintenance timer.
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_maintenance_queue_len() -> u64 {
+    GraphStore::new().maintenance_queue_len()
+}
+
 pub async fn backfill_label_postings(
     args: gleaph_graph_kernel::federation::PostingBackfillArgs,
 ) -> Result<gleaph_graph_kernel::federation::PostingBackfillResult, String> {

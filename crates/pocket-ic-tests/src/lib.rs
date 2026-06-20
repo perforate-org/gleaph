@@ -149,6 +149,18 @@ pub struct E2eInsertDirectedEdgeWithPropertyArgs {
 }
 
 #[derive(CandidType, Clone, Debug)]
+pub struct E2eEnqueueForwardCompactionArgs {
+    pub local_vertex_id: u32,
+}
+
+#[derive(CandidType, Clone, Debug)]
+pub struct E2eDeleteDirectedEdgeArgs {
+    pub source_local_vertex_id: u32,
+    pub target_local_vertex_id: u32,
+    pub property_id: u32,
+}
+
+#[derive(CandidType, Clone, Debug)]
 pub struct E2eInsertUndirectedEdgeWithPropertyArgs {
     pub source_local_vertex_id: u32,
     pub target_local_vertex_id: u32,
@@ -1103,6 +1115,86 @@ pub fn e2e_insert_undirected_edge_with_property(
             property_id,
             value,
         },
+    );
+}
+
+/// Enqueue forward-span compaction on `graph` and arm its maintenance timer
+/// without an inline drain (PocketIC E2E hook; see the graph canister handler).
+///
+/// Leaves a `CompactVertexEdgeSpan` work item in the shard's stable deferred
+/// queue so [`drain_maintenance_via_timer`] can drive the wasm async timer tick.
+pub fn e2e_enqueue_forward_compaction(env: &FederationEnv, graph: Principal, local_vertex_id: u32) {
+    let _: () = update_as_router(
+        env,
+        graph,
+        "e2e_enqueue_forward_compaction",
+        E2eEnqueueForwardCompactionArgs { local_vertex_id },
+    );
+}
+
+/// Delete the directed edge `source -> target` on `graph`, flushing the index
+/// posting removal, and leave a tombstone at its slot (PocketIC E2E hook).
+pub fn e2e_delete_directed_edge_with_property(
+    env: &FederationEnv,
+    graph: Principal,
+    source_local: u32,
+    target_local: u32,
+    property_id: u32,
+) {
+    let _: () = update_as_router(
+        env,
+        graph,
+        "e2e_delete_directed_edge_with_property",
+        E2eDeleteDirectedEdgeArgs {
+            source_local_vertex_id: source_local,
+            target_local_vertex_id: target_local,
+            property_id,
+        },
+    );
+}
+
+/// Pending deferred-maintenance work items in `graph`'s stable queue (E2E hook).
+pub fn e2e_maintenance_queue_len(env: &FederationEnv, graph: Principal) -> u64 {
+    let bytes = env
+        .pic
+        .query_call(
+            graph,
+            env.router,
+            "e2e_maintenance_queue_len",
+            Encode!(&()).expect("encode e2e_maintenance_queue_len"),
+        )
+        .unwrap_or_else(|e| panic!("e2e_maintenance_queue_len on {graph}: {e:?}"));
+    Decode!(&bytes, u64).expect("decode e2e_maintenance_queue_len")
+}
+
+/// Advance PocketIC time past the maintenance-timer floor delay and tick until
+/// the graph shard's deferred-maintenance queue drains (timer-fire harness).
+///
+/// `ic-cdk-timers` one-shot timers do not fire until simulated time passes their
+/// delay and the IC executes a round, and the async tick spans several
+/// inter-canister hops (router catalog fetch, posting flush). Each outer round
+/// advances time well past the 1s floor delay, then ticks enough times to let
+/// the timer fire and its cross-canister calls settle. Panics if the queue is
+/// still non-empty after the bounded number of rounds.
+pub fn drain_maintenance_via_timer(env: &FederationEnv, graph: Principal) {
+    use std::time::Duration;
+
+    const MAX_ROUNDS: usize = 40;
+    const TICKS_PER_ROUND: usize = 12;
+
+    for _ in 0..MAX_ROUNDS {
+        if e2e_maintenance_queue_len(env, graph) == 0 {
+            return;
+        }
+        env.pic.advance_time(Duration::from_secs(2));
+        for _ in 0..TICKS_PER_ROUND {
+            env.pic.tick();
+        }
+    }
+    assert_eq!(
+        e2e_maintenance_queue_len(env, graph),
+        0,
+        "maintenance timer failed to drain the deferred queue within {MAX_ROUNDS} rounds"
     );
 }
 

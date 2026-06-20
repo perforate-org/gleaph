@@ -17,6 +17,7 @@ Anchor timestamp: 2026-06-20 04:15:12 UTC +0000
 | 2026-06-20 | Phase 4a implemented (P3 part): durable repair journal (`facade/stable/repair_journal.rs`, new stable `MemoryId 41`). Flush failure with successful compensation now persists the whole batch to stable memory (all three posting kinds) rather than the volatile queue, so the store-ahead delta survives upgrade/trap; `arm_if_needed` arms on a non-empty journal, `post_upgrade` replays it, and the async tick re-applies entries in-tick (`index/repair_journal.rs`) and reschedules at the relaxed delay while non-empty. Stable-memory inventory + typed layout registry updated (graph: 42 regions). Phase 4b (dirty marker + catalog-driven rebuild + retire compensation trap), 5, 6 pending. |
 | 2026-06-20 | Phase 4 completed (P4): the compensation-failure trap is retired across all three flush paths (`index/pending.rs`, `edge_pending.rs`, `label_pending.rs`) — the branch now journals the full batch and returns an error instead of `ic_cdk::trap`, since idempotent journal re-application converges the index to the store regardless of partial compensation state (store becomes the source of truth; no whole-message rollback). Refinement: the durable `index-dirty` marker + the catalog-driven *scan* rebuild from the original D5 wording are re-sequenced into phase 5 (they need D6's index-side posting-purge primitive and share its machinery); the journal alone closes P4. Phases 5–6 pending. |
 | 2026-06-20 | Phase 6 (P5): INV test oracle added. `graph/src/index/inv_oracle.rs` drives vertex/edge/label posting ops through the real flush paths (incl. an edge compaction re-key) with a mid-batch index failure, then asserts `recorded postings == projection(store over indexed properties)` exactly after compensation + repair-journal drain (verification items 1–2). PocketIC P1 is now green for edges too (`post_upgrade_indexed_edge_write_stays_consistent_with_store`). Remaining gap: the wasm-only timer-driven compaction+upgrade e2e (item 3) needs a PocketIC time-advance/timer-fire harness and is tracked as a follow-up; relocation slot-invariance (item 4) stays covered by existing ic-stable-lara tests. |
+| 2026-06-20 | Phase 6 completed (P5, item 3): added the wasm-only timer-driven compaction+upgrade e2e (`timer_compaction_after_upgrade_rekeys_edge_postings_consistently`). New PocketIC time-advance/timer-fire harness (`drain_maintenance_via_timer`) plus feature-gated (`pocket-ic-e2e`) graph-shard admin hooks — `e2e_enqueue_forward_compaction` (enqueue `CompactVertexEdgeSpan` + arm timer, no inline drain), `e2e_delete_directed_edge_with_property`, `e2e_maintenance_queue_len`. The enqueue-only hook is required because production delete/insert budgets fully reclaim inline at test scale. The test deletes a slot-0 edge, upgrades the shard (asserting the queued compaction survives the stable queue), then fires the re-armed timer; the async tick runs the real slot-moving LARA compaction and re-keys postings in-tick, after which index-served lookups still resolve each weight to the correct target. Verification plan item 3 is now done. |
 | 2026-06-20 | Phase 5 completed (P7 / D6): `DROP INDEX` now purges postings. Added a bounded, resumable index-side primitive `admin_purge_property_postings` (`graph-index`, `facade/store/posting_purge.rs`) with kernel wire types (`federation/index_posting_purge.rs`), scoped to a contiguous `property_id` range (vertex: whole range; edge: filtered by catalog `label_id` → `(property_id, label_id)`). `router::drop_index` drives the purge fan-out across `graph_index_lookup_targets` only when no remaining index needs the postings (`is_property_registered` for vertex; new `edge_index_uses_property_label` for edge). Stateless (no new stable region). PocketIC `drop_index_purges_postings_from_graph_index` is green. The `index-dirty` marker + catalog-driven scan-rebuild (re-sequenced from phase 4) are dropped as unneeded — the phase-4 journal already provides idempotent repair. Phase 6 (INV oracle) pending. |
 
 ## Context
@@ -82,7 +83,7 @@ state) and the store-ahead delta is durably recorded and eventually repaired.**
 | P2 | High | Timer-driven compaction's posting re-key is not flushed in-tick; relies on a later request flush | `on_tick`/`run_timer_maintenance_tick` are synchronous and never call `flush_pending` (`facade/maintenance_timer.rs:64-91`, `facade/store/maintenance.rs:48-52`); request path flushes at `gql_run.rs:262-264` |
 | P3 | High | Failed-flush re-queue and timer-enqueued moves are lost on upgrade/restart/trap | Pending queues are `thread_local` (`index/pending.rs:57-58`, `index/edge_pending.rs:28-29`, `index/label_pending.rs:16-18`) |
 | P4 | Medium | Compensation failure traps with acknowledged unrepairable divergence | `index/pending.rs:169-173` (comment self-admits) |
-| P5 | Medium | INV has no test oracle; wasm-only timer path uncovered — **oracle added (phase 6)**; timer-compaction e2e still a gap | Non-wasm builds drain maintenance inline and unbounded (`facade/store/maintenance.rs:62-63`), masking the wasm timer gap. `graph/src/index/inv_oracle.rs` now asserts `postings == projection(store)` incl. failure recovery + compaction re-key; the wasm-only timer-driven compaction+upgrade e2e remains a tracked follow-up |
+| P5 | Medium | INV has no test oracle; wasm-only timer path uncovered — **oracle added (phase 6); wasm timer-compaction+upgrade e2e added (phase 6 follow-up)** | Non-wasm builds drain maintenance inline and unbounded (`facade/store/maintenance.rs:62-63`), masking the wasm timer gap. `graph/src/index/inv_oracle.rs` asserts `postings == projection(store)` incl. failure recovery + compaction re-key; `timer_compaction_after_upgrade_rekeys_edge_postings_consistently` now drives the wasm async timer tick over a real slot-moving compaction across the upgrade boundary in PocketIC |
 | P6 | Design | Indexed-ness decision sits in a shard-local volatile gate | `registry.rs`; decision authority should be the router (definitions SSOT) |
 | P7 | High | `DROP INDEX` leaves orphan postings on graph-index — **fixed (D6, phase 5)** | `router::drop_index` now fans the bounded `admin_purge_property_postings` primitive out across the graph's index canisters once the postings are unreferenced |
 
@@ -289,15 +290,26 @@ provable.
    pre-batch state) and that draining the durable repair journal converges the
    index to INV; the phase-4 `repair_journal.rs` tests cover the bounded/partial
    drain.
-3. **PocketIC red repro then green** — **partially done.** P1 (post-upgrade
-   indexed write) is green for both vertex and edge in
-   `adr0023_index_store_consistency` (`post_upgrade_indexed_write_stays_consistent_with_store`,
+3. **PocketIC red repro then green** — **done.** P1 (post-upgrade indexed write)
+   is green for both vertex and edge in `adr0023_index_store_consistency`
+   (`post_upgrade_indexed_write_stays_consistent_with_store`,
    `post_upgrade_indexed_edge_write_stays_consistent_with_store`). The **timer-
-   driven compaction + upgrade** e2e (the wasm-only async-tick path) is **not yet
-   covered** — it needs PocketIC time-advance / timer-fire harness plus a
-   reclaimable-state setup that is not built; tracked as a follow-up. The
-   compaction re-key logic itself is covered natively (item 1) and by the phase-3
-   async-tick unit tests.
+   driven compaction + upgrade** e2e (the wasm-only async-tick path) is now
+   covered by `timer_compaction_after_upgrade_rekeys_edge_postings_consistently`:
+   it seeds three indexed `KNOWS` edges (slots 0/1/2), deletes slot 0 to leave a
+   tombstone, enqueues a `CompactVertexEdgeSpan` **without** an inline drain,
+   upgrades the graph shard (asserting the work survives in the stable queue),
+   then advances PocketIC time so the re-armed maintenance timer fires. The async
+   tick fetches the router catalog, runs the real LARA compaction (moving the
+   surviving edges' `slot_index`), and flushes the re-keyed postings in-tick;
+   index-served equality lookups then still resolve each weight to the correct
+   target. The reclaimable-state setup and the time-advance / timer-fire harness
+   (`drain_maintenance_via_timer`) live in the `pocket-ic-tests` crate, driven by
+   feature-gated (`pocket-ic-e2e`) admin hooks on the graph shard
+   (`e2e_enqueue_forward_compaction`, `e2e_delete_directed_edge_with_property`,
+   `e2e_maintenance_queue_len`); the enqueue-only hook is required because the
+   production delete/insert budgets fully reclaim inline at test scale, so the
+   timer never arms through the normal path.
 4. **Relocation/rebalance regression** — slot-invariance under physical
    relocation/rebalance is an established fact backed by the existing
    `ic-stable-lara` tests (posting keys carry the bucket-relative `slot_index`,
@@ -367,12 +379,14 @@ provable.
    (folded in from phase 4) are **dropped as unneeded** — the phase-4 repair
    journal already provides idempotent eventual-consistency repair; the purge
    primitive is the reusable machinery a future rebuild would need.
-6. **Land the verification suite (P5)** — mostly done. Added the native INV
-   oracle (`graph/src/index/inv_oracle.rs`: postings == store projection, incl.
-   failure recovery + compaction re-key) and the edge variant of the PocketIC P1
-   repro. Remaining follow-up: the wasm-only timer-driven compaction+upgrade e2e
-   (needs a PocketIC time-advance/timer-fire harness); relocation slot-invariance
-   stays covered by existing ic-stable-lara tests.
+6. **Land the verification suite (P5)** — done. Added the native INV oracle
+   (`graph/src/index/inv_oracle.rs`: postings == store projection, incl. failure
+   recovery + compaction re-key), the edge variant of the PocketIC P1 repro, and
+   the wasm-only timer-driven compaction+upgrade e2e
+   (`timer_compaction_after_upgrade_rekeys_edge_postings_consistently`) backed by
+   a PocketIC time-advance/timer-fire harness (`drain_maintenance_via_timer`) and
+   feature-gated graph-shard admin hooks. Relocation slot-invariance stays covered
+   by existing ic-stable-lara tests.
 
 No stable graph/index posting wire change; the new repair journal is additive
 stable state.
