@@ -15,9 +15,10 @@ use ic_stable_lara::VertexId;
 use super::super::error::PlanQueryError;
 use super::super::row::PlanRow;
 use super::PlanBinding;
+use super::bindings::EdgeBinding;
+#[cfg(feature = "cypher")]
 use super::bindings::{
-    EdgeBinding, edge_group_element_at_index, path_group_element_at_index,
-    vertex_group_element_at_index,
+    edge_group_element_at_index, path_group_element_at_index, vertex_group_element_at_index,
 };
 use super::context::QueryExprEvaluator;
 use super::path::{
@@ -71,6 +72,7 @@ fn decode_gleaph_weight_for_edge_binding(
     })
 }
 
+#[cfg(feature = "cypher")]
 fn eval_list_index_value(
     evaluator: &QueryExprEvaluator<'_>,
     row: &PlanRow,
@@ -188,6 +190,8 @@ fn try_eval_horizontal_sum_gleaph_weight(
     Ok(Some(Value::Float32(sum)))
 }
 
+// `evaluator` is only consulted by the cypher list-index (`GroupElement`) arm.
+#[cfg_attr(not(feature = "cypher"), allow(unused_variables))]
 fn try_eval_gleaph_weight(
     decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
     name: &ObjectName,
@@ -251,6 +255,7 @@ fn try_eval_gleaph_weight(
                 }),
             }
         }
+        #[cfg(feature = "cypher")]
         super::super::gleaph_weight::GleaphWeightEdgeRef::GroupElement { group_var, index } => {
             let decoder = map
                 .get(&group_var)
@@ -548,6 +553,7 @@ impl QueryExprEvaluator<'_> {
                 };
                 super::super::aggregate::resolve_aggregate_from_row(row, expr, specs)
             }
+            #[cfg(feature = "cypher")]
             ExprKind::ListIndex { list, index } => eval_list_index_value(self, row, list, index),
             ExprKind::Cardinality { expr, .. } => {
                 if let ExprKind::Variable(name) = &expr.kind {

@@ -26,6 +26,12 @@ canbench_large = ["canbench"]
 # Use only for WASM canprof / canbench runs: `--features canbench,canbench_lara`.
 canbench_lara = ["canbench", "ic-stable-lara/canbench"]
 sql-compat = ["gleaph-gql/sql-compat", "gleaph-gql-planner/sql-compat"]
+# Cypher-dialect GQL extensions (list index/slice, STARTS/ENDS WITH, CONTAINS,
+# NODES/EDGES/LABELS, VALUE/EXISTS subqueries, ...). Disabled in the default
+# canister build: the router parses incoming GQL without cypher, so these
+# constructs never reach the graph shard. Kept behind a feature so the executor
+# support can be re-enabled without rewriting it.
+cypher = ["gleaph-gql/cypher", "gleaph-gql-planner/cypher"]
 # Test-only canister methods for PocketIC multi-canister E2E (not enabled in release benches).
 pocket-ic-e2e = []
 
@@ -34,9 +40,9 @@ async-trait = "0.1"
 bitflags.workspace = true
 candid.workspace = true
 derive_more = { version = "2", features = ["display", "from", "into"] }
-gleaph-gql = { workspace = true, features = ["f128", "f256", "cypher"] }
+gleaph-gql = { workspace = true, features = ["f128", "f256"] }
 gleaph-gql-ic.workspace = true
-gleaph-gql-planner = { workspace = true, features = ["plan-wire", "cypher"] }
+gleaph-gql-planner = { workspace = true, features = ["plan-wire"] }
 gleaph-graph-prepared.workspace = true
 gleaph-graph-kernel.workspace = true
 half.workspace = true

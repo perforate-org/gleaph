@@ -55,7 +55,7 @@ Triangle / cycle patterns fused to [`PlanOp::WorstCaseOptimalJoin`] carry `hop_a
 | `RETURN p` | OK → `Value::Path` (singleton) or `Value::List` of paths (`SHORTEST k GROUP`) |
 | `CARDINALITY(p)` | OK on `PathGroup` |
 | `CARDINALITY(e)`, `CARDINALITY(u)` | OK |
-| `GLEAPH.WEIGHT(e[-1])`, `u[0]`, `v[-1]` | OK (Cypher list index; requires `cypher` feature on `gleaph-gql`) |
+| `GLEAPH.WEIGHT(e[-1])`, `u[0]`, `v[-1]` | OK only with the `cypher` feature (Cypher list index). Off by default: the canister build (`gleaph-graph`, and the `gleaph-gql`-parsing `gleaph-router`) ships without `cypher`, so these are rejected at parse time there. |
 | `LET x = SUM(GLEAPH.WEIGHT(e))` | OK (horizontal sum over group in one row) |
 | `RETURN SUM(GLEAPH.WEIGHT(e))` (implicit `PlanOp::Aggregate`) | OK (same horizontal fold per input row) |
 | `GLEAPH.WEIGHT(e)` | **Error** at evaluation (group, not singleton) |

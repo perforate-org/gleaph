@@ -1625,6 +1625,7 @@ fn gql_var_len_scalar_gleaph_weight_is_rejected() {
     );
 }
 
+#[cfg(feature = "cypher")]
 #[test]
 fn gql_var_len_return_gleaph_weight_decodes_indexed_last_hop_edge() {
     let store = GraphStore::new();
@@ -1869,6 +1870,7 @@ fn gql_var_len_path_var_binds_traversed_path() {
     );
 }
 
+#[cfg(feature = "cypher")]
 #[test]
 fn gql_var_len_where_gleaph_weight_filters_on_last_hop_edge() {
     let store = GraphStore::new();
