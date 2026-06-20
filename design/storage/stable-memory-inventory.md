@@ -198,9 +198,9 @@ Regions **1–2** (canonical), **3–4** (derived indexes), **`ROUTER_GRAPH_RUNT
 | 28 | `ROUTER_VERTEX_LABEL_LIVE_BY_SHARD` | `ROUTER_VERTEX_LABEL_LIVE_BY_SHARD` | `init_vertex_label_live_by_shard` | telemetry | label telemetry | **`(GraphId, ShardId, VertexLabelId) → live_count`** |
 | 29 | `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `ROUTER_EDGE_LABEL_LIVE_BY_SHARD` | `init_edge_label_live_by_shard` | telemetry | label telemetry | **`(GraphId, ShardId, EdgeLabelId) → live_count`** |
 | 30 | `ROUTER_LABEL_STATS_PROJECTION` | `ROUTER_LABEL_STATS_PROJECTION` | `init_label_stats_projection` | telemetry | label stats projection | **`GraphShardKey → applied_through_seq`** |
-| 31 | `ROUTER_LABEL_BACKFILL_STATE` | `ROUTER_LABEL_BACKFILL_STATE` | `init_label_backfill_state` | maintenance | label backfill | **`GraphShardKey → BackfillShardState`** |
-| 32 | `ROUTER_VERTEX_PROPERTY_BACKFILL_STATE` | `ROUTER_VERTEX_PROPERTY_BACKFILL_STATE` | `init_vertex_property_backfill_state` | maintenance | vertex property backfill | **`GraphShardKey → BackfillShardState`** |
-| 33 | `ROUTER_EDGE_BACKFILL_STATE` | `ROUTER_EDGE_BACKFILL_STATE` | `init_edge_backfill_state` | maintenance | edge backfill | **`GraphShardKey → EdgeBackfillShardState`** |
+| 31 | `ROUTER_LABEL_BACKFILL_STATE` | `ROUTER_LABEL_BACKFILL_STATE` | `init_label_backfill_state` | maintenance | label backfill | **`GraphShardKey → BackfillShardState`**, one entry per shard (bounded by live shard count, not operations); the step's TOCTOU concurrency guard is a heap-local `INFLIGHT_BACKFILL` claim set (not stable — auto-released on upgrade), so the stable record is unchanged; entry purged on `unregister_shard` so a re-registered shard does not inherit a stale cursor |
+| 32 | `ROUTER_VERTEX_PROPERTY_BACKFILL_STATE` | `ROUTER_VERTEX_PROPERTY_BACKFILL_STATE` | `init_vertex_property_backfill_state` | maintenance | vertex property backfill | **`GraphShardKey → BackfillShardState`**; same heap-local claim guard and `unregister_shard` purge as region 31 |
+| 33 | `ROUTER_EDGE_BACKFILL_STATE` | `ROUTER_EDGE_BACKFILL_STATE` | `init_edge_backfill_state` | maintenance | edge backfill | **`GraphShardKey → EdgeBackfillShardState`**; same heap-local claim guard and `unregister_shard` purge as region 31 |
 
 Router **34 regions** total (0–33).
 

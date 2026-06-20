@@ -131,6 +131,26 @@ pub struct EdgeBackfillShardStatus {
     pub done: bool,
 }
 
+/// Which posting-backfill cursor a reset targets.
+#[derive(
+    CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord,
+)]
+pub enum BackfillKind {
+    Label,
+    VertexProperty,
+    Edge,
+}
+
+/// Operator recovery: clear a stuck `in_progress` claim on one shard's backfill
+/// cursor (see ADR 0009). Only use after confirming no step is in flight for the
+/// shard, since clearing a legitimately in-flight claim re-enables the cursor race.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminResetBackfillClaimArgs {
+    pub logical_graph_name: String,
+    pub shard_id: ShardId,
+    pub kind: BackfillKind,
+}
+
 /// One router-orchestrated batch advancing label stats projection for a graph shard.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AdminLabelStatsProjectionStepArgs {

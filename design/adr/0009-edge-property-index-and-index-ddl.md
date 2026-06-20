@@ -338,6 +338,53 @@ Phases A–B may land before D; **main** should not maintain two edge posting SS
 
 ---
 
+## Addendum: backfill step cursor concurrency guard
+
+The paginated backfill steps (`admin_label_backfill_step`,
+`admin_vertex_property_backfill_step`, `admin_edge_backfill_step`) load the
+shard cursor, make an inter-canister call to the graph canister, then write the
+advanced cursor back. The `await` is a message boundary: the IC can run another
+ingress step for the same shard while the first is in flight. Two steps that
+both read the same cursor then race the write-back, causing duplicate backfill
+work and cursor regression (a stale write moving the cursor backward), which
+stalls convergence.
+
+The guard is a **heap-local** claim set, `INFLIGHT_BACKFILL:
+BTreeSet<(BackfillKind, GraphShardKey)>` (a `thread_local`). A step claims its
+`(kind, shard)` before the `await`; a concurrently routed step finds the key
+already claimed and returns `RouterError::Conflict` instead of racing. The claim
+is released on both success and remote-call failure, so a transient failure stays
+retryable. The stable cursor records (`BackfillShardState` /
+`EdgeBackfillShardState`) are unchanged — the guard lives entirely in heap.
+
+**Wedge recovery is automatic on upgrade.** Heap state is wiped by a canister
+upgrade, and outstanding inter-canister calls do not resume across an upgrade, so
+any claim is implicitly released on upgrade and a wedged claim cannot survive one.
+The only residual wedge is a router-side trap *during the reply callback* (an
+instruction/cycles trap after the call returned) with no intervening upgrade. The
+normal reject/return paths all release the claim; for that residual case,
+`admin_reset_backfill_claim(logical_graph_name, shard_id, kind)` (`Role::Admin`)
+removes the heap claim without moving the cursor.
+
+A persisted (stable) claim bit with a time-based auto-clear (TTL) was rejected:
+it would require widening the populated fixed-width cursor records (a stable-layout
+migration — a data-corruption risk in itself), and the heap-local guard already
+gets free upgrade-time recovery without touching the stable layout.
+
+### Cursor lifecycle and capacity
+
+Backfill cursors are keyed by `GraphShardKey` (one entry per shard) and updated
+in place, so the three cursor maps are bounded by the live shard count, not by
+the number of steps or data volume. `unregister_shard` now deletes a shard's
+cursors (`purge_backfill_state`): they are derived per-shard state owned by the
+shard lifecycle. This prevents orphaned cursors and, more importantly, stops a
+later shard reusing the same `(graph_id, shard_id)` from inheriting a stale
+cursor — which could skip its historical backfill (`done`/`next` carried over).
+`purge_backfill_state` also drops any heap claim for the key so a re-registered
+shard starts unclaimed.
+
+---
+
 ## References
 
 - [0005 — Vertex/edge identity](0005-vertex-identity.md)

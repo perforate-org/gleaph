@@ -324,6 +324,13 @@ async fn admin_label_backfill_step(
     canister::admin_label_backfill_step(args).await
 }
 
+/// Operator recovery: clear a stuck `in_progress` claim on a shard's backfill
+/// cursor (`Role::Admin`). Use only when no step is in flight for the shard.
+#[update]
+fn admin_reset_backfill_claim(args: types::AdminResetBackfillClaimArgs) -> Result<(), RouterError> {
+    canister::admin_reset_backfill_claim(args)
+}
+
 /// List router-stable backfill cursors for all shards of a logical graph.
 #[query]
 fn admin_list_label_backfill_status(

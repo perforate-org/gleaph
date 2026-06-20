@@ -220,6 +220,12 @@ pub(crate) fn admin_intern_property(
     RouterStore::new().admin_intern_property(msg_caller(), &logical_graph_name, &name)
 }
 
+pub(crate) fn admin_reset_backfill_claim(
+    args: crate::types::AdminResetBackfillClaimArgs,
+) -> Result<(), RouterError> {
+    RouterStore::new().admin_reset_backfill_claim(msg_caller(), &args)
+}
+
 pub(crate) async fn admin_label_backfill_step(
     args: AdminLabelBackfillStepArgs,
 ) -> Result<AdminLabelBackfillStepResult, RouterError> {

@@ -278,6 +278,9 @@ impl RouterStore {
                 index.insert(entry.graph_id, list);
             }
         });
+        // Drop the shard's derived posting-backfill cursors so a re-registered shard
+        // reusing this key starts from a clean cursor instead of a stale one.
+        super::backfill::purge_backfill_state(key);
 
         Self::verify_registry_invariants_after_commit()?;
         Ok(entry)
