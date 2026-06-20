@@ -67,6 +67,22 @@ thread_local! {
     static LABELED_LEAF_PHYSICAL_RELEASE_CALLS: Cell<u32> = const { Cell::new(0) };
     static LABELED_VERTEX_FOOTPRINT_RELEASE_CALLS: Cell<u32> = const { Cell::new(0) };
     static REWRITE_VERTEX_EDGE_SPAN_CALLS: Cell<u32> = const { Cell::new(0) };
+    // Fault-injection latch: when set, the next `compact_vertex_edge_span_one_step`
+    // returns an error before mutating any state, so maintenance-loop tests can assert
+    // a failed step is requeued for retry rather than silently marked complete.
+    static FORCE_COMPACT_VERTEX_EDGE_SPAN_STEP_ERROR: Cell<bool> = const { Cell::new(false) };
+}
+
+/// Arms a one-shot error from the next `compact_vertex_edge_span_one_step` call on
+/// this thread. Consumed by the first call. Test-only.
+#[cfg(test)]
+pub(crate) fn force_next_compact_vertex_edge_span_step_error() {
+    FORCE_COMPACT_VERTEX_EDGE_SPAN_STEP_ERROR.with(|c| c.set(true));
+}
+
+#[cfg(test)]
+fn take_forced_compact_vertex_edge_span_step_error() -> bool {
+    FORCE_COMPACT_VERTEX_EDGE_SPAN_STEP_ERROR.with(|c| c.replace(false))
 }
 
 #[cfg(test)]
@@ -1201,6 +1217,10 @@ where
     where
         E: CsrEdgeTombstone,
     {
+        #[cfg(test)]
+        if take_forced_compact_vertex_edge_span_step_error() {
+            return Err(LaraOperationError::CollectAllocationOverflow.into());
+        }
         self.ensure_vertex(vid)?;
         let vertex = self.vertices.get(vid);
         if vertex.is_default_edge_labeled() || vertex.degree() == 0 {

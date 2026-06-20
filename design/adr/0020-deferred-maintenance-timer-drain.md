@@ -2,7 +2,7 @@
 
 Date: 2026-06-19
 Status: accepted (implemented)
-Last revised: 2026-06-19
+Last revised: 2026-06-20
 
 ## Context
 
@@ -171,6 +171,22 @@ ADR bounds and schedules only the **physical reclamation queue**.
   ticks, `stored_slots` may exceed `degree` (tombstones awaiting compaction).
   This is already true transiently today and is visibility-neutral.
 - A new `#[post_upgrade]` hook is introduced on the graph canister.
+
+### Failure-mode contract: failed compaction steps are retried, never dropped (2026-06-20)
+
+A compaction step (`compact_vertex_edge_span_one_step`) can fail after partially
+mutating the slab (e.g. a transient `GrowFailed`). The deferred maintenance loops
+(`LabeledLaraGraph` bidirectional and single-orientation) previously mapped a step
+error to `complete` — clearing the work item's dirty bit and dropping it from the
+queue, so a half-compacted span had no path back to consistency. The loops now
+**requeue the failed item (its dirty bit stays set) and stop the pass**, so the
+next tick retries it with a fresh instruction budget. Stopping the pass (rather
+than re-popping in place) avoids hot-looping a deterministic failure within a
+single tick; the error is not propagated to inline delete/insert callers, so a
+maintenance fault no longer fails an otherwise-valid user mutation. The timer's
+`remaining_queue_len > 0` signal then drives the retry. Regression-guarded by
+`failed_compaction_step_is_requeued_not_silently_completed` via a `#[cfg(test)]`
+fault latch on the compaction step.
 
 ## Migration
 

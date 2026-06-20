@@ -766,6 +766,10 @@ where
             report.processed_work_items = report.processed_work_items.saturating_add(1);
             #[cfg(feature = "canbench")]
             let _bench_scope = bench_scope("labeled_deferred_maintenance_item");
+            // Set when a compaction step fails; the partially mutated span must be retried, not
+            // dropped. We requeue the item and stop the pass to avoid hot-looping a deterministic
+            // failure; the next maintenance call retries it with a fresh budget.
+            let mut stalled = false;
             let requeue = match item {
                 MaintenanceWorkItem::CompactLabelBucketVertexSegment { vid } => {
                     if self.inner.compact_label_bucket_vertex_segment(vid).is_ok() {
@@ -806,7 +810,10 @@ where
                                     report.rebalanced_segments.saturating_add(1);
                                 None
                             }
-                            Err(_) => None,
+                            Err(_) => {
+                                stalled = true;
+                                None
+                            }
                         }
                     }
                 }
@@ -854,11 +861,18 @@ where
                                     report.rebalanced_segments.saturating_add(1);
                                 None
                             }
-                            Err(_) => None,
+                            Err(_) => {
+                                stalled = true;
+                                None
+                            }
                         }
                     }
                 }
             };
+            if stalled {
+                let _ = self.queue.push_front(&item);
+                break;
+            }
             if let Some(next) = requeue {
                 let _ = self.queue.push_front(&next);
             }

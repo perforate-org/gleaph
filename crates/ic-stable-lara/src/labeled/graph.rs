@@ -47,6 +47,8 @@ struct BucketLookupCache {
 mod bucket;
 mod bypass;
 mod compact;
+#[cfg(test)]
+pub(crate) use compact::force_next_compact_vertex_edge_span_step_error;
 mod error;
 mod init;
 mod insert;

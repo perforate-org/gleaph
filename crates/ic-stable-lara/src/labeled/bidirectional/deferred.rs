@@ -1736,6 +1736,11 @@ where
                 break;
             };
             report.work.processed_work_items = report.work.processed_work_items.saturating_add(1);
+            // Set when a compaction step fails. A failed step may have partially mutated the
+            // slab, so the item must be retried rather than marked complete. We requeue it and
+            // stop the pass to avoid hot-looping a deterministic failure within a single tick;
+            // the next maintenance tick retries it with a fresh instruction budget.
+            let mut stalled = false;
             let requeue = match item {
                 MaintenanceWorkItem::CompactLabelBucketVertexSegment { orientation, vid } => {
                     let graph = match orientation {
@@ -1793,7 +1798,10 @@ where
                                     report.work.rebalanced_segments.saturating_add(1);
                                 None
                             }
-                            Err(_) => None,
+                            Err(_) => {
+                                stalled = true;
+                                None
+                            }
                         }
                     }
                 }
@@ -1851,7 +1859,10 @@ where
                                     report.work.rebalanced_segments.saturating_add(1);
                                 None
                             }
-                            Err(_) => None,
+                            Err(_) => {
+                                stalled = true;
+                                None
+                            }
                         }
                     }
                 }
@@ -1869,6 +1880,11 @@ where
                     next
                 }
             };
+            if stalled {
+                // Keep the failed item queued (its dirty bit is still set) and stop the pass.
+                self.maintenance.requeue_front(item)?;
+                break;
+            }
             if let Some(next) = requeue {
                 self.maintenance.requeue_front(next)?;
             } else {
@@ -2608,6 +2624,78 @@ mod tests {
             BucketLabelKey::from_raw(1),
         )
         .expect("graph")
+    }
+
+    fn unbounded_budget() -> MaintenanceBudget {
+        MaintenanceBudget {
+            max_instructions: 0,
+            reserve_instructions: 0,
+            checkpoint_every: 1,
+            max_work_items: None,
+            max_segments: None,
+            max_delete_edge_steps: None,
+        }
+    }
+
+    #[test]
+    fn failed_compaction_step_is_requeued_not_silently_completed() {
+        // A compaction step can fail after partially mutating the slab (e.g. a transient
+        // grow failure). The maintenance loop must keep the work item queued for retry
+        // instead of marking it complete and dropping it, which would leave the span
+        // half-compacted with no path back to consistency.
+        let graph = graph();
+        let src = graph.push_vertex().expect("src");
+        let dst = graph.push_vertex().expect("dst");
+        let label = BucketLabelKey::directed_from_index(3);
+        graph
+            .insert_directed_edge(
+                src,
+                dst,
+                label,
+                TestEdge(u32::from(dst)),
+                TestEdge(u32::from(src)),
+            )
+            .expect("src -> dst");
+        graph
+            .maintenance(unbounded_budget())
+            .expect("settle insert");
+        assert_eq!(
+            graph.maintenance_queue_len(),
+            0,
+            "insert maintenance should drain to a clean queue"
+        );
+
+        // Enqueue a forward vertex-edge-span compaction (src has degree > 0, so the loop
+        // reaches the fallible one-step call) and force that step to fail.
+        graph
+            .mark_compact_vertex_edge_span(Orientation::Forward, src, 0)
+            .expect("enqueue compaction");
+        assert_eq!(graph.maintenance_queue_len(), 1);
+
+        crate::labeled::graph::force_next_compact_vertex_edge_span_step_error();
+        let report = graph
+            .maintenance(unbounded_budget())
+            .expect("maintenance pass");
+
+        assert_eq!(
+            graph.maintenance_queue_len(),
+            1,
+            "a failed compaction step must be requeued, not silently completed"
+        );
+        assert_eq!(report.work.processed_work_items, 1);
+        assert_eq!(
+            report.work.rebalanced_segments, 0,
+            "a failed step must not be counted as rebalanced"
+        );
+
+        // With the fault cleared, the retained item drains cleanly, proving the retry path.
+        let retry = graph.maintenance(unbounded_budget()).expect("retry pass");
+        assert_eq!(
+            graph.maintenance_queue_len(),
+            0,
+            "the requeued item should drain once the fault clears"
+        );
+        assert!(retry.work.processed_work_items >= 1);
     }
 
     #[test]
