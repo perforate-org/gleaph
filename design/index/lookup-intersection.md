@@ -105,12 +105,17 @@ otherwise. The walk arm is the first spec (callers order arms; matches the label
 size-based smallest-arm selection yet, since there is no cheap per-`(property,value)` cardinality
 signal). `filter_hits_by_equal` remains an internal store method (no longer a canister endpoint).
 
-**Remaining gap (edge / mixed intersection):** the server-side `lookup_intersection` still
-**materializes one in-heap set per arm** for all-edge and mixed vertex+edge intersection (used by
-`EdgeIndexScan` / all-edge arms, not the vertex-only planner op), and `lookup_label_intersection`
-retains its materializing server impl (the router label query path already streams via
-`filter_hits_by_label`). Extending the same walk + `contains` sieve to edge owners (a prefix-existence
-check per arm) is the remaining work; it is **not yet implemented**.
+**Edge / mixed intersection (dormant — intentionally not streamed).** The server-side
+`lookup_intersection` still **materializes one in-heap set per arm** for all-edge and mixed
+vertex+edge intersection. This path is **unreachable from GQL today**: `PlanOp::IndexIntersection`'s
+`IndexScanSpec` has no edge subject and the planner binds the variable as a vertex, so only the
+vertex-only shape is generated (`IndexEqualSpec::edge(..)` appears only in tests/benches). Because
+there is no live consumer, and because the edge key orders `label_id` before `shard_id`/`owner` (so
+**unlabeled** edge-owner existence is not a contiguous range), streaming is deliberately deferred —
+see the §3 status note in [ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md). Revisit when a
+planner change introduces an edge-led or mixed `IndexIntersection`. `lookup_label_intersection`
+likewise retains its materializing server impl (the router label query path already streams via
+`filter_hits_by_label`).
 
 ### Benchmarks
 

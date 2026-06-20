@@ -2,8 +2,8 @@
 
 Date: 2026-06-12  
 Status: accepted  
-Last revised: 2026-06-13  
-Anchor timestamp: 2026-06-13 06:18:40 UTC +0000
+Last revised: 2026-06-20  
+Anchor timestamp: 2026-06-20 02:10:05 UTC +0000
 
 ## Revision history
 
@@ -22,6 +22,7 @@ Anchor timestamp: 2026-06-13 06:18:40 UTC +0000
 | 2026-06-13 | Phase E PocketIC e2e: `DROP INDEX` standalone scan fallback + federated anchor loss; planner `PropertyFilter`/`Filter` contribute to `property_uses` for shard `resolved_properties`. |
 | 2026-06-13 | Phase E PocketIC e2e: edge `CREATE INDEX` / `DROP INDEX` via `e2e_insert_directed_edge_with_property`; standalone scan fallback and federated anchor loss for `()-[e:L {p: v}]->` queries. |
 | 2026-06-13 | [ADR 0012](0012-edge-index-direction-in-ddl.md) accepted: GQL `EdgeDirection` in edge `FOR`; graph-index `wire_label_id` keys; planner storage-class subset rule; slash `FOR` rejected (amends §1 `label_id`, §4 edge DDL). |
+| 2026-06-20 | Vertex-only intersection streamed via server-side `lookup_intersection_page` (paged walk + in-heap merge-join sieve); see [lookup-intersection.md](../index/lookup-intersection.md). **Edge / mixed intersection (§3) marked dormant** — implemented at store/wire layer but unreachable from GQL/planner; streaming intentionally not applied (see §3 status note). |
 
 ## Context
 
@@ -125,6 +126,39 @@ registered edge properties replaying from `EDGE_PROPERTIES`.
 ### 3. Index-plane intersection (vertex, edge, mixed)
 
 Extend graph-index beyond vertex-only `lookup_intersection`.
+
+> **Status (2026-06-20): edge / mixed intersection is dormant — implemented but unreachable.**
+>
+> The store/wire capability below (`IndexSubject::EdgeProperty`, `IndexIntersectionResult::Edges`,
+> mixed owner projection) is implemented and unit-tested on graph-index, but **no GQL query can reach
+> it today**:
+>
+> - `PlanOp::IndexIntersection` carries `Vec<IndexScanSpec>` where `IndexScanSpec { property, value,
+>   cmp }` has **no edge/subject field**, and the planner binds the intersection variable as a
+>   **vertex** (`output_schema.rs`, `binding_layout.rs`). It is generated only for a node variable
+>   with ≥2 indexed equality predicates (`find_index_intersection` in
+>   `gql-planner/.../path/filters.rs`), e.g. `MATCH (n:User WHERE n.uid = '…' AND n.email = '…')`.
+> - Edge index access is the separate single-arm `EdgeIndexScan` (resolved via `lookup_edge_equal`),
+>   not an intersection. `IndexEqualSpec::edge(..)` is constructed only in tests/benches.
+>
+> Consequently the **"no full-bucket heap materialization"** invariant
+> ([capacity-planning.md](../index/capacity-planning.md)) is satisfied for the live query path by
+> streaming the **vertex-only** intersection (`lookup_intersection_page`,
+> [lookup-intersection.md](../index/lookup-intersection.md)). The materializing edge/mixed
+> `lookup_intersection` is retained as-is and **intentionally not streamed**, because:
+>
+> 1. **No live consumer** — there is no query, planner path, or plan-op shape that triggers it, so its
+>    heap exposure is theoretical.
+> 2. **Key-layout limitation** — the canonical edge key orders `label_id` **before** `shard_id`/
+>    `owner_vertex_id` (§1), so per-owner existence for an **unlabeled** (`label_id: None`) edge arm is
+>    **not a contiguous range** and cannot be sieved cheaply without scanning the whole `(property,
+>    value)` bucket or probing every label. A cheap streamed sieve would therefore only cover labeled
+>    arms; the unlabeled case would need a secondary edge-owner index (Alternative E) or a key reorder
+>    (Alternative B).
+>
+> **Revisit when** a planner change introduces an edge-led or mixed `IndexIntersection` (an edge
+> subject on `IndexScanSpec` plus a generating rule). At that point, stream labeled arms via a paged
+> edge endpoint mirroring `lookup_intersection_page`, and decide the unlabeled-owner index question.
 
 #### 3.1 Wire types (illustrative — `graph-kernel::index`)
 
