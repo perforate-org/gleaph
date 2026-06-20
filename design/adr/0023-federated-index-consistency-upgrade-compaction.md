@@ -13,6 +13,7 @@ Anchor timestamp: 2026-06-20 04:15:12 UTC +0000
 | 2026-06-20 | `adr-review` pass (APPROVE WITH CHANGES): added P7 + D6 (`DROP INDEX` does not purge postings today; make purge real, load-bearing for D4); framed repair journal as durable extension of existing pending queues; marked async tick as amending ADR 0020; prefer reusing the existing router indexed-catalog surface for the timer fetch. |
 | 2026-06-20 | Accepted; policy frozen pending implementation per §Migration (phases 1–6). |
 | 2026-06-20 | Phases 1–2 implemented: removed shard `registry.rs`; added router-sourced `IndexedPropertyCatalog` on `ExecutePlanArgs` + backfill requests, consulted via ephemeral `catalog_context`. Implementation carries the full per-graph catalog (safe superset of label-scoped). PocketIC P1 repro (`adr0023_index_store_consistency`) now green. Phases 3–6 (async tick/in-tick flush, durable repair journal, `DROP INDEX` purge, INV oracle) pending. |
+| 2026-06-20 | Phase 3 implemented (P2): maintenance tick is now `async` (`facade/maintenance_timer.rs`) — it fetches the router catalog via the new shard-callable `indexed_property_catalog` query, installs it ephemerally for the pass so compaction's `EdgeSlotMove` observers enqueue posting re-keys, runs the budgeted compaction, then flushes `pending`/`edge_pending`/`label_pending` in-tick. Defers (floor-delay retry) when the router catalog is unavailable instead of re-keying the store blind; a `MAINTENANCE_RUNNING` flag prevents duplicate overlapping passes across the tick's awaits. Phases 4–6 pending. |
 
 ## Context
 
@@ -269,8 +270,19 @@ provable.
    context at `execute_plan_impl` / e2e / backfill entrypoints; delete
    `registry.rs` and the `register/unregister_indexed_*` fan-out, endpoints, and
    graph-client calls.
-3. Make the maintenance tick `async`; fetch catalog per drain; flush in-tick;
-   add the defer-on-unavailable rule. (Amends ADR 0020.)
+3. **(implemented)** Make the maintenance tick `async`
+   (`facade/maintenance_timer.rs`): fetch the router-sourced catalog per pass via
+   the new `indexed_property_catalog` router query, install it ephemerally for the
+   pass (so compaction's `EdgeSlotMove` observers enqueue posting re-keys), run
+   the budgeted compaction, then flush `pending` / `edge_pending` / `label_pending`
+   in the same tick. Defer-on-unavailable: if the router catalog cannot be
+   fetched, skip the pass and retry at the floor delay rather than re-key the store
+   blind. A `MAINTENANCE_RUNNING` flag prevents a concurrent enqueue from arming a
+   duplicate pass across the tick's awaits. (Amends ADR 0020.) The label-scoped
+   per-graph reuse note from phase 1 is satisfied by reusing `RouterGraphStats`;
+   the timer fetch needed a shard-callable endpoint, so a dedicated
+   `indexed_property_catalog` query was added (the existing catalog had no
+   shard-facing read).
 4. Add the durable repair journal + dirty marker (extending the existing pending
    queues); replay on `post_upgrade`; drive rebuild from the router catalog;
    retire the compensation-failure trap.
@@ -289,5 +301,5 @@ is additive stable state.
 | [adr/README.md](README.md) | Index ADR 0023 | done |
 | [adr/0009-edge-property-index-and-index-ddl.md](0009-edge-property-index-and-index-ddl.md) | Note: shard index registry superseded by router-sourced ephemeral catalog (0023) | done |
 | [index/property-index.md](../index/property-index.md) | Replace shard-registry gate with router-sourced ephemeral catalog; precise emit; repair journal | done (registry→ephemeral catalog); repair journal pending |
-| [adr/0020-deferred-maintenance-timer-drain.md](0020-deferred-maintenance-timer-drain.md) | Tick becomes async; per-drain catalog fetch; in-tick flush; defer-on-router-unavailable | pending |
+| [adr/0020-deferred-maintenance-timer-drain.md](0020-deferred-maintenance-timer-drain.md) | Tick becomes async; per-drain catalog fetch; in-tick flush; defer-on-router-unavailable | done |
 | [index/derived-state-query-semantics.md](../index/derived-state-query-semantics.md) | INV statement and eventual-consistency/repair model | pending |

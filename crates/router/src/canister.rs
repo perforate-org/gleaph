@@ -85,6 +85,17 @@ pub(crate) fn list_shards_for_graph(
     RouterStore::new().list_shards_for_graph(&logical_graph_name)
 }
 
+/// Router-sourced snapshot of which properties are indexed for a graph (ADR 0023
+/// D1/D3/P2). Graph shards consult this ephemerally per operation — including the
+/// async maintenance tick that re-keys postings after compaction — so they never
+/// persist derived index state across the upgrade boundary.
+pub(crate) fn indexed_property_catalog(
+    logical_graph_name: String,
+) -> Result<gleaph_graph_kernel::index::IndexedPropertyCatalog, RouterError> {
+    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    Ok(crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog())
+}
+
 pub(crate) fn lookup_vertex_label_id(
     logical_graph_name: String,
     name: String,

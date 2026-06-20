@@ -6,8 +6,15 @@
 //! timer is scheduled while the queue is empty; each tick chooses its successor
 //! delay from the just-finished pass via [`next_delay`].
 //!
-//! The queued work is physical reclamation only (tombstones gate reads
-//! synchronously), so deferring it never changes query visibility.
+//! The queued work is physical reclamation, but `CompactVertexEdgeSpan`
+//! re-keys live edges (their `slot_index` changes), so a tick that touches an
+//! indexed edge must also re-key the corresponding index postings. The tick is
+//! therefore asynchronous (ADR 0023 P2): it fetches the router-sourced indexed
+//! catalog, installs it ephemerally for the pass, runs the compaction, and
+//! flushes the postings the compaction observers enqueued — all in one tick. If
+//! the router catalog is unavailable the pass is deferred (retried at the floor
+//! delay) rather than run blind, which would re-key the store without re-keying
+//! the index and silently diverge the two.
 
 #[cfg(target_family = "wasm")]
 use super::GraphStore;
@@ -20,6 +27,11 @@ thread_local! {
     /// drained. Rebuilt after upgrade (timers do not survive upgrades).
     static MAINTENANCE_TIMER: std::cell::RefCell<Option<ic_cdk_timers::TimerId>> =
         const { std::cell::RefCell::new(None) };
+    /// `true` while an async tick is in flight. The tick spans awaits (router
+    /// catalog fetch, posting flush) during which the timer slot is cleared, so
+    /// this flag keeps a concurrent enqueue's [`arm_if_needed`] from scheduling a
+    /// duplicate, overlapping pass.
+    static MAINTENANCE_RUNNING: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Reschedule policy from a finished maintenance pass.
@@ -53,6 +65,10 @@ pub(crate) fn arm_if_needed() {
         if GraphStore::new().maintenance_queue_len() == 0 {
             return;
         }
+        if MAINTENANCE_RUNNING.with(std::cell::Cell::get) {
+            // A pass is already draining; it reschedules its own successor.
+            return;
+        }
         MAINTENANCE_TIMER.with_borrow_mut(|slot| {
             if slot.is_none() {
                 *slot = Some(schedule(MAINTENANCE_TIMER_FLOOR_DELAY));
@@ -62,32 +78,96 @@ pub(crate) fn arm_if_needed() {
 }
 
 /// Registers a one-shot timer that runs [`on_tick`]. `ic-cdk-timers` 1.0 takes a
-/// future; the tick body is synchronous, so a non-suspending async block wraps it.
+/// future; the tick is asynchronous (router catalog fetch + posting flush).
 #[cfg(target_family = "wasm")]
 fn schedule(delay: core::time::Duration) -> ic_cdk_timers::TimerId {
-    ic_cdk_timers::set_timer(delay, async { on_tick() })
+    ic_cdk_timers::set_timer(delay, on_tick())
 }
 
 /// Runs one budgeted maintenance pass, then reschedules per [`next_delay`].
 #[cfg(target_family = "wasm")]
-fn on_tick() {
-    // The fired one-shot is consumed; clear before running so the reschedule
-    // below installs exactly one successor.
+async fn on_tick() {
+    // Consume the fired one-shot and mark the async pass in flight so a
+    // concurrent enqueue does not arm a duplicate while we await the router /
+    // index. The reschedule below installs exactly one successor.
     MAINTENANCE_TIMER.with_borrow_mut(|slot| *slot = None);
+    MAINTENANCE_RUNNING.with(|r| r.set(true));
 
-    let next = match GraphStore::new().run_timer_maintenance_tick() {
+    let next = run_maintenance_pass().await;
+
+    MAINTENANCE_RUNNING.with(|r| r.set(false));
+    if let Some(delay) = next {
+        let id = schedule(delay);
+        MAINTENANCE_TIMER.with_borrow_mut(|slot| *slot = Some(id));
+    }
+}
+
+/// Fetches the catalog, runs one compaction pass under it, and flushes the
+/// postings it re-keyed. Returns the reschedule delay (`None` stops the timer).
+#[cfg(target_family = "wasm")]
+async fn run_maintenance_pass() -> Option<core::time::Duration> {
+    let store = GraphStore::new();
+
+    // Hold the router-sourced catalog for the whole pass: the compaction
+    // observers consult it while enqueuing posting re-keys, and the flush below
+    // must run under the same view. Deferring on an unavailable router avoids a
+    // blind pass that re-keys the store but not the index (ADR 0023 P2).
+    let _catalog_guard = match acquire_catalog_guard(&store).await {
+        Ok(guard) => guard,
+        Err(()) => return Some(MAINTENANCE_TIMER_FLOOR_DELAY),
+    };
+
+    let report = store.run_timer_maintenance_tick();
+    flush_pending_postings(&store).await;
+
+    match report {
         Ok(report) => next_delay(
             report.remaining_queue_len(),
             report.instruction_budget_exhausted,
         ),
         // A Rust-level error leaves the stable queue intact; retry at the floor.
         Err(_) => Some(MAINTENANCE_TIMER_FLOOR_DELAY),
-    };
-
-    if let Some(delay) = next {
-        let id = schedule(delay);
-        MAINTENANCE_TIMER.with_borrow_mut(|slot| *slot = Some(id));
     }
+}
+
+/// Installs the router-sourced indexed catalog for the pass. `Ok(None)` means the
+/// shard is not federated (no index to keep consistent); `Err(())` means the
+/// router was unreachable and the pass must be deferred.
+#[cfg(target_family = "wasm")]
+async fn acquire_catalog_guard(
+    store: &GraphStore,
+) -> Result<Option<crate::index::catalog_context::CatalogGuard>, ()> {
+    let Some(routing) = store.federation_routing() else {
+        return Ok(None);
+    };
+    let graph_name = store.logical_graph_name().unwrap_or_default();
+    match crate::index::federation_routing::fetch_indexed_catalog(
+        routing.router_canister,
+        &graph_name,
+    )
+    .await
+    {
+        Ok(catalog) => Ok(Some(crate::index::catalog_context::enter(catalog))),
+        Err(_) => Err(()),
+    }
+}
+
+/// Flushes the postings the compaction observers enqueued during this pass, in
+/// the same tick, so the index converges with the re-keyed store. A no-op on a
+/// non-federated shard.
+#[cfg(target_family = "wasm")]
+async fn flush_pending_postings(store: &GraphStore) {
+    let Some(routing) = store.federation_routing() else {
+        return;
+    };
+    let client = crate::index::ic::IcPropertyIndexClient {
+        index_principal: routing.index_canister,
+        shard_id: routing.shard_id,
+    };
+    let ix = &client as &dyn crate::index::lookup::PropertyIndexLookup;
+    let _ = crate::index::pending::flush_pending(Some(ix)).await;
+    let _ = crate::index::edge_pending::flush_pending(Some(ix)).await;
+    let _ = crate::index::label_pending::flush_pending(Some(ix)).await;
 }
 
 #[cfg(test)]

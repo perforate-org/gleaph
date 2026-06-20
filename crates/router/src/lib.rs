@@ -104,6 +104,13 @@ fn list_shards_for_graph(
 }
 
 #[query]
+fn indexed_property_catalog(
+    logical_graph_name: String,
+) -> Result<gleaph_graph_kernel::index::IndexedPropertyCatalog, RouterError> {
+    canister::indexed_property_catalog(logical_graph_name)
+}
+
+#[query]
 fn lookup_vertex_label_id(
     logical_graph_name: String,
     name: String,

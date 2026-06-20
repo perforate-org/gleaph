@@ -210,5 +210,12 @@ Implemented in the graph canister:
 - Delete/finalize inline drains switched from `unlimited_*` to the bounded timer
   budget on canisters (native still drains fully for deterministic tests).
 - `ic-cdk-timers = "1.0"` added (workspace + graph crate); `set_timer` in 1.0
-  takes a future, so the synchronous tick is wrapped in a non-suspending async
-  block.
+  takes a future. The tick is now a genuine `async` pass (ADR 0023 P2): it awaits
+  the router's `indexed_property_catalog` query, installs that catalog ephemerally
+  for the pass so compaction's `EdgeSlotMove` observers enqueue index posting
+  re-keys, runs the budgeted compaction, then flushes the pending posting queues
+  in-tick so the index converges with the re-keyed store within the same tick.
+  Because the pass now spans awaits, a `MAINTENANCE_RUNNING` flag guards
+  `arm_if_needed` from scheduling an overlapping duplicate pass, and the tick
+  defers (retries at the floor delay) when the router catalog is unavailable
+  rather than re-keying the store without the index.

@@ -4,6 +4,7 @@ use candid::Principal;
 #[cfg(any(not(target_family = "wasm"), test))]
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{LocalVertexId, RouterError, ShardRegistryEntry};
+use gleaph_graph_kernel::index::IndexedPropertyCatalog;
 use ic_stable_lara::VertexId;
 use std::cell::RefCell;
 use std::fmt;
@@ -59,6 +60,46 @@ pub async fn list_shards_for_graph(
                 .collect()
         }))
     }
+}
+
+/// Fetches the router-sourced indexed-property catalog for this shard's graph
+/// (ADR 0023 D1/D3/P2). The async maintenance tick consults it ephemerally so the
+/// timer-driven compaction re-keys postings without any shard-local index state.
+pub async fn fetch_indexed_catalog(
+    router_canister: Principal,
+    logical_graph_name: &str,
+) -> Result<IndexedPropertyCatalog, FederationRoutingError> {
+    #[cfg(target_family = "wasm")]
+    {
+        let catalog: Result<IndexedPropertyCatalog, RouterError> =
+            super::router_call::call_router1(
+                router_canister,
+                "indexed_property_catalog",
+                logical_graph_name.to_string(),
+            )
+            .await
+            .map_err(FederationRoutingError::Call)?;
+        catalog.map_err(FederationRoutingError::Rejected)
+    }
+
+    #[cfg(not(target_family = "wasm"))]
+    {
+        let _ = (router_canister, logical_graph_name);
+        Ok(NATIVE_TEST_CATALOG.with_borrow(|catalog| catalog.clone()))
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+thread_local! {
+    static NATIVE_TEST_CATALOG: RefCell<IndexedPropertyCatalog> =
+        RefCell::new(IndexedPropertyCatalog::default());
+}
+
+/// Installs the catalog returned by [`fetch_indexed_catalog`] on native builds
+/// (unit tests only).
+#[cfg(test)]
+pub fn native_test_set_indexed_catalog(catalog: IndexedPropertyCatalog) {
+    NATIVE_TEST_CATALOG.with_borrow_mut(|slot| *slot = catalog);
 }
 
 #[cfg(not(target_family = "wasm"))]
