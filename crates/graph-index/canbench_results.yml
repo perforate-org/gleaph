@@ -2,13 +2,13 @@ benches:
   bench_filter_hits_by_equal_page:
     total:
       calls: 1
-      instructions: 173112152
+      instructions: 8410080
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       filter_hits_by_equal_page:
         calls: 1
-        instructions: 173111097
+        instructions: 8409015
         heap_increase: 0
         stable_memory_increase: 0
   bench_layout_index_posting_insert_64:

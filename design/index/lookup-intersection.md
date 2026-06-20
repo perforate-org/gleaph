@@ -117,17 +117,22 @@ sieve arm = the 2048 even ids; `canbench_results.yml` baseline):
 |-----------|--------------|---------------|
 | `bench_lookup_intersection_two_arms` (materializing, server-side) | 36.4 M | 3 pages |
 | `bench_lookup_equal_page_walk_arm` (one streamed walk page) | 15.8 M | 0 pages |
-| `bench_filter_hits_by_equal_page` (`contains` sieve over a 4096-hit page) | 173.1 M | 0 pages |
+| `bench_filter_hits_by_equal_page` (merge-join sieve over a 4096-hit page) | 8.4 M | 0 pages |
 
-**Tradeoff:** the streamed path (walk + per-page sieve ≈ 189 M for this shape) costs more total
-instructions than the single materializing call (36 M) because the sieve does one **stable-memory
-point lookup per hit** instead of a sequential range scan. The win is **bounded heap** (0 pages: no
-arm set is materialized) and **bounded per-message work** (each page is ≤ `limit` walk hits plus
-that many `contains` checks), so a large bucket cannot exceed the wasm heap or the per-message
-instruction budget. This also motivates **smallest-arm walk** (see Non-goals / future work): walking
-the smaller arm minimizes the number of `contains` checks (here, walking the 2048-id arm instead of
-the 4096-id arm roughly halves the sieve cost). A bounded merge-join sieve (range-scan the sieve arm
-over `[first_hit, last_hit]` instead of N point lookups) is a further optimization.
+**Result:** the streamed path (walk + per-page sieve ≈ 24 M for this shape) is now **both
+heap-bounded and fewer instructions** than the single materializing call (36 M). `filter_hits_by_equal`
+runs a **bounded sorted merge-join**: the page hits and the `(property_id, value)` bucket are both
+ordered by `(shard_id, vertex_id)`, so it scans the bucket range `[min(hits), max(hits)]` once in
+lockstep with the page instead of doing one stable point lookup per hit. This replaced a per-hit
+`contains` sieve that cost 173 M for the same page (−95%) by turning random tree descents into a
+sequential scan. Heap stays bounded (0 pages: no arm set is materialized; `hits` is sorted in place).
+
+**Caveat / future work:** the merge-join scans every bucket posting within the page's key span, so a
+sparse walk page spanning a dense sieve arm can still scan many sieve postings in one message (no
+worse than the materializing scan, and still heap-bounded). **Smallest-arm walk** (see Non-goals)
+remains the main lever: walking the smaller arm minimizes both the number of pages and the sieve
+span. There is currently no cheap per-`(property, value)` cardinality signal to pick it, so the walk
+arm is the first spec.
 
 ### Validation
 

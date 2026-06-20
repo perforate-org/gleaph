@@ -156,7 +156,7 @@ fn bench_filter_hits_by_equal_page() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("filter_hits_by_equal_page");
         let survivors = store
-            .filter_hits_by_equal(INTERSECTION_SIEVE_PROPERTY, black_box(&sieve_value), &hits)
+            .filter_hits_by_equal(INTERSECTION_SIEVE_PROPERTY, black_box(&sieve_value), hits)
             .expect("filter_hits_by_equal");
         black_box(survivors);
     })

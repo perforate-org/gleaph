@@ -247,7 +247,7 @@ pub(crate) fn filter_hits_by_equal(
     hits: Vec<PostingHit>,
 ) -> Vec<PostingHit> {
     IndexStore::new()
-        .filter_hits_by_equal(property_id, &value, &hits)
+        .filter_hits_by_equal(property_id, &value, hits)
         .unwrap_or_else(|e| {
             trap_err(e);
             unreachable!()

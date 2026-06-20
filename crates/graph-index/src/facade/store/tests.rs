@@ -737,7 +737,7 @@ fn filter_hits_by_equal_keeps_arm_members_only() {
         },
     ];
     let filtered = store
-        .filter_hits_by_equal(2, b"a@b.c", &hits)
+        .filter_hits_by_equal(2, b"a@b.c", hits)
         .expect("filter_hits_by_equal");
     assert_eq!(
         filtered,
@@ -745,6 +745,52 @@ fn filter_hits_by_equal_keeps_arm_members_only() {
             PostingHit {
                 shard_id: ShardId::new(0),
                 vertex_id: 20
+            },
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 30
+            },
+        ]
+    );
+}
+
+#[test]
+fn filter_hits_by_equal_sorts_unsorted_input() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_principal = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
+
+    for v in [10u32, 20, 30] {
+        store
+            .posting_insert(shard_principal, ShardId::new(0), 2, b"a@b.c".to_vec(), v)
+            .expect("arm insert");
+    }
+
+    // Descending input must still be sieved correctly by the merge-join (it sorts internally).
+    let hits = vec![
+        PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 30,
+        },
+        PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 25,
+        },
+        PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 10,
+        },
+    ];
+    let filtered = store
+        .filter_hits_by_equal(2, b"a@b.c", hits)
+        .expect("filter_hits_by_equal");
+    assert_eq!(
+        filtered,
+        vec![
+            PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: 10
             },
             PostingHit {
                 shard_id: ShardId::new(0),
@@ -795,7 +841,7 @@ fn paged_walk_plus_equal_sieve_matches_lookup_intersection() {
             })
             .expect("lookup_equal_page");
         let survivors = store
-            .filter_hits_by_equal(2, b"a@b.c", &page.hits)
+            .filter_hits_by_equal(2, b"a@b.c", page.hits)
             .expect("filter_hits_by_equal");
         streamed.extend(survivors);
         if page.done {

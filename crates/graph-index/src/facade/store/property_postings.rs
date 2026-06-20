@@ -253,29 +253,60 @@ impl IndexStore {
 
     /// Keep only hits whose `(shard_id, vertex_id)` has a posting for `(property_id, value)`.
     ///
-    /// Equality-arm `contains` sieve for streaming property intersection: the caller walks one arm
-    /// in pages ([`Self::lookup_equal_page`]) and sieves each page against the other arms here, so
-    /// the index never materializes a full posting bucket for any arm. Cost ∝ `len(hits)`.
+    /// Equality-arm sieve for streaming property intersection: the caller walks one arm in pages
+    /// ([`Self::lookup_equal_page`]) and sieves each page against the other arms here, so the index
+    /// never materializes a full posting bucket for any arm.
+    ///
+    /// Both the input `hits` and the `(property_id, value)` bucket are ordered by
+    /// `(shard_id, vertex_id)`, so this runs a single bounded sorted merge over the bucket range
+    /// `[min(hits), max(hits)]` instead of one stable point lookup per hit — turning random tree
+    /// descents into a sequential scan. `hits` need not be pre-sorted (sorted in place); the
+    /// returned survivors are in `(shard_id, vertex_id)` order. The result is at most `len(hits)`, so
+    /// heap stays bounded by the page.
     pub fn filter_hits_by_equal(
         &self,
         property_id: u32,
         value: &[u8],
-        hits: &[PostingHit],
+        mut hits: Vec<PostingHit>,
     ) -> Result<Vec<PostingHit>, IndexError> {
         ensure_index_value_key(value)?;
-        let mut probe = PostingKey {
+        if hits.is_empty() {
+            return Ok(Vec::new());
+        }
+        hits.sort_unstable_by_key(|hit| (hit.shard_id, hit.vertex_id));
+
+        let first = hits[0];
+        let last = hits[hits.len() - 1];
+        let lower = Bound::Included(PostingKey {
             property_id,
             value: value.to_vec(),
-            shard_id: ShardId::new(0),
-            vertex_id: 0,
-        };
+            shard_id: first.shard_id,
+            vertex_id: first.vertex_id,
+        });
+        let upper = Bound::Included(PostingKey {
+            property_id,
+            value: value.to_vec(),
+            shard_id: last.shard_id,
+            vertex_id: last.vertex_id,
+        });
+
         let mut out = Vec::new();
         INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
+            let mut bucket = postings.range((lower, upper));
+            let mut current = bucket.next();
             for hit in hits {
-                probe.shard_id = hit.shard_id;
-                probe.vertex_id = hit.vertex_id;
-                if postings.contains(&probe) {
-                    out.push(*hit);
+                let hit_key = (hit.shard_id, hit.vertex_id);
+                while let Some(key) = &current {
+                    let bucket_key = (key.shard_id, key.vertex_id);
+                    if bucket_key < hit_key {
+                        current = bucket.next();
+                    } else if bucket_key == hit_key {
+                        out.push(hit);
+                        current = bucket.next();
+                        break;
+                    } else {
+                        break;
+                    }
                 }
             }
         });
