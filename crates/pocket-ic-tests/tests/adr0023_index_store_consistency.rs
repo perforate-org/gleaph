@@ -18,13 +18,15 @@ use candid::{Decode, Encode};
 use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_graph_kernel::index::PostingHit;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, create_vertex_property_index, drop_vertex_property_index,
-    gql_execute_idempotent_as_admin, gql_query_as_admin, install_single_shard_federation,
-    wasm_bytes,
+    FederationEnv, create_edge_property_index, create_vertex_property_index,
+    drop_vertex_property_index, gql_execute_idempotent_as_admin, gql_query_as_admin,
+    install_single_shard_federation, wasm_bytes,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
 const INDEX_AGE_NAME: &str = "adr0023_vertex_age";
+const INDEX_EDGE_LABEL: &str = "KNOWS";
+const INDEX_WEIGHT_NAME: &str = "adr0023_edge_weight";
 
 /// Counts postings on graph-index whose value matches `age` (summed over the
 /// small interned-property-id space the test uses). `lookup_equal` is
@@ -94,6 +96,53 @@ fn post_upgrade_indexed_write_stays_consistent_with_store() {
         after.row_count, 2,
         "post-upgrade indexed write must be visible through the index \
          (P1: shard registry volatility loses the posting)"
+    );
+}
+
+/// ADR 0023 INV (P1, edge variant): an indexed **edge** write that lands after a
+/// graph-shard upgrade must still emit its posting via the router-sourced
+/// ephemeral catalog, so the edge index stays consistent with the store across
+/// the upgrade boundary.
+#[test]
+fn post_upgrade_indexed_edge_write_stays_consistent_with_store() {
+    let env = install_single_shard_federation();
+    create_edge_property_index(
+        &env,
+        INDEX_WEIGHT_NAME,
+        INDEX_EDGE_LABEL,
+        "weight",
+        "adr0023_create_edge_index",
+    );
+
+    const EDGE_QUERY: &str = "MATCH (a)-[e:KNOWS {weight: 7}]->(b) RETURN e";
+
+    let _ = gql_execute_idempotent_as_admin(
+        &env,
+        "INSERT (:Person)-[:KNOWS {weight: 7}]->(:Project)",
+        "adr0023_pre_upgrade_edge_insert",
+    );
+    let before = gql_query_as_admin(&env, EDGE_QUERY);
+    assert_eq!(
+        before.row_count, 1,
+        "pre-upgrade indexed edge query must find the single matching edge"
+    );
+
+    let empty = Encode!(&()).expect("encode empty upgrade arg");
+    env.pic
+        .upgrade_canister(env.graph_source, wasm_bytes("GRAPH_WASM"), empty, None)
+        .expect("upgrade graph shard canister");
+
+    let _ = gql_execute_idempotent_as_admin(
+        &env,
+        "INSERT (:Person)-[:KNOWS {weight: 7}]->(:Project)",
+        "adr0023_post_upgrade_edge_insert",
+    );
+
+    let after = gql_query_as_admin(&env, EDGE_QUERY);
+    assert_eq!(
+        after.row_count, 2,
+        "post-upgrade indexed edge write must be visible through the index \
+         (INV across the upgrade boundary for edges)"
     );
 }
 
