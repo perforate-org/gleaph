@@ -869,12 +869,22 @@ where
                     }
                 }
             };
+            // Both requeues push exactly one item back immediately after the `pop_front`
+            // above, so `len < capacity` and the ring never grows; the slot is already
+            // allocated (`MaintenanceWorkItem` is fixed-width), so the write cannot fail.
+            // Unlike the bidirectional queue, this single-orientation queue has no dirty
+            // bitmap to reconstruct a dropped item, so we trap (rolling back the pass)
+            // rather than silently losing maintenance work if that invariant is violated.
             if stalled {
-                let _ = self.queue.push_front(&item);
+                self.queue
+                    .push_front(&item)
+                    .expect("requeue after pop_front cannot grow the ring");
                 break;
             }
             if let Some(next) = requeue {
-                let _ = self.queue.push_front(&next);
+                self.queue
+                    .push_front(&next)
+                    .expect("requeue after pop_front cannot grow the ring");
             }
         }
         report.remaining_queue_len = self.queue.len();
