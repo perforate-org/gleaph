@@ -245,17 +245,17 @@ pub(crate) async fn flush_pending(
                     return Err(primary);
                 }
                 Err(rollback_err) => {
-                    #[cfg(target_family = "wasm")]
-                    ic_cdk::trap(format!(
-                        "gleaph-graph: federated edge index sync failed and rollback failed (op error: {primary}; rollback: {rollback_err})"
-                    ));
-                    #[cfg(not(target_family = "wasm"))]
-                    {
-                        return Err(PlanQueryError::FederatedIndexCall {
-                            op: "edge_compensate",
-                            detail: format!("primary: {primary}; rollback: {rollback_err}"),
-                        });
-                    }
+                    // Compensation failed: do not trap (ADR 0023 P4). Persist the
+                    // full batch so idempotent re-application converges the index
+                    // to the store, then surface the error with context.
+                    GraphStore::new().repair_journal_append(ops.iter().map(to_repair_op));
+                    crate::facade::maintenance_timer::arm_if_needed();
+                    return Err(PlanQueryError::FederatedIndexCall {
+                        op: "edge_compensate",
+                        detail: format!(
+                            "primary: {primary}; rollback: {rollback_err}; batch journaled for repair"
+                        ),
+                    });
                 }
             }
         }

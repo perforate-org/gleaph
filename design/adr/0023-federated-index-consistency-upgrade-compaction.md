@@ -15,6 +15,7 @@ Anchor timestamp: 2026-06-20 04:15:12 UTC +0000
 | 2026-06-20 | Phases 1–2 implemented: removed shard `registry.rs`; added router-sourced `IndexedPropertyCatalog` on `ExecutePlanArgs` + backfill requests, consulted via ephemeral `catalog_context`. Implementation carries the full per-graph catalog (safe superset of label-scoped). PocketIC P1 repro (`adr0023_index_store_consistency`) now green. Phases 3–6 (async tick/in-tick flush, durable repair journal, `DROP INDEX` purge, INV oracle) pending. |
 | 2026-06-20 | Phase 3 implemented (P2): maintenance tick is now `async` (`facade/maintenance_timer.rs`) — it fetches the router catalog via the new shard-callable `indexed_property_catalog` query, installs it ephemerally for the pass so compaction's `EdgeSlotMove` observers enqueue posting re-keys, runs the budgeted compaction, then flushes `pending`/`edge_pending`/`label_pending` in-tick. Defers (floor-delay retry) when the router catalog is unavailable instead of re-keying the store blind; a `MAINTENANCE_RUNNING` flag prevents duplicate overlapping passes across the tick's awaits. Phases 4–6 pending. |
 | 2026-06-20 | Phase 4a implemented (P3 part): durable repair journal (`facade/stable/repair_journal.rs`, new stable `MemoryId 41`). Flush failure with successful compensation now persists the whole batch to stable memory (all three posting kinds) rather than the volatile queue, so the store-ahead delta survives upgrade/trap; `arm_if_needed` arms on a non-empty journal, `post_upgrade` replays it, and the async tick re-applies entries in-tick (`index/repair_journal.rs`) and reschedules at the relaxed delay while non-empty. Stable-memory inventory + typed layout registry updated (graph: 42 regions). Phase 4b (dirty marker + catalog-driven rebuild + retire compensation trap), 5, 6 pending. |
+| 2026-06-20 | Phase 4 completed (P4): the compensation-failure trap is retired across all three flush paths (`index/pending.rs`, `edge_pending.rs`, `label_pending.rs`) — the branch now journals the full batch and returns an error instead of `ic_cdk::trap`, since idempotent journal re-application converges the index to the store regardless of partial compensation state (store becomes the source of truth; no whole-message rollback). Refinement: the durable `index-dirty` marker + the catalog-driven *scan* rebuild from the original D5 wording are re-sequenced into phase 5 (they need D6's index-side posting-purge primitive and share its machinery); the journal alone closes P4. Phases 5–6 pending. |
 
 ## Context
 
@@ -174,12 +175,16 @@ path stays lean). On failure:
 - **Flush failure (compensation succeeded):** persist the failed batch to a
   durable (stable-memory) repair journal, replayed on `post_upgrade` and drained
   by the maintenance driver; cleared on successful re-flush. Surgical retry.
-- **Compensation failure (P4):** **do not trap.** Set a durable `index-dirty`
-  marker and trigger a **catalog-driven deterministic rebuild** that scans the
-  shard store and reconstructs postings (`index = f(store)`), reusing the
-  existing backfill machinery (`index/edge_property_backfill.rs`,
-  `vertex_property_backfill`, `label_backfill`) but **driven by the router
-  catalog instead of the registry**.
+- **Compensation failure (P4):** **do not trap.** *(Implemented, refined.)* The
+  failure branch now journals the full batch (as above) and returns an error;
+  idempotent journal re-application converges the index to the store regardless of
+  the partial compensation state, which is what retires the trap. The originally
+  proposed durable `index-dirty` marker + **catalog-driven deterministic rebuild**
+  (scan the shard store and reconstruct postings, `index = f(store)`, reusing the
+  backfill machinery driven by the router catalog) is retained as the **escalation
+  backstop** for divergence the journal cannot converge, and is re-sequenced into
+  **phase 5** because it needs the same index-side posting-purge primitive that D6
+  introduces.
 
 This makes the store-ahead/index-behind delta always durably recorded and
 eventually repaired, which is what makes INV's eventual-consistency form
@@ -284,22 +289,42 @@ provable.
    the timer fetch needed a shard-callable endpoint, so a dedicated
    `indexed_property_catalog` query was added (the existing catalog had no
    shard-facing read).
-4. **(partially implemented)** Durable repair journal landed
+4. **(implemented)** Durable repair journal
    (`facade/stable/repair_journal.rs`, `MemoryId 41`): on flush failure with
    successful compensation, the whole batch is persisted to stable memory instead
    of the volatile queue (all three posting kinds), `arm_if_needed` arms on a
    non-empty journal, `post_upgrade` replays it (the timer re-arms and drains),
    and the async tick re-applies entries in-tick (`index/repair_journal.rs`),
-   rescheduling at the relaxed delay while the journal is non-empty. **Pending
-   (4b):** the durable `index-dirty` marker, the catalog-driven rebuild backstop,
-   and retiring the compensation-failure trap (P4).
+   rescheduling at the relaxed delay while the journal is non-empty. The
+   **compensation-failure trap (P4) is retired**: the failure branch now journals
+   the full batch and returns an error instead of `ic_cdk::trap`, because
+   journal re-application is idempotent (graph-index `remove` is a no-op on a
+   missing key; `insert` sets membership) and the journaled batch fully specifies
+   the desired delta, so re-application converges the index to the store
+   regardless of how far compensation got. This makes the store the source of
+   truth on the failure path (no whole-message rollback) — the ADR's intended
+   store-ahead/index-repaired model.
+   **Refinement vs the original D5 wording:** D5 proposed an `index-dirty` marker
+   + a separate catalog-driven *scan* rebuild as the compensation-failure
+   backstop. Implementation found the journal's idempotent re-application already
+   provides the eventual-consistency repair that retires the trap, so the
+   scan-rebuild is **not** required for P4 closure. The scan rebuild also needs an
+   index-side "purge postings for `(shard, kind, label, property)`" primitive that
+   does not exist yet and is exactly what D6 introduces — so the dirty marker +
+   catalog-driven rebuild are **re-sequenced into phase 5 alongside D6**, where
+   they share that purge/rebuild machinery (D5/D6 explicitly share it). This is a
+   simplicity-driven refinement, not a change to the decision's correctness goal.
 5. **Implement `DROP INDEX` posting purge (D6)** as a scoped catalog-driven
-   rebuild/purge; add a test asserting no orphan postings remain after drop.
+   rebuild/purge (adds the index-side purge primitive); add a test asserting no
+   orphan postings remain after drop. **Folded in from phase 4:** the durable
+   `index-dirty` marker + the catalog-driven full rebuild backstop (escalation for
+   when journal re-application cannot converge), reusing the same purge/rebuild
+   machinery.
 6. Land the verification suite (start with the PocketIC red repro in step 0 as a
    regression guard).
 
-No stable graph/index posting wire change; the new repair journal / dirty marker
-is additive stable state.
+No stable graph/index posting wire change; the new repair journal is additive
+stable state.
 
 ## Design documentation impact
 

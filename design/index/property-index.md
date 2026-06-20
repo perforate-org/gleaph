@@ -161,6 +161,16 @@ model as `backfill_label_postings`). Unindexable values are skipped (see `proper
 `crates/graph/src/property/`). Router orchestrates per-shard cursors via
 `admin_vertex_property_backfill_step` / `admin_list_vertex_property_backfill_status` (Admin-only).
 
+**Durable repair journal (ADR 0023 D5):** the happy-path flush stays volatile and persists nothing.
+When a flush fails, the batch is compensated and persisted to the stable `INDEX_REPAIR_JOURNAL`
+(`graph/src/index/repair_journal.rs`, `MemoryId 41`) instead of the volatile queue, so the
+store-ahead/index-behind delta survives the upgrade boundary, the router-less timer context, and
+traps. The maintenance driver re-applies journal entries each tick and on `post_upgrade`, removing
+each once graph-index accepts it; re-application is idempotent so no compensation is needed on the
+drain path. If compensation itself fails, the canister no longer traps (P4) — the full batch is
+journaled all the same, since idempotent re-application converges the index to the store regardless
+of the partial compensation state.
+
 ## Derived-state lag
 
 See [derived-state-query-semantics.md](derived-state-query-semantics.md) for query behavior when

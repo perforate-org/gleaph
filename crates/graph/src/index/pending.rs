@@ -29,9 +29,11 @@
 //!
 //! [`flush_pending`] applies postings in order. If an inter-canister call fails after earlier
 //! calls succeeded, successful prefix operations are **compensated** (inverse postings) so the
-//! index matches its pre-flush state for this batch, then the full batch is re-queued for a later
-//! retry. If compensation itself fails, the canister **traps** on Wasm (there is no safe automatic
-//! recovery across two canisters).
+//! index matches its pre-flush state for this batch, then the full batch is persisted to the
+//! durable repair journal ([`crate::facade::stable::repair_journal`], ADR 0023 D5) for the
+//! maintenance driver to re-apply. If compensation itself **also** fails, the canister no longer
+//! traps (ADR 0023 P4): the full batch is journaled all the same, since idempotent re-application
+//! converges the index to the store regardless of the partial compensation state.
 
 use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
@@ -196,17 +198,18 @@ pub(crate) async fn flush_pending(
                     return Err(primary);
                 }
                 Err(rollback_err) => {
-                    #[cfg(target_family = "wasm")]
-                    ic_cdk::trap(format!(
-                        "gleaph-graph: federated index sync failed and rollback failed (op error: {primary}; rollback: {rollback_err})"
-                    ));
-                    #[cfg(not(target_family = "wasm"))]
-                    {
-                        return Err(PlanQueryError::FederatedIndexCall {
-                            op: "compensate",
-                            detail: format!("primary: {primary}; rollback: {rollback_err}"),
-                        });
-                    }
+                    // Compensation failed: the index is in an unknown partial
+                    // state for this batch. Do not trap (ADR 0023 P4) — persist
+                    // the full batch so idempotent re-application converges the
+                    // index to the store, then surface the error with context.
+                    GraphStore::new().repair_journal_append(ops.iter().map(to_repair_op));
+                    crate::facade::maintenance_timer::arm_if_needed();
+                    return Err(PlanQueryError::FederatedIndexCall {
+                        op: "compensate",
+                        detail: format!(
+                            "primary: {primary}; rollback: {rollback_err}; batch journaled for repair"
+                        ),
+                    });
                 }
             }
         }
@@ -227,6 +230,7 @@ mod tests {
 
     struct FlakyIndex {
         fail_after: usize,
+        fail_remove: bool,
         insert_calls: AtomicUsize,
         remove_calls: AtomicUsize,
     }
@@ -235,6 +239,17 @@ mod tests {
         fn new(fail_after: usize) -> Self {
             Self {
                 fail_after,
+                fail_remove: false,
+                insert_calls: AtomicUsize::new(0),
+                remove_calls: AtomicUsize::new(0),
+            }
+        }
+
+        /// Also fail `posting_remove_at`, so the compensation step itself fails.
+        fn with_failing_remove(fail_after: usize) -> Self {
+            Self {
+                fail_after,
+                fail_remove: true,
                 insert_calls: AtomicUsize::new(0),
                 remove_calls: AtomicUsize::new(0),
             }
@@ -292,6 +307,9 @@ mod tests {
             _vertex_id: u32,
         ) -> Result<(), PlanQueryError> {
             self.remove_calls.fetch_add(1, Ordering::SeqCst);
+            if self.fail_remove {
+                return Err(PlanQueryError::UnsupportedOp("test_remove_fail"));
+            }
             Ok(())
         }
 
@@ -384,5 +402,68 @@ mod tests {
         for (seq, _) in graph.repair_journal_peek(usize::MAX) {
             graph.repair_journal_remove(seq);
         }
+    }
+
+    #[test]
+    fn compensation_failure_journals_batch_without_trapping() {
+        // Insert fails on the 2nd op; compensation (remove of the 1st insert)
+        // also fails. Pre-ADR-0023 this trapped on wasm; now the whole batch is
+        // journaled for idempotent re-application (ADR 0023 P4).
+        let index = FlakyIndex::with_failing_remove(2);
+        let graph = GraphStore::new();
+        graph
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: ShardId::new(0),
+            }))
+            .expect("set routing");
+        drain_test_journal(&graph);
+
+        PENDING.with(|p| {
+            p.borrow_mut().extend([
+                PendingPostingOp::Insert {
+                    property_id: 7,
+                    payload_bytes: vec![20],
+                    vertex_id: 3,
+                },
+                PendingPostingOp::Remove {
+                    property_id: 7,
+                    payload_bytes: vec![21],
+                    vertex_id: 4,
+                },
+            ]);
+        });
+
+        let err = pollster::block_on(flush_pending(Some(&index)))
+            .expect_err("primary + compensation both fail");
+        assert!(err.to_string().contains("batch journaled for repair"));
+
+        let journaled: Vec<RepairPostingOp> = graph
+            .repair_journal_peek(16)
+            .into_iter()
+            .map(|(_, op)| op)
+            .collect();
+        assert_eq!(
+            journaled,
+            vec![
+                RepairPostingOp::VertexProperty {
+                    remove: false,
+                    property_id: 7,
+                    payload_bytes: vec![20],
+                    vertex_id: 3,
+                },
+                RepairPostingOp::VertexProperty {
+                    remove: true,
+                    property_id: 7,
+                    payload_bytes: vec![21],
+                    vertex_id: 4,
+                },
+            ]
+        );
+
+        drain_test_journal(&graph);
+        graph.set_federation_routing(None).expect("clear routing");
+        clear_pending();
     }
 }

@@ -219,3 +219,9 @@ Implemented in the graph canister:
   `arm_if_needed` from scheduling an overlapping duplicate pass, and the tick
   defers (retries at the floor delay) when the router catalog is unavailable
   rather than re-keying the store without the index.
+- The tick also drains the durable index repair journal (ADR 0023 D5,
+  `INDEX_REPAIR_JOURNAL`) in-tick: `arm_if_needed` now arms when **either** the
+  LARA maintenance queue **or** the repair journal is non-empty, and the pass
+  reschedules at the relaxed delay while journal entries remain (a persistently
+  unavailable index backs off instead of hot-looping). This makes the timer the
+  re-application driver for failed-flush postings across the upgrade boundary.
