@@ -65,8 +65,8 @@ pub enum StableMemoryClass {
     /// authority for “does this vertex/edge/property exist?”
     ///
     /// **Gleaph examples:**
-    /// - LARA reverse orientation (`REV_*` adjacency and payloads) — co-updated on DML, no public
-    ///   scan-rebuild API
+    /// - LARA reverse orientation (`REV_*` adjacency and payloads) — co-updated on DML, plus a
+    ///   differential `rebuild_reverse_adjacency` repair API
     /// - `EDGE_ALIASES` — sync rebuild API on graph shard
     /// - `INDEX_VERTEX_POSTINGS`, `INDEX_VERTEX_LABEL_POSTINGS` — graph-index projections; backfill from graph
     ///
@@ -162,9 +162,11 @@ pub enum RebuildPath {
     /// Derived state kept consistent with its canonical source inside the same mutation / commit
     /// boundary; there is no standalone scan-and-rebuild API.
     ///
-    /// **Gleaph:** LARA reverse orientation (`REV_*`, co-updated on DML) and the router registry
-    /// projections denormalized from `ROUTER_SHARDS` (`ROUTER_SHARD_BY_GRAPH`,
-    /// `ROUTER_SHARDS_BY_GRAPH_ID`, commit-synced).
+    /// **Gleaph:** the router registry projections denormalized from `ROUTER_SHARDS`
+    /// (`ROUTER_SHARD_BY_GRAPH`, `ROUTER_SHARDS_BY_GRAPH_ID`, commit-synced). The LARA reverse
+    /// orientation (`REV_*`) is also co-updated on DML, but it additionally exposes a standalone
+    /// differential repair (`rebuild_reverse_adjacency`), so it is classified `Named` rather than
+    /// `SyncCoUpdate`.
     SyncCoUpdate,
     /// Rebuildable or backfillable from canonical state via a named entry point
     /// (e.g. `rebuild_edge_aliases`, `backfill_label_postings`, `admin_label_stats_projection_step`).
@@ -367,14 +369,14 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "Out-of-line large payload blobs",
             RebuildPath::None,
         ),
-        // Reverse orientation — derived adjacency (sync co-update)
+        // Reverse orientation — derived adjacency (co-updated on DML; differential repair API)
         region(
             "REV_VERTICES",
             15,
             StableMemoryClass::Derived,
             "lara/adjacency",
             "Reverse CSR vertex rows (mirror of forward)",
-            RebuildPath::SyncCoUpdate,
+            RebuildPath::Named("rebuild_reverse_adjacency"),
         ),
         region(
             "REV_BUCKETS",
@@ -382,7 +384,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/adjacency",
             "Reverse labeled edge bucket roots",
-            RebuildPath::SyncCoUpdate,
+            RebuildPath::Named("rebuild_reverse_adjacency"),
         ),
         region(
             "REV_BUCKET_FREE_SPANS",
@@ -406,7 +408,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/adjacency",
             "Per-vertex reverse edge counts",
-            RebuildPath::SyncCoUpdate,
+            RebuildPath::Named("rebuild_reverse_adjacency"),
         ),
         region(
             "REV_EDGES",
@@ -414,7 +416,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/adjacency",
             "Reverse edge slab",
-            RebuildPath::SyncCoUpdate,
+            RebuildPath::Named("rebuild_reverse_adjacency"),
         ),
         region(
             "REV_EDGE_LOG",
@@ -422,7 +424,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/adjacency",
             "Reverse edge value log",
-            RebuildPath::SyncCoUpdate,
+            RebuildPath::Named("rebuild_reverse_adjacency"),
         ),
         region(
             "REV_EDGE_SPAN_META",
@@ -454,7 +456,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/payload",
             "Reverse payload slab",
-            RebuildPath::SyncCoUpdate,
+            RebuildPath::Named("rebuild_reverse_adjacency"),
         ),
         region(
             "REV_PAYLOAD_FREE_SPANS",
@@ -478,7 +480,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/payload",
             "Reverse payload value log",
-            RebuildPath::SyncCoUpdate,
+            RebuildPath::Named("rebuild_reverse_adjacency"),
         ),
         region(
             "REV_PAYLOAD_BLOBS",
@@ -486,7 +488,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             StableMemoryClass::Derived,
             "lara/payload",
             "Reverse out-of-line payload blobs",
-            RebuildPath::SyncCoUpdate,
+            RebuildPath::Named("rebuild_reverse_adjacency"),
         ),
         // LARA deferred maintenance
         region(
@@ -1164,7 +1166,7 @@ mod tests {
                 }
             }
         }
-        // LARA reverse and router projections are sync co-update; index postings name a backfill.
+        // LARA reverse adjacency and edge aliases name a rebuild; index postings name a backfill.
         let graph = |symbol: &str| {
             GRAPH_STABLE_LAYOUT
                 .regions
@@ -1173,7 +1175,10 @@ mod tests {
                 .unwrap()
                 .rebuild
         };
-        assert_eq!(graph("REV_VERTICES"), RebuildPath::SyncCoUpdate);
+        assert_eq!(
+            graph("REV_VERTICES"),
+            RebuildPath::Named("rebuild_reverse_adjacency")
+        );
         assert_eq!(
             graph("EDGE_ALIASES"),
             RebuildPath::Named("rebuild_edge_aliases")

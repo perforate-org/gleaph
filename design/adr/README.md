@@ -58,5 +58,6 @@ Last revised: YYYY-MM-DD
 | [0021](0021-resumable-supernode-detach-delete.md) | Resumable super-node `DETACH DELETE` via tombstone-first + phased incident-edge purge on the maintenance timer; gated read-time neighbor visibility | proposed |
 | [0022](0022-degree-driven-hub-edge-storage.md) | Fix labeled overflow-log read-window underflow (`CollectAllocationOverflow`) for buckets past leaf-0's cap now; degree-driven hub edge storage (dedicated span / B-tree) deferred | accepted |
 | [0023](0023-federated-index-consistency-upgrade-compaction.md) | Federated index/store consistency across upgrade & compaction: remove shard index registry; router-sourced ephemeral catalog; precise emit; failure-only durable repair journal | accepted |
+| [0026](0026-reverse-adjacency-differential-repair.md) | Reverse-adjacency differential repair (`rebuild_reverse_adjacency`): per-diverged-key reconcile; reject full clear-and-rebuild cascade | implemented |
 
 When adding an ADR, link it from the relevant design doc and update this table.
