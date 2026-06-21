@@ -62,5 +62,6 @@ Last revised: YYYY-MM-DD
 | [0025](0025-client-mutation-journal-retention-sweep.md) | Client-mutation idempotency journal retention, compaction, and GC | implemented |
 | [0026](0026-reverse-adjacency-differential-repair.md) | Reverse-adjacency differential repair (`rebuild_reverse_adjacency`): per-diverged-key reconcile; reject full clear-and-rebuild cascade | implemented |
 | [0027](0027-graph-mutation-journal-retention.md) | Graph mutation journal time-based retention + amortized write-path GC; reject ack-through-seq eviction | implemented |
+| [0028](0028-per-graph-tenancy-metadata-reads.md) | Per-graph tenancy on router metadata reads: owner/admins ACL + Admin superuser + own-shard allow; NotFound non-disclosure; reject anonymous owner/admin at registration | accepted |
 
 When adding an ADR, link it from the relevant design doc and update this table.

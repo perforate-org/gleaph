@@ -72,6 +72,25 @@ Graph type catalog DDL runs on the main GQL path **before** ingress dispatch whe
 
 **Note:** Index DDL is **stricter** than graph type catalog DDL — Write alone is insufficient for index create/drop.
 
+## Per-graph tenancy (graph-scoped read authorization)
+
+**Status: Implemented** ([ADR 0028](../adr/0028-per-graph-tenancy-metadata-reads.md))
+
+RBAC roles above are **canister-global**. Graph-scoped *visibility* is a separate, orthogonal ACL carried on `GraphRegistryEntry.{owner, admins}`. A caller may resolve/read a graph's metadata and routing data when `caller_may_access_graph` holds (`crates/router/src/facade/store/registry.rs`):
+
+| Allow path | Who | Why |
+|------------|-----|-----|
+| Tenant | `caller == owner` or `caller ∈ admins` | The graph's tenant(s). |
+| Superuser bypass | global `Role::Admin` | Operations/migration/tooling (DB-superuser analogue). |
+| Own shard | the graph's registered `graph_canister` (keyed in `ROUTER_SHARD_BY_GRAPH`, same `graph_id`) | Keeps federation/index-routing inter-canister calls working (`verify_shard_attachment`, `list_shards_for_graph`, `indexed_property_catalog`), which reach the router with the shard's `graph_canister` principal. |
+
+Enforcement:
+
+- **Name→id metadata endpoints** (`resolve_shard`, `lookup_graph_id`, `list_shards_for_graph`, `indexed_property_catalog`, `lookup_{vertex,edge}_label_id`, `lookup_property_id`, `reverse_{vertex,edge}_label_name`, `reverse_property_name`) resolve via `resolve_graph_id_authorized`. Previously these used a bare name lookup with no ACL (cross-tenant disclosure).
+- **Non-disclosure:** a non-tenant gets `NotFound`, not `Forbidden`, so it cannot confirm a graph exists. `resolve_graph` follows the same rule and gains the Admin bypass.
+- **Default/HOME selection is excluded:** `list_visible_graph_ids` / `resolve_home_graph_id` keep membership-only checks (no Admin bypass) so an Admin's HOME does not become ambiguous. The intentionally-public `prepared_execute_*` path already scopes through `list_visible_graph_ids` and is unchanged.
+- **Registration validation:** `validate_registration_principals` rejects the anonymous principal as `owner` or in `admins` (before any state mutation); an anonymous owner/admin would make the ACL match every unauthenticated caller. This complements the [anonymous-principal invariant](#anonymous-principal-invariant).
+
 ## Graph shard exposure
 
 Graph canisters **do not** serve arbitrary GQL to end users. They execute:
