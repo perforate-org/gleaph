@@ -186,13 +186,18 @@ async fn execute_plan_query_bindings_with_initial_rows_inner(
 }
 
 fn is_router_seed_skippable_op(op: &PlanOp) -> bool {
+    // Only the leading *scan/index anchor* is represented by the router-supplied seed
+    // bindings, so only those ops may be skipped. A residual `PropertyFilter` is NOT an
+    // anchor: the router resolves seeds from the index/label anchor alone and cannot apply
+    // non-indexed (or otherwise residual) equality predicates when building seeds. The shard
+    // must always re-apply such filters against the seed rows; skipping them would return the
+    // unfiltered anchor set (e.g. all label vertices), so `PropertyFilter` is excluded here.
     matches!(
         op,
         PlanOp::NodeScan { label: Some(_), .. }
             | PlanOp::IndexScan { .. }
             | PlanOp::IndexIntersection { .. }
             | PlanOp::EdgeIndexScan { .. }
-            | PlanOp::PropertyFilter { .. }
     )
 }
 

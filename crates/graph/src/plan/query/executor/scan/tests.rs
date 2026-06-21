@@ -2177,6 +2177,63 @@ fn seeded_skip_leading_node_scan_and_property_filter_uses_seed_only() {
 }
 
 #[test]
+fn seeded_node_scan_reapplies_residual_property_filter_to_seed_rows() {
+    // ADR 0029 regression: router seeds resolve only the label/index *anchor*; a residual
+    // `PropertyFilter` on a non-indexed property is NOT applied when building seeds, so the
+    // shard must re-apply it. Seeding both a matching and a non-matching vertex must yield
+    // only the matching one (previously the filter was skipped and both were returned).
+    let store = GraphStore::new();
+    let matching = store
+        .insert_vertex_named(["Person"], [("region", Value::Text("US".into()))])
+        .expect("matching vertex");
+    let other = store
+        .insert_vertex_named(["Person"], [("region", Value::Text("EU".into()))])
+        .expect("non-matching vertex");
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "n".into(),
+            label: Some("Person".into()),
+            property_projection: None,
+        },
+        PlanOp::PropertyFilter {
+            predicates: vec![Expr::new(ExprKind::Compare {
+                left: Box::new(prop("n", "region")),
+                op: CmpOp::Eq,
+                right: Box::new(Expr::new(ExprKind::Literal(Value::Text("US".into())))),
+            })],
+            stage: 0,
+        },
+        PlanOp::Project {
+            columns: vec![project(var("n"), "n")],
+            distinct: false,
+        },
+    ]);
+    let mut matching_seed = PlanRow::new();
+    matching_seed.insert("n".to_owned(), PlanBinding::Vertex(matching));
+    let mut other_seed = PlanRow::new();
+    other_seed.insert("n".to_owned(), PlanBinding::Vertex(other));
+    let index = MockPropertyIndex::default();
+
+    let rows = pollster::block_on(execute_plan_query_bindings_with_initial_rows(
+        &store,
+        &plan,
+        &params(),
+        Some(&index),
+        GqlExecutionContext::default(),
+        vec![matching_seed, other_seed],
+        true,
+    ))
+    .expect("seeded node scan re-applies residual filter");
+
+    assert_eq!(rows.len(), 1, "non-matching seed must be filtered out");
+    assert!(matches!(
+        rows[0].get("n"),
+        Some(PlanBinding::Vertex(id)) if *id == matching
+    ));
+    assert!(index.equal_calls.borrow().is_empty());
+}
+
+#[test]
 fn seeded_skip_leading_label_intersection_plan_uses_seed_only() {
     let store = GraphStore::new();
     let vid = store
