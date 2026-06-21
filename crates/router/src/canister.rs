@@ -89,6 +89,34 @@ pub(crate) fn mutation_status(
     Ok(crate::types::MutationStatus::from_record(&record))
 }
 
+/// Test-only (`pocket-ic-e2e`): inject a projection-lagging federated saga so the autonomous
+/// recovery driver's convergence can be exercised end-to-end. `mutation_id` must name a mutation
+/// already committed on the graph's live shards (typically the token from a prior idempotent DML on
+/// the same graph). See [`RouterStore::test_insert_projection_pending_record`]. Arms the recovery
+/// timer so the injected non-terminal saga is picked up on the next tick.
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) fn test_inject_projection_pending_saga(
+    logical_graph_name: String,
+    client_mutation_key: String,
+    mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
+    row_count: u64,
+) -> Result<(), RouterError> {
+    let caller = msg_caller();
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let shards = store.list_live_shards_for_graph_id(graph_id)?;
+    store.test_insert_projection_pending_record(
+        caller,
+        graph_id,
+        &client_mutation_key,
+        mutation_id,
+        row_count,
+        &shards,
+    )?;
+    crate::recovery::arm_if_needed();
+    Ok(())
+}
+
 pub(crate) fn graph_element_id_encoding_key(
     logical_graph_name: String,
 ) -> Result<[u8; 16], RouterError> {

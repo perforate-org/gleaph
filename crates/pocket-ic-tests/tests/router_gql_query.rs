@@ -19,6 +19,7 @@ use gleaph_pocket_ic_tests::{
     graph_index_pending_min_mutation_id, install_federation, install_single_shard_federation,
     knowledge_map_live_query, mutation_status_as_admin, run_router_recovery_timer,
     seed_knowledge_map_graph, start_graph_shard, stop_graph_shard,
+    test_inject_projection_pending_saga,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -599,6 +600,78 @@ fn router_recovers_non_terminal_federated_saga_via_idempotent_retry() {
         after.row_count, 2,
         "both shards' vertices converged to the updated value"
     );
+}
+
+#[test]
+fn router_recovery_timer_converges_projection_pending_saga_autonomously() {
+    // ADR 0029 Phase 4: the autonomous recovery driver converges a projection-lagging federated
+    // saga to `Completed` with no client in the loop. `ProjectionPending` (canonical durable on all
+    // shards, projection advanced on some) is unreachable through the black-box DML path, which
+    // advances every shard's projection inline before returning, so a test-only seam injects that
+    // exact persisted state referencing a real prior mutation. The timer then advances the lagging
+    // shard's projection and finalizes the record.
+    use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
+
+    let env = install_federation();
+    let age = admin_intern_property(&env, "age");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "router_recovery_timer_converges_projection_pending_saga_autonomously",
+    );
+    let source = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
+    let dest = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 5);
+    assert_eq!(source.global_vertex_id.shard_id, SOURCE_SHARD);
+    assert_eq!(dest.global_vertex_id.shard_id, DEST_SHARD);
+
+    // A real federated DML commits a mutation on both shards and advances both projections inline.
+    let real = gql_execute_idempotent_result_as_admin(
+        &env,
+        "MATCH (n {age: 5}) SET n.age = 6",
+        "projection_pending_seed_mutation",
+    );
+    let mutation_id = real
+        .token
+        .expect("federated DML returns a mutation token")
+        .mutation_id;
+
+    // Inject a record for that mutation with the dest shard's projection left lagging.
+    let key = "router_recovery_timer_converges_projection_pending_saga";
+    test_inject_projection_pending_saga(
+        &env,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+        key,
+        mutation_id,
+        1,
+    );
+
+    let pending = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+        .expect("status for the injected saga");
+    assert_eq!(
+        pending.phase,
+        MutationLifecyclePhase::ProjectionPending,
+        "canonical-complete with a lagging shard projection is ProjectionPending"
+    );
+    assert!(
+        pending.next_action.contains("automatic"),
+        "ProjectionPending recovery is automatic, got {:?}",
+        pending.next_action
+    );
+
+    // The autonomous timer converges the saga without any client retry.
+    run_router_recovery_timer(&env);
+
+    let completed = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+        .expect("status after autonomous recovery");
+    assert_eq!(
+        completed.phase,
+        MutationLifecyclePhase::Completed,
+        "the recovery timer advances the lagging projection and finalizes the saga"
+    );
+    assert_eq!(completed.target_shard, None);
+    assert_eq!(completed.next_action, "none");
 }
 
 #[test]

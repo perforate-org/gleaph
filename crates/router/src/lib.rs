@@ -291,6 +291,25 @@ fn mutation_status(
     canister::mutation_status(logical_graph_name, client_mutation_key)
 }
 
+/// Test-only (`pocket-ic-e2e`): inject a projection-lagging federated saga referencing an
+/// already-committed `mutation_id`, then arm the recovery timer. Lets the E2E suite drive the
+/// autonomous recovery driver from `ProjectionPending` to `Completed` without a client retry.
+#[cfg(feature = "pocket-ic-e2e")]
+#[update]
+fn test_inject_projection_pending_saga(
+    logical_graph_name: String,
+    client_mutation_key: String,
+    mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
+    row_count: u64,
+) -> Result<(), RouterError> {
+    canister::test_inject_projection_pending_saga(
+        logical_graph_name,
+        client_mutation_key,
+        mutation_id,
+        row_count,
+    )
+}
+
 /// Read-only GQL on the update path only (no composite-query savings; bypasses path check).
 #[update]
 async fn force_gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterError> {

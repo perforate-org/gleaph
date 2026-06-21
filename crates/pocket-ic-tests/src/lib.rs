@@ -1375,6 +1375,40 @@ pub fn mutation_status_as_admin(
     Decode!(&bytes, Result<MutationStatus, RouterError>).expect("decode mutation_status")
 }
 
+/// Test-only (`pocket-ic-e2e`): inject a projection-lagging federated saga under `client_mutation_key`
+/// referencing an already-committed `mutation_id` (e.g. a token from a prior idempotent DML). Used to
+/// exercise the autonomous recovery driver's `ProjectionPending` -> `Completed` convergence.
+pub fn test_inject_projection_pending_saga(
+    env: &FederationEnv,
+    logical_graph_name: &str,
+    client_mutation_key: &str,
+    mutation_id: u64,
+    row_count: u64,
+) {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "test_inject_projection_pending_saga",
+            Encode!(
+                &logical_graph_name.to_string(),
+                &client_mutation_key.to_string(),
+                &mutation_id,
+                &row_count
+            )
+            .expect("encode test_inject_projection_pending_saga"),
+        )
+        .unwrap_or_else(|e| panic!("test_inject_projection_pending_saga on router: {e:?}"));
+    match Decode!(&bytes, Result<(), RouterError>) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("test_inject_projection_pending_saga rejected: {err:?}"),
+        Err(err) => panic!("decode test_inject_projection_pending_saga: {err:?}"),
+    }
+}
+
 /// Advance simulated time and tick so the router's autonomous recovery timer fires
 /// (ADR 0029 Phase 4).
 pub fn run_router_recovery_timer(env: &FederationEnv) {

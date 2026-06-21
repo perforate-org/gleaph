@@ -381,6 +381,13 @@ Tests:
   Note: the recovery driver is projection-only by design, so the timer converges a `ProjectionPending`
   saga autonomously, whereas a `CanonicalPending` saga (an outstanding canonical shard write) is
   resumed by the idempotent retry path, never by re-dispatching canonical DML from the timer.
+- Autonomous `ProjectionPending` -> `Completed` convergence with no client in the loop. **Done** —
+  that persisted state (canonical durable on all shards, projection advanced on some) is unreachable
+  through the black-box DML path, which advances every shard's projection inline before returning, so
+  a test-only seam (gated by the `pocket-ic-e2e` feature: `test_inject_projection_pending_saga`)
+  injects the state referencing a real prior mutation, and the test asserts a single recovery-timer
+  run advances the lagging shard's projection and finalizes the record without any idempotent retry
+  (`router_recovery_timer_converges_projection_pending_saga_autonomously`).
 - Router upgrade during each phase resumes without duplicate graph writes — recovery is projection-
   only and idempotent; `post_upgrade` re-arms the timer.
 - Repeated rejection keeps durable progress and does not spin unboundedly — timer backs off to a

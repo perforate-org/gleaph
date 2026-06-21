@@ -455,6 +455,44 @@ impl RouterStore {
         })
     }
 
+    /// Test-only (`pocket-ic-e2e`): insert a non-terminal federated mutation record that the
+    /// autonomous recovery driver can converge without a client in the loop. Every shard is marked
+    /// canonical-complete; every shard except the highest `shard_id` is marked projection-advanced,
+    /// leaving the record `ProjectionPending` on a multi-shard graph (or `CanonicalCommitted` on a
+    /// single shard) — both projection-only recoverable states. `mutation_id` must name a mutation
+    /// already committed on those shards so the driver finds a graph journal entry to project
+    /// through. This builds the one persisted saga state that is unreachable through the black-box
+    /// DML path (canonical durable, projection lagging), so the timer's autonomous convergence can
+    /// be exercised end-to-end.
+    #[cfg(feature = "pocket-ic-e2e")]
+    pub fn test_insert_projection_pending_record(
+        &self,
+        caller: Principal,
+        graph_id: GraphId,
+        client_key: &str,
+        mutation_id: MutationId,
+        row_count: u64,
+        shards: &[gleaph_graph_kernel::federation::ShardRegistryEntry],
+    ) -> Result<(), RouterError> {
+        let key = client_mutation_key(caller, graph_id, client_key);
+        let highest = shards.iter().map(|shard| shard.shard_id).max();
+        let mut record = RouterMutationRecord::new(mutation_id, ic_time_ns(), Vec::new());
+        record.routing_in_progress = false;
+        record.shards = shards
+            .iter()
+            .map(|shard| {
+                let mut entry =
+                    RouterMutationShard::new(shard.shard_id, shard.graph_canister, None);
+                entry.completed = true;
+                entry.row_count = row_count;
+                entry.projection_advanced = Some(shard.shard_id) != highest;
+                entry
+            })
+            .collect();
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key, record));
+        Ok(())
+    }
+
     pub fn router_mutation_completed_row_count(
         &self,
         caller: Principal,
