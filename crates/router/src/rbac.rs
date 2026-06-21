@@ -118,6 +118,38 @@ mod tests {
     }
 
     #[test]
+    fn index_ddl_rejects_anonymous_and_read_roles() {
+        // Guards the legacy `admin_set_indexed_{vertex,edge}_property` compat endpoints, which
+        // route through `authorize_index_ddl` exactly like GQL `CREATE INDEX`.
+        let anon = Principal::anonymous();
+        assert!(matches!(
+            authorize_index_ddl(&anon),
+            Err(RouterError::Forbidden)
+        ));
+        let read = principal(7);
+        upsert_role(read, Role::Read, 0);
+        assert!(matches!(
+            authorize_index_ddl(&read),
+            Err(RouterError::Forbidden)
+        ));
+    }
+
+    #[test]
+    fn index_ddl_allows_admin_and_manager_with_prepare_cap() {
+        let admin = principal(8);
+        upsert_role(admin, Role::Admin, 0);
+        authorize_index_ddl(&admin).expect("admin may run index DDL");
+
+        let manager = principal(9);
+        upsert_role(
+            manager,
+            Role::Manager,
+            ManagerCapability::PREPARE_REGISTER.bits(),
+        );
+        authorize_index_ddl(&manager).expect("manager with prepare cap may run index DDL");
+    }
+
+    #[test]
     fn default_executor_may_execute_prepared() {
         let p = principal(6);
         authorize_prepared_execute(&p).expect("executor default");

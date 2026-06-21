@@ -328,6 +328,7 @@ pub(crate) async fn admin_set_indexed_vertex_property(
 ) -> Result<(), RouterError> {
     use gleaph_graph_kernel::index::IndexedPropertyKind;
 
+    crate::rbac::authorize_index_ddl(&msg_caller())?;
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id(&logical_graph_name)?;
     crate::index_catalog::create_admin_compat_property_index(
@@ -350,6 +351,7 @@ pub(crate) async fn admin_set_indexed_edge_property(
     use gleaph_gql::types::EdgeDirection;
     use gleaph_graph_kernel::index::IndexedPropertyKind;
 
+    crate::rbac::authorize_index_ddl(&msg_caller())?;
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id(&logical_graph_name)?;
     crate::index_catalog::create_admin_compat_property_index(
