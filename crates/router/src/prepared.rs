@@ -69,6 +69,11 @@ pub fn prepared_register(name: String, query: String) -> Result<(), RouterError>
             "planner DML content does not match program classification".into(),
         ));
     }
+    // ADR 0029 Phase 5: never persist a prepared plan that is a federated multi-DML bundle; the
+    // gate runs at registration (the AST is available here) so execute-time dispatch is clean.
+    if requires_write_path {
+        crate::gql::enforce_multi_dml_bundle_gate(&store, dispatch.dispatch_graph_id, block)?;
+    }
     let session_current = graph_context::session_current_after_activity(&store, &program, caller)?;
     let (graph_id, plan) = match crate::use_graph::analyze_use_graph_v2_dispatch(
         plan,

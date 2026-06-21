@@ -175,9 +175,24 @@ rejected (`InvalidArgument`) until owner-side scan routing and the unsupported-s
 
 ### 6. Restrict multi-DML until its boundary is explicit
 
-Federated multi-DML programs are not advertised as atomic. The first implementation phase will
-reject unsupported multi-DML update bundles at the Router boundary rather than preserve a syntax
-that suggests rollback semantics the system does not provide.
+Federated multi-DML programs are not advertised as atomic. The first implementation phase
+(**implemented**, Phase 5 rejection gate) rejects unsupported multi-DML update bundles at the
+Router boundary rather than preserve a syntax that suggests rollback semantics the system does not
+provide.
+
+The gate rejects a write program iff its statement block holds **more than one top-level DML
+statement** (`StatementBlock::first` plus each `NEXT` statement; a single statement counts once
+regardless of how many DML parts it contains) **and** the target graph is **federated** (more than
+one live shard). It returns `RouterError::UnsupportedMultiDmlBundle` before resolving seeds or
+dispatching to any shard, so no canonical or projection state changes. The top-level DML statement
+count is derived from the AST (`gleaph_gql::program_modification::count_dml_statements`, the source
+of truth for how many DML statements the program contains). Single-shard multi-DML stays
+shard-local atomic (decision 1) and a single federated DML statement converges via the federated
+saga (decision 4), so both pass. The gate is enforced at both AST-owning ingress points: ad-hoc
+`gql_query*`/`gql_update*` (`router::gql::run_gql`) and prepared-plan registration
+(`router::prepared::prepared_register`), so a federated multi-DML prepared plan is never persisted.
+A prepared plan registered against a single-shard graph that is later re-sharded is an orthogonal
+prepared-plan staleness concern, not covered by this gate.
 
 Future support may choose one of two explicit contracts:
 

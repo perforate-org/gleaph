@@ -49,6 +49,21 @@ pub enum RouterError {
         required: u64,
         current: u64,
     },
+    /// A federated update bundle contained more than one top-level DML statement. Federated
+    /// multi-DML bundles have no defined cross-shard partial-application contract yet
+    /// (ADR 0029 Phase 5), so the bundle is rejected before any shard dispatch — no canonical
+    /// or projection state changed. This is **not** retryable as written: split the bundle into
+    /// single-statement mutations, or target a single-shard graph. Resubmitting the same bundle
+    /// is rejected identically.
+    #[error(
+        "unsupported federated multi-DML bundle: {dml_statements} top-level DML statements across \
+         {shard_count} shards; no cross-shard bundle contract is implemented (ADR 0029 Phase 5). \
+         Split into single-statement mutations or target a single-shard graph"
+    )]
+    UnsupportedMultiDmlBundle {
+        dml_statements: u32,
+        shard_count: u32,
+    },
     #[error("shard already registered")]
     ShardAlreadyRegistered,
     #[error("id exhausted: {0}")]

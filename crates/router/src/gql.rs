@@ -605,6 +605,14 @@ async fn run_gql(
         ));
     }
 
+    // ADR 0029 Phase 5: a federated bundle of more than one top-level DML statement has no
+    // defined cross-shard partial-application contract yet. Reject it before resolving seeds or
+    // dispatching to any shard, so no accepted program has unspecified partial semantics. The
+    // count is taken from the AST (the SSOT for "how many DML statements the user wrote").
+    if requires_write_path {
+        enforce_multi_dml_bundle_gate(&store, dispatch.dispatch_graph_id, block)?;
+    }
+
     let session_current =
         crate::graph_context::session_current_after_activity(&store, &program, caller)?;
     let v2 = crate::use_graph::analyze_use_graph_v2_dispatch(
@@ -816,6 +824,29 @@ fn decode_wire_result(result: GqlQueryResult) -> Result<IcWirePlanQueryResult, R
 }
 
 /// Route and execute a plan blob (single- or multi-shard).
+/// ADR 0029 Phase 5: reject a federated bundle that contains more than one top-level DML
+/// statement. The block AST is the source of truth for the DML statement count; federation is
+/// the live shard count of the dispatch graph. Single-shard multi-DML stays shard-local atomic
+/// (Phase 1) and a single federated DML statement converges via the Phase 4 saga, so both pass.
+pub(crate) fn enforce_multi_dml_bundle_gate(
+    store: &RouterStore,
+    graph_id: GraphId,
+    block: &gleaph_gql::ast::StatementBlock,
+) -> Result<(), RouterError> {
+    let dml_statements = gleaph_gql::program_modification::count_dml_statements(block);
+    if dml_statements <= 1 {
+        return Ok(());
+    }
+    let shard_count = store.list_live_shards_for_graph_id(graph_id)?.len();
+    if shard_count > 1 {
+        return Err(RouterError::UnsupportedMultiDmlBundle {
+            dml_statements: dml_statements as u32,
+            shard_count: shard_count as u32,
+        });
+    }
+    Ok(())
+}
+
 pub async fn dispatch_plan_blob(
     graph_id: GraphId,
     plan_blob: &[u8],

@@ -44,6 +44,25 @@ pub fn classify_statement_block(block: &StatementBlock) -> ProgramModificationFl
     flags
 }
 
+/// Count top-level block statements that perform data modification (DML).
+///
+/// The unit is the top-level statement (`StatementBlock::first` plus each chained `NEXT`
+/// statement). A single top-level statement counts once regardless of how many DML parts it
+/// contains, e.g. `MATCH (n) SET n.a = 1 SET n.b = 2` is one statement. DDL-only and read-only
+/// statements do not count. Used by the federated multi-DML bundle gate (ADR 0029 Phase 5).
+pub fn count_dml_statements(block: &StatementBlock) -> usize {
+    block
+        .iter_statements()
+        .filter(|st| statement_has_data_modification(st))
+        .count()
+}
+
+fn statement_has_data_modification(stmt: &Statement) -> bool {
+    let mut flags = ProgramModificationFlags::default();
+    walk_statement(stmt, &mut flags);
+    flags.has_data_modification
+}
+
 fn walk_statement_block(block: &StatementBlock, flags: &mut ProgramModificationFlags) {
     for st in block.iter_statements() {
         walk_statement(st, flags);
@@ -155,5 +174,46 @@ mod tests {
         let f = classify_program(&p);
         assert!(f.has_catalog_modification);
         assert!(f.requires_write_path());
+    }
+
+    fn dml_statement_count(query: &str) -> usize {
+        let p = parser::parse(query).expect("parse");
+        let body = p
+            .transaction_activity
+            .as_ref()
+            .expect("tx")
+            .body
+            .as_ref()
+            .expect("body");
+        count_dml_statements(body)
+    }
+
+    #[test]
+    fn count_dml_statements_zero_for_read_only() {
+        assert_eq!(dml_statement_count("MATCH (n) RETURN n"), 0);
+    }
+
+    #[test]
+    fn count_dml_statements_one_for_single_insert() {
+        assert_eq!(dml_statement_count("INSERT (n:Person {age: 42})"), 1);
+    }
+
+    #[test]
+    fn count_dml_statements_one_for_single_statement_with_multiple_dml_parts() {
+        // One top-level statement (one linear query) counts once even with several DML parts.
+        assert_eq!(dml_statement_count("MATCH (n) SET n.a = 1 SET n.b = 2"), 1);
+    }
+
+    #[test]
+    fn count_dml_statements_counts_each_next_chained_dml_statement() {
+        assert_eq!(dml_statement_count("INSERT (a:A) NEXT INSERT (b:B)"), 2);
+    }
+
+    #[test]
+    fn count_dml_statements_ignores_read_only_next_statements() {
+        assert_eq!(
+            dml_statement_count("INSERT (a:A) NEXT MATCH (n) RETURN n"),
+            1
+        );
     }
 }

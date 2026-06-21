@@ -190,6 +190,52 @@ fn router_gql_insert_seeds_knowledge_map_fan_out_graph() {
 }
 
 #[test]
+fn router_rejects_federated_multi_dml_bundle_before_dispatch() {
+    // ADR 0029 Phase 5: a bundle of more than one top-level DML statement on a federated
+    // (multi-shard) graph has no defined cross-shard partial-application contract, so the Router
+    // rejects it before any shard dispatch with `UnsupportedMultiDmlBundle` — no canonical or
+    // projection state changes. The companion `router_allows_multi_dml_bundle_on_single_shard`
+    // test proves the gate keys on federation, not on statement count alone.
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let env = install_federation();
+
+    let err = gql_execute_idempotent_as_admin_expect_err(
+        &env,
+        "INSERT (:Person) NEXT INSERT (:Project)",
+        "router_rejects_federated_multi_dml_bundle_before_dispatch",
+    );
+    assert!(
+        matches!(
+            err,
+            RouterError::UnsupportedMultiDmlBundle {
+                dml_statements: 2,
+                shard_count: 2,
+            }
+        ),
+        "expected UnsupportedMultiDmlBundle for a 2-statement bundle on a 2-shard graph, got {err:?}"
+    );
+}
+
+#[test]
+fn router_allows_multi_dml_bundle_on_single_shard() {
+    // ADR 0029 Phase 5: multi-DML stays shard-local atomic on a single-shard graph (Phase 1),
+    // so the federated multi-DML gate must not reject it. Both inserts apply in one canonical
+    // segment on the one shard.
+    let env = install_single_shard_federation();
+
+    let result = gql_execute_idempotent_result_as_admin(
+        &env,
+        "INSERT (:Person) NEXT INSERT (:Project)",
+        "router_allows_multi_dml_bundle_on_single_shard",
+    );
+    assert!(
+        result.token.is_some(),
+        "single-shard multi-DML executes and issues a mutation token"
+    );
+}
+
+#[test]
 fn router_idempotent_dml_issues_mutation_token_and_exposes_index_watermark() {
     // ADR 0029 Phase 2: an idempotent DML returns a read-your-writes token (mutation id +
     // per-shard label-stats watermarks) and a lifecycle phase. After a successful insert the

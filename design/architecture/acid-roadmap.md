@@ -394,14 +394,24 @@ Exit criteria:
 
 ## Phase 5: Multi-DML contract
 
-**Status: Planned.**
+**Status: Rejection gate done. Supported contracts (one-shard atomic / roll-forward / staged) still planned.**
 
 Goal: remove the existing partial multi-DML ambiguity.
 
-Immediate decision:
+Immediate decision (implemented):
 
-- Reject federated multi-DML update bundles until one of the supported contracts below is
-  implemented.
+- Reject federated multi-DML update bundles before any shard dispatch, until one of the supported
+  contracts below is implemented. A bundle is rejected iff it is a write program whose statement
+  block contains **more than one top-level DML statement** (`StatementBlock::first` plus each
+  `NEXT` statement, counted as one regardless of how many DML parts a single statement holds)
+  **and** the target graph is **federated** (more than one live shard). The Router returns
+  `RouterError::UnsupportedMultiDmlBundle` before resolving seeds or dispatching to any shard, so
+  no canonical or projection state changes. Single-shard multi-DML stays shard-local atomic
+  (Phase 1); a single federated DML statement converges via the Phase 4 roll-forward saga. The
+  gate is enforced at both ingress points that own the AST: ad-hoc `gql_query*`/`gql_update*`
+  (`run_gql`) and prepared-plan registration (`prepared_register`). A prepared plan registered
+  against a single-shard graph that is later re-sharded is an orthogonal prepared-plan staleness
+  concern, not covered by this gate.
 
 Candidate future contracts:
 
@@ -412,10 +422,14 @@ Candidate future contracts:
 
 Tests:
 
-- Router rejects unsupported multi-DML before any shard dispatch.
-- A supported one-shard bundle traps back to its pre-message canonical state.
+- Router rejects unsupported multi-DML before any shard dispatch. *(Done:
+  `router_rejects_federated_multi_dml_bundle_before_dispatch`,
+  `router_allows_multi_dml_bundle_on_single_shard`, and
+  `program_modification::count_dml_statements_*` host unit tests.)*
+- A supported one-shard bundle traps back to its pre-message canonical state. *(Planned with the
+  one-shard atomic contract.)*
 - If roll-forward support is selected, retries resume at the persisted plan boundary without being
-  described as rollback atomicity.
+  described as rollback atomicity. *(Planned with the roll-forward contract.)*
 
 Benchmarks:
 
