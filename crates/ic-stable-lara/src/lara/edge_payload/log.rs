@@ -134,6 +134,13 @@ impl<M: Memory> PayloadLogStore<M> {
                 actual: header.stride,
             });
         }
+        // Backing-size guard (mirrors free_span::validate_header): reject memory smaller than
+        // the layout the header declares so later per-segment offset reads cannot trap with an
+        // opaque out-of-bounds error.
+        let needed = required_bytes(&header);
+        if store.memory.size().saturating_mul(crate::WASM_PAGE_SIZE) < needed {
+            return Err(InitError::OutOfMemory);
+        }
         Ok(store)
     }
 
@@ -289,4 +296,23 @@ fn entry_offset(h: &HeaderV1, leaf_segment: u32, entry_idx: u32) -> u64 {
 #[inline]
 fn required_bytes(h: &HeaderV1) -> u64 {
     HEADER_SIZE.saturating_add(u64::from(h.segment_count).saturating_mul(segment_block_size(h)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::test_support::vector_memory;
+
+    #[test]
+    fn init_rejects_backing_smaller_than_declared_layout() {
+        // Corrupt the declared segment_count so the layout the header describes far exceeds the
+        // backing memory; init must fail fast instead of trapping on a later offset read.
+        let store = PayloadLogStore::new(vector_memory(), HeaderV1::new(2)).expect("store");
+        let mem = store.into_memory();
+        crate::write_u32(&mem, Address::from(4), u32::MAX);
+        assert!(matches!(
+            PayloadLogStore::init(mem),
+            Err(InitError::OutOfMemory)
+        ));
+    }
 }

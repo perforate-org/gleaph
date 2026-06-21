@@ -167,6 +167,14 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
                 actual: header.stride,
             });
         }
+        // Backing-size guard (mirrors free_span::validate_header): the header passed the
+        // magic/version/stride checks, but if the backing memory is smaller than the layout
+        // it declares (truncation or a corrupt segment_count), later per-segment offset reads
+        // would trap with an opaque out-of-bounds error. Fail fast with a typed InitError.
+        let needed = required_bytes::<E>(&header);
+        if store.memory.size().saturating_mul(crate::WASM_PAGE_SIZE) < needed {
+            return Err(InitError::OutOfMemory);
+        }
         Ok(store)
     }
 
@@ -454,6 +462,20 @@ mod tests {
         assert!(matches!(
             LogStore::<TestEdge, _>::init(mem),
             Err(InitError::BadMagic { .. })
+        ));
+    }
+
+    #[test]
+    fn init_rejects_backing_smaller_than_declared_layout() {
+        // A valid 2-segment store, then corrupt the declared segment_count so the layout the
+        // header describes far exceeds the actual backing memory. Without the guard, later
+        // per-segment offset reads would trap; init must fail fast with a typed error instead.
+        let store = fresh_store(2);
+        let mem = store.into_memory();
+        crate::write_u32(&mem, crate::types::Address::from(4), u32::MAX);
+        assert!(matches!(
+            LogStore::<TestEdge, _>::init(mem),
+            Err(InitError::OutOfMemory)
         ));
     }
 
