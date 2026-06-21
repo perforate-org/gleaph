@@ -1,7 +1,7 @@
 # Derived-state query semantics
 
 Last updated: 2026-06-21
-Anchor timestamp: 2026-06-21 05:36:08 UTC +0000
+Anchor timestamp: 2026-06-21 08:00:20 UTC +0000
 
 ## Status
 
@@ -28,9 +28,35 @@ not paper over sync gaps with graph-side tombstone filtering at the index layer.
 4. **Maintenance cursors are not data.** Router `BackfillShardState` and graph pending queues track
    repair progress; they must not be read as membership or count truth.
 5. **Canonical success is not a freshness barrier.** A graph mutation may be durable while a
-   cross-canister projection is pending. Read-your-writes requires an explicit projection watermark
-   under [ADR 0029](../adr/0029-shard-local-atomicity-and-cross-canister-consistency.md); that API is
-   planned, not implemented.
+   cross-canister projection is pending. Idempotent mutations report a `MutationLifecyclePhase`
+   ([ADR 0029](../adr/0029-shard-local-atomicity-and-cross-canister-consistency.md) Phase 0,
+   implemented) so a client can distinguish a durable canonical commit
+   (`CanonicalCommitted` / `ProjectionPending`) from full convergence (`Completed`). The read-side
+   read-your-writes barrier (`AtLeast(token)`) is still planned (ADR 0029 Phase 3), not implemented.
+
+## Entrypoint consistency modes (ADR 0029)
+
+The supported consistency contract of every public router GQL entrypoint. The read-side
+`AtLeast(token)` barrier from [ADR 0029](../adr/0029-shard-local-atomicity-and-cross-canister-consistency.md)
+§5 is **not yet implemented** (Phase 3); reads today are `Eventual` for derived/index-backed
+shapes and `Canonical` for graph-shard-served shapes, without an explicit per-read watermark.
+
+| Router entrypoint | Call kind | Program | Consistency contract |
+|-------------------|-----------|---------|----------------------|
+| `gql_query` | query (composite) | read-only | **Eventual** for projection/index-backed shapes (count-only may under-count; postings may lag — see Sync vs lag policy); **Canonical** for graph-shard-served shapes (vertex/edge rows, property reads). No `AtLeast(token)` barrier. |
+| `prepared_execute_query` | query (composite) | read-only | Same as `gql_query`. |
+| `force_gql_execute` | update | read-only (escape hatch) | Same read contract as `gql_query`, forced onto the update path (no composite-query savings; bypasses the path check). |
+| `force_prepared_execute_update` | update | read-only (escape hatch) | Same as `force_gql_execute`, for a registered prepared plan. |
+| `gql_execute` | update | non-DML (index / catalog DDL); DML rejected | Catalog/DDL changes apply synchronously within the call (router is index-definition SSOT; `DROP INDEX` posting purge is driven to `done`). DML returns an error directing the caller to the idempotent entrypoint. |
+| `prepared_execute_update` | update | non-DML; DML rejected | Same as `gql_execute`, for a registered prepared plan. |
+| `gql_execute_idempotent` | update | DML (idempotent) | Canonical write is shard-local atomic (ADR 0029 §1). Returns `GqlQueryResult.phase` (`MutationLifecyclePhase`). The label-stats projection is advanced **inline**, or the DML fails with `label stats projection lag`; graph-index postings may be deferred (ADR 0023/0024), leaving the federated mutation `ProjectionPending` until the repair journal drains. `Completed` means the canonical writes **and** the projections required by the mutation contract converged. |
+| `prepared_execute_update_idempotent` | update | DML (idempotent) | Same as `gql_execute_idempotent`, for a registered prepared plan. |
+
+Read-your-writes today: after a `Completed` idempotent DML, label-stats count-only reads are
+read-your-writes (the projection is drained inline before completion). Index-backed shapes
+(membership, property equality/range) can still lag while a mutation is `ProjectionPending`; the
+returned phase signals this until the Phase 3 `AtLeast(token)` read barrier makes it enforceable
+per read.
 
 ## Sync vs lag policy
 

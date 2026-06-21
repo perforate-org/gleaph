@@ -944,6 +944,7 @@ pub fn gql_execute_idempotent_as_admin(
     client_mutation_key: &str,
 ) -> u64 {
     use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 
     let query = query.to_string();
     let params: Vec<u8> = Vec::new();
@@ -957,8 +958,8 @@ pub fn gql_execute_idempotent_as_admin(
             Encode!(&query, &params, &mutation_key).expect("encode gql_execute_idempotent"),
         )
         .unwrap_or_else(|e| panic!("gql_execute_idempotent on router: {e:?}"));
-    match Decode!(&bytes, Result<u64, RouterError>) {
-        Ok(Ok(row_count)) => row_count,
+    match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
+        Ok(Ok(result)) => result.row_count,
         Ok(Err(err)) => panic!("gql_execute_idempotent rejected: {err:?}"),
         Err(err) => panic!("decode gql_execute_idempotent: {err}"),
     }
@@ -1406,6 +1407,7 @@ pub fn gql_execute_idempotent_as_admin_expect_err(
     client_mutation_key: &str,
 ) -> gleaph_graph_kernel::federation::RouterError {
     use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 
     let query = query.to_string();
     let params: Vec<u8> = Vec::new();
@@ -1419,10 +1421,13 @@ pub fn gql_execute_idempotent_as_admin_expect_err(
             Encode!(&query, &params, &mutation_key).expect("encode gql_execute_idempotent"),
         )
         .unwrap_or_else(|e| panic!("gql_execute_idempotent on router: {e:?}"));
-    match Decode!(&bytes, Result<u64, RouterError>) {
+    match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
         Ok(Err(err)) => err,
-        Ok(Ok(row_count)) => {
-            panic!("gql_execute_idempotent should fail, got row_count {row_count}")
+        Ok(Ok(result)) => {
+            panic!(
+                "gql_execute_idempotent should fail, got row_count {}",
+                result.row_count
+            )
         }
         Err(err) => panic!("decode gql_execute_idempotent: {err}"),
     }

@@ -392,8 +392,8 @@ pub async fn gql_execute_idempotent(
     query: String,
     params: Vec<u8>,
     client_mutation_key: String,
-) -> Result<u64, RouterError> {
-    Ok(run_gql(
+) -> Result<GqlQueryResult, RouterError> {
+    run_gql(
         &query,
         &params,
         GqlExecutionMode::Update,
@@ -401,8 +401,7 @@ pub async fn gql_execute_idempotent(
         false,
         Some(&client_mutation_key),
     )
-    .await?
-    .row_count)
+    .await
 }
 
 /// Run a read-only program on the **update** path (higher cost; escape hatch only).
@@ -694,6 +693,7 @@ async fn dispatch_use_graph_join(
     let projected = crate::use_graph_wire::apply_tail_ops_wire(&merged, &tail_ops)?;
     Ok(GqlQueryResult {
         row_count: projected.rows.len() as u64,
+        phase: None,
         rows_blob: Some(
             projected
                 .encode_blob()
@@ -743,6 +743,25 @@ pub async fn dispatch_plan_blob(
         stats,
     )
     .await
+}
+
+/// Attach the ADR 0029 federated mutation lifecycle phase to a DML result. The phase is
+/// derived from the saga record, so it is only present when the caller tracks an idempotent
+/// mutation via `client_mutation_key`; read queries and non-idempotent writes stay `None`.
+fn attach_mutation_phase(
+    result: GqlQueryResult,
+    store: &RouterStore,
+    caller: Principal,
+    graph_id: GraphId,
+    client_mutation_key: Option<&str>,
+) -> GqlQueryResult {
+    let Some(key) = client_mutation_key else {
+        return result;
+    };
+    match store.router_mutation_record(caller, graph_id, key) {
+        Some(record) => result.with_phase(record.lifecycle_phase()),
+        None => result,
+    }
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -799,11 +818,23 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
 
     if has_dml && let Some(key) = client_mutation_key {
         if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
-            return Ok(GqlQueryResult::row_count_only(row_count));
+            return Ok(attach_mutation_phase(
+                GqlQueryResult::row_count_only(row_count),
+                store,
+                caller,
+                graph_id,
+                client_mutation_key,
+            ));
         }
         reconcile_router_mutation_projection(store, caller, graph_id, key).await?;
         if let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key) {
-            return Ok(GqlQueryResult::row_count_only(row_count));
+            return Ok(attach_mutation_phase(
+                GqlQueryResult::row_count_only(row_count),
+                store,
+                caller,
+                graph_id,
+                client_mutation_key,
+            ));
         }
     }
 
@@ -905,7 +936,13 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                             0,
                         )?;
                     }
-                    return Ok(GqlQueryResult::row_count_only(0));
+                    return Ok(attach_mutation_phase(
+                        GqlQueryResult::row_count_only(0),
+                        store,
+                        caller,
+                        graph_id,
+                        client_mutation_key,
+                    ));
                 }
                 match policy.resolve_with_hits(store, graph_id, &shards, set.routing_anchor(), hits)
                 {
@@ -1099,9 +1136,21 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     if let Some(key) = client_mutation_key
         && let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key)
     {
-        return Ok(GqlQueryResult::row_count_only(row_count));
+        return Ok(attach_mutation_phase(
+            GqlQueryResult::row_count_only(row_count),
+            store,
+            caller,
+            graph_id,
+            client_mutation_key,
+        ));
     }
-    Ok(GqlQueryResult::from_merged(&merged))
+    Ok(attach_mutation_phase(
+        GqlQueryResult::from_merged(&merged),
+        store,
+        caller,
+        graph_id,
+        client_mutation_key,
+    ))
 }
 
 fn release_routing_if_owner(

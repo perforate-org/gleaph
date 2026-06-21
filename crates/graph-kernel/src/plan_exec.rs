@@ -58,12 +58,40 @@ pub struct ExecutePlanResult {
     pub hot_forward_vertices: Vec<crate::federation::LocalVertexId>,
 }
 
+/// Federated mutation lifecycle phase (ADR 0029).
+///
+/// Router owns the transitions; this is the wire projection a client receives for an
+/// idempotent mutation. It is deliberately distinct from [`MutationJournalState`], which
+/// only attests a *shard-local* replayable outcome and never describes cross-canister
+/// projection convergence.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum MutationLifecyclePhase {
+    /// Router is resolving and durably recording the immutable dispatch envelope.
+    Routing,
+    /// At least one required canonical shard outcome is not yet known.
+    CanonicalPending,
+    /// All required canonical shard writes are durable; no projection has advanced yet.
+    CanonicalCommitted,
+    /// Canonical writes are durable; one or more required derived projections still lag.
+    ProjectionPending,
+    /// Canonical writes and every projection required by the mutation contract converged.
+    Completed,
+    /// Validation or execution failed before any canonical write committed.
+    Failed,
+}
+
 /// Router read-path result: merged row count and optional materialized rows.
+///
+/// `phase` is populated only for idempotent mutations, where Router tracks a federated
+/// saga; it is `None` for read queries and for non-idempotent escape-hatch writes that
+/// carry no tracked mutation record (ADR 0029).
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct GqlQueryResult {
     pub row_count: u64,
     /// Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`] after federated merge.
     pub rows_blob: Option<Vec<u8>>,
+    /// Federated mutation lifecycle phase for idempotent mutations (ADR 0029).
+    pub phase: Option<MutationLifecyclePhase>,
 }
 
 impl GqlQueryResult {
@@ -71,6 +99,7 @@ impl GqlQueryResult {
         Self {
             row_count: merged.row_count,
             rows_blob: merged.rows_blob.clone(),
+            phase: None,
         }
     }
 
@@ -78,7 +107,15 @@ impl GqlQueryResult {
         Self {
             row_count,
             rows_blob: None,
+            phase: None,
         }
+    }
+
+    /// Attach a federated mutation lifecycle phase (ADR 0029).
+    #[must_use]
+    pub fn with_phase(mut self, phase: MutationLifecyclePhase) -> Self {
+        self.phase = Some(phase);
+        self
     }
 }
 
@@ -98,6 +135,12 @@ pub struct LabelStatsDelta {
 }
 
 /// Graph-local mutation journal state (ADR 0015).
+///
+/// This is a *shard-local* idempotency outcome, not a cross-canister status. `Completed`
+/// here means the shard-local canonical mutation outcome is durable and replayable; it
+/// does **not** imply that derived projections (graph-index postings, Router label stats)
+/// have converged. Cross-canister convergence is tracked separately by Router's
+/// [`MutationLifecyclePhase`] (ADR 0029).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum MutationJournalState {
     Incomplete,

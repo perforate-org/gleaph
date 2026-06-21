@@ -118,6 +118,7 @@ pub fn gql_query_result_from_label_live_count(
         return Ok(GqlQueryResult {
             row_count: 0,
             rows_blob: None,
+            phase: None,
         });
     }
     let mut row = BTreeMap::new();
@@ -135,6 +136,7 @@ pub fn gql_query_result_from_label_live_count(
     Ok(GqlQueryResult {
         row_count: 1,
         rows_blob: Some(rows_blob),
+        phase: None,
     })
 }
 
@@ -235,6 +237,7 @@ pub fn gql_query_result_from_posting_counts(
     Ok(GqlQueryResult {
         row_count,
         rows_blob,
+        phase: None,
     })
 }
 

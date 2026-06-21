@@ -1,8 +1,8 @@
 # Gleaph ACID and Consistency Roadmap
 
 Last updated: 2026-06-21 UTC
-Status: Planned
-Anchor timestamp: 2026-06-21 05:36:08 UTC +0000
+Status: Phase 0 done; Phases 1-6 planned
+Anchor timestamp: 2026-06-21 08:00:20 UTC +0000
 
 ## Purpose
 
@@ -92,29 +92,51 @@ The target read modes are:
 
 ## Phase 0: Contract and terminology
 
-**Status: Planned.**
+**Status: Done (as of 2026-06-21 08:00:20 UTC +0000).**
 
 Goal: remove ambiguous uses of transaction success before changing persistence or APIs.
 
 Deliverables:
 
 - Implement the accepted ADR 0029 contract through the phases below.
-- Define `CanonicalCommitted`, `ProjectionPending`, and `Completed` in public/internal contracts.
-- Clarify that existing graph-journal `Completed` means shard-local replayable outcome, not global
-  projection freshness.
-- Reconcile ADR 0023's completion invariant with ADR 0024's deferred-index success.
-- Document the supported consistency mode of every update and index-backed read entrypoint.
-- Decide whether public mutation APIs return a richer result or add a status/token endpoint.
+- **Done.** Define `CanonicalCommitted`, `ProjectionPending`, and `Completed` in
+  public/internal contracts. Implemented as `MutationLifecyclePhase` in
+  `gleaph_graph_kernel::plan_exec`, derived (single source of truth) from the existing
+  `RouterMutationRecord` saga fields via `RouterMutationRecord::lifecycle_phase()`.
+- **Done.** Clarify that existing graph-journal `Completed` means shard-local replayable
+  outcome, not global projection freshness. Documented on
+  `gleaph_graph_kernel::plan_exec::MutationJournalState`.
+- **Done.** Decide whether public mutation APIs return a richer result or add a
+  status/token endpoint. Decision: richer result. The idempotent update entrypoints
+  (`gql_execute_idempotent`, `prepared_execute_update_idempotent`) now return
+  `GqlQueryResult` with an optional `phase`. The mutation token with per-shard watermarks
+  is deferred to Phase 2; only the lifecycle phase ships in Phase 0.
+- **Done.** Reconcile ADR 0023's completion invariant with ADR 0024's deferred-index
+  success. Both ADRs carry the ADR 0029 vocabulary: a repair-journaled (deferred) flush
+  records the shard-local graph-journal `Completed` while the *distributed* mutation stays
+  `ProjectionPending` until the index watermark is reached, and Router owns the final
+  cross-canister `Completed` transition (ADR 0023 §"Interaction with the mutation journal
+  (ADR 0024)" and INV section; ADR 0024 §"Consistency vocabulary (ADR 0029)").
+- **Done.** Document the supported consistency mode of every update and index-backed read
+  entrypoint. Added the entrypoint consistency-mode table in
+  [derived-state-query-semantics.md](../index/derived-state-query-semantics.md).
 
 Tests:
 
-- Characterization tests for current mutation-journal and projection transitions.
-- A contract test that prevents Router `Completed` while a required shard/projection is unfinished.
+- **Done.** Characterization test for current mutation-journal and projection transitions
+  (`lifecycle_phase_tracks_saga_progress`).
+- **Done.** A contract test that prevents Router `Completed` while a required
+  shard/projection is unfinished (`lifecycle_phase_never_completes_with_outstanding_work`).
 
 Exit criteria:
 
-- No active design document equates canonical commit with cross-canister convergence.
-- `Completed` has one owner and one meaning at each boundary.
+- **Met.** No active design document equates canonical commit with cross-canister
+  convergence. Audited: ADRs 0023/0024/0029, `derived-state-query-semantics.md`
+  (principle 5), `stable-memory-inventory.md` (region 39 `GRAPH_MUTATION_JOURNAL`), and the
+  ADR 0015 addendum all separate shard-local canonical completion from projection freshness.
+- **Met.** `Completed` has one owner and one meaning at each boundary: graph-journal
+  `MutationJournalState::Completed` is shard-local replayable; Router
+  `MutationLifecyclePhase::Completed` is the cross-canister terminal state.
 
 ## Phase 1: Protect the local atomic boundary
 

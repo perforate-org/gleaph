@@ -64,9 +64,19 @@ export const IcWirePlanQueryResult = IDL.Record({
   ),
 });
 
+const MutationLifecyclePhase = IDL.Variant({
+  Routing: IDL.Null,
+  CanonicalPending: IDL.Null,
+  CanonicalCommitted: IDL.Null,
+  ProjectionPending: IDL.Null,
+  Completed: IDL.Null,
+  Failed: IDL.Null,
+});
+
 const GqlQueryResult = IDL.Record({
   row_count: IDL.Nat64,
   rows_blob: IDL.Opt(IDL.Vec(IDL.Nat8)),
+  phase: IDL.Opt(MutationLifecyclePhase),
 });
 
 const RouterError = IDL.Variant({

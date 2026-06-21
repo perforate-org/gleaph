@@ -141,8 +141,8 @@ pub async fn prepared_execute_update_idempotent(
     name: String,
     params: Vec<u8>,
     client_mutation_key: String,
-) -> Result<u64, RouterError> {
-    Ok(prepared_execute(
+) -> Result<GqlQueryResult, RouterError> {
+    prepared_execute(
         name,
         params,
         GqlExecutionMode::Update,
@@ -150,8 +150,7 @@ pub async fn prepared_execute_update_idempotent(
         false,
         Some(&client_mutation_key),
     )
-    .await?
-    .row_count)
+    .await
 }
 
 /// Run a read-only prepared plan on the **update** path (escape hatch only).

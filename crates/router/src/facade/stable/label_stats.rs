@@ -3,7 +3,9 @@
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::plan_exec::{MutationId, ResolvedLabelTable, ResolvedPropertyTable};
+use gleaph_graph_kernel::plan_exec::{
+    MutationId, MutationLifecyclePhase, ResolvedLabelTable, ResolvedPropertyTable,
+};
 use ic_stable_structures::storable::{Bound, Storable};
 use serde::{Deserialize, Serialize};
 use std::borrow::Cow;
@@ -200,6 +202,42 @@ impl RouterMutationRecord {
             shards: Vec::new(),
         }
     }
+
+    /// Derive the ADR 0029 federated mutation lifecycle phase from the existing saga
+    /// progress fields. This is a pure projection of the record's state, not a separate
+    /// stored field, so the per-shard `completed`/`projection_advanced` flags and
+    /// `completed_row_count` remain the single source of truth.
+    ///
+    /// The contract this enforces: the record never reports [`MutationLifecyclePhase::Completed`]
+    /// while a required canonical shard outcome or a required projection watermark is still
+    /// outstanding.
+    pub fn lifecycle_phase(&self) -> MutationLifecyclePhase {
+        // A pinned row count is the terminal "all canonical + all projections converged"
+        // signal; the heavy shard fan-out is compacted away once it is set.
+        if self.completed_row_count.is_some() {
+            return MutationLifecyclePhase::Completed;
+        }
+        if self.routing_in_progress {
+            return MutationLifecyclePhase::Routing;
+        }
+        if self.shards.is_empty() {
+            // Routing was released without a durable dispatch envelope and no canonical
+            // write committed (e.g. a validation/planning failure that freed the
+            // reservation). The key is still re-reservable for a fresh attempt.
+            return MutationLifecyclePhase::Failed;
+        }
+        if self.shards.iter().any(|shard| !shard.completed) {
+            return MutationLifecyclePhase::CanonicalPending;
+        }
+        // Every shard's canonical write is durable from here on.
+        if self.shards.iter().all(|shard| shard.projection_advanced) {
+            return MutationLifecyclePhase::Completed;
+        }
+        if self.shards.iter().any(|shard| shard.projection_advanced) {
+            return MutationLifecyclePhase::ProjectionPending;
+        }
+        MutationLifecyclePhase::CanonicalCommitted
+    }
 }
 
 /// Stable-memory wire envelope for [`RouterMutationRecord`].
@@ -270,5 +308,97 @@ mod tests {
         assert_eq!(decoded, record);
         assert_eq!(decoded.mutation_id, 1);
         assert!(decoded.routing_in_progress);
+    }
+
+    fn shard(shard_id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShard {
+        RouterMutationShard {
+            shard_id: ShardId(shard_id),
+            graph_canister: Principal::anonymous(),
+            seed_bindings_blob: None,
+            completed,
+            projection_advanced,
+            row_count: 0,
+        }
+    }
+
+    fn record_with_shards(shards: Vec<RouterMutationShard>) -> RouterMutationRecord {
+        let mut record = RouterMutationRecord::new(1, 0, Vec::new());
+        record.routing_in_progress = false;
+        record.shards = shards;
+        record
+    }
+
+    // ADR 0029 Phase 0 characterization: each saga progress state maps to exactly one
+    // lifecycle phase, derived from the existing fields (no new stored status).
+    #[test]
+    fn lifecycle_phase_tracks_saga_progress() {
+        // Routing: reservation taken, no envelope persisted yet.
+        let routing = RouterMutationRecord::new(1, 0, Vec::new());
+        assert_eq!(routing.lifecycle_phase(), MutationLifecyclePhase::Routing);
+
+        // Canonical pending: at least one shard outcome unknown.
+        let canonical_pending =
+            record_with_shards(vec![shard(0, true, true), shard(1, false, false)]);
+        assert_eq!(
+            canonical_pending.lifecycle_phase(),
+            MutationLifecyclePhase::CanonicalPending
+        );
+
+        // Canonical committed: all shards durable, no projection advanced.
+        let canonical_committed =
+            record_with_shards(vec![shard(0, true, false), shard(1, true, false)]);
+        assert_eq!(
+            canonical_committed.lifecycle_phase(),
+            MutationLifecyclePhase::CanonicalCommitted
+        );
+
+        // Projection pending: canonical durable, some (not all) projections caught up.
+        let projection_pending =
+            record_with_shards(vec![shard(0, true, true), shard(1, true, false)]);
+        assert_eq!(
+            projection_pending.lifecycle_phase(),
+            MutationLifecyclePhase::ProjectionPending
+        );
+
+        // Completed: all shards canonical + projected.
+        let completed_via_shards =
+            record_with_shards(vec![shard(0, true, true), shard(1, true, true)]);
+        assert_eq!(
+            completed_via_shards.lifecycle_phase(),
+            MutationLifecyclePhase::Completed
+        );
+
+        // Completed: compacted record with a pinned row count.
+        let mut completed_compacted = RouterMutationRecord::new(1, 0, Vec::new());
+        completed_compacted.routing_in_progress = false;
+        completed_compacted.completed_row_count = Some(7);
+        assert_eq!(
+            completed_compacted.lifecycle_phase(),
+            MutationLifecyclePhase::Completed
+        );
+
+        // Failed: routing released with no durable shard envelope.
+        let failed = record_with_shards(Vec::new());
+        assert_eq!(failed.lifecycle_phase(), MutationLifecyclePhase::Failed);
+    }
+
+    // ADR 0029 Phase 0 contract: Router must never report `Completed` while any required
+    // canonical shard outcome or projection watermark is still outstanding.
+    #[test]
+    fn lifecycle_phase_never_completes_with_outstanding_work() {
+        let unfinished_states = [
+            record_with_shards(vec![shard(0, false, false)]),
+            record_with_shards(vec![shard(0, true, false)]),
+            record_with_shards(vec![shard(0, true, true), shard(1, false, false)]),
+            record_with_shards(vec![shard(0, true, true), shard(1, true, false)]),
+        ];
+        for record in unfinished_states {
+            assert_ne!(
+                record.lifecycle_phase(),
+                MutationLifecyclePhase::Completed,
+                "incomplete saga must not report Completed: {:?}",
+                record.shards
+            );
+        }
     }
 }

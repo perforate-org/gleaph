@@ -246,12 +246,16 @@ async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterError>
 }
 
 /// Idempotent GQL update. Reuse `client_mutation_key` only for retries of the same mutation.
+///
+/// Returns the richer [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) so
+/// clients can read the ADR 0029 federated mutation lifecycle `phase`, distinguishing a
+/// durable canonical commit from full cross-canister projection convergence.
 #[update]
 async fn gql_execute_idempotent(
     query: String,
     params: Vec<u8>,
     client_mutation_key: String,
-) -> Result<u64, RouterError> {
+) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
     gql::gql_execute_idempotent(query, params, client_mutation_key).await
 }
 
@@ -284,12 +288,15 @@ async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u64, R
     prepared::prepared_execute_update(name, params).await
 }
 
+/// Idempotent prepared update. Returns the richer
+/// [`GqlQueryResult`](gleaph_graph_kernel::plan_exec::GqlQueryResult) carrying the ADR 0029
+/// federated mutation lifecycle `phase`.
 #[update]
 async fn prepared_execute_update_idempotent(
     name: String,
     params: Vec<u8>,
     client_mutation_key: String,
-) -> Result<u64, RouterError> {
+) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
     prepared::prepared_execute_update_idempotent(name, params, client_mutation_key).await
 }
 
