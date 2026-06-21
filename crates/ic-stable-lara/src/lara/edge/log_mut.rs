@@ -17,10 +17,17 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             return 0;
         }
         let h = self.log.header();
+        let max_entries = h.max_log_entries;
         let scratch_len = E::BYTES.max(1);
         let mut cur = head;
         let mut len = 0u32;
         while cur >= 0 {
+            // Defensive budget guard: a valid per-segment overflow chain has at most
+            // `max_log_entries` entries. A longer walk means a corrupt `prev` pointer
+            // (cycle or dangling link); stop instead of looping unbounded.
+            if len >= max_entries {
+                break;
+            }
             len = len.saturating_add(1);
             if E::BYTES <= INLINE_EDGE_BYTES {
                 let mut scratch = [0u8; INLINE_EDGE_BYTES];
@@ -49,8 +56,16 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
         let mut chain = Vec::new();
         let mut cur = head;
         let h = self.log.header();
+        let max_entries = h.max_log_entries as usize;
         let scratch_len = E::BYTES.max(1);
         while cur >= 0 {
+            // Defensive budget guard (mirrors the prefetch_* walks): a valid per-segment
+            // overflow chain visits each of the segment's `<= max_log_entries` entries at
+            // most once. A longer walk means a corrupt `prev` pointer (cycle or dangling
+            // link); stop instead of looping unbounded and growing `chain` without limit.
+            if chain.len() >= max_entries {
+                break;
+            }
             chain.push(cur as u32);
             if E::BYTES <= INLINE_EDGE_BYTES {
                 let mut scratch = [0u8; INLINE_EDGE_BYTES];
@@ -375,5 +390,94 @@ impl<E: CsrEdge, M: Memory> EdgeStore<E, M> {
             .max(0) as f64;
         let capacity = log_h.max_log_entries.max(1) as f64;
         idx / capacity
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::super::*;
+    use crate::VertexCount;
+    use crate::test_support::{TestEdge, vector_memory};
+    use crate::traits::CsrEdge;
+
+    fn fresh_edges() -> EdgeStore<TestEdge, crate::VectorMemory> {
+        let edges = EdgeStore::new(
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            vector_memory(),
+            8,
+            1,
+            0,
+        )
+        .unwrap();
+        edges
+            .grow_segment_tree_to(segment_tree_leaf_count(VertexCount::from(2u32), 1))
+            .unwrap();
+        edges
+    }
+
+    fn edge_payload(value: u32) -> Vec<u8> {
+        let mut buf = vec![0u8; TestEdge::BYTES];
+        TestEdge(value).write_to(&mut buf);
+        buf
+    }
+
+    #[test]
+    fn chain_walks_terminate_and_bound_on_corrupt_prev_cycle() {
+        // A corrupt `prev` link forms a 3-entry cycle: head 2 -> 1 -> 0 -> 2 -> ...
+        // Without the budget guard both walks would loop forever / grow unbounded.
+        let edges = fresh_edges();
+        let leaf = 0u32;
+        let h = edges.log.header();
+        let payload = edge_payload(7);
+        edges
+            .log
+            .write_entry_with_header(&h, leaf, 0, 2, &payload)
+            .unwrap();
+        edges
+            .log
+            .write_entry_with_header(&h, leaf, 1, 0, &payload)
+            .unwrap();
+        edges
+            .log
+            .write_entry_with_header(&h, leaf, 2, 1, &payload)
+            .unwrap();
+        edges.log.write_idx_with_header(&h, leaf, 3);
+
+        let chain = edges.overflow_log_chain_asc_indices(leaf, 2);
+        assert_eq!(chain.len(), h.max_log_entries as usize);
+        assert_eq!(
+            edges.overflow_log_chain_len(leaf, 2),
+            h.max_log_entries,
+            "length walk is capped at the per-segment budget"
+        );
+    }
+
+    #[test]
+    fn chain_walks_return_full_valid_chain() {
+        // Acyclic chain head 2 -> 1 -> 0 -> -1 must not be truncated by the guard.
+        let edges = fresh_edges();
+        let leaf = 0u32;
+        let h = edges.log.header();
+        let payload = edge_payload(7);
+        edges
+            .log
+            .write_entry_with_header(&h, leaf, 0, -1, &payload)
+            .unwrap();
+        edges
+            .log
+            .write_entry_with_header(&h, leaf, 1, 0, &payload)
+            .unwrap();
+        edges
+            .log
+            .write_entry_with_header(&h, leaf, 2, 1, &payload)
+            .unwrap();
+        edges.log.write_idx_with_header(&h, leaf, 3);
+
+        assert_eq!(edges.overflow_log_chain_asc_indices(leaf, 2), vec![0, 1, 2]);
+        assert_eq!(edges.overflow_log_chain_len(leaf, 2), 3);
     }
 }
