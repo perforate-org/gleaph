@@ -290,6 +290,83 @@ fn router_places_completely_new_insert_bundle_on_latest_shard() {
 }
 
 #[test]
+fn router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard() {
+    // ADR 0029 Phase 5 (contract 1, anchored single-shard): a multi-DML bundle whose single
+    // leading anchor resolves to exactly one shard performs no cross-shard reads, so the whole
+    // bundle runs atomically on that shard. Here the `age = 5` anchor exists only on SOURCE_SHARD,
+    // so the SET + threaded INSERT bundle is admitted and the token names exactly that one shard.
+    let env = install_federation();
+    let age = admin_intern_property(&env, "age");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard",
+    );
+    let source = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
+    assert_eq!(source.global_vertex_id.shard_id, SOURCE_SHARD);
+
+    let result = gql_execute_idempotent_result_as_admin(
+        &env,
+        "MATCH (n {age: 5}) SET n.age = 6 NEXT INSERT (n)-[:KNOWS]->(:Project)",
+        "router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard",
+    );
+    let token = result
+        .token
+        .expect("an admitted anchored multi-DML bundle issues a mutation token");
+    assert_eq!(
+        token.shards.len(),
+        1,
+        "the anchor resolves to a single shard, so the bundle touches one shard"
+    );
+    assert_eq!(
+        token.shards[0].shard_id, SOURCE_SHARD,
+        "the bundle runs on the shard the anchor resolved to"
+    );
+}
+
+#[test]
+fn router_rejects_anchored_multi_dml_bundle_when_anchor_spans_multiple_shards() {
+    // ADR 0029 Phase 5 (contract 1, anchored single-shard): the same single-anchor bundle is
+    // rejected when its leading anchor resolves to more than one shard, because applying the
+    // multiple statements per-shard has no defined cross-shard partial-application contract. Here
+    // `age = 5` exists on both shards, so the anchor spans two shards and the bundle is rejected
+    // after anchor resolution but before any shard executes (no canonical state changes).
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let env = install_federation();
+    let age = admin_intern_property(&env, "age");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "router_rejects_anchored_multi_dml_bundle_when_anchor_spans_multiple_shards",
+    );
+    let source = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
+    let dest = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 5);
+    assert_eq!(source.global_vertex_id.shard_id, SOURCE_SHARD);
+    assert_eq!(dest.global_vertex_id.shard_id, DEST_SHARD);
+
+    let err = gql_execute_idempotent_as_admin_expect_err(
+        &env,
+        "MATCH (n {age: 5}) SET n.age = 6 NEXT INSERT (n)-[:KNOWS]->(:Project)",
+        "router_rejects_anchored_multi_dml_bundle_when_anchor_spans_multiple_shards",
+    );
+    assert!(
+        matches!(
+            err,
+            RouterError::UnsupportedMultiDmlBundle {
+                dml_statements: 2,
+                shard_count: 2,
+            }
+        ),
+        "expected UnsupportedMultiDmlBundle for a 2-statement anchored bundle spanning 2 shards, got {err:?}"
+    );
+}
+
+#[test]
 fn router_idempotent_dml_issues_mutation_token_and_exposes_index_watermark() {
     // ADR 0029 Phase 2: an idempotent DML returns a read-your-writes token (mutation id +
     // per-shard label-stats watermarks) and a lifecycle phase. After a successful insert the

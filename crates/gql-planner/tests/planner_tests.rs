@@ -1914,6 +1914,35 @@ fn is_pure_insert_false_for_set_and_for_read_only() {
 }
 
 #[test]
+fn is_single_anchor_threaded_bundle_true_for_labeled_anchor_then_set() {
+    // One labeled scan anchor, then a mutation on the threaded binding: the only existing-state
+    // read is the leading anchor, so a router may resolve it to a shard and run the bundle there.
+    let plan = plan_block("MATCH (n:Person) SET n.x = 1");
+    assert!(plan.is_single_anchor_threaded_bundle());
+}
+
+#[test]
+fn is_single_anchor_threaded_bundle_false_for_unlabeled_full_scan() {
+    // A full (unlabeled) scan is not a bounded, index-resolvable anchor.
+    let plan = plan_block("MATCH (n) SET n.x = 1");
+    assert!(!plan.is_single_anchor_threaded_bundle());
+}
+
+#[test]
+fn is_single_anchor_threaded_bundle_false_for_expand_after_anchor() {
+    // A traversal after the anchor reaches existing neighbors that may live on other shards.
+    let plan = plan_block("MATCH (a:A)-[:E]->(b) SET b.name = 'x'");
+    assert!(!plan.is_single_anchor_threaded_bundle());
+}
+
+#[test]
+fn is_single_anchor_threaded_bundle_false_for_pure_insert_and_read_only() {
+    // No leading anchor (pure insert) and no DML (read-only) are both excluded.
+    assert!(!plan_block("INSERT (n:Person)").is_single_anchor_threaded_bundle());
+    assert!(!plan_block("MATCH (n:Person) RETURN n").is_single_anchor_threaded_bundle());
+}
+
+#[test]
 fn test_dml_warning_for_scalar_set_target() {
     let query = parse_query("MATCH (n) LET x = 1 SET x.foo = 2 RETURN n");
     let err = build_plan(&query, None).expect_err("fatal DML should fail planning");

@@ -206,14 +206,33 @@ applies all of the bundle's statements atomically and provides read-your-own-wri
 authority for brand-new federated elements (the Router owns placement; graph shards do not). It
 also resolves a prior gap: a single unanchored `INSERT` on a federated graph used to fail with
 `no index anchor: single-shard graph required`; it is now placed on the latest shard.
-`detection: gleaph_gql_planner::PhysicalPlan::is_pure_insert`. MATCH-based and mixed multi-DML
-bundles remain rejected by the §6 gate.
+`detection: gleaph_gql_planner::PhysicalPlan::is_pure_insert`.
 
-Future support may choose, for the remaining (anchored / cross-shard) cases, one of two explicit
-contracts:
+**Contract 1 (one-shard atomic bundle), anchored single-shard subset — implemented.** A bundle that
+is a *single-anchor threaded bundle* reads existing graph state in exactly one place — a single
+leading index/label anchor the Router can resolve to a shard set by index lookup — and every later
+operator only mutates threaded bindings, inserts new elements, or reshapes already-bound rows (no
+second scan, traversal, join, or sub-plan that reaches back into the graph). Because the only
+existing data the bundle touches is the leading anchor's rows, it performs **no cross-shard reads**:
+when the anchor resolves to a single shard, the whole multi-statement program can run on that shard
+under the shard's single canonical critical section (§1), which applies every statement atomically
+and provides read-your-own-writes between them. The Router admits such a bundle past the pre-dispatch
+gate, resolves the leading anchor, and — only if the anchor actually spans more than one shard —
+rejects it with `RouterError::UnsupportedMultiDmlBundle` after resolution but before any shard
+executes or any saga state is recorded (no canonical state changes). The top-level DML statement
+count from the AST is threaded into dispatch so a single DML statement that fans out to many shards
+stays the federated saga (decision 4), not a rejection.
+`detection: gleaph_gql_planner::PhysicalPlan::is_single_anchor_threaded_bundle`. This subset is
+enforced for ad-hoc execution; the runtime shard count is unknown at prepared-plan registration, so
+prepared multi-DML on a federated graph stays rejected at registration (the orthogonal
+re-sharding-staleness caveat above still applies). MATCH-based bundles with a second scan, a
+traversal, or independent per-statement matches remain rejected by the §6 gate, since their
+cross-shard reads have no defined partial-application contract.
 
-- execute all canonical DML for one shard in one message segment and publish projection intent at
-  the end (the anchored single-shard extension of contract 1); or
+Future support may choose, for the remaining (cross-shard) cases, one of two explicit contracts:
+
+- persist a per-plan cursor and advertise federated roll-forward saga semantics explicitly across
+  shards; or
 - use staged writes and a commit protocol for operations that genuinely require cross-shard
   all-or-nothing visibility.
 

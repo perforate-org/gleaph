@@ -97,7 +97,10 @@ The shard runs the physical plan against **local CSR** only. It does not call th
 ## Placement of brand-new elements
 
 The Router owns placement authority; graph shards do not. Writes anchored to existing data follow
-the anchor's shard(s) (index hits). A **completely-new (unanchored) write** — a *pure-insert* plan
+the anchor's shard(s) (index hits); a single DML statement may fan out to several shards (the
+federated saga), but an **anchored multi-DML bundle** is admitted only when it is a single-anchor
+threaded bundle whose anchor resolves to exactly one shard (ADR 0029 §6, Phase 5 contract 1). A
+**completely-new (unanchored) write** — a *pure-insert* plan
 that contains at least one `INSERT` and no operator reading existing graph state
 (`gleaph_gql_planner::PhysicalPlan::is_pure_insert`) — is placed on the graph's **latest shard**:
 the live shard with the greatest graph-local `shard_id` (ids grow densely `0..n-1` via

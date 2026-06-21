@@ -270,6 +270,25 @@ impl PhysicalPlan {
         ops_are_pure_insert(&self.ops)
     }
 
+    /// True iff this plan is a *single-anchor threaded bundle*: it reads existing graph state in
+    /// exactly one place — a single leading index/label anchor a router can resolve to a shard set
+    /// by index lookup — and every later operator only mutates threaded bindings, inserts new
+    /// elements, or reshapes already-bound rows (no second scan, traversal, join, or sub-plan that
+    /// reaches back into the graph). Such a bundle performs no cross-shard reads, so when its
+    /// anchor resolves to a single shard the whole (possibly multi-statement) program can run there
+    /// atomically (ADR 0029 Phase 5, contract 1, anchored single-shard). Returns false for pure
+    /// reads (no DML), anchorless plans, and any plan with a non-leading existing-state read.
+    pub fn is_single_anchor_threaded_bundle(&self) -> bool {
+        match self.ops.split_first() {
+            Some((first, rest)) => {
+                op_is_seedable_anchor(first)
+                    && self.has_dml()
+                    && !rest.iter().any(op_reads_existing_graph)
+            }
+            None => false,
+        }
+    }
+
     pub fn use_graph_pushdown(&self) -> &[UseGraphPushdownInfo] {
         &self.annotations.optimizer.use_graph_pushdown
     }
@@ -670,6 +689,49 @@ fn ops_are_pure_insert(ops: &[PlanOp]) -> bool {
         }
     }
     has_insert
+}
+
+/// True for the leading-anchor operators a router can resolve to a shard set by index lookup: a
+/// labeled vertex scan or an indexed (vertex/edge) scan / index intersection. An unlabeled full
+/// `NodeScan` and a `ConditionalIndexScan` (which may fall back to a full scan) are excluded —
+/// neither pins the read to a bounded, index-resolvable anchor.
+fn op_is_seedable_anchor(op: &PlanOp) -> bool {
+    matches!(
+        op,
+        PlanOp::NodeScan { label: Some(_), .. }
+            | PlanOp::IndexScan { .. }
+            | PlanOp::EdgeIndexScan { .. }
+            | PlanOp::IndexIntersection { .. }
+    )
+}
+
+/// True for any operator that reads or binds existing graph state. The complement (returned
+/// false) is the set of *row-local* operators that consume rows produced upstream — pure
+/// row-shaping (filter/project/sort/limit/aggregate/let/for/materialize/topk) and DML mutations on
+/// already-bound rows or brand-new elements. Any operator not on the row-local allowlist is
+/// treated as an existing-state read, so a newly added [`PlanOp`] variant is conservatively
+/// excluded from a single-anchor bundle until it is classified.
+fn op_reads_existing_graph(op: &PlanOp) -> bool {
+    !matches!(
+        op,
+        PlanOp::PropertyFilter { .. }
+            | PlanOp::Filter { .. }
+            | PlanOp::Let { .. }
+            | PlanOp::For { .. }
+            | PlanOp::Aggregate { .. }
+            | PlanOp::Project { .. }
+            | PlanOp::Sort { .. }
+            | PlanOp::Limit { .. }
+            | PlanOp::TopK { .. }
+            | PlanOp::Materialize { .. }
+            | PlanOp::InsertVertex { .. }
+            | PlanOp::InsertEdge { .. }
+            | PlanOp::SetProperties { .. }
+            | PlanOp::RemoveProperties { .. }
+            | PlanOp::DeleteVertex { .. }
+            | PlanOp::DetachDeleteVertex { .. }
+            | PlanOp::DeleteEdge { .. }
+    )
 }
 
 fn ops_contain_dml(ops: &[PlanOp]) -> bool {

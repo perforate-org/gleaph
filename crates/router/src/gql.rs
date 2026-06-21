@@ -606,12 +606,18 @@ async fn run_gql(
     }
 
     // ADR 0029 Phase 5: a federated bundle of more than one top-level DML statement has no
-    // defined cross-shard partial-application contract yet. Reject it before resolving seeds or
-    // dispatching to any shard, so no accepted program has unspecified partial semantics. The
-    // count is taken from the AST (the SSOT for "how many DML statements the user wrote"). A
-    // completely-new INSERT-only bundle is exempt: contract 1 places it on the graph's latest
-    // shard and executes it atomically there (no cross-shard partial application possible).
-    if requires_write_path && !plan.is_pure_insert() {
+    // defined cross-shard partial-application contract yet. The count is taken from the AST (the
+    // SSOT for "how many DML statements the user wrote") and threaded into dispatch so the runtime
+    // single-shard decision can be made after anchor resolution. Two exemptions are admitted under
+    // contract 1, both of which provably touch a single shard:
+    //   * a completely-new INSERT-only bundle — placed on the graph's latest shard; and
+    //   * a single-anchor threaded bundle (one leading index/label anchor, no other existing-state
+    //     read) — admitted past this pre-dispatch gate and rejected in dispatch only if its anchor
+    //     resolves to more than one shard.
+    // Any other multi-DML bundle on a federated graph is rejected here, before resolving seeds or
+    // dispatching to any shard, so no accepted program has unspecified partial semantics.
+    let dml_statements = gleaph_gql::program_modification::count_dml_statements(block);
+    if requires_write_path && !plan.is_pure_insert() && !plan.is_single_anchor_threaded_bundle() {
         enforce_multi_dml_bundle_gate(&store, dispatch.dispatch_graph_id, block)?;
     }
 
@@ -640,6 +646,7 @@ async fn run_gql(
                 params,
                 mode,
                 client_mutation_key,
+                dml_statements,
                 &stats,
             )
             .await
@@ -656,6 +663,7 @@ async fn run_gql(
                 params,
                 mode,
                 client_mutation_key,
+                dml_statements,
                 &stats,
             )
             .await
@@ -719,6 +727,7 @@ async fn dispatch_multi_graph_use_segments(
         let stats = graph_stats_for(segment.graph_id);
         let plan_blob = encode_block_plans(std::slice::from_ref(&seg_plan), requires_write_path)
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        // Multi-graph USE GRAPH rejects DML above, so there is no DML statement to gate here.
         let result = dispatch_plan_blob(
             segment.graph_id,
             &plan_blob,
@@ -727,6 +736,7 @@ async fn dispatch_multi_graph_use_segments(
             params,
             mode,
             client_mutation_key,
+            1,
             &stats,
         )
         .await?;
@@ -772,6 +782,7 @@ async fn dispatch_use_graph_join(
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let right_blob = encode_block_plans(std::slice::from_ref(&right_plan), requires_write_path)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    // Multi-graph USE GRAPH joins reject DML above, so there is no DML statement to gate here.
     let left_result = dispatch_plan_blob(
         left.graph_id,
         &left_blob,
@@ -780,6 +791,7 @@ async fn dispatch_use_graph_join(
         params,
         mode,
         client_mutation_key,
+        1,
         &left_stats,
     )
     .await?;
@@ -791,6 +803,7 @@ async fn dispatch_use_graph_join(
         params,
         mode,
         client_mutation_key,
+        1,
         &right_stats,
     )
     .await?;
@@ -857,6 +870,7 @@ pub async fn dispatch_plan_blob(
     params: &[u8],
     mode: GqlExecutionMode,
     client_mutation_key: Option<&str>,
+    dml_statement_count: usize,
     stats: &RouterGraphStats,
 ) -> Result<GqlQueryResult, RouterError> {
     let store = RouterStore::new();
@@ -874,6 +888,7 @@ pub async fn dispatch_plan_blob(
         params,
         mode,
         client_mutation_key,
+        dml_statement_count,
         &store,
         shards,
         &index,
@@ -911,6 +926,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     params: &[u8],
     mode: GqlExecutionMode,
     client_mutation_key: Option<&str>,
+    dml_statement_count: usize,
     store: &RouterStore,
     shards: Vec<ShardRegistryEntry>,
     index: &I,
@@ -1129,6 +1145,28 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         };
         routings_to_dispatches(routings)
     };
+
+    // ADR 0029 Phase 5 (contract 1, anchored single-shard): a multi-DML bundle (> 1 top-level DML
+    // statement) is admitted past the pre-dispatch gate only when it is a single-anchor threaded
+    // bundle; here, after the leading anchor has been resolved, reject it if that anchor actually
+    // spans more than one shard. A single DML statement that fans out to many shards is the Phase 4
+    // saga and stays allowed (count <= 1). The check runs before any saga state is recorded and
+    // before any shard executes, so a rejection changes no canonical state. A reused saved-record
+    // path can only carry a previously-accepted (single-shard or single-statement) mutation, so it
+    // is never rejected here.
+    if dml_statement_count > 1 && dispatches.len() > 1 {
+        release_routing_if_owner(
+            store,
+            caller,
+            graph_id,
+            client_mutation_key,
+            mutation_reservation,
+        )?;
+        return Err(RouterError::UnsupportedMultiDmlBundle {
+            dml_statements: dml_statement_count as u32,
+            shard_count: dispatches.len() as u32,
+        });
+    }
 
     if let (Some(key), Some(_)) = (client_mutation_key, mutation_id)
         && mutation_reservation.is_some_and(|reservation| reservation.routing_owner)
@@ -2234,6 +2272,7 @@ mod tests {
             &[],
             GqlExecutionMode::Update,
             Some(client_key),
+            1,
             store,
             shards,
             fake_index,
@@ -2582,6 +2621,7 @@ mod tests {
             &[],
             GqlExecutionMode::Query,
             None,
+            1,
             &store,
             shards,
             &fake,
@@ -2680,6 +2720,7 @@ mod tests {
             &[],
             GqlExecutionMode::Query,
             None,
+            1,
             &store,
             shards,
             &fake,

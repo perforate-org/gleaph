@@ -394,8 +394,9 @@ Exit criteria:
 
 ## Phase 5: Multi-DML contract
 
-**Status: Rejection gate done. Contract 1 (one-shard atomic) in progress — completely-new
-INSERT-only bundles. Roll-forward / staged contracts still planned.**
+**Status: Rejection gate done. Contract 1 (one-shard atomic) implemented for completely-new
+INSERT-only bundles and the anchored single-shard subset. Roll-forward / staged contracts still
+planned.**
 
 Goal: remove the existing partial multi-DML ambiguity.
 
@@ -417,33 +418,51 @@ Immediate decision (implemented):
 
 Candidate future contracts:
 
-1. **One-shard atomic bundle** *(in progress — completely-new INSERT-only subset):* execute all
-   canonical DML in one message segment on a single shard, with the shard's existing single
-   canonical segment providing read-your-own-writes between statements, then publish projection
-   intent. Federated placement requires a target shard for brand-new (unanchored) elements; the
-   policy is **place a completely-new INSERT on the graph's latest shard** (the live shard with the
-   greatest graph-local `shard_id`; shard ids grow densely `0..n-1`). A plan qualifies when it is
-   *pure-insert*: it contains at least one `INSERT` and no operator that reads or binds existing
-   graph state (no scan/index/expand/match and no `SET`/`REMOVE`/`DELETE`), so every edge endpoint
-   is a freshly inserted vertex and the whole plan needs no anchor or seeds. Such a plan — single-
-   or multi-statement — is routed to the latest shard and executed there atomically. This also
-   enables a single unanchored `INSERT` on a federated graph (previously rejected with
-   `no index anchor`). MATCH-based and mixed multi-DML bundles remain rejected. The remaining
-   subset (anchored multi-DML that provably resolves to one shard) is still planned.
+1. **One-shard atomic bundle** *(implemented — completely-new INSERT-only and anchored single-shard
+   subsets):* execute all canonical DML in one message segment on a single shard, with the shard's
+   existing single canonical segment providing read-your-own-writes between statements, then publish
+   projection intent. Two qualifying subsets are admitted, both of which provably touch one shard:
+   - *Completely-new INSERT-only.* The plan is *pure-insert*: it contains at least one `INSERT` and
+     no operator that reads or binds existing graph state (no scan/index/expand/match and no
+     `SET`/`REMOVE`/`DELETE`), so every edge endpoint is a freshly inserted vertex and the whole
+     plan needs no anchor or seeds. Federated placement requires a target shard for these brand-new
+     (unanchored) elements; the policy is **place a completely-new INSERT on the graph's latest
+     shard** (the live shard with the greatest graph-local `shard_id`; shard ids grow densely
+     `0..n-1`). Such a plan — single- or multi-statement — is routed to the latest shard and
+     executed there atomically. This also enables a single unanchored `INSERT` on a federated graph
+     (previously rejected with `no index anchor`).
+     `detection: gleaph_gql_planner::PhysicalPlan::is_pure_insert`.
+   - *Anchored single-shard.* The plan is a *single-anchor threaded bundle*: it reads existing graph
+     state in exactly one place — a single leading index/label anchor the Router can resolve to a
+     shard set — and every later operator only mutates threaded bindings, inserts new elements, or
+     reshapes already-bound rows (no second scan, traversal, join, or sub-plan that reaches back
+     into the graph). Such a bundle performs no cross-shard reads, so when its leading anchor
+     resolves to a single shard the whole multi-statement program runs there atomically. The Router
+     admits it past the pre-dispatch gate and, after resolving the anchor, rejects it with
+     `RouterError::UnsupportedMultiDmlBundle` only if the anchor actually spans more than one shard.
+     A single DML statement that fans out to many shards remains the Phase 4 roll-forward saga.
+     `detection: gleaph_gql_planner::PhysicalPlan::is_single_anchor_threaded_bundle`. This subset is
+     enforced for ad-hoc execution; prepared multi-DML on a federated graph stays rejected at
+     registration (the runtime shard count is not known at registration time).
+
+   MATCH-based bundles with a second scan, a traversal, or independent per-statement matches remain
+   rejected, since their cross-shard reads have no defined partial-application contract.
 2. **Roll-forward bundle:** persist a per-plan cursor and advertise saga semantics explicitly.
 3. **Staged distributed commit:** reserve for a named cross-shard all-or-nothing requirement.
 
 Tests:
 
 - Router rejects unsupported multi-DML before any shard dispatch. *(Done:
-  `router_rejects_federated_multi_dml_bundle_before_dispatch`,
+  `router_rejects_federated_match_based_multi_dml_bundle_before_dispatch`,
   `router_allows_multi_dml_bundle_on_single_shard`, and
   `program_modification::count_dml_statements_*` host unit tests.)*
 - A supported one-shard bundle executes atomically on a single shard. *(Done for the completely-new
   INSERT-only subset: `router_places_completely_new_single_insert_on_latest_shard`,
-  `router_places_completely_new_insert_bundle_on_latest_shard`, and
-  `is_pure_insert_*` host unit tests. Trap-to-pre-message coverage for anchored bundles is planned
-  with the anchored extension.)*
+  `router_places_completely_new_insert_bundle_on_latest_shard`, and `is_pure_insert_*` host unit
+  tests. Done for the anchored single-shard subset:
+  `router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard`,
+  `router_rejects_anchored_multi_dml_bundle_when_anchor_spans_multiple_shards`, and
+  `is_single_anchor_threaded_bundle_*` host unit tests.)*
 - If roll-forward support is selected, retries resume at the persisted plan boundary without being
   described as rollback atomicity. *(Planned with the roll-forward contract.)*
 
