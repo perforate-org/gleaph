@@ -2,8 +2,8 @@
 
 Date: 2026-06-20
 Status: implemented
-Last revised: 2026-06-20
-Anchor timestamp: 2026-06-20 14:43:28 UTC +0000
+Last revised: 2026-06-21
+Anchor timestamp: 2026-06-21 05:36:08 UTC +0000
 
 ## Context
 
@@ -158,6 +158,14 @@ No stable-layout or wire-type change. `GraphMutationJournalEntry` and the delta 
 unchanged. The new `PlanQueryError::IndexFlushDeferred` variant is internal to
 `gleaph-graph`. No canister reset required.
 
+## Consistency vocabulary (ADR 0029)
+
+This ADR's graph mutation-journal `Completed` state means that the shard-local canonical
+outcome is durable and replayable. It does not mean graph-index has converged. Under
+[ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md), a deferred
+flush leaves the distributed mutation `ProjectionPending` until the required index
+watermark is reached; Router owns the final cross-canister `Completed` transition.
+
 ## Design Documentation Impact
 
 | Document | Update |
@@ -165,3 +173,5 @@ unchanged. The new `PlanQueryError::IndexFlushDeferred` variant is internal to
 | `design/adr/0015-label-stats-projection-log.md` | Note that completion is no longer coupled to synchronous flush success; cross-reference ADR 0024 |
 | `design/adr/0023-federated-index-consistency-upgrade-compaction.md` | Note that a repair-journaled flush is non-fatal for mutation-journal completion |
 | `design/storage/stable-memory-inventory.md` | Clarify mutation-journal completion semantics under deferred flush |
+| `design/adr/0029-shard-local-atomicity-and-cross-canister-consistency.md` | Separate shard-local canonical completion from distributed projection completion |
+| `design/architecture/acid-roadmap.md` | Plan mutation phases, projection watermarks, read barriers, and saga recovery |

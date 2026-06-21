@@ -2,13 +2,14 @@
 
 Date: 2026-06-20
 Status: accepted
-Last revised: 2026-06-20
-Anchor timestamp: 2026-06-20 04:15:12 UTC +0000
+Last revised: 2026-06-21
+Anchor timestamp: 2026-06-21 05:36:08 UTC +0000
 
 ## Revision history
 
 | Date | Change |
 |------|--------|
+| 2026-06-21 | ADR 0029 consistency-contract sync: distinguish shard-local canonical mutation completion from cross-canister projection completion; a repair-journaled flush may leave the distributed mutation `ProjectionPending`. |
 | 2026-06-20 | Proposed; follow-up to [0009](0009-edge-property-index-and-index-ddl.md) (Phase A shard index registry) and [0020](0020-deferred-maintenance-timer-drain.md) (timer drain). |
 | 2026-06-20 | `adr-review` pass (APPROVE WITH CHANGES): added P7 + D6 (`DROP INDEX` does not purge postings today; make purge real, load-bearing for D4); framed repair journal as durable extension of existing pending queues; marked async tick as amending ADR 0020; prefer reusing the existing router indexed-catalog surface for the timer fetch. |
 | 2026-06-20 | Accepted; policy frozen pending implementation per §Migration (phases 1–6). |
@@ -45,9 +46,11 @@ postings.
 
 Cross-canister atomicity is impossible on the IC (shard store and index live in
 different canisters; an update is split by `await`/commit points). The achievable
-guarantee is therefore: **on success, INV holds at the message-completion
-boundary; on failure, graph-index is batch-atomic (compensated to its pre-batch
-state) and the store-ahead delta is durably recorded and eventually repaired.**
+guarantee is therefore: **a synchronous projection completion satisfies INV; a
+repair-journaled flush may complete the canonical mutation while projection is pending,
+and the durable store-ahead delta eventually restores INV.** Canonical mutation success
+must not be interpreted as a cross-canister freshness barrier; see
+[ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md).
 
 ### Established facts that scope this ADR
 
@@ -410,6 +413,11 @@ maintenance timer. ADR 0024 uses this guarantee to record the ADR 0015 mutation 
 leaving the mutation wedged `Incomplete`. See
 [adr/0024-mutation-journal-completion-vs-index-flush.md](0024-mutation-journal-completion-vs-index-flush.md).
 
+In the lifecycle defined by ADR 0029, the graph-journal `Completed` state proves a
+replayable shard-local canonical outcome. When repair work remains, the distributed
+mutation is still `ProjectionPending`; only the Router owns the final cross-canister
+`Completed` transition.
+
 ## Design documentation impact
 
 | Document | Update | Status |
@@ -418,4 +426,4 @@ leaving the mutation wedged `Incomplete`. See
 | [adr/0009-edge-property-index-and-index-ddl.md](0009-edge-property-index-and-index-ddl.md) | Note: shard index registry superseded by router-sourced ephemeral catalog (0023) | done |
 | [index/property-index.md](../index/property-index.md) | Replace shard-registry gate with router-sourced ephemeral catalog; precise emit; repair journal | done (registry→ephemeral catalog); repair journal pending |
 | [adr/0020-deferred-maintenance-timer-drain.md](0020-deferred-maintenance-timer-drain.md) | Tick becomes async; per-drain catalog fetch; in-tick flush; defer-on-router-unavailable | done |
-| [index/derived-state-query-semantics.md](../index/derived-state-query-semantics.md) | INV statement and eventual-consistency/repair model | pending |
+| [index/derived-state-query-semantics.md](../index/derived-state-query-semantics.md) | INV statement, eventual-consistency/repair model, and canonical-success freshness caveat | done |

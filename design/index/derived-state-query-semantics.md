@@ -1,7 +1,7 @@
 # Derived-state query semantics
 
-Last updated: 2026-06-19
-Anchor timestamp: 2026-06-19 01:02:52 UTC +0000
+Last updated: 2026-06-21
+Anchor timestamp: 2026-06-21 05:36:08 UTC +0000
 
 ## Status
 
@@ -27,6 +27,10 @@ not paper over sync gaps with graph-side tombstone filtering at the index layer.
    non-indexable on write and rejected on index read/query derivation — not as stale postings.
 4. **Maintenance cursors are not data.** Router `BackfillShardState` and graph pending queues track
    repair progress; they must not be read as membership or count truth.
+5. **Canonical success is not a freshness barrier.** A graph mutation may be durable while a
+   cross-canister projection is pending. Read-your-writes requires an explicit projection watermark
+   under [ADR 0029](../adr/0029-shard-local-atomicity-and-cross-canister-consistency.md); that API is
+   planned, not implemented.
 
 ## Sync vs lag policy
 
@@ -147,6 +151,8 @@ count completeness is required.
 - [property-index.md](property-index.md)
 - [label-index.md](label-index.md)
 - [../adr/0015-label-stats-projection-log.md](../adr/0015-label-stats-projection-log.md)
+- [../adr/0029-shard-local-atomicity-and-cross-canister-consistency.md](../adr/0029-shard-local-atomicity-and-cross-canister-consistency.md)
+- [../architecture/acid-roadmap.md](../architecture/acid-roadmap.md)
 - [../sharding/standalone-mode.md](../sharding/standalone-mode.md)
 - [../federation/query-semantics.md](../federation/query-semantics.md)
 - [../architecture/refactoring-roadmap.md](../architecture/refactoring-roadmap.md)
