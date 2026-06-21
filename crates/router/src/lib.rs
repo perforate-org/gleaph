@@ -239,6 +239,19 @@ async fn gql_query(
     gql::gql_query(query, params).await
 }
 
+/// Read-only GQL with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
+///
+/// `Eventual` matches [`gql_query`]; `AtLeast(token)` enforces a retryable read-your-writes
+/// barrier against the token's per-shard watermarks; `Canonical` is deferred and rejected.
+#[query(composite = true)]
+async fn gql_query_with_consistency(
+    query: String,
+    params: Vec<u8>,
+    read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
+) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
+    gql::gql_query_with_consistency(query, params, read_mode).await
+}
+
 /// Update-path GQL entrypoint for non-DML escape hatches; DML requires `gql_execute_idempotent`.
 #[update]
 async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterError> {
@@ -281,6 +294,16 @@ async fn prepared_execute_query(
     params: Vec<u8>,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
     prepared::prepared_execute_query(name, params).await
+}
+
+/// Prepared read with an explicit ADR 0029 §5 read-consistency contract (Phase 3).
+#[query(composite = true)]
+async fn prepared_execute_query_with_consistency(
+    name: String,
+    params: Vec<u8>,
+    read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
+) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
+    prepared::prepared_execute_query_with_consistency(name, params, read_mode).await
 }
 
 #[update]

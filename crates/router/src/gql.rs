@@ -16,7 +16,7 @@ use gleaph_graph_kernel::index::{
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanResult, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire, MutationId,
-    MutationJournalState, MutationToken, MutationTokenShard, ShardEventSeq,
+    MutationJournalState, MutationToken, MutationTokenShard, ReadMode, ShardEventSeq,
 };
 use ic_cdk::api::msg_caller;
 
@@ -36,7 +36,7 @@ use crate::federation::{
 };
 use crate::graph_client::{
     ack_label_stats_deltas_through, execute_plan_on_graph, get_mutation_journal_entry,
-    list_pending_label_stats_deltas,
+    index_pending_min_mutation_id, list_pending_label_stats_deltas,
 };
 use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
@@ -371,6 +371,31 @@ pub async fn gql_query(query: String, params: Vec<u8>) -> Result<GqlQueryResult,
         "gql_query",
         false,
         None,
+        ReadMode::Eventual,
+    )
+    .await
+}
+
+/// Read with an explicit ADR 0029 §5 consistency contract (Phase 3).
+///
+/// `ReadMode::Eventual` matches [`gql_query`]. `ReadMode::AtLeast(token)` enforces the
+/// read-your-writes barrier: the read is served only once every shard in the token has
+/// reached its label-stats and graph-index watermarks, otherwise a retryable
+/// `RouterError::ProjectionLag` is returned without serving stale state.
+/// `ReadMode::Canonical` is deferred and rejected.
+pub async fn gql_query_with_consistency(
+    query: String,
+    params: Vec<u8>,
+    read_mode: ReadMode,
+) -> Result<GqlQueryResult, RouterError> {
+    run_gql(
+        &query,
+        &params,
+        GqlExecutionMode::Query,
+        "gql_query_with_consistency",
+        false,
+        None,
+        read_mode,
     )
     .await
 }
@@ -383,6 +408,7 @@ pub async fn gql_execute(query: String, params: Vec<u8>) -> Result<u64, RouterEr
         "gql_execute",
         false,
         None,
+        ReadMode::Eventual,
     )
     .await?
     .row_count)
@@ -400,6 +426,7 @@ pub async fn gql_execute_idempotent(
         "gql_execute_idempotent",
         false,
         Some(&client_mutation_key),
+        ReadMode::Eventual,
     )
     .await
 }
@@ -413,11 +440,74 @@ pub async fn force_gql_execute(query: String, params: Vec<u8>) -> Result<u64, Ro
         "force_gql_execute",
         true,
         None,
+        ReadMode::Eventual,
     )
     .await?
     .row_count)
 }
 
+/// ADR 0029 §5 (Phase 3) read barrier.
+///
+/// For `AtLeast(token)`, verify every shard named in the token has reached both its
+/// label-stats projection cursor and its graph-index repair watermark before any read
+/// shape is served. If any watermark is unmet, return a retryable
+/// [`RouterError::ProjectionLag`] instead of serving a stale projection. `Eventual` is a
+/// no-op; `Canonical` is deferred (Phase 3) and rejected so callers never silently get
+/// `Eventual` semantics under a stronger label.
+pub(crate) async fn enforce_read_consistency(
+    store: &RouterStore,
+    graph_id: GraphId,
+    read_mode: &ReadMode,
+) -> Result<(), RouterError> {
+    let token = match read_mode {
+        ReadMode::Eventual => return Ok(()),
+        ReadMode::Canonical => {
+            return Err(RouterError::InvalidArgument(
+                "Canonical read mode is not yet implemented (ADR 0029 Phase 3 deferred); \
+                 use Eventual or AtLeast(token)"
+                    .into(),
+            ));
+        }
+        ReadMode::AtLeast(token) => token,
+    };
+
+    for shard in &token.shards {
+        // Label-stats watermark: the Router projection cursor must reach the shard's seq
+        // for count-only read-your-writes. Resolved locally from Router stable state.
+        if let Some(required) = shard.label_stats_seq {
+            let current = store.label_stats_projection_cursor(graph_id, shard.shard_id);
+            if current < required {
+                return Err(RouterError::ProjectionLag {
+                    shard_id: shard.shard_id.raw(),
+                    watermark: "label_stats".into(),
+                    required,
+                    current,
+                });
+            }
+        }
+
+        // Graph-index watermark: the shard's repair journal must have drained past the
+        // token's `mutation_id`. Index-satisfied iff `None` or `mutation_id < min_pending`.
+        let entry = store.resolve_shard(graph_id, shard.shard_id)?;
+        let min_pending = index_pending_min_mutation_id(entry.graph_canister)
+            .await
+            .map_err(RouterError::Internal)?;
+        if let Some(min_pending) = min_pending
+            && token.mutation_id >= min_pending
+        {
+            return Err(RouterError::ProjectionLag {
+                shard_id: shard.shard_id.raw(),
+                watermark: "graph_index".into(),
+                required: token.mutation_id,
+                current: min_pending,
+            });
+        }
+    }
+
+    Ok(())
+}
+
+#[allow(clippy::too_many_arguments)]
 async fn run_gql(
     query: &str,
     params: &[u8],
@@ -425,6 +515,7 @@ async fn run_gql(
     entrypoint: &str,
     force: bool,
     client_mutation_key: Option<&str>,
+    read_mode: ReadMode,
 ) -> Result<GqlQueryResult, RouterError> {
     if let Some(ddl) = crate::index_ddl::try_parse(query) {
         let caller = msg_caller();
@@ -455,6 +546,11 @@ async fn run_gql(
     let seed = crate::graph_context::session_graph_seed(&store, resolved, caller);
     gleaph_gql::validate::validate_with_seed(&program, Some(&seed))
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+
+    // ADR 0029 §5 (Phase 3): enforce the read consistency contract before serving any
+    // read shape (label-count fast path, index seed, or graph-shard scan all flow through
+    // here). The barrier is a no-op for `Eventual` and for the write path.
+    enforce_read_consistency(&store, resolved.graph_id, &read_mode).await?;
 
     let tx = program
         .transaction_activity
@@ -1374,7 +1470,7 @@ mod tests {
     };
     use gleaph_graph_kernel::plan_exec::{
         ExecutePlanResult, GqlExecutionMode, GqlQueryResult, LabelStatsDelta,
-        LabelStatsDeltaEventWire, SeedBindingsWire,
+        LabelStatsDeltaEventWire, MutationToken, MutationTokenShard, ReadMode, SeedBindingsWire,
     };
 
     use crate::facade::stable::graph_catalog::lookup_graph_id;
@@ -1383,7 +1479,9 @@ mod tests {
         collect_label_intersection_hits_for_shards, resolve_seed_routings_multi,
         routings_to_dispatches,
     };
-    use crate::gql::{dispatch_plan_blob_with_index, request_fingerprint};
+    use crate::gql::{
+        dispatch_plan_blob_with_index, enforce_read_consistency, request_fingerprint,
+    };
     use crate::init::RouterInitArgs;
     use crate::planner_stats::RouterGraphStats;
     use crate::seed::SeedAnchorSet;
@@ -2534,5 +2632,84 @@ mod tests {
             store.label_stats_projection_cursor(GraphId::from_raw(0), shard_id),
             0
         );
+    }
+
+    // ADR 0029 §5 (Phase 3) read barrier decision logic. The index branch performs an
+    // inter-canister query (covered by PocketIC); these host tests pin the local decisions:
+    // `Eventual` no-op, `Canonical` rejection, and the label-stats lag short-circuit.
+    #[test]
+    fn read_barrier_eventual_is_noop() {
+        let store = store_with_shards();
+        let graph_id = tenant_main_graph_id();
+        futures::executor::block_on(enforce_read_consistency(
+            &store,
+            graph_id,
+            &ReadMode::Eventual,
+        ))
+        .expect("eventual never blocks");
+    }
+
+    #[test]
+    fn read_barrier_canonical_is_rejected() {
+        let store = store_with_shards();
+        let graph_id = tenant_main_graph_id();
+        let err = futures::executor::block_on(enforce_read_consistency(
+            &store,
+            graph_id,
+            &ReadMode::Canonical,
+        ))
+        .expect_err("canonical is deferred");
+        assert!(matches!(err, RouterError::InvalidArgument(_)));
+    }
+
+    #[test]
+    fn read_barrier_atleast_label_stats_lag_returns_retryable_projection_lag() {
+        let store = store_with_shards();
+        let graph_id = tenant_main_graph_id();
+        // Cursor defaults to 0; require seq 5 on shard 0 → unmet, so the barrier must
+        // return ProjectionLag *before* any inter-canister index call.
+        let token = MutationToken {
+            mutation_id: 1,
+            shards: vec![MutationTokenShard {
+                shard_id: ShardId::new(0),
+                label_stats_seq: Some(5),
+            }],
+        };
+        let err = futures::executor::block_on(enforce_read_consistency(
+            &store,
+            graph_id,
+            &ReadMode::AtLeast(token),
+        ))
+        .expect_err("label stats projection has not caught up");
+        match err {
+            RouterError::ProjectionLag {
+                shard_id,
+                watermark,
+                required,
+                current,
+            } => {
+                assert_eq!(shard_id, 0);
+                assert_eq!(watermark, "label_stats");
+                assert_eq!(required, 5);
+                assert_eq!(current, 0);
+            }
+            other => panic!("expected ProjectionLag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_barrier_atleast_empty_token_is_satisfied() {
+        let store = store_with_shards();
+        let graph_id = tenant_main_graph_id();
+        let token = MutationToken {
+            mutation_id: 7,
+            shards: vec![],
+        };
+        futures::executor::block_on(enforce_read_consistency(
+            &store,
+            graph_id,
+            &ReadMode::AtLeast(token),
+        ))
+        .expect("no shard watermarks to satisfy");
     }
 }

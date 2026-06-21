@@ -119,19 +119,29 @@ committed view must use the visibility rules in the next section.
 
 ### 5. Make read consistency explicit
 
-The target API distinguishes:
+The API distinguishes (`gleaph_graph_kernel::plan_exec::ReadMode`):
 
-| Read mode | Contract |
-|-----------|----------|
-| `Eventual` | Read the available derived projection; it may lag canonical state |
-| `AtLeast(mutation_token)` | Succeed only after every required projection reaches the token's watermark; otherwise return a retryable lag result |
-| `Canonical` | Read from the canonical graph owner where the query shape supports it |
+| Read mode | Contract | Status |
+|-----------|----------|--------|
+| `Eventual` | Read the available derived projection; it may lag canonical state | Implemented (Phase 3; default) |
+| `AtLeast(mutation_token)` | Succeed only after every required projection reaches the token's watermark; otherwise return a retryable lag result | Implemented (Phase 3) |
+| `Canonical` | Read from the canonical graph owner where the query shape supports it | Deferred (Phase 3; rejected at runtime, not downgraded) |
 
 A mutation token identifies the mutation and the shard-local projection watermarks required for
 read-your-writes. The token is not a global MVCC snapshot timestamp.
 
 Count-only Router projections and graph-index-backed membership/property reads must not silently
 claim read-your-writes unless their respective cursor or watermark has reached the token.
+
+**Implementation (Phase 3).** Callers select a mode via the router composite-query entrypoints
+`gql_query_with_consistency` / `prepared_execute_query_with_consistency`; the legacy `gql_query` /
+`prepared_execute_query` stay `Eventual`. The barrier is enforced once before any read shape is
+dispatched (label-count fast path, graph-index seed, and graph-shard scan are gated uniformly).
+For `AtLeast(token)`, each token shard must satisfy its label-stats projection cursor
+(`label_stats_projection_cursor`) and its graph-index watermark (`index_pending_min_mutation_id`,
+index-satisfied iff `None` or `mutation_id < value`); an unmet watermark returns retryable
+`RouterError::ProjectionLag` without serving stale state. `Canonical` is reserved on the wire but
+rejected (`InvalidArgument`) until owner-side scan routing and the unsupported-shape catalog land.
 
 ### 6. Restrict multi-DML until its boundary is explicit
 

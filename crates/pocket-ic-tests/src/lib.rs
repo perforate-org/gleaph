@@ -1321,6 +1321,34 @@ pub fn gql_query_on_router(
     }
 }
 
+/// Router composite `gql_query_with_consistency` (ADR 0029 §5, Phase 3) as admin.
+///
+/// Returns the raw `Result` so a test can assert both the served (`Ok`) and the retryable
+/// projection-lag / rejected (`Err`) outcomes of the read barrier.
+pub fn gql_query_with_consistency_as_admin(
+    env: &FederationEnv,
+    query: &str,
+    read_mode: gleaph_graph_kernel::plan_exec::ReadMode,
+) -> Result<
+    gleaph_graph_kernel::plan_exec::GqlQueryResult,
+    gleaph_graph_kernel::federation::RouterError,
+> {
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "gql_query_with_consistency",
+            Encode!(&query.to_string(), &Vec::<u8>::new(), &read_mode)
+                .expect("encode gql_query_with_consistency"),
+        )
+        .unwrap_or_else(|e| panic!("gql_query_with_consistency on router: {e:?}"));
+    Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_query_with_consistency")
+}
+
 /// Admin query: per-graph `ElementIdEncodingKey` bytes from router runtime config (ADR 0019).
 pub fn graph_element_id_encoding_key(
     pic: &PocketIc,

@@ -36,20 +36,26 @@ not paper over sync gaps with graph-side tombstone filtering at the index layer.
    carrying the per-shard read-your-writes watermarks: each shard's label-stats `emitted_delta_last_seq`
    and — keyed by the monotonic `mutation_id` — the graph-index watermark exposed by the graph query
    `index_pending_min_mutation_id`. The read-side `AtLeast(token)` barrier that *enforces* these
-   watermarks is still planned (ADR 0029 Phase 3), not implemented — Phase 2 only issues the token
-   and exposes the watermark.
+   watermarks is implemented (ADR 0029 Phase 3): `gql_query_with_consistency(query, params,
+   ReadMode::AtLeast(token))` serves the read only once every token shard has reached both
+   watermarks, otherwise it returns a retryable `RouterError::ProjectionLag` without serving stale
+   state.
 
 ## Entrypoint consistency modes (ADR 0029)
 
 The supported consistency contract of every public router GQL entrypoint. The read-side
 `AtLeast(token)` barrier from [ADR 0029](../adr/0029-shard-local-atomicity-and-cross-canister-consistency.md)
-§5 is **not yet implemented** (Phase 3); reads today are `Eventual` for derived/index-backed
-shapes and `Canonical` for graph-shard-served shapes, without an explicit per-read watermark.
+§5 is **implemented** (Phase 3) via the explicit `ReadMode` entrypoints below. The default
+`gql_query` / `prepared_execute_query` entrypoints remain `Eventual` (no per-read watermark);
+callers opt into the barrier with `gql_query_with_consistency`. `ReadMode::Canonical` is reserved
+on the wire but **rejected at runtime** (deferred); it is not silently downgraded to `Eventual`.
 
 | Router entrypoint | Call kind | Program | Consistency contract |
 |-------------------|-----------|---------|----------------------|
 | `gql_query` | query (composite) | read-only | **Eventual** for projection/index-backed shapes (count-only may under-count; postings may lag — see Sync vs lag policy); **Canonical** for graph-shard-served shapes (vertex/edge rows, property reads). No `AtLeast(token)` barrier. |
+| `gql_query_with_consistency` | query (composite) | read-only | Explicit `ReadMode`. `Eventual` matches `gql_query`. `AtLeast(token)` enforces the read-your-writes barrier: served only once every token shard reaches its label-stats cursor and graph-index watermark, else retryable `RouterError::ProjectionLag` (no stale state). `Canonical` is deferred and rejected (`InvalidArgument`). |
 | `prepared_execute_query` | query (composite) | read-only | Same as `gql_query`. |
+| `prepared_execute_query_with_consistency` | query (composite) | read-only | Same as `gql_query_with_consistency`, for a registered prepared plan. |
 | `force_gql_execute` | update | read-only (escape hatch) | Same read contract as `gql_query`, forced onto the update path (no composite-query savings; bypasses the path check). |
 | `force_prepared_execute_update` | update | read-only (escape hatch) | Same as `force_gql_execute`, for a registered prepared plan. |
 | `gql_execute` | update | non-DML (index / catalog DDL); DML rejected | Catalog/DDL changes apply synchronously within the call (router is index-definition SSOT; `DROP INDEX` posting purge is driven to `done`). DML returns an error directing the caller to the idempotent entrypoint. |
@@ -64,7 +70,9 @@ even after the Router-saga `Completed`, since the saga's `projection_advanced` t
 only, not graph-index posting delivery (which may be deferred to the repair journal). The returned
 `MutationToken` now lets a caller detect this: the graph-index watermark
 (`index_pending_min_mutation_id`) is keyed by `mutation_id` independently of the saga phase. The
-Phase 3 `AtLeast(token)` read barrier will make the token enforceable per read.
+Phase 3 `AtLeast(token)` read barrier makes the token enforceable per read: a caller that issues
+`gql_query_with_consistency(.., ReadMode::AtLeast(token))` is either served read-your-writes
+(every shard caught up) or gets a retryable `ProjectionLag`, never a silently stale projection.
 
 ## Sync vs lag policy
 

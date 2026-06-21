@@ -1,7 +1,7 @@
 # Gleaph ACID and Consistency Roadmap
 
 Last updated: 2026-06-21 UTC
-Status: Phases 0-2 done; Phases 3-6 planned
+Status: Phases 0-3 done (Phase 3 `Canonical` deferred); Phases 4-6 planned
 Anchor timestamp: 2026-06-21 11:05:29 UTC +0000
 
 ## Purpose
@@ -279,33 +279,63 @@ Exit criteria:
 
 ## Phase 3: Read consistency API
 
-**Status: Planned.**
+**Status: Done (as of 2026-06-21 11:37:56 UTC +0000), `Canonical` deferred.** `Eventual` and
+`AtLeast(token)` are implemented and enforced; `Canonical` is accepted on the wire but rejected at
+runtime (deferred — see Deferred below), so callers never silently receive `Eventual` semantics
+under a stronger label.
 
 Goal: stop silently presenting a stale projection as read-your-writes.
 
 Deliverables:
 
-- Add `Eventual`, `AtLeast(token)`, and supported `Canonical` read modes at the Gleaph integration
-  boundary, not in generic GQL crates.
-- Return a retryable projection-lag result when a watermark has not been reached.
-- Apply barriers to Router label-count fast paths and graph-index seed/membership/property paths.
-- Document which query shapes cannot use `Canonical` mode without an owner-side scan.
+- **Done.** Read modes live at the Gleaph integration boundary, not in the generic GQL crates:
+  `gleaph_graph_kernel::plan_exec::ReadMode { Eventual, AtLeast(MutationToken), Canonical }`
+  (`Eventual` is the `Default`). New router composite-query entrypoints
+  `gql_query_with_consistency(query, params, ReadMode)` and
+  `prepared_execute_query_with_consistency(name, params, ReadMode)` carry it; the existing
+  `gql_query` / `prepared_execute_query` keep `Eventual` semantics (back-compatible).
+- **Done.** Unmet watermarks return a retryable `RouterError::ProjectionLag { shard_id, watermark,
+  required, current }` **without serving stale state**; the caller retries after the projection
+  drains.
+- **Done.** The barrier is enforced once in `run_gql` (and the prepared path) before *any* read
+  shape is dispatched, so the Router label-count fast path, graph-index seed, and graph-shard scan
+  are all gated uniformly (no per-path gap). For `AtLeast(token)`, each token shard must satisfy
+  both its label-stats projection cursor (`label_stats_projection_cursor`, resolved locally) and
+  its graph-index watermark (`index_pending_min_mutation_id`, queried per shard: index-satisfied
+  iff `None` or `mutation_id < value`).
+
+Deferred:
+
+- **`Canonical` mode is deferred.** It is rejected at runtime (`InvalidArgument`) rather than
+  silently downgraded. Routing each shape to an owner-side scan (bypassing the label-count fast
+  path and index seed) and documenting which shapes cannot use `Canonical` without an owner scan
+  is left to a follow-up; the `ReadMode::Canonical` variant is reserved on the wire so adding it
+  later is backward-compatible.
 
 Tests:
 
-- A successful mutation followed by `AtLeast(token)` cannot observe the pre-mutation projection.
-- `Eventual` remains non-blocking and may observe the documented lag.
-- Label-count and posting-backed paths enforce their own watermarks independently.
-- Federated reads never claim one shared snapshot unless a later protocol provides it.
+- **Done.** A successful idempotent DML followed by `AtLeast(token)` is served read-your-writes,
+  while a token whose watermark is forced past the projection cursor returns retryable
+  `ProjectionLag`; `Canonical` is rejected and `Eventual` is non-blocking
+  (`router_atleast_read_barrier_serves_when_satisfied_and_lags_when_unmet`, PocketIC).
+- **Done.** Barrier decision logic host unit tests: `Eventual` no-op, `Canonical` rejected,
+  label-stats lag short-circuit returns `ProjectionLag`, empty token satisfied
+  (`gql::tests::read_barrier_*`).
+- **Done.** `ReadMode` candid round-trip across all variants (`read_mode_candid_roundtrip_all_variants`,
+  graph-kernel `plan_exec`).
 
 Benchmarks:
 
-- Router fast-path overhead with and without a token.
-- Index lookup overhead for an already-satisfied watermark.
+- **Deferred (no hot-path change).** The `Eventual` path is a single match arm with no added work;
+  the `AtLeast` barrier adds one inter-canister query per token shard, which is a deliberate
+  per-read cost, not a regression to an existing entrypoint. No canbench added for the barrier
+  (it is a control-plane read gate, not a storage hot path).
 
 Exit criteria:
 
-- Read freshness is selected or explicitly defaulted, never inferred from mutation success.
+- **Met.** Read freshness is selected (`ReadMode`) or explicitly defaulted (`Eventual`), never
+  inferred from mutation success. A read that cannot meet its requested barrier fails retryably
+  instead of serving a stale projection.
 
 ## Phase 4: Autonomous federated saga recovery
 

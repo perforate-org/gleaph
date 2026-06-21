@@ -87,12 +87,37 @@ pub enum MutationLifecyclePhase {
 /// It is deliberately **not** a global snapshot timestamp: graph-index freshness is
 /// keyed by the monotonic `mutation_id` (a shard's index work for `mutation_id` is
 /// applied once its repair watermark passes it), and label-stats freshness by each
-/// shard's delta [`ShardEventSeq`]. Phase 2 only *issues* the token; enforcing the
-/// `AtLeast(token)` read barrier is Phase 3.
+/// shard's delta [`ShardEventSeq`]. Phase 2 *issues* the token; Phase 3 enforces it via
+/// [`ReadMode::AtLeast`].
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct MutationToken {
     pub mutation_id: MutationId,
     pub shards: Vec<MutationTokenShard>,
+}
+
+/// Read freshness contract a caller selects per read (ADR 0029 §5, Phase 3).
+///
+/// This lives at the Gleaph integration boundary, not in the generic GQL crates:
+/// it is keyed by Gleaph-specific projection watermarks (`MutationToken`).
+///
+/// - [`ReadMode::Eventual`] is non-blocking and may observe documented projection lag
+///   (count-only under-count, posting lag). It is the default and matches the
+///   historical `gql_query` behavior.
+/// - [`ReadMode::AtLeast`] enforces a read barrier: the read is served only once every
+///   shard in the token has caught its label-stats and graph-index watermarks; otherwise
+///   the router returns a retryable projection-lag error without serving stale state.
+/// - [`ReadMode::Canonical`] requests owner-served truth for every shape. It is **not yet
+///   implemented** (Phase 3 deferred); the router rejects it so callers do not silently
+///   receive `Eventual` semantics under a stronger label.
+#[derive(Clone, Debug, PartialEq, Eq, Default, CandidType, Serialize, Deserialize)]
+pub enum ReadMode {
+    /// Non-blocking; may observe documented projection lag.
+    #[default]
+    Eventual,
+    /// Block (retryable) until every shard reaches the token's watermarks.
+    AtLeast(MutationToken),
+    /// Owner-served truth for every shape (deferred; rejected by the router for now).
+    Canonical,
 }
 
 /// Per-shard watermarks a read must reach for read-your-writes against one mutation.
@@ -327,6 +352,26 @@ mod tests {
         let bytes = Encode!(&token).expect("encode");
         let decoded: MutationToken = Decode!(&bytes, MutationToken).expect("decode");
         assert_eq!(token, decoded);
+    }
+
+    #[test]
+    fn read_mode_candid_roundtrip_all_variants() {
+        for mode in [
+            ReadMode::Eventual,
+            ReadMode::Canonical,
+            ReadMode::AtLeast(MutationToken {
+                mutation_id: 11,
+                shards: vec![MutationTokenShard {
+                    shard_id: ShardId::new(3),
+                    label_stats_seq: Some(4),
+                }],
+            }),
+        ] {
+            let bytes = Encode!(&mode).expect("encode");
+            let decoded: ReadMode = Decode!(&bytes, ReadMode).expect("decode");
+            assert_eq!(mode, decoded);
+        }
+        assert_eq!(ReadMode::default(), ReadMode::Eventual);
     }
 
     #[test]

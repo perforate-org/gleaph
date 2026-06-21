@@ -15,9 +15,9 @@ use gleaph_pocket_ic_tests::{
     e2e_insert_undirected_edge_with_property, e2e_insert_vertex, e2e_insert_vertex_with_property,
     e2e_insert_vertex_with_two_properties, gql_execute_idempotent_as_admin,
     gql_execute_idempotent_as_admin_expect_err, gql_execute_idempotent_result_as_admin,
-    gql_query_as_admin, gql_query_as_admin_expect_err, graph_index_pending_min_mutation_id,
-    install_federation, install_single_shard_federation, knowledge_map_live_query,
-    seed_knowledge_map_graph,
+    gql_query_as_admin, gql_query_as_admin_expect_err, gql_query_with_consistency_as_admin,
+    graph_index_pending_min_mutation_id, install_federation, install_single_shard_federation,
+    knowledge_map_live_query, seed_knowledge_map_graph,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -220,6 +220,74 @@ fn router_idempotent_dml_issues_mutation_token_and_exposes_index_watermark() {
         None,
         "a successfully flushed mutation leaves no pending index work"
     );
+}
+
+#[test]
+fn router_atleast_read_barrier_serves_when_satisfied_and_lags_when_unmet() {
+    // ADR 0029 Phase 3: `gql_query_with_consistency(AtLeast(token))` enforces the
+    // read-your-writes barrier. After a successful idempotent DML the projections are
+    // caught up, so the real token is *served* (read-your-writes); a token whose label-stats
+    // watermark is forced beyond the projection cursor returns a retryable `ProjectionLag`
+    // without serving stale state; `Canonical` is deferred and rejected.
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::{MutationTokenShard, ReadMode};
+
+    let env = install_single_shard_federation();
+
+    let result = gql_execute_idempotent_result_as_admin(
+        &env,
+        "INSERT (:Person)",
+        "router_atleast_read_barrier_serves_when_satisfied_and_lags_when_unmet",
+    );
+    let token = result.token.expect("idempotent DML issues a token");
+
+    // Watermarks satisfied → the barrier serves the read-your-writes result.
+    let served = gql_query_with_consistency_as_admin(
+        &env,
+        "MATCH (n:Person) RETURN n",
+        ReadMode::AtLeast(token.clone()),
+    )
+    .expect("satisfied AtLeast(token) is served");
+    assert_eq!(
+        served.row_count, 1,
+        "AtLeast(token) observes the just-written vertex"
+    );
+
+    // Force one shard's label-stats watermark past the projection cursor → retryable lag.
+    let mut lagging = token.clone();
+    lagging.shards = lagging
+        .shards
+        .iter()
+        .map(|shard| MutationTokenShard {
+            shard_id: shard.shard_id,
+            label_stats_seq: Some(u64::MAX),
+        })
+        .collect();
+    let err = gql_query_with_consistency_as_admin(
+        &env,
+        "MATCH (n:Person) RETURN n",
+        ReadMode::AtLeast(lagging),
+    )
+    .expect_err("unmet watermark is a retryable projection lag");
+    assert!(
+        matches!(err, RouterError::ProjectionLag { .. }),
+        "unmet watermark returns ProjectionLag, got {err:?}"
+    );
+
+    // Canonical is deferred (Phase 3) and explicitly rejected.
+    let err =
+        gql_query_with_consistency_as_admin(&env, "MATCH (n:Person) RETURN n", ReadMode::Canonical)
+            .expect_err("Canonical read mode is deferred");
+    assert!(
+        matches!(err, RouterError::InvalidArgument(_)),
+        "Canonical is rejected, got {err:?}"
+    );
+
+    // Eventual remains non-blocking and serves the same data.
+    let eventual =
+        gql_query_with_consistency_as_admin(&env, "MATCH (n:Person) RETURN n", ReadMode::Eventual)
+            .expect("Eventual never blocks");
+    assert_eq!(eventual.row_count, 1);
 }
 
 #[test]

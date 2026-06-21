@@ -9,7 +9,7 @@ use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_gql_planner::build_block_plan_with_schema;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult};
+use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult, ReadMode};
 
 use crate::execution_path::check_prepared_execution_path;
 use crate::facade::stable::prepared_catalog::{
@@ -120,6 +120,25 @@ pub async fn prepared_execute_query(
         "prepared_execute_query",
         false,
         None,
+        ReadMode::Eventual,
+    )
+    .await
+}
+
+/// Run a prepared read with an explicit ADR 0029 §5 consistency contract (Phase 3).
+pub async fn prepared_execute_query_with_consistency(
+    name: String,
+    params: Vec<u8>,
+    read_mode: ReadMode,
+) -> Result<GqlQueryResult, RouterError> {
+    prepared_execute(
+        name,
+        params,
+        GqlExecutionMode::Query,
+        "prepared_execute_query_with_consistency",
+        false,
+        None,
+        read_mode,
     )
     .await
 }
@@ -132,6 +151,7 @@ pub async fn prepared_execute_update(name: String, params: Vec<u8>) -> Result<u6
         "prepared_execute_update",
         false,
         None,
+        ReadMode::Eventual,
     )
     .await?
     .row_count)
@@ -149,6 +169,7 @@ pub async fn prepared_execute_update_idempotent(
         "prepared_execute_update_idempotent",
         false,
         Some(&client_mutation_key),
+        ReadMode::Eventual,
     )
     .await
 }
@@ -165,11 +186,13 @@ pub async fn force_prepared_execute_update(
         "force_prepared_execute_update",
         true,
         None,
+        ReadMode::Eventual,
     )
     .await?
     .row_count)
 }
 
+#[allow(clippy::too_many_arguments)]
 async fn prepared_execute(
     name: String,
     params: Vec<u8>,
@@ -177,6 +200,7 @@ async fn prepared_execute(
     entrypoint: &str,
     force: bool,
     client_mutation_key: Option<&str>,
+    read_mode: ReadMode,
 ) -> Result<GqlQueryResult, RouterError> {
     authorize_prepared_execute(&msg_caller())?;
     let caller = msg_caller();
@@ -187,6 +211,7 @@ async fn prepared_execute(
         .ok_or_else(|| RouterError::NotFound(format!("prepared query {name:?}")))?;
     let v1 = record.as_v1()?;
     check_prepared_execution_path(entrypoint, mode, v1.requires_write_path, force)?;
+    crate::gql::enforce_read_consistency(&store, graph_id, &read_mode).await?;
     let pmap =
         decode_gql_params_blob(&params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let (_, plans) = gleaph_gql_planner::wire::decode_plan_bundle(&v1.plan_blob)

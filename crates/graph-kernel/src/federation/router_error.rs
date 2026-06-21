@@ -36,6 +36,19 @@ pub enum RouterError {
     },
     #[error("shard not registered")]
     ShardNotRegistered,
+    /// A `ReadMode::AtLeast(token)` read could not be served because a shard projection
+    /// has not yet reached the token's watermark (ADR 0029 §5, Phase 3). This is
+    /// **retryable**: the caller should retry after the projection drains. No stale state
+    /// is served.
+    #[error(
+        "projection lag on shard {shard_id} ({watermark}): required {required}, current {current}; retry"
+    )]
+    ProjectionLag {
+        shard_id: u32,
+        watermark: String,
+        required: u64,
+        current: u64,
+    },
     #[error("shard already registered")]
     ShardAlreadyRegistered,
     #[error("id exhausted: {0}")]

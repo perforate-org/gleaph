@@ -110,6 +110,28 @@ pub async fn ack_label_stats_deltas_through(
     call_graph(graph, "ack_label_stats_deltas_through", through_seq).await
 }
 
+/// Smallest tracked unapplied `mutation_id` whose graph-index postings are still in the
+/// shard's repair journal (ADR 0029 Phase 2/3). `None` means all tracked index work
+/// drained: a read for mutation `M` is index-satisfied on this shard iff this is `None`
+/// or `M < value`.
+#[cfg(target_family = "wasm")]
+pub async fn index_pending_min_mutation_id(graph: Principal) -> Result<Option<MutationId>, String> {
+    use ic_cdk::call::Call;
+
+    Call::bounded_wait(graph, "index_pending_min_mutation_id")
+        .await
+        .map_err(|e| format!("graph index_pending_min_mutation_id call failed: {e}"))?
+        .candid()
+        .map_err(|e| format!("graph index_pending_min_mutation_id decode failed: {e}"))
+}
+
+#[cfg(not(target_family = "wasm"))]
+pub async fn index_pending_min_mutation_id(
+    _graph: Principal,
+) -> Result<Option<MutationId>, String> {
+    Err("graph index_pending_min_mutation_id unavailable in native builds".to_string())
+}
+
 pub async fn list_pending_label_stats_deltas(
     graph: Principal,
     from_seq: ShardEventSeq,
