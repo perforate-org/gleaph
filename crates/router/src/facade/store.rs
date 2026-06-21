@@ -32,6 +32,13 @@ use gleaph_graph_kernel::plan_exec::MutationId;
 pub(crate) const MAX_METADATA_NAME_BYTES: usize = 256;
 const MAX_CLIENT_MUTATION_KEY_BYTES: usize = 256;
 pub(crate) const CLIENT_MUTATION_KEY_TTL_NS: u64 = 7 * 24 * 60 * 60 * 1_000_000_000;
+/// How long a routing reservation (`routing_in_progress`) is honored before a retry may
+/// reclaim it (ADR 0029 Phase 4). The routing phase only issues read-only index lookups
+/// before persisting the dispatch envelope, so an owner that has not released the lease
+/// within this window is treated as crashed; reclaiming is safe because no canonical write
+/// has happened yet (the envelope, which clears the lease, is persisted before any shard
+/// DML). Generous relative to a healthy routing pass to avoid racing a slow-but-live owner.
+pub(crate) const ROUTING_LEASE_TTL_NS: u64 = 5 * 60 * 1_000_000_000;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct ClientMutationReservation {

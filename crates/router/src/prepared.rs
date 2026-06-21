@@ -162,7 +162,7 @@ pub async fn prepared_execute_update_idempotent(
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<GqlQueryResult, RouterError> {
-    prepared_execute(
+    let result = prepared_execute(
         name,
         params,
         GqlExecutionMode::Update,
@@ -171,7 +171,11 @@ pub async fn prepared_execute_update_idempotent(
         Some(&client_mutation_key),
         ReadMode::Eventual,
     )
-    .await
+    .await;
+    // ADR 0029 Phase 4: arm the recovery driver so a saga left non-terminal (canonical
+    // committed, projection incomplete) converges without a client retry.
+    crate::recovery::arm_if_needed();
+    result
 }
 
 /// Run a read-only prepared plan on the **update** path (escape hatch only).

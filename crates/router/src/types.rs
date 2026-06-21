@@ -8,8 +8,67 @@ pub use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
 pub use gleaph_graph_kernel::federation::{
     GlobalVertexId, GraphShardKey, LocalVertexId, ShardId, ShardRegistryEntry,
 };
+use gleaph_graph_kernel::plan_exec::{MutationId, MutationLifecyclePhase};
 
-pub use crate::facade::stable::label_stats::ClientMutationKey;
+pub use crate::facade::stable::label_stats::{ClientMutationKey, RouterMutationRecord};
+
+/// Operator/SDK-facing status of a federated mutation (ADR 0029 Phase 4).
+///
+/// Pull-based observability for the autonomous recovery driver: a caller polls this to learn
+/// whether a saga converged, which shard is outstanding, and what (if any) explicit action
+/// is required. It deliberately carries no read-your-writes token — the token is issued with
+/// the original DML result; this query reports lifecycle, not freshness watermarks.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct MutationStatus {
+    pub mutation_id: MutationId,
+    pub phase: MutationLifecyclePhase,
+    /// Most recent recovery diagnostic, if any.
+    pub last_error: Option<String>,
+    /// First shard still outstanding (incomplete canonical write, else lagging projection).
+    pub target_shard: Option<ShardId>,
+    /// Human-readable next step: `none` when terminal/auto-converging, or the explicit retry
+    /// guidance when caller action is required.
+    pub next_action: String,
+}
+
+impl MutationStatus {
+    pub fn from_record(record: &RouterMutationRecord) -> Self {
+        let phase = record.lifecycle_phase();
+        let target_shard = record
+            .shards
+            .iter()
+            .find(|shard| !shard.completed)
+            .or_else(|| {
+                record
+                    .shards
+                    .iter()
+                    .find(|shard| !shard.projection_advanced)
+            })
+            .map(|shard| shard.shard_id);
+        let next_action = match phase {
+            MutationLifecyclePhase::Completed => "none",
+            MutationLifecyclePhase::Failed => "resubmit with a new client_mutation_key",
+            MutationLifecyclePhase::Routing => {
+                "routing in progress; retry the idempotent mutation if it does not settle"
+            }
+            MutationLifecyclePhase::CanonicalPending => {
+                "retry the idempotent mutation to resume the remaining canonical shard writes"
+            }
+            MutationLifecyclePhase::CanonicalCommitted
+            | MutationLifecyclePhase::ProjectionPending => {
+                "none; projection recovery is automatic (poll mutation_status or use AtLeast reads)"
+            }
+        }
+        .to_string();
+        Self {
+            mutation_id: record.mutation_id,
+            phase,
+            last_error: record.last_error.clone(),
+            target_shard,
+            next_action,
+        }
+    }
+}
 
 #[derive(CandidType, Deserialize)]
 pub struct GrantRoleArgs {
@@ -167,4 +226,53 @@ pub struct AdminLabelStatsProjectionStepResult {
     pub deltas_drained: u32,
     pub deltas_applied: u32,
     pub done: bool,
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::facade::stable::label_stats::RouterMutationShard;
+
+    fn shard(id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShard {
+        let mut shard = RouterMutationShard::new(ShardId::new(id), Principal::anonymous(), None);
+        shard.completed = completed;
+        shard.projection_advanced = projection_advanced;
+        shard
+    }
+
+    fn record_with(shards: Vec<RouterMutationShard>) -> RouterMutationRecord {
+        let mut record = RouterMutationRecord::new(7, 0, Vec::new());
+        record.routing_in_progress = false;
+        record.shards = shards;
+        record
+    }
+
+    #[test]
+    fn status_for_canonical_pending_points_at_outstanding_shard_and_asks_retry() {
+        let record = record_with(vec![shard(0, true, true), shard(1, false, false)]);
+        let status = MutationStatus::from_record(&record);
+        assert_eq!(status.mutation_id, 7);
+        assert_eq!(status.phase, MutationLifecyclePhase::CanonicalPending);
+        assert_eq!(status.target_shard, Some(ShardId::new(1)));
+        assert!(status.next_action.contains("retry"));
+    }
+
+    #[test]
+    fn status_for_projection_pending_is_automatic_recovery() {
+        let record = record_with(vec![shard(0, true, false)]);
+        let status = MutationStatus::from_record(&record);
+        assert_eq!(status.phase, MutationLifecyclePhase::CanonicalCommitted);
+        assert_eq!(status.target_shard, Some(ShardId::new(0)));
+        assert!(status.next_action.starts_with("none"));
+    }
+
+    #[test]
+    fn status_for_completed_has_no_target_or_action() {
+        let mut record = record_with(vec![shard(0, true, true)]);
+        record.completed_row_count = Some(3);
+        let status = MutationStatus::from_record(&record);
+        assert_eq!(status.phase, MutationLifecyclePhase::Completed);
+        assert_eq!(status.target_shard, None);
+        assert_eq!(status.next_action, "none");
+    }
 }

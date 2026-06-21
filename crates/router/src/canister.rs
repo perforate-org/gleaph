@@ -70,6 +70,25 @@ pub(crate) fn lookup_graph_id(
     RouterStore::new().resolve_graph_id_authorized(&graph_name, msg_caller())
 }
 
+/// ADR 0029 Phase 4: pull-based status of a caller's federated mutation. Read-only; scoped
+/// to the caller's own `client_mutation_key` under an authorized graph.
+pub(crate) fn mutation_status(
+    logical_graph_name: String,
+    client_mutation_key: String,
+) -> Result<crate::types::MutationStatus, RouterError> {
+    let caller = msg_caller();
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    let record = store
+        .router_mutation_record(caller, graph_id, &client_mutation_key)
+        .ok_or_else(|| {
+            RouterError::InvalidArgument(
+                "no mutation found for this client_mutation_key".to_string(),
+            )
+        })?;
+    Ok(crate::types::MutationStatus::from_record(&record))
+}
+
 pub(crate) fn graph_element_id_encoding_key(
     logical_graph_name: String,
 ) -> Result<[u8; 16], RouterError> {

@@ -37,6 +37,7 @@ mod peer_sync;
 mod planner_stats;
 mod prepared;
 mod rbac;
+mod recovery;
 mod seed;
 pub mod state;
 pub mod types;
@@ -49,11 +50,20 @@ pub use init::RouterInitArgs;
 pub use state::RouterError;
 
 use candid::Principal;
-use ic_cdk_macros::{init, query, update};
+use ic_cdk_macros::{init, post_upgrade, query, update};
 
 #[init]
 fn init(args: RouterInitArgs) {
     canister::init(args);
+    // ADR 0029 Phase 4: arm the autonomous saga recovery driver (no-op until there is work).
+    recovery::arm_if_needed();
+}
+
+#[post_upgrade]
+fn post_upgrade() {
+    // Timers do not survive an upgrade; re-arm the recovery driver so non-terminal sagas
+    // persisted across the upgrade still converge (ADR 0029 Phase 4).
+    recovery::arm_if_needed();
 }
 
 #[query]
@@ -270,6 +280,15 @@ async fn gql_execute_idempotent(
     client_mutation_key: String,
 ) -> Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, RouterError> {
     gql::gql_execute_idempotent(query, params, client_mutation_key).await
+}
+
+/// ADR 0029 Phase 4: pull-based status of a federated mutation for the calling principal.
+#[query]
+fn mutation_status(
+    logical_graph_name: String,
+    client_mutation_key: String,
+) -> Result<types::MutationStatus, RouterError> {
+    canister::mutation_status(logical_graph_name, client_mutation_key)
 }
 
 /// Read-only GQL on the update path only (no composite-query savings; bypasses path check).

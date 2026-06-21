@@ -1,7 +1,7 @@
 # Gleaph ACID and Consistency Roadmap
 
 Last updated: 2026-06-21 UTC
-Status: Phases 0-3 done (Phase 3 `Canonical` deferred); Phases 4-6 planned
+Status: Phases 0-4 done (Phase 3 `Canonical` deferred; Phase 4 autonomous recovery is projection-only, canonical re-dispatch stays explicit-retry); Phases 5-6 planned
 Anchor timestamp: 2026-06-21 11:05:29 UTC +0000
 
 ## Purpose
@@ -339,25 +339,48 @@ Exit criteria:
 
 ## Phase 4: Autonomous federated saga recovery
 
-**Status: Planned.**
+**Status: Core done (autonomous recovery is projection-only; canonical re-dispatch stays
+explicit-retry, see below).**
 
 Goal: make convergence independent of the original client retrying.
 
+Scope decision (projection-only autonomous recovery): the background timer drives only the safe,
+idempotent half of recovery — projection/index convergence for sagas whose canonical writes are
+already durable. It deliberately does **not** re-dispatch canonical DML, because autonomous shard
+re-execution is the single operation that risks double-apply. Unfinished canonical writes
+(`CanonicalPending`) are resumed by explicit idempotent retry, surfaced via `mutation_status`. Full
+autonomous canonical re-dispatch can be added later without reworking the timer/lease/status
+machinery (it would add envelope `plan_blob`/`params` persistence plus a re-dispatch branch).
+
 Deliverables:
 
-- Persist an immutable dispatch envelope before the first graph-shard call.
-- Add a bounded Router timer/admin recovery step for unfinished shard work.
-- Reconcile graph journal outcomes and projection watermarks into monotonic Router progress.
-- Exclude unfinished mutations from completed-record TTL eviction.
-- Add operator inspection for stuck phase, last error, target shard, and next retry action.
-- Bound work per timer message and avoid unsafe lease expiry.
+- Persist an immutable dispatch envelope before the first graph-shard call. **(Pre-existing; Phase 4
+  relies on it.)**
+- Bounded, self-rescheduling Router recovery timer (`ic-cdk-timers`) for unfinished **projection**
+  work; armed after each idempotent DML and re-armed from `init` / `post_upgrade`. **Done**
+  (`crates/router/src/recovery.rs`).
+- Reconcile graph journal outcomes and projection watermarks into monotonic Router progress. **Done**
+  (`gql::recover_mutation_record`, idempotent + cursor-guarded).
+- Exclude non-terminal mutations from TTL eviction (terminal-only predicate). **Done** (ADR 0025
+  revision; `evict_expired_client_mutation_keys`).
+- Operator/SDK inspection for stuck phase, last error, target shard, next retry action. **Done**
+  (`mutation_status` router query).
+- Bound work per timer message and avoid unsafe lease expiry. **Done** (per-tick scan budget;
+  `routing_lease_ns` / `ROUTING_LEASE_TTL_NS` reclaim is safe only pre-envelope).
 
 Tests:
 
 - Drop the original client after one shard commits; recovery completes remaining shards.
-- Router upgrade during each phase resumes without duplicate graph writes.
-- Repeated rejection keeps durable progress and does not spin unboundedly.
-- Completed records still compact and expire under ADR 0025.
+  **Partial / deferred** — host tests cover the recovery decision logic (scan selection, projection
+  convergence record mutations, lease reclaim, TTL retention, status derivation); a PocketIC test
+  asserts the timer is armed, runs, and is a safe no-op on a terminal saga, plus `mutation_status`
+  wiring. Forcing a non-terminal saga deterministically end-to-end is left as a follow-up.
+- Router upgrade during each phase resumes without duplicate graph writes — recovery is projection-
+  only and idempotent; `post_upgrade` re-arms the timer.
+- Repeated rejection keeps durable progress and does not spin unboundedly — timer backs off to a
+  relaxed delay and stops a lap that finds no recoverable saga.
+- Completed records still compact and expire under ADR 0025 — unchanged; terminal records evict as
+  before.
 
 Benchmarks:
 

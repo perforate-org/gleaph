@@ -187,6 +187,16 @@ pub struct RouterMutationRecord {
     pub completed_row_count: Option<u64>,
     pub routing_in_progress: bool,
     pub shards: Vec<RouterMutationShard>,
+    /// Wall-clock time the current routing lease was acquired (ADR 0029 Phase 4). Set
+    /// whenever `routing_in_progress` is flipped to `true`; lets a retry reclaim a routing
+    /// reservation whose owner trapped before persisting the dispatch envelope. `None` for
+    /// records that never held an active routing lease (pre-Phase-4 records decode as `None`).
+    #[serde(default)]
+    pub routing_lease_ns: Option<u64>,
+    /// Last recovery diagnostic (ADR 0029 Phase 4), surfaced by `mutation_status` for
+    /// operators. `None` until a recovery step records why a saga cannot yet converge.
+    #[serde(default)]
+    pub last_error: Option<String>,
 }
 
 impl RouterMutationRecord {
@@ -200,7 +210,19 @@ impl RouterMutationRecord {
             completed_row_count: None,
             routing_in_progress: true,
             shards: Vec::new(),
+            routing_lease_ns: Some(created_at_ns),
+            last_error: None,
         }
+    }
+
+    /// `true` once the saga reaches a terminal phase (`Completed` or `Failed`). Terminal
+    /// records are the only ones eligible for TTL eviction; non-terminal sagas are retained
+    /// as recovery targets (ADR 0029 Phase 4).
+    pub fn is_terminal(&self) -> bool {
+        matches!(
+            self.lifecycle_phase(),
+            MutationLifecyclePhase::Completed | MutationLifecyclePhase::Failed
+        )
     }
 
     /// Derive the ADR 0029 federated mutation lifecycle phase from the existing saga

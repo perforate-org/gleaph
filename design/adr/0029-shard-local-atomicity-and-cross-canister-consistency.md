@@ -112,10 +112,40 @@ bindings required for deterministic replay.
 
 Each graph shard applies the same `mutation_id` idempotently. Router records per-shard canonical and
 projection progress and retries incomplete work. Recovery must not depend solely on the original
-client retrying; planned work adds a bounded timer/admin recovery driver.
+client retrying.
 
 This is a roll-forward saga, not a distributed rollback protocol. Reads that require a globally
 committed view must use the visibility rules in the next section.
+
+**Implementation (Phase 4) — autonomous, projection-only recovery.** Recovery is split by risk:
+
+- *Liveness (autonomous, projection-only).* A single self-rescheduling `ic-cdk-timers` timer
+  (`crates/router/src/recovery.rs`), armed after every idempotent DML and re-armed from
+  `init` / `post_upgrade`, scans a bounded slice of `ROUTER_MUTATION_BY_CLIENT_KEY` per tick for
+  non-terminal sagas that already have a persisted dispatch envelope, and drives each forward with
+  **idempotent, cursor-guarded projection/index convergence only** (`gql::recover_mutation_record`
+  → label-stats projection advance + graph-index watermark check). The driver **never re-dispatches
+  canonical DML**: autonomous re-execution of a shard write is the one operation that risks
+  double-apply, so it is deliberately excluded from the background path. Per-tick work and scan
+  budget are bounded; the timer backs off and stops when a lap finds no recoverable saga.
+- *Unfinished canonical writes (`CanonicalPending`).* Resumed by **explicit retry**, not the timer:
+  re-presenting the same `client_mutation_key` resumes the saga idempotently via the inline
+  reconciliation path. `mutation_status` reports `next_action` so a client / SDK / operator knows a
+  retry is required.
+- *Stuck routing reservation.* `routing_in_progress` now carries a lease (`routing_lease_ns`,
+  `ROUTING_LEASE_TTL_NS`). A retry may reclaim a reservation whose lease has expired; this is safe
+  because `routing_in_progress == true` implies the immutable envelope was not yet persisted and
+  therefore no canonical write has happened.
+- *Retention safety.* TTL eviction (ADR 0025 B + sweep) now reclaims **only terminal** records, so a
+  non-terminal saga is never discarded before recovery finishes (ADR 0025, "Eviction predicate
+  revision").
+- *Observability is pull-based.* `mutation_status(logical_graph_name, client_mutation_key)` (router
+  `#[query]`) returns the lifecycle phase, last recovery diagnostic, outstanding target shard, and
+  next action. Read-your-writes convergence is observed through `AtLeast(token)` reads (§5) and this
+  query; the timer never returns results to a client.
+
+Schema: `RouterMutationRecord` gains `routing_lease_ns: Option<u64>` and `last_error: Option<String>`
+(both Candid `opt`, so old region-7 records decode as `None` with no migration).
 
 ### 5. Make read consistency explicit
 

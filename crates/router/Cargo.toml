@@ -23,6 +23,7 @@ gleaph-graph-kernel.workspace = true
 ic-cdk.workspace = true
 ic-cdk-management-canister.workspace = true
 ic-cdk-macros.workspace = true
+ic-cdk-timers.workspace = true
 ic-stable-structures.workspace = true
 serde.workspace = true
 sha2 = "0.11"

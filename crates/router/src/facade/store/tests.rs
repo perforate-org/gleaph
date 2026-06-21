@@ -1573,6 +1573,187 @@ fn mutation_journal_len() -> u64 {
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.len())
 }
 
+fn shard_with(shard_id: u32, completed: bool, projection_advanced: bool) -> RouterMutationShard {
+    let mut shard = RouterMutationShard::new(ShardId::new(shard_id), graph_principal(9), None);
+    shard.completed = completed;
+    shard.projection_advanced = projection_advanced;
+    shard
+}
+
+fn insert_mutation_record_with_shards(
+    caller: Principal,
+    client_key: &str,
+    created_at_ns: u64,
+    shards: Vec<RouterMutationShard>,
+) -> ClientMutationKey {
+    let key = ClientMutationKey::new(caller, tenant_main_graph_id(), client_key.into());
+    let mut record = RouterMutationRecord::new(1, created_at_ns, b"fp".to_vec());
+    record.routing_in_progress = false;
+    record.shards = shards;
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+        m.insert(key.clone(), record);
+    });
+    key
+}
+
+// ADR 0029 Phase 4: TTL eviction must retain non-terminal sagas (recovery targets) and only
+// reclaim terminal ones; the old "not routing" rule wrongly stranded committed-but-unprojected
+// federated mutations.
+#[test]
+fn ttl_eviction_retains_nonterminal_saga_but_evicts_terminal() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let now = CLIENT_MUTATION_KEY_TTL_NS * 2;
+    // Non-terminal: canonical committed on its shard, projection not yet advanced.
+    let pending = insert_mutation_record_with_shards(
+        graph_principal(1),
+        "pending",
+        0,
+        vec![shard_with(0, true, false)],
+    );
+    // Terminal: routing released without an envelope and no canonical write -> Failed.
+    let failed = insert_mutation_record(graph_principal(2), "failed", 0, false);
+
+    let result = store
+        .admin_sweep_expired_client_mutation_keys_at(admin, None, 100, now)
+        .expect("sweep");
+    assert_eq!(result.removed, 1, "only the terminal saga is evicted");
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| {
+        assert!(
+            m.get(&pending).is_some(),
+            "non-terminal saga must be retained as a recovery target"
+        );
+        assert!(m.get(&failed).is_none(), "terminal saga must be evicted");
+    });
+}
+
+// ADR 0029 Phase 4: an unexpired routing lease blocks a concurrent owner, but a lease past
+// ROUTING_LEASE_TTL_NS is reclaimable (the previous owner trapped before persisting an
+// envelope, so no canonical write happened and reclaiming is safe).
+#[test]
+fn expired_routing_lease_is_reclaimable_by_retry() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let caller = graph_principal(42);
+
+    let first = store
+        .reserve_mutation_id_for_client_key_at(
+            caller,
+            tenant_main_graph_id(),
+            "k",
+            b"a".to_vec(),
+            0,
+        )
+        .expect("first owner");
+    assert!(first.routing_owner);
+
+    assert_eq!(
+        store.reserve_mutation_id_for_client_key_at(
+            caller,
+            tenant_main_graph_id(),
+            "k",
+            b"a".to_vec(),
+            ROUTING_LEASE_TTL_NS,
+        ),
+        Err(RouterError::Conflict(
+            "client_mutation_key is already in progress; retry later".into()
+        )),
+        "an unexpired routing lease must block a concurrent owner"
+    );
+
+    let reclaimed = store
+        .reserve_mutation_id_for_client_key_at(
+            caller,
+            tenant_main_graph_id(),
+            "k",
+            b"a".to_vec(),
+            ROUTING_LEASE_TTL_NS + 1,
+        )
+        .expect("reclaim expired lease");
+    assert_eq!(reclaimed.mutation_id, first.mutation_id);
+    assert!(reclaimed.routing_owner);
+}
+
+// ADR 0029 Phase 4: the recovery driver's scan returns only sagas it can safely converge —
+// non-terminal records that already have a persisted dispatch envelope (shards) and are not
+// held by an active routing lease.
+#[test]
+fn scan_recoverable_selects_only_nonterminal_with_envelope() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    insert_mutation_record(graph_principal(1), "routing", 0, true);
+    insert_mutation_record(graph_principal(2), "failed", 0, false);
+    let pending = insert_mutation_record_with_shards(
+        graph_principal(3),
+        "pending",
+        0,
+        vec![shard_with(0, true, false)],
+    );
+    insert_mutation_record_with_shards(
+        graph_principal(4),
+        "done",
+        0,
+        vec![shard_with(0, true, true)],
+    );
+
+    let (keys, _last, scanned) = store.scan_recoverable_mutations(None, 100);
+    assert_eq!(scanned, 4);
+    assert_eq!(
+        keys.len(),
+        1,
+        "only the committed-but-unprojected saga is recoverable"
+    );
+    assert!(keys.contains(&pending));
+}
+
+// ADR 0029 Phase 4: recovery diagnostics attach to live sagas and never resurrect a terminal
+// record.
+#[test]
+fn record_last_error_sets_diagnostic_and_skips_terminal() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let pending = insert_mutation_record_with_shards(
+        graph_principal(1),
+        "pending",
+        0,
+        vec![shard_with(0, true, false)],
+    );
+    store
+        .record_router_mutation_last_error(&pending, "boom".into())
+        .expect("record diagnostic");
+    let live = ROUTER_MUTATION_BY_CLIENT_KEY
+        .with_borrow(|m| m.get(&pending))
+        .expect("record");
+    assert_eq!(live.last_error.as_deref(), Some("boom"));
+
+    let failed = insert_mutation_record(graph_principal(2), "failed", 0, false);
+    store
+        .record_router_mutation_last_error(&failed, "ignored".into())
+        .expect("no-op on terminal");
+    let terminal = ROUTER_MUTATION_BY_CLIENT_KEY
+        .with_borrow(|m| m.get(&failed))
+        .expect("record");
+    assert!(
+        terminal.last_error.is_none(),
+        "a terminal record must not record a recovery diagnostic"
+    );
+}
+
 #[test]
 fn sweep_removes_expired_but_keeps_fresh_and_in_progress() {
     let store = RouterStore::new();

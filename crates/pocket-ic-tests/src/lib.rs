@@ -1349,6 +1349,45 @@ pub fn gql_query_with_consistency_as_admin(
     Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_query_with_consistency")
 }
 
+/// Router `mutation_status` (ADR 0029 Phase 4) as the bootstrap admin principal. Returns the
+/// raw `Result` so a test can assert both a found saga and the not-found error.
+pub fn mutation_status_as_admin(
+    env: &FederationEnv,
+    logical_graph_name: &str,
+    client_mutation_key: &str,
+) -> Result<gleaph_router::types::MutationStatus, gleaph_graph_kernel::federation::RouterError> {
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_router::types::MutationStatus;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "mutation_status",
+            Encode!(
+                &logical_graph_name.to_string(),
+                &client_mutation_key.to_string()
+            )
+            .expect("encode mutation_status"),
+        )
+        .unwrap_or_else(|e| panic!("mutation_status on router: {e:?}"));
+    Decode!(&bytes, Result<MutationStatus, RouterError>).expect("decode mutation_status")
+}
+
+/// Advance simulated time and tick so the router's autonomous recovery timer fires
+/// (ADR 0029 Phase 4).
+pub fn run_router_recovery_timer(env: &FederationEnv) {
+    use std::time::Duration;
+
+    for _ in 0..6 {
+        env.pic.advance_time(Duration::from_secs(3));
+        for _ in 0..12 {
+            env.pic.tick();
+        }
+    }
+}
+
 /// Admin query: per-graph `ElementIdEncodingKey` bytes from router runtime config (ADR 0019).
 pub fn graph_element_id_encoding_key(
     pic: &PocketIc,

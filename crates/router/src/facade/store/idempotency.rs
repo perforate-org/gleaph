@@ -5,8 +5,8 @@ use super::super::stable::label_stats::{
 };
 use super::super::stable::{ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER};
 use super::{
-    CLIENT_MUTATION_KEY_TTL_NS, ClientMutationReservation, RouterStore, ic_time_ns,
-    validate_client_mutation_key,
+    CLIENT_MUTATION_KEY_TTL_NS, ClientMutationReservation, ROUTING_LEASE_TTL_NS, RouterStore,
+    ic_time_ns, validate_client_mutation_key,
 };
 use crate::facade::auth;
 use crate::state::RouterError;
@@ -55,7 +55,11 @@ fn evict_expired_client_mutation_keys(
             let key = entry.key().clone();
             let record = entry.value();
             scanned += 1;
-            if !record.routing_in_progress
+            // ADR 0029 Phase 4: only *terminal* sagas are TTL-evictable. A non-terminal
+            // saga (CanonicalPending / CanonicalCommitted / ProjectionPending / Routing) is
+            // retained as a recovery target so the recovery driver can still converge it;
+            // evicting it would silently strand unfinished cross-canister work.
+            if record.is_terminal()
                 && now.saturating_sub(record.created_at_ns) > CLIENT_MUTATION_KEY_TTL_NS
             {
                 expired.push(key.clone());
@@ -138,12 +142,31 @@ impl RouterStore {
                 ));
             }
             if record.routing_in_progress {
-                return Err(RouterError::Conflict(
-                    "client_mutation_key is already in progress; retry later".into(),
-                ));
+                // ADR 0029 Phase 4: honor an unexpired routing lease, but let a retry
+                // reclaim one whose owner crashed before persisting the dispatch envelope.
+                // Reclaiming is safe — `routing_in_progress == true` implies no envelope and
+                // thus no canonical write has happened yet.
+                let lease_live = record
+                    .routing_lease_ns
+                    .is_some_and(|started| now.saturating_sub(started) <= ROUTING_LEASE_TTL_NS);
+                if lease_live {
+                    return Err(RouterError::Conflict(
+                        "client_mutation_key is already in progress; retry later".into(),
+                    ));
+                }
+                record.routing_lease_ns = Some(now);
+                let mutation_id = record.mutation_id;
+                ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+                    m.insert(key, record);
+                });
+                return Ok(ClientMutationReservation {
+                    mutation_id,
+                    routing_owner: true,
+                });
             }
             if record.shards.is_empty() && record.completed_row_count.is_none() {
                 record.routing_in_progress = true;
+                record.routing_lease_ns = Some(now);
                 let mutation_id = record.mutation_id;
                 ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
                     m.insert(key, record);
@@ -250,6 +273,55 @@ impl RouterStore {
     ) -> Option<RouterMutationRecord> {
         let key = client_mutation_key(caller, graph_id, client_key);
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key))
+    }
+
+    /// Record a recovery diagnostic on a mutation, surfaced by `mutation_status` (ADR 0029
+    /// Phase 4). No-op if the record is gone or already terminal.
+    pub fn record_router_mutation_last_error(
+        &self,
+        key: &ClientMutationKey,
+        error: String,
+    ) -> Result<(), RouterError> {
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            if let Some(mut record) = m.get(key)
+                && !record.is_terminal()
+            {
+                record.last_error = Some(error);
+                m.insert(key.clone(), record);
+            }
+            Ok(())
+        })
+    }
+
+    /// Bounded scan for sagas the recovery driver can converge: non-terminal records that
+    /// have a persisted dispatch envelope and are not currently held by an active routing
+    /// lease (ADR 0029 Phase 4). Returns `(recoverable_keys, last_examined, scanned)`; the
+    /// caller advances a round-robin cursor with `last_examined`.
+    pub fn scan_recoverable_mutations(
+        &self,
+        start_after: Option<&ClientMutationKey>,
+        budget: usize,
+    ) -> (Vec<ClientMutationKey>, Option<ClientMutationKey>, u32) {
+        let mut scanned: u32 = 0;
+        let mut last_key: Option<ClientMutationKey> = None;
+        let mut recoverable: Vec<ClientMutationKey> = Vec::new();
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| {
+            let lower = match start_after {
+                Some(key) => Bound::Excluded(key.clone()),
+                None => Bound::Unbounded,
+            };
+            for entry in m.range((lower, Bound::Unbounded)).take(budget) {
+                let key = entry.key().clone();
+                let record = entry.value();
+                scanned += 1;
+                if !record.routing_in_progress && !record.is_terminal() && !record.shards.is_empty()
+                {
+                    recoverable.push(key.clone());
+                }
+                last_key = Some(key);
+            }
+        });
+        (recoverable, last_key, scanned)
     }
 
     pub fn record_router_mutation_shards(

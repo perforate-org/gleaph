@@ -1,9 +1,9 @@
 # 0025. Client-mutation idempotency journal retention, compaction, and GC
 
 Date: 2026-06-20
-Status: implemented
-Last revised: 2026-06-20
-Anchor timestamp: 2026-06-20 16:04:00 UTC +0000
+Status: implemented (eviction predicate and timer stance revised by ADR 0029 Phase 4)
+Last revised: 2026-06-21
+Anchor timestamp: 2026-06-21 13:18:04 UTC +0000
 
 ## Context
 
@@ -46,7 +46,8 @@ completed_row_count }`, which is all replay and TTL eviction need.
 inserts a record). After each new insert it runs `gc_expired_client_mutation_keys`, which
 advances a **heap-only round-robin cursor** over the journal keyspace, examines
 `MUTATION_GC_BUDGET` (2) records, and removes those past `CLIENT_MUTATION_KEY_TTL_NS` that
-are not `routing_in_progress`. Each insert evicts up to 2 expired records, so eviction
+are in a **terminal** lifecycle phase (`Completed` or `Failed`; see the eviction-predicate
+revision below). Each insert evicts up to 2 expired records, so eviction
 keeps pace with insertion and the journal converges to its TTL working set with no
 operator action, no timer, and no second stable index. The cursor is ephemeral: on upgrade
 it resets to the start, which merely restarts the lap (the journal itself is fully stable).
@@ -61,8 +62,26 @@ backfill / projection steps. It exists to drain a large pre-existing backlog qui
 force a full pass; B alone keeps steady-state growth bounded. Both share one eviction core
 (`evict_expired_client_mutation_keys`).
 
-Only records that are **not** `routing_in_progress` are ever removed, so an in-flight
-reservation is never yanked even if it is wall-clock-expired.
+Only **terminal** records are ever removed (see the eviction-predicate revision below), so
+no in-flight or recoverable saga is yanked even if it is wall-clock-expired.
+
+### Eviction predicate revision (ADR 0029 Phase 4)
+
+The original predicate evicted any record that was past the TTL and **not**
+`routing_in_progress`. That stranded a federated mutation whose canonical writes were
+durable but whose derived projections had not yet converged (`CanonicalCommitted` /
+`ProjectionPending`) and whose canonical fan-out was only partly applied
+(`CanonicalPending`): such records have `routing_in_progress == false`, so the old rule
+made them TTL-evictable, silently discarding a saga the recovery driver still had to finish.
+
+ADR 0029 Phase 4 makes the shared eviction core (`evict_expired_client_mutation_keys`)
+evictable **iff the record is terminal** — `RouterMutationRecord::is_terminal()`, i.e. the
+lifecycle phase is `Completed` or `Failed`. Non-terminal sagas (`Routing`,
+`CanonicalPending`, `CanonicalCommitted`, `ProjectionPending`) are retained as recovery
+targets regardless of age. This subsumes the old `routing_in_progress` exclusion (a routing
+record is non-terminal) and additionally protects committed-but-unprojected sagas. Age is
+still tracked solely by `created_at_ns`; terminal records past the TTL evict exactly as
+before.
 
 ### Alternatives considered
 
@@ -74,8 +93,12 @@ reservation is never yanked even if it is wall-clock-expired.
   can be added later behind the same TTL contract without changing observable semantics.
 - **Operator-only sweep (no B).** Bounded only if the operator runs the loop; fragile.
   Kept as the backstop, not the primary mechanism.
-- **Router timer.** The router deliberately has no `ic_cdk_timers`/`heartbeat`; all router
-  maintenance is operator- or write-path-driven. B fits that model.
+- **Router timer.** This ADR originally kept the router free of `ic_cdk_timers`/`heartbeat`;
+  all retention maintenance is operator- or write-path-driven, and B fits that model.
+  **Superseded for recovery by ADR 0029 Phase 4**, which introduces a single, bounded,
+  self-rescheduling recovery timer for autonomous federated-saga convergence. Retention GC
+  (B + sweep) remains write-path/operator-driven as described here; the recovery timer is a
+  separate concern (liveness of unfinished sagas, not journal size) and does not evict.
 - **Per-write full scan.** O(n) per mutation; unacceptable.
 
 ## Consequences
@@ -99,4 +122,5 @@ reservation is never yanked even if it is wall-clock-expired.
 `amortized_gc_evicts_expired_and_keeps_fresh` (B),
 `sweep_removes_expired_but_keeps_fresh_and_in_progress`,
 `sweep_paginates_with_cursor_until_done`,
-`sweep_requires_admin_and_nonzero_budget`.
+`sweep_requires_admin_and_nonzero_budget`,
+`ttl_eviction_retains_nonterminal_saga_but_evicts_terminal` (ADR 0029 Phase 4 predicate).

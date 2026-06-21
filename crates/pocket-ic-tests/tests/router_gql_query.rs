@@ -17,7 +17,8 @@ use gleaph_pocket_ic_tests::{
     gql_execute_idempotent_as_admin_expect_err, gql_execute_idempotent_result_as_admin,
     gql_query_as_admin, gql_query_as_admin_expect_err, gql_query_with_consistency_as_admin,
     graph_index_pending_min_mutation_id, install_federation, install_single_shard_federation,
-    knowledge_map_live_query, seed_knowledge_map_graph,
+    knowledge_map_live_query, mutation_status_as_admin, run_router_recovery_timer,
+    seed_knowledge_map_graph,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -288,6 +289,45 @@ fn router_atleast_read_barrier_serves_when_satisfied_and_lags_when_unmet() {
         gql_query_with_consistency_as_admin(&env, "MATCH (n:Person) RETURN n", ReadMode::Eventual)
             .expect("Eventual never blocks");
     assert_eq!(eventual.row_count, 1);
+}
+
+#[test]
+fn router_mutation_status_reports_completed_and_recovery_timer_is_safe_noop() {
+    // ADR 0029 Phase 4: a successful idempotent DML finalizes its saga inline, so
+    // `mutation_status` reports `Completed` with no outstanding shard or required action. The
+    // autonomous recovery timer (armed after every idempotent DML) must find no recoverable
+    // work and leave the terminal saga untouched.
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
+
+    let env = install_single_shard_federation();
+    let key = "router_mutation_status_completed";
+
+    let result = gql_execute_idempotent_result_as_admin(&env, "INSERT (:Person)", key);
+    assert!(result.token.is_some(), "idempotent DML issues a token");
+
+    let status = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+        .expect("status for a known client_mutation_key");
+    assert_eq!(status.phase, MutationLifecyclePhase::Completed);
+    assert_eq!(status.target_shard, None);
+    assert_eq!(status.next_action, "none");
+    assert!(status.last_error.is_none());
+
+    run_router_recovery_timer(&env);
+
+    let after = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+        .expect("status after a recovery tick");
+    assert_eq!(
+        after.phase,
+        MutationLifecyclePhase::Completed,
+        "recovery timer must not disturb a completed saga"
+    );
+
+    let missing = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, "no-such-key");
+    assert!(
+        matches!(missing, Err(RouterError::InvalidArgument(_))),
+        "unknown client_mutation_key returns InvalidArgument, got {missing:?}"
+    );
 }
 
 #[test]

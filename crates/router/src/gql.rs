@@ -21,6 +21,8 @@ use gleaph_graph_kernel::plan_exec::{
 use ic_cdk::api::msg_caller;
 
 use crate::execution_path::check_adhoc_execution_path;
+#[cfg(target_family = "wasm")]
+use crate::facade::stable::label_stats::ClientMutationKey;
 use crate::facade::stable::label_stats::RouterMutationShard;
 use crate::facade::store::RouterStore;
 use crate::federation::{
@@ -419,7 +421,7 @@ pub async fn gql_execute_idempotent(
     params: Vec<u8>,
     client_mutation_key: String,
 ) -> Result<GqlQueryResult, RouterError> {
-    run_gql(
+    let result = run_gql(
         &query,
         &params,
         GqlExecutionMode::Update,
@@ -428,7 +430,13 @@ pub async fn gql_execute_idempotent(
         Some(&client_mutation_key),
         ReadMode::Eventual,
     )
-    .await
+    .await;
+    // ADR 0029 Phase 4: a federated mutation that committed canonically but could not
+    // finish projection inline (returned here as an error) is left non-terminal; arm the
+    // recovery driver so it converges without the client retrying. Self-guarding no-op when
+    // the saga already finalized.
+    crate::recovery::arm_if_needed();
+    result
 }
 
 /// Run a read-only program on the **update** path (higher cost; escape hatch only).
@@ -1445,6 +1453,78 @@ async fn recover_mutation_outcome(
     )
     .await?;
     Ok(Some(entry))
+}
+
+/// ADR 0029 Phase 4: drive one non-terminal saga toward `Completed` using only safe,
+/// idempotent projection/index convergence — the recovery driver never re-executes
+/// canonical DML.
+///
+/// For each unfinished shard: if the graph mutation journal shows the canonical write
+/// committed, advance that shard's label-stats projection and record it
+/// completed+projected; once every shard is projected the record finalizes (terminal). If a
+/// shard's canonical write has not committed (`CanonicalPending`), a diagnostic is recorded
+/// and the shard is left for explicit, retry-driven recovery — re-dispatching canonical DML
+/// from a background driver is out of scope precisely because it is the one operation that
+/// risks double-apply.
+///
+/// Idempotent and bounded: safe to call concurrently with a client retry (both paths use
+/// cursor-guarded projection advancement and idempotent record mutators).
+#[cfg(target_family = "wasm")]
+pub(crate) async fn recover_mutation_record(
+    store: &RouterStore,
+    key: &ClientMutationKey,
+) -> Result<(), RouterError> {
+    let Some(record) = store.router_mutation_record(key.caller, key.graph_id, &key.client_key)
+    else {
+        return Ok(());
+    };
+    if record.is_terminal() {
+        return Ok(());
+    }
+    let mutation_id = record.mutation_id;
+    for shard in &record.shards {
+        if shard.completed && shard.projection_advanced {
+            continue;
+        }
+        match recover_mutation_outcome(
+            store,
+            key.graph_id,
+            shard.graph_canister,
+            shard.shard_id,
+            mutation_id,
+        )
+        .await?
+        {
+            Some(entry) => {
+                if !shard.completed {
+                    store.record_router_mutation_shard_completed(
+                        key.caller,
+                        key.graph_id,
+                        &key.client_key,
+                        shard.shard_id,
+                        entry.row_count,
+                    )?;
+                }
+                store.record_router_mutation_shard_projection_advanced(
+                    key.caller,
+                    key.graph_id,
+                    &key.client_key,
+                    shard.shard_id,
+                )?;
+            }
+            None => {
+                store.record_router_mutation_last_error(
+                    key,
+                    format!(
+                        "shard {} canonical write not yet committed; retry the idempotent \
+                         mutation to resume",
+                        shard.shard_id
+                    ),
+                )?;
+            }
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
