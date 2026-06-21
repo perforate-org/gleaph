@@ -25,14 +25,6 @@ pub trait PlanMutationExecutor {
     ) -> Result<PlanMutationBindings, PlanMutationError>;
 }
 
-pub async fn execute_plan_mutations_async(
-    store: &GraphStore,
-    plan: &PhysicalPlan,
-    execution: GqlExecutionContext,
-) -> Result<PlanMutationBindings, PlanMutationError> {
-    execute_ops_async(store, &plan.ops, &BTreeMap::new(), execution).await
-}
-
 #[derive(Clone, Debug, Default, PartialEq)]
 pub struct PlanMutationBindings {
     pub vertices: BTreeMap<String, VertexId>,
@@ -75,24 +67,6 @@ pub fn execute_ops(
 ) -> Result<PlanMutationBindings, PlanMutationError> {
     let mut bindings = PlanMutationBindings::default();
     execute_ops_with_bindings(store, ops, parameters, execution, &mut bindings)?;
-    Ok(bindings)
-}
-
-pub async fn execute_ops_async(
-    store: &GraphStore,
-    ops: &[PlanOp],
-    parameters: &BTreeMap<String, gleaph_gql::Value>,
-    execution: GqlExecutionContext,
-) -> Result<PlanMutationBindings, PlanMutationError> {
-    let mut bindings = PlanMutationBindings::default();
-    Box::pin(execute_ops_with_bindings_async(
-        store,
-        ops,
-        parameters,
-        execution,
-        &mut bindings,
-    ))
-    .await?;
     Ok(bindings)
 }
 
@@ -245,7 +219,11 @@ fn execute_ops_with_bindings(
     Ok(())
 }
 
-async fn execute_ops_with_bindings_async(
+/// Apply the mutation ops in order against pre-seeded `bindings`, **without** finalizing
+/// hot-forward accounting. Read-prefix ops are skipped here: matched variables are bound in
+/// the read phase before this canonical segment and supplied via `bindings` (see
+/// [`execute_mutation_tail_async`]).
+pub(crate) async fn apply_mutation_ops_async(
     store: &GraphStore,
     ops: &[PlanOp],
     parameters: &BTreeMap<String, gleaph_gql::Value>,
@@ -326,7 +304,7 @@ async fn execute_ops_with_bindings_async(
                 sub_plan: Some(sub_plan),
                 ..
             } => {
-                Box::pin(execute_ops_with_bindings_async(
+                Box::pin(apply_mutation_ops_async(
                     store,
                     sub_plan,
                     parameters,
@@ -397,8 +375,91 @@ async fn execute_ops_with_bindings_async(
             other => return Err(PlanMutationError::UnsupportedOp(plan_op_name(other))),
         }
     }
+    Ok(())
+}
+
+async fn execute_ops_with_bindings_async(
+    store: &GraphStore,
+    ops: &[PlanOp],
+    parameters: &BTreeMap<String, gleaph_gql::Value>,
+    execution: GqlExecutionContext,
+    bindings: &mut PlanMutationBindings,
+) -> Result<(), PlanMutationError> {
+    Box::pin(apply_mutation_ops_async(
+        store, ops, parameters, execution, bindings,
+    ))
+    .await?;
     finish_hot_forward_vertices(bindings);
     Ok(())
+}
+
+/// One read-phase binding row projected to the vertex/edge handles a mutation tail can seed.
+#[derive(Clone, Debug, Default)]
+pub struct SeededMutationRow {
+    pub vertices: BTreeMap<String, VertexId>,
+    pub edges: BTreeMap<String, EdgeHandle>,
+}
+
+/// Number of leading read-prefix ops in a DML plan: everything before the first op the
+/// mutation executor owns (a mutation op, a Gleaph-finalize `CALL`, or a `USE GRAPH`
+/// sub-plan). Those tail ops must run in the mutation executor, not the read phase.
+pub fn read_prefix_len(ops: &[PlanOp]) -> usize {
+    ops.iter()
+        .position(|op| {
+            is_mutation_op(op)
+                || matches!(
+                    op,
+                    PlanOp::CallProcedure { .. }
+                        | PlanOp::UseGraph {
+                            sub_plan: Some(_),
+                            ..
+                        }
+                )
+        })
+        .unwrap_or(ops.len())
+}
+
+/// Run a plan's mutation tail once per read-phase seed row (ADR 0029 §1 canonical segment).
+///
+/// `seed_rows` are the binding rows produced by the plan's read prefix, already executed
+/// (with index access) in the read phase. An empty slice means the statement has no read
+/// prefix (e.g. a bare `INSERT`): the ops run once with no pre-bound variables. Variable
+/// bindings reset per row; label-stats and hot-forward accounting accumulate across the
+/// whole batch, which executes as a single shard-local segment with no inter-canister
+/// `await` between writes.
+pub async fn execute_mutation_tail_async(
+    store: &GraphStore,
+    mutation_ops: &[PlanOp],
+    seed_rows: &[SeededMutationRow],
+    parameters: &BTreeMap<String, gleaph_gql::Value>,
+    execution: GqlExecutionContext,
+) -> Result<PlanMutationBindings, PlanMutationError> {
+    let mut bindings = PlanMutationBindings::default();
+    if seed_rows.is_empty() {
+        Box::pin(apply_mutation_ops_async(
+            store,
+            mutation_ops,
+            parameters,
+            execution,
+            &mut bindings,
+        ))
+        .await?;
+    } else {
+        for row in seed_rows {
+            bindings.vertices = row.vertices.clone();
+            bindings.edges = row.edges.clone();
+            Box::pin(apply_mutation_ops_async(
+                store,
+                mutation_ops,
+                parameters,
+                execution.clone(),
+                &mut bindings,
+            ))
+            .await?;
+        }
+    }
+    finish_hot_forward_vertices(&mut bindings);
+    Ok(bindings)
 }
 
 fn execute_set_item(

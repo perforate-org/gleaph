@@ -5,9 +5,10 @@ use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::{label_pending, pending};
 use crate::plan::{
-    PlanBinding, PlanMutationBindings, PlanQueryResult, PlanQueryRow, execute_plan_mutations_async,
-    execute_plan_query, execute_plan_query_bindings, execute_plan_query_bindings_with_initial_rows,
-    plan_contains_gleaph_finalize_call,
+    PlanBinding, PlanMutationBindings, PlanQueryResult, PlanQueryRow, SeededMutationRow,
+    execute_mutation_tail_async, execute_plan_query, execute_plan_query_bindings,
+    execute_plan_query_bindings_with_initial_rows, plan_contains_gleaph_finalize_call,
+    read_prefix_len,
 };
 use gleaph_gql::Value;
 use gleaph_gql::ast::{Statement, StatementBlock};
@@ -42,6 +43,91 @@ fn gleaph_plan_options() -> PlanBuildOptions<'static> {
 
 fn plan_needs_mutation_executor(plan: &gleaph_gql_planner::PhysicalPlan) -> bool {
     plan.has_dml() || plan_contains_gleaph_finalize_call(&plan.ops)
+}
+
+/// Project a read-phase binding row to the vertex/edge handles its mutation tail can seed.
+fn seeded_mutation_row(row: &PlanQueryRow) -> SeededMutationRow {
+    let mut seed = SeededMutationRow::default();
+    for (name, binding) in row.iter() {
+        match binding {
+            PlanBinding::Vertex(vertex_id) => {
+                seed.vertices.insert(name.to_string(), *vertex_id);
+            }
+            PlanBinding::Edge(edge) => {
+                seed.edges.insert(name.to_string(), edge.handle);
+            }
+            _ => {}
+        }
+    }
+    seed
+}
+
+/// The read-prefix sub-plan (leading ops before the first mutation op). The full plan's
+/// binding layout and annotations are retained — the mutation-tail vars become unused slots.
+fn read_prefix_plan(
+    plan: &gleaph_gql_planner::PhysicalPlan,
+    prefix_len: usize,
+) -> gleaph_gql_planner::PhysicalPlan {
+    let mut read_plan = plan.clone();
+    read_plan.ops.truncate(prefix_len);
+    read_plan
+}
+
+/// Execute a DML plan in two phases (ADR 0029 §1): run the read prefix (with index access)
+/// to bind matched variables, then apply the mutation tail once per binding row in the
+/// shard-local canonical segment. `router_seed` carries router-supplied seed rows plus the
+/// leading-anchor skip flag; `None` means run the read prefix from a single empty row.
+async fn execute_dml_plan_async(
+    store: &GraphStore,
+    plan: &gleaph_gql_planner::PhysicalPlan,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    execution: GqlExecutionContext,
+    router_seed: Option<(Vec<PlanQueryRow>, bool)>,
+) -> Result<PlanMutationBindings, GqlRunError> {
+    let seed_rows = read_phase_seed_rows(store, plan, parameters, index, &execution, router_seed)
+        .await?
+        .unwrap_or_default();
+    let mutation_ops = &plan.ops[read_prefix_len(&plan.ops)..];
+    // The mutation tail intentionally runs with empty parameters, matching the prior
+    // single-pass mutation path; $-parameters are resolved in the read phase.
+    let empty_params = BTreeMap::new();
+    Ok(
+        execute_mutation_tail_async(store, mutation_ops, &seed_rows, &empty_params, execution)
+            .await?,
+    )
+}
+
+/// Run a DML plan's read prefix and project the result to mutation seed rows. Returns `None`
+/// when the plan has no read prefix (bare `INSERT`): the caller runs the tail once unseeded.
+async fn read_phase_seed_rows(
+    store: &GraphStore,
+    plan: &gleaph_gql_planner::PhysicalPlan,
+    parameters: &BTreeMap<String, Value>,
+    index: Option<&dyn PropertyIndexLookup>,
+    execution: &GqlExecutionContext,
+    router_seed: Option<(Vec<PlanQueryRow>, bool)>,
+) -> Result<Option<Vec<SeededMutationRow>>, GqlRunError> {
+    let prefix_len = read_prefix_len(&plan.ops);
+    if prefix_len == 0 {
+        return Ok(None);
+    }
+    let read_plan = read_prefix_plan(plan, prefix_len);
+    let (initial_rows, skip_leading) = match router_seed {
+        Some((rows, skip)) => (rows, skip),
+        None => (vec![crate::plan::empty_row_for_plan(&read_plan)], false),
+    };
+    let rows = execute_plan_query_bindings_with_initial_rows(
+        store,
+        &read_plan,
+        parameters,
+        index,
+        execution.clone(),
+        initial_rows,
+        skip_leading,
+    )
+    .await?;
+    Ok(Some(rows.iter().map(seeded_mutation_row).collect()))
 }
 
 fn plan_statement(
@@ -249,7 +335,9 @@ async fn run_transaction_block(
         }
         let plan = plan_statement(stmt).map_err(|e| GqlRunError::Plan(e.to_string()))?;
         if plan_needs_mutation_executor(&plan) {
-            let mutation = execute_plan_mutations_async(store, &plan, execution.clone()).await?;
+            let mutation =
+                execute_dml_plan_async(store, &plan, parameters, index, execution.clone(), None)
+                    .await?;
             merge_hot_forward_vertices(&mut hot_forward_vertices, &mutation.hot_forward_vertices);
             merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
             record_mutation_procedure_rows(
@@ -551,18 +639,27 @@ async fn run_wire_plans(
 /// inter-canister call. Index posting *delivery* happens *after* this segment via `flush_pending`
 /// (the asynchronous projection boundary), never inside it. The missing index parameter is the
 /// structural enforcement of the "no remote call inside the critical section" invariant.
+///
+/// Matched-variable mutations (`MATCH ... DELETE`/`SET`/etc.) run their **read prefix in a
+/// separate read phase** (with index access) *before* this segment; the resulting bindings
+/// arrive as `seed_rows`, so this segment only applies the write-only mutation tail.
 async fn apply_canonical_mutation_segment(
     store: &GraphStore,
-    plan: &gleaph_gql_planner::PhysicalPlan,
+    mutation_ops: &[gleaph_gql_planner::plan::PlanOp],
+    seed_rows: &[SeededMutationRow],
     execution: GqlExecutionContext,
     mutation_id: Option<MutationId>,
     emitted_delta_first_seq: &mut Option<ShardEventSeq>,
     emitted_delta_last_seq: &mut Option<ShardEventSeq>,
 ) -> Result<PlanMutationBindings, GqlRunError> {
-    let mutation = match execute_plan_mutations_async(store, plan, execution).await {
-        Ok(mutation) => mutation,
-        Err(error) => trap_wire_mutation_failure(error),
-    };
+    let empty_params = BTreeMap::new();
+    let mutation =
+        match execute_mutation_tail_async(store, mutation_ops, seed_rows, &empty_params, execution)
+            .await
+        {
+            Ok(mutation) => mutation,
+            Err(error) => trap_wire_mutation_failure(error),
+        };
     let has_delta = !mutation.label_stats_delta.vertex.is_empty()
         || !mutation.label_stats_delta.edge.is_empty();
     if let Some(mutation_id) = mutation_id
@@ -654,10 +751,19 @@ async fn run_wire_plans_inner(
 
     for (plan_idx, plan) in plans.iter().enumerate() {
         if plan_needs_mutation_executor(plan) {
+            // ADR 0029: read phase (with index) binds matched variables; consumes the router's
+            // leading-anchor seed rows once, just like a read-only plan would.
+            let router_seed = (skip_index && !seed_rows.is_empty())
+                .then(|| (std::mem::take(&mut seed_rows), true));
+            let mutation_seed_rows =
+                read_phase_seed_rows(store, plan, parameters, index, &execution, router_seed)
+                    .await?
+                    .unwrap_or_default();
             // ADR 0029 §1: shard-local canonical critical section (no inter-canister call).
             let mutation = apply_canonical_mutation_segment(
                 store,
-                plan,
+                &plan.ops[read_prefix_len(&plan.ops)..],
+                &mutation_seed_rows,
                 execution.clone(),
                 mutation_id,
                 &mut emitted_delta_first_seq,
@@ -1164,6 +1270,126 @@ mod tests {
         .expect("match");
         assert_eq!(q.rows.len(), 1);
         assert_eq!(q.rows[0].get("n.age"), Some(&Value::Int64(1)));
+    }
+
+    // Regression (ADR 0029 Phase 1 follow-up, defect #2 fixed): an inline
+    // property-equality predicate on a **non-indexed** property still filters. Without
+    // index stats the planner now emits a labeled NodeScan + residual PropertyFilter
+    // (instead of an unexecutable IndexScan), so the equality is enforced.
+    #[test]
+    fn inline_property_equality_filters_without_index() {
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        for age in [1i64, 2] {
+            pollster::block_on(run_adhoc_gql(
+                store,
+                &format!("INSERT (:FilterProbe {{age: {age}}})"),
+                &params,
+                None,
+                GqlCanisterExecutionMode::Update,
+                GqlExecutionContext::default(),
+            ))
+            .expect("insert probe vertex");
+        }
+
+        let q = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH (n:FilterProbe {age: 1}) RETURN n",
+            &params,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("inline-property filtered match");
+        assert_eq!(
+            q.rows.len(),
+            1,
+            "inline property equality must filter on a non-indexed property"
+        );
+    }
+
+    // Regression (defect #2 fixed, WHERE-clause form): same expectation as the inline
+    // form, exercised through `WHERE n.age = 1`.
+    #[test]
+    fn where_property_equality_filters_without_index() {
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        for age in [1i64, 2] {
+            pollster::block_on(run_adhoc_gql(
+                store,
+                &format!("INSERT (:WhereProbe {{age: {age}}})"),
+                &params,
+                None,
+                GqlCanisterExecutionMode::Update,
+                GqlExecutionContext::default(),
+            ))
+            .expect("insert probe vertex");
+        }
+
+        let q = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH (n:WhereProbe) WHERE n.age = 1 RETURN n",
+            &params,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("WHERE-clause filtered match");
+        assert_eq!(
+            q.rows.len(),
+            1,
+            "WHERE property equality must filter on a non-indexed property"
+        );
+    }
+
+    // Regression (exec defect #1, fixed): a MATCH-bound variable stays bound across a
+    // following INSERT clause so a later DELETE can reference it. Before the read-phase
+    // seeding fix the segment failed with `MissingVertexBinding { variable: "d" }`.
+    #[test]
+    fn match_binding_survives_insert_for_following_delete() {
+        let store = GraphStore::new();
+        let params = BTreeMap::new();
+        pollster::block_on(run_adhoc_gql(
+            store,
+            "INSERT (:BindHub)",
+            &params,
+            None,
+            GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
+        ))
+        .expect("insert detached hub");
+
+        pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH (d:BindHub) INSERT (:BindOrphan) DELETE d",
+            &params,
+            None,
+            GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
+        ))
+        .expect("MATCH-bound variable must stay bound across INSERT for the following DELETE");
+
+        let hub = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH (n:BindHub) RETURN n",
+            &params,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("query hub");
+        assert_eq!(hub.rows.len(), 0, "the matched hub must be deleted");
+
+        let orphan = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH (n:BindOrphan) RETURN n",
+            &params,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("query orphan");
+        assert_eq!(orphan.rows.len(), 1, "the inserted orphan must persist");
     }
 
     #[test]

@@ -161,17 +161,34 @@ fn test_return_with_order_by() {
 fn test_anchor_equality_no_stats() {
     let plan = plan_query("MATCH (n:User) WHERE n.uid = 'alice' RETURN n");
 
-    // Without stats, should still pick equality as anchor.
+    // Without stats the planner cannot confirm an index, so it must NOT anchor on the
+    // equality (that would emit an unexecutable IndexScan and drop the label). It falls
+    // back to a labeled scan; the equality is enforced by a residual PropertyFilter.
     if let Some(anchor) = &plan.annotations.optimizer.anchor {
         assert_eq!(&*anchor.variable, "n");
         assert!(
-            matches!(&anchor.source, AnchorSource::PropertyEquality { property } if &**property == "uid"),
-            "expected PropertyEquality anchor, got: {:?}",
+            matches!(&anchor.source, AnchorSource::FullScan),
+            "expected FullScan anchor without stats, got: {:?}",
             anchor.source
         );
     } else {
         panic!("expected anchor to be set");
     }
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::PropertyFilter { .. })),
+        "equality must be enforced by a residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+        "no IndexScan without a confirmed index, got: {:?}",
+        plan.ops
+    );
 }
 
 #[test]
@@ -1254,24 +1271,64 @@ fn test_inline_property_index_scan_with_stats() {
     );
 }
 
+// Regression (ADR 0029 Phase 1 follow-up): with stats present but the property NOT
+// indexed (the federated/router planning scenario), the inline property-equality stays
+// enforced via a labeled NodeScan + residual PropertyFilter (no index assumption).
+#[test]
+fn inline_property_equality_enforced_with_stats_but_no_index() {
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 10000);
+    // `uid` is deliberately NOT added to `indexed_vertex_properties`.
+
+    let plan = plan_query_with_stats("MATCH (n:User {uid: 'alice'}) RETURN n", &stats);
+
+    let index_served = plan
+        .ops
+        .iter()
+        .any(|op| matches!(op, PlanOp::IndexScan { property, .. } if &**property == "uid"));
+    let residual_filter = plan
+        .ops
+        .iter()
+        .any(|op| matches!(op, PlanOp::PropertyFilter { .. }));
+    assert!(
+        index_served || residual_filter,
+        "inline property equality on a non-indexed property must stay enforced \
+         (IndexScan or residual PropertyFilter), got: {:?}",
+        plan.ops
+    );
+}
+
 #[test]
 fn test_inline_property_anchor_without_stats() {
     let plan = plan_query("MATCH (n:User {uid: 'alice'}) RETURN n");
 
-    // Without stats, inline property should still be chosen as anchor.
+    // Without stats the planner cannot confirm an index, so an inline property must not
+    // be chosen as an index anchor (which would drop the label and be unexecutable). It
+    // falls back to a labeled scan with a residual PropertyFilter for the equality.
     if let Some(anchor) = &plan.annotations.optimizer.anchor {
         assert_eq!(&*anchor.variable, "n");
         assert!(
-            matches!(
-                &anchor.source,
-                AnchorSource::InlinePropertyEquality { property } if &**property == "uid"
-            ),
-            "expected InlinePropertyEquality anchor, got: {:?}",
+            matches!(&anchor.source, AnchorSource::FullScan),
+            "expected FullScan anchor without stats, got: {:?}",
             anchor.source
         );
     } else {
         panic!("expected anchor to be set");
     }
+    assert!(
+        plan.ops.iter().any(
+            |op| matches!(op, PlanOp::NodeScan { label: Some(l), .. } if l.name.as_ref() == "User")
+        ),
+        "expected a labeled NodeScan, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::PropertyFilter { .. })),
+        "equality must be enforced by a residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
 }
 
 #[test]
@@ -1364,9 +1421,36 @@ fn test_index_scan_keeps_property_filter_for_exact_numeric_correctness() {
     );
 }
 
+// Regression (ADR 0029 Phase 1 follow-up, defect #2 fixed): without index stats the
+// planner must NOT emit an index-assuming `IndexScan` (which would drop the label and be
+// unexecutable without an index client). It emits a labeled scan plus a residual
+// `PropertyFilter`, so the equality still filters correctly when no index exists.
+#[test]
+fn inline_property_equality_keeps_filter_without_index_stats() {
+    let plan = plan_query("MATCH (n:User {uid: 'alice'}) RETURN n");
+    assert!(
+        !plan
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+        "no IndexScan must be chosen without confirmed index stats, got: {:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::PropertyFilter { .. })),
+        "the equality must be enforced by a residual PropertyFilter, got: {:?}",
+        plan.ops
+    );
+}
+
 #[test]
 fn test_explain_inline_anchor() {
-    let plan = plan_query("MATCH (n:User {uid: 'alice'}) RETURN n");
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 1000);
+    stats.indexed_vertex_properties.insert("uid".to_string());
+    let plan = plan_query_with_stats("MATCH (n:User {uid: 'alice'}) RETURN n", &stats);
     let output = explain_plan(&plan);
 
     assert!(
@@ -2560,13 +2644,34 @@ fn compat_planner_supports_mutations() {
 
 #[test]
 fn compat_planner_prefers_property_equality_anchor() {
-    let plan = plan_query("MATCH (a)-[:X]->(b:User) WHERE b.id = 1 RETURN a, b LIMIT 10");
+    // With confirmed index stats the planner anchors on the equality.
+    let mut stats = TableStats::default();
+    stats.label_cardinality.insert("User".to_string(), 1000);
+    stats.indexed_vertex_properties.insert("id".to_string());
+    let plan = plan_query_with_stats(
+        "MATCH (a)-[:X]->(b:User) WHERE b.id = 1 RETURN a, b LIMIT 10",
+        &stats,
+    );
     let anchor = plan.annotations.optimizer.anchor.as_ref().unwrap();
     assert_eq!(&*anchor.variable, "b");
     assert!(matches!(
         anchor.source,
         AnchorSource::PropertyEquality { .. }
     ));
+
+    // Without stats the equality is not used as an index anchor; it falls back to the
+    // labeled node and the equality is enforced by a residual PropertyFilter.
+    let no_stats = plan_query("MATCH (a)-[:X]->(b:User) WHERE b.id = 1 RETURN a, b LIMIT 10");
+    let no_stats_anchor = no_stats.annotations.optimizer.anchor.as_ref().unwrap();
+    assert_eq!(&*no_stats_anchor.variable, "b");
+    assert!(
+        !no_stats
+            .ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::IndexScan { .. })),
+        "no IndexScan without confirmed index stats, got: {:?}",
+        no_stats.ops
+    );
 }
 
 // ── Category 3: Anchor selection ──

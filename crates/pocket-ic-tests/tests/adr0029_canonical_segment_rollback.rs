@@ -1,13 +1,14 @@
 //! PocketIC proof for ADR 0029 Phase 1: a graph-shard canonical mutation segment
 //! that traps after a local write rolls back the **whole** message.
 //!
-//! A single linear DML statement (`MATCH ... INSERT ... DELETE ...`) compiles to
-//! one `PhysicalPlan`, which the shard executes as one shard-local canonical
-//! segment with no inter-canister `await` inside it (ADR 0029 §1). The plan runs
-//! `INSERT` (a canonical write) before `DELETE`; deleting the matched hub traps
-//! inside the same segment (it still has an incident edge). IC message-execution
-//! atomicity must then discard every canonical write in that message — the orphan
-//! inserted before the trap must not survive.
+//! A single linear DML statement (`MATCH ... INSERT ... DELETE ...`) binds the
+//! matched hub in the read phase, then the shard applies the write tail
+//! (`INSERT` then `DELETE`) as one shard-local canonical segment with no
+//! inter-canister `await` inside it (ADR 0029 §1). The segment runs `INSERT` (a
+//! canonical write) before `DELETE`; deleting the matched hub traps inside the
+//! same segment (it still has an incident edge). IC message-execution atomicity
+//! must then discard every canonical write in that message — the orphan inserted
+//! before the trap must not survive.
 //!
 //! Two guards make the result unambiguous:
 //!   * A plain `INSERT` of the same orphan label commits and is observable, so the

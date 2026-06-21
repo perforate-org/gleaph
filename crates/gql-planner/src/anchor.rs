@@ -48,52 +48,40 @@ pub fn choose_anchor(pattern: &GraphPattern, stats: Option<&dyn GraphStats>) -> 
 
     // Phase 2: Check inline property equalities from the pattern itself.
     for candidate in &candidates {
-        if !candidate.inline_properties.is_empty() {
-            if let Some(stats) = stats {
-                // Prefer indexed properties.
-                for prop in &candidate.inline_properties {
-                    if stats.is_vertex_property_indexed(prop) {
-                        return Some(AnchorInfo {
-                            variable: candidate.variable.clone().into(),
-                            source: AnchorSource::InlinePropertyEquality {
-                                property: prop.clone().into(),
-                            },
-                        });
-                    }
+        // Prefer an indexed inline property; without confirmed index availability fall
+        // through to a label/full scan so the equality is enforced by a residual
+        // PropertyFilter (an index-assuming anchor would drop the label and be
+        // unexecutable when no index exists).
+        if !candidate.inline_properties.is_empty()
+            && let Some(stats) = stats
+        {
+            for prop in &candidate.inline_properties {
+                if stats.is_vertex_property_indexed(prop) {
+                    return Some(AnchorInfo {
+                        variable: candidate.variable.clone().into(),
+                        source: AnchorSource::InlinePropertyEquality {
+                            property: prop.clone().into(),
+                        },
+                    });
                 }
-            } else {
-                // Without stats, still use the first inline property as anchor hint.
-                return Some(AnchorInfo {
-                    variable: candidate.variable.clone().into(),
-                    source: AnchorSource::InlinePropertyEquality {
-                        property: candidate.inline_properties[0].clone().into(),
-                    },
-                });
             }
         }
     }
 
     // Phase 2b: Check inline WHERE from node patterns.
     for candidate in &candidates {
-        if !candidate.inline_where_properties.is_empty() {
-            if let Some(stats) = stats {
-                for prop in &candidate.inline_where_properties {
-                    if stats.is_vertex_property_indexed(prop) {
-                        return Some(AnchorInfo {
-                            variable: candidate.variable.clone().into(),
-                            source: AnchorSource::InlinePropertyEquality {
-                                property: prop.clone().into(),
-                            },
-                        });
-                    }
+        if !candidate.inline_where_properties.is_empty()
+            && let Some(stats) = stats
+        {
+            for prop in &candidate.inline_where_properties {
+                if stats.is_vertex_property_indexed(prop) {
+                    return Some(AnchorInfo {
+                        variable: candidate.variable.clone().into(),
+                        source: AnchorSource::InlinePropertyEquality {
+                            property: prop.clone().into(),
+                        },
+                    });
                 }
-            } else {
-                return Some(AnchorInfo {
-                    variable: candidate.variable.clone().into(),
-                    source: AnchorSource::InlinePropertyEquality {
-                        property: candidate.inline_where_properties[0].clone().into(),
-                    },
-                });
             }
         }
     }
@@ -253,17 +241,12 @@ fn find_equality_anchor(
         if let Some((var, prop)) = extract_equality_predicate(pred) {
             // Check if this variable is one of our candidates.
             if candidates.iter().any(|c| c.variable == var) {
-                if let Some(stats) = stats {
-                    if stats.is_vertex_property_indexed(&prop) {
-                        return Some(AnchorInfo {
-                            variable: var.into(),
-                            source: AnchorSource::PropertyEquality {
-                                property: prop.into(),
-                            },
-                        });
-                    }
-                } else {
-                    // Without stats, assume the first equality predicate is a good anchor.
+                // Only anchor on an index when stats confirm the property is indexed.
+                // Without that confirmation the equality is enforced by a residual
+                // PropertyFilter over a label/full scan, so do not assume an index here.
+                if let Some(stats) = stats
+                    && stats.is_vertex_property_indexed(&prop)
+                {
                     return Some(AnchorInfo {
                         variable: var.into(),
                         source: AnchorSource::PropertyEquality {
