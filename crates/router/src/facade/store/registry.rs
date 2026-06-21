@@ -25,6 +25,45 @@ use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GraphShardKey, Shard
 
 use super::{RouterStore, ic_time_ns, validate_metadata_name};
 
+/// Per-graph tenancy predicate shared by name resolution and [`RouterStore::resolve_graph`].
+///
+/// A caller may access a graph's metadata/routing data when it is the graph `owner`, listed in
+/// `admins`, a global canister `Admin` (superuser bypass), or the graph's own registered shard
+/// canister. The last case keeps federation/index-routing inter-canister calls working: shards
+/// call the router with their `graph_canister` principal, which is keyed in
+/// [`ROUTER_SHARD_BY_GRAPH`].
+fn caller_may_access_graph(
+    entry: &GraphRegistryEntry,
+    graph_id: GraphId,
+    caller: Principal,
+) -> bool {
+    if auth::is_admin(&caller) || caller == entry.owner || entry.admins.contains(&caller) {
+        return true;
+    }
+    ROUTER_SHARD_BY_GRAPH
+        .with_borrow(|m| m.get(&caller))
+        .is_some_and(|key| key.graph_id == graph_id)
+}
+
+/// Rejects registration whose tenancy fields cannot form a trustworthy boundary.
+///
+/// The anonymous principal as `owner` or in `admins` would make [`caller_may_access_graph`]
+/// match every unauthenticated caller, silently turning the graph world-readable. Validated
+/// before any registration state is mutated so a rejected request leaves no orphaned name.
+fn validate_registration_principals(entry: &GraphRegistryEntry) -> Result<(), RouterError> {
+    if entry.owner == Principal::anonymous() {
+        return Err(RouterError::InvalidArgument(
+            "graph owner must not be the anonymous principal".into(),
+        ));
+    }
+    if entry.admins.contains(&Principal::anonymous()) {
+        return Err(RouterError::InvalidArgument(
+            "graph admins must not include the anonymous principal".into(),
+        ));
+    }
+    Ok(())
+}
+
 const ELEMENT_ID_KEY_DERIVATION_DOMAIN: &[u8] = b"gleaph:element-id-key:v1";
 /// Deterministic entropy for host unit tests and `admin_register_graph` (not IC `raw_rand`).
 const HOST_GRAPH_REGISTRATION_ENTROPY: &[u8] = b"router-test-entropy-seed-000000000000";
@@ -406,8 +445,9 @@ impl RouterStore {
         let entry = ROUTER_GRAPHS
             .with_borrow(|graphs| graphs.get(&graph_id))
             .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
-        if caller != entry.owner && !entry.admins.contains(&caller) {
-            return Err(RouterError::Forbidden);
+        if !caller_may_access_graph(&entry, graph_id, caller) {
+            // Existence non-disclosure: a non-tenant sees the same error as a missing graph.
+            return Err(RouterError::NotFound(graph_name.to_owned()));
         }
         if !matches!(entry.status, GraphStatus::Active | GraphStatus::ReadOnly) {
             return Err(RouterError::GraphUnavailable);
@@ -417,6 +457,28 @@ impl RouterStore {
 
     pub fn resolve_graph_id(&self, graph_name: &str) -> Result<GraphId, RouterError> {
         lookup_graph_id(graph_name).ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))
+    }
+
+    /// Resolve `graph_name` to its `GraphId` only when `caller` may access the graph.
+    ///
+    /// Enforces the per-graph tenancy ACL (see [`caller_may_access_graph`]). A caller who is
+    /// not a tenant gets `NotFound` rather than `Forbidden`, so a non-tenant cannot even confirm
+    /// the graph exists (cross-tenant existence non-disclosure).
+    pub fn resolve_graph_id_authorized(
+        &self,
+        graph_name: &str,
+        caller: Principal,
+    ) -> Result<GraphId, RouterError> {
+        let graph_id = lookup_graph_id(graph_name)
+            .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
+        let entry = ROUTER_GRAPHS
+            .with_borrow(|graphs| graphs.get(&graph_id))
+            .ok_or_else(|| RouterError::NotFound(graph_name.to_owned()))?;
+        if caller_may_access_graph(&entry, graph_id, caller) {
+            Ok(graph_id)
+        } else {
+            Err(RouterError::NotFound(graph_name.to_owned()))
+        }
     }
 
     pub fn list_visible_graph_ids(&self, caller: Principal) -> Result<Vec<GraphId>, RouterError> {
@@ -525,6 +587,7 @@ impl RouterStore {
         entry: GraphRegistryEntry,
     ) -> Result<(), RouterError> {
         auth::require_admin(&caller)?;
+        validate_registration_principals(&entry)?;
         ensure_graph_registration_slot_available(&entry.graph_name, entry.is_home)?;
         let graph_id = intern_graph_name(&entry.graph_name)?;
         let key = derive_element_id_encoding_key(graph_id, HOST_GRAPH_REGISTRATION_ENTROPY);
@@ -541,6 +604,7 @@ impl RouterStore {
         entry: GraphRegistryEntry,
     ) -> Result<(), RouterError> {
         auth::require_admin(&caller)?;
+        validate_registration_principals(&entry)?;
         ensure_graph_registration_slot_available(&entry.graph_name, entry.is_home)?;
 
         let random_bytes = graph_registration_random_entropy().await?;

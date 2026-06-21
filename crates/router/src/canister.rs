@@ -59,14 +59,15 @@ pub(crate) fn resolve_shard(
     logical_graph_name: String,
     shard_id: ShardId,
 ) -> Result<ShardRegistryEntry, RouterError> {
-    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    let graph_id =
+        RouterStore::new().resolve_graph_id_authorized(&logical_graph_name, msg_caller())?;
     RouterStore::new().resolve_shard(graph_id, shard_id)
 }
 
 pub(crate) fn lookup_graph_id(
     graph_name: String,
 ) -> Result<gleaph_graph_kernel::entry::GraphId, RouterError> {
-    RouterStore::new().resolve_graph_id(&graph_name)
+    RouterStore::new().resolve_graph_id_authorized(&graph_name, msg_caller())
 }
 
 pub(crate) fn graph_element_id_encoding_key(
@@ -82,7 +83,9 @@ pub(crate) fn graph_element_id_encoding_key(
 pub(crate) fn list_shards_for_graph(
     logical_graph_name: String,
 ) -> Result<Vec<ShardRegistryEntry>, RouterError> {
-    RouterStore::new().list_shards_for_graph(&logical_graph_name)
+    let graph_id =
+        RouterStore::new().resolve_graph_id_authorized(&logical_graph_name, msg_caller())?;
+    RouterStore::new().list_shards_for_graph_id(graph_id)
 }
 
 /// Router-sourced snapshot of which properties are indexed for a graph (ADR 0023
@@ -92,7 +95,8 @@ pub(crate) fn list_shards_for_graph(
 pub(crate) fn indexed_property_catalog(
     logical_graph_name: String,
 ) -> Result<gleaph_graph_kernel::index::IndexedPropertyCatalog, RouterError> {
-    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    let graph_id =
+        RouterStore::new().resolve_graph_id_authorized(&logical_graph_name, msg_caller())?;
     Ok(crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog())
 }
 
@@ -100,7 +104,8 @@ pub(crate) fn lookup_vertex_label_id(
     logical_graph_name: String,
     name: String,
 ) -> Result<VertexLabelId, RouterError> {
-    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    let graph_id =
+        RouterStore::new().resolve_graph_id_authorized(&logical_graph_name, msg_caller())?;
     RouterStore::new().lookup_vertex_label_id(graph_id, &name)
 }
 
@@ -108,7 +113,8 @@ pub(crate) fn lookup_edge_label_id(
     logical_graph_name: String,
     name: String,
 ) -> Result<EdgeLabelId, RouterError> {
-    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    let graph_id =
+        RouterStore::new().resolve_graph_id_authorized(&logical_graph_name, msg_caller())?;
     RouterStore::new().lookup_edge_label_id(graph_id, &name)
 }
 
@@ -116,7 +122,8 @@ pub(crate) fn lookup_property_id(
     logical_graph_name: String,
     name: String,
 ) -> Result<PropertyId, RouterError> {
-    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    let graph_id =
+        RouterStore::new().resolve_graph_id_authorized(&logical_graph_name, msg_caller())?;
     RouterStore::new().lookup_property_id(graph_id, &name)
 }
 
@@ -124,7 +131,8 @@ pub(crate) fn reverse_vertex_label_name(
     logical_graph_name: String,
     label_id: VertexLabelId,
 ) -> Result<String, RouterError> {
-    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    let graph_id =
+        RouterStore::new().resolve_graph_id_authorized(&logical_graph_name, msg_caller())?;
     RouterStore::new().reverse_vertex_label_name(graph_id, label_id)
 }
 
@@ -132,7 +140,8 @@ pub(crate) fn reverse_edge_label_name(
     logical_graph_name: String,
     label_id: EdgeLabelId,
 ) -> Result<String, RouterError> {
-    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    let graph_id =
+        RouterStore::new().resolve_graph_id_authorized(&logical_graph_name, msg_caller())?;
     RouterStore::new().reverse_edge_label_name(graph_id, label_id)
 }
 
@@ -140,7 +149,8 @@ pub(crate) fn reverse_property_name(
     logical_graph_name: String,
     property_id: PropertyId,
 ) -> Result<String, RouterError> {
-    let graph_id = RouterStore::new().resolve_graph_id(&logical_graph_name)?;
+    let graph_id =
+        RouterStore::new().resolve_graph_id_authorized(&logical_graph_name, msg_caller())?;
     RouterStore::new().reverse_property_name(graph_id, property_id)
 }
 

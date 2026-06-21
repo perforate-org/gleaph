@@ -854,7 +854,149 @@ fn resolve_graph_checks_permissions() {
         .expect("register");
 
     assert!(store.resolve_graph("g", owner).is_ok());
-    assert_eq!(store.resolve_graph("g", other), Err(RouterError::Forbidden));
+    // Existence non-disclosure: a non-tenant gets NotFound, not Forbidden, so it cannot
+    // distinguish "exists but forbidden" from "does not exist".
+    assert_eq!(
+        store.resolve_graph("g", other),
+        Err(RouterError::NotFound("g".into()))
+    );
+    // Superuser bypass: a global canister Admin may resolve any graph by name.
+    assert!(store.resolve_graph("g", admin).is_ok());
+}
+
+#[test]
+fn resolve_graph_id_authorized_enforces_tenancy() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    let owner = graph_principal(10);
+    let member = graph_principal(12);
+    let other = graph_principal(11);
+
+    let mut admins = BTreeSet::new();
+    admins.insert(member);
+    store
+        .admin_register_graph(
+            admin,
+            GraphRegistryEntry {
+                graph_id: GraphId::from_raw(0),
+                graph_name: "g".into(),
+                canister_id: owner,
+                owner,
+                admins,
+                status: GraphStatus::Active,
+                version: 1,
+                updated_at_ns: 0,
+                provisioning_state: ProvisioningState::None,
+                is_home: false,
+            },
+        )
+        .expect("register");
+
+    let gid = lookup_graph_id("g").expect("g");
+    assert_eq!(store.resolve_graph_id_authorized("g", owner), Ok(gid));
+    assert_eq!(store.resolve_graph_id_authorized("g", member), Ok(gid));
+    // Superuser bypass.
+    assert_eq!(store.resolve_graph_id_authorized("g", admin), Ok(gid));
+    // Non-tenant cannot even confirm existence.
+    assert_eq!(
+        store.resolve_graph_id_authorized("g", other),
+        Err(RouterError::NotFound("g".into()))
+    );
+    // Unknown graph is indistinguishable from a forbidden one.
+    assert_eq!(
+        store.resolve_graph_id_authorized("missing", other),
+        Err(RouterError::NotFound("missing".into()))
+    );
+}
+
+#[test]
+fn resolve_graph_id_authorized_allows_registered_shard_canister() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    register_test_graph(&store, admin, "other.graph");
+
+    let shard_canister = graph_principal(1);
+    let index = graph_principal(2);
+    futures::executor::block_on(store.admin_register_shard(
+        admin,
+        AdminRegisterShardArgs {
+            shard_id: ShardId::new(0),
+            graph_canister: shard_canister,
+            index_canister: index,
+            logical_graph_name: "tenant.main".into(),
+        },
+    ))
+    .expect("register shard");
+
+    let tenant = lookup_graph_id("tenant.main").expect("tenant.main");
+    // A graph's own registered shard canister may resolve its routing metadata
+    // (keeps federation/index-routing inter-canister calls working).
+    assert_eq!(
+        store.resolve_graph_id_authorized("tenant.main", shard_canister),
+        Ok(tenant)
+    );
+    // ...but not a different graph it is not a shard of.
+    assert_eq!(
+        store.resolve_graph_id_authorized("other.graph", shard_canister),
+        Err(RouterError::NotFound("other.graph".into()))
+    );
+    // An unrelated principal is rejected entirely.
+    assert_eq!(
+        store.resolve_graph_id_authorized("tenant.main", graph_principal(99)),
+        Err(RouterError::NotFound("tenant.main".into()))
+    );
+}
+
+#[test]
+fn register_graph_rejects_anonymous_owner_and_admin() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+
+    let anon_owner = GraphRegistryEntry {
+        graph_id: GraphId::from_raw(0),
+        graph_name: "g".into(),
+        canister_id: Principal::management_canister(),
+        owner: Principal::anonymous(),
+        admins: BTreeSet::new(),
+        status: GraphStatus::Active,
+        version: 1,
+        updated_at_ns: 0,
+        provisioning_state: ProvisioningState::None,
+        is_home: false,
+    };
+    assert!(matches!(
+        store.admin_register_graph(admin, anon_owner),
+        Err(RouterError::InvalidArgument(_))
+    ));
+    // Rejected before any state mutation: the name was never interned.
+    assert!(lookup_graph_id("g").is_none());
+
+    let owner = graph_principal(10);
+    let mut admins = BTreeSet::new();
+    admins.insert(Principal::anonymous());
+    let anon_admin = GraphRegistryEntry {
+        graph_id: GraphId::from_raw(0),
+        graph_name: "g2".into(),
+        canister_id: owner,
+        owner,
+        admins,
+        status: GraphStatus::Active,
+        version: 1,
+        updated_at_ns: 0,
+        provisioning_state: ProvisioningState::None,
+        is_home: false,
+    };
+    assert!(matches!(
+        store.admin_register_graph(admin, anon_admin),
+        Err(RouterError::InvalidArgument(_))
+    ));
 }
 
 #[test]
