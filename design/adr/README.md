@@ -61,5 +61,6 @@ Last revised: YYYY-MM-DD
 | [0024](0024-mutation-journal-completion-vs-index-flush.md) | Mutation journal completion vs deferred index flush | implemented |
 | [0025](0025-client-mutation-journal-retention-sweep.md) | Client-mutation idempotency journal retention, compaction, and GC | implemented |
 | [0026](0026-reverse-adjacency-differential-repair.md) | Reverse-adjacency differential repair (`rebuild_reverse_adjacency`): per-diverged-key reconcile; reject full clear-and-rebuild cascade | implemented |
+| [0027](0027-graph-mutation-journal-retention.md) | Graph mutation journal time-based retention + amortized write-path GC; reject ack-through-seq eviction | implemented |
 
 When adding an ADR, link it from the relevant design doc and update this table.

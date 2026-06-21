@@ -8,6 +8,45 @@ use gleaph_graph_kernel::plan_exec::{
     GraphMutationJournalEntryWire, LabelStatsDelta, LabelStatsDeltaEventWire, MutationId,
     ShardEventSeq,
 };
+use std::cell::RefCell;
+
+/// Retention window for completed/incomplete mutation journal entries (ADR 0027). A
+/// `mutation_id` can only be replayed by the router while the router's client-key
+/// idempotency record lives — at most `CLIENT_MUTATION_KEY_TTL_NS` (7 days, ADR 0025)
+/// from creation, after which the same client key allocates a *fresh* id and the old id
+/// is retired forever. This constant is a one-directional lower bound on that router TTL
+/// (router TTL + margin), deliberately not an exact duplicate: it only needs to be
+/// `>= router TTL` for dedup safety. Crates cannot share the constant (graph must not
+/// depend on router), so the coupling is documented here and in ADR 0027.
+const GRAPH_MUTATION_JOURNAL_RETENTION_NS: u64 = 9 * 24 * 60 * 60 * 1_000_000_000;
+
+/// Entries examined per amortized GC step on the completed-journal write path
+/// (ADR 0025 mechanism B, mirrored). Each completed mutation evicts up to this many
+/// expired entries, keeping eviction in pace with the sole growth source (new mutations).
+const MUTATION_JOURNAL_GC_BUDGET: usize = 2;
+
+thread_local! {
+    /// Ephemeral round-robin cursor for amortized journal GC (ADR 0027). Heap-only on
+    /// purpose: resetting to the start on upgrade just restarts the lap, and the journal
+    /// itself (region 39, Canonical) is fully stable.
+    static MUTATION_JOURNAL_GC_CURSOR: RefCell<Option<MutationId>> = const { RefCell::new(None) };
+}
+
+fn ic_time_ns() -> u64 {
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::api::time()
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        0
+    }
+}
+
+#[cfg(test)]
+pub(crate) fn reset_mutation_journal_gc_cursor_for_test() {
+    MUTATION_JOURNAL_GC_CURSOR.with_borrow_mut(|cursor| *cursor = None);
+}
 
 impl GraphStore {
     pub(crate) fn mutation_journal_entry(
@@ -31,17 +70,52 @@ impl GraphStore {
         emitted_delta_first_seq: Option<ShardEventSeq>,
         emitted_delta_last_seq: Option<ShardEventSeq>,
     ) {
+        self.commit_record_incomplete_mutation_journal_at(
+            ic_time_ns(),
+            mutation_id,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+        );
+    }
+
+    pub(crate) fn commit_record_incomplete_mutation_journal_at(
+        &self,
+        now_ns: u64,
+        mutation_id: MutationId,
+        emitted_delta_first_seq: Option<ShardEventSeq>,
+        emitted_delta_last_seq: Option<ShardEventSeq>,
+    ) {
         GRAPH_MUTATION_JOURNAL.with_borrow_mut(|m| {
             m.insert(GraphMutationJournalEntry::incomplete(
                 mutation_id,
                 emitted_delta_first_seq,
                 emitted_delta_last_seq,
+                now_ns,
             ));
         });
     }
 
     pub(crate) fn commit_record_completed_mutation_journal(
         &self,
+        mutation_id: MutationId,
+        row_count: u64,
+        emitted_delta_first_seq: Option<ShardEventSeq>,
+        emitted_delta_last_seq: Option<ShardEventSeq>,
+        hot_forward_vertices: Vec<LocalVertexId>,
+    ) {
+        self.commit_record_completed_mutation_journal_at(
+            ic_time_ns(),
+            mutation_id,
+            row_count,
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            hot_forward_vertices,
+        );
+    }
+
+    pub(crate) fn commit_record_completed_mutation_journal_at(
+        &self,
+        now_ns: u64,
         mutation_id: MutationId,
         row_count: u64,
         emitted_delta_first_seq: Option<ShardEventSeq>,
@@ -55,8 +129,32 @@ impl GraphStore {
                 emitted_delta_first_seq,
                 emitted_delta_last_seq,
                 hot_forward_vertices,
+                now_ns,
             ));
         });
+        // Amortized retention sweep: the completed-journal write is the per-mutation
+        // growth source, so each one funds one bounded eviction step (ADR 0027).
+        self.gc_mutation_journal_at(now_ns);
+    }
+
+    /// One bounded, round-robin retention step over the mutation journal (ADR 0027).
+    /// Advances a heap-only cursor; wraps to the start once the keyspace is exhausted.
+    pub(crate) fn gc_mutation_journal_at(&self, now_ns: u64) {
+        let start = MUTATION_JOURNAL_GC_CURSOR.with_borrow(|cursor| *cursor);
+        let (scanned, _removed, last_key) = GRAPH_MUTATION_JOURNAL.with_borrow_mut(|m| {
+            m.evict_expired(
+                start,
+                MUTATION_JOURNAL_GC_BUDGET,
+                now_ns,
+                GRAPH_MUTATION_JOURNAL_RETENTION_NS,
+            )
+        });
+        let next = if (scanned as usize) < MUTATION_JOURNAL_GC_BUDGET {
+            None
+        } else {
+            last_key
+        };
+        MUTATION_JOURNAL_GC_CURSOR.with_borrow_mut(|cursor| *cursor = next);
     }
 
     pub(crate) fn commit_append_label_stats_delta(
@@ -161,6 +259,33 @@ mod tests {
         assert_eq!(
             store.pending_label_stats_deltas(0, 10),
             vec![second.clone()]
+        );
+    }
+
+    const DAY_NS: u64 = 24 * 60 * 60 * 1_000_000_000;
+
+    #[test]
+    fn completed_write_path_stamps_and_amortized_gc_evicts() {
+        super::reset_mutation_journal_gc_cursor_for_test();
+        let store = GraphStore::new();
+        let id = 9_000_001u64;
+        // Recorded "long ago" via the timestamped write path.
+        store.commit_record_completed_mutation_journal_at(0, id, 3, None, None, Vec::new());
+        let entry = store.mutation_journal_entry(id).expect("entry recorded");
+        assert_eq!(entry.recorded_at_ns, Some(0));
+
+        // Drive amortized GC forward at a time well past retention; the round-robin cursor
+        // reaches the aged entry within a bounded number of budgeted steps and evicts it.
+        let now = 100 * DAY_NS;
+        for _ in 0..256 {
+            if store.mutation_journal_entry(id).is_none() {
+                break;
+            }
+            store.gc_mutation_journal_at(now);
+        }
+        assert!(
+            store.mutation_journal_entry(id).is_none(),
+            "aged entry should be evicted by amortized GC"
         );
     }
 
