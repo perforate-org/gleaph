@@ -394,7 +394,8 @@ Exit criteria:
 
 ## Phase 5: Multi-DML contract
 
-**Status: Rejection gate done. Supported contracts (one-shard atomic / roll-forward / staged) still planned.**
+**Status: Rejection gate done. Contract 1 (one-shard atomic) in progress — completely-new
+INSERT-only bundles. Roll-forward / staged contracts still planned.**
 
 Goal: remove the existing partial multi-DML ambiguity.
 
@@ -407,16 +408,28 @@ Immediate decision (implemented):
   **and** the target graph is **federated** (more than one live shard). The Router returns
   `RouterError::UnsupportedMultiDmlBundle` before resolving seeds or dispatching to any shard, so
   no canonical or projection state changes. Single-shard multi-DML stays shard-local atomic
-  (Phase 1); a single federated DML statement converges via the Phase 4 roll-forward saga. The
-  gate is enforced at both ingress points that own the AST: ad-hoc `gql_query*`/`gql_update*`
-  (`run_gql`) and prepared-plan registration (`prepared_register`). A prepared plan registered
-  against a single-shard graph that is later re-sharded is an orthogonal prepared-plan staleness
-  concern, not covered by this gate.
+  (Phase 1); a single federated DML statement converges via the Phase 4 roll-forward saga;
+  completely-new INSERT-only bundles are accepted under contract 1 below. The gate is enforced at
+  both ingress points that own the AST: ad-hoc `gql_query*`/`gql_update*` (`run_gql`) and
+  prepared-plan registration (`prepared_register`). A prepared plan registered against a
+  single-shard graph that is later re-sharded is an orthogonal prepared-plan staleness concern,
+  not covered by this gate.
 
 Candidate future contracts:
 
-1. **One-shard atomic bundle:** execute all canonical DML in one message segment, provide an
-   owner-local overlay for read-your-own-writes, then publish projection intent.
+1. **One-shard atomic bundle** *(in progress — completely-new INSERT-only subset):* execute all
+   canonical DML in one message segment on a single shard, with the shard's existing single
+   canonical segment providing read-your-own-writes between statements, then publish projection
+   intent. Federated placement requires a target shard for brand-new (unanchored) elements; the
+   policy is **place a completely-new INSERT on the graph's latest shard** (the live shard with the
+   greatest graph-local `shard_id`; shard ids grow densely `0..n-1`). A plan qualifies when it is
+   *pure-insert*: it contains at least one `INSERT` and no operator that reads or binds existing
+   graph state (no scan/index/expand/match and no `SET`/`REMOVE`/`DELETE`), so every edge endpoint
+   is a freshly inserted vertex and the whole plan needs no anchor or seeds. Such a plan — single-
+   or multi-statement — is routed to the latest shard and executed there atomically. This also
+   enables a single unanchored `INSERT` on a federated graph (previously rejected with
+   `no index anchor`). MATCH-based and mixed multi-DML bundles remain rejected. The remaining
+   subset (anchored multi-DML that provably resolves to one shard) is still planned.
 2. **Roll-forward bundle:** persist a per-plan cursor and advertise saga semantics explicitly.
 3. **Staged distributed commit:** reserve for a named cross-shard all-or-nothing requirement.
 
@@ -426,8 +439,11 @@ Tests:
   `router_rejects_federated_multi_dml_bundle_before_dispatch`,
   `router_allows_multi_dml_bundle_on_single_shard`, and
   `program_modification::count_dml_statements_*` host unit tests.)*
-- A supported one-shard bundle traps back to its pre-message canonical state. *(Planned with the
-  one-shard atomic contract.)*
+- A supported one-shard bundle executes atomically on a single shard. *(Done for the completely-new
+  INSERT-only subset: `router_places_completely_new_single_insert_on_latest_shard`,
+  `router_places_completely_new_insert_bundle_on_latest_shard`, and
+  `is_pure_insert_*` host unit tests. Trap-to-pre-message coverage for anchored bundles is planned
+  with the anchored extension.)*
 - If roll-forward support is selected, retries resume at the persisted plan boundary without being
   described as rollback atomicity. *(Planned with the roll-forward contract.)*
 

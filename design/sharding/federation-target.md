@@ -94,6 +94,21 @@ The shard runs the physical plan against **local CSR** only. It does not call th
 4. Returned neighbors are incorporated into **local** execution state for the remainder of the plan on that shard.
 5. If multiple shards produce rows for the same logical query, Router merges.
 
+## Placement of brand-new elements
+
+The Router owns placement authority; graph shards do not. Writes anchored to existing data follow
+the anchor's shard(s) (index hits). A **completely-new (unanchored) write** — a *pure-insert* plan
+that contains at least one `INSERT` and no operator reading existing graph state
+(`gleaph_gql_planner::PhysicalPlan::is_pure_insert`) — is placed on the graph's **latest shard**:
+the live shard with the greatest graph-local `shard_id` (ids grow densely `0..n-1` via
+`next_graph_local_shard_id`). The whole plan (single- or multi-statement) runs on that one shard and
+is applied atomically by its single canonical critical section, which also gives read-your-own-writes
+between bundled statements (ADR 0029 §6, Phase 5 contract 1). This supersedes the previous behavior
+where an unanchored write on a multi-shard graph failed with `no index anchor: single-shard graph
+required`; that error now applies only to unanchored **reads** and to non-pure-insert writes.
+Trade-off: new elements concentrate on the latest shard until a newer shard is added (a grow-by-
+adding-shards model), not hash/round-robin balanced.
+
 ## Index maintenance
 
 Writes remain on graph shards; postings sync to index on DML (`graph/src/index/pending.rs`):

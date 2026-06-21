@@ -194,10 +194,26 @@ saga (decision 4), so both pass. The gate is enforced at both AST-owning ingress
 A prepared plan registered against a single-shard graph that is later re-sharded is an orthogonal
 prepared-plan staleness concern, not covered by this gate.
 
-Future support may choose one of two explicit contracts:
+**Contract 1 (one-shard atomic bundle), completely-new INSERT subset — implemented.** A bundle
+that is *pure-insert* (contains at least one `INSERT` and no operator that reads or binds existing
+graph state — no scan/index/expand/match, and no `SET`/`REMOVE`/`DELETE`) creates only brand-new
+elements, so every edge endpoint is a freshly inserted vertex and the plan needs no index anchor or
+seeds. The Router places such a bundle on the graph's **latest shard** — the live shard with the
+greatest graph-local `shard_id` (shard ids grow densely `0..n-1` via `next_graph_local_shard_id`) —
+and executes the whole plan there. The shard's existing single canonical critical section (§1)
+applies all of the bundle's statements atomically and provides read-your-own-writes between them
+(e.g. `INSERT (a) NEXT INSERT (a)-[:E]->(b)`), since they are co-located. This is the placement
+authority for brand-new federated elements (the Router owns placement; graph shards do not). It
+also resolves a prior gap: a single unanchored `INSERT` on a federated graph used to fail with
+`no index anchor: single-shard graph required`; it is now placed on the latest shard.
+`detection: gleaph_gql_planner::PhysicalPlan::is_pure_insert`. MATCH-based and mixed multi-DML
+bundles remain rejected by the §6 gate.
+
+Future support may choose, for the remaining (anchored / cross-shard) cases, one of two explicit
+contracts:
 
 - execute all canonical DML for one shard in one message segment and publish projection intent at
-  the end; or
+  the end (the anchored single-shard extension of contract 1); or
 - use staged writes and a commit protocol for operations that genuinely require cross-shard
   all-or-nothing visibility.
 

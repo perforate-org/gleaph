@@ -190,20 +190,20 @@ fn router_gql_insert_seeds_knowledge_map_fan_out_graph() {
 }
 
 #[test]
-fn router_rejects_federated_multi_dml_bundle_before_dispatch() {
-    // ADR 0029 Phase 5: a bundle of more than one top-level DML statement on a federated
-    // (multi-shard) graph has no defined cross-shard partial-application contract, so the Router
-    // rejects it before any shard dispatch with `UnsupportedMultiDmlBundle` — no canonical or
-    // projection state changes. The companion `router_allows_multi_dml_bundle_on_single_shard`
-    // test proves the gate keys on federation, not on statement count alone.
+fn router_rejects_federated_match_based_multi_dml_bundle_before_dispatch() {
+    // ADR 0029 Phase 5: a MATCH-based (non-pure-insert) bundle of more than one top-level DML
+    // statement on a federated (multi-shard) graph has no defined cross-shard partial-application
+    // contract, so the Router rejects it before any shard dispatch with `UnsupportedMultiDmlBundle`
+    // — no canonical or projection state changes. Completely-new INSERT-only bundles are exempt
+    // (contract 1, see `router_places_completely_new_insert_bundle_on_latest_shard`).
     use gleaph_graph_kernel::federation::RouterError;
 
     let env = install_federation();
 
     let err = gql_execute_idempotent_as_admin_expect_err(
         &env,
-        "INSERT (:Person) NEXT INSERT (:Project)",
-        "router_rejects_federated_multi_dml_bundle_before_dispatch",
+        "MATCH (n:Person) SET n.x = 1 NEXT MATCH (m:Project) SET m.y = 2",
+        "router_rejects_federated_match_based_multi_dml_bundle_before_dispatch",
     );
     assert!(
         matches!(
@@ -213,7 +213,7 @@ fn router_rejects_federated_multi_dml_bundle_before_dispatch() {
                 shard_count: 2,
             }
         ),
-        "expected UnsupportedMultiDmlBundle for a 2-statement bundle on a 2-shard graph, got {err:?}"
+        "expected UnsupportedMultiDmlBundle for a 2-statement MATCH bundle on a 2-shard graph, got {err:?}"
     );
 }
 
@@ -232,6 +232,60 @@ fn router_allows_multi_dml_bundle_on_single_shard() {
     assert!(
         result.token.is_some(),
         "single-shard multi-DML executes and issues a mutation token"
+    );
+}
+
+#[test]
+fn router_places_completely_new_single_insert_on_latest_shard() {
+    // ADR 0029 §6 (Phase 5 contract 1): a completely-new (unanchored) INSERT on a federated graph
+    // is placed on the graph's latest shard (greatest graph-local shard id = DEST_SHARD here),
+    // instead of being rejected with `no index anchor`. The mutation token names exactly that
+    // single shard.
+    let env = install_federation();
+
+    let result = gql_execute_idempotent_result_as_admin(
+        &env,
+        "INSERT (:Person)",
+        "router_places_completely_new_single_insert_on_latest_shard",
+    );
+    let token = result
+        .token
+        .expect("a completely-new federated INSERT issues a mutation token");
+    assert_eq!(
+        token.shards.len(),
+        1,
+        "a pure insert is placed on exactly one shard"
+    );
+    assert_eq!(
+        token.shards[0].shard_id, DEST_SHARD,
+        "the pure insert lands on the graph's latest shard"
+    );
+}
+
+#[test]
+fn router_places_completely_new_insert_bundle_on_latest_shard() {
+    // ADR 0029 §6 (Phase 5 contract 1): a completely-new INSERT-only *bundle* (multiple top-level
+    // DML statements) on a federated graph is co-placed on the latest shard and executed there
+    // atomically in one canonical segment, so the federated multi-DML gate does not reject it. The
+    // token names exactly the one (latest) shard.
+    let env = install_federation();
+
+    let result = gql_execute_idempotent_result_as_admin(
+        &env,
+        "INSERT (:Person) NEXT INSERT (:Project)",
+        "router_places_completely_new_insert_bundle_on_latest_shard",
+    );
+    let token = result
+        .token
+        .expect("a completely-new federated INSERT bundle issues a mutation token");
+    assert_eq!(
+        token.shards.len(),
+        1,
+        "the whole bundle is co-placed on one shard"
+    );
+    assert_eq!(
+        token.shards[0].shard_id, DEST_SHARD,
+        "the bundle lands on the graph's latest shard"
     );
 }
 

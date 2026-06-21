@@ -1885,6 +1885,35 @@ fn test_dml_annotation() {
 }
 
 #[test]
+fn is_pure_insert_true_for_single_insert() {
+    let plan = plan_block("INSERT (n:Person {age: 42})");
+    assert!(plan.is_pure_insert());
+}
+
+#[test]
+fn is_pure_insert_true_for_multi_statement_insert_bundle() {
+    // Both statements create only new elements; the second edge endpoints are inserted in the
+    // same bundle, so no operator reads existing graph state.
+    let plan = plan_block("INSERT (a:A) NEXT INSERT (a)-[:E]->(b:B)");
+    assert!(plan.is_pure_insert());
+}
+
+#[test]
+fn is_pure_insert_false_for_match_then_insert() {
+    let plan = plan_block("MATCH (a:A) INSERT (a)-[:E]->(b:B)");
+    assert!(
+        !plan.is_pure_insert(),
+        "a MATCH binds existing state, so the plan is not pure-insert"
+    );
+}
+
+#[test]
+fn is_pure_insert_false_for_set_and_for_read_only() {
+    assert!(!plan_block("MATCH (n) SET n.x = 1").is_pure_insert());
+    assert!(!plan_block("MATCH (n) RETURN n").is_pure_insert());
+}
+
+#[test]
 fn test_dml_warning_for_scalar_set_target() {
     let query = parse_query("MATCH (n) LET x = 1 SET x.foo = 2 RETURN n");
     let err = build_plan(&query, None).expect_err("fatal DML should fail planning");

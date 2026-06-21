@@ -26,7 +26,7 @@ pub use aggregate_merge::{
 };
 #[allow(unused_imports)] // public federation API surface
 pub use dispatch::resolve_seed_routings_multi;
-pub use dispatch::{SeedHits, SeedRouting};
+pub use dispatch::{SeedHits, SeedRouting, latest_shard_routing};
 pub use having_filter::apply_federated_aggregate_having;
 pub use limits::{packed_vertices_exceed_fast_path_budget, posting_hits_exceed_fast_path_budget};
 #[expect(unused_imports, reason = "public federation API surface")]

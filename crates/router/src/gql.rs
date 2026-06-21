@@ -608,8 +608,10 @@ async fn run_gql(
     // ADR 0029 Phase 5: a federated bundle of more than one top-level DML statement has no
     // defined cross-shard partial-application contract yet. Reject it before resolving seeds or
     // dispatching to any shard, so no accepted program has unspecified partial semantics. The
-    // count is taken from the AST (the SSOT for "how many DML statements the user wrote").
-    if requires_write_path {
+    // count is taken from the AST (the SSOT for "how many DML statements the user wrote"). A
+    // completely-new INSERT-only bundle is exempt: contract 1 places it on the graph's latest
+    // shard and executes it atomically there (no cross-shard partial application possible).
+    if requires_write_path && !plan.is_pure_insert() {
         enforce_multi_dml_bundle_gate(&store, dispatch.dispatch_graph_id, block)?;
     }
 
@@ -916,6 +918,9 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     stats: &RouterGraphStats,
 ) -> Result<GqlQueryResult, RouterError> {
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
+    // ADR 0029 §6 (Phase 5 contract 1): a completely-new INSERT-only write has no index anchor and
+    // no existing-state reads, so it is placed on the graph's latest shard rather than rejected.
+    let pure_insert_write = has_dml && plans.iter().all(PhysicalPlan::is_pure_insert);
     if mode == GqlExecutionMode::Query && !has_dml {
         if let Some(label_path) = try_label_count_telemetry_fast_path(plans, stats, store, pmap) {
             let live_count = vertex_label_live_count(store, graph_id, label_path.vertex_label_id);
@@ -1095,6 +1100,19 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     }
                 }
             }
+            None if pure_insert_write => match crate::federation::latest_shard_routing(&shards) {
+                Ok(routings) => routings,
+                Err(err) => {
+                    release_routing_if_owner(
+                        store,
+                        caller,
+                        graph_id,
+                        client_mutation_key,
+                        mutation_reservation,
+                    )?;
+                    return Err(err);
+                }
+            },
             None => match policy.resolve_without_anchor(&shards) {
                 Ok(routings) => routings,
                 Err(err) => {

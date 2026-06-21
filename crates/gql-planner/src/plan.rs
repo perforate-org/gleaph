@@ -260,6 +260,16 @@ impl PhysicalPlan {
         ops_contain_dml(&self.ops)
     }
 
+    /// True iff this plan creates only brand-new elements: it has at least one `INSERT` and no
+    /// operator that reads or binds existing graph state. Such a plan needs no index anchor and
+    /// no seeds — every edge endpoint is a freshly inserted vertex — so a router may place the
+    /// whole plan on a single shard and execute it there atomically. Returns false for any
+    /// read/scan/traversal operator, for non-insert DML (`SET`/`REMOVE`/`DELETE`), and for a plan
+    /// with no DML at all.
+    pub fn is_pure_insert(&self) -> bool {
+        ops_are_pure_insert(&self.ops)
+    }
+
     pub fn use_graph_pushdown(&self) -> &[UseGraphPushdownInfo] {
         &self.annotations.optimizer.use_graph_pushdown
     }
@@ -645,6 +655,21 @@ impl PlanOp {
                 | Self::DeleteEdge { .. }
         )
     }
+}
+
+fn ops_are_pure_insert(ops: &[PlanOp]) -> bool {
+    let mut has_insert = false;
+    for op in ops {
+        match op {
+            PlanOp::InsertVertex { .. } | PlanOp::InsertEdge { .. } => has_insert = true,
+            // Pure-output boundaries are safe: they neither read graph state nor mutate it.
+            PlanOp::Project { .. } | PlanOp::Materialize { .. } => {}
+            // Any scan/index/expand/match, non-insert DML, or other operator reads or binds
+            // existing state (or is not classifiable as new-only), so the plan is not pure-insert.
+            _ => return false,
+        }
+    }
+    has_insert
 }
 
 fn ops_contain_dml(ops: &[PlanOp]) -> bool {

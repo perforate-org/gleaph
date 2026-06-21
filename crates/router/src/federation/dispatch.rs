@@ -69,6 +69,26 @@ impl ShardingPolicy for MultiShardDispatch {
     }
 }
 
+/// Placement for a completely-new (pure-insert) write that has no index anchor: route the whole
+/// plan to the graph's **latest shard** — the live shard with the greatest graph-local `shard_id`
+/// (shard ids grow densely `0..n-1`, so the maximum is the most recently added shard). The routing
+/// carries no anchor and no hits, so the shard executes the plan with no seeds and creates the new
+/// elements locally (ADR 0029 §6, Phase 5 contract 1). Works for single- and multi-shard graphs.
+pub fn latest_shard_routing(
+    shards: &[ShardRegistryEntry],
+) -> Result<Vec<SeedRouting>, RouterError> {
+    let entry = shards
+        .iter()
+        .max_by_key(|entry| entry.shard_id.raw())
+        .ok_or(RouterError::ShardNotRegistered)?;
+    Ok(vec![SeedRouting {
+        shard_id: entry.shard_id,
+        graph_canister: entry.graph_canister,
+        hits: SeedHits::Vertices(Vec::new()),
+        anchor: None,
+    }])
+}
+
 /// Fan out one routing per distinct shard in index hits.
 pub fn resolve_seed_routings_multi(
     store: &RouterStore,

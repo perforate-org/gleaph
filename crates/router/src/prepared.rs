@@ -70,8 +70,9 @@ pub fn prepared_register(name: String, query: String) -> Result<(), RouterError>
         ));
     }
     // ADR 0029 Phase 5: never persist a prepared plan that is a federated multi-DML bundle; the
-    // gate runs at registration (the AST is available here) so execute-time dispatch is clean.
-    if requires_write_path {
+    // gate runs at registration (the AST is available here) so execute-time dispatch is clean. A
+    // completely-new INSERT-only bundle is exempt (contract 1 places it on the latest shard).
+    if requires_write_path && !plan.is_pure_insert() {
         crate::gql::enforce_multi_dml_bundle_gate(&store, dispatch.dispatch_graph_id, block)?;
     }
     let session_current = graph_context::session_current_after_activity(&store, &program, caller)?;
