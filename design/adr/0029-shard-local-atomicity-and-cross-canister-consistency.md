@@ -164,11 +164,41 @@ Every stronger protocol requires its own ADR or an amendment that names:
 - upgrade/reopen behavior and bounded retention;
 - conflict and retry semantics.
 
+### 8. Preserve the boundary when the graph canister is split into more shards
+
+Splitting the graph canister into additional shards, and introducing shard-to-shard `await`, does
+not relax the boundary in §1. The boundary is *shard-local by definition*, and the IC execution
+model makes that durable rather than fragile:
+
+- An inter-canister `await` is a commit and interleaving point, so a single critical section that
+  spans two shards is physically impossible. There is no future call mechanism that turns two
+  shards' writes into one atomic message segment.
+- Therefore cross-shard atomicity is never obtained by extending a critical section across an
+  `await`. It is *composed* from multiple shard-local atomic segments coordinated above them:
+  - the default path is the idempotent roll-forward Router saga (§4); and
+  - a named strong invariant (§7) uses a prepare/commit/cancel protocol in which **each** shard's
+    prepare and **each** shard's commit is itself a separate shard-local atomic segment.
+- Remote inputs — including inputs sourced from peer shards once sharding exists — are fetched
+  before the segment (§1). The canonical mutation segment must take no cross-canister client handle
+  (graph-index or peer-shard); a cross-shard `await` belongs in the coordination layer between
+  segments, never inside one.
+
+Enforcement note. Today the boundary is enforced structurally but narrowly: the canonical mutation
+segment is constructed without a `PropertyIndexLookup` handle and runs `CALL` procedures
+synchronously, so it cannot reach the only existing inter-canister paths. When a peer-shard client
+is introduced, that narrow construction is no longer sufficient on its own. Enforcement must then
+generalize to a path-independent guard — assert "no canonical segment is active" at every
+inter-canister chokepoint (graph-index client, Router call, and any peer-shard client) — so a new
+call path added inside the segment fails loudly instead of silently extending the critical section
+across a commit point. This guard is expected when a second inter-canister path first appears
+(peer-shard client or the Phase 4/6 cross-shard coordination work), not before.
+
 ## Invariants
 
 | Invariant | Owner | Enforcement point |
 |-----------|-------|-------------------|
 | Canonical graph state changes atomically within the supported local boundary | Graph | Synchronous canonical mutation segment |
+| The canonical mutation segment carries no inter-canister call/commit point, including after graph-shard splitting | Graph | Segment constructed without a cross-canister client handle today; path-independent "no active segment" guard once a peer-shard client exists |
 | A committed canonical mutation has durable replay/repair metadata before cross-canister work can be lost | Graph | Mutation journal and projection-intent write boundary |
 | One client key and fingerprint reuse one mutation identity | Router | Client mutation reservation |
 | One mutation id is not applied twice on a graph shard | Graph | Graph mutation journal lookup before execution |

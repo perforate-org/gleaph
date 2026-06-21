@@ -5,8 +5,8 @@ use crate::gql_execution_context::GqlExecutionContext;
 use crate::index::lookup::PropertyIndexLookup;
 use crate::index::{label_pending, pending};
 use crate::plan::{
-    PlanBinding, PlanQueryResult, PlanQueryRow, execute_plan_mutations_async, execute_plan_query,
-    execute_plan_query_bindings, execute_plan_query_bindings_with_initial_rows,
+    PlanBinding, PlanMutationBindings, PlanQueryResult, PlanQueryRow, execute_plan_mutations_async,
+    execute_plan_query, execute_plan_query_bindings, execute_plan_query_bindings_with_initial_rows,
     plan_contains_gleaph_finalize_call,
 };
 use gleaph_gql::Value;
@@ -537,6 +537,56 @@ async fn run_wire_plans(
     run_result
 }
 
+/// ADR 0029 §1 canonical critical section for a single DML plan.
+///
+/// This segment performs **only shard-local canonical writes**: it executes the plan's mutations
+/// against [`GraphStore`], appends the label-stats projection *intent* to the durable delta log,
+/// and records the shard-local mutation journal as `Incomplete`. There is no inter-canister
+/// `await` between these steps, so by IC execution semantics the whole segment commits — or, on
+/// trap, rolls back — atomically within one message handler.
+///
+/// The segment deliberately takes **no `PropertyIndexLookup` handle**: all remote inputs (resolved
+/// labels, properties, catalog, seed bindings) are pre-resolved by the Router into `execution`
+/// before execution begins, so the critical section cannot — and must not — issue any
+/// inter-canister call. Index posting *delivery* happens *after* this segment via `flush_pending`
+/// (the asynchronous projection boundary), never inside it. The missing index parameter is the
+/// structural enforcement of the "no remote call inside the critical section" invariant.
+async fn apply_canonical_mutation_segment(
+    store: &GraphStore,
+    plan: &gleaph_gql_planner::PhysicalPlan,
+    execution: GqlExecutionContext,
+    mutation_id: Option<MutationId>,
+    emitted_delta_first_seq: &mut Option<ShardEventSeq>,
+    emitted_delta_last_seq: &mut Option<ShardEventSeq>,
+) -> Result<PlanMutationBindings, GqlRunError> {
+    let mutation = match execute_plan_mutations_async(store, plan, execution).await {
+        Ok(mutation) => mutation,
+        Err(error) => trap_wire_mutation_failure(error),
+    };
+    let has_delta = !mutation.label_stats_delta.vertex.is_empty()
+        || !mutation.label_stats_delta.edge.is_empty();
+    if let Some(mutation_id) = mutation_id
+        && has_delta
+    {
+        let event = store
+            .commit_append_label_stats_delta(mutation_id, mutation.label_stats_delta.clone())
+            .map_err(GqlRunError::Plan)?;
+        extend_delta_seq_range(
+            emitted_delta_first_seq,
+            emitted_delta_last_seq,
+            event.shard_event_seq,
+        );
+    }
+    if let Some(mutation_id) = mutation_id {
+        store.commit_record_incomplete_mutation_journal(
+            mutation_id,
+            *emitted_delta_first_seq,
+            *emitted_delta_last_seq,
+        );
+    }
+    Ok(mutation)
+}
+
 async fn run_wire_plans_inner(
     store: &GraphStore,
     plans: &[gleaph_gql_planner::PhysicalPlan],
@@ -604,35 +654,16 @@ async fn run_wire_plans_inner(
 
     for (plan_idx, plan) in plans.iter().enumerate() {
         if plan_needs_mutation_executor(plan) {
-            let mutation = match execute_plan_mutations_async(store, plan, execution.clone()).await
-            {
-                Ok(mutation) => mutation,
-                Err(error) => trap_wire_mutation_failure(error),
-            };
-            let has_delta = !mutation.label_stats_delta.vertex.is_empty()
-                || !mutation.label_stats_delta.edge.is_empty();
-            if let Some(mutation_id) = mutation_id
-                && has_delta
-            {
-                let event = store
-                    .commit_append_label_stats_delta(
-                        mutation_id,
-                        mutation.label_stats_delta.clone(),
-                    )
-                    .map_err(GqlRunError::Plan)?;
-                extend_delta_seq_range(
-                    &mut emitted_delta_first_seq,
-                    &mut emitted_delta_last_seq,
-                    event.shard_event_seq,
-                );
-            }
-            if let Some(mutation_id) = mutation_id {
-                store.commit_record_incomplete_mutation_journal(
-                    mutation_id,
-                    emitted_delta_first_seq,
-                    emitted_delta_last_seq,
-                );
-            }
+            // ADR 0029 §1: shard-local canonical critical section (no inter-canister call).
+            let mutation = apply_canonical_mutation_segment(
+                store,
+                plan,
+                execution.clone(),
+                mutation_id,
+                &mut emitted_delta_first_seq,
+                &mut emitted_delta_last_seq,
+            )
+            .await?;
             merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
             merge_hot_forward_vertices(&mut hot_forward_vertices, &mutation.hot_forward_vertices);
             record_mutation_procedure_rows(
@@ -642,6 +673,9 @@ async fn run_wire_plans_inner(
                 &mut last_read_row_count,
                 &mut last_read_plan_rows,
             );
+            // Asynchronous projection delivery (ADR 0029) — OUTSIDE the canonical critical
+            // section above. The canonical store mutation and the label-stats delta are already
+            // durable; these inter-canister flushes only deliver derived index postings.
             // Flush all three pending buffers (forward / edge / label). They are evaluated
             // even when an earlier one defers, so every posting is either applied or durably
             // journaled for repair before we consider completing the mutation (ADR 0024).
@@ -1299,6 +1333,75 @@ mod tests {
 
         drain_repair_journal(store);
         store.set_federation_routing(None).expect("clear routing");
+    }
+
+    // ADR 0029 Phase 1: the canonical critical section commits shard-local canonical data, the
+    // mutation-journal progress record, and the label-stats projection *intent* together, in one
+    // message segment — independently of (and before) asynchronous index projection *delivery*
+    // (`flush_pending`). Here index delivery is forced to defer to the repair journal, yet all
+    // three owner-local facts are durably present.
+    #[test]
+    fn canonical_segment_commits_canonical_data_and_projection_intent_together() {
+        let store = GraphStore::new();
+        with_federation_routing(store);
+        drain_repair_journal(store);
+
+        let blob = encode_block_plans(&[insert_vertex_plan("Phase1Canonical")], true)
+            .expect("encode plan");
+        let params = BTreeMap::new();
+
+        pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::Update,
+            Some(&DeferLabelFlushIndex),
+            GqlExecutionContext::default(),
+            None,
+            Some(910),
+        ))
+        .expect("canonical segment commits despite deferred projection delivery");
+
+        // Mutation progress: the shard-local journal records the outcome in-segment.
+        let journal = store
+            .mutation_journal_entry(910)
+            .expect("mutation journal entry recorded");
+        assert!(
+            journal.is_completed(),
+            "single-DML canonical outcome must be journaled"
+        );
+
+        // Projection intent: the label-stats delta is durably logged in the same flow...
+        let first_seq = journal
+            .emitted_delta_first_seq
+            .expect("label-stats delta intent recorded");
+        let delta = store
+            .pending_label_stats_deltas(first_seq, 10)
+            .pop()
+            .expect("pending label-stats delta");
+        assert_eq!(delta.mutation_id, 910);
+
+        // ...while projection *delivery* (index postings) was deferred to the repair journal,
+        // proving canonical commit is decoupled from inter-canister projection delivery.
+        assert!(
+            !store.repair_journal_is_empty(),
+            "deferred index delivery must be journaled for repair"
+        );
+
+        // Canonical data: the vertex itself is durably present and locally readable.
+        store.set_federation_routing(None).expect("clear routing");
+        let q = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH (n:Phase1Canonical) RETURN n",
+            &params,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("read back canonical vertex");
+        assert_eq!(q.rows.len(), 1);
+
+        drain_repair_journal(store);
     }
 
     #[test]

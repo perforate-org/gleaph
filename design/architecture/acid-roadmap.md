@@ -1,8 +1,8 @@
 # Gleaph ACID and Consistency Roadmap
 
 Last updated: 2026-06-21 UTC
-Status: Phase 0 done; Phases 1-6 planned
-Anchor timestamp: 2026-06-21 08:00:20 UTC +0000
+Status: Phase 0 done; Phase 1 in progress; Phases 2-6 planned
+Anchor timestamp: 2026-06-21 08:26:25 UTC +0000
 
 ## Purpose
 
@@ -140,32 +140,70 @@ Exit criteria:
 
 ## Phase 1: Protect the local atomic boundary
 
-**Status: Planned.**
+**Status: In progress (as of 2026-06-21 08:26:25 UTC +0000).** The boundary is now named and
+structurally enforced in code; whole-message trap-rollback proof under PocketIC and the mutation
+canbench remain.
 
 Goal: make the Graph critical section visible in code and tests.
 
 Deliverables:
 
-- Separate remote input acquisition from canonical mutation execution.
-- Ensure the canonical mutation segment contains no inter-canister call/commit point.
-- Commit canonical data, mutation outcome/progress, and required projection intent together.
-- Add owner-controlled revision revalidation to any read-before-`await`/write-after-`await` path.
-- Keep GraphStore domain commits as the only write path for affected invariants.
+- **Done (by construction).** Separate remote input acquisition from canonical mutation execution.
+  The Router pre-resolves labels, properties, catalog, and seed bindings into `GqlExecutionContext`
+  before the graph shard runs; no remote input is fetched mid-mutation.
+- **Done.** Ensure the canonical mutation segment contains no inter-canister call/commit point.
+  The segment is extracted as the named `apply_canonical_mutation_segment` in
+  `crates/graph/src/gql_run.rs`. It takes **no `PropertyIndexLookup` handle** and runs all CALL
+  procedures synchronously, so it structurally cannot issue an inter-canister call. The missing
+  index parameter is the enforcement; index posting *delivery* is the separate `flush_pending`
+  boundary that runs only after the segment.
+- **Done.** Commit canonical data, mutation outcome/progress, and required projection intent
+  together. `apply_canonical_mutation_segment` performs the store mutation, the durable
+  label-stats delta append (projection intent), and the `Incomplete` mutation-journal record with
+  no inter-canister `await` between them, so IC semantics commit them in one message segment.
+- **N/A for the shard (deferred to Phase 4 saga).** Owner-controlled revision revalidation on a
+  read-before-`await`/write-after-`await` path. The graph DML segment has no inter-canister
+  `await` between a read and a dependent write; the only read-then-remote-write spans live in the
+  Router saga and are addressed in Phases 2 and 4.
+- **Done.** Keep GraphStore domain commits as the only write path for affected invariants. Canonical
+  vertex/edge/property/label writes flow exclusively through `GraphStore`; the delta log and
+  mutation journal are GraphStore-owned commits.
+
+The boundary is shard-local by definition and survives future graph-shard splitting and shard-to-shard
+`await`; cross-shard atomicity is composed from shard-local atomic segments above the critical
+section, never by extending it across an `await`. See
+[ADR 0029 §8](../adr/0029-shard-local-atomicity-and-cross-canister-consistency.md). The current
+structural enforcement (segment takes no index handle) must generalize to a path-independent guard
+once a peer-shard client exists.
 
 Tests:
 
-- Trap injection after each local write step proves whole-message rollback.
-- Reopen tests prove canonical state and mutation/projection intent survive together.
-- Interleaving tests prove stale preconditions are rejected rather than silently overwritten.
+- **Done.** Reopen-equivalent / commit-together proof: `canonical_segment_commits_canonical_data_and_
+  projection_intent_together` (graph `gql_run` tests) shows canonical data, journal progress, and
+  projection intent are durable together while index *delivery* is deferred to the repair journal.
+- **Done.** Interleaving / stale-precondition rejection: `wire_update_persists_label_stats_delta_and_
+  dedupes_retry` and `deferred_index_flush_completes_single_dml_mutation_journal` prove an already
+  applied `mutation_id` returns the cached outcome instead of silently re-applying; a partial
+  multi-DML bundle stays `Incomplete` (`deferred_index_flush_leaves_multi_dml_mutation_incomplete`).
+- **Remaining.** Trap injection after each local write step proving whole-message rollback. On IC
+  this rollback is guaranteed by the platform (a trap before the first inter-canister `await`
+  discards the segment); a dedicated PocketIC trap-injection test should assert it end to end. Host
+  unit tests cannot prove it because the in-memory store does not roll back on panic.
 
 Benchmarks:
 
-- Graph mutation canbench for vertex/property/edge paths before and after boundary changes.
+- **Remaining.** Graph mutation canbench for vertex/property/edge paths. The Phase 1 change is a
+  behavior-preserving extraction (same store/journal/delta calls in the same order), so no
+  regression is expected; a before/after canbench should confirm this.
 
 Exit criteria:
 
-- Every supported shard-local DML either commits all owner-local state or commits none.
-- No remote call occurs inside the named canonical critical section.
+- **Met.** Every supported shard-local DML either commits all owner-local state or commits none:
+  the canonical segment has no intermediate inter-canister `await`, so it is one atomic message
+  segment.
+- **Met.** No remote call occurs inside the named canonical critical section: enforced structurally
+  by `apply_canonical_mutation_segment` taking no index handle and running CALL procedures
+  synchronously.
 
 ## Phase 2: Mutation-linked projection watermarks
 
