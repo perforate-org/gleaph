@@ -206,6 +206,14 @@ pub fn get_mutation_journal_entry(
     GraphStore::new().get_mutation_journal_entry(mutation_id)
 }
 
+/// Smallest tracked mutation id whose graph-index postings are not yet applied, or
+/// `None` when all tracked index work has drained (ADR 0029 Phase 2 watermark). Router
+/// uses this to resolve a mutation token's index barrier: a read for mutation `M` is
+/// index-satisfied on this shard iff the result is `None` or `M < value`.
+pub fn index_pending_min_mutation_id() -> Option<gleaph_graph_kernel::plan_exec::MutationId> {
+    GraphStore::new().index_pending_min_mutation_id()
+}
+
 #[cfg(feature = "pocket-ic-e2e")]
 pub async fn e2e_insert_vertex() -> Result<super::types::E2eInsertVertexResult, String> {
     use crate::index::federation_routing;
@@ -248,9 +256,10 @@ pub async fn e2e_insert_vertex_with_property(
         .set_vertex_property(vertex_id, property_id, Value::Int64(args.value))
         .map_err(|e| e.to_string())?;
     let index = wasm_index_client_holder().ok_or("federation not configured")?;
-    pending::flush_pending(Some(
-        &index as &dyn crate::index::lookup::PropertyIndexLookup,
-    ))
+    pending::flush_pending(
+        Some(&index as &dyn crate::index::lookup::PropertyIndexLookup),
+        None,
+    )
     .await
     .map_err(|e| e.to_string())?;
     let global_vertex_id = store
@@ -295,9 +304,10 @@ pub async fn e2e_insert_vertex_with_two_properties(
         )
         .map_err(|e| e.to_string())?;
     let index = wasm_index_client_holder().ok_or("federation not configured")?;
-    pending::flush_pending(Some(
-        &index as &dyn crate::index::lookup::PropertyIndexLookup,
-    ))
+    pending::flush_pending(
+        Some(&index as &dyn crate::index::lookup::PropertyIndexLookup),
+        None,
+    )
     .await
     .map_err(|e| e.to_string())?;
     let global_vertex_id = store
@@ -350,10 +360,10 @@ pub async fn e2e_insert_directed_edge_with_property(
         .map_err(|e| e.to_string())?;
     let index = wasm_index_client_holder().ok_or("federation not configured")?;
     let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
-    pending::flush_pending(Some(ix))
+    pending::flush_pending(Some(ix), None)
         .await
         .map_err(|e| e.to_string())?;
-    edge_pending::flush_pending(Some(ix))
+    edge_pending::flush_pending(Some(ix), None)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -387,10 +397,10 @@ pub async fn e2e_insert_undirected_edge_with_property(
         .map_err(|e| e.to_string())?;
     let index = wasm_index_client_holder().ok_or("federation not configured")?;
     let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
-    pending::flush_pending(Some(ix))
+    pending::flush_pending(Some(ix), None)
         .await
         .map_err(|e| e.to_string())?;
-    edge_pending::flush_pending(Some(ix))
+    edge_pending::flush_pending(Some(ix), None)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())
@@ -461,10 +471,10 @@ pub async fn e2e_delete_directed_edge_with_property(
         .map_err(|e| e.to_string())?;
     let index = wasm_index_client_holder().ok_or("federation not configured")?;
     let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
-    pending::flush_pending(Some(ix))
+    pending::flush_pending(Some(ix), None)
         .await
         .map_err(|e| e.to_string())?;
-    edge_pending::flush_pending(Some(ix))
+    edge_pending::flush_pending(Some(ix), None)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

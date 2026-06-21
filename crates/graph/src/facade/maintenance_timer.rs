@@ -174,9 +174,9 @@ async fn flush_and_repair(store: &GraphStore) {
         shard_id: routing.shard_id,
     };
     let ix = &client as &dyn crate::index::lookup::PropertyIndexLookup;
-    let _ = crate::index::pending::flush_pending(Some(ix)).await;
-    let _ = crate::index::edge_pending::flush_pending(Some(ix)).await;
-    let _ = crate::index::label_pending::flush_pending(Some(ix)).await;
+    let _ = crate::index::pending::flush_pending(Some(ix), None).await;
+    let _ = crate::index::edge_pending::flush_pending(Some(ix), None).await;
+    let _ = crate::index::label_pending::flush_pending(Some(ix), None).await;
     let _ = crate::index::repair_journal::drain_once(ix).await;
 }
 

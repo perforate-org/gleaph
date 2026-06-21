@@ -9,6 +9,7 @@ Anchor timestamp: 2026-06-21 05:36:08 UTC +0000
 
 | Date | Change |
 |------|--------|
+| 2026-06-21 | ADR 0029 Phase 2 sync: the durable repair journal (D5, region 41) value type is now `RepairJournalEntry { mutation_id, op }` so each deferred batch is linked to its originating federated `mutation_id` (`0` = untracked). This makes graph-index posting lag observable per mutation via `index_pending_min_mutation_id` (the mutation-linked index watermark). Backward-incompatible in-place repack of region 41. |
 | 2026-06-21 | ADR 0029 consistency-contract sync: distinguish shard-local canonical mutation completion from cross-canister projection completion; a repair-journaled flush may leave the distributed mutation `ProjectionPending`. |
 | 2026-06-20 | Proposed; follow-up to [0009](0009-edge-property-index-and-index-ddl.md) (Phase A shard index registry) and [0020](0020-deferred-maintenance-timer-drain.md) (timer drain). |
 | 2026-06-20 | `adr-review` pass (APPROVE WITH CHANGES): added P7 + D6 (`DROP INDEX` does not purge postings today; make purge real, load-bearing for D4); framed repair journal as durable extension of existing pending queues; marked async tick as amending ADR 0020; prefer reusing the existing router indexed-catalog surface for the timer fetch. |

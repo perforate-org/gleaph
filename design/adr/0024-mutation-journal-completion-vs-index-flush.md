@@ -166,6 +166,14 @@ outcome is durable and replayable. It does not mean graph-index has converged. U
 flush leaves the distributed mutation `ProjectionPending` until the required index
 watermark is reached; Router owns the final cross-canister `Completed` transition.
 
+As of ADR 0029 Phase 2 (implemented), the required index watermark is observable: the
+deferred batch in the repair journal (ADR 0023 D5, region 41) carries its originating
+`mutation_id`, and the graph query `index_pending_min_mutation_id` reports the smallest
+tracked unapplied mutation. Because the Router saga's `projection_advanced` tracks label
+stats only, a mutation can reach the Router-saga `Completed` while its graph-index postings
+are still pending in the repair journal; the mutation-linked index watermark exposes that gap
+independently of the saga phase.
+
 ## Design Documentation Impact
 
 | Document | Update |

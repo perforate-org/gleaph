@@ -1,8 +1,8 @@
 # Gleaph ACID and Consistency Roadmap
 
 Last updated: 2026-06-21 UTC
-Status: Phases 0-1 done; Phases 2-6 planned
-Anchor timestamp: 2026-06-21 08:26:25 UTC +0000
+Status: Phases 0-2 done; Phases 3-6 planned
+Anchor timestamp: 2026-06-21 11:05:29 UTC +0000
 
 ## Purpose
 
@@ -216,34 +216,66 @@ Exit criteria:
 
 ## Phase 2: Mutation-linked projection watermarks
 
-**Status: Planned.**
+**Status: Done (as of 2026-06-21 11:05:29 UTC +0000).** The mutation token is *issued* and
+the graph-index watermark is *exposed*; enforcing the `AtLeast(token)` read barrier remains
+Phase 3 (issue-only scope).
 
 Goal: make derived-state freshness observable and usable as a read barrier.
 
 Deliverables:
 
-- Associate failed index repair batches with the originating `mutation_id` and an ordered target.
-- Expose whether graph-index work required by a mutation is pending or applied.
-- Preserve the existing label-stats `emitted_delta_last_seq` barrier.
-- Introduce a mutation token carrying the per-shard watermarks needed for read-your-writes.
-- Do not introduce a global snapshot timestamp in this phase.
+- **Done.** Associate failed index repair batches with the originating `mutation_id`. The
+  durable repair journal value type is now
+  `gleaph_graph::facade::stable::repair_journal::RepairJournalEntry { mutation_id, op }`
+  (stable region 41, backward-incompatible repack — see
+  [stable-memory-inventory.md](../storage/stable-memory-inventory.md)). `flush_pending`
+  (vertex / edge / label) threads the federated `mutation_id` to the append site;
+  `mutation_id == 0` is the reserved *untracked* sentinel (e.g. maintenance-timer flushes).
+- **Done.** Expose whether graph-index work required by a mutation is pending or applied.
+  Graph query `index_pending_min_mutation_id() -> Option<MutationId>` returns the smallest
+  tracked unapplied mutation id (the mutation-linked index watermark); `None` means all
+  tracked index work drained. A read for mutation `M` is index-satisfied on the shard iff the
+  result is `None` or `M < value`. Derived single-source-of-truth from the repair journal, not
+  a separate stored cursor.
+- **Done.** Preserve the existing label-stats `emitted_delta_last_seq` barrier. Unchanged; the
+  mutation token carries each shard's `emitted_delta_last_seq` as its label-stats watermark.
+- **Done.** Introduce a mutation token carrying the per-shard watermarks needed for
+  read-your-writes. `gleaph_graph_kernel::plan_exec::MutationToken { mutation_id, shards:
+  [{ shard_id, label_stats_seq }] }`, returned on `GqlQueryResult.token` for idempotent DML.
+  The index barrier is keyed by the monotonic `mutation_id`; label-stats by each shard's seq.
+- **Done (by construction).** No global snapshot timestamp introduced; watermarks are per-shard
+  seqs and a monotonic mutation id.
 
 Tests:
 
-- Deferred index flush returns a canonical outcome and a pending projection status.
-- Repair replay advances the mutation-linked watermark exactly once.
-- Duplicate delivery and out-of-order delivery do not advance past a gap.
-- Upgrade/reopen preserves pending targets and applied cursors.
+- **Done.** Deferred index flush links the repair batch to its `mutation_id` and pins the
+  watermark (`deferred_flush_links_repair_batch_to_mutation_id`, graph `index::pending`).
+- **Done.** Repair replay advances the mutation-linked watermark exactly once and ignores the
+  untracked sentinel (`min_tracked_mutation_id_pins_lowest_unapplied_and_ignores_untracked`,
+  graph `index::repair_journal`).
+- **Done.** End-to-end token issuance + watermark exposure under PocketIC
+  (`router_idempotent_dml_issues_mutation_token_and_exposes_index_watermark`).
+- **Done.** Token candid round-trip (`mutation_token_candid_roundtrip`,
+  `gql_query_result_carries_phase_and_token`, graph-kernel `plan_exec`).
+- **Deferred to Phase 3.** Duplicate/out-of-order delivery gap handling and upgrade/reopen
+  watermark persistence are exercised at the barrier-enforcement layer; the underlying repair
+  journal already persists across upgrade via stable region 41 (ADR 0023 D5 tests).
 
 Benchmarks:
 
-- Repair journal append/drain canbench.
-- Router mutation status/token encoding canbench if added to a hot entrypoint.
+- **Done (no regression).** The canonical-segment mutation canbenches
+  (`bench_graph_canonical_segment_insert_vertex` / `_with_property` / `_insert_edge`) are
+  within noise after threading `mutation_id` (the happy-path flush is a no-op under bench init,
+  so the repair-append path is not on the measured segment). A dedicated repair-append/drain
+  canbench is deferred — it is a cold, deferred-maintenance path, not a hot entrypoint.
 
 Exit criteria:
 
-- Given a mutation token, Router can determine whether all required projections caught up.
-- Projection completion is durable and idempotent.
+- **Met.** Given a mutation token, Router can determine whether all required projections caught
+  up: label-stats via each shard's `label_stats_seq` against the projection cursor, graph-index
+  via `index_pending_min_mutation_id` against the token's `mutation_id`.
+- **Met.** Projection completion is durable (stable region 41) and idempotent (drain
+  re-application is idempotent; watermark derived from the journal contents).
 
 ## Phase 3: Read consistency API
 

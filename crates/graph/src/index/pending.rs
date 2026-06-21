@@ -150,7 +150,9 @@ async fn compensate_index_ops(
 
 pub(crate) async fn flush_pending(
     index: Option<&dyn PropertyIndexLookup>,
+    mutation_id: Option<u64>,
 ) -> Result<(), PlanQueryError> {
+    let mutation_id = mutation_id.unwrap_or(0);
     if !GraphStore::new().federation_configured() {
         clear_pending();
         return Ok(());
@@ -194,7 +196,8 @@ pub(crate) async fn flush_pending(
                     // batch durably (ADR 0023 D5) so the delta survives upgrade /
                     // trap, and arm the timer to re-apply it. The batch is durable
                     // and the index converges asynchronously (ADR 0024).
-                    GraphStore::new().repair_journal_append(ops.iter().map(to_repair_op));
+                    GraphStore::new()
+                        .repair_journal_append(mutation_id, ops.iter().map(to_repair_op));
                     crate::facade::maintenance_timer::arm_if_needed();
                     return Err(PlanQueryError::IndexFlushDeferred {
                         op: "vertex_flush",
@@ -206,7 +209,8 @@ pub(crate) async fn flush_pending(
                     // state for this batch. Do not trap (ADR 0023 P4) — persist
                     // the full batch so idempotent re-application converges the
                     // index to the store (ADR 0024), then surface the deferred error.
-                    GraphStore::new().repair_journal_append(ops.iter().map(to_repair_op));
+                    GraphStore::new()
+                        .repair_journal_append(mutation_id, ops.iter().map(to_repair_op));
                     crate::facade::maintenance_timer::arm_if_needed();
                     return Err(PlanQueryError::IndexFlushDeferred {
                         op: "vertex_compensate",
@@ -365,7 +369,8 @@ mod tests {
             ]);
         });
 
-        let err = pollster::block_on(flush_pending(Some(&index))).expect_err("second insert fails");
+        let err =
+            pollster::block_on(flush_pending(Some(&index), None)).expect_err("second insert fails");
         assert!(err.to_string().contains("test_insert_fail"));
 
         assert_eq!(index.insert_calls.load(Ordering::SeqCst), 2);
@@ -409,6 +414,40 @@ mod tests {
     }
 
     #[test]
+    fn deferred_flush_links_repair_batch_to_mutation_id() {
+        // ADR 0029 Phase 2: a flush that defers to the repair journal under a federated
+        // mutation pins that mutation in the index watermark until the batch drains.
+        let index = FlakyIndex::new(1);
+        let graph = GraphStore::new();
+        graph
+            .set_federation_routing(Some(FederationRouting {
+                router_canister: Principal::management_canister(),
+                index_canister: Principal::management_canister(),
+                shard_id: ShardId::new(0),
+            }))
+            .expect("set routing");
+        drain_test_journal(&graph);
+        assert_eq!(graph.index_pending_min_mutation_id(), None);
+
+        PENDING.with(|p| {
+            p.borrow_mut().push(PendingPostingOp::Insert {
+                property_id: 1,
+                payload_bytes: vec![10],
+                vertex_id: 1,
+            });
+        });
+        let err = pollster::block_on(flush_pending(Some(&index), Some(55)))
+            .expect_err("first insert fails");
+        assert!(matches!(err, PlanQueryError::IndexFlushDeferred { .. }));
+        // The deferred batch is now linked to mutation 55.
+        assert_eq!(graph.index_pending_min_mutation_id(), Some(55));
+
+        drain_test_journal(&graph);
+        graph.set_federation_routing(None).expect("clear routing");
+        clear_pending();
+    }
+
+    #[test]
     fn compensation_failure_journals_batch_without_trapping() {
         // Insert fails on the 2nd op; compensation (remove of the 1st insert)
         // also fails. Pre-ADR-0023 this trapped on wasm; now the whole batch is
@@ -439,7 +478,7 @@ mod tests {
             ]);
         });
 
-        let err = pollster::block_on(flush_pending(Some(&index)))
+        let err = pollster::block_on(flush_pending(Some(&index), None))
             .expect_err("primary + compensation both fail");
         assert!(err.to_string().contains("batch journaled for repair"));
 

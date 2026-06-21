@@ -943,6 +943,16 @@ pub fn gql_execute_idempotent_as_admin(
     query: &str,
     client_mutation_key: &str,
 ) -> u64 {
+    gql_execute_idempotent_result_as_admin(env, query, client_mutation_key).row_count
+}
+
+/// Like [`gql_execute_idempotent_as_admin`] but returns the full `GqlQueryResult`
+/// (lifecycle `phase` and ADR 0029 Phase 2 mutation `token`), not just the row count.
+pub fn gql_execute_idempotent_result_as_admin(
+    env: &FederationEnv,
+    query: &str,
+    client_mutation_key: &str,
+) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
     use gleaph_graph_kernel::federation::RouterError;
     use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 
@@ -959,10 +969,30 @@ pub fn gql_execute_idempotent_as_admin(
         )
         .unwrap_or_else(|e| panic!("gql_execute_idempotent on router: {e:?}"));
     match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
-        Ok(Ok(result)) => result.row_count,
+        Ok(Ok(result)) => result,
         Ok(Err(err)) => panic!("gql_execute_idempotent rejected: {err:?}"),
         Err(err) => panic!("decode gql_execute_idempotent: {err}"),
     }
+}
+
+/// Graph shard query (as router): smallest tracked mutation id with unapplied index
+/// postings, or `None` when index work has drained (ADR 0029 Phase 2 watermark).
+pub fn graph_index_pending_min_mutation_id(
+    env: &FederationEnv,
+    graph: Principal,
+) -> Option<gleaph_graph_kernel::plan_exec::MutationId> {
+    use gleaph_graph_kernel::plan_exec::MutationId;
+
+    let bytes = env
+        .pic
+        .query_call(
+            graph,
+            env.router,
+            "index_pending_min_mutation_id",
+            Encode!(&()).expect("encode index_pending_min_mutation_id"),
+        )
+        .unwrap_or_else(|e| panic!("index_pending_min_mutation_id on {graph}: {e:?}"));
+    Decode!(&bytes, Option<MutationId>).expect("decode index_pending_min_mutation_id")
 }
 
 /// Call the router's read-only registry-invariant oracle as admin. Returns the raw

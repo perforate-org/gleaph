@@ -227,7 +227,7 @@ mod tests {
     #[test]
     fn drain_reapplies_all_and_clears_journal() {
         with_routing(|graph| {
-            graph.repair_journal_append([vertex_insert(1), vertex_insert(2), vertex_insert(3)]);
+            graph.repair_journal_append(0, [vertex_insert(1), vertex_insert(2), vertex_insert(3)]);
             let index = CountingIndex::new(0);
             pollster::block_on(drain_once(&index)).expect("drain succeeds");
             assert_eq!(index.inserts.load(Ordering::SeqCst), 3);
@@ -236,9 +236,33 @@ mod tests {
     }
 
     #[test]
+    fn min_tracked_mutation_id_pins_lowest_unapplied_and_ignores_untracked() {
+        with_routing(|graph| {
+            // No tracked entries yet: fully caught up.
+            assert_eq!(graph.index_pending_min_mutation_id(), None);
+            // An untracked (mutation_id 0) batch never pins the watermark.
+            graph.repair_journal_append(0, [vertex_insert(1)]);
+            assert_eq!(graph.index_pending_min_mutation_id(), None);
+            // Tracked batches pin the smallest unapplied mutation id.
+            graph.repair_journal_append(7, [vertex_insert(2)]);
+            graph.repair_journal_append(9, [vertex_insert(3)]);
+            assert_eq!(graph.index_pending_min_mutation_id(), Some(7));
+            // Draining the mutation-7 prefix advances the watermark exactly once to 9.
+            let index = CountingIndex::new(2); // fail the 2nd insert (mutation 7's op)
+            let _ = pollster::block_on(drain_once(&index));
+            // The untracked op (seq 0) drained; mutation 7 remains the floor.
+            assert_eq!(graph.index_pending_min_mutation_id(), Some(7));
+            let healthy = CountingIndex::new(0);
+            pollster::block_on(drain_once(&healthy)).expect("drain converges");
+            assert_eq!(graph.index_pending_min_mutation_id(), None);
+            assert!(graph.repair_journal_is_empty());
+        });
+    }
+
+    #[test]
     fn drain_stops_at_failure_and_retains_remaining() {
         with_routing(|graph| {
-            graph.repair_journal_append([vertex_insert(1), vertex_insert(2), vertex_insert(3)]);
+            graph.repair_journal_append(0, [vertex_insert(1), vertex_insert(2), vertex_insert(3)]);
             // Fail the 2nd insert: the 1st is removed, the 2nd and 3rd persist.
             let index = CountingIndex::new(2);
             let err = pollster::block_on(drain_once(&index)).expect_err("drain stops");

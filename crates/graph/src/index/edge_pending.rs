@@ -180,7 +180,9 @@ async fn compensate_index_ops(
 
 pub(crate) async fn flush_pending(
     index: Option<&dyn PropertyIndexLookup>,
+    mutation_id: Option<u64>,
 ) -> Result<(), PlanQueryError> {
+    let mutation_id = mutation_id.unwrap_or(0);
     if !GraphStore::new().federation_configured() {
         clear_pending();
         return Ok(());
@@ -241,7 +243,8 @@ pub(crate) async fn flush_pending(
                     // Index is back at its pre-batch state; persist the whole
                     // batch durably (ADR 0023 D5) and arm the timer to re-apply.
                     // The batch is durable and the index converges async (ADR 0024).
-                    GraphStore::new().repair_journal_append(ops.iter().map(to_repair_op));
+                    GraphStore::new()
+                        .repair_journal_append(mutation_id, ops.iter().map(to_repair_op));
                     crate::facade::maintenance_timer::arm_if_needed();
                     return Err(PlanQueryError::IndexFlushDeferred {
                         op: "edge_flush",
@@ -252,7 +255,8 @@ pub(crate) async fn flush_pending(
                     // Compensation failed: do not trap (ADR 0023 P4). Persist the
                     // full batch so idempotent re-application converges the index
                     // to the store (ADR 0024), then surface the deferred error.
-                    GraphStore::new().repair_journal_append(ops.iter().map(to_repair_op));
+                    GraphStore::new()
+                        .repair_journal_append(mutation_id, ops.iter().map(to_repair_op));
                     crate::facade::maintenance_timer::arm_if_needed();
                     return Err(PlanQueryError::IndexFlushDeferred {
                         op: "edge_compensate",

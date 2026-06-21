@@ -31,8 +31,13 @@ not paper over sync gaps with graph-side tombstone filtering at the index layer.
    cross-canister projection is pending. Idempotent mutations report a `MutationLifecyclePhase`
    ([ADR 0029](../adr/0029-shard-local-atomicity-and-cross-canister-consistency.md) Phase 0,
    implemented) so a client can distinguish a durable canonical commit
-   (`CanonicalCommitted` / `ProjectionPending`) from full convergence (`Completed`). The read-side
-   read-your-writes barrier (`AtLeast(token)`) is still planned (ADR 0029 Phase 3), not implemented.
+   (`CanonicalCommitted` / `ProjectionPending`) from full convergence (`Completed`). Idempotent
+   mutations also return a `MutationToken` (`GqlQueryResult.token`, ADR 0029 Phase 2, implemented)
+   carrying the per-shard read-your-writes watermarks: each shard's label-stats `emitted_delta_last_seq`
+   and — keyed by the monotonic `mutation_id` — the graph-index watermark exposed by the graph query
+   `index_pending_min_mutation_id`. The read-side `AtLeast(token)` barrier that *enforces* these
+   watermarks is still planned (ADR 0029 Phase 3), not implemented — Phase 2 only issues the token
+   and exposes the watermark.
 
 ## Entrypoint consistency modes (ADR 0029)
 
@@ -54,9 +59,12 @@ shapes and `Canonical` for graph-shard-served shapes, without an explicit per-re
 
 Read-your-writes today: after a `Completed` idempotent DML, label-stats count-only reads are
 read-your-writes (the projection is drained inline before completion). Index-backed shapes
-(membership, property equality/range) can still lag while a mutation is `ProjectionPending`; the
-returned phase signals this until the Phase 3 `AtLeast(token)` read barrier makes it enforceable
-per read.
+(membership, property equality/range) can still lag while a mutation is `ProjectionPending` — and
+even after the Router-saga `Completed`, since the saga's `projection_advanced` tracks label stats
+only, not graph-index posting delivery (which may be deferred to the repair journal). The returned
+`MutationToken` now lets a caller detect this: the graph-index watermark
+(`index_pending_min_mutation_id`) is keyed by `mutation_id` independently of the saga phase. The
+Phase 3 `AtLeast(token)` read barrier will make the token enforceable per read.
 
 ## Sync vs lag policy
 

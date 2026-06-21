@@ -16,7 +16,7 @@ use gleaph_graph_kernel::index::{
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanResult, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire, MutationId,
-    MutationJournalState, ShardEventSeq,
+    MutationJournalState, MutationToken, MutationTokenShard, ShardEventSeq,
 };
 use ic_cdk::api::msg_caller;
 
@@ -694,6 +694,7 @@ async fn dispatch_use_graph_join(
     Ok(GqlQueryResult {
         row_count: projected.rows.len() as u64,
         phase: None,
+        token: None,
         rows_blob: Some(
             projected
                 .encode_blob()
@@ -1022,6 +1023,9 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
 
     let mut merged = empty_execute_plan_result();
+    // ADR 0029 Phase 2: accumulate per-shard read-your-writes watermarks for the mutation
+    // token as each shard completes (built live so it survives record compaction).
+    let mut token_shards: Vec<MutationTokenShard> = Vec::new();
     for dispatch in dispatches {
         let result = match execute_plan_on_graph(
             dispatch.graph_canister,
@@ -1087,13 +1091,17 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                             dispatch.shard_id,
                         )?;
                     }
+                    token_shards.push(MutationTokenShard {
+                        shard_id: dispatch.shard_id,
+                        label_stats_seq: entry.emitted_delta_last_seq,
+                    });
                     continue;
                 }
                 return Err(RouterError::InvalidArgument(err));
             }
         };
         if let Some(mutation_id) = mutation_id {
-            advance_mutation_label_stats_projection(
+            let entry = advance_mutation_label_stats_projection(
                 store,
                 graph_id,
                 dispatch.graph_canister,
@@ -1101,6 +1109,10 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 mutation_id,
             )
             .await?;
+            token_shards.push(MutationTokenShard {
+                shard_id: dispatch.shard_id,
+                label_stats_seq: entry.emitted_delta_last_seq,
+            });
         }
         if has_dml {
             crate::bulk_ingest_finalize::maybe_finalize_hot_vertices_after_dml(
@@ -1133,24 +1145,45 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         apply_federated_aggregate_having(&mut merged, spec, pmap)
             .map_err(RouterError::InvalidArgument)?;
     }
+    // ADR 0029 Phase 2: issue a read-your-writes token for the idempotent mutation. The
+    // index barrier is keyed by the monotonic mutation_id; label-stats barriers by each
+    // shard's emitted delta seq. Enforcement is Phase 3.
+    let token = mutation_id.map(|mutation_id| MutationToken {
+        mutation_id,
+        shards: token_shards,
+    });
     if let Some(key) = client_mutation_key
         && let Some(row_count) = store.router_mutation_completed_row_count(caller, graph_id, key)
     {
-        return Ok(attach_mutation_phase(
-            GqlQueryResult::row_count_only(row_count),
+        return Ok(attach_mutation_token(
+            attach_mutation_phase(
+                GqlQueryResult::row_count_only(row_count),
+                store,
+                caller,
+                graph_id,
+                client_mutation_key,
+            ),
+            token,
+        ));
+    }
+    Ok(attach_mutation_token(
+        attach_mutation_phase(
+            GqlQueryResult::from_merged(&merged),
             store,
             caller,
             graph_id,
             client_mutation_key,
-        ));
-    }
-    Ok(attach_mutation_phase(
-        GqlQueryResult::from_merged(&merged),
-        store,
-        caller,
-        graph_id,
-        client_mutation_key,
+        ),
+        token,
     ))
+}
+
+/// Attach an ADR 0029 Phase 2 mutation token when one was issued for this dispatch.
+fn attach_mutation_token(result: GqlQueryResult, token: Option<MutationToken>) -> GqlQueryResult {
+    match token {
+        Some(token) => result.with_token(token),
+        None => result,
+    }
 }
 
 fn release_routing_if_owner(

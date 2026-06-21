@@ -80,6 +80,31 @@ pub enum MutationLifecyclePhase {
     Failed,
 }
 
+/// Read-your-writes token for a federated mutation (ADR 0029 §5, Phase 2).
+///
+/// Issued with an idempotent DML result. It names the mutation and the per-shard
+/// projection watermarks a later read must reach to observe this mutation's effects.
+/// It is deliberately **not** a global snapshot timestamp: graph-index freshness is
+/// keyed by the monotonic `mutation_id` (a shard's index work for `mutation_id` is
+/// applied once its repair watermark passes it), and label-stats freshness by each
+/// shard's delta [`ShardEventSeq`]. Phase 2 only *issues* the token; enforcing the
+/// `AtLeast(token)` read barrier is Phase 3.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct MutationToken {
+    pub mutation_id: MutationId,
+    pub shards: Vec<MutationTokenShard>,
+}
+
+/// Per-shard watermarks a read must reach for read-your-writes against one mutation.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct MutationTokenShard {
+    pub shard_id: ShardId,
+    /// Highest label-stats delta seq this mutation emitted on the shard. The Router
+    /// label-stats projection must reach this seq to satisfy a count-only
+    /// read-your-writes. `None` when the mutation emitted no label-stats delta here.
+    pub label_stats_seq: Option<ShardEventSeq>,
+}
+
 /// Router read-path result: merged row count and optional materialized rows.
 ///
 /// `phase` is populated only for idempotent mutations, where Router tracks a federated
@@ -92,6 +117,9 @@ pub struct GqlQueryResult {
     pub rows_blob: Option<Vec<u8>>,
     /// Federated mutation lifecycle phase for idempotent mutations (ADR 0029).
     pub phase: Option<MutationLifecyclePhase>,
+    /// Read-your-writes token for idempotent mutations (ADR 0029 §5, Phase 2). `None`
+    /// for reads and untracked escape-hatch writes.
+    pub token: Option<MutationToken>,
 }
 
 impl GqlQueryResult {
@@ -100,6 +128,7 @@ impl GqlQueryResult {
             row_count: merged.row_count,
             rows_blob: merged.rows_blob.clone(),
             phase: None,
+            token: None,
         }
     }
 
@@ -108,6 +137,7 @@ impl GqlQueryResult {
             row_count,
             rows_blob: None,
             phase: None,
+            token: None,
         }
     }
 
@@ -115,6 +145,13 @@ impl GqlQueryResult {
     #[must_use]
     pub fn with_phase(mut self, phase: MutationLifecyclePhase) -> Self {
         self.phase = Some(phase);
+        self
+    }
+
+    /// Attach a read-your-writes mutation token (ADR 0029 §5, Phase 2).
+    #[must_use]
+    pub fn with_token(mut self, token: MutationToken) -> Self {
+        self.token = Some(token);
         self
     }
 }
@@ -270,6 +307,47 @@ mod tests {
         let bytes = Encode!(&result).expect("encode");
         let decoded: ExecutePlanResult = Decode!(&bytes, ExecutePlanResult).expect("decode");
         assert_eq!(result, decoded);
+    }
+
+    #[test]
+    fn mutation_token_candid_roundtrip() {
+        let token = MutationToken {
+            mutation_id: 42,
+            shards: vec![
+                MutationTokenShard {
+                    shard_id: ShardId::new(0),
+                    label_stats_seq: Some(7),
+                },
+                MutationTokenShard {
+                    shard_id: ShardId::new(1),
+                    label_stats_seq: None,
+                },
+            ],
+        };
+        let bytes = Encode!(&token).expect("encode");
+        let decoded: MutationToken = Decode!(&bytes, MutationToken).expect("decode");
+        assert_eq!(token, decoded);
+    }
+
+    #[test]
+    fn gql_query_result_carries_phase_and_token() {
+        let result = GqlQueryResult::row_count_only(3)
+            .with_phase(MutationLifecyclePhase::ProjectionPending)
+            .with_token(MutationToken {
+                mutation_id: 9,
+                shards: vec![MutationTokenShard {
+                    shard_id: ShardId::new(2),
+                    label_stats_seq: Some(5),
+                }],
+            });
+        let bytes = Encode!(&result).expect("encode");
+        let decoded: GqlQueryResult = Decode!(&bytes, GqlQueryResult).expect("decode");
+        assert_eq!(result, decoded);
+        assert_eq!(
+            decoded.phase,
+            Some(MutationLifecyclePhase::ProjectionPending)
+        );
+        assert_eq!(decoded.token.expect("token").mutation_id, 9);
     }
 
     #[test]

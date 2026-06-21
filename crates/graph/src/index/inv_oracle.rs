@@ -271,7 +271,7 @@ fn postings_converge_to_store_projection_after_failure_and_compaction() {
         pending::push_vertex_index_op(VertexId::from(1u32), vertex_insert(AGE_PID, &[10]));
         pending::push_vertex_index_op(VertexId::from(2u32), vertex_insert(AGE_PID, &[11]));
         pending::push_vertex_index_op(VertexId::from(3u32), vertex_insert(AGE_PID, &[10]));
-        let err = pollster::block_on(pending::flush_pending(Some(&index)))
+        let err = pollster::block_on(pending::flush_pending(Some(&index), None))
             .expect_err("injected failure on the 2nd vertex insert");
         assert!(err.to_string().contains("inv_oracle_injected_failure"));
         assert!(
@@ -296,7 +296,8 @@ fn postings_converge_to_store_projection_after_failure_and_compaction() {
             1,
             edge_insert(&[200]),
         );
-        pollster::block_on(edge_pending::flush_pending(Some(&index))).expect("edge batch flushes");
+        pollster::block_on(edge_pending::flush_pending(Some(&index), None))
+            .expect("edge batch flushes");
 
         // Batch 3 — compaction re-key: slot 0's edge is deleted, then slot 1 is
         // compacted down into slot 0 (remove old slot, insert new slot). This is
@@ -319,7 +320,7 @@ fn postings_converge_to_store_projection_after_failure_and_compaction() {
             0,
             edge_insert(&[200]),
         );
-        pollster::block_on(edge_pending::flush_pending(Some(&index)))
+        pollster::block_on(edge_pending::flush_pending(Some(&index), None))
             .expect("compaction re-key flushes");
 
         // Batch 4 — always-on vertex label membership.
@@ -333,7 +334,7 @@ fn postings_converge_to_store_projection_after_failure_and_compaction() {
             &[],
             &[VertexLabelId::from_raw(KNOWS_LABEL)],
         );
-        pollster::block_on(label_pending::flush_pending(Some(&index)))
+        pollster::block_on(label_pending::flush_pending(Some(&index), None))
             .expect("label batch flushes");
 
         // Repair: replay the journaled vertex batch (the index is healthy now).

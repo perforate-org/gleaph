@@ -14,7 +14,8 @@ use gleaph_pocket_ic_tests::{
     drop_vertex_property_index, e2e_insert_directed_edge_with_property,
     e2e_insert_undirected_edge_with_property, e2e_insert_vertex, e2e_insert_vertex_with_property,
     e2e_insert_vertex_with_two_properties, gql_execute_idempotent_as_admin,
-    gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin, gql_query_as_admin_expect_err,
+    gql_execute_idempotent_as_admin_expect_err, gql_execute_idempotent_result_as_admin,
+    gql_query_as_admin, gql_query_as_admin_expect_err, graph_index_pending_min_mutation_id,
     install_federation, install_single_shard_federation, knowledge_map_live_query,
     seed_knowledge_map_graph,
 };
@@ -184,6 +185,40 @@ fn router_gql_insert_seeds_knowledge_map_fan_out_graph() {
     assert!(
         edge_ids.contains("project-lara"),
         "expected project-lara edge, got {edge_ids:?}"
+    );
+}
+
+#[test]
+fn router_idempotent_dml_issues_mutation_token_and_exposes_index_watermark() {
+    // ADR 0029 Phase 2: an idempotent DML returns a read-your-writes token (mutation id +
+    // per-shard label-stats watermarks) and a lifecycle phase. After a successful insert the
+    // index postings are applied inline, so the shard's index watermark is clear (`None`).
+    let env = install_single_shard_federation();
+
+    let result = gql_execute_idempotent_result_as_admin(
+        &env,
+        "INSERT (:Person)-[:KNOWS {weight: 5}]->(:Project)",
+        "router_idempotent_dml_issues_mutation_token_and_exposes_index_watermark",
+    );
+
+    let token = result
+        .token
+        .expect("idempotent DML must issue a mutation token");
+    assert_ne!(token.mutation_id, 0, "token carries a real mutation id");
+    assert!(
+        !token.shards.is_empty(),
+        "token names the shards that participated in the mutation"
+    );
+    assert!(
+        result.phase.is_some(),
+        "idempotent DML reports a lifecycle phase"
+    );
+
+    // Happy-path flush applies postings inline; no tracked mutation is left pending.
+    assert_eq!(
+        graph_index_pending_min_mutation_id(&env, env.graph_source),
+        None,
+        "a successfully flushed mutation leaves no pending index work"
     );
 }
 

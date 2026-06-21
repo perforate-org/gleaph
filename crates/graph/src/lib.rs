@@ -90,6 +90,13 @@ fn get_mutation_journal_entry(
     canister::handlers::get_mutation_journal_entry(mutation_id)
 }
 
+/// Router → graph: smallest tracked mutation id with unapplied index postings, or
+/// `None` when index work has drained (ADR 0029 Phase 2 read-your-writes barrier).
+#[query(guard = "guard_router_canister")]
+fn index_pending_min_mutation_id() -> Option<gleaph_graph_kernel::plan_exec::MutationId> {
+    canister::handlers::index_pending_min_mutation_id()
+}
+
 #[update(guard = "guard_router_canister")]
 fn ack_label_stats_deltas_through(through_seq: gleaph_graph_kernel::plan_exec::ShardEventSeq) {
     canister::handlers::ack_label_stats_deltas_through(through_seq);
