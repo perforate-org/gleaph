@@ -370,11 +370,17 @@ Deliverables:
 
 Tests:
 
-- Drop the original client after one shard commits; recovery completes remaining shards.
-  **Partial / deferred** — host tests cover the recovery decision logic (scan selection, projection
-  convergence record mutations, lease reclaim, TTL retention, status derivation); a PocketIC test
-  asserts the timer is armed, runs, and is a safe no-op on a terminal saga, plus `mutation_status`
-  wiring. Forcing a non-terminal saga deterministically end-to-end is left as a follow-up.
+- Drop the original client after one shard commits; recovery completes remaining shards. **Done** —
+  host tests cover the recovery decision logic (scan selection, projection convergence record
+  mutations, lease reclaim, TTL retention, status derivation); a PocketIC test asserts the timer is
+  armed, runs, and is a safe no-op on a terminal saga, plus `mutation_status` wiring. A full
+  end-to-end convergence test crashes one shard mid-saga, asserts the saga persists as
+  `CanonicalPending`, that the autonomous timer leaves it pending without double-applying while the
+  shard is down, and that restarting the shard plus an idempotent retry converges it to `Completed`
+  with both shards updated (`router_recovers_non_terminal_federated_saga_via_idempotent_retry`).
+  Note: the recovery driver is projection-only by design, so the timer converges a `ProjectionPending`
+  saga autonomously, whereas a `CanonicalPending` saga (an outstanding canonical shard write) is
+  resumed by the idempotent retry path, never by re-dispatching canonical DML from the timer.
 - Router upgrade during each phase resumes without duplicate graph writes — recovery is projection-
   only and idempotent; `post_upgrade` re-arms the timer.
 - Repeated rejection keeps durable progress and does not spin unboundedly — timer backs off to a

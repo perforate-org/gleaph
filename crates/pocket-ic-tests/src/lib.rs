@@ -1388,6 +1388,22 @@ pub fn run_router_recovery_timer(env: &FederationEnv) {
     }
 }
 
+/// Stop a graph-shard canister to simulate a crashed / unavailable shard mid-saga
+/// (federated-saga recovery tests). Canisters are created with the anonymous controller, so the
+/// management call is sent as `None` (anonymous).
+pub fn stop_graph_shard(env: &FederationEnv, shard: Principal) {
+    env.pic
+        .stop_canister(shard, None)
+        .unwrap_or_else(|e| panic!("stop graph shard {shard}: {e:?}"));
+}
+
+/// Restart a previously [`stop_graph_shard`]-ed graph-shard canister.
+pub fn start_graph_shard(env: &FederationEnv, shard: Principal) {
+    env.pic
+        .start_canister(shard, None)
+        .unwrap_or_else(|e| panic!("start graph shard {shard}: {e:?}"));
+}
+
 /// Admin query: per-graph `ElementIdEncodingKey` bytes from router runtime config (ADR 0019).
 pub fn graph_element_id_encoding_key(
     pic: &PocketIc,

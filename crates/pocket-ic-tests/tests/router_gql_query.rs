@@ -18,7 +18,7 @@ use gleaph_pocket_ic_tests::{
     gql_query_as_admin, gql_query_as_admin_expect_err, gql_query_with_consistency_as_admin,
     graph_index_pending_min_mutation_id, install_federation, install_single_shard_federation,
     knowledge_map_live_query, mutation_status_as_admin, run_router_recovery_timer,
-    seed_knowledge_map_graph,
+    seed_knowledge_map_graph, start_graph_shard, stop_graph_shard,
 };
 
 const INDEX_VERTEX_LABEL: &str = "Person";
@@ -504,6 +504,100 @@ fn router_mutation_status_reports_completed_and_recovery_timer_is_safe_noop() {
     assert!(
         matches!(missing, Err(RouterError::InvalidArgument(_))),
         "unknown client_mutation_key returns InvalidArgument, got {missing:?}"
+    );
+}
+
+#[test]
+fn router_recovers_non_terminal_federated_saga_via_idempotent_retry() {
+    // ADR 0029 Phase 4: a federated DML whose fan-out spans two shards, with one shard crashed
+    // mid-saga, leaves the mutation non-terminal (`CanonicalPending`) instead of corrupting state.
+    // The autonomous recovery timer never re-applies canonical DML, so while the shard is down the
+    // saga stays pending (no double-apply). After the shard restarts, an idempotent retry on the
+    // same `client_mutation_key` resumes only the outstanding shard (the already-committed shard is
+    // deduplicated by `mutation_id`) and converges the saga to `Completed`.
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
+
+    let env = install_federation();
+    let age = admin_intern_property(&env, "age");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "router_recovers_non_terminal_federated_saga_via_idempotent_retry",
+    );
+    let source = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
+    let dest = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 5);
+    assert_eq!(source.global_vertex_id.shard_id, SOURCE_SHARD);
+    assert_eq!(dest.global_vertex_id.shard_id, DEST_SHARD);
+
+    let key = "router_recovers_non_terminal_federated_saga";
+
+    // Crash the dest shard, then run a federated DML whose `age = 5` anchor fans out to both
+    // shards. The dest write cannot commit, so the router returns an error and persists a
+    // non-terminal saga (the dispatch envelope, with both shards' seeds, is recorded before any
+    // shard executes).
+    stop_graph_shard(&env, env.graph_dest);
+    let err =
+        gql_execute_idempotent_as_admin_expect_err(&env, "MATCH (n {age: 5}) SET n.age = 6", key);
+    assert!(
+        matches!(err, RouterError::InvalidArgument(_)),
+        "a crashed shard fails the federated DML, got {err:?}"
+    );
+
+    let pending = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+        .expect("status for the in-flight saga");
+    assert_eq!(
+        pending.phase,
+        MutationLifecyclePhase::CanonicalPending,
+        "an outstanding canonical shard write leaves the saga CanonicalPending"
+    );
+    assert!(
+        pending.target_shard.is_some(),
+        "status names the outstanding shard"
+    );
+    assert!(
+        pending
+            .next_action
+            .contains("retry the idempotent mutation"),
+        "CanonicalPending asks the caller to retry, got {:?}",
+        pending.next_action
+    );
+
+    // The autonomous recovery timer must not converge or corrupt the saga while the shard is down:
+    // it never re-dispatches canonical DML, and the unavailable shard cannot be projected.
+    run_router_recovery_timer(&env);
+    let still_pending = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+        .expect("status after a recovery tick with the shard still down");
+    assert_eq!(
+        still_pending.phase,
+        MutationLifecyclePhase::CanonicalPending,
+        "recovery timer leaves an unavailable canonical shard pending (no double-apply)"
+    );
+
+    // Restart the shard and retry the same idempotent mutation. The already-committed shard is a
+    // no-op (deduplicated by mutation_id); the recovered shard applies and the saga finalizes.
+    start_graph_shard(&env, env.graph_dest);
+    let resumed =
+        gql_execute_idempotent_result_as_admin(&env, "MATCH (n {age: 5}) SET n.age = 6", key);
+    assert_eq!(
+        resumed.phase,
+        Some(MutationLifecyclePhase::Completed),
+        "the idempotent retry converges the saga to Completed"
+    );
+
+    let completed = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+        .expect("status after convergence");
+    assert_eq!(completed.phase, MutationLifecyclePhase::Completed);
+    assert_eq!(completed.target_shard, None);
+    assert_eq!(completed.next_action, "none");
+
+    // The mutation landed on both shards: both vertices now read back at the new value.
+    let after = gql_query_as_admin(&env, "MATCH (n {age: 6}) RETURN n");
+    assert_eq!(
+        after.row_count, 2,
+        "both shards' vertices converged to the updated value"
     );
 }
 
