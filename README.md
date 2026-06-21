@@ -1,5 +1,9 @@
 # Gleaph
 
+<p align="center">
+  <img src="assets/gleaph_logo.webp" alt="Gleaph" width="720">
+</p>
+
 **Gleaph** is a graph database designed to run on the
 [Internet Computer](https://internetcomputer.org/).
 
