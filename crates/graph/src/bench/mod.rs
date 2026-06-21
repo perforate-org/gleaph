@@ -8,6 +8,7 @@ mod stable_layout;
 
 use crate::facade::GraphStore;
 use crate::gql_execution_context::GqlExecutionContext;
+use crate::gql_run::{GqlCanisterExecutionMode, run_wire_plan_last_read_row_count};
 use crate::plan::query::{PlanQueryResult, execute_plan_query, execute_plan_query_bindings};
 use canbench_rs::bench;
 use gleaph_gql::Value;
@@ -15,8 +16,9 @@ use gleaph_gql::ast::{CmpOp, Expr, ExprKind, ObjectName};
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{
     EdgePayloadPredicate, EdgeVectorMetric, EdgeVectorPredicate, PhysicalPlan, PlanOp,
-    ProjectColumn, ScanValue, ShortestMode, ShortestPathCost, VarLenSpec,
+    ProjectColumn, PropertyAssignment, ScanValue, ShortestMode, ShortestPathCost, VarLenSpec,
 };
+use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::{
     EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile, EdgeWeightProfile, Vertex, WeightEncoding,
 };
@@ -1932,6 +1934,105 @@ fn bench_graph_delete_detached_vertex() -> canbench_rs::BenchResult {
     })
 }
 
+// --- ADR 0029 canonical mutation segment benches (wire path: router -> shard) ---
+//
+// These measure the shard-local canonical critical section
+// (`apply_canonical_mutation_segment`, ADR 0029 §1): decode the wire plan bundle, execute the
+// DML against `GraphStore`, append the label-stats projection *intent* to the delta log, and
+// record the mutation journal — all inside one message segment. `index` is `None` and federation
+// routing is unset, so there is no inter-canister projection *delivery* (`flush_pending` is a
+// no-op): the benches isolate the canonical write path for the vertex / property / edge mutations
+// named in the ADR 0029 Phase 1 roadmap, giving a baseline for future boundary changes.
+
+/// Run a single-DML wire plan through the canonical mutation segment with no index delivery.
+fn run_canonical_segment(store: GraphStore, plan: &PhysicalPlan) {
+    let blob = encode_block_plans(std::slice::from_ref(plan), true).expect("encode mutation plan");
+    pollster::block_on(run_wire_plan_last_read_row_count(
+        store,
+        &blob,
+        &params(),
+        GqlCanisterExecutionMode::Update,
+        None,
+        GqlExecutionContext::default(),
+        None,
+        Some(1),
+    ))
+    .expect("canonical mutation segment");
+}
+
+fn insert_vertex_mutation_plan(label: &str, properties: Vec<PropertyAssignment>) -> PhysicalPlan {
+    plan(vec![PlanOp::InsertVertex {
+        variable: Some("n".into()),
+        labels: vec![label.into()],
+        properties,
+    }])
+}
+
+fn insert_edge_mutation_plan() -> PhysicalPlan {
+    plan(vec![
+        PlanOp::InsertVertex {
+            variable: Some("a".into()),
+            labels: vec!["BenchMutEdgeSrc".into()],
+            properties: vec![],
+        },
+        PlanOp::InsertVertex {
+            variable: Some("b".into()),
+            labels: vec!["BenchMutEdgeDst".into()],
+            properties: vec![],
+        },
+        PlanOp::InsertEdge {
+            variable: None,
+            src: "a".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            labels: vec!["BenchMutEdge".into()],
+            properties: vec![],
+        },
+    ])
+}
+
+/// Canonical segment: insert one labeled vertex (no properties).
+#[bench(raw)]
+fn bench_graph_canonical_segment_insert_vertex() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let plan = insert_vertex_mutation_plan("BenchMutVertex", vec![]);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("canonical_segment_insert_vertex");
+        run_canonical_segment(black_box(store), black_box(&plan));
+    })
+}
+
+/// Canonical segment: insert one labeled vertex carrying one property (property store write path).
+#[bench(raw)]
+fn bench_graph_canonical_segment_insert_vertex_with_property() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let plan = insert_vertex_mutation_plan(
+        "BenchMutVertexProp",
+        vec![PropertyAssignment {
+            name: "weight".into(),
+            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+        }],
+    );
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("canonical_segment_insert_vertex_with_property");
+        run_canonical_segment(black_box(store), black_box(&plan));
+    })
+}
+
+/// Canonical segment: insert two vertices and a directed edge between them in one plan.
+#[bench(raw)]
+fn bench_graph_canonical_segment_insert_edge() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let plan = insert_edge_mutation_plan();
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("canonical_segment_insert_edge");
+        run_canonical_segment(black_box(store), black_box(&plan));
+    })
+}
+
 #[cfg(test)]
 mod bench_setup_tests {
     use super::*;
@@ -1948,6 +2049,74 @@ mod bench_setup_tests {
             EdgePayloadProfile::from(EdgeWeightProfile {
                 encoding: WeightEncoding::RawU16,
             }),
+        );
+    }
+
+    /// The canonical-segment mutation benches must execute and persist real
+    /// canonical state, so the benchmark measures the write path rather than an
+    /// early error return.
+    #[test]
+    fn canonical_segment_insert_vertex_bench_persists() {
+        let store = GraphStore::new();
+        run_canonical_segment(
+            store,
+            &insert_vertex_mutation_plan("BenchMutVertex", vec![]),
+        );
+        let result = pollster::block_on(execute_plan_query(
+            &store,
+            &plan(vec![
+                PlanOp::NodeScan {
+                    variable: "n".into(),
+                    label: Some("BenchMutVertex".into()),
+                    property_projection: None,
+                },
+                PlanOp::Project {
+                    columns: vec![project(var("n"), "n")],
+                    distinct: false,
+                },
+            ]),
+            &params(),
+            None,
+            GqlExecutionContext::default(),
+        ))
+        .expect("read back inserted vertex");
+        assert_eq!(result.rows.len(), 1);
+    }
+
+    #[test]
+    fn canonical_segment_insert_vertex_with_property_bench_persists() {
+        let store = GraphStore::new();
+        run_canonical_segment(
+            store,
+            &insert_vertex_mutation_plan(
+                "BenchMutVertexProp",
+                vec![PropertyAssignment {
+                    name: "weight".into(),
+                    value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                }],
+            ),
+        );
+        assert_eq!(u32::from(store.vertex_count()), 1);
+    }
+
+    #[test]
+    fn canonical_segment_insert_edge_bench_persists() {
+        let store = GraphStore::new();
+        run_canonical_segment(store, &insert_edge_mutation_plan());
+        assert_eq!(u32::from(store.vertex_count()), 2);
+        let src_label = crate::test_labels::vertex_label_id_for_name("BenchMutEdgeSrc");
+        let mut src = None;
+        for raw in 0..u32::from(store.vertex_count()) {
+            let vid = VertexId::from(raw);
+            let vertex = store.vertex(vid).expect("vertex");
+            if store.vertex_has_label(vid, vertex, src_label) {
+                src = Some(vid);
+            }
+        }
+        let src = src.expect("edge source vertex");
+        assert_eq!(
+            store.directed_out_edges(src).expect("src out edges").len(),
+            1
         );
     }
 

@@ -1,7 +1,7 @@
 # Gleaph ACID and Consistency Roadmap
 
 Last updated: 2026-06-21 UTC
-Status: Phase 0 done; Phase 1 in progress; Phases 2-6 planned
+Status: Phases 0-1 done; Phases 2-6 planned
 Anchor timestamp: 2026-06-21 08:26:25 UTC +0000
 
 ## Purpose
@@ -140,9 +140,9 @@ Exit criteria:
 
 ## Phase 1: Protect the local atomic boundary
 
-**Status: In progress (as of 2026-06-21 08:26:25 UTC +0000).** The boundary is now named and
-structurally enforced in code; whole-message trap-rollback proof under PocketIC and the mutation
-canbench remain.
+**Status: Done (as of 2026-06-21 09:10 UTC +0000).** The boundary is named and structurally
+enforced in code, whole-message trap-rollback is proven end to end under PocketIC, and the
+canonical-segment mutation canbench baselines (vertex / property / edge) are recorded.
 
 Goal: make the Graph critical section visible in code and tests.
 
@@ -185,16 +185,25 @@ Tests:
   dedupes_retry` and `deferred_index_flush_completes_single_dml_mutation_journal` prove an already
   applied `mutation_id` returns the cached outcome instead of silently re-applying; a partial
   multi-DML bundle stays `Incomplete` (`deferred_index_flush_leaves_multi_dml_mutation_incomplete`).
-- **Remaining.** Trap injection after each local write step proving whole-message rollback. On IC
-  this rollback is guaranteed by the platform (a trap before the first inter-canister `await`
-  discards the segment); a dedicated PocketIC trap-injection test should assert it end to end. Host
-  unit tests cannot prove it because the in-memory store does not roll back on panic.
+- **Done.** Trap injection proving whole-message rollback end to end:
+  `canonical_segment_trap_rolls_back_whole_message` (PocketIC,
+  `adr0029_canonical_segment_rollback`) runs a single linear DML
+  (`MATCH (h) INSERT (:RollbackOrphan) DELETE h`) whose plan writes the orphan and then traps at the
+  `DELETE` op (the matched hub still has an incident edge). After the trap the orphan does not exist
+  and the matched hub and its sink survive — the entire message rolled back. A committing `INSERT`
+  control plus the router's "DML atomic section" trap marker rule out a vacuous parse/plan
+  rejection. Host unit tests cannot prove this because the in-memory store does not roll back on
+  panic.
 
 Benchmarks:
 
-- **Remaining.** Graph mutation canbench for vertex/property/edge paths. The Phase 1 change is a
-  behavior-preserving extraction (same store/journal/delta calls in the same order), so no
-  regression is expected; a before/after canbench should confirm this.
+- **Done.** Graph mutation canbench for the canonical segment (wire path, `index = None`):
+  `bench_graph_canonical_segment_insert_vertex` (572.41 K instructions),
+  `bench_graph_canonical_segment_insert_vertex_with_property` (598.66 K), and
+  `bench_graph_canonical_segment_insert_edge` (792.35 K), persisted in `crates/graph/canbench_results.yml`.
+  The Phase 1 change is a behavior-preserving extraction (same store/journal/delta calls in the same
+  order), so these numbers are the baseline future boundary changes are measured against; no
+  regression is expected or observed.
 
 Exit criteria:
 
