@@ -8,6 +8,7 @@ mod canister;
 mod constraint_ddl;
 mod edge_backfill;
 mod edge_index_direction;
+mod effect_recovery;
 mod execution_path;
 pub mod facade;
 mod federation;

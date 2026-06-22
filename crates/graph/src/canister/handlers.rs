@@ -249,6 +249,20 @@ pub fn read_unique_release_effects(
 /// plus small fixed fields, so 256 receipts stays well under the IC 2 MiB response limit.
 pub const MAX_RELEASE_EFFECTS_PAGE: usize = 256;
 
+/// Router → graph (replicated read): one page of **all** of a mutation's pinned effects (`Acquire`
+/// and `Release`), with `effect_ordinal > after_ordinal`, capped at `limit` (clamped to the shard's
+/// hard maximum). Backs the Router's unified slice-6 effect recovery (Driver 2): it discovers every
+/// un-acked effect — an orphan `Acquire` no reservation can resolve, as well as `Release`s. An empty
+/// page is the only end-of-stream signal. Runs as an update so the answer is replicated.
+pub fn read_unique_mutation_effects(
+    mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
+    after_ordinal: Option<u32>,
+    limit: u32,
+) -> Vec<gleaph_graph_kernel::federation::UniqueEffectReceipt> {
+    let limit = (limit as usize).min(MAX_RELEASE_EFFECTS_PAGE);
+    GraphStore::new().unique_effects_page(mutation_id, after_ordinal, limit)
+}
+
 /// Router → graph: unpin (ack) unique effects after the Router has durably applied them. Per-effect;
 /// acking one effect never unpins a sibling of the same mutation (ADR 0030).
 pub fn ack_unique_effects(effect_ids: Vec<gleaph_graph_kernel::federation::EffectId>) {

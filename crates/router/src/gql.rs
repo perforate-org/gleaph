@@ -1348,14 +1348,21 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     // only durable handle back to the pinned canister (the inline happy path runs first; Driver 2
     // removes a row only after the shard re-enumerates empty).
     if let Some(mutation_id) = mutation_id
+        && let Some(key) = client_mutation_key
         && (!unique_claims.is_empty() || !constrained_properties.is_empty())
     {
+        let client_key = crate::facade::stable::label_stats::ClientMutationKey::new(
+            caller,
+            graph_id,
+            key.to_string(),
+        );
         for dispatch in &dispatches {
             store.register_pending_unique_effect(
                 graph_id,
                 mutation_id,
                 dispatch.shard_id,
                 dispatch.graph_canister,
+                client_key.clone(),
             );
         }
     }

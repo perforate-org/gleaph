@@ -205,6 +205,24 @@ pub async fn read_unique_release_effects(
     .await
 }
 
+/// One page of **all** of a mutation's pinned effects (`Acquire` and `Release`) with `effect_ordinal
+/// > after_ordinal`, capped at `limit` (the shard clamps to its own hard maximum). Backs the unified
+/// slice-6 effect recovery (Driver 2), which discovers every un-acked effect — including an orphan
+/// `Acquire`. An `update` call so the answer is replicated.
+pub async fn read_unique_mutation_effects(
+    graph: Principal,
+    mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
+    after_ordinal: Option<u32>,
+    limit: u32,
+) -> Result<Vec<gleaph_graph_kernel::federation::UniqueEffectReceipt>, String> {
+    call_graph_args(
+        graph,
+        "read_unique_mutation_effects",
+        &(mutation_id, after_ordinal, limit),
+    )
+    .await
+}
+
 /// Unpins (acks) unique effects after the Router has durably applied them (ADR 0030, per-effect).
 pub async fn ack_unique_effects(
     graph: Principal,

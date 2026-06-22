@@ -30,6 +30,7 @@ use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
 
 use crate::facade::stable::ROUTER_UNIQUE_EFFECT_PENDING;
+use crate::facade::stable::label_stats::ClientMutationKey;
 
 /// Fixed key width: `graph_id` (4) + `mutation_id` (8) + `shard_id` (4).
 const KEY_LEN: usize = 4 + 8 + 4;
@@ -116,6 +117,11 @@ pub(crate) struct PendingEffectRecord {
     /// the exact canister even after the shard is unregistered/reused. This is the row's stable
     /// identity: [`register`] refuses to change it.
     pub canister: Principal,
+    /// The owning mutation's client key, captured verbatim so Driver 2 can resolve the
+    /// `RouterMutationRecord` (its terminal-completion proof) for **any** effect kind — a `Release`
+    /// or an orphan `Acquire` owns no reservation, so the reservation reverse index cannot resolve
+    /// them. Self-contained in the row, it survives unregistration of the reservation index.
+    pub client_key: ClientMutationKey,
     /// Recovery disposition.
     pub state: PendingEffectState,
     /// Earliest time Driver 2 should (re-)attempt this row; the quarantine/backoff gate.
@@ -128,10 +134,11 @@ pub(crate) struct PendingEffectRecord {
 
 impl PendingEffectRecord {
     /// A freshly registered, `Active` row with no attempts and no backoff.
-    fn new_active(canister: Principal) -> Self {
+    fn new_active(canister: Principal, client_key: ClientMutationKey) -> Self {
         Self {
             schema_version: PENDING_EFFECT_SCHEMA_V1,
             canister,
+            client_key,
             state: PendingEffectState::Active,
             next_retry_ns: 0,
             attempts: 0,
@@ -190,6 +197,7 @@ pub(crate) fn register(
     mutation_id: MutationId,
     shard_id: ShardId,
     canister: Principal,
+    client_key: ClientMutationKey,
 ) {
     let key = UniqueEffectPendingKey::new(graph_id, mutation_id, shard_id);
     ROUTER_UNIQUE_EFFECT_PENDING.with_borrow_mut(|table| {
@@ -201,9 +209,46 @@ pub(crate) fn register(
                  canister identity is immutable (ADR 0030 slice 6)",
                 existing.canister
             );
+            assert!(
+                existing.client_key == client_key,
+                "pending unique-effect row {key:?} is already owned by client key {:?} and cannot \
+                 be re-registered to a different client key {client_key:?}; the (graph, mutation, \
+                 shard) → owning-record identity is immutable (ADR 0030 slice 6)",
+                existing.client_key
+            );
             return;
         }
-        table.insert(key, PendingEffectRecord::new_active(canister));
+        table.insert(key, PendingEffectRecord::new_active(canister, client_key));
+    });
+}
+
+/// Move a row into `Quarantined` with a fresh re-check backoff and a persistent diagnostic. Used for
+/// an orphan `Acquire` (no reservation, mutation effect-generation already terminated): the row and
+/// its evidence are kept — never acked — but parked so recovery does not hot-loop it. A missing row
+/// is a no-op (a concurrent drain removed it).
+#[cfg_attr(
+    not(test),
+    allow(
+        dead_code,
+        reason = "consumed by Driver 2's effect recovery (next commit)"
+    )
+)]
+pub(crate) fn quarantine(
+    graph_id: GraphId,
+    mutation_id: MutationId,
+    shard_id: ShardId,
+    next_retry_ns: u64,
+    diagnostic: String,
+) {
+    let key = UniqueEffectPendingKey::new(graph_id, mutation_id, shard_id);
+    ROUTER_UNIQUE_EFFECT_PENDING.with_borrow_mut(|table| {
+        if let Some(mut record) = table.get(&key) {
+            record.state = PendingEffectState::Quarantined;
+            record.attempts = record.attempts.saturating_add(1);
+            record.next_retry_ns = next_retry_ns;
+            record.diagnostic = Some(diagnostic);
+            table.insert(key, record);
+        }
     });
 }
 
@@ -348,12 +393,21 @@ mod tests {
         GraphId::from_raw(770_000 + seed)
     }
 
+    fn ck() -> ClientMutationKey {
+        ClientMutationKey::new(
+            Principal::anonymous(),
+            GraphId::from_raw(1),
+            "ck".to_string(),
+        )
+    }
+
     #[test]
     fn register_lookup_remove_roundtrip() {
         let canister = Principal::management_canister();
-        register(g(1), 10, ShardId::new(3), canister);
+        register(g(1), 10, ShardId::new(3), canister, ck());
         let record = lookup(g(1), 10, ShardId::new(3)).expect("row present");
         assert_eq!(record.canister, canister);
+        assert_eq!(record.client_key, ck());
         assert_eq!(record.state, PendingEffectState::Active);
         assert_eq!(record.schema_version, PENDING_EFFECT_SCHEMA_V1);
         remove(g(1), 10, ShardId::new(3));
@@ -363,8 +417,8 @@ mod tests {
     #[test]
     fn register_is_idempotent_on_replay() {
         let canister = Principal::anonymous();
-        register(g(2), 20, ShardId::new(0), canister);
-        register(g(2), 20, ShardId::new(0), canister);
+        register(g(2), 20, ShardId::new(0), canister, ck());
+        register(g(2), 20, ShardId::new(0), canister, ck());
         let (rows, _next, _scanned) = scan(None, 4096);
         assert_eq!(
             rows.iter()
@@ -377,10 +431,28 @@ mod tests {
     #[test]
     #[should_panic(expected = "identity is immutable")]
     fn register_to_a_different_canister_traps() {
-        register(g(20), 1, ShardId::new(0), Principal::anonymous());
+        register(g(20), 1, ShardId::new(0), Principal::anonymous(), ck());
         // Re-registering the same (graph, mutation, shard) to another canister would orphan the
         // first canister's still-pinned effect — fail-closed.
-        register(g(20), 1, ShardId::new(0), Principal::management_canister());
+        register(
+            g(20),
+            1,
+            ShardId::new(0),
+            Principal::management_canister(),
+            ck(),
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "owning-record identity is immutable")]
+    fn register_to_a_different_client_key_traps() {
+        let c = Principal::anonymous();
+        register(g(25), 1, ShardId::new(0), c, ck());
+        // Same (graph, mutation, shard) + canister but a different owning record would let recovery
+        // resolve the wrong terminal proof — fail-closed.
+        let other =
+            ClientMutationKey::new(Principal::anonymous(), GraphId::from_raw(2), "x".into());
+        register(g(25), 1, ShardId::new(0), c, other);
     }
 
     #[test]
@@ -388,6 +460,7 @@ mod tests {
         let record = PendingEffectRecord {
             schema_version: PENDING_EFFECT_SCHEMA_V1,
             canister: Principal::management_canister(),
+            client_key: ck(),
             state: PendingEffectState::Quarantined,
             next_retry_ns: 12_345,
             attempts: 7,
@@ -401,8 +474,8 @@ mod tests {
     fn pending_effect_pin_tracks_row_presence() {
         let c = Principal::anonymous();
         assert!(!pending_effect_pinned(g(21), 99));
-        register(g(21), 99, ShardId::new(0), c);
-        register(g(21), 99, ShardId::new(5), c);
+        register(g(21), 99, ShardId::new(0), c, ck());
+        register(g(21), 99, ShardId::new(5), c, ck());
         assert!(pending_effect_pinned(g(21), 99));
         // A neighbouring mutation in the same graph is not pinned by this mutation's rows.
         assert!(!pending_effect_pinned(g(21), 100));
@@ -413,9 +486,35 @@ mod tests {
     }
 
     #[test]
+    fn quarantine_parks_row_with_backoff_and_diagnostic() {
+        let c = Principal::anonymous();
+        register(g(23), 1, ShardId::new(0), c, ck());
+        quarantine(
+            g(23),
+            1,
+            ShardId::new(0),
+            5_000,
+            "orphan acquire".to_string(),
+        );
+        let record = lookup(g(23), 1, ShardId::new(0)).expect("still present");
+        assert_eq!(record.state, PendingEffectState::Quarantined);
+        assert_eq!(record.next_retry_ns, 5_000);
+        assert_eq!(record.attempts, 1);
+        assert_eq!(record.diagnostic.as_deref(), Some("orphan acquire"));
+        // The row and its canister identity are retained — never dropped.
+        assert_eq!(record.canister, c);
+    }
+
+    #[test]
+    fn quarantine_missing_row_is_noop() {
+        quarantine(g(24), 1, ShardId::new(0), 5_000, "x".to_string());
+        assert_eq!(lookup(g(24), 1, ShardId::new(0)), None);
+    }
+
+    #[test]
     fn pending_effect_pin_at_max_mutation_id() {
         let c = Principal::anonymous();
-        register(g(22), u64::MAX, ShardId::new(0), c);
+        register(g(22), u64::MAX, ShardId::new(0), c, ck());
         assert!(pending_effect_pinned(g(22), u64::MAX));
         remove(g(22), u64::MAX, ShardId::new(0));
         assert!(!pending_effect_pinned(g(22), u64::MAX));
@@ -433,9 +532,9 @@ mod tests {
     fn scan_orders_by_graph_then_mutation_then_shard() {
         let gx = g(3);
         let c = Principal::anonymous();
-        register(gx, 2, ShardId::new(1), c);
-        register(gx, 1, ShardId::new(9), c);
-        register(gx, 1, ShardId::new(2), c);
+        register(gx, 2, ShardId::new(1), c, ck());
+        register(gx, 1, ShardId::new(9), c, ck());
+        register(gx, 1, ShardId::new(2), c, ck());
         let (rows, _next, _scanned) = scan(None, 4096);
         let ours: Vec<_> = rows
             .iter()
@@ -455,9 +554,9 @@ mod tests {
     #[test]
     fn purge_graph_removes_only_that_graph() {
         let c = Principal::anonymous();
-        register(g(4), 1, ShardId::new(0), c);
-        register(g(4), 2, ShardId::new(0), c);
-        register(g(5), 1, ShardId::new(0), c);
+        register(g(4), 1, ShardId::new(0), c, ck());
+        register(g(4), 2, ShardId::new(0), c, ck());
+        register(g(5), 1, ShardId::new(0), c, ck());
         purge_graph(g(4));
         let (rows, _n, _s) = scan(None, 4096);
         assert!(rows.iter().all(|r| r.key.graph_id != g(4)));
@@ -467,7 +566,7 @@ mod tests {
     #[test]
     fn purge_graph_at_max_graph_id_is_not_skipped() {
         let c = Principal::anonymous();
-        register(GraphId::from_raw(u32::MAX), 1, ShardId::new(0), c);
+        register(GraphId::from_raw(u32::MAX), 1, ShardId::new(0), c, ck());
         purge_graph(GraphId::from_raw(u32::MAX));
         assert_eq!(
             lookup(GraphId::from_raw(u32::MAX), 1, ShardId::new(0)),

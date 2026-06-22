@@ -57,6 +57,21 @@ impl GraphStore {
             .with_borrow(|outbox| outbox.release_effects_page(mutation_id, after_ordinal, limit))
     }
 
+    /// One page of **all** of a mutation's pinned effects (`Acquire` and `Release`) in
+    /// `effect_ordinal` order with ordinal `> after_ordinal`, capped at `limit`. Backs the Router's
+    /// unified slice-6 effect recovery (Driver 2): unlike [`unique_release_effects_page`] it includes
+    /// `Acquire`s, so recovery can discover an orphan `Acquire` (no reservation) as well as
+    /// `Release`s. An empty page is the only end-of-stream signal.
+    pub(crate) fn unique_effects_page(
+        &self,
+        mutation_id: MutationId,
+        after_ordinal: Option<u32>,
+        limit: usize,
+    ) -> Vec<UniqueEffectReceipt> {
+        UNIQUE_EFFECT_OUTBOX
+            .with_borrow(|outbox| outbox.effects_page(mutation_id, after_ordinal, limit))
+    }
+
     /// Unpins (acks) effects by `EffectId`. The Router calls this only after durably applying each
     /// effect; acking one effect never unpins a sibling.
     pub(crate) fn ack_unique_effects(&self, effect_ids: impl IntoIterator<Item = EffectId>) {
@@ -237,5 +252,43 @@ mod tests {
 
         // Cursor past the end is empty (terminates the Router loop).
         assert!(store.unique_release_effects_page(m, Some(4), 2).is_empty());
+    }
+
+    #[test]
+    fn effects_page_includes_both_ops_cursor_bounded_and_capped() {
+        let store = GraphStore::new();
+        let m = 9_000_011;
+        // Interleave an Acquire (ordinal 0) with releases (1..=3): Driver 2 must see *all* of them.
+        store.emit_unique_effect(acquire(m, 0, 0, 1));
+        for ordinal in 1u32..=3 {
+            store.emit_unique_effect(release(m, ordinal, ordinal as u8));
+        }
+
+        // First page from the start, capped at 2, keeps the Acquire (unlike the release-only page).
+        let page = store.unique_effects_page(m, None, 2);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].effect_id.effect_ordinal, 0);
+        assert_eq!(page[0].op, UniqueEffectOp::Acquire);
+        assert_eq!(page[1].effect_id.effect_ordinal, 1);
+        assert_eq!(page[1].op, UniqueEffectOp::Release);
+
+        // Next page strictly after the last observed ordinal.
+        let page = store.unique_effects_page(m, Some(1), 5);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].effect_id.effect_ordinal, 2);
+        assert_eq!(page[1].effect_id.effect_ordinal, 3);
+
+        // Cursor past the end is empty (the only EOF signal).
+        assert!(store.unique_effects_page(m, Some(3), 5).is_empty());
+    }
+
+    #[test]
+    fn effects_page_at_max_mutation_id_is_found() {
+        let store = GraphStore::new();
+        let m = u64::MAX;
+        store.emit_unique_effect(acquire(m, 0, 0, 4));
+        let page = store.unique_effects_page(m, None, 8);
+        assert_eq!(page.len(), 1);
+        assert_eq!(page[0].effect_id.effect_ordinal, 0);
     }
 }

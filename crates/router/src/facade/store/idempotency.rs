@@ -325,6 +325,32 @@ impl RouterStore {
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key))
     }
 
+    /// Whether the record under `key` is the **same mutation** as `mutation_id` **and** has reached a
+    /// terminal lifecycle phase (completed or terminally failed) — i.e. that exact mutation's effect
+    /// generation has finished, so Driver 2 (ADR 0030 slice 6) may safely drain its pending effects.
+    /// `None` when the record is gone (the GC pin should prevent this while a pending-effect row
+    /// remains) **or** when `record.mutation_id != mutation_id` (a same-client-key retry recycled the
+    /// record onto a *different* mutation, so this record cannot prove the pending mutation terminal);
+    /// both are hold signals, never a drain.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        allow(
+            dead_code,
+            reason = "driven by the wasm recovery timer (Driver 2); resolvers are unit-tested"
+        )
+    )]
+    pub(crate) fn mutation_terminal_for(
+        &self,
+        key: &ClientMutationKey,
+        mutation_id: MutationId,
+    ) -> Option<bool> {
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| {
+            m.get(key)
+                .filter(|record| record.mutation_id == mutation_id)
+                .map(|record| record.is_terminal())
+        })
+    }
+
     /// Record a recovery diagnostic on a mutation, surfaced by `mutation_status` (ADR 0029
     /// Phase 4). No-op if the record is gone or already terminal.
     pub fn record_router_mutation_last_error(

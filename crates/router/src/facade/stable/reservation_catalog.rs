@@ -522,6 +522,25 @@ pub(crate) fn is_reclaiming_at(
     })
 }
 
+/// `true` iff a reservation exists for `(graph, constraint, encoded_value)` **and** is held by
+/// `claim_id` (any state). Read-only. Driver 2 (ADR 0030 slice 6) uses this to distinguish a
+/// delegated `Acquire` (reservation present ⇒ Driver 1 owns the ack) from an orphan `Acquire` (no
+/// reservation ⇒ no one will ever ack it). A reservation for the *same value* held by a **different**
+/// claim is not this claim's reservation, so it reads as absent.
+pub(crate) fn claim_has_reservation(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+    encoded_value: &[u8],
+    claim_id: ClaimId,
+) -> bool {
+    let key = UniqueReservationKey::new(graph_id, constraint_id, encoded_value.to_vec());
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow(|table| {
+        table
+            .get(&key)
+            .is_some_and(|record| record.claim == claim_id)
+    })
+}
+
 /// Apply a reclaim proof's **commit** outcome under the fence (ADR 0030 §Timeout step 5): only if the
 /// entry is still `Reclaiming` with `reclaim_generation == g` and owned by `claim_id`, transition to
 /// `Committed` and stamp `owner_element_id`. Returns `true` iff applied (the caller may then ack the

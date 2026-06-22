@@ -290,20 +290,80 @@ impl RouterStore {
     /// Register the slice-6 discovery row for a dispatch that may emit a unique effect (ADR 0030
     /// slice 6). Called once per dispatch shard **before the first dispatch `await`**, so it
     /// co-commits with the reservation/envelope; idempotent on replay. The pinned `canister` is
-    /// stored verbatim so recovery reaches the exact canister even after the shard is unregistered.
+    /// stored verbatim so recovery reaches the exact canister even after the shard is unregistered;
+    /// `client_key` is stored so Driver 2 can resolve the owning record for any effect kind.
     pub(crate) fn register_pending_unique_effect(
         &self,
         graph_id: GraphId,
         mutation_id: MutationId,
         shard_id: gleaph_graph_kernel::federation::ShardId,
         canister: candid::Principal,
+        client_key: crate::facade::stable::label_stats::ClientMutationKey,
     ) {
         crate::facade::stable::unique_effect_pending::register(
             graph_id,
             mutation_id,
             shard_id,
             canister,
+            client_key,
         );
+    }
+
+    /// Remove one slice-6 discovery row (Driver 2): called only after a fresh `cursor=None`
+    /// re-enumeration of the shard's effects for the mutation came back empty.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        allow(
+            dead_code,
+            reason = "driven by the wasm recovery timer (Driver 2); resolvers are unit-tested"
+        )
+    )]
+    pub(crate) fn remove_pending_unique_effect(
+        &self,
+        graph_id: GraphId,
+        mutation_id: MutationId,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
+    ) {
+        crate::facade::stable::unique_effect_pending::remove(graph_id, mutation_id, shard_id);
+    }
+
+    /// Park a slice-6 discovery row (Driver 2) as a quarantined orphan with a re-check backoff and a
+    /// persistent diagnostic — the row is kept, never acked.
+    #[cfg_attr(
+        not(target_family = "wasm"),
+        allow(
+            dead_code,
+            reason = "driven by the wasm recovery timer (Driver 2); resolvers are unit-tested"
+        )
+    )]
+    pub(crate) fn quarantine_pending_unique_effect(
+        &self,
+        graph_id: GraphId,
+        mutation_id: MutationId,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
+        next_retry_ns: u64,
+        diagnostic: String,
+    ) {
+        crate::facade::stable::unique_effect_pending::quarantine(
+            graph_id,
+            mutation_id,
+            shard_id,
+            next_retry_ns,
+            diagnostic,
+        );
+    }
+
+    /// `true` iff a reservation for `(graph, constraint, encoded_value)` exists **and** is held by
+    /// `claim_id`. Driver 2 uses this to tell a delegated `Acquire` (a reservation Driver 1 still
+    /// owns) from an orphan `Acquire` (no reservation will ever ack it).
+    pub(crate) fn reservation_exists_for_claim(
+        &self,
+        graph_id: GraphId,
+        constraint_id: gleaph_graph_kernel::entry::ConstraintNameId,
+        encoded_value: &[u8],
+        claim_id: gleaph_graph_kernel::federation::ClaimId,
+    ) -> bool {
+        reservation_catalog::claim_has_reservation(graph_id, constraint_id, encoded_value, claim_id)
     }
 
     /// Confirm one claim, stamping the canonical owner (ADR 0030). Runs after the shard's `Acquire`

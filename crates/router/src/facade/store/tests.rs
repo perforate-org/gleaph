@@ -1921,7 +1921,7 @@ fn gc_pin_retains_terminal_record_until_pending_effect_removed() {
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
 
     // Pin it via a pending-effect row (no reservation reverse-row exists for this mutation).
-    store.register_pending_unique_effect(tenant_main_graph_id(), mid, shard, caller);
+    store.register_pending_unique_effect(tenant_main_graph_id(), mid, shard, caller, key.clone());
     assert!(store.reservation_index_client_key(mid).is_none());
     store
         .admin_sweep_expired_client_mutation_keys_at(admin, None, 100_000, now)
