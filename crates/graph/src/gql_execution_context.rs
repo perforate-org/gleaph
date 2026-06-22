@@ -9,7 +9,7 @@ use gleaph_gql_ic::principal_to_value;
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::plan_exec::{
-    ResolvedLabelTable, ResolvedPropertyTable, UniqueClaimDispatch,
+    ConstrainedPropertyDispatch, ResolvedLabelTable, ResolvedPropertyTable, UniqueClaimDispatch,
 };
 
 /// Carries data that is fixed for one GQL execution (adhoc, prepared, or plan replay).
@@ -26,6 +26,10 @@ pub struct GqlExecutionContext {
     /// Cross-shard uniqueness claims the canonical segment must `Acquire` for the element it creates
     /// (ADR 0030 slice 5). Empty for non-constrained operations.
     pub unique_claims: Vec<UniqueClaimDispatch>,
+    /// Constrained `(vertex_label, property)` set the canonical segment consults to pin a `Release`
+    /// for each freed value when it deletes/removes a constrained element (ADR 0030 slice 5b). Empty
+    /// for operations that cannot release a constrained value.
+    pub constrained_properties: Vec<ConstrainedPropertyDispatch>,
 }
 
 impl GqlExecutionContext {

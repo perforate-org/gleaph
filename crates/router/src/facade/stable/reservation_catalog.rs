@@ -362,6 +362,54 @@ pub(crate) fn confirm_reservation(
     })
 }
 
+/// Outcome of reconciling one `Release` effect against the reservation table (ADR 0030 slice 5b).
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ReleaseOutcome {
+    /// The `Release` was durably applied (or was a proven no-op): the Router may **ack** the effect.
+    /// Covers a removed `Committed` reservation whose owner matched, a value that no longer has a
+    /// reservation, and a stale `Release` whose value a *different* element has since taken over.
+    Applied,
+    /// The `Release` must be **held (not acked)**: the value's reservation is still `Reserved`/
+    /// `Reclaiming` or its owner is not yet determined, so acking now could let a pending `Acquire`
+    /// re-create a `Committed` reservation for an already-deleted element (the Release-before-Acquire
+    /// hazard). The slice-6 recovery reconciler retries it after the `Acquire` is reconciled.
+    Held,
+}
+
+/// Release: remove the `Committed` reservation a deleted/removed element owned, matched by
+/// `owner_element_id` (ADR 0030 slice 5b). Best-effort and idempotent like Confirm — the canonical
+/// delete is already durable and cannot be rolled back, so this never traps and never errors:
+/// - **missing record** → `Applied` (nothing reserved; the value is already free — re-ack-safe);
+/// - **`Reserved`/`Reclaiming`**, or `Committed` with no stamped owner → `Held` (Release-before-
+///   Acquire: the owner is undetermined; do not ack, reconcile the `Acquire` first);
+/// - **`Committed`, owner == effect owner** → remove the reservation, `Applied`;
+/// - **`Committed`, owner != effect owner** → a different element took the value over; the `Release`
+///   is stale → `Applied` (no-op ack), leaving the live reservation intact.
+pub(crate) fn release_reservation(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+    encoded_value: &[u8],
+    owner_element_id: &[u8],
+) -> ReleaseOutcome {
+    let key = UniqueReservationKey::new(graph_id, constraint_id, encoded_value.to_vec());
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow_mut(|table| {
+        let Some(record) = table.get(&key) else {
+            return ReleaseOutcome::Applied;
+        };
+        match record.state {
+            ReservationState::Reserved | ReservationState::Reclaiming => ReleaseOutcome::Held,
+            ReservationState::Committed => match record.owner_element_id.as_deref() {
+                None => ReleaseOutcome::Held,
+                Some(owner) if owner == owner_element_id => {
+                    table.remove(&key);
+                    ReleaseOutcome::Applied
+                }
+                Some(_) => ReleaseOutcome::Applied,
+            },
+        }
+    })
+}
+
 /// Exclusive upper bound of one graph's key range. `graph_id` is the most-significant key
 /// component, so `[(graph_id, ..), (graph_id + 1, ..))` covers exactly that graph. At
 /// `GraphId::MAX` there is no `graph_id + 1`; the bound must be `Unbounded` — a saturating `+1`
@@ -778,6 +826,114 @@ mod tests {
             lookup(g, 1, b"v").unwrap().owner_element_id,
             Some(first_owner),
             "owner is not rewritten on idempotent replay"
+        );
+    }
+
+    /// Reserve then Confirm a value to a known owner, the precondition a `Release` reconciles.
+    fn reserve_and_commit(g: GraphId, value: &[u8], owner: &[u8]) {
+        try_reserve(g, 100, &[claim(1, value, 0)], &scope(1), 1).expect("reserve");
+        assert!(confirm_reservation(
+            g,
+            ClaimId::new(100, 0),
+            cid(),
+            value,
+            owner.to_vec()
+        ));
+    }
+
+    #[test]
+    fn release_removes_committed_reservation_when_owner_matches() {
+        let g = fresh_graph(30);
+        let owner = vec![7u8; 8];
+        reserve_and_commit(g, b"v", &owner);
+
+        assert_eq!(
+            release_reservation(g, cid(), b"v", &owner),
+            ReleaseOutcome::Applied
+        );
+        assert!(
+            lookup(g, 1, b"v").is_none(),
+            "owner-matched release must remove the reservation"
+        );
+    }
+
+    #[test]
+    fn release_with_different_owner_is_stale_noop_ack_and_keeps_reservation() {
+        // The value was taken over by a different element; the old element's Release must not remove
+        // the live reservation, but it is stale and safely ack-able.
+        let g = fresh_graph(31);
+        let live_owner = vec![9u8; 8];
+        reserve_and_commit(g, b"v", &live_owner);
+
+        let stale_owner = vec![1u8; 8];
+        assert_eq!(
+            release_reservation(g, cid(), b"v", &stale_owner),
+            ReleaseOutcome::Applied
+        );
+        let rec = lookup(g, 1, b"v").expect("reservation kept");
+        assert_eq!(rec.owner_element_id, Some(live_owner), "live owner intact");
+    }
+
+    #[test]
+    fn release_on_missing_reservation_is_applied() {
+        // Nothing reserved (already released or never claimed) → the value is free; re-ack-safe.
+        let g = fresh_graph(32);
+        assert_eq!(
+            release_reservation(g, cid(), b"absent", &[1u8; 8]),
+            ReleaseOutcome::Applied
+        );
+    }
+
+    #[test]
+    fn release_is_held_while_reservation_is_reserved() {
+        // Release-before-Acquire: the value's Acquire is not yet Confirmed (owner undetermined), so
+        // the Release must be held — acking now could let the pending Acquire re-create the
+        // reservation for an already-deleted element.
+        let g = fresh_graph(33);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+
+        assert_eq!(
+            release_reservation(g, cid(), b"v", &[7u8; 8]),
+            ReleaseOutcome::Held
+        );
+        assert_eq!(
+            lookup(g, 1, b"v").unwrap().state,
+            ReservationState::Reserved,
+            "held release must not touch the reservation"
+        );
+    }
+
+    #[test]
+    fn release_is_held_while_reservation_is_reclaiming() {
+        let g = fresh_graph(34);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        force_state(g, b"v", ReservationState::Reclaiming);
+
+        assert_eq!(
+            release_reservation(g, cid(), b"v", &[7u8; 8]),
+            ReleaseOutcome::Held
+        );
+        assert_eq!(
+            lookup(g, 1, b"v").unwrap().state,
+            ReservationState::Reclaiming
+        );
+    }
+
+    #[test]
+    fn release_is_held_when_committed_owner_is_undetermined() {
+        // Defensive: a Committed record without a stamped owner cannot be matched, so the Release is
+        // held rather than removing a reservation whose owner is unknown.
+        let g = fresh_graph(35);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        force_state(g, b"v", ReservationState::Committed);
+
+        assert_eq!(
+            release_reservation(g, cid(), b"v", &[7u8; 8]),
+            ReleaseOutcome::Held
+        );
+        assert!(
+            lookup(g, 1, b"v").is_some(),
+            "kept while owner undetermined"
         );
     }
 }

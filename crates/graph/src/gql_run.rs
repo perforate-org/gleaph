@@ -318,6 +318,50 @@ fn emit_unique_acquires(
     }
 }
 
+/// Pins one `Release` receipt per constrained value the segment freed (ADR 0030 slice 5b). Each
+/// release was captured pre-delete with its canonical `encoded_value` and owning element id, so the
+/// Router keys the same reservation and matches it by `owner_element_id`. `next_release_ordinal` is
+/// the mutation-wide running `effect_ordinal` cursor: a single mutation can run several canonical
+/// segments (one per DML statement), so the cursor must be carried **across** segments — restarting
+/// it per segment would re-mint the same `EffectId`s and trap the outbox on a different receipt. It
+/// is initialized past the mutation's `Acquire` ordinals so every effect id stays distinct and is
+/// deterministic across replays. A `Release` carries no `claim_id` (the freeing mutation differs
+/// from the original `Acquire`; matching is by owner).
+fn emit_unique_releases(
+    store: &GraphStore,
+    mutation_id: Option<MutationId>,
+    next_release_ordinal: &mut u32,
+    mutation: &PlanMutationBindings,
+) {
+    let Some(mutation_id) = mutation_id else {
+        unique_release_emit_trap("unique releases captured without a mutation_id");
+    };
+    for release in &mutation.released_unique_values {
+        let effect_ordinal = *next_release_ordinal;
+        *next_release_ordinal += 1;
+        store.emit_unique_effect(UniqueEffectReceipt {
+            effect_id: EffectId::new(mutation_id, effect_ordinal),
+            claim_id: None,
+            owner_element_id: release.owner_element_id.clone(),
+            constraint_id: release.constraint_id,
+            encoded_value: release.encoded_value.clone(),
+            op: UniqueEffectOp::Release,
+        });
+    }
+}
+
+fn unique_release_emit_trap(message: &str) -> ! {
+    let message = format!("unique-effect Release emit failed inside DML atomic section: {message}");
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::trap(&message);
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        panic!("{message}");
+    }
+}
+
 fn unique_acquire_trap(message: &str) -> ! {
     let message = format!("unique-effect Acquire emit failed inside DML atomic section: {message}");
     #[cfg(target_family = "wasm")]
@@ -704,6 +748,7 @@ async fn apply_canonical_mutation_segment(
     mutation_id: Option<MutationId>,
     emitted_delta_first_seq: &mut Option<ShardEventSeq>,
     emitted_delta_last_seq: &mut Option<ShardEventSeq>,
+    next_release_ordinal: &mut u32,
 ) -> Result<PlanMutationBindings, GqlRunError> {
     let empty_params = BTreeMap::new();
     let unique_claims = execution.unique_claims.clone();
@@ -719,6 +764,13 @@ async fn apply_canonical_mutation_segment(
     // the receipts commit (or roll back on trap) atomically with the canonical mutation.
     if !unique_claims.is_empty() {
         emit_unique_acquires(store, &unique_claims, mutation_id, &mutation);
+    }
+    // ADR 0030 slice 5b: pin one `Release` receipt per constrained value this segment freed
+    // (captured pre-delete in `mutation.released_unique_values`), in the same atomic section. The
+    // `effect_ordinal` cursor is carried across the mutation's segments so multi-statement DELETEs
+    // never re-mint an `EffectId`.
+    if !mutation.released_unique_values.is_empty() {
+        emit_unique_releases(store, mutation_id, next_release_ordinal, &mutation);
     }
     let has_delta = !mutation.label_stats_delta.vertex.is_empty()
         || !mutation.label_stats_delta.edge.is_empty();
@@ -802,6 +854,10 @@ async fn run_wire_plans_inner(
     let mut emitted_delta_first_seq = None;
     let mut emitted_delta_last_seq = None;
     let mut hot_forward_vertices = Vec::new();
+    // ADR 0030 slice 5b: the mutation-wide `Release` `effect_ordinal` cursor, carried across every
+    // canonical segment so a multi-statement DELETE/REMOVE never re-mints an `EffectId`. Starts past
+    // the mutation's `Acquire` ordinals (which occupy `0..unique_claims.len()`).
+    let mut next_unique_release_ordinal = execution.unique_claims.len() as u32;
 
     let (mut seed_rows, mut skip_index) = if let Some(ref s) = seeds {
         seed_initial_rows(store, s)?
@@ -828,6 +884,7 @@ async fn run_wire_plans_inner(
                 mutation_id,
                 &mut emitted_delta_first_seq,
                 &mut emitted_delta_last_seq,
+                &mut next_unique_release_ordinal,
             )
             .await?;
             merge_label_stats_delta(&mut label_stats_delta, mutation.label_stats_delta);
@@ -1244,6 +1301,84 @@ mod tests {
         assert_eq!(
             evidence.owner_element_id, expected_owner,
             "owner element id must be the created vertex's canonical id"
+        );
+    }
+
+    #[test]
+    fn emit_unique_releases_pins_release_per_freed_value() {
+        let store = GraphStore::new();
+        let owner = vec![7u8; 8];
+        let releases = vec![
+            crate::plan::PendingUniqueRelease {
+                constraint_id: gleaph_graph_kernel::entry::ConstraintNameId::from_raw(3),
+                encoded_value: b"alice".to_vec(),
+                owner_element_id: owner.clone(),
+            },
+            crate::plan::PendingUniqueRelease {
+                constraint_id: gleaph_graph_kernel::entry::ConstraintNameId::from_raw(4),
+                encoded_value: b"alias".to_vec(),
+                owner_element_id: owner.clone(),
+            },
+        ];
+        let bindings = PlanMutationBindings::with_released_unique_values_for_test(releases);
+
+        // No Acquire claims in this (release-only) mutation, so the cursor starts at 0.
+        let mut next_release_ordinal = 0u32;
+        emit_unique_releases(&store, Some(70), &mut next_release_ordinal, &bindings);
+        assert_eq!(
+            next_release_ordinal, 2,
+            "cursor advances once per freed value"
+        );
+
+        let effects = store.unique_release_effects_page(70, None, 100);
+        assert_eq!(effects.len(), 2);
+        assert_eq!(effects[0].effect_id, EffectId::new(70, 0));
+        assert_eq!(effects[0].op, UniqueEffectOp::Release);
+        assert_eq!(effects[0].claim_id, None, "a Release carries no claim_id");
+        assert_eq!(effects[0].owner_element_id, owner);
+        assert_eq!(effects[0].encoded_value, b"alice");
+        assert_eq!(effects[1].effect_id, EffectId::new(70, 1));
+        assert_eq!(effects[1].encoded_value, b"alias");
+    }
+
+    #[test]
+    fn emit_unique_releases_carries_ordinal_cursor_across_segments() {
+        // A multi-statement DELETE runs several canonical segments under one mutation_id. The cursor
+        // is carried across them, so the second segment's releases never re-mint an EffectId. The
+        // cursor is seeded past any Acquire ordinals (here a single acquire occupies ordinal 0).
+        let store = GraphStore::new();
+        let seg1 = PlanMutationBindings::with_released_unique_values_for_test(vec![
+            crate::plan::PendingUniqueRelease {
+                constraint_id: gleaph_graph_kernel::entry::ConstraintNameId::from_raw(3),
+                encoded_value: b"old-a".to_vec(),
+                owner_element_id: vec![1u8; 8],
+            },
+        ]);
+        let seg2 = PlanMutationBindings::with_released_unique_values_for_test(vec![
+            crate::plan::PendingUniqueRelease {
+                constraint_id: gleaph_graph_kernel::entry::ConstraintNameId::from_raw(3),
+                encoded_value: b"old-b".to_vec(),
+                owner_element_id: vec![2u8; 8],
+            },
+        ]);
+
+        // Seed the cursor past one acquire ordinal, then run two segments.
+        let mut next_release_ordinal = 1u32;
+        emit_unique_releases(&store, Some(71), &mut next_release_ordinal, &seg1);
+        emit_unique_releases(&store, Some(71), &mut next_release_ordinal, &seg2);
+        assert_eq!(next_release_ordinal, 3);
+
+        let effects = store.unique_release_effects_page(71, None, 100);
+        assert_eq!(effects.len(), 2);
+        assert_eq!(
+            effects[0].effect_id,
+            EffectId::new(71, 1),
+            "first release skips the acquire ordinal (0)"
+        );
+        assert_eq!(
+            effects[1].effect_id,
+            EffectId::new(71, 2),
+            "second segment's release continues the cursor instead of restarting"
         );
     }
 

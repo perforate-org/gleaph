@@ -177,6 +177,7 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
             resolved_properties: args.resolved_properties,
             element_id_encoding_key: Some(args.element_id_encoding_key),
             unique_claims: args.unique_claims.unwrap_or_default(),
+            constrained_properties: args.constrained_properties.unwrap_or_default(),
         },
         seeds,
         args.mutation_id,
@@ -227,6 +228,26 @@ pub fn read_unique_effect_proof(
         )
         .collect()
 }
+
+/// Router → graph (replicated read): one page of a mutation's pinned `Release` effects (ADR 0030
+/// slice 5b), with `effect_ordinal > after_ordinal`, capped at `limit` (the shard also clamps to a
+/// hard maximum so an arbitrary-cardinality DELETE cannot overflow the IC response). A `Release` is
+/// matched at the Router by `owner_element_id` (not by `ClaimId`, since the releasing mutation
+/// differs from the original `Acquire`), so the Router pages through them, reconciles each by owner,
+/// and advances the cursor. Runs as an update so the answer is replicated.
+pub fn read_unique_release_effects(
+    mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
+    after_ordinal: Option<u32>,
+    limit: u32,
+) -> Vec<gleaph_graph_kernel::federation::UniqueEffectReceipt> {
+    let limit = (limit as usize).min(MAX_RELEASE_EFFECTS_PAGE);
+    GraphStore::new().unique_release_effects_page(mutation_id, after_ordinal, limit)
+}
+
+/// Hard cap on a single [`read_unique_release_effects`] page. Each receipt carries an
+/// `encoded_value` of at most [`gleaph_gql_ic::unique_key::MAX_UNIQUE_ENCODED_VALUE_LEN`] (2 KiB)
+/// plus small fixed fields, so 256 receipts stays well under the IC 2 MiB response limit.
+pub const MAX_RELEASE_EFFECTS_PAGE: usize = 256;
 
 /// Router → graph: unpin (ack) unique effects after the Router has durably applied them. Per-effect;
 /// acking one effect never unpins a sibling of the same mutation (ADR 0030).
@@ -764,6 +785,7 @@ mod tests {
             resolved_properties: None,
             indexed_properties: None,
             unique_claims: None,
+            constrained_properties: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -823,6 +845,7 @@ mod tests {
             resolved_properties: None,
             indexed_properties: None,
             unique_claims: None,
+            constrained_properties: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -867,6 +890,7 @@ mod tests {
             resolved_properties: None,
             indexed_properties: None,
             unique_claims: None,
+            constrained_properties: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("missing seeds");
@@ -898,6 +922,7 @@ mod tests {
             resolved_properties: None,
             indexed_properties: None,
             unique_claims: None,
+            constrained_properties: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("shard mismatch");

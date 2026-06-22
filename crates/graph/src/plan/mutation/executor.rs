@@ -7,11 +7,12 @@ use crate::gql_execution_context::GqlExecutionContext;
 use gleaph_gql::Value;
 use gleaph_gql::ast::ExprKind;
 use gleaph_gql::types::EdgeDirection;
+use gleaph_gql_ic::{UniqueKeyOutcome, encode_unique_value};
 use gleaph_gql_planner::plan::{
     PhysicalPlan, PlanOp, ProjectColumn, RemovePlanItem, SetPlanItem, Str,
 };
-use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
-use gleaph_graph_kernel::plan_exec::LabelStatsDelta;
+use gleaph_graph_kernel::entry::{ConstraintNameId, EdgeLabelId, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::plan_exec::{ConstrainedPropertyDispatch, LabelStatsDelta};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::OutEdgeOrder;
 use ic_stable_lara::traits::CsrEdge;
@@ -23,6 +24,17 @@ pub trait PlanMutationExecutor {
         plan: &PhysicalPlan,
         execution: GqlExecutionContext,
     ) -> Result<PlanMutationBindings, PlanMutationError>;
+}
+
+/// One constrained value a delete/remove frees, captured before the canonical write so the value
+/// and the owning element id are still readable (ADR 0030 slice 5b). `encoded_value` is the
+/// canonical key the Router reserved for the matching `Acquire`, so the Router's `Release`
+/// reconciliation keys the same reservation and matches it by `owner_element_id`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct PendingUniqueRelease {
+    pub constraint_id: ConstraintNameId,
+    pub encoded_value: Vec<u8>,
+    pub owner_element_id: Vec<u8>,
 }
 
 #[derive(Clone, Debug, Default, PartialEq)]
@@ -38,6 +50,10 @@ pub struct PlanMutationBindings {
     /// cross-shard uniqueness `Acquire` emit (ADR 0030 slice 5) so an anonymous `CREATE (:L {..})`
     /// (no variable binding) still exposes its canonical element id.
     pub created_vertices: Vec<VertexId>,
+    /// Constrained values freed by deletes/removes in this segment, in execution order, captured
+    /// **before** the canonical delete so the property value and owner element id are still readable
+    /// (ADR 0030 slice 5b). The `Release` emit (`emit_unique_releases`) pins one receipt per entry.
+    pub released_unique_values: Vec<PendingUniqueRelease>,
     forward_edge_insert_counts: BTreeMap<VertexId, u32>,
     /// Forward hubs from this DML batch (sources with enough edge inserts).
     pub hot_forward_vertices: Vec<VertexId>,
@@ -52,6 +68,18 @@ impl PlanMutationBindings {
     pub(crate) fn with_created_vertices_for_test(created_vertices: Vec<VertexId>) -> Self {
         Self {
             created_vertices,
+            ..Default::default()
+        }
+    }
+
+    /// Test-only constructor carrying just the captured release list, to exercise the ADR 0030
+    /// `Release` emit without running a full delete segment.
+    #[cfg(test)]
+    pub(crate) fn with_released_unique_values_for_test(
+        released_unique_values: Vec<PendingUniqueRelease>,
+    ) -> Self {
+        Self {
+            released_unique_values,
             ..Default::default()
         }
     }
@@ -186,7 +214,13 @@ fn execute_ops_with_bindings(
                         variable: variable.to_string(),
                     }
                 })?;
-                collect_vertex_delete_label_deltas(store, vertex_id, false, bindings)?;
+                collect_vertex_delete_label_deltas(
+                    store,
+                    vertex_id,
+                    false,
+                    &execution.constrained_properties,
+                    bindings,
+                )?;
                 store.delete_vertex(vertex_id)?;
                 bindings.vertices.remove(variable.as_ref());
             }
@@ -196,7 +230,13 @@ fn execute_ops_with_bindings(
                         variable: variable.to_string(),
                     }
                 })?;
-                collect_vertex_delete_label_deltas(store, vertex_id, true, bindings)?;
+                collect_vertex_delete_label_deltas(
+                    store,
+                    vertex_id,
+                    true,
+                    &execution.constrained_properties,
+                    bindings,
+                )?;
                 store.detach_delete_vertex(vertex_id)?;
                 bindings.vertices.remove(variable.as_ref());
             }
@@ -347,7 +387,13 @@ pub(crate) async fn apply_mutation_ops_async(
                         variable: variable.to_string(),
                     }
                 })?;
-                collect_vertex_delete_label_deltas(store, vertex_id, false, bindings)?;
+                collect_vertex_delete_label_deltas(
+                    store,
+                    vertex_id,
+                    false,
+                    &execution.constrained_properties,
+                    bindings,
+                )?;
                 store.delete_vertex(vertex_id)?;
                 bindings.vertices.remove(variable.as_ref());
             }
@@ -357,7 +403,13 @@ pub(crate) async fn apply_mutation_ops_async(
                         variable: variable.to_string(),
                     }
                 })?;
-                collect_vertex_delete_label_deltas(store, vertex_id, true, bindings)?;
+                collect_vertex_delete_label_deltas(
+                    store,
+                    vertex_id,
+                    true,
+                    &execution.constrained_properties,
+                    bindings,
+                )?;
                 store.detach_delete_vertex(vertex_id)?;
                 bindings.vertices.remove(variable.as_ref());
             }
@@ -615,8 +667,19 @@ fn execute_remove_item(
                 return Ok(());
             };
 
-            if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
-                store.remove_vertex_property(*vertex_id, property_id);
+            if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()).copied() {
+                // ADR 0030 slice 5b: removing a constrained property frees its reserved value —
+                // capture the `Release` before the value is gone.
+                if !execution.constrained_properties.is_empty() {
+                    capture_remove_property_releases(
+                        store,
+                        vertex_id,
+                        property_id,
+                        &execution.constrained_properties,
+                        bindings,
+                    );
+                }
+                store.remove_vertex_property(vertex_id, property_id);
                 return Ok(());
             }
 
@@ -637,16 +700,28 @@ fn execute_remove_item(
                     name: label.to_string(),
                 })?;
 
-            if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()) {
-                let vertex = store.vertex(*vertex_id).ok_or_else(|| {
+            if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()).copied() {
+                let vertex = store.vertex(vertex_id).ok_or_else(|| {
                     PlanMutationError::MissingVertexBinding {
                         variable: variable.to_string(),
                     }
                 })?;
-                let had_label = store.vertex_has_label(*vertex_id, vertex, label_id);
-                let vertex = store.remove_vertex_label(*vertex_id, vertex, label_id);
+                let had_label = store.vertex_has_label(vertex_id, vertex, label_id);
+                // ADR 0030 slice 5b: dropping a label removes the applicability of its
+                // `(label, property)` constraints — capture each freed value before the label is
+                // gone (only when the vertex actually carried the label).
+                if had_label && !execution.constrained_properties.is_empty() {
+                    capture_remove_label_releases(
+                        store,
+                        vertex_id,
+                        label_id,
+                        &execution.constrained_properties,
+                        bindings,
+                    );
+                }
+                let vertex = store.remove_vertex_label(vertex_id, vertex, label_id);
                 store
-                    .set_vertex(*vertex_id, vertex)
+                    .set_vertex(vertex_id, vertex)
                     .map_err(GraphStoreError::from)?;
                 if had_label {
                     bindings.add_vertex_label_delta(label_id, -1);
@@ -784,17 +859,133 @@ fn collect_vertex_delete_label_deltas(
     store: &GraphStore,
     vertex_id: VertexId,
     include_incident_edges: bool,
+    constrained: &[ConstrainedPropertyDispatch],
     bindings: &mut PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
     if let Some(vertex) = store.vertex(vertex_id) {
-        for label_id in store.vertex_labels(vertex_id, vertex) {
+        let labels = store.vertex_labels(vertex_id, vertex);
+        for &label_id in &labels {
             bindings.add_vertex_label_delta(label_id, -1);
+        }
+        if !constrained.is_empty() {
+            collect_vertex_release_effects(store, vertex_id, &labels, constrained, bindings);
         }
     }
     if include_incident_edges {
         collect_detach_delete_edge_label_deltas(store, vertex_id, bindings)?;
     }
     Ok(())
+}
+
+/// Captures the `Release` effects a constrained vertex delete frees (ADR 0030 slice 5b), **before**
+/// the canonical delete so the property value and owner element id are still readable. Every
+/// constraint applicable to the vertex (the vertex carries the constrained label) frees its value.
+fn collect_vertex_release_effects(
+    store: &GraphStore,
+    vertex_id: VertexId,
+    labels: &[VertexLabelId],
+    constrained: &[ConstrainedPropertyDispatch],
+    bindings: &mut PlanMutationBindings,
+) {
+    let label_set: BTreeSet<VertexLabelId> = labels.iter().copied().collect();
+    let mut owner_cache: Option<Vec<u8>> = None;
+    for entry in constrained {
+        if label_set.contains(&entry.vertex_label_id) {
+            capture_constrained_release(store, vertex_id, entry, &mut owner_cache, bindings);
+        }
+    }
+}
+
+/// Captures the `Release` for a `REMOVE n.prop` on a constrained property (ADR 0030 slice 5b), for
+/// each constraint on `(a label the vertex carries, property_id)`. Called before the property value
+/// is removed.
+fn capture_remove_property_releases(
+    store: &GraphStore,
+    vertex_id: VertexId,
+    property_id: PropertyId,
+    constrained: &[ConstrainedPropertyDispatch],
+    bindings: &mut PlanMutationBindings,
+) {
+    let Some(vertex) = store.vertex(vertex_id) else {
+        return;
+    };
+    let label_set: BTreeSet<VertexLabelId> =
+        store.vertex_labels(vertex_id, vertex).into_iter().collect();
+    let mut owner_cache: Option<Vec<u8>> = None;
+    for entry in constrained {
+        if entry.property_id == property_id && label_set.contains(&entry.vertex_label_id) {
+            capture_constrained_release(store, vertex_id, entry, &mut owner_cache, bindings);
+        }
+    }
+}
+
+/// Captures the `Release`s a `REMOVE n:Label` frees (ADR 0030 slice 5b): each constraint on
+/// `(label_id, property)` no longer applies once the label is dropped, so its reserved value (if the
+/// vertex still holds the property) is freed. Called before the label is removed.
+fn capture_remove_label_releases(
+    store: &GraphStore,
+    vertex_id: VertexId,
+    label_id: VertexLabelId,
+    constrained: &[ConstrainedPropertyDispatch],
+    bindings: &mut PlanMutationBindings,
+) {
+    let mut owner_cache: Option<Vec<u8>> = None;
+    for entry in constrained {
+        if entry.vertex_label_id == label_id {
+            capture_constrained_release(store, vertex_id, entry, &mut owner_cache, bindings);
+        }
+    }
+}
+
+/// Records one pending `Release` for a constrained value, reading the value and owner element id
+/// before the canonical mutation removes them (ADR 0030 slice 5b). The `encoded_value` is the
+/// canonical key the Router reserved for the matching `Acquire`, so the Router's reconciliation keys
+/// the same reservation and matches it by `owner_element_id`. No-op when the property is absent or
+/// NULL/non-keyable (no value was ever reserved). `owner_cache` resolves the owner once per element.
+/// A constrained vertex whose owner element id is unavailable is an invariant violation and traps,
+/// rolling back the atomic segment rather than emitting a release the Router can never match.
+fn capture_constrained_release(
+    store: &GraphStore,
+    vertex_id: VertexId,
+    entry: &ConstrainedPropertyDispatch,
+    owner_cache: &mut Option<Vec<u8>>,
+    bindings: &mut PlanMutationBindings,
+) {
+    let Some(value) = store.vertex_property(vertex_id, entry.property_id) else {
+        return;
+    };
+    let encoded_value = match encode_unique_value(&value) {
+        UniqueKeyOutcome::Claim(bytes) => bytes,
+        UniqueKeyOutcome::NoClaim | UniqueKeyOutcome::Rejected(_) => return,
+    };
+    let owner = owner_cache.get_or_insert_with(|| {
+        store
+            .path_vertex_element_id(vertex_id)
+            .map(|id| id.to_bytes().to_vec())
+            .unwrap_or_else(|| {
+                unique_release_trap(
+                    "owner element id unavailable for a constrained vertex being modified",
+                )
+            })
+    });
+    bindings.released_unique_values.push(PendingUniqueRelease {
+        constraint_id: entry.constraint_id,
+        encoded_value,
+        owner_element_id: owner.clone(),
+    });
+}
+
+fn unique_release_trap(message: &str) -> ! {
+    let message =
+        format!("unique-effect Release capture failed inside DML atomic section: {message}");
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::trap(&message);
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        panic!("{message}");
+    }
 }
 
 fn collect_detach_delete_edge_label_deltas(
@@ -1559,6 +1750,180 @@ mod tests {
     }
 
     #[test]
+    fn delete_captures_release_for_constrained_property() {
+        let store = GraphStore::new();
+        let vid = store
+            .insert_vertex_named(["RelUser"], vec![("email", Value::Text("a@x".into()))])
+            .expect("insert constrained vertex");
+        let expected_owner = store
+            .path_vertex_element_id(vid)
+            .expect("owner id")
+            .to_bytes()
+            .to_vec();
+        let constrained = vec![ConstrainedPropertyDispatch {
+            vertex_label_id: crate::test_labels::vertex_label_id_for_name("RelUser"),
+            property_id: crate::test_labels::property_id_for_name("email"),
+            constraint_id: ConstraintNameId::from_raw(1),
+        }];
+        let mut bindings = PlanMutationBindings::default();
+
+        collect_vertex_delete_label_deltas(&store, vid, false, &constrained, &mut bindings)
+            .expect("collect release");
+
+        let expected_value = match encode_unique_value(&Value::Text("a@x".into())) {
+            UniqueKeyOutcome::Claim(bytes) => bytes,
+            other => panic!("expected a claim, got {other:?}"),
+        };
+        assert_eq!(bindings.released_unique_values.len(), 1);
+        let release = &bindings.released_unique_values[0];
+        assert_eq!(release.constraint_id, ConstraintNameId::from_raw(1));
+        assert_eq!(
+            release.encoded_value, expected_value,
+            "release must carry the same canonical key the Acquire reserved"
+        );
+        assert_eq!(
+            release.owner_element_id, expected_owner,
+            "release owner must be the deleted vertex's canonical id"
+        );
+    }
+
+    #[test]
+    fn delete_of_absent_constrained_property_captures_no_release() {
+        // The vertex carries the constrained label but not the constrained property, so no value was
+        // ever reserved — nothing to release.
+        let store = GraphStore::new();
+        let vid = store
+            .insert_vertex_named(["RelUser2"], vec![("name", Value::Text("x".into()))])
+            .expect("insert");
+        let constrained = vec![ConstrainedPropertyDispatch {
+            vertex_label_id: crate::test_labels::vertex_label_id_for_name("RelUser2"),
+            property_id: crate::test_labels::property_id_for_name("email"),
+            constraint_id: ConstraintNameId::from_raw(1),
+        }];
+        let mut bindings = PlanMutationBindings::default();
+
+        collect_vertex_delete_label_deltas(&store, vid, false, &constrained, &mut bindings)
+            .expect("collect");
+
+        assert!(
+            bindings.released_unique_values.is_empty(),
+            "absent constrained property must not capture a release"
+        );
+    }
+
+    #[test]
+    fn remove_property_captures_release_for_constrained_value() {
+        // ADR 0030 slice 5b: `REMOVE n.email` on a constrained property frees its reserved value.
+        let store = GraphStore::new();
+        let vid = store
+            .insert_vertex_named(
+                ["RelRemoveProp"],
+                vec![("email", Value::Text("a@x".into()))],
+            )
+            .expect("insert constrained vertex");
+        let expected_owner = store
+            .path_vertex_element_id(vid)
+            .expect("owner id")
+            .to_bytes()
+            .to_vec();
+        let email = crate::test_labels::property_id_for_name("email");
+        let constrained = vec![ConstrainedPropertyDispatch {
+            vertex_label_id: crate::test_labels::vertex_label_id_for_name("RelRemoveProp"),
+            property_id: email,
+            constraint_id: ConstraintNameId::from_raw(7),
+        }];
+        let mut bindings = PlanMutationBindings::default();
+
+        capture_remove_property_releases(&store, vid, email, &constrained, &mut bindings);
+
+        assert_eq!(bindings.released_unique_values.len(), 1);
+        let release = &bindings.released_unique_values[0];
+        assert_eq!(release.constraint_id, ConstraintNameId::from_raw(7));
+        assert_eq!(release.owner_element_id, expected_owner);
+    }
+
+    #[test]
+    fn remove_property_for_unconstrained_label_captures_no_release() {
+        // The vertex holds `email` but not the label the constraint is defined on, so the value was
+        // never reserved under this constraint — removing it frees nothing.
+        let store = GraphStore::new();
+        let vid = store
+            .insert_vertex_named(
+                ["RelRemovePropOther"],
+                vec![("email", Value::Text("a@x".into()))],
+            )
+            .expect("insert");
+        let email = crate::test_labels::property_id_for_name("email");
+        let constrained = vec![ConstrainedPropertyDispatch {
+            vertex_label_id: crate::test_labels::vertex_label_id_for_name("SomeOtherLabel"),
+            property_id: email,
+            constraint_id: ConstraintNameId::from_raw(7),
+        }];
+        let mut bindings = PlanMutationBindings::default();
+
+        capture_remove_property_releases(&store, vid, email, &constrained, &mut bindings);
+
+        assert!(bindings.released_unique_values.is_empty());
+    }
+
+    #[test]
+    fn remove_label_captures_release_for_each_dropped_constraint() {
+        // ADR 0030 slice 5b: dropping a label removes its `(label, property)` constraints, freeing
+        // the value the vertex still holds.
+        let store = GraphStore::new();
+        let vid = store
+            .insert_vertex_named(
+                ["RelRemoveLabel"],
+                vec![("email", Value::Text("a@x".into()))],
+            )
+            .expect("insert constrained vertex");
+        let expected_owner = store
+            .path_vertex_element_id(vid)
+            .expect("owner id")
+            .to_bytes()
+            .to_vec();
+        let label = crate::test_labels::vertex_label_id_for_name("RelRemoveLabel");
+        let constrained = vec![ConstrainedPropertyDispatch {
+            vertex_label_id: label,
+            property_id: crate::test_labels::property_id_for_name("email"),
+            constraint_id: ConstraintNameId::from_raw(9),
+        }];
+        let mut bindings = PlanMutationBindings::default();
+
+        capture_remove_label_releases(&store, vid, label, &constrained, &mut bindings);
+
+        assert_eq!(bindings.released_unique_values.len(), 1);
+        assert_eq!(
+            bindings.released_unique_values[0].owner_element_id,
+            expected_owner
+        );
+    }
+
+    #[test]
+    fn remove_label_without_the_property_captures_no_release() {
+        // Dropping the constrained label when the vertex never held the constrained property frees
+        // nothing (no value was ever reserved).
+        let store = GraphStore::new();
+        let vid = store
+            .insert_vertex_named(
+                ["RelRemoveLabelNoProp"],
+                vec![("name", Value::Text("x".into()))],
+            )
+            .expect("insert");
+        let label = crate::test_labels::vertex_label_id_for_name("RelRemoveLabelNoProp");
+        let constrained = vec![ConstrainedPropertyDispatch {
+            vertex_label_id: label,
+            property_id: crate::test_labels::property_id_for_name("email"),
+            constraint_id: ConstraintNameId::from_raw(9),
+        }];
+        let mut bindings = PlanMutationBindings::default();
+
+        capture_remove_label_releases(&store, vid, label, &constrained, &mut bindings);
+
+        assert!(bindings.released_unique_values.is_empty());
+    }
+
+    #[test]
     fn label_stats_delta_collects_all_incident_edges_before_detach_delete() {
         let store = GraphStore::new();
         let a = store
@@ -1593,7 +1958,7 @@ mod tests {
             .expect("a-b");
         let mut bindings = PlanMutationBindings::default();
 
-        collect_vertex_delete_label_deltas(&store, a, true, &mut bindings)
+        collect_vertex_delete_label_deltas(&store, a, true, &[], &mut bindings)
             .expect("collect detach delete telemetry");
 
         assert_eq!(

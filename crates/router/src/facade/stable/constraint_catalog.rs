@@ -174,6 +174,28 @@ pub(crate) fn find_unique_constraint(
     })
 }
 
+/// All constrained `(vertex_label_id, property_id, constraint_name_id)` triples for a graph, in
+/// catalog-key order (ADR 0030 slice 5b). Dispatched to a shard whose mutation can delete/remove a
+/// constrained element so it can pin one `Release` per freed value. The label/property ids are the
+/// same Router-interned ids the shard stores, so they match a deleted vertex with no translation.
+pub(crate) fn constrained_properties_for_graph(
+    graph_id: GraphId,
+) -> Vec<(VertexLabelId, PropertyId, ConstraintNameId)> {
+    ROUTER_UNIQUE_CONSTRAINTS.with_borrow(|map| {
+        let start = UniqueConstraintKey::new(graph_id, ConstraintNameId::from_raw(0));
+        map.range((Bound::Included(start), graph_range_upper(graph_id)))
+            .map(|entry| {
+                let def = entry.value();
+                (
+                    def.vertex_label_id,
+                    def.property_id,
+                    entry.key().constraint_name_id,
+                )
+            })
+            .collect()
+    })
+}
+
 pub(crate) fn purge_graph_constraints(graph_id: GraphId) {
     ROUTER_UNIQUE_CONSTRAINTS.with_borrow_mut(|map| {
         let start = UniqueConstraintKey::new(graph_id, ConstraintNameId::from_raw(0));

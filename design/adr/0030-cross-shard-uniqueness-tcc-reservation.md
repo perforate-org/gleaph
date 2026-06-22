@@ -6,8 +6,8 @@ Last revised: 2026-06-22
 
 > **Status note:** The decision is **accepted**. Implementation is **partial: catalog/DDL + value
 > encoding + reservation table & no-`await` Try + pinned unique-effect outbox + the INSERT write-path
-> TCC wiring (Try/Acquire/Confirm); `CREATE`/`DROP CONSTRAINT` DDL stays gated off, and
-> delete-release/recovery/failure-injection are pending.** Slice 1 has
+> TCC wiring (Try/Acquire/Confirm) + the DELETE/REMOVE Release write-path wiring;
+> `CREATE`/`DROP CONSTRAINT` DDL stays gated off, and recovery/failure-injection are pending.** Slice 1 has
 > landed the logical constraint catalog
 > (Router-owned `ConstraintNameId` + `ROUTER_UNIQUE_CONSTRAINTS`) and `CREATE`/`DROP CONSTRAINT`
 > parsing and storage, under the declare-on-empty contract. Slice 2 has landed the canonical
@@ -30,9 +30,25 @@ Last revised: 2026-06-22
 > literal/parameter constrained value), the fenced no-`await` Try wired into the dispatch path before
 > the canonical write, the dispatch envelope carrying the claim list (`ExecutePlanArgs.unique_claims`),
 > the shard-side `Acquire` emit inside the canonical DML segment, and Confirm/ack (replicated
-> proof read → `Reserved → Committed` **only on a successful transition** → per-effect ack). The
-> remaining write-path lifecycle — DELETE/REMOVE Release (slice 5b), the recovery reconciler (slice 6),
-> and failure-injection coverage (slice 7) — is **not yet built**, so the public GQL dispatch keeps
+> proof read → `Reserved → Committed` (also re-acking an idempotent re-confirm) → per-effect ack).
+> Slice 5b has landed the **DELETE/REMOVE Release write-path**: release-only mutations
+> (`DELETE`/`DETACH DELETE`, `REMOVE prop`, and label-removal) are admitted at **any cardinality**
+> with no Try; the dispatch
+> envelope carries the graph's constrained `(label, property)` set
+> (`ExecutePlanArgs.constrained_properties`, an ephemeral per-operation catalog slice like
+> `indexed_properties`, ADR 0023); the shard pins one `Release` receipt per freed value inside the
+> canonical DML segment (captured pre-mutation so the value and owner element id are still readable)
+> — covering vertex delete, `REMOVE n.prop` on a constrained property, and `REMOVE n:Label` that drops
+> a constraint's applicability — with a **mutation-wide `effect_ordinal` cursor carried across every
+> canonical segment** so a multi-statement DELETE never re-mints an `EffectId`. The Router reconciles
+> each `Release` after commit via a **paginated** per-`mutation_id` replicated read
+> (`read_unique_release_effects(mutation_id, after_ordinal, limit)`, cursor by `effect_ordinal`, hard
+> page cap so an arbitrary-cardinality DELETE cannot overflow the IC response), removing the
+> `Committed` reservation **matched by `owner_element_id`** and acking the effect page by page, while a
+> **held** release (Release-before-Acquire) is left pinned (the cursor still advances past it so
+> reconciliation terminates and slice-6 recovery revisits it). The
+> remaining write-path lifecycle — the recovery reconciler (slice 6) and failure-injection coverage
+> (slice 7) — is **not yet built**, so the public GQL dispatch keeps
 > refusing `CREATE`/`DROP CONSTRAINT` with `NotImplemented`: publishing a constraint that is enforced
 > on insert but not on delete (or across crashes) would be a weaker, silently-wrong guarantee than
 > refusing it. This is the named-invariant strong protocol that
@@ -113,6 +129,57 @@ Last revised: 2026-06-22
 > committed-by-another-claim/mismatched reservation would destroy the sole durable commit evidence. `CREATE`/`DROP CONSTRAINT`
 > remains `NotImplemented` (see status note): the lifecycle is not complete until delete-release
 > (5b), recovery (6), and failure-injection (7) land.
+>
+> **Revision 2026-06-22 #8 (slice 5b implementation landed):** the DELETE/REMOVE Release write-path is
+> now wired end-to-end. Release-only mutations need **no Try** and are admitted at **any cardinality
+> and any shard count** (the asymmetry in Scope: only the *acquire* claim set must be
+> Router-pre-resolvable). The constrained-property set rides the dispatch as
+> `ExecutePlanArgs.constrained_properties` — an **ephemeral per-operation slice** of the Router
+> constraint catalog, mirroring `indexed_properties` (ADR 0023): the shard persists **no** derived
+> constraint catalog, so it cannot go stale across the upgrade boundary. Because the Router is the
+> sole interner of label/property names (it ships `Resolved*Table`, the shard persists those ids), the
+> dispatched `(VertexLabelId, PropertyId)` match a deleted vertex's stored ids with no translation.
+> The shard captures each freed value **before** the canonical delete (the value and `owner_element_id`
+> are unreadable afterward), then pins one `Release` receipt per freed value inside the same atomic
+> DML segment, with `effect_ordinal`s offset past the mutation's `Acquire` ordinals so every
+> `EffectId` stays distinct and replay-deterministic. After commit the Router reads the mutation's
+> `Release` effects (`read_unique_release_effects`, a replicated per-`mutation_id` read since a
+> `Release` is matched by `owner_element_id`, not `ClaimId`) and reconciles each: a `Committed`
+> reservation whose `owner_element_id` matches is removed and the effect acked; a missing reservation
+> or a stale `Release` (the value was taken over by a **different** element) is a no-op ack; and a
+> **held** release — the value is still `Reserved`/`Reclaiming` or its owner is undetermined
+> (Release-before-Acquire) — is **not acked**, staying pinned for the slice-6 reconciler so a pending
+> `Acquire` can never re-create an already-deleted element's reservation. Reconciliation is
+> best-effort and idempotent like Confirm (the canonical delete cannot be rolled back). `CREATE`/`DROP
+> CONSTRAINT` remains `NotImplemented`: recovery (6) and failure-injection (7) must still land.
+>
+> **Revision 2026-06-22 #9 (slice 5b correctness/scale hardening):** three gaps in #8 are closed so the
+> release path matches what admission/this ADR already claim. (1) **`REMOVE` capture parity** — the
+> shard now captures a `Release` not only for vertex delete but for `REMOVE n.prop` on a constrained
+> property and for `REMOVE n:Label` that drops a constraint's applicability (both captured before the
+> property/label is gone, keyed by the same canonical `encoded_value` and matched by
+> `owner_element_id`). Previously these deleted directly and **stranded the reservation**, so the value
+> could never be reused. (2) **Mutation-wide `effect_ordinal` cursor** — a single mutation can run
+> several canonical segments (one per DML statement); the `Release` ordinal cursor is now carried
+> **across** segments (seeded past the mutation's `Acquire` ordinals) instead of restarting per
+> segment, so a multi-statement `DELETE` can no longer re-mint an `EffectId` and trap the outbox on a
+> mismatched receipt. (3) **Paginated release read** — `read_unique_release_effects` now takes an
+> `(after_ordinal, limit)` cursor and returns one bounded page (the shard clamps `limit` to a hard cap
+> so an arbitrary-cardinality `DELETE` cannot exceed the IC response/heap limits); the Router pages
+> through, reconciling and acking each page and advancing the cursor past **every** observed effect
+> (including held ones, which slice-6 recovery revisits). End-of-stream is signaled by an **empty
+> page**, not a short one: the shard clamps `limit` to its own hard cap, so a page shorter than the
+> Router's requested size does not imply the last page (a rolling upgrade or a smaller shard cap would
+> otherwise strand releases past the first short page). The cursor increases by at least one each
+> iteration, guaranteeing termination. (4) **`SET` admission gate now enforced** — the deferred-write
+> rule above (reject `SET` that touches a constrained value until the two-round protocol ships) was
+> specified but not wired: `plan_unique_claims` only scans `InsertVertex` and `plan_can_release` only
+> covers `DELETE`/`REMOVE`, so `SET n.email = …`, `SET n = {…}`, and `SET n IS User` (adding a
+> constrained label) reached the canonical write **unguarded**. The dispatch now calls
+> `reject_unsupported_constrained_writes` before reserving/dispatching: when the graph declares any
+> constraint, a `SET` item that targets a constrained property, replaces all properties, or adds a
+> constrained label is refused with `NotImplemented`. DDL is still non-public so no external guarantee
+> was breached, but the gate must exist before `CREATE CONSTRAINT` is published.
 
 ## Context
 

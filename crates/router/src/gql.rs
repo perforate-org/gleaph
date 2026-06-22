@@ -15,9 +15,9 @@ use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, PostingHit, ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanResult, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire, MutationId,
-    MutationJournalState, MutationToken, MutationTokenShard, ReadMode, ShardEventSeq,
-    UniqueClaimDispatch,
+    ConstrainedPropertyDispatch, ExecutePlanResult, GqlExecutionMode, GqlQueryResult,
+    GraphMutationJournalEntryWire, MutationId, MutationJournalState, MutationToken,
+    MutationTokenShard, ReadMode, ShardEventSeq, UniqueClaimDispatch,
 };
 use ic_cdk::api::msg_caller;
 
@@ -26,6 +26,7 @@ use crate::execution_path::check_adhoc_execution_path;
 use crate::facade::stable::label_stats::ClientMutationKey;
 use crate::facade::stable::label_stats::RouterMutationShard;
 use crate::facade::store::RouterStore;
+use crate::facade::store::uniqueness::plan_can_release;
 use crate::federation::{
     AggregateIndexFastPath, FederatedMergeMode, SeedHits, ShardDispatch, ShardingPolicy,
     apply_federated_aggregate_having, collect_label_hits_for_shards,
@@ -40,7 +41,7 @@ use crate::federation::{
 use crate::graph_client::{
     ack_label_stats_deltas_through, ack_unique_effects, execute_plan_on_graph,
     get_mutation_journal_entry, index_pending_min_mutation_id, list_pending_label_stats_deltas,
-    read_unique_effect_proof,
+    read_unique_effect_proof, read_unique_release_effects,
 };
 use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
@@ -1058,6 +1059,21 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         },
     };
 
+    // ADR 0030: refuse SET writes that would touch a constrained value before the two-phase
+    // acquire/release protocol exists — they would otherwise reach the canonical write unguarded and
+    // could create a duplicate once `CREATE CONSTRAINT` is published. Checked before dispatch so the
+    // refusal records no envelope and reserves nothing.
+    if let Err(err) = store.reject_unsupported_constrained_writes(graph_id, plans) {
+        release_routing_if_owner(
+            store,
+            caller,
+            graph_id,
+            client_mutation_key,
+            mutation_reservation,
+        )?;
+        return Err(err);
+    }
+
     // ADR 0030 slice 5a: detect the cross-shard uniqueness claims this INSERT makes (admission gate
     // + canonical `encoded_value`). Computed before dispatch so a rejected/over-scope constrained
     // insert never records an envelope or reserves anything.
@@ -1079,6 +1095,16 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             )?;
             return Err(err);
         }
+    };
+
+    // ADR 0030 slice 5b: a mutation that can delete/remove a constrained element carries the graph's
+    // constrained `(label, property)` set so the shard pins one `Release` per freed value. Release is
+    // admission-free (no Try, any cardinality, any shard count): the Router reconciles the emitted
+    // `Release` effects by `owner_element_id` after the canonical write.
+    let constrained_properties: Vec<ConstrainedPropertyDispatch> = if plan_can_release(plans) {
+        store.constrained_property_dispatch(graph_id)
+    } else {
+        Vec::new()
     };
 
     let mut dispatches: Vec<ShardDispatch> = if let Some(record) = saved_record.as_ref()
@@ -1293,6 +1319,19 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             .collect()
     };
     let dispatch_unique_claims = (!unique_claims.is_empty()).then(|| unique_claims.clone());
+    let dispatch_constrained_properties =
+        (!constrained_properties.is_empty()).then(|| constrained_properties.clone());
+    // ADR 0030 slice 5b: every target a constrained delete/remove dispatched to, so the post-commit
+    // pass can read each shard's `Release` effects and reconcile them. Captured before the loop
+    // consumes `dispatches`.
+    let unique_release_targets: Vec<Principal> = if constrained_properties.is_empty() {
+        Vec::new()
+    } else {
+        dispatches
+            .iter()
+            .map(|dispatch| dispatch.graph_canister)
+            .collect()
+    };
 
     let mut merged = empty_execute_plan_result();
     // ADR 0029 Phase 2: accumulate per-shard read-your-writes watermarks for the mutation
@@ -1313,6 +1352,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 resolved_properties: Some(resolved_properties.clone()),
                 indexed_properties: Some(indexed_properties.clone()),
                 unique_claims: dispatch_unique_claims.clone(),
+                constrained_properties: dispatch_constrained_properties.clone(),
             },
         )
         .await
@@ -1429,6 +1469,14 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             &unique_proof_targets,
         )
         .await;
+    }
+    // ADR 0030 slice 5b: reconcile the `Release` effects the constrained delete/remove pinned, now
+    // that the canonical write is durable. Best-effort and idempotent — a removed reservation cannot
+    // un-delete the element, and a held/failed release is left pinned for slice-6 recovery.
+    if let Some(mutation_id) = mutation_id
+        && !constrained_properties.is_empty()
+    {
+        reconcile_unique_releases(store, graph_id, mutation_id, &unique_release_targets).await;
     }
     if let FederatedMergeMode::Aggregate(spec) = &merge_mode {
         apply_federated_aggregate_having(&mut merged, spec, pmap)
@@ -1554,6 +1602,84 @@ fn confirm_proofs_collect_acks(
         };
         if store.confirm_unique_claim(graph_id, mutation_id, claim, evidence.owner_element_id) {
             acked_effects.push(evidence.effect_id);
+        }
+    }
+    acked_effects
+}
+
+/// Page size for the Router's paginated `Release` reconciliation (ADR 0030 slice 5b). The shard
+/// clamps the request to its own hard maximum, so this is an upper bound on effects pulled per call.
+const UNIQUE_RELEASE_RECONCILE_PAGE: u32 = 256;
+
+/// Release step of the cross-shard uniqueness TCC (ADR 0030 slice 5b).
+///
+/// Pages through each target's pinned `Release` effects for this mutation — an arbitrary-cardinality
+/// DELETE/REMOVE can free unbounded values, so the effects are pulled by an `effect_ordinal` cursor
+/// rather than in one response. Each page removes the matching `Committed` reservations (by
+/// `owner_element_id`) and acks the consumed effects before advancing. Best-effort by contract: the
+/// canonical delete is already durable, so a failed read/ack — or a `Release` held under the
+/// Release-before-Acquire rule — leaves the effect pinned for the slice-6 recovery reconciler
+/// instead of failing the mutation that already succeeded. The cursor advances past held effects so
+/// reconciliation terminates; recovery revisits the still-pinned ones.
+async fn reconcile_unique_releases(
+    store: &RouterStore,
+    graph_id: GraphId,
+    mutation_id: MutationId,
+    release_targets: &[Principal],
+) {
+    for target in release_targets {
+        let mut cursor: Option<u32> = None;
+        loop {
+            let page = match read_unique_release_effects(
+                *target,
+                mutation_id,
+                cursor,
+                UNIQUE_RELEASE_RECONCILE_PAGE,
+            )
+            .await
+            {
+                Ok(page) => page,
+                // Leave releases pinned; slice-6 recovery reconciles them.
+                Err(_) => break,
+            };
+            // An empty page is the only end-of-stream signal: the shard clamps `limit` to its own
+            // hard cap, so a short page does **not** imply the last page (a rolling upgrade or a
+            // smaller shard cap would otherwise strand the releases past the first short page).
+            let Some(last_ordinal) = page.last().map(|r| r.effect_id.effect_ordinal) else {
+                break;
+            };
+            let acked_effects = reconcile_releases_collect_acks(store, graph_id, page);
+            if !acked_effects.is_empty() {
+                let _ = ack_unique_effects(*target, acked_effects).await;
+            }
+            // Advance past every effect observed (including held ones), so the loop terminates.
+            cursor = Some(last_ordinal);
+        }
+    }
+}
+
+/// Decision core of [`reconcile_unique_releases`], factored out from the inter-canister I/O so it is
+/// unit-testable: given the `Release` effects one target returned, apply each to the reservation
+/// table and return the effect ids that may be acked. The safety contract lives here: an effect is
+/// acked **only** when [`RouterStore::release_unique_effect`] reports the value durably free for this
+/// owner (reservation removed, already gone, or a stale release a different element took over). A
+/// **held** release (the value is still `Reserved`/`Reclaiming` or its owner is undetermined) is not
+/// acked, so it stays pinned until slice-6 recovery reconciles the `Acquire` first — preventing the
+/// Release-before-Acquire leak where a pending `Acquire` re-creates an already-deleted reservation.
+fn reconcile_releases_collect_acks(
+    store: &RouterStore,
+    graph_id: GraphId,
+    effects: Vec<gleaph_graph_kernel::federation::UniqueEffectReceipt>,
+) -> Vec<EffectId> {
+    let mut acked_effects: Vec<EffectId> = Vec::new();
+    for effect in effects {
+        if store.release_unique_effect(
+            graph_id,
+            effect.constraint_id,
+            &effect.encoded_value,
+            &effect.owner_element_id,
+        ) {
+            acked_effects.push(effect.effect_id);
         }
     }
     acked_effects
@@ -3341,6 +3467,145 @@ mod tests {
                 replay,
                 vec![EffectId::new(10, 0)],
                 "idempotent re-confirm must re-ack so a previously-failed ack is retried"
+            );
+        }
+    }
+
+    /// ADR 0030 slice 5b Release orchestration (`reconcile_releases_collect_acks`): an effect is
+    /// acked only when the value is durably free for this owner; a held release (Release-before-
+    /// Acquire) is left pinned for slice-6 recovery.
+    mod release_orchestration {
+        use super::super::reconcile_releases_collect_acks;
+        use crate::facade::stable::reservation_catalog::{self, ProofShard, ReservationClaim};
+        use crate::facade::store::RouterStore;
+        use candid::Principal;
+        use gleaph_graph_kernel::entry::{ConstraintNameId, GraphId};
+        use gleaph_graph_kernel::federation::{
+            ClaimId, EffectId, ShardId, UniqueEffectOp, UniqueEffectReceipt,
+        };
+
+        const CONSTRAINT: u16 = 6;
+
+        fn graph(seed: u32) -> GraphId {
+            GraphId::from_raw(920_000 + seed)
+        }
+
+        fn cid() -> ConstraintNameId {
+            ConstraintNameId::from_raw(CONSTRAINT)
+        }
+
+        fn reserve(g: GraphId) {
+            reservation_catalog::try_reserve(
+                g,
+                10,
+                &[ReservationClaim {
+                    constraint_id: cid(),
+                    encoded_value: b"v".to_vec(),
+                    claim_ordinal: 0,
+                }],
+                &[ProofShard::new(ShardId::new(0), Principal::anonymous())],
+                1,
+            )
+            .expect("reserve");
+        }
+
+        fn commit(g: GraphId, owner: &[u8]) {
+            reserve(g);
+            assert!(reservation_catalog::confirm_reservation(
+                g,
+                ClaimId::new(10, 0),
+                cid(),
+                b"v",
+                owner.to_vec()
+            ));
+        }
+
+        fn release_effect(effect_ordinal: u32, owner: &[u8]) -> UniqueEffectReceipt {
+            UniqueEffectReceipt {
+                effect_id: EffectId::new(20, effect_ordinal),
+                claim_id: None,
+                owner_element_id: owner.to_vec(),
+                constraint_id: cid(),
+                encoded_value: b"v".to_vec(),
+                op: UniqueEffectOp::Release,
+            }
+        }
+
+        /// `Ok` ⇒ the value is free (reservation removed), `Err` ⇒ a reservation still holds it.
+        fn value_is_free(g: GraphId) -> bool {
+            reservation_catalog::try_reserve(
+                g,
+                999,
+                &[ReservationClaim {
+                    constraint_id: cid(),
+                    encoded_value: b"v".to_vec(),
+                    claim_ordinal: 0,
+                }],
+                &[ProofShard::new(ShardId::new(0), Principal::anonymous())],
+                2,
+            )
+            .is_ok()
+        }
+
+        #[test]
+        fn owner_matched_release_removes_reservation_and_acks() {
+            let store = RouterStore::new();
+            let g = graph(1);
+            let owner = vec![7u8; 8];
+            commit(g, &owner);
+
+            let acks = reconcile_releases_collect_acks(&store, g, vec![release_effect(0, &owner)]);
+            assert_eq!(acks, vec![EffectId::new(20, 0)]);
+            assert!(value_is_free(g), "owner-matched release frees the value");
+        }
+
+        #[test]
+        fn held_release_is_not_acked() {
+            // The value's Acquire is still Reserved (owner undetermined) → Release-before-Acquire
+            // hold: not acked, reservation untouched.
+            let store = RouterStore::new();
+            let g = graph(2);
+            reserve(g);
+
+            let acks =
+                reconcile_releases_collect_acks(&store, g, vec![release_effect(0, &[7u8; 8])]);
+            assert!(acks.is_empty(), "a held release must not be acked");
+            assert!(
+                !value_is_free(g),
+                "held release leaves the reservation in place"
+            );
+        }
+
+        #[test]
+        fn release_on_missing_reservation_is_acked_noop() {
+            // Nothing reserved (already released) → re-ack-safe no-op.
+            let store = RouterStore::new();
+            let g = graph(3);
+
+            let acks =
+                reconcile_releases_collect_acks(&store, g, vec![release_effect(0, &[7u8; 8])]);
+            assert_eq!(acks, vec![EffectId::new(20, 0)]);
+        }
+
+        #[test]
+        fn stale_release_with_different_owner_is_acked_and_keeps_live_reservation() {
+            // A different element took the value over; the old element's Release is stale → no-op ack,
+            // and the live reservation must survive.
+            let store = RouterStore::new();
+            let g = graph(4);
+            let live_owner = vec![9u8; 8];
+            commit(g, &live_owner);
+
+            let acks =
+                reconcile_releases_collect_acks(&store, g, vec![release_effect(0, &[1u8; 8])]);
+            assert_eq!(
+                acks,
+                vec![EffectId::new(20, 0)],
+                "stale release is ack-able"
+            );
+            assert!(
+                !value_is_free(g),
+                "stale release must not remove the live reservation"
             );
         }
     }

@@ -43,6 +43,20 @@ impl GraphStore {
         UNIQUE_EFFECT_OUTBOX.with_borrow(|outbox| outbox.effects_for_mutation(mutation_id))
     }
 
+    /// One page of a mutation's pinned `Release` effects (ADR 0030 slice 5b), in `effect_ordinal`
+    /// order with ordinal `> after_ordinal`, capped at `limit`. Backs the Router-facing paginated
+    /// read so an arbitrary-cardinality DELETE/REMOVE cannot overflow the IC response; the Router
+    /// reconciles each page by `owner_element_id`, acks the applied ones, and advances the cursor.
+    pub(crate) fn unique_release_effects_page(
+        &self,
+        mutation_id: MutationId,
+        after_ordinal: Option<u32>,
+        limit: usize,
+    ) -> Vec<UniqueEffectReceipt> {
+        UNIQUE_EFFECT_OUTBOX
+            .with_borrow(|outbox| outbox.release_effects_page(mutation_id, after_ordinal, limit))
+    }
+
     /// Unpins (acks) effects by `EffectId`. The Router calls this only after durably applying each
     /// effect; acking one effect never unpins a sibling.
     pub(crate) fn ack_unique_effects(&self, effect_ids: impl IntoIterator<Item = EffectId>) {
@@ -196,5 +210,32 @@ mod tests {
         assert_eq!(effects.len(), 2);
         assert_eq!(effects[0].effect_id.effect_ordinal, 0);
         assert_eq!(effects[1].effect_id.effect_ordinal, 2);
+    }
+
+    #[test]
+    fn release_page_is_cursor_bounded_filtered_and_capped() {
+        let store = GraphStore::new();
+        let m = 9_000_010;
+        // An Acquire occupies ordinal 0; releases occupy 1..=4.
+        store.emit_unique_effect(acquire(m, 0, 0, 1));
+        for ordinal in 1u32..=4 {
+            store.emit_unique_effect(release(m, ordinal, ordinal as u8));
+        }
+
+        // First page: from the start, capped at 2, only Release effects (the Acquire is skipped).
+        let page = store.unique_release_effects_page(m, None, 2);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].effect_id.effect_ordinal, 1);
+        assert_eq!(page[1].effect_id.effect_ordinal, 2);
+        assert!(page.iter().all(|r| r.op == UniqueEffectOp::Release));
+
+        // Next page strictly after the last observed ordinal.
+        let page = store.unique_release_effects_page(m, Some(2), 2);
+        assert_eq!(page.len(), 2);
+        assert_eq!(page[0].effect_id.effect_ordinal, 3);
+        assert_eq!(page[1].effect_id.effect_ordinal, 4);
+
+        // Cursor past the end is empty (terminates the Router loop).
+        assert!(store.unique_release_effects_page(m, Some(4), 2).is_empty());
     }
 }

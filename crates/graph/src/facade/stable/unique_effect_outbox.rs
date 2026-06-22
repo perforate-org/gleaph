@@ -148,6 +148,40 @@ impl<M: Memory> UniqueEffectOutbox<M> {
             .collect()
     }
 
+    /// One page of a mutation's pinned `Release` effects with `effect_ordinal > after_ordinal`, in
+    /// ascending order, capped at `limit`. Backs the Router's paginated Release reconciliation
+    /// (ADR 0030 slice 5b): an arbitrary-cardinality DELETE/REMOVE can free unbounded values, so
+    /// the full set cannot be returned in one IC response. The cursor is the last `effect_ordinal`
+    /// the Router has already observed (exclusive); `None` starts at the beginning. Held releases
+    /// stay pinned but the cursor advances past them, so reconciliation terminates and recovery
+    /// (slice 6) revisits the still-pinned ones.
+    pub fn release_effects_page(
+        &self,
+        mutation_id: MutationId,
+        after_ordinal: Option<u32>,
+        limit: usize,
+    ) -> Vec<UniqueEffectReceipt> {
+        let lo = match after_ordinal {
+            Some(cursor) => match cursor.checked_add(1) {
+                Some(next) => RangeBound::Included(EffectKey(EffectId::new(mutation_id, next))),
+                // cursor == u32::MAX: no effect ordinal can exceed it.
+                None => return Vec::new(),
+            },
+            None => RangeBound::Included(EffectKey(EffectId::new(mutation_id, 0))),
+        };
+        let upper = if mutation_id == u64::MAX {
+            RangeBound::Included(EffectKey(EffectId::new(u64::MAX, u32::MAX)))
+        } else {
+            RangeBound::Excluded(EffectKey(EffectId::new(mutation_id + 1, 0)))
+        };
+        self.map
+            .range((lo, upper))
+            .map(|entry| entry.value().0)
+            .filter(|r| r.op == UniqueEffectOp::Release)
+            .take(limit)
+            .collect()
+    }
+
     /// Replicated commit proof: the `EffectId` + `owner_element_id` of the `Acquire` effect matching
     /// `claim_id`, or `None` if no such `Acquire` is pinned. `Acquire` is matched by **`ClaimId`**
     /// (ADR 0030), so an unrelated effect on the same value is never mistaken for this claim's

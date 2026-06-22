@@ -188,6 +188,23 @@ pub async fn read_unique_effect_proof(
     call_graph(graph, "read_unique_effect_proof", claim_ids).await
 }
 
+/// One page of a mutation's pinned `Release` effects with `effect_ordinal > after_ordinal`, capped
+/// at `limit` (the shard clamps to its own hard maximum), reconciled by the Router per
+/// `owner_element_id` (ADR 0030 slice 5b). An `update` call so the answer is replicated.
+pub async fn read_unique_release_effects(
+    graph: Principal,
+    mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
+    after_ordinal: Option<u32>,
+    limit: u32,
+) -> Result<Vec<gleaph_graph_kernel::federation::UniqueEffectReceipt>, String> {
+    call_graph_args(
+        graph,
+        "read_unique_release_effects",
+        &(mutation_id, after_ordinal, limit),
+    )
+    .await
+}
+
 /// Unpins (acks) unique effects after the Router has durably applied them (ADR 0030, per-effect).
 pub async fn ack_unique_effects(
     graph: Principal,
@@ -219,6 +236,7 @@ mod tests {
                 resolved_properties: None,
                 indexed_properties: None,
                 unique_claims: None,
+                constrained_properties: None,
             },
         );
         let err = futures::executor::block_on(fut).expect_err("native unavailable");

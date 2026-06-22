@@ -111,6 +111,18 @@ fn read_unique_effect_proof(
     canister::handlers::read_unique_effect_proof(claim_ids)
 }
 
+/// Router → graph (replicated read): one page of a mutation's pinned `Release` effects, reconciled
+/// by the Router per `owner_element_id` and paged by `effect_ordinal` cursor (ADR 0030 slice 5b). An
+/// `update` so the answer is replicated/certified.
+#[update(guard = "guard_router_canister")]
+fn read_unique_release_effects(
+    mutation_id: gleaph_graph_kernel::plan_exec::MutationId,
+    after_ordinal: Option<u32>,
+    limit: u32,
+) -> Vec<gleaph_graph_kernel::federation::UniqueEffectReceipt> {
+    canister::handlers::read_unique_release_effects(mutation_id, after_ordinal, limit)
+}
+
 /// Router → graph: per-effect ack (unpin) of unique effects after the Router has durably applied
 /// them (ADR 0030).
 #[update(guard = "guard_router_canister")]

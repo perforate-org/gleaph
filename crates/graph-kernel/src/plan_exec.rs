@@ -53,6 +53,12 @@ pub struct ExecutePlanArgs {
     /// and pins one `Acquire` receipt per claim so the Router can Confirm it. `None`/empty when the
     /// operation touches no constrained property.
     pub unique_claims: Option<Vec<UniqueClaimDispatch>>,
+    /// Constrained `(vertex_label, property)` set the shard consults when this segment can delete or
+    /// remove a constrained element, so it can pin one `Release` receipt per freed value (ADR 0030
+    /// slice 5b). Like `indexed_properties` this is an ephemeral per-operation slice of the Router's
+    /// constraint catalog (no persistent shard-side catalog; ADR 0023). `None`/empty when the
+    /// operation cannot release a constrained value.
+    pub constrained_properties: Option<Vec<ConstrainedPropertyDispatch>>,
 }
 
 /// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
@@ -66,6 +72,20 @@ pub struct UniqueClaimDispatch {
     pub claim_ordinal: u32,
     pub constraint_id: ConstraintNameId,
     pub encoded_value: Vec<u8>,
+}
+
+/// One constrained `(vertex_label, property)` dispatched to the shard so a delete/remove can pin a
+/// `Release` for the freed value (ADR 0030 slice 5b).
+///
+/// The ids are Router-interned and match the shard's stored vertex labels/property ids verbatim
+/// (the Router is the sole interner; it ships `ResolvedLabelTable`/`ResolvedPropertyTable` and the
+/// shard persists those same ids), so the shard matches a deleted vertex's labels/properties with
+/// no translation. `constraint_id` is the reservation-key constraint the freed value belongs to.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ConstrainedPropertyDispatch {
+    pub vertex_label_id: VertexLabelId,
+    pub property_id: PropertyId,
+    pub constraint_id: ConstraintNameId,
 }
 
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
@@ -463,6 +483,11 @@ mod tests {
                 claim_ordinal: 0,
                 constraint_id: ConstraintNameId::from_raw(3),
                 encoded_value: vec![9, 8, 7],
+            }]),
+            constrained_properties: Some(vec![ConstrainedPropertyDispatch {
+                vertex_label_id: VertexLabelId::from_raw(2),
+                property_id: PropertyId::from_raw(1),
+                constraint_id: ConstraintNameId::from_raw(3),
             }]),
         };
         let bytes = Encode!(&args).expect("encode");
