@@ -4,10 +4,14 @@ Date: 2026-06-22
 Status: accepted (partially implemented)
 Last revised: 2026-06-22
 
-> **Status note:** The decision is **accepted**. Implementation is **partial: catalog/DDL only;
-> enforcement inactive.** Slice 1 has landed the logical constraint catalog (Router-owned
-> `ConstraintNameId` + `ROUTER_UNIQUE_CONSTRAINTS`) and `CREATE`/`DROP CONSTRAINT` parsing and
-> storage, under the declare-on-empty contract. Write-path TCC enforcement (reservation table,
+> **Status note:** The decision is **accepted**. Implementation is **partial: catalog/DDL +
+> value encoding only; enforcement inactive.** Slice 1 has landed the logical constraint catalog
+> (Router-owned `ConstraintNameId` + `ROUTER_UNIQUE_CONSTRAINTS`) and `CREATE`/`DROP CONSTRAINT`
+> parsing and storage, under the declare-on-empty contract. Slice 2 has landed the canonical
+> `encoded_value` (`gleaph_gql_ic::unique_key`): the equality-injective reservation key built on the
+> property-index key encoding, with NULL→no-claim, non-finite(`NaN`/`±∞`)/unsupported/over-length
+> rejection, and the
+> shared `MAX_UNIQUE_ENCODED_VALUE_LEN` bound. Write-path TCC enforcement (reservation table,
 > unique-effect outbox, fenced Try/Confirm/Cancel, recovery) is **not yet built**, so the public
 > GQL dispatch refuses `CREATE`/`DROP CONSTRAINT` with `NotImplemented` rather than publishing an
 > unenforced uniqueness guarantee. This is the named-invariant strong protocol that
@@ -412,8 +416,9 @@ equal — otherwise the gate either false-rejects distinct values or false-admit
 - **Numbers:** encode in the property's declared scalar type's canonical form so GQL-equal numbers map
   to identical bytes (e.g. integer/float that compare equal under the type system share one
   encoding). Mixed-type numeric equality follows the GQL type rules for that property.
-- **NaN:** `NaN ≠ NaN` in GQL, so it has no stable key identity; a `NaN` value is **rejected** as a
-  unique key (it cannot participate in a uniqueness constraint).
+- **Non-finite floats (`NaN` / `±∞`):** `NaN ≠ NaN` in GQL, so a `NaN` has no stable key identity;
+  `±∞` likewise has no canonical finite key. Every non-finite float is **rejected** as a unique key
+  (it cannot participate in a uniqueness constraint).
 - **NULL / missing:** SQL-style — a missing or `NULL` constrained property makes **no claim**
   (multiple `NULL`s are allowed). It is not reservable.
 - **Strings:** byte-exact comparison on canonical UTF-8; no implicit Unicode normalization or
@@ -612,7 +617,8 @@ on the write path, the implementation must add:
   reservation is never re-created or leaked;
 - **declare-on-empty only**: declaring a constraint after the constrained label has elements is
   rejected in the first cut (only declare-at-creation is admitted);
-- **value equivalence**: GQL-equal values share a key; `NaN` and over-length values are rejected;
+- **value equivalence**: GQL-equal values share a key; non-finite floats (`NaN`/`±∞`) and
+  over-length values are rejected;
   `NULL`/missing makes no claim;
 - canbench evidence for the Try/Confirm/Cancel overhead on the write path, the outbox ack round, and
   reservation-table storage growth.

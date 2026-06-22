@@ -23,9 +23,13 @@ use std::ops::Deref;
 pub use candid::Principal;
 pub mod graph_registry;
 pub mod plan_result_wire;
+pub mod unique_key;
 pub mod wire;
 
 pub use plan_result_wire::{IcWirePlanQueryResult, IcWirePlanQueryRow};
+pub use unique_key::{
+    MAX_UNIQUE_ENCODED_VALUE_LEN, UniqueKeyOutcome, UniqueKeyRejection, encode_unique_value,
+};
 pub use wire::{
     IcWirePathElement, IcWireValue, WireError, decode_gql_params_blob, encode_gql_params_blob,
     principal_to_value, value_as_principal,
