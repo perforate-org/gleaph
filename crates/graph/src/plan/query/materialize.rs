@@ -4,6 +4,7 @@ use std::collections::HashMap;
 
 use gleaph_gql::Value;
 use gleaph_gql_planner::{OutputBindingKind, OutputColumn, OutputSchema};
+use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 
 use super::error::PlanQueryError;
 use super::executor::{PlanQueryRow, binding_to_value, path_binding_to_value};
@@ -19,13 +20,15 @@ pub struct PlanQueryBindings {
 /// Per-query caches reused across many result rows (paths, etc.).
 pub(crate) struct MaterializeCtx<'a> {
     store: &'a GraphStore,
+    element_id_key: &'a ElementIdEncodingKey,
     path_cache: HashMap<(usize, usize), Value>,
 }
 
 impl<'a> MaterializeCtx<'a> {
-    pub(crate) fn new(store: &'a GraphStore) -> Self {
+    pub(crate) fn new(store: &'a GraphStore, element_id_key: &'a ElementIdEncodingKey) -> Self {
         Self {
             store,
+            element_id_key,
             path_cache: HashMap::new(),
         }
     }
@@ -35,7 +38,7 @@ impl<'a> MaterializeCtx<'a> {
         if let Some(cached) = self.path_cache.get(&key) {
             return cached.clone();
         }
-        let value = path_binding_to_value(self.store, pb);
+        let value = path_binding_to_value(self.store, self.element_id_key, pb);
         self.path_cache.insert(key, value.clone());
         value
     }
@@ -51,8 +54,10 @@ impl<'a> MaterializeCtx<'a> {
             | (OutputBindingKind::Edge, PlanBinding::Edge(_))
             | (OutputBindingKind::RemoteVertex, PlanBinding::RemoteVertex(_))
             | (OutputBindingKind::Scalar, PlanBinding::Value(_))
-            | (OutputBindingKind::Dynamic, _) => binding_to_value(self.store, None, binding),
-            (_, actual) => binding_to_value(self.store, None, actual),
+            | (OutputBindingKind::Dynamic, _) => {
+                binding_to_value(self.store, self.element_id_key, None, binding)
+            }
+            (_, actual) => binding_to_value(self.store, self.element_id_key, None, actual),
         }
     }
 }
@@ -78,18 +83,19 @@ fn single_path_output_column(schema: &OutputSchema) -> Option<&OutputColumn> {
 
 pub(crate) fn materialize_plan_rows(
     store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
     rows: &[PlanQueryRow],
     schema: &OutputSchema,
 ) -> Result<Vec<std::collections::BTreeMap<String, Value>>, PlanQueryError> {
     #[cfg(all(feature = "canbench", target_family = "wasm"))]
     let _scope = canbench_rs::bench_scope("plan_query_materialize_value_rows");
 
-    let mut ctx = MaterializeCtx::new(store);
+    let mut ctx = MaterializeCtx::new(store, element_id_key);
     let mut out = Vec::with_capacity(rows.len());
 
     if schema.hydrates_all_row_bindings() {
         for row in rows {
-            out.push(super::executor::value_row(store, row)?);
+            out.push(super::executor::value_row(store, element_id_key, row)?);
         }
         return Ok(out);
     }
@@ -126,11 +132,12 @@ pub(crate) fn materialize_plan_rows(
 
 pub fn hydrate_plan_rows(
     store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
     bindings: &PlanQueryBindings,
     schema: &OutputSchema,
 ) -> Result<super::executor::PlanQueryResult, PlanQueryError> {
     Ok(super::executor::PlanQueryResult {
-        rows: materialize_plan_rows(store, &bindings.rows, schema)?,
+        rows: materialize_plan_rows(store, element_id_key, &bindings.rows, schema)?,
     })
 }
 
@@ -148,7 +155,13 @@ mod tests {
         let v = store.insert_vertex().expect("vertex");
         let mut row = PlanQueryRow::new();
         row.insert("n".into(), PlanBinding::Vertex(v));
-        let out = materialize_plan_rows(&store, &[row], &OutputSchema::default()).unwrap();
+        let out = materialize_plan_rows(
+            &store,
+            &ElementIdEncodingKey::host_test_fixture(),
+            &[row],
+            &OutputSchema::default(),
+        )
+        .unwrap();
         assert_eq!(out.len(), 1);
         assert!(out[0].contains_key("n"));
     }
@@ -166,7 +179,13 @@ mod tests {
                 source_var: Some(Str::from("n")),
             }],
         };
-        let out = materialize_plan_rows(&store, &[row], &schema).unwrap();
+        let out = materialize_plan_rows(
+            &store,
+            &ElementIdEncodingKey::host_test_fixture(),
+            &[row],
+            &schema,
+        )
+        .unwrap();
         assert_eq!(out.len(), 1);
         match &out[0]["n"] {
             Value::Record(fields) => assert!(!fields.is_empty()),
@@ -185,7 +204,13 @@ mod tests {
                 source_var: Some(Str::from("missing")),
             }],
         };
-        let out = materialize_plan_rows(&store, &[row], &schema).unwrap();
+        let out = materialize_plan_rows(
+            &store,
+            &ElementIdEncodingKey::host_test_fixture(),
+            &[row],
+            &schema,
+        )
+        .unwrap();
         assert_eq!(out[0]["missing"], Value::Null);
     }
 
@@ -202,7 +227,13 @@ mod tests {
                 source_var: Some(Str::from("n")),
             }],
         };
-        let out = materialize_plan_rows(&store, &[row], &schema).unwrap();
+        let out = materialize_plan_rows(
+            &store,
+            &ElementIdEncodingKey::host_test_fixture(),
+            &[row],
+            &schema,
+        )
+        .unwrap();
         match &out[0]["alias"] {
             Value::Record(_) => {}
             other => panic!("expected vertex record via source_var, got {other:?}"),
@@ -221,7 +252,13 @@ mod tests {
                 source_var: Some(Str::from("x")),
             }],
         };
-        let out = materialize_plan_rows(&store, &[row], &schema).unwrap();
+        let out = materialize_plan_rows(
+            &store,
+            &ElementIdEncodingKey::host_test_fixture(),
+            &[row],
+            &schema,
+        )
+        .unwrap();
         assert_eq!(out[0]["x"], Value::Int64(42));
     }
 }

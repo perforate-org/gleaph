@@ -23,6 +23,8 @@ pub mod gql_run;
 mod index;
 mod plan_wire_guard;
 mod property;
+#[cfg(feature = "pocket-ic-e2e")]
+mod test_fault;
 #[cfg(any(test, feature = "canbench"))]
 mod test_labels;
 
@@ -208,6 +210,30 @@ async fn e2e_delete_directed_edge_with_property(
 #[query(guard = "guard_control_plane_admin")]
 fn e2e_maintenance_queue_len() -> u64 {
     canister::handlers::e2e_maintenance_queue_len()
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
+fn e2e_arm_unique_ack_fault(code: u8) -> Result<(), String> {
+    canister::handlers::e2e_arm_unique_ack_fault(code)
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[query(guard = "guard_control_plane_admin")]
+fn e2e_unique_outbox_len() -> Result<u64, String> {
+    canister::handlers::e2e_unique_outbox_len()
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[query(guard = "guard_control_plane_admin")]
+fn e2e_mutation_journal_len() -> Result<u64, String> {
+    canister::handlers::e2e_mutation_journal_len()
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
+fn e2e_evict_mutation_journal() -> Result<u64, String> {
+    canister::handlers::e2e_evict_mutation_journal()
 }
 
 #[cfg(feature = "pocket-ic-e2e")]

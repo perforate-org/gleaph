@@ -561,18 +561,17 @@ async fn run_gql(
         // Validate syntax so malformed constraint DDL is a precise `InvalidArgument` rather than
         // an opaque `NotImplemented`.
         let _stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-        // ADR 0030: CREATE/DROP CONSTRAINT stays disabled until the *full* uniqueness lifecycle is
-        // live. Slice 5a wires only the INSERT Try/Acquire/Confirm path; DELETE/REMOVE Release
-        // (slice 5b), the recovery reconciler (slice 6), and failure-injection coverage (slice 7)
-        // are not yet implemented. Publishing the DDL now would let a caller declare a UNIQUE
-        // constraint that is only half-enforced (no release on deletion, no crash recovery), which
-        // is a weaker, silently-wrong guarantee than refusing it. The store-level
-        // `create_unique_constraint` / `drop_unique_constraint` and the write-path enforcement
-        // remain exercised by unit tests and become reachable here when the lifecycle is complete.
+        // ADR 0030: the enforcement lifecycle is complete through slice 7 (INSERT Try/Acquire/Confirm,
+        // DELETE/REMOVE Release, the slice-6 recovery reconciler, and the slice-7 failure-injection +
+        // canbench gate — the Phase-6 gate is satisfied). CREATE/DROP CONSTRAINT nonetheless stays
+        // gated for two distinct reasons (ADR 0030 Revisions #14–#15): CREATE publication is a
+        // deliberate decision held for final architectural review, and DROP additionally needs a
+        // dedicated lifecycle slice (reservation invalidation + saga draining + ConstraintNameId-reuse
+        // guard) before it is safe to publish — `drop_unique_constraint` is definition-only today.
         return Err(RouterError::NotImplemented(
-            "uniqueness constraints are accepted in design (ADR 0030) but the full write-path \
-             lifecycle (insert + delete release + recovery) is not yet active; CREATE/DROP \
-             CONSTRAINT is temporarily disabled"
+            "uniqueness constraints are enforced end-to-end (ADR 0030) but CREATE/DROP CONSTRAINT \
+             DDL is not yet published: CREATE publication is pending final architectural review, and \
+             DROP additionally requires a dedicated reservation-draining lifecycle slice"
                 .to_string(),
         ));
     }
@@ -1367,6 +1366,12 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         }
     }
 
+    // ADR 0030 slice 7 (failure injection): trap after the no-`await` Try, before the first dispatch
+    // `await`. The reservation/envelope co-commit only at that `await`, so this trap must roll them
+    // back with the message — proving Try leaves no stranded reservation on a pre-dispatch crash.
+    #[cfg(feature = "pocket-ic-e2e")]
+    crate::test_fault::maybe_trap_after_try();
+
     let mut merged = empty_execute_plan_result();
     // ADR 0029 Phase 2: accumulate per-shard read-your-writes watermarks for the mutation
     // token as each shard completes (built live so it survives record compaction).
@@ -1495,6 +1500,13 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     if let Some(mutation_id) = mutation_id
         && !unique_claims.is_empty()
     {
+        // ADR 0030 slice 7 (failure injection): trap in the post-dispatch callback before Confirm.
+        // The shard's canonical write + pinned `Acquire` are already durable; only the Router-side
+        // Confirm rolls back, leaving the reservation `Reserved` (commit-but-reply-lost) for recovery
+        // to converge — Confirm is re-runnable and the reservation is never lost.
+        #[cfg(feature = "pocket-ic-e2e")]
+        crate::test_fault::maybe_trap_before_confirm();
+
         confirm_unique_reservations(
             store,
             graph_id,

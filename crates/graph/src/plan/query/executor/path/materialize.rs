@@ -3,7 +3,7 @@ use std::cell::RefCell;
 use gleaph_gql::Value;
 use gleaph_gql::types::PathElement;
 use gleaph_graph_kernel::entry::EdgeSlotIndex;
-use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::federation::{ElementIdEncodingKey, ShardId};
 use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
 use ic_stable_lara::VertexId;
 
@@ -21,12 +21,23 @@ thread_local! {
 /// `plan_query_materialize_value_rows` benches.
 const PATH_MATERIALIZE_SCRATCH_MIN_ELEMENTS: usize = 16;
 
-pub(crate) fn path_binding_to_value(store: &GraphStore, pb: &PathBinding) -> Value {
-    materialize_path_from_search_states(store, pb.shard_id, pb.states.as_ref(), pb.leaf_state_idx)
+pub(crate) fn path_binding_to_value(
+    store: &GraphStore,
+    key: &ElementIdEncodingKey,
+    pb: &PathBinding,
+) -> Value {
+    materialize_path_from_search_states(
+        store,
+        key,
+        pb.shard_id,
+        pb.states.as_ref(),
+        pb.leaf_state_idx,
+    )
 }
 
 pub(crate) fn materialize_path_from_search_states(
     store: &GraphStore,
+    key: &ElementIdEncodingKey,
     shard_id: gleaph_graph_kernel::federation::ShardId,
     states: &[PathSearchNode],
     state_idx: usize,
@@ -35,22 +46,23 @@ pub(crate) fn materialize_path_from_search_states(
     let min_cap = depth.saturating_mul(2).saturating_add(1);
     if min_cap < PATH_MATERIALIZE_SCRATCH_MIN_ELEMENTS {
         let mut elements = Vec::with_capacity(min_cap);
-        fill_path_elements_leaf_to_root(store, shard_id, states, state_idx, &mut elements);
+        fill_path_elements_leaf_to_root(store, key, shard_id, states, state_idx, &mut elements);
         return Value::Path(elements);
     }
     PATH_MATERIALIZE_SCRATCH.with(|scratch| {
         if let Ok(mut elements) = scratch.try_borrow_mut() {
-            fill_path_elements_leaf_to_root(store, shard_id, states, state_idx, &mut elements);
+            fill_path_elements_leaf_to_root(store, key, shard_id, states, state_idx, &mut elements);
             return Value::Path(std::mem::take(&mut *elements));
         }
         let mut elements = Vec::with_capacity(min_cap);
-        fill_path_elements_leaf_to_root(store, shard_id, states, state_idx, &mut elements);
+        fill_path_elements_leaf_to_root(store, key, shard_id, states, state_idx, &mut elements);
         Value::Path(elements)
     })
 }
 
 fn fill_path_elements_leaf_to_root(
     store: &GraphStore,
+    key: &ElementIdEncodingKey,
     shard_id: gleaph_graph_kernel::federation::ShardId,
     states: &[PathSearchNode],
     state_idx: usize,
@@ -75,9 +87,9 @@ fn fill_path_elements_leaf_to_root(
         if hop > 0
             && let Some(edge_binding) = state.edge.clone()
         {
-            elements.push(edge_path_element(shard_id, edge_binding.handle));
+            elements.push(edge_path_element(key, shard_id, edge_binding.handle));
         }
-        elements.push(vertex_path_element(store, state.current));
+        elements.push(vertex_path_element(store, key, state.current));
     }
 }
 
@@ -90,50 +102,54 @@ pub(crate) fn local_shard_id(store: &GraphStore) -> gleaph_graph_kernel::federat
 
 pub(crate) fn vertex_element_id_bytes(
     store: &GraphStore,
+    key: &ElementIdEncodingKey,
     vertex_id: VertexId,
 ) -> Result<Vec<u8>, PlanQueryError> {
-    let path_id =
-        store
-            .path_vertex_element_id(vertex_id)
-            .ok_or_else(|| PlanQueryError::MissingBinding {
-                variable: format!("global vertex id for {vertex_id:?}"),
-            })?;
+    let path_id = store
+        .path_vertex_element_id(key, vertex_id)
+        .ok_or_else(|| PlanQueryError::MissingBinding {
+            variable: format!("global vertex id for {vertex_id:?}"),
+        })?;
     Ok(path_id.to_bytes().to_vec())
 }
 
 pub(crate) fn edge_element_id_bytes(
+    key: &ElementIdEncodingKey,
     shard_id: gleaph_graph_kernel::federation::ShardId,
     owner_vertex_id: VertexId,
     edge_slot_index: gleaph_graph_kernel::entry::EdgeSlotIndex,
 ) -> Result<Vec<u8>, PlanQueryError> {
-    let key = crate::element_id_encoding::require_execution_element_id_key()
-        .map_err(|_| PlanQueryError::MissingElementIdEncodingKey)?;
     Ok(
-        GraphPathEdgeId::new(&key, shard_id, owner_vertex_id, edge_slot_index)
+        GraphPathEdgeId::new(key, shard_id, owner_vertex_id, edge_slot_index)
             .to_bytes()
             .to_vec(),
     )
 }
 
-fn vertex_path_element(store: &GraphStore, vertex_id: VertexId) -> PathElement {
-    let path_id = store.path_vertex_element_id(vertex_id).unwrap_or_else(|| {
-        let key = crate::element_id_encoding::execution_element_id_key();
-        store
-            .global_vertex_id(vertex_id)
-            .map(|id| GraphPathVertexId::from_global(&key, id))
-            .expect("global vertex id")
-    });
+fn vertex_path_element(
+    store: &GraphStore,
+    key: &ElementIdEncodingKey,
+    vertex_id: VertexId,
+) -> PathElement {
+    let path_id = store
+        .path_vertex_element_id(key, vertex_id)
+        .unwrap_or_else(|| {
+            store
+                .global_vertex_id(vertex_id)
+                .map(|id| GraphPathVertexId::from_global(key, id))
+                .expect("global vertex id")
+        });
     PathElement::Vertex(path_id.to_bytes().into())
 }
 
 fn edge_path_element(
+    key: &ElementIdEncodingKey,
     shard_id: gleaph_graph_kernel::federation::ShardId,
     handle: EdgeHandle,
 ) -> PathElement {
     PathElement::Edge({
-        let key = crate::element_id_encoding::execution_element_id_key();
         GraphPathEdgeId::new(
-            &key,
+            key,
             shard_id,
             handle.owner_vertex_id,
             EdgeSlotIndex::from_raw(handle.slot_index),

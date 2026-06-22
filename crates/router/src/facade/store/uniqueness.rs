@@ -454,6 +454,45 @@ impl RouterStore {
         reservation_catalog::begin_reclaim(graph_id, constraint_id, encoded_value)
     }
 
+    /// Test-only (`pocket-ic-e2e`): drive a `Reserved` reservation for the `(label, property, text
+    /// value)` of `graph_id` into `Reclaiming` and commit it, so the failure-injection suite can prove
+    /// a same-`ClaimId` retry is fenced while a reclaim proof is in flight. Returns whether the
+    /// transition happened. The value is encoded exactly as the write path encodes a literal `Text`
+    /// claim, so the key byte-matches a reservation made by an `INSERT (:Label {property: 'value'})`.
+    #[cfg(feature = "pocket-ic-e2e")]
+    pub(crate) fn test_force_reclaiming_text(
+        &self,
+        graph_id: GraphId,
+        label: &str,
+        property: &str,
+        value: &str,
+    ) -> Result<bool, RouterError> {
+        let vertex_label_id = self.lookup_vertex_label_id(graph_id, label)?;
+        let property_id = self.lookup_property_id(graph_id, property)?;
+        let (constraint_id, _) = find_unique_constraint(graph_id, vertex_label_id, property_id)
+            .ok_or_else(|| {
+                RouterError::InvalidArgument(
+                    "no unique constraint for (label, property)".to_string(),
+                )
+            })?;
+        let encoded_value = match encode_unique_value(&Value::Text(value.to_string())) {
+            UniqueKeyOutcome::Claim(encoded) => encoded,
+            UniqueKeyOutcome::NoClaim => {
+                return Err(RouterError::InvalidArgument(
+                    "value makes no uniqueness claim".to_string(),
+                ));
+            }
+            UniqueKeyOutcome::Rejected(_) => {
+                return Err(RouterError::InvalidArgument(
+                    "value cannot be a uniqueness key".to_string(),
+                ));
+            }
+        };
+        Ok(self
+            .begin_unique_reclaim(graph_id, constraint_id, &encoded_value)
+            .is_some())
+    }
+
     /// Resume an interrupted reclaim proof (entry already `Reclaiming`) under its current generation,
     /// without bumping it (ADR 0030 slice 6). `None` if not `Reclaiming`.
     pub(crate) fn resume_unique_reclaim(

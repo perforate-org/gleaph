@@ -1,8 +1,11 @@
 # Set `CANBENCH_GLEAPH_GRAPH_FEATURES=canbench_large` to include the heavyweight
 # query-call scale benches under `src/bench/large.rs` (vector expand, payload
 # predicate skewed 10k/50k, feed page, friends-of-friends, road grid).
-build_cmd: "sh -c 'EXTRA=\"${CANBENCH_GLEAPH_GRAPH_FEATURES:-}\"; CARGO_TARGET_DIR=../../target cargo build --release --target wasm32-unknown-unknown --features canbench${EXTRA:+,}${EXTRA}'"
-wasm_path: "../../target/wasm32-unknown-unknown/release/gleaph_graph.wasm"
+# canbench builds into a dedicated CARGO_TARGET_DIR (../../target/canbench) so its
+# `--features canbench` wasm never clobbers the `--features pocket-ic-e2e` artifacts the
+# pocket-ic-tests build.rs writes under ../../target.
+build_cmd: "sh -c 'EXTRA=\"${CANBENCH_GLEAPH_GRAPH_FEATURES:-}\"; CARGO_TARGET_DIR=../../target/canbench cargo build --release --target wasm32-unknown-unknown --features canbench${EXTRA:+,}${EXTRA}'"
+wasm_path: "../../target/canbench/wasm32-unknown-unknown/release/gleaph_graph.wasm"
 # Candid `GraphInitArgs`: all fields default / null (no federation in default bench init).
 init_args:
   hex: 4449444c046c03dcd7bda804019dbbfed10c029284fcde0c036e796e686e710100000000

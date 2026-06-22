@@ -1409,6 +1409,189 @@ pub fn test_inject_projection_pending_saga(
     }
 }
 
+/// Test-only (`pocket-ic-e2e`): declare a uniqueness constraint (ADR 0030). Public `CREATE`/`DROP
+/// CONSTRAINT` DDL stays `NotImplemented` (CREATE pending the publication decision, DROP pending a
+/// dedicated lifecycle slice — ADR 0030 Revisions #14–#15), so the E2E suite reaches the
+/// admin-authorized, declare-on-empty store path through this seam. The constraint must be declared
+/// on a **brand-new** vertex label (declare-on-empty) — call it before inserting any such vertex.
+pub fn test_declare_unique_constraint(
+    env: &FederationEnv,
+    logical_graph_name: &str,
+    constraint_name: &str,
+    label: &str,
+    property: &str,
+) {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "test_declare_unique_constraint",
+            Encode!(
+                &logical_graph_name.to_string(),
+                &constraint_name.to_string(),
+                &label.to_string(),
+                &property.to_string()
+            )
+            .expect("encode test_declare_unique_constraint"),
+        )
+        .unwrap_or_else(|e| panic!("test_declare_unique_constraint on router: {e:?}"));
+    match Decode!(&bytes, Result<(), RouterError>) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("test_declare_unique_constraint rejected: {err:?}"),
+        Err(err) => panic!("decode test_declare_unique_constraint: {err:?}"),
+    }
+}
+
+/// Test-only (`pocket-ic-e2e`): invoke the constraint-declaration seam as an arbitrary `sender`,
+/// returning the router's `Result` so callers can assert the admin guard rejects non-admins.
+pub fn test_declare_unique_constraint_as(
+    env: &FederationEnv,
+    sender: Principal,
+    logical_graph_name: &str,
+    constraint_name: &str,
+    label: &str,
+    property: &str,
+) -> Result<(), gleaph_graph_kernel::federation::RouterError> {
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            sender,
+            "test_declare_unique_constraint",
+            Encode!(
+                &logical_graph_name.to_string(),
+                &constraint_name.to_string(),
+                &label.to_string(),
+                &property.to_string()
+            )
+            .expect("encode test_declare_unique_constraint"),
+        )
+        .unwrap_or_else(|e| panic!("test_declare_unique_constraint on router: {e:?}"));
+    Decode!(
+        &bytes,
+        Result<(), gleaph_graph_kernel::federation::RouterError>
+    )
+    .expect("decode test_declare_unique_constraint")
+}
+
+/// Advance simulated time past the ADR 0030 reclaim eligibility window
+/// (`UNIQUE_RESERVATION_TTL_NS`, 30 min) and tick repeatedly so the recovery timer's reclaim driver
+/// (Driver 1) becomes eligible to act on an overdue `Reserved` reservation. Use for the
+/// failure-injection reclaim/Cancel paths; for the prompt projection/effect drivers
+/// [`run_router_recovery_timer`] is enough.
+pub fn run_router_recovery_after_reservation_ttl(env: &FederationEnv) {
+    use std::time::Duration;
+
+    // Jump just past the 30-minute reservation TTL so the next reclaim scan finds the entry overdue.
+    env.pic.advance_time(Duration::from_secs(31 * 60));
+    for _ in 0..40 {
+        env.pic.advance_time(Duration::from_secs(3));
+        for _ in 0..12 {
+            env.pic.tick();
+        }
+    }
+}
+
+/// Advance simulated time past **both** retention windows the ADR 0030 outbox-vs-eviction test must
+/// surpass: the router client-mutation-key TTL (`CLIENT_MUTATION_KEY_TTL_NS`, 7 days, ADR 0025) and
+/// the longer graph mutation-journal retention (9 days, ADR 0027). Advancing past the larger (9-day)
+/// window means a subsequent router key sweep **and** a graph journal eviction both treat every
+/// record as age-expired, so the test can prove a reservation-pinned router record and a pinned
+/// `Acquire` outbox effect both survive while the graph journal entry is evicted. Ticks once;
+/// callers drive convergence.
+pub fn advance_past_journal_eviction(env: &FederationEnv) {
+    use std::time::Duration;
+
+    // 9-day graph journal retention (ADR 0027) + 1h margin — also past the 7-day router key TTL.
+    env.pic
+        .advance_time(Duration::from_secs(9 * 24 * 60 * 60 + 60 * 60));
+    env.pic.tick();
+}
+
+/// Arm (or clear, with `0`) the graph shard's ADR 0030 unique-effect ack fault (PocketIC E2E seam),
+/// so the failure-injection suite can trap the Router's `Acquire` ack and exercise slice-6 re-ack
+/// recovery. Called with the router principal as sender (the shard's control-plane guard).
+pub fn arm_graph_unique_ack_fault(env: &FederationEnv, shard: Principal, code: u8) {
+    let _: () = update_as_router(env, shard, "e2e_arm_unique_ack_fault", code);
+}
+
+/// Count of currently pinned (un-acked) unique effects in a graph shard's outbox (PocketIC E2E).
+pub fn graph_unique_outbox_len(env: &FederationEnv, shard: Principal) -> u64 {
+    query_as_router(env, shard, "e2e_unique_outbox_len", ())
+}
+
+/// Count of entries in a graph shard's mutation journal (PocketIC E2E).
+pub fn graph_mutation_journal_len(env: &FederationEnv, shard: Principal) -> u64 {
+    query_as_router(env, shard, "e2e_mutation_journal_len", ())
+}
+
+/// Run a full graph mutation-journal retention sweep (ADR 0027, 9-day window) on a graph shard at the
+/// current simulated time and return the remaining entry count (PocketIC E2E).
+pub fn evict_graph_mutation_journal(env: &FederationEnv, shard: Principal) -> u64 {
+    update_as_router(env, shard, "e2e_evict_mutation_journal", ())
+}
+
+/// Test-only (`pocket-ic-e2e`): force a `Reserved` reservation for `(label, property, value)` into
+/// `Reclaiming` (admin). Returns whether the transition happened. See `gleaph_router` `test_fault`
+/// neighbours; used by the ADR 0030 reclaim-during-retry fence test.
+pub fn test_force_reclaiming(
+    env: &FederationEnv,
+    logical_graph_name: &str,
+    label: &str,
+    property: &str,
+    value: &str,
+) -> bool {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "test_force_reclaiming",
+            Encode!(
+                &logical_graph_name.to_string(),
+                &label.to_string(),
+                &property.to_string(),
+                &value.to_string()
+            )
+            .expect("encode test_force_reclaiming"),
+        )
+        .unwrap_or_else(|e| panic!("test_force_reclaiming on router: {e:?}"));
+    Decode!(&bytes, Result<bool, RouterError>)
+        .expect("decode test_force_reclaiming")
+        .unwrap_or_else(|err| panic!("test_force_reclaiming rejected: {err:?}"))
+}
+
+/// Run one full expired-client-mutation-key sweep pass (admin) and return how many records it
+/// evicted. A record pinned by a non-terminal reservation or a pending unique-effect row must not be
+/// evicted (ADR 0030 slice 6 GC-pin).
+pub fn admin_sweep_mutation_keys(env: &FederationEnv, max_scan: u32) -> u32 {
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_router::types::{AdminSweepMutationKeysStepArgs, AdminSweepMutationKeysStepResult};
+
+    let args = AdminSweepMutationKeysStepArgs {
+        start_after: None,
+        max_scan,
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_sweep_expired_client_mutation_keys",
+            Encode!(&args).expect("encode admin_sweep_expired_client_mutation_keys"),
+        )
+        .unwrap_or_else(|e| panic!("admin_sweep_expired_client_mutation_keys on router: {e:?}"));
+    let result = Decode!(&bytes, Result<AdminSweepMutationKeysStepResult, RouterError>)
+        .expect("decode admin_sweep_expired_client_mutation_keys")
+        .unwrap_or_else(|err| panic!("admin_sweep_expired_client_mutation_keys rejected: {err:?}"));
+    result.removed
+}
+
 /// Advance simulated time and tick so the router's autonomous recovery timer fires
 /// (ADR 0029 Phase 4).
 pub fn run_router_recovery_timer(env: &FederationEnv) {
@@ -1578,6 +1761,117 @@ pub fn gql_execute_idempotent_as_admin_expect_err(
         }
         Err(err) => panic!("decode gql_execute_idempotent: {err}"),
     }
+}
+
+/// Test-only (`pocket-ic-e2e`): arm (or clear, with `0`) an ADR 0030 write-path fault injection on
+/// the router (admin). See `gleaph_router::test_fault`.
+pub fn arm_router_fault(env: &FederationEnv, code: u8) {
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "test_arm_fault",
+            Encode!(&code).expect("encode test_arm_fault"),
+        )
+        .unwrap_or_else(|e| panic!("test_arm_fault on router: {e:?}"));
+    Decode!(
+        &bytes,
+        Result<(), gleaph_graph_kernel::federation::RouterError>
+    )
+    .expect("decode test_arm_fault")
+    .unwrap_or_else(|err| panic!("test_arm_fault rejected: {err:?}"));
+}
+
+/// Run `gql_execute_idempotent` as admin expecting the message itself to **trap** (an injected
+/// fault), i.e. the ingress is rejected rather than returning an application `Result`.
+pub fn gql_execute_idempotent_as_admin_expect_trap(
+    env: &FederationEnv,
+    query: &str,
+    client_mutation_key: &str,
+) {
+    let result = env.pic.update_call(
+        env.router,
+        env.admin,
+        "gql_execute_idempotent",
+        Encode!(
+            &query.to_string(),
+            &Vec::<u8>::new(),
+            &client_mutation_key.to_string()
+        )
+        .expect("encode gql_execute_idempotent"),
+    );
+    assert!(
+        result.is_err(),
+        "expected the injected fault to trap the ingress, got Ok({:?})",
+        result.ok().map(|bytes| bytes.len())
+    );
+}
+
+/// Submit two `gql_execute_idempotent` ingress messages (as admin) **before** executing any round,
+/// then drive rounds so they interleave (each yields at its dispatch `await`). Returns both decoded
+/// application results so a caller can assert exactly one winner. Used for the ADR 0030 true
+/// concurrent same-value conflict test.
+#[allow(clippy::type_complexity)]
+pub fn gql_execute_idempotent_pair_concurrent_as_admin(
+    env: &FederationEnv,
+    query_a: &str,
+    key_a: &str,
+    query_b: &str,
+    key_b: &str,
+) -> (
+    Result<
+        gleaph_graph_kernel::plan_exec::GqlQueryResult,
+        gleaph_graph_kernel::federation::RouterError,
+    >,
+    Result<
+        gleaph_graph_kernel::plan_exec::GqlQueryResult,
+        gleaph_graph_kernel::federation::RouterError,
+    >,
+) {
+    let encode = |query: &str, key: &str| {
+        Encode!(&query.to_string(), &Vec::<u8>::new(), &key.to_string())
+            .expect("encode gql_execute_idempotent")
+    };
+    let msg_a = env
+        .pic
+        .submit_call(
+            env.router,
+            env.admin,
+            "gql_execute_idempotent",
+            encode(query_a, key_a),
+        )
+        .expect("submit gql_execute_idempotent a");
+    let msg_b = env
+        .pic
+        .submit_call(
+            env.router,
+            env.admin,
+            "gql_execute_idempotent",
+            encode(query_b, key_b),
+        )
+        .expect("submit gql_execute_idempotent b");
+    // Both ingress messages are now queued; ticking executes them in interleaved rounds.
+    for _ in 0..60 {
+        env.pic.tick();
+    }
+    let result_a = match env.pic.await_call(msg_a) {
+        Ok(bytes) => Decode!(
+            &bytes,
+            Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, gleaph_graph_kernel::federation::RouterError>
+        )
+        .expect("decode gql_execute_idempotent a"),
+        Err(reject) => panic!("concurrent ingress a unexpectedly trapped: {reject:?}"),
+    };
+    let result_b = match env.pic.await_call(msg_b) {
+        Ok(bytes) => Decode!(
+            &bytes,
+            Result<gleaph_graph_kernel::plan_exec::GqlQueryResult, gleaph_graph_kernel::federation::RouterError>
+        )
+        .expect("decode gql_execute_idempotent b"),
+        Err(reject) => panic!("concurrent ingress b unexpectedly trapped: {reject:?}"),
+    };
+    (result_a, result_b)
 }
 
 const KNOWLEDGE_MAP_SEEDS_JSON: &str =

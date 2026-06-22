@@ -439,6 +439,7 @@ fn push_vector_dst_only_row_for_edge(
         if dst_only_prefilter
             && !vertex_row_matches_dst_filters(
                 store,
+                &evaluator.element_id_key,
                 parameters,
                 dst,
                 dst_id,

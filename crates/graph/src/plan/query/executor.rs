@@ -35,7 +35,7 @@ use gleaph_gql_planner::OutputSchema;
 use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, Str};
 use gleaph_graph_kernel::entry::PreparedWeightDecoder;
-use gleaph_graph_kernel::federation::GlobalVertexId;
+use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::OutEdgeOrder;
 use std::collections::BTreeMap;
@@ -74,10 +74,11 @@ impl PlanQueryResult {
     /// [`execute_plan_query`].
     pub fn try_from_plan_rows(
         store: &GraphStore,
+        element_id_key: &ElementIdEncodingKey,
         rows: &[PlanQueryRow],
     ) -> Result<Self, PlanQueryError> {
         Ok(Self {
-            rows: materialize_plan_rows(store, rows)?,
+            rows: materialize_plan_rows(store, element_id_key, rows)?,
         })
     }
 }
@@ -138,8 +139,11 @@ pub async fn execute_plan_query_bindings_with_initial_rows(
     initial_rows: Vec<PlanRow>,
     skip_leading_index_scan: bool,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
-    crate::element_id_encoding::set_execution_element_id_key(execution.element_id_encoding_key());
-    let run_result = execute_plan_query_bindings_with_initial_rows_inner(
+    // The router-issued element-id key is carried as owned data in the per-op evaluator
+    // (`QueryExprEvaluator::element_id_key`), never parked in ambient thread-local state across the
+    // `await`s in `execute_ops_from`. Materialization resolves the same key explicitly from
+    // `execution` (see `execute_plan_query`).
+    execute_plan_query_bindings_with_initial_rows_inner(
         store,
         plan,
         parameters,
@@ -148,9 +152,7 @@ pub async fn execute_plan_query_bindings_with_initial_rows(
         initial_rows,
         skip_leading_index_scan,
     )
-    .await;
-    crate::element_id_encoding::clear_execution_element_id_key();
-    run_result
+    .await
 }
 
 async fn execute_plan_query_bindings_with_initial_rows_inner(
@@ -211,17 +213,19 @@ fn skip_leading_index_anchor_ops(ops: &[PlanOp]) -> &[PlanOp] {
 
 pub fn materialize_plan_rows(
     store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
     rows: &[PlanRow],
 ) -> Result<Vec<BTreeMap<String, Value>>, PlanQueryError> {
-    super::materialize::materialize_plan_rows(store, rows, &OutputSchema::default())
+    super::materialize::materialize_plan_rows(store, element_id_key, rows, &OutputSchema::default())
 }
 
 pub fn materialize_plan_rows_for_schema(
     store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
     rows: &[PlanRow],
     schema: &OutputSchema,
 ) -> Result<Vec<BTreeMap<String, Value>>, PlanQueryError> {
-    super::materialize::materialize_plan_rows(store, rows, schema)
+    super::materialize::materialize_plan_rows(store, element_id_key, rows, schema)
 }
 
 pub async fn execute_plan_query(
@@ -231,9 +235,12 @@ pub async fn execute_plan_query(
     index: Option<&dyn PropertyIndexLookup>,
     execution: GqlExecutionContext,
 ) -> Result<PlanQueryResult, PlanQueryError> {
+    let element_id_key =
+        crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
     let bindings = execute_plan_query_bindings(store, plan, parameters, index, execution).await?;
     super::materialize::hydrate_plan_rows(
         store,
+        &element_id_key,
         &super::materialize::PlanQueryBindings { rows: bindings },
         &plan.output,
     )
@@ -316,8 +323,10 @@ fn expr_variables_subset_of_dst(expr: &Expr, dst: &str) -> bool {
         .all(|variable| variable == dst)
 }
 
+#[allow(clippy::too_many_arguments)]
 pub(crate) fn vertex_row_matches_dst_filters(
     store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
     parameters: &BTreeMap<String, Value>,
     dst: &Str,
     dst_id: VertexId,
@@ -335,6 +344,7 @@ pub(crate) fn vertex_row_matches_dst_filters(
         resolved_labels: None,
         resolved_properties: None,
         gleaph_weight_decoders,
+        element_id_key: *element_id_key,
     };
     row_matches_all(&evaluator, &stub, dst_filter)
 }

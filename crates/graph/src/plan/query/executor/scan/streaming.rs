@@ -128,6 +128,9 @@ pub(crate) fn execute_limited_streaming_prefix(
         resolved_labels: execution.resolved_labels.as_ref(),
         resolved_properties: execution.resolved_properties.as_ref(),
         gleaph_weight_decoders,
+        element_id_key: crate::element_id_encoding::resolve_or_host_fixture(
+            execution.element_id_encoding_key(),
+        ),
     };
     let offset = match offset {
         Some(expr) => limit_value(&evaluator.eval_expr(&PlanRow::new(), expr)?)?,
@@ -812,6 +815,9 @@ fn stream_expand(
                 if dst_only_prefilter
                     && !vertex_row_matches_dst_filters(
                         store,
+                        &crate::element_id_encoding::resolve_or_host_fixture(
+                            execution.element_id_encoding_key(),
+                        ),
                         parameters,
                         dst,
                         dst_id,
@@ -892,6 +898,7 @@ fn stream_expand(
             if dst_only_prefilter
                 && !vertex_row_matches_dst_filters(
                     store,
+                    &evaluator.element_id_key,
                     parameters,
                     dst,
                     dst_id,

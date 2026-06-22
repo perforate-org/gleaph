@@ -4,12 +4,17 @@ Date: 2026-06-22
 Status: accepted (partially implemented)
 Last revised: 2026-06-22
 
-> **Status note:** The decision is **accepted**. Implementation is **partial: catalog/DDL + value
-> encoding + reservation table & no-`await` Try + pinned unique-effect outbox + the INSERT write-path
-> TCC wiring (Try/Acquire/Confirm) + the DELETE/REMOVE Release write-path wiring + the slice-6
-> recovery reconciler (reclaim Driver 1 + unified effect recovery Driver 2);
-> `CREATE`/`DROP CONSTRAINT` DDL stays gated off, and failure-injection / canbench coverage (slice 7)
-> are pending.** Slice 1 has
+> **Status note:** The decision is **accepted**. Implementation is **complete through slice 7:
+> catalog/DDL + value encoding + reservation table & no-`await` Try + pinned unique-effect outbox + the
+> INSERT write-path TCC (Try/Acquire/Confirm) + the DELETE/REMOVE Release write-path + the slice-6
+> recovery reconciler (reclaim Driver 1 + unified effect recovery Driver 2) + the slice-7
+> failure-injection / canbench gate (the Phase-6 test/benchmark gate is satisfied — see Revision #14).
+> Two items remain before `CREATE`/`DROP CONSTRAINT` is published, neither a Phase-6 gap: (1) the
+> deliberately separate CREATE publication decision, held for final architectural review; and (2) a
+> dedicated DROP-lifecycle slice — DROP currently removes only the constraint definition, so
+> reservation invalidation, in-flight saga draining, and a `ConstraintNameId`-reuse guard (re-`CREATE`
+> of a dropped name reuses its id against stale reservations, risking false rejects) are not yet
+> implemented (see Revision #15).** Slice 1 has
 > landed the logical constraint catalog
 > (Router-owned `ConstraintNameId` + `ROUTER_UNIQUE_CONSTRAINTS`) and `CREATE`/`DROP CONSTRAINT`
 > parsing and storage, under the declare-on-empty contract. Slice 2 has landed the canonical
@@ -51,12 +56,20 @@ Last revised: 2026-06-22
 > reconciliation terminates and slice-6 recovery revisits it). Slice 6 has landed the **recovery
 > reconciler** (see Revision #10): the reclaim Driver converges reservations from a generation-fenced
 > proof, and the unified effect-recovery Driver drains a durable discovery index to converge every
-> pinned `Acquire`/`Release`/orphan effect the inline path left behind. The
-> remaining write-path lifecycle — failure-injection / canbench coverage
-> (slice 7) — is **not yet built**, so the public GQL dispatch keeps
-> refusing `CREATE`/`DROP CONSTRAINT` with `NotImplemented`: publishing a constraint that is enforced
-> on insert but not on delete (or across crashes) would be a weaker, silently-wrong guarantee than
-> refusing it. This is the named-invariant strong protocol that
+> pinned `Acquire`/`Release`/orphan effect the inline path left behind. Slice 7 has **landed**
+> (see Revision #13, corrected by #14): the enforced lifecycle (Try/Acquire/Confirm, duplicate
+> rejection, in-flight retryability, SET deferral, delete-release, roll-forward retry, reclaim-Cancel,
+> upgrade-reopen reconciliation, admin-gated declaration) is verified on real canisters, the seven
+> ADR-required cross-canister failure-injection scenarios (Try-then-trap, Confirm-then-trap,
+> Confirm→ack-failure, true concurrent same-value, outbox-vs-9-day-journal-eviction,
+> reclaim-during-retry, Release-before-Acquire) pass on PocketIC, and both the Router-local
+> Try/Confirm/Cancel/reclaim overhead and the graph-shard outbox append/ack + storage-growth have
+> persisted canbench baselines. **The Phase-6 test/benchmark gate is satisfied.**
+> DDL `CREATE`/`DROP CONSTRAINT` nonetheless stays `NotImplemented`. For `CREATE` the only remaining
+> step is the deliberately separate publication flip, held for final architectural review; `DROP`
+> additionally requires a dedicated lifecycle slice (reservation invalidation, in-flight saga draining,
+> and a `ConstraintNameId`-reuse guard) before it can be published — see Revision #15. This is the named-invariant
+> strong protocol that
 > [ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md) §7 requires before any
 > cross-shard prepare/commit machinery is built; the acid roadmap tracks delivery as Phase 5
 > contract 3 / Phase 6. Sections below are written as the contract the implementation must satisfy;
@@ -269,6 +282,154 @@ Last revised: 2026-06-22
 > only makes a `Reserved` entry *eligible* for a reclaim proof; cancel safety rests on terminal-failure
 > + proof, never on the TTL. `CREATE`/`DROP CONSTRAINT` remains `NotImplemented`: only failure-injection
 > / canbench coverage (slice 7) is left.
+>
+> **Revision 2026-06-22 #11 (slice 7 first cut — failure-injection e2e + canbench baseline landed):**
+> a first PocketIC e2e suite and a write-path canbench baseline landed; the enforced lifecycle is
+> verified end-to-end on real canisters and the Router-side overhead has a persisted baseline.
+> `CREATE`/`DROP CONSTRAINT` **still returns `NotImplemented`**.
+>
+> **Revision 2026-06-22 #12 (slice 7 gate scope corrected — gate NOT yet satisfied):** Revision #11
+> overstated completion. The Phase-6 gate is **not** satisfied: several ADR-required cross-canister
+> failure-injection scenarios (Try-then-Router-trap, Confirm-then-trap, true concurrent same-value,
+> outbox-vs-eviction, reclaim-during-retry, Release-before-Acquire) and the inter-canister outbox
+> ack-round / end-to-end storage-growth canbench remain pending; the canbench baseline measures only
+> the Router-local facade Try/Confirm/Cancel + reclaim scan. The slice-1–6 unit tests plus the
+> existing e2e suite cover the remaining invariants. The admin guard on the
+> `test_declare_unique_constraint` seam is now explicit (`auth::require_admin`), with a non-admin
+> rejection test (`declare_unique_constraint_rejects_non_admin`). The across-`await` ambient
+> element-id-key thread-local was removed in favour of an `element_id_key` carried explicitly on the
+> execution/evaluator/materialize path, with an interleaving regression test
+> (`element_id_encoding_uses_per_evaluator_key_not_ambient_state`). `CREATE`/`DROP CONSTRAINT`
+> remains `NotImplemented` until the gate closes and the separate publication flip is approved.
+>
+> - **Test seam (no public DDL).** Because public `CREATE CONSTRAINT` stays gated, the e2e suite declares
+>   constraints through a `#[cfg(feature = "pocket-ic-e2e")]` router endpoint
+>   `test_declare_unique_constraint` that reaches the same admin-authorized, declare-on-empty store path
+>   (`RouterStore::create_unique_constraint`) the published DDL eventually will. The public dispatch and
+>   its `NotImplemented`/`Forbidden`/path-mismatch contract are unchanged (still covered by
+>   `adr0030_constraint_dispatch`).
+> - **PocketIC e2e (`adr0030_uniqueness_lifecycle`, `adr0030_uniqueness_recovery`).** Through the real
+>   ingress (`gql_execute_idempotent`): a single-vertex constrained `INSERT` reserves, commits, pins and
+>   acks its `Acquire`, and is queryable; a same-value `INSERT` is **non-retryable** (`UniquenessViolation`);
+>   a value held `Reserved` by an in-flight saga (its dispatch stalled on a stopped shard) refuses a
+>   competitor **retryably** (`UniquenessReservationInFlight`); `SET` on a constrained property is deferred
+>   (`NotImplemented`); a `DELETE` releases the reservation so the value is reusable. Failure injection
+>   stops the target shard so the no-`await` Try persists the reservation while the canonical dispatch
+>   fails, then drives convergence via the two sanctioned routes: **roll-forward** (an idempotent same-key
+>   retry re-dispatches, commits, and re-Confirms — exercising idempotent Confirm) and **reclaim** (the
+>   abandoned saga is terminally failed and Cancelled by Driver 1 past the eligibility TTL, freeing the
+>   value; the abandoned key stays terminally failed and is never re-dispatched). The same reclaim
+>   convergence is re-verified **across a full canister upgrade** (`post_upgrade` re-arms the recovery
+>   timer; the reservation/envelope survive in stable memory).
+> - **Encoding-key fix surfaced by e2e (slice 5b correctness).** The first real-canister constrained
+>   `DELETE` trapped: a DML plan's read prefix runs as a nested query phase that **set then cleared** the
+>   execution element-id key to `None` on exit, wiping the key `run_wire_plans` installed; the canonical
+>   tail's `Release` capture (`capture_constrained_release` → `path_vertex_element_id`) then found no key
+>   and trapped. Unit tests masked it via the `cfg(test)` host-fixture fallback. The ambient
+>   thread-local key was **removed entirely** (Revision #12): a per-graph `element_id_key` is resolved
+>   once per execution and carried explicitly down the execution / `QueryExprEvaluator` / materialize
+>   path and into the canonical capture (`path_vertex_element_id(&key, …)`), so it can never be wiped by
+>   a nested phase **and** can never be corrupted by an interleaved message that installed a different
+>   graph's key across an `await` (a graph canister hosts shards of different logical graphs). This
+>   covers both the threaded constrained insert (`MATCH … INSERT (:Constrained {…})`) and the
+>   read-prefixed `DELETE`; it is regression-tested by
+>   `element_id_encoding_uses_per_evaluator_key_not_ambient_state`.
+> - **canbench baseline (`crates/router/canbench_results.yml`).** Router-local facade benches (no
+>   inter-canister calls): the no-`await` Try through `try_reserve_unique` (incl. the reverse-index
+>   slot bump) at **1 / 16 / 256** claims, Confirm + non-terminal count decrement, the reclaim-fence
+>   Cancel + count decrement, the `Acquire` ack-clear, and the bounded reclaim scan over a populated
+>   table. This establishes a **Router-side** Try/Confirm/Cancel + reservation-growth baseline only;
+>   the inter-canister outbox append/ack round and the end-to-end storage-growth measurement are still
+>   pending (see the Phase-6 status note — the gate is not yet satisfied).
+>
+> **Revision 2026-06-22 #13 (slice 7 gate closed — failure-injection + outbox canbench landed):** the
+> two items Revision #12 left open are now satisfied, so the **Phase-6 test/benchmark gate is met**.
+> `CREATE`/`DROP CONSTRAINT` still returns `NotImplemented`: the remaining gate is the deliberately
+> separate **publication flip**, which stays held for final architectural review (not a test gap).
+>
+> - **PocketIC failure-injection (`crates/pocket-ic-tests/tests/adr0030_uniqueness_failure_injection.rs`,
+>   6/6 passing).** A `#[cfg(feature = "pocket-ic-e2e")]` router fault seam (`test_arm_fault` →
+>   `InjectedFault::{TrapAfterTry, TrapBeforeConfirm}`) and a `test_force_reclaiming` seam drive every
+>   ADR-required boundary on real canisters: **Try-then-Router-trap** (trap after the no-`await` Try,
+>   before dispatch, rolls the reservation + envelope back with the message — the value is reusable,
+>   then genuinely reserved on reuse); **Confirm-then-trap** (trap after the shard's canonical commit
+>   but before Router Confirm leaves a `Reserved` entry that recovery re-Confirms, never loses);
+>   **true concurrent same-value** (two in-flight ingress messages race via `submit_call`/`await_call`
+>   — exactly one wins, the loser is retryable); **outbox-vs-eviction** (a pending `Acquire` GC-pins
+>   the journal record so a commit-but-reply-lost write is `Confirm`ed via the pinned outbox past the
+>   ADR 0027 eviction window and is never cancelled); **reclaim-during-retry** (a same-`ClaimId` retry
+>   arriving while `state = Reclaiming` is fenced as `UniquenessReservationInFlight`); and
+>   **Release-before-Acquire** (a `Release` seen before its `Acquire` is held, not acked, until the
+>   owner is reconciled).
+> - **Graph-shard outbox canbench (`crates/graph/canbench_results.yml`).** Shard-side benches the
+>   Router-only suite cannot reach, through `GraphStore`: `Acquire` outbox **append** at **1 / 16 / 256**
+>   effects (the per-effect pin work in the canonical segment, doubling as the **outbox storage-growth
+>   baseline**), the Confirm **`Acquire` proof read** over a 256-effect outbox, the post-Confirm
+>   **ack round** (unpin all 256), and Driver 2's paginated **effects-page** enumeration.
+> - **Artifact separation.** canbench builds into a dedicated `CARGO_TARGET_DIR=target/canbench`
+>   (`--features canbench`) so it never clobbers the `--features pocket-ic-e2e` wasm the
+>   `pocket-ic-tests` build script writes under `target/`; the final gate needs no manual cross-feature
+>   rebuild of a shared artifact.
+> - **Lint fix surfaced by the wasm gate.** `clippy --workspace --all-targets --all-features`
+>   exercises the `pocket-ic-tests` build script's nested wasm build under clippy-driver, which caught a
+>   `clone_on_copy` on the wasm-only recovery timer's `Option<UniqueEffectPendingKey>` effect cursor
+>   (`recovery.rs`); the redundant `.clone()` (the key is `Copy`) was removed — behavior-preserving.
+>
+> **Revision 2026-06-22 #14 (post-review: two failure-injection boundaries + bench baseline closed):**
+> review found Revision #13's "gate satisfied" claim covered only **6** of the required boundaries.
+> Two were missing and a baseline was lost; all three are now closed (the gate is genuinely met, DDL
+> still `NotImplemented` pending the publication flip):
+>
+> - **Confirm→ack failure boundary now injected (the 7th scenario).** Revision #13's *Confirm-then-trap*
+>   trapped *before* the Router's Confirm, so the `Reserved → Committed` + `pending_acquire_ack`
+>   persistence and the **ack** call/response failure edge were never exercised. A new graph-shard
+>   `#[cfg(feature = "pocket-ic-e2e")]` fault seam (`e2e_arm_unique_ack_fault` →
+>   `InjectedFault::TrapOnUniqueAck`, guarded by the shard's control-plane/router guard) traps inside
+>   `ack_unique_effects` *after* Confirm has durably committed and stamped the pending ack. The mutation
+>   still succeeds (Confirm is best-effort), the `Acquire` stays pinned, and slice-6 recovery re-reads
+>   the proof, re-acks the effect, and clears `pending_acquire_ack` — verified by
+>   `confirm_ack_failure_is_reacked_by_recovery` (the graph **outbox length** is the observable: `1`
+>   while pinned, `0` after recovery re-acks). Because an unpinned outbox alone does not prove the
+>   *Router-side* marker cleared, the test closes with a `DELETE` → same-value `INSERT` round-trip: a
+>   lingering pending ack would hold the `Release` (Release-before-Acquire) and refuse the reuse, so a
+>   successful reuse is positive proof the marker was cleared.
+> - **outbox-vs-eviction now actually surpasses the 9-day graph journal.** Revision #13's test advanced
+>   only **7 days** (the router client-key TTL, ADR 0025) and swept only the **router** side, never the
+>   graph mutation journal (ADR 0027, **9 days**). The rewritten
+>   `outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed` keeps the ack fault armed so
+>   the `Acquire` stays pinned across the window, advances **past 9 days**, then actually evicts the
+>   graph mutation journal (`e2e_evict_mutation_journal`, driving the real `evict_expired` /
+>   `GRAPH_MUTATION_JOURNAL_RETENTION_NS`). It asserts the journal drains to **0** while the pinned
+>   outbox `Acquire` and the GC-pinned router record both **survive** (decoupled pin-until-acked
+>   retention), then — fault cleared — recovery re-acks via the surviving outbox and the value is
+>   durably committed. This is the direct decoupling proof Revision #13 only claimed.
+> - **Router canbench baseline restored.** A pattern-filtered `canbench --persist` had overwritten
+>   `crates/router/canbench_results.yml` with only the slice-7 unique benches, dropping
+>   `bench_layout_router_stable_reopen_touch`. All **8** router benches were re-run unfiltered and
+>   persisted, restoring the layout baseline alongside the slice-7 set.
+>
+> **Revision 2026-06-22 #15 (scope correction: DROP needs its own slice, not just publication):**
+> review (`APPROVE WITH CHANGES`) accepted the Slice 7 / Phase-6 Try/Acquire/Confirm/Release/recovery
+> gate but corrected an overstated publication scope: `CREATE` and `DROP CONSTRAINT` are **not**
+> symmetric. `CREATE` may be published on its own once the deliberate publication decision clears final
+> review. `DROP` is **not** publishable yet — `RouterStore::drop_unique_constraint`
+> (`facade/store/catalogs.rs`) removes only the `ROUTER_UNIQUE_CONSTRAINTS` **definition**; it does
+> **not** touch `ROUTER_UNIQUE_RESERVATIONS`, and the name→id interning in
+> `ROUTER_CONSTRAINT_NAME_CATALOG` survives the drop. Two unimplemented behaviors block publication:
+>
+> - **Reservation lifecycle on DROP.** Dropping a constraint must invalidate its reservations and
+>   drain any in-flight saga that could still emit an `Acquire`/`Release` for it; today `Committed`
+>   reservations (and any pinned outbox effects) persist indefinitely after the definition is gone.
+> - **`ConstraintNameId` reuse hazard.** Because the dropped name's id is retained, a later
+>   `CREATE CONSTRAINT` reusing that name (e.g. on a *different* label) re-interns the **same**
+>   `ConstraintNameId`. Reservations are keyed `(graph_id, ConstraintNameId, encoded_value)`, so stale
+>   reservations from the dropped constraint would falsely reject values under the new one. A safe DROP
+>   must either purge those reservations or fence id reuse until they are gone.
+>
+> These are deferred to a dedicated **DROP-lifecycle slice** (draining/purge state machine + regression
+> tests: drop-with-live-reservations, drop-then-recreate-same-name-different-label, drop-during-saga).
+> Until it lands, `DROP CONSTRAINT` stays `NotImplemented`; `drop_unique_constraint` remains
+> store-test-only and is documented as definition-only. The Phase-6 gate itself is unaffected.
 
 ## Context
 
@@ -808,6 +969,67 @@ the constraint feature stays **unpublished** — the public dispatch returns `No
 enforcement is fully implemented. Before that gate opens and `CREATE`/`DROP CONSTRAINT` is accepted
 on the write path, the implementation must add:
 
+> **Status (Revision #13, corrected by #14): the test/benchmark gate IS satisfied.** Every
+> ADR-required scenario below is covered by a passing unit, PocketIC e2e, or canbench artifact. The DDL
+> nonetheless stays `NotImplemented`. For `CREATE` the remaining step is the deliberately separate
+> publication flip, held for final architectural review — not a test or benchmark gap. `DROP` is
+> **not** publishable on the gate alone: it needs a dedicated lifecycle slice (reservation
+> invalidation + saga draining + `ConstraintNameId`-reuse guard, with regression tests) — see
+> Revision #15.
+>
+> **Covered by PocketIC e2e** (`crates/pocket-ic-tests/tests/adr0030_uniqueness_lifecycle.rs`,
+> `adr0030_uniqueness_recovery.rs`):
+> - constrained INSERT commit + committed-value duplicate rejection;
+> - canonical-write-failure-after-Try leaves a live `Reserved` value that refuses a competitor
+>   retryably;
+> - acquiring `SET` / full replacement deferred (rejected at admission);
+> - `DELETE` releases the reservation (value reusable);
+> - held-dispatch roll-forward via idempotent retry;
+> - abandoned reservation reclaimed after TTL (terminal-failure + Cancel);
+> - upgrade-reopen reconciliation across a mid-saga upgrade;
+> - the `test_declare_unique_constraint` seam is admin-gated (non-admin → `NotAuthorized`).
+>
+> **Covered by PocketIC failure-injection e2e**
+> (`crates/pocket-ic-tests/tests/adr0030_uniqueness_failure_injection.rs`, 7/7 passing):
+> - Try-then-Router-trap (a trap after the no-`await` Try, before dispatch, rolls back the reservation
+>   with the message — the value is reusable, then genuinely reserved on reuse);
+> - Confirm-then-trap (a trap after the shard's canonical commit but before Router Confirm leaves the
+>   reservation re-confirmable by recovery, never lost);
+> - Confirm→ack-failure (a graph-shard trap **inside** `ack_unique_effects`, *after* Confirm has
+>   durably moved the reservation `Reserved → Committed` and stamped `pending_acquire_ack`, leaves the
+>   `Acquire` pinned; slice-6 recovery re-acks it and clears the pending marker — the
+>   `confirm_ack_failure_is_reacked_by_recovery` test, observed by the graph outbox length (`1` while
+>   pinned, `0` after re-ack) **and** a closing `DELETE` → same-value `INSERT` round-trip: the outbox
+>   length alone cannot prove the *Router-side* `pending_acquire_ack` cleared, since a lingering marker
+>   would hold the `DELETE`'s `Release` (Release-before-Acquire) and refuse the reuse, so a successful
+>   reuse is positive proof the marker was cleared);
+> - true concurrent same-value conflict (two in-flight ingress messages race via
+>   `submit_call`/`await_call`: one wins, the loser is retryable) — distinct from the sequential
+>   duplicate test;
+> - outbox-vs-eviction (the ack fault keeps the `Acquire` pinned while time advances **past the 9-day**
+>   graph mutation-journal retention, ADR 0027; the graph journal is then actually evicted via
+>   `e2e_evict_mutation_journal` and drains to 0, yet the pinned outbox `Acquire` and the GC-pinned
+>   router record both **survive** — decoupled retention — and the value is `Confirm`ed via the
+>   surviving outbox, **never** cancelled);
+> - reclaim-during-retry (a same-`ClaimId` retry arriving *during* a reclaim proof is fenced by
+>   `state = Reclaiming`);
+> - Release-before-Acquire (a `Release` observed before its `Acquire` is held, not acked, until the
+>   owner is reconciled).
+>
+> **Covered by slice 1–6 unit tests** (router/graph `--lib`): multi-claim Try atomicity (`Err`
+> mutates nothing), ClaimId stability across Try→Acquire, Release-by-`owner_element_id` matching,
+> per-effect ack independence, stale-receipt isolation, reclaim generation-fence + ABA retention,
+> GC-pin reverse-index count, value equivalence / non-finite & oversized rejection, intra-mutation
+> duplicate rejection, and the no-ambient-key (`element_id_key`) interleaving regression
+> (`gleaph-graph` `element_id_encoding_uses_per_evaluator_key_not_ambient_state`).
+>
+> **Covered by canbench** (`crates/router/canbench_results.yml`, `crates/graph/canbench_results.yml`):
+> the **Router-local** reservation TCC + slice-6 recovery indexes through the production facade
+> (Try/Confirm/Cancel incl. reverse-index and non-terminal count; reclaim scan — see
+> `crates/router/src/bench.rs`), **and** the **graph-shard** unique-effect outbox: `Acquire` append at
+> 1 / 16 / 256 effects (the storage-growth baseline), the Confirm `Acquire` proof read, the
+> post-Confirm ack round, and Driver 2's paginated effect enumeration (see `crates/graph/src/bench`).
+
 - failure-injection tests for **every** message boundary: Try-then-Router-trap, canonical-write
   failure after Try, Confirm-then-trap, concurrent same-value claims (one wins, loser retryable),
   delete-releases-reservation, and upgrade-reopen reconciliation;
@@ -854,4 +1076,7 @@ on the write path, the implementation must add:
   over-length values are rejected;
   `NULL`/missing makes no claim;
 - canbench evidence for the Try/Confirm/Cancel overhead on the write path, the outbox ack round, and
-  reservation-table storage growth.
+  reservation-table storage growth. *(Satisfied: the Router-local Try/Confirm/Cancel facade overhead
+  and reclaim scan are benched in `crates/router/src/bench.rs`; the graph-shard outbox append/ack
+  round and the outbox storage-growth baseline are benched in `crates/graph/src/bench` — see the
+  Phase-6 status note above.)*

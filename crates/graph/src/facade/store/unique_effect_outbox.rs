@@ -81,6 +81,12 @@ impl GraphStore {
             }
         });
     }
+
+    /// Count of currently pinned (un-acked) unique effects (PocketIC E2E only).
+    #[cfg(feature = "pocket-ic-e2e")]
+    pub(crate) fn e2e_unique_outbox_len(&self) -> u64 {
+        UNIQUE_EFFECT_OUTBOX.with_borrow(|outbox| outbox.len())
+    }
 }
 
 #[cfg(test)]

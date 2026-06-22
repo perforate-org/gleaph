@@ -12,6 +12,7 @@ use gleaph_gql_planner::plan::{
     PhysicalPlan, PlanOp, ProjectColumn, RemovePlanItem, SetPlanItem, Str,
 };
 use gleaph_graph_kernel::entry::{ConstraintNameId, EdgeLabelId, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::plan_exec::{ConstrainedPropertyDispatch, LabelStatsDelta};
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::OutEdgeOrder;
@@ -216,6 +217,9 @@ fn execute_ops_with_bindings(
                 })?;
                 collect_vertex_delete_label_deltas(
                     store,
+                    &crate::element_id_encoding::resolve_or_host_fixture(
+                        execution.element_id_encoding_key(),
+                    ),
                     vertex_id,
                     false,
                     &execution.constrained_properties,
@@ -232,6 +236,9 @@ fn execute_ops_with_bindings(
                 })?;
                 collect_vertex_delete_label_deltas(
                     store,
+                    &crate::element_id_encoding::resolve_or_host_fixture(
+                        execution.element_id_encoding_key(),
+                    ),
                     vertex_id,
                     true,
                     &execution.constrained_properties,
@@ -389,6 +396,9 @@ pub(crate) async fn apply_mutation_ops_async(
                 })?;
                 collect_vertex_delete_label_deltas(
                     store,
+                    &crate::element_id_encoding::resolve_or_host_fixture(
+                        execution.element_id_encoding_key(),
+                    ),
                     vertex_id,
                     false,
                     &execution.constrained_properties,
@@ -405,6 +415,9 @@ pub(crate) async fn apply_mutation_ops_async(
                 })?;
                 collect_vertex_delete_label_deltas(
                     store,
+                    &crate::element_id_encoding::resolve_or_host_fixture(
+                        execution.element_id_encoding_key(),
+                    ),
                     vertex_id,
                     true,
                     &execution.constrained_properties,
@@ -671,8 +684,12 @@ fn execute_remove_item(
                 // ADR 0030 slice 5b: removing a constrained property frees its reserved value —
                 // capture the `Release` before the value is gone.
                 if !execution.constrained_properties.is_empty() {
+                    let element_id_key = crate::element_id_encoding::resolve_or_host_fixture(
+                        execution.element_id_encoding_key(),
+                    );
                     capture_remove_property_releases(
                         store,
+                        &element_id_key,
                         vertex_id,
                         property_id,
                         &execution.constrained_properties,
@@ -711,8 +728,12 @@ fn execute_remove_item(
                 // `(label, property)` constraints — capture each freed value before the label is
                 // gone (only when the vertex actually carried the label).
                 if had_label && !execution.constrained_properties.is_empty() {
+                    let element_id_key = crate::element_id_encoding::resolve_or_host_fixture(
+                        execution.element_id_encoding_key(),
+                    );
                     capture_remove_label_releases(
                         store,
+                        &element_id_key,
                         vertex_id,
                         label_id,
                         &execution.constrained_properties,
@@ -857,6 +878,7 @@ fn edge_label_delta_for_handle(store: &GraphStore, handle: EdgeHandle) -> Option
 
 fn collect_vertex_delete_label_deltas(
     store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
     vertex_id: VertexId,
     include_incident_edges: bool,
     constrained: &[ConstrainedPropertyDispatch],
@@ -868,7 +890,14 @@ fn collect_vertex_delete_label_deltas(
             bindings.add_vertex_label_delta(label_id, -1);
         }
         if !constrained.is_empty() {
-            collect_vertex_release_effects(store, vertex_id, &labels, constrained, bindings);
+            collect_vertex_release_effects(
+                store,
+                element_id_key,
+                vertex_id,
+                &labels,
+                constrained,
+                bindings,
+            );
         }
     }
     if include_incident_edges {
@@ -882,6 +911,7 @@ fn collect_vertex_delete_label_deltas(
 /// constraint applicable to the vertex (the vertex carries the constrained label) frees its value.
 fn collect_vertex_release_effects(
     store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
     vertex_id: VertexId,
     labels: &[VertexLabelId],
     constrained: &[ConstrainedPropertyDispatch],
@@ -891,7 +921,14 @@ fn collect_vertex_release_effects(
     let mut owner_cache: Option<Vec<u8>> = None;
     for entry in constrained {
         if label_set.contains(&entry.vertex_label_id) {
-            capture_constrained_release(store, vertex_id, entry, &mut owner_cache, bindings);
+            capture_constrained_release(
+                store,
+                element_id_key,
+                vertex_id,
+                entry,
+                &mut owner_cache,
+                bindings,
+            );
         }
     }
 }
@@ -901,6 +938,7 @@ fn collect_vertex_release_effects(
 /// is removed.
 fn capture_remove_property_releases(
     store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
     vertex_id: VertexId,
     property_id: PropertyId,
     constrained: &[ConstrainedPropertyDispatch],
@@ -914,7 +952,14 @@ fn capture_remove_property_releases(
     let mut owner_cache: Option<Vec<u8>> = None;
     for entry in constrained {
         if entry.property_id == property_id && label_set.contains(&entry.vertex_label_id) {
-            capture_constrained_release(store, vertex_id, entry, &mut owner_cache, bindings);
+            capture_constrained_release(
+                store,
+                element_id_key,
+                vertex_id,
+                entry,
+                &mut owner_cache,
+                bindings,
+            );
         }
     }
 }
@@ -924,6 +969,7 @@ fn capture_remove_property_releases(
 /// vertex still holds the property) is freed. Called before the label is removed.
 fn capture_remove_label_releases(
     store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
     vertex_id: VertexId,
     label_id: VertexLabelId,
     constrained: &[ConstrainedPropertyDispatch],
@@ -932,7 +978,14 @@ fn capture_remove_label_releases(
     let mut owner_cache: Option<Vec<u8>> = None;
     for entry in constrained {
         if entry.vertex_label_id == label_id {
-            capture_constrained_release(store, vertex_id, entry, &mut owner_cache, bindings);
+            capture_constrained_release(
+                store,
+                element_id_key,
+                vertex_id,
+                entry,
+                &mut owner_cache,
+                bindings,
+            );
         }
     }
 }
@@ -946,6 +999,7 @@ fn capture_remove_label_releases(
 /// rolling back the atomic segment rather than emitting a release the Router can never match.
 fn capture_constrained_release(
     store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
     vertex_id: VertexId,
     entry: &ConstrainedPropertyDispatch,
     owner_cache: &mut Option<Vec<u8>>,
@@ -960,7 +1014,7 @@ fn capture_constrained_release(
     };
     let owner = owner_cache.get_or_insert_with(|| {
         store
-            .path_vertex_element_id(vertex_id)
+            .path_vertex_element_id(element_id_key, vertex_id)
             .map(|id| id.to_bytes().to_vec())
             .unwrap_or_else(|| {
                 unique_release_trap(
@@ -1756,7 +1810,7 @@ mod tests {
             .insert_vertex_named(["RelUser"], vec![("email", Value::Text("a@x".into()))])
             .expect("insert constrained vertex");
         let expected_owner = store
-            .path_vertex_element_id(vid)
+            .path_vertex_element_id(&ElementIdEncodingKey::host_test_fixture(), vid)
             .expect("owner id")
             .to_bytes()
             .to_vec();
@@ -1767,8 +1821,15 @@ mod tests {
         }];
         let mut bindings = PlanMutationBindings::default();
 
-        collect_vertex_delete_label_deltas(&store, vid, false, &constrained, &mut bindings)
-            .expect("collect release");
+        collect_vertex_delete_label_deltas(
+            &store,
+            &ElementIdEncodingKey::host_test_fixture(),
+            vid,
+            false,
+            &constrained,
+            &mut bindings,
+        )
+        .expect("collect release");
 
         let expected_value = match encode_unique_value(&Value::Text("a@x".into())) {
             UniqueKeyOutcome::Claim(bytes) => bytes,
@@ -1802,8 +1863,15 @@ mod tests {
         }];
         let mut bindings = PlanMutationBindings::default();
 
-        collect_vertex_delete_label_deltas(&store, vid, false, &constrained, &mut bindings)
-            .expect("collect");
+        collect_vertex_delete_label_deltas(
+            &store,
+            &ElementIdEncodingKey::host_test_fixture(),
+            vid,
+            false,
+            &constrained,
+            &mut bindings,
+        )
+        .expect("collect");
 
         assert!(
             bindings.released_unique_values.is_empty(),
@@ -1822,7 +1890,7 @@ mod tests {
             )
             .expect("insert constrained vertex");
         let expected_owner = store
-            .path_vertex_element_id(vid)
+            .path_vertex_element_id(&ElementIdEncodingKey::host_test_fixture(), vid)
             .expect("owner id")
             .to_bytes()
             .to_vec();
@@ -1834,7 +1902,14 @@ mod tests {
         }];
         let mut bindings = PlanMutationBindings::default();
 
-        capture_remove_property_releases(&store, vid, email, &constrained, &mut bindings);
+        capture_remove_property_releases(
+            &store,
+            &ElementIdEncodingKey::host_test_fixture(),
+            vid,
+            email,
+            &constrained,
+            &mut bindings,
+        );
 
         assert_eq!(bindings.released_unique_values.len(), 1);
         let release = &bindings.released_unique_values[0];
@@ -1861,7 +1936,14 @@ mod tests {
         }];
         let mut bindings = PlanMutationBindings::default();
 
-        capture_remove_property_releases(&store, vid, email, &constrained, &mut bindings);
+        capture_remove_property_releases(
+            &store,
+            &ElementIdEncodingKey::host_test_fixture(),
+            vid,
+            email,
+            &constrained,
+            &mut bindings,
+        );
 
         assert!(bindings.released_unique_values.is_empty());
     }
@@ -1878,7 +1960,7 @@ mod tests {
             )
             .expect("insert constrained vertex");
         let expected_owner = store
-            .path_vertex_element_id(vid)
+            .path_vertex_element_id(&ElementIdEncodingKey::host_test_fixture(), vid)
             .expect("owner id")
             .to_bytes()
             .to_vec();
@@ -1890,7 +1972,14 @@ mod tests {
         }];
         let mut bindings = PlanMutationBindings::default();
 
-        capture_remove_label_releases(&store, vid, label, &constrained, &mut bindings);
+        capture_remove_label_releases(
+            &store,
+            &ElementIdEncodingKey::host_test_fixture(),
+            vid,
+            label,
+            &constrained,
+            &mut bindings,
+        );
 
         assert_eq!(bindings.released_unique_values.len(), 1);
         assert_eq!(
@@ -1918,7 +2007,14 @@ mod tests {
         }];
         let mut bindings = PlanMutationBindings::default();
 
-        capture_remove_label_releases(&store, vid, label, &constrained, &mut bindings);
+        capture_remove_label_releases(
+            &store,
+            &ElementIdEncodingKey::host_test_fixture(),
+            vid,
+            label,
+            &constrained,
+            &mut bindings,
+        );
 
         assert!(bindings.released_unique_values.is_empty());
     }
@@ -1958,8 +2054,15 @@ mod tests {
             .expect("a-b");
         let mut bindings = PlanMutationBindings::default();
 
-        collect_vertex_delete_label_deltas(&store, a, true, &[], &mut bindings)
-            .expect("collect detach delete telemetry");
+        collect_vertex_delete_label_deltas(
+            &store,
+            &ElementIdEncodingKey::host_test_fixture(),
+            a,
+            true,
+            &[],
+            &mut bindings,
+        )
+        .expect("collect detach delete telemetry");
 
         assert_eq!(
             bindings.label_stats_delta.vertex,

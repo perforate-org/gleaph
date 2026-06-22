@@ -1997,6 +1997,7 @@ fn stale_mid_diamond_weighted_search_finds_cheaper_three_hop_path() {
     .expect("search");
     let path = materialize_path_from_search_states(
         &store,
+        &gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
         local_shard_id(&store),
         &search.states,
         *search.found.first().expect("path"),

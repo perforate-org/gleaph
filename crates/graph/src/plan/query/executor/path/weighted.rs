@@ -12,6 +12,7 @@ use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 use gleaph_graph_kernel::entry::{
     EdgeLabelId, EdgeTarget, PreparedWeightDecoder, WeightDecodeError,
 };
+use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use ic_stable_lara::VertexId;
 use nohash_hasher::IntMap;
 use rapidhash::fast::RapidHasher;
@@ -371,6 +372,8 @@ pub(crate) fn weighted_shortest_paths_between(
         );
     }
 
+    let element_id_key =
+        crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
         max: Some(1),
@@ -569,6 +572,7 @@ pub(crate) fn weighted_shortest_paths_between(
                             let _scope = bench_scope("weighted_shortest_hop_cost_cache_miss");
                             let cost = eval_shortest_hop_cost(
                                 store,
+                                &element_id_key,
                                 cost_expr,
                                 edge_var,
                                 edge_binding.clone(),
@@ -623,6 +627,8 @@ fn weighted_shortest_k_paths_between(
     let k = usize::try_from(k).map_err(|_| PlanQueryError::InvalidLimit {
         value: Value::Uint64(k),
     })?;
+    let element_id_key =
+        crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
     let bounds = var_len.unwrap_or(VarLenSpec {
         min: 1,
         max: Some(1),
@@ -781,6 +787,7 @@ fn weighted_shortest_k_paths_between(
                             }
                             let cost = eval_shortest_hop_cost(
                                 store,
+                                &element_id_key,
                                 cost_expr,
                                 edge_var,
                                 edge_binding.clone(),
@@ -885,8 +892,10 @@ fn decode_direct_gleaph_weight_hop_cost_from_payload(
     Ok(WeightedCost::from_validated_non_negative_float32(weight))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn eval_shortest_hop_cost(
     store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
     expr: &Expr,
     edge_var: &str,
     edge_binding: EdgeBinding,
@@ -916,6 +925,7 @@ fn eval_shortest_hop_cost(
         resolved_labels: None,
         resolved_properties: None,
         gleaph_weight_decoders,
+        element_id_key: *element_id_key,
     };
     let value = evaluator.eval_expr(&row, expr)?;
     WeightedCost::from_value(value)

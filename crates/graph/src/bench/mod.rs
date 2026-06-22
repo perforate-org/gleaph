@@ -20,8 +20,10 @@ use gleaph_gql_planner::plan::{
 };
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::{
-    EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile, EdgeWeightProfile, Vertex, WeightEncoding,
+    ConstraintNameId, EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile, EdgeWeightProfile,
+    Vertex, WeightEncoding,
 };
+use gleaph_graph_kernel::federation::{ClaimId, EffectId, UniqueEffectOp, UniqueEffectReceipt};
 use ic_stable_lara::VertexId;
 use std::collections::BTreeMap;
 use std::hint::black_box;
@@ -2070,6 +2072,114 @@ fn bench_graph_canonical_segment_insert_bundle_16() -> canbench_rs::BenchResult 
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("canonical_segment_insert_bundle_16");
         run_canonical_segment(black_box(store), black_box(&plan));
+    })
+}
+
+// --- ADR 0030 unique-effect outbox benches (graph-shard side of the cross-shard TCC) ---
+//
+// These complement the Router-side reservation benches (`crates/router/src/bench.rs`) by measuring
+// the **graph-shard** legs of the protocol that the Router-only canbench cannot reach: the pinned
+// unique-effect outbox the shard appends inside its canonical write segment, the replicated
+// `Acquire` proof read the Router's Confirm performs, the per-effect ack (unpin) round, and Driver
+// 2's paginated effect enumeration. The 1/16/256 append sweep doubles as the **storage-growth
+// baseline** for the outbox (instruction cost of pinning N effects in one mutation). Each bench uses
+// a distinct `mutation_id` so the shared thread-local outbox does not collide across benches in the
+// same canister instance.
+
+const UNIQUE_OUTBOX_BENCH_CONSTRAINT: ConstraintNameId = ConstraintNameId::from_raw(1);
+
+fn unique_acquire_receipt(mutation_id: u64, ordinal: u32) -> UniqueEffectReceipt {
+    UniqueEffectReceipt {
+        effect_id: EffectId::new(mutation_id, ordinal),
+        claim_id: Some(ClaimId::new(mutation_id, ordinal)),
+        owner_element_id: u64::from(ordinal).to_le_bytes().to_vec(),
+        constraint_id: UNIQUE_OUTBOX_BENCH_CONSTRAINT,
+        encoded_value: format!("bench-value-{ordinal:08}").into_bytes(),
+        op: UniqueEffectOp::Acquire,
+    }
+}
+
+fn seed_unique_outbox_acquires(store: &GraphStore, mutation_id: u64, count: u32) {
+    for ordinal in 0..count {
+        store.emit_unique_effect(unique_acquire_receipt(mutation_id, ordinal));
+    }
+}
+
+/// Append `count` `Acquire` effects into a fresh outbox — the per-effect pin work the shard does
+/// inside its canonical write segment, and the outbox storage-growth baseline at 1/16/256.
+fn bench_unique_outbox_append(
+    mutation_seed: u64,
+    count: u32,
+    scope: &'static str,
+) -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let mutation_id = 8_000_000 + mutation_seed;
+    let receipts: Vec<UniqueEffectReceipt> = (0..count)
+        .map(|ordinal| unique_acquire_receipt(mutation_id, ordinal))
+        .collect();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope);
+        for receipt in &receipts {
+            store.emit_unique_effect(black_box(receipt.clone()));
+        }
+    })
+}
+
+#[bench(raw)]
+fn bench_graph_unique_outbox_append_1() -> canbench_rs::BenchResult {
+    bench_unique_outbox_append(1, 1, "unique_outbox_append_1")
+}
+
+#[bench(raw)]
+fn bench_graph_unique_outbox_append_16() -> canbench_rs::BenchResult {
+    bench_unique_outbox_append(16, 16, "unique_outbox_append_16")
+}
+
+#[bench(raw)]
+fn bench_graph_unique_outbox_append_256() -> canbench_rs::BenchResult {
+    bench_unique_outbox_append(256, 256, "unique_outbox_append_256")
+}
+
+/// The Router's Confirm proof read: resolve one claim's `Acquire` evidence over a 256-effect outbox.
+#[bench(raw)]
+fn bench_graph_unique_outbox_acquire_proof_read_256() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let mutation_id = 8_100_001;
+    seed_unique_outbox_acquires(&store, mutation_id, 256);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("unique_outbox_acquire_proof_read_256");
+        let evidence = store.unique_acquire_evidence(black_box(ClaimId::new(mutation_id, 200)));
+        black_box(evidence);
+    })
+}
+
+/// The post-Confirm ack round: unpin all 256 pinned effects of a mutation (the inter-canister leg
+/// the Router drives after a committed canonical write).
+#[bench(raw)]
+fn bench_graph_unique_outbox_ack_round_256() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let mutation_id = 8_200_001;
+    seed_unique_outbox_acquires(&store, mutation_id, 256);
+    let effect_ids: Vec<EffectId> = (0..256)
+        .map(|ordinal| EffectId::new(mutation_id, ordinal))
+        .collect();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("unique_outbox_ack_round_256");
+        store.ack_unique_effects(black_box(effect_ids.clone()));
+    })
+}
+
+/// Driver 2's recovery enumeration: read one 64-effect page from a 256-effect outbox.
+#[bench(raw)]
+fn bench_graph_unique_outbox_effects_page_256() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let mutation_id = 8_300_001;
+    seed_unique_outbox_acquires(&store, mutation_id, 256);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("unique_outbox_effects_page_256");
+        let page =
+            store.unique_effects_page(black_box(mutation_id), black_box(None), black_box(64));
+        black_box(page.len());
     })
 }
 

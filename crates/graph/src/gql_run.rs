@@ -17,7 +17,9 @@ use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_gql_planner::{PlanBuildOptions, build_statement_plan_with_options};
-use gleaph_graph_kernel::federation::{ClaimId, EffectId, UniqueEffectOp, UniqueEffectReceipt};
+use gleaph_graph_kernel::federation::{
+    ClaimId, EffectId, ElementIdEncodingKey, UniqueEffectOp, UniqueEffectReceipt,
+};
 use gleaph_graph_kernel::plan_exec::{
     GqlExecutionMode as KernelGqlExecutionMode, LabelStatsDelta, MutationId, SeedBindingsWire,
     ShardEventSeq, UniqueClaimDispatch,
@@ -285,6 +287,7 @@ fn trap_wire_mutation_failure(error: crate::plan::PlanMutationError) -> ! {
 /// rather than recording mismatched commit evidence).
 fn emit_unique_acquires(
     store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
     claims: &[UniqueClaimDispatch],
     mutation_id: Option<MutationId>,
     mutation: &PlanMutationBindings,
@@ -301,7 +304,7 @@ fn emit_unique_acquires(
         )),
     };
     let owner_element_id = store
-        .path_vertex_element_id(owner_vertex)
+        .path_vertex_element_id(element_id_key, owner_vertex)
         .map(|id| id.to_bytes().to_vec())
         .unwrap_or_else(|| {
             unique_acquire_trap("owner element id unavailable after insert (no global vertex id)")
@@ -703,7 +706,8 @@ async fn run_wire_plans(
     mutation_id: Option<MutationId>,
 ) -> Result<TransactionBlockRun, GqlRunError> {
     crate::edge_payload_schema::set_execution_resolved_labels(execution.resolved_labels.clone());
-    crate::element_id_encoding::set_execution_element_id_key(execution.element_id_encoding_key());
+    // The element-id encoding key is threaded as owned data (evaluator / materialization / canonical
+    // segment), never parked in ambient thread-local state across the `await`s below.
     let run_result = run_wire_plans_inner(
         store,
         plans,
@@ -718,7 +722,6 @@ async fn run_wire_plans(
     )
     .await;
     crate::edge_payload_schema::clear_execution_resolved_labels();
-    crate::element_id_encoding::clear_execution_element_id_key();
     run_result
 }
 
@@ -752,6 +755,10 @@ async fn apply_canonical_mutation_segment(
 ) -> Result<PlanMutationBindings, GqlRunError> {
     let empty_params = BTreeMap::new();
     let unique_claims = execution.unique_claims.clone();
+    // Resolve the router-issued encoding key into owned data for this no-`await` canonical segment;
+    // the `Acquire`/`Release` owner element ids are encoded synchronously below.
+    let element_id_key =
+        crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
     let mutation =
         match execute_mutation_tail_async(store, mutation_ops, seed_rows, &empty_params, execution)
             .await
@@ -763,7 +770,13 @@ async fn apply_canonical_mutation_segment(
     // in this segment. This runs inside the same no-`await` canonical section as the write above, so
     // the receipts commit (or roll back on trap) atomically with the canonical mutation.
     if !unique_claims.is_empty() {
-        emit_unique_acquires(store, &unique_claims, mutation_id, &mutation);
+        emit_unique_acquires(
+            store,
+            &element_id_key,
+            &unique_claims,
+            mutation_id,
+            &mutation,
+        );
     }
     // ADR 0030 slice 5b: pin one `Release` receipt per constrained value this segment freed
     // (captured pre-delete in `mutation.released_unique_values`), in the same atomic section. The
@@ -1026,6 +1039,8 @@ async fn execute_plan_query_with_rows(
     initial_rows: Vec<PlanQueryRow>,
     skip_leading_index_scan: bool,
 ) -> Result<PlanQueryResult, GqlRunError> {
+    let element_id_key =
+        crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
     let rows = execute_plan_query_bindings_with_initial_rows(
         store,
         plan,
@@ -1037,7 +1052,7 @@ async fn execute_plan_query_with_rows(
     )
     .await?;
     Ok(PlanQueryResult {
-        rows: crate::plan::materialize_plan_rows(store, &rows)?,
+        rows: crate::plan::materialize_plan_rows(store, &element_id_key, &rows)?,
     })
 }
 
@@ -1053,6 +1068,8 @@ pub async fn run_wire_plans_last_read_row_count(
     seeds: Option<SeedBindingsWire>,
     mutation_id: Option<MutationId>,
 ) -> Result<WirePlanRunResult, GqlRunError> {
+    let element_id_key =
+        crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
     let run = run_wire_plans(
         &store,
         plans,
@@ -1076,7 +1093,8 @@ pub async fn run_wire_plans_last_read_row_count(
         );
     }
     let rows_blob = if mode == GqlCanisterExecutionMode::CompositeQuery {
-        let materialized = PlanQueryResult::try_from_plan_rows(&store, &run.last_read_plan_rows)?;
+        let materialized =
+            PlanQueryResult::try_from_plan_rows(&store, &element_id_key, &run.last_read_plan_rows)?;
         let wire = crate::plan::ic_wire_from_plan_query_result(&materialized)
             .map_err(|e| GqlRunError::Plan(e.to_string()))?;
         Some(
@@ -1280,7 +1298,10 @@ mod tests {
             .insert_vertex_named(["AcqOwner"], Vec::<(&str, Value)>::new())
             .expect("create owner vertex");
         let expected_owner = store
-            .path_vertex_element_id(vid)
+            .path_vertex_element_id(
+                &gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
+                vid,
+            )
             .expect("owner element id")
             .to_bytes()
             .to_vec();
@@ -1292,7 +1313,13 @@ mod tests {
         }];
         let bindings = PlanMutationBindings::with_created_vertices_for_test(vec![vid]);
 
-        emit_unique_acquires(&store, &claims, Some(42), &bindings);
+        emit_unique_acquires(
+            &store,
+            &gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
+            &claims,
+            Some(42),
+            &bindings,
+        );
 
         let evidence = store
             .unique_acquire_evidence(ClaimId::new(42, 0))
@@ -1394,7 +1421,13 @@ mod tests {
             encoded_value: b"alice".to_vec(),
         }];
         let bindings = PlanMutationBindings::with_created_vertices_for_test(vec![]);
-        emit_unique_acquires(&store, &claims, Some(42), &bindings);
+        emit_unique_acquires(
+            &store,
+            &gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
+            &claims,
+            Some(42),
+            &bindings,
+        );
     }
 
     fn with_federation_routing(store: GraphStore) {
@@ -2208,8 +2241,12 @@ mod tests {
             GqlExecutionContext::default(),
         ))
         .expect("bindings");
-        let from_rows =
-            PlanQueryResult::try_from_plan_rows(&store, &binding_rows).expect("materialize");
+        let from_rows = PlanQueryResult::try_from_plan_rows(
+            &store,
+            &gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
+            &binding_rows,
+        )
+        .expect("materialize");
         let direct = pollster::block_on(run_adhoc_gql(
             GraphStore::new(),
             gql,

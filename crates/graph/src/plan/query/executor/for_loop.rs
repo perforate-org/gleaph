@@ -84,6 +84,8 @@ mod tests {
             resolved_labels: None,
             resolved_properties: None,
             gleaph_weight_decoders: None,
+            element_id_key:
+                gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
         };
         execute_for(
             &evaluator,
@@ -149,6 +151,8 @@ mod tests {
             resolved_labels: None,
             resolved_properties: None,
             gleaph_weight_decoders: None,
+            element_id_key:
+                gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
         };
         let list = Expr::new(ExprKind::Literal(Value::Int64(1)));
         let err = execute_for(&evaluator, vec![PlanRow::new()], "x", &list, None, false)

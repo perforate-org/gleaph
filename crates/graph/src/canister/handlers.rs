@@ -266,6 +266,11 @@ pub fn read_unique_mutation_effects(
 /// Router → graph: unpin (ack) unique effects after the Router has durably applied them. Per-effect;
 /// acking one effect never unpins a sibling of the same mutation (ADR 0030).
 pub fn ack_unique_effects(effect_ids: Vec<gleaph_graph_kernel::federation::EffectId>) {
+    // ADR 0030 slice 7 (failure injection): trap the ack so the `Acquire` stays pinned and the
+    // Router's Confirm keeps its `pending_acquire_ack` — the Confirm→ack boundary slice-6 recovery
+    // re-acks. See `crate::test_fault`.
+    #[cfg(feature = "pocket-ic-e2e")]
+    crate::test_fault::maybe_trap_on_unique_ack();
     GraphStore::new().ack_unique_effects(effect_ids);
 }
 
@@ -550,6 +555,39 @@ pub async fn e2e_delete_directed_edge_with_property(
 #[cfg(feature = "pocket-ic-e2e")]
 pub fn e2e_maintenance_queue_len() -> u64 {
     GraphStore::new().maintenance_queue_len()
+}
+
+/// Arm (or clear, with `0`) an ADR 0030 unique-effect ack fault (PocketIC E2E only), so the
+/// failure-injection suite can trap the Router's `Acquire` ack and exercise slice-6 re-ack recovery.
+/// See [`crate::test_fault`].
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_arm_unique_ack_fault(code: u8) -> Result<(), String> {
+    let fault = crate::test_fault::fault_from_code(code)
+        .ok_or_else(|| format!("unknown graph fault code {code}"))?;
+    crate::test_fault::arm(fault);
+    Ok(())
+}
+
+/// Count of currently pinned (un-acked) unique effects in the outbox (PocketIC E2E only). Lets a
+/// test prove a pinned `Acquire` survives a graph mutation-journal eviction (decoupled retention,
+/// ADR 0030) and that slice-6 recovery eventually re-acks it (count returns to 0).
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_unique_outbox_len() -> Result<u64, String> {
+    Ok(GraphStore::new().e2e_unique_outbox_len())
+}
+
+/// Count of entries in the graph mutation journal (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_mutation_journal_len() -> Result<u64, String> {
+    Ok(GraphStore::new().e2e_mutation_journal_len())
+}
+
+/// Run a full graph mutation-journal retention sweep (ADR 0027, 9-day window) at the current IC time
+/// and return the remaining entry count (PocketIC E2E only). Exercises the real `evict_expired` path
+/// over the whole keyspace so a test can advance past the retention window and observe eviction.
+#[cfg(feature = "pocket-ic-e2e")]
+pub fn e2e_evict_mutation_journal() -> Result<u64, String> {
+    Ok(GraphStore::new().e2e_evict_mutation_journal())
 }
 
 /// Reads the `property_id` value of the directed edge `source -> target` through

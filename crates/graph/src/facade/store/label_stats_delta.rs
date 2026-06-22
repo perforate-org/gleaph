@@ -157,6 +157,38 @@ impl GraphStore {
         MUTATION_JOURNAL_GC_CURSOR.with_borrow_mut(|cursor| *cursor = next);
     }
 
+    /// Count of entries in the graph mutation journal (PocketIC E2E only).
+    #[cfg(feature = "pocket-ic-e2e")]
+    pub(crate) fn e2e_mutation_journal_len(&self) -> u64 {
+        GRAPH_MUTATION_JOURNAL.with_borrow(|m| m.len())
+    }
+
+    /// Run a full retention sweep over the whole journal keyspace at the current IC time and return
+    /// the remaining entry count (PocketIC E2E only). Drives the production [`evict_expired`] path
+    /// with the real 9-day [`GRAPH_MUTATION_JOURNAL_RETENTION_NS`] window — unlike the amortized,
+    /// budgeted [`gc_mutation_journal_at`] step it loops until the keyspace is exhausted, so a test
+    /// can advance past the window and observe eviction deterministically.
+    #[cfg(feature = "pocket-ic-e2e")]
+    pub(crate) fn e2e_evict_mutation_journal(&self) -> u64 {
+        let now = ic_time_ns();
+        GRAPH_MUTATION_JOURNAL.with_borrow_mut(|m| {
+            let mut cursor = None;
+            loop {
+                let (scanned, _removed, last) = m.evict_expired(
+                    cursor,
+                    MUTATION_JOURNAL_GC_BUDGET,
+                    now,
+                    GRAPH_MUTATION_JOURNAL_RETENTION_NS,
+                );
+                if (scanned as usize) < MUTATION_JOURNAL_GC_BUDGET {
+                    break;
+                }
+                cursor = last;
+            }
+            m.len()
+        })
+    }
+
     pub(crate) fn commit_append_label_stats_delta(
         &self,
         mutation_id: MutationId,

@@ -48,3 +48,207 @@ fn bench_layout_router_stable_reopen_touch() -> canbench_rs::BenchResult {
         router_stable_reopen_round();
     })
 }
+
+// ----------------------------------------------------------------------------
+// ADR 0030 cross-shard uniqueness write-path benchmarks (Router-side only).
+//
+// SCOPE / GATE STATUS: these measure the **Router-local** cost of the reservation TCC and the
+// slice-6 recovery indexes, exercised through the production facade ([`RouterStore`]) so each
+// op includes the reverse-index work the real write path does:
+//   - Try: `try_reserve_unique` — the no-`await` conflict scan, reservation insert, **and** the
+//     `MutationId → {client_key, nonterminal}` reverse-index slot bump (at 1/16/256 claims);
+//   - Confirm: `confirm_unique_claim` (`Reserved → Committed`) **plus** the
+//     `release_unique_reservation_slot` non-terminal count decrement on `FreshlyCommitted`;
+//   - Cancel: `cancel_reclaim` under the reclaim fence **plus** the count decrement;
+//   - `clear_unique_acquire_ack`: the Router-local `pending_acquire_ack` unpin marker;
+//   - the bounded reclaim scan over a populated table.
+//
+// These do **not** measure the inter-canister legs of the protocol: the graph-shard unique-effect
+// **outbox append/ack round** and the canonical write are cross-canister and cannot be exercised
+// from a Router-only canbench; the facade Cancel's `RouterMutationRecord` terminal-failure write is
+// a journal-record cost, not a reservation-table cost. The ADR 0030 Phase-6 canbench gate
+// (Try/Confirm/Cancel overhead **and** the outbox ack round **and** reservation-table storage
+// growth, end to end) is therefore **not** fully satisfied by these alone — see the ADR gate note.
+//
+// Each bench uses a distinct `graph_id`/`mutation_id` so the shared thread-local tables do not
+// collide across benches in the same canister instance.
+// ----------------------------------------------------------------------------
+
+use crate::facade::stable::reservation_catalog::{
+    ConfirmOutcome, begin_reclaim, cancel_reclaim, scan_reclaim_candidates,
+};
+use crate::facade::store::RouterStore;
+use crate::federation::ShardDispatch;
+use gleaph_graph_kernel::entry::{ConstraintNameId, GraphId};
+use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId};
+use gleaph_graph_kernel::plan_exec::UniqueClaimDispatch;
+
+const BENCH_CONSTRAINT: ConstraintNameId = ConstraintNameId::from_raw(1);
+
+fn bench_caller() -> candid::Principal {
+    candid::Principal::anonymous()
+}
+
+fn bench_claims(count: u32) -> Vec<UniqueClaimDispatch> {
+    (0..count)
+        .map(|i| UniqueClaimDispatch {
+            claim_ordinal: i,
+            constraint_id: BENCH_CONSTRAINT,
+            encoded_value: format!("bench-value-{i:08}").into_bytes(),
+        })
+        .collect()
+}
+
+fn bench_dispatch() -> Vec<ShardDispatch> {
+    vec![ShardDispatch {
+        shard_id: ShardId::new(0),
+        graph_canister: candid::Principal::anonymous(),
+        seed_bindings_blob: None,
+    }]
+}
+
+/// Seed `count` `Reserved` entries (one mutation's claim set) through the production facade, so the
+/// reverse-index slot is bumped exactly as on the live write path.
+fn seed_reserved(store: &RouterStore, graph: GraphId, mutation_id: u64, count: u32) {
+    let claims = bench_claims(count);
+    store
+        .try_reserve_unique(
+            bench_caller(),
+            graph,
+            mutation_id,
+            "bench-key",
+            &claims,
+            &bench_dispatch(),
+        )
+        .expect("bench seed try_reserve_unique");
+}
+
+fn bench_try_reserve(
+    graph_seed: u32,
+    claim_count: u32,
+    scope: &'static str,
+) -> canbench_rs::BenchResult {
+    let store = RouterStore::new();
+    let graph = GraphId::from_raw(910_000 + graph_seed);
+    let mutation_id = 7_000_000 + graph_seed as u64;
+    let claims = bench_claims(claim_count);
+    let dispatch = bench_dispatch();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope);
+        store
+            .try_reserve_unique(
+                black_box(bench_caller()),
+                black_box(graph),
+                black_box(mutation_id),
+                black_box("bench-key"),
+                black_box(&claims),
+                black_box(&dispatch),
+            )
+            .expect("bench try_reserve_unique");
+    })
+}
+
+#[bench(raw)]
+fn bench_unique_try_reserve_1() -> canbench_rs::BenchResult {
+    bench_try_reserve(1, 1, "unique_try_reserve_1")
+}
+
+#[bench(raw)]
+fn bench_unique_try_reserve_16() -> canbench_rs::BenchResult {
+    bench_try_reserve(16, 16, "unique_try_reserve_16")
+}
+
+#[bench(raw)]
+fn bench_unique_try_reserve_256() -> canbench_rs::BenchResult {
+    bench_try_reserve(256, 256, "unique_try_reserve_256")
+}
+
+#[bench(raw)]
+fn bench_unique_confirm_reservation() -> canbench_rs::BenchResult {
+    let store = RouterStore::new();
+    let graph = GraphId::from_raw(920_001);
+    let mutation_id = 7_200_001;
+    seed_reserved(&store, graph, mutation_id, 1);
+    let claim = bench_claims(1).remove(0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("unique_confirm_reservation");
+        let outcome = store.confirm_unique_claim(
+            black_box(graph),
+            black_box(mutation_id),
+            black_box(&claim),
+            black_box(vec![9u8; 16]),
+            black_box(EffectId::new(mutation_id, 0)),
+        );
+        // The live caller decrements the non-terminal count only on the fresh transition.
+        if matches!(outcome, ConfirmOutcome::FreshlyCommitted) {
+            store.release_unique_reservation_slot(black_box(mutation_id));
+        }
+        black_box(outcome);
+    })
+}
+
+#[bench(raw)]
+fn bench_unique_cancel_reclaim() -> canbench_rs::BenchResult {
+    let store = RouterStore::new();
+    let graph = GraphId::from_raw(950_001);
+    let mutation_id = 7_500_001;
+    seed_reserved(&store, graph, mutation_id, 1);
+    let value = bench_claims(1).remove(0).encoded_value;
+    let ticket = begin_reclaim(graph, BENCH_CONSTRAINT, &value).expect("bench begin_reclaim");
+    let claim_id = ClaimId::new(mutation_id, 0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("unique_cancel_reclaim");
+        let removed = cancel_reclaim(
+            black_box(graph),
+            black_box(BENCH_CONSTRAINT),
+            black_box(&value),
+            black_box(claim_id),
+            black_box(ticket.generation),
+        );
+        store.release_unique_reservation_slot(black_box(mutation_id));
+        black_box(removed);
+    })
+}
+
+#[bench(raw)]
+fn bench_unique_clear_acquire_ack() -> canbench_rs::BenchResult {
+    let store = RouterStore::new();
+    let graph = GraphId::from_raw(930_001);
+    let mutation_id = 7_300_001;
+    seed_reserved(&store, graph, mutation_id, 1);
+    let claim = bench_claims(1).remove(0);
+    let value = claim.encoded_value.clone();
+    // Commit so a pending ack exists to clear (the slice-6 unpin path).
+    let _ = store.confirm_unique_claim(
+        graph,
+        mutation_id,
+        &claim,
+        vec![9u8; 16],
+        EffectId::new(mutation_id, 0),
+    );
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("unique_clear_acquire_ack");
+        let cleared = store.clear_unique_acquire_ack(
+            black_box(graph),
+            black_box(BENCH_CONSTRAINT),
+            black_box(&value),
+            black_box(ClaimId::new(mutation_id, 0)),
+        );
+        black_box(cleared);
+    })
+}
+
+#[bench(raw)]
+fn bench_unique_reclaim_scan_256() -> canbench_rs::BenchResult {
+    let store = RouterStore::new();
+    let graph = GraphId::from_raw(940_001);
+    seed_reserved(&store, graph, 7_400_001, 256);
+    // All seeded `Reserved` entries are past the reclaim-eligibility TTL at this clock.
+    let now = u64::MAX;
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("unique_reclaim_scan_256");
+        let (candidates, _next, scanned) =
+            scan_reclaim_candidates(black_box(None), black_box(256), black_box(now));
+        black_box((candidates, scanned));
+    })
+}

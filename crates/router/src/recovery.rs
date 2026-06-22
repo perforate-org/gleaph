@@ -187,7 +187,7 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
         });
     }
     let effect_next = effect_outcome.next_cursor;
-    EFFECT_CURSOR.with_borrow_mut(|c| *c = effect_next.clone());
+    EFFECT_CURSOR.with_borrow_mut(|c| *c = effect_next);
 
     // Advance the cursor. A short scan (fewer than the budget) means we reached the end of
     // the keyspace, so reset to start a fresh lap next time.

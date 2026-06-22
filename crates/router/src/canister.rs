@@ -117,6 +117,53 @@ pub(crate) fn test_inject_projection_pending_saga(
     Ok(())
 }
 
+/// Test-only (`pocket-ic-e2e`): declare a uniqueness constraint so the E2E suite can exercise the
+/// full ADR 0030 write-path lifecycle end to end. Public `CREATE`/`DROP CONSTRAINT` DDL stays
+/// `NotImplemented` (CREATE pending the publication decision, DROP pending a dedicated lifecycle
+/// slice — ADR 0030 Revisions #14–#15; see [`crate::gql`]); this seam reaches the same
+/// admin-authorized, declare-on-empty store path ([`RouterStore::create_unique_constraint`]) without
+/// publishing the DDL. The constraint must be declared on a **brand-new** vertex label (declare-on-
+/// empty), so call it before any vertex of `label` is inserted.
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) fn test_declare_unique_constraint(
+    logical_graph_name: String,
+    constraint_name: String,
+    label: String,
+    property: String,
+) -> Result<(), RouterError> {
+    let caller = msg_caller();
+    auth::require_admin(&caller)?;
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    store.create_unique_constraint(graph_id, &constraint_name, false, &label, &property)
+}
+
+/// Test-only (`pocket-ic-e2e`): arm/clear an ADR 0030 write-path fault injection (admin-only).
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) fn test_arm_fault(code: u8) -> Result<(), RouterError> {
+    auth::require_admin(&msg_caller())?;
+    let fault = crate::test_fault::fault_from_code(code)
+        .ok_or_else(|| RouterError::InvalidArgument(format!("unknown fault code {code}")))?;
+    crate::test_fault::arm(fault);
+    Ok(())
+}
+
+/// Test-only (`pocket-ic-e2e`): force a `Reserved` reservation into `Reclaiming` (admin-only), so the
+/// failure-injection suite can prove a same-`ClaimId` retry is fenced during a reclaim proof.
+#[cfg(feature = "pocket-ic-e2e")]
+pub(crate) fn test_force_reclaiming(
+    logical_graph_name: String,
+    label: String,
+    property: String,
+    value: String,
+) -> Result<bool, RouterError> {
+    let caller = msg_caller();
+    auth::require_admin(&caller)?;
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id_authorized(&logical_graph_name, caller)?;
+    store.test_force_reclaiming_text(graph_id, &label, &property, &value)
+}
+
 pub(crate) fn graph_element_id_encoding_key(
     logical_graph_name: String,
 ) -> Result<[u8; 16], RouterError> {

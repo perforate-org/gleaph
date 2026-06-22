@@ -302,12 +302,25 @@ impl RouterStore {
         Ok(())
     }
 
-    /// Drops a uniqueness constraint declaration.
-    // ADR 0030: reachable only from `DROP CONSTRAINT` DDL, which is gated off until the full
-    // uniqueness lifecycle ships (see `gql::run_gql`). Exercised by store-level tests until then.
+    /// Drops a uniqueness constraint **definition only** (ADR 0030 Revision #15).
+    //
+    // INCOMPLETE — definition-only, NOT publishable. This removes the `ROUTER_UNIQUE_CONSTRAINTS`
+    // record but deliberately does **not** invalidate the constraint's `ROUTER_UNIQUE_RESERVATIONS`
+    // entries or drain in-flight sagas, and the name→id mapping in `ROUTER_CONSTRAINT_NAME_CATALOG`
+    // survives. Two hazards therefore block publication and are deferred to a dedicated DROP-lifecycle
+    // slice (draining/purge state machine + regression tests):
+    //   1. `Committed` reservations (and any pinned outbox effects) persist after the definition is
+    //      gone — the value is never released;
+    //   2. a later `CREATE` reusing the dropped name re-interns the **same** `ConstraintNameId`, so
+    //      stale reservations keyed by that id would falsely reject values under the new constraint.
+    // `DROP CONSTRAINT` DDL stays gated off in `gql::run_gql` until that slice lands; this path is
+    // exercised only by store-level tests of the definition catalog until then.
     #[cfg_attr(
         not(test),
-        allow(dead_code, reason = "DROP CONSTRAINT DDL gated off (ADR 0030)")
+        allow(
+            dead_code,
+            reason = "DROP CONSTRAINT DDL gated off (ADR 0030 Revision #15)"
+        )
     )]
     pub(crate) fn drop_unique_constraint(
         &self,

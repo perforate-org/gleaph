@@ -178,6 +178,11 @@ impl<M: Memory> GraphMutationJournal<M> {
         }
     }
 
+    #[cfg(feature = "pocket-ic-e2e")]
+    pub fn len(&self) -> u64 {
+        self.map.len()
+    }
+
     pub fn get(&self, mutation_id: MutationId) -> Option<GraphMutationJournalEntry> {
         self.map.get(&mutation_id)
     }

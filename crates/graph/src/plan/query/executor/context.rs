@@ -6,6 +6,7 @@ use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql_planner::plan::AggregateSpec;
 use gleaph_graph_kernel::entry::PreparedWeightDecoder;
+use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::plan_exec::{ResolvedLabelTable, ResolvedPropertyTable};
 
 use crate::facade::GraphStore;
@@ -61,6 +62,9 @@ impl<'a> ExecuteCtx<'a> {
             resolved_labels: self.execution.resolved_labels.as_ref(),
             resolved_properties: self.execution.resolved_properties.as_ref(),
             gleaph_weight_decoders: self.gleaph_weight_decoders,
+            element_id_key: crate::element_id_encoding::resolve_or_host_fixture(
+                self.execution.element_id_encoding_key(),
+            ),
         }
     }
 }
@@ -79,6 +83,9 @@ pub(crate) struct QueryExprEvaluator<'a> {
     pub resolved_properties: Option<&'a ResolvedPropertyTable>,
     /// Prepared decoders for `GLEAPH.WEIGHT(edgeVar)` (when the query uses it).
     pub gleaph_weight_decoders: Option<&'a BTreeMap<String, PreparedWeightDecoder>>,
+    /// Router-issued per-graph element-id encoding key (ADR 0019), owned by this evaluator so
+    /// `ELEMENT_ID`/path encoding never reads ambient thread-local state across an `await`.
+    pub element_id_key: ElementIdEncodingKey,
 }
 
 impl<'a> QueryExprEvaluator<'a> {

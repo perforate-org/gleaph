@@ -477,6 +477,7 @@ pub fn eval_test_expr(expr: Expr) -> Value {
         resolved_labels: None,
         resolved_properties: None,
         gleaph_weight_decoders: None,
+        element_id_key: gleaph_graph_kernel::federation::ElementIdEncodingKey::host_test_fixture(),
     };
     evaluator
         .eval_expr(&PlanRow::new(), &expr)

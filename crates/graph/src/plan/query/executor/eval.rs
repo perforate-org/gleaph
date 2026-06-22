@@ -7,6 +7,7 @@ use gleaph_gql::ast::{AggregateFunc, CmpOp, Expr, ExprKind, ObjectName, TruthVal
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::{ProjectColumn, Str};
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, Vertex};
+use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
@@ -47,9 +48,12 @@ pub(crate) fn eval_sort_expr(
             let projected_name = expression_name(expr);
             match row.get(&projected_name) {
                 Some(PlanBinding::Value(value)) => Ok(value.clone()),
-                Some(binding) => {
-                    binding_to_value(evaluator.store, evaluator.resolved_labels, binding)
-                }
+                Some(binding) => binding_to_value(
+                    evaluator.store,
+                    &evaluator.element_id_key,
+                    evaluator.resolved_labels,
+                    binding,
+                ),
                 None => Err(PlanQueryError::MissingBinding {
                     variable: projected_name,
                 }),
@@ -96,11 +100,20 @@ fn eval_list_index_value(
                     .map_or(Ok(Value::Null), Ok)
             }
             Some(PlanBinding::PathGroup(paths)) => match path_group_element_at_index(paths, idx) {
-                Some(pb) => Ok(path_binding_to_value(evaluator.store, pb)),
+                Some(pb) => Ok(path_binding_to_value(
+                    evaluator.store,
+                    &evaluator.element_id_key,
+                    pb,
+                )),
                 None => Ok(Value::Null),
             },
             Some(binding) => {
-                let value = binding_to_value(evaluator.store, evaluator.resolved_labels, binding)?;
+                let value = binding_to_value(
+                    evaluator.store,
+                    &evaluator.element_id_key,
+                    evaluator.resolved_labels,
+                    binding,
+                )?;
                 list_index_into_value(&value, idx)
             }
             None => Err(PlanQueryError::MissingBinding {
@@ -289,6 +302,7 @@ impl QueryExprEvaluator<'_> {
             ExprKind::Paren(inner) => self.eval_expr(row, inner),
             ExprKind::Variable(name) => binding_to_value(
                 self.store,
+                &self.element_id_key,
                 self.resolved_labels,
                 row.get(name)
                     .ok_or_else(|| PlanQueryError::MissingBinding {
@@ -568,8 +582,12 @@ impl QueryExprEvaluator<'_> {
                             return Ok(Value::Int64(paths.len() as i64));
                         }
                         Some(binding) => {
-                            let value =
-                                binding_to_value(self.store, self.resolved_labels, binding)?;
+                            let value = binding_to_value(
+                                self.store,
+                                &self.element_id_key,
+                                self.resolved_labels,
+                                binding,
+                            )?;
                             if let Value::List(items) = value {
                                 return Ok(Value::Int64(items.len() as i64));
                             }
@@ -690,7 +708,7 @@ impl QueryExprEvaluator<'_> {
                 }),
                 Some(PlanBinding::Value(value)) => Ok(property_from_value(value, property)),
                 Some(PlanBinding::Path(pb)) => Ok(record_property(
-                    &path_binding_to_value(self.store, pb),
+                    &path_binding_to_value(self.store, &self.element_id_key, pb),
                     property,
                 )),
                 Some(PlanBinding::PathGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
@@ -713,18 +731,17 @@ impl QueryExprEvaluator<'_> {
         if let ExprKind::Variable(name) = &expr.kind {
             return match row.get(name) {
                 Some(PlanBinding::Vertex(vertex_id)) => Ok(Value::Bytes(vertex_element_id_bytes(
-                    self.store, *vertex_id,
+                    self.store,
+                    &self.element_id_key,
+                    *vertex_id,
                 )?)),
-                Some(PlanBinding::RemoteVertex(vertex_id)) => {
-                    let key = crate::element_id_encoding::require_execution_element_id_key()
-                        .map_err(|_| PlanQueryError::MissingElementIdEncodingKey)?;
-                    Ok(Value::Bytes(
-                        GraphPathVertexId::from_global(&key, *vertex_id)
-                            .to_bytes()
-                            .to_vec(),
-                    ))
-                }
+                Some(PlanBinding::RemoteVertex(vertex_id)) => Ok(Value::Bytes(
+                    GraphPathVertexId::from_global(&self.element_id_key, *vertex_id)
+                        .to_bytes()
+                        .to_vec(),
+                )),
                 Some(PlanBinding::Edge(edge)) => Ok(Value::Bytes(edge_element_id_bytes(
+                    &self.element_id_key,
                     local_shard_id(self.store),
                     edge.handle.owner_vertex_id,
                     EdgeSlotIndex::from_raw(edge.handle.slot_index),
@@ -791,7 +808,12 @@ pub(crate) fn project_row(
     if columns.is_empty() {
         let mut out = PlanRow::new();
         for (name, binding) in row.iter() {
-            let value = binding_to_value(evaluator.store, evaluator.resolved_labels, binding)?;
+            let value = binding_to_value(
+                evaluator.store,
+                &evaluator.element_id_key,
+                evaluator.resolved_labels,
+                binding,
+            )?;
             out.insert(name.to_string(), PlanBinding::Value(value));
         }
         return Ok(out);
@@ -854,44 +876,42 @@ pub(crate) fn expression_name(expr: &Expr) -> String {
 
 pub(crate) fn value_row(
     store: &GraphStore,
+    key: &ElementIdEncodingKey,
     row: &PlanRow,
 ) -> Result<BTreeMap<String, Value>, PlanQueryError> {
     if row.len() == 1 {
         let (name, binding) = row.iter().next().expect("len==1 guarantees one entry");
-        let value = binding_to_value(store, None, binding)?;
+        let value = binding_to_value(store, key, None, binding)?;
         let mut out = BTreeMap::new();
         out.insert(name.to_string(), value);
         return Ok(out);
     }
     row.iter()
         .map(|(name, binding)| {
-            binding_to_value(store, None, binding).map(|value| (name.to_string(), value))
+            binding_to_value(store, key, None, binding).map(|value| (name.to_string(), value))
         })
         .collect()
 }
 
 pub(crate) fn binding_to_value(
     store: &GraphStore,
+    key: &ElementIdEncodingKey,
     resolved_labels: Option<&ResolvedLabelTable>,
     binding: &PlanBinding,
 ) -> Result<Value, PlanQueryError> {
     match binding {
         PlanBinding::Vertex(vertex_id) => vertex_to_value(store, resolved_labels, *vertex_id),
-        PlanBinding::RemoteVertex(vertex_id) => {
-            let key = crate::element_id_encoding::require_execution_element_id_key()
-                .map_err(|_| PlanQueryError::MissingElementIdEncodingKey)?;
-            Ok(Value::Record(vec![
-                (
-                    "id".to_owned(),
-                    Value::Bytes(
-                        GraphPathVertexId::from_global(&key, *vertex_id)
-                            .to_bytes()
-                            .to_vec(),
-                    ),
+        PlanBinding::RemoteVertex(vertex_id) => Ok(Value::Record(vec![
+            (
+                "id".to_owned(),
+                Value::Bytes(
+                    GraphPathVertexId::from_global(key, *vertex_id)
+                        .to_bytes()
+                        .to_vec(),
                 ),
-                ("remote".to_owned(), Value::Bool(true)),
-            ]))
-        }
+            ),
+            ("remote".to_owned(), Value::Bool(true)),
+        ])),
         PlanBinding::Edge(edge) => edge_to_value(store, resolved_labels, edge.clone()),
         PlanBinding::EdgeGroup(edges) => Ok(Value::List(
             edges
@@ -908,11 +928,11 @@ pub(crate) fn binding_to_value(
                 .collect::<Result<Vec<_>, _>>()?,
         )),
         PlanBinding::Value(value) => Ok(value.clone()),
-        PlanBinding::Path(pb) => Ok(path_binding_to_value(store, pb)),
+        PlanBinding::Path(pb) => Ok(path_binding_to_value(store, key, pb)),
         PlanBinding::PathGroup(paths) => Ok(Value::List(
             paths
                 .iter()
-                .map(|pb| path_binding_to_value(store, pb))
+                .map(|pb| path_binding_to_value(store, key, pb))
                 .collect(),
         )),
     }
@@ -1090,6 +1110,57 @@ mod tests {
         assert_eq!(
             result.rows[0].get("name"),
             Some(&Value::Text("Planner Alice".into()))
+        );
+    }
+
+    #[test]
+    fn element_id_encoding_uses_per_evaluator_key_not_ambient_state() {
+        // ADR 0030 P0 regression. The element-id encoding key (ADR 0019) is owned per execution by
+        // `QueryExprEvaluator`, never parked in ambient thread-local state across an `await`. A
+        // graph canister can host shards of different logical graphs, so concurrent messages can
+        // carry different keys, and on the IC another message runs during any inter-canister
+        // `await`. Here we interleave a key-B evaluation between two key-A evaluations: key A's
+        // result must be unaffected, and each evaluator must encode with its own key.
+        let store = GraphStore::new();
+        let vid = store
+            .insert_vertex_named(["KeyIsoOwner"], [("k", Value::Int64(1))])
+            .expect("insert vertex");
+        let parameters = params();
+        let mut row = super::PlanRow::new();
+        row.insert("n".to_owned(), super::PlanBinding::Vertex(vid));
+        let element_id_expr = gleaph_gql::ast::Expr::new(gleaph_gql::ast::ExprKind::ElementId(
+            Box::new(gleaph_gql::ast::Expr::var("n")),
+        ));
+
+        let make = |key: gleaph_graph_kernel::federation::ElementIdEncodingKey| {
+            crate::plan::query::executor::context::QueryExprEvaluator {
+                store: &store,
+                parameters: &parameters,
+                aggregate_specs: None,
+                caller: None,
+                resolved_labels: None,
+                resolved_properties: None,
+                gleaph_weight_decoders: None,
+                element_id_key: key,
+            }
+        };
+        let key_a = gleaph_graph_kernel::federation::ElementIdEncodingKey(*b"graph-a-key-0001");
+        let key_b = gleaph_graph_kernel::federation::ElementIdEncodingKey(*b"graph-b-key-0002");
+
+        let a1 = make(key_a)
+            .eval_expr(&row, &element_id_expr)
+            .expect("eval element id under key A");
+        let b = make(key_b)
+            .eval_expr(&row, &element_id_expr)
+            .expect("eval element id under key B");
+        let a2 = make(key_a)
+            .eval_expr(&row, &element_id_expr)
+            .expect("re-eval element id under key A");
+
+        assert_ne!(a1, b, "distinct keys must produce distinct element ids");
+        assert_eq!(
+            a1, a2,
+            "key A result must be stable across an interleaved key B evaluation"
         );
     }
 

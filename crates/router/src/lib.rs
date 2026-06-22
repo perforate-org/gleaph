@@ -3,6 +3,9 @@
 #[cfg(feature = "canbench")]
 mod bench;
 
+#[cfg(feature = "pocket-ic-e2e")]
+mod test_fault;
+
 mod bulk_ingest_finalize;
 mod canister;
 mod constraint_ddl;
@@ -311,6 +314,43 @@ fn test_inject_projection_pending_saga(
         mutation_id,
         row_count,
     )
+}
+
+/// Test-only (`pocket-ic-e2e`): declare a uniqueness constraint (admin-authorized, declare-on-empty)
+/// so the E2E suite can exercise the ADR 0030 write-path lifecycle. Public `CREATE`/`DROP CONSTRAINT`
+/// DDL remains `NotImplemented` (CREATE pending the publication decision, DROP pending a dedicated
+/// lifecycle slice — ADR 0030 Revisions #14–#15).
+#[cfg(feature = "pocket-ic-e2e")]
+#[update]
+fn test_declare_unique_constraint(
+    logical_graph_name: String,
+    constraint_name: String,
+    label: String,
+    property: String,
+) -> Result<(), RouterError> {
+    canister::test_declare_unique_constraint(logical_graph_name, constraint_name, label, property)
+}
+
+/// Test-only (`pocket-ic-e2e`): arm (or clear, with `0`) an ADR 0030 write-path fault injection so
+/// the failure-injection e2e suite can reproduce trap boundaries (Try-then-trap, Confirm-then-trap).
+/// Admin-authorized. See [`crate::test_fault`].
+#[cfg(feature = "pocket-ic-e2e")]
+#[update]
+fn test_arm_fault(code: u8) -> Result<(), RouterError> {
+    canister::test_arm_fault(code)
+}
+
+/// Test-only (`pocket-ic-e2e`): force a `Reserved` reservation into `Reclaiming` (admin), so the
+/// failure-injection suite can prove a same-`ClaimId` retry is fenced during a reclaim proof.
+#[cfg(feature = "pocket-ic-e2e")]
+#[update]
+fn test_force_reclaiming(
+    logical_graph_name: String,
+    label: String,
+    property: String,
+    value: String,
+) -> Result<bool, RouterError> {
+    canister::test_force_reclaiming(logical_graph_name, label, property, value)
 }
 
 /// Read-only GQL on the update path only (no composite-query savings; bypasses path check).

@@ -5,6 +5,7 @@ use std::pin::Pin;
 
 use gleaph_gql::Value;
 use gleaph_gql_planner::plan::{InlineProcedureScope, PhysicalPlan, PlanOp};
+use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -272,6 +273,7 @@ fn inline_seed_row(row: &PlanRow, scope: &InlineProcedureScope) -> Result<PlanRo
 
 fn merge_inline_rows(
     store: &crate::facade::GraphStore,
+    key: &ElementIdEncodingKey,
     outer: &PlanRow,
     inner: PlanRow,
 ) -> Result<PlanRow, PlanQueryError> {
@@ -282,7 +284,8 @@ fn merge_inline_rows(
     let mut merged = outer.clone();
     for (name, inner_binding) in inner.iter() {
         match outer.get(name) {
-            Some(outer_binding) if inline_bindings_match(store, outer_binding, inner_binding)? => {}
+            Some(outer_binding)
+                if inline_bindings_match(store, key, outer_binding, inner_binding)? => {}
             Some(_) => {
                 return Err(PlanQueryError::InvalidExpressionValue {
                     expression: "inline CALL: conflicting bindings on merge".into(),
@@ -296,13 +299,14 @@ fn merge_inline_rows(
 
 fn inline_bindings_match(
     store: &crate::facade::GraphStore,
+    key: &ElementIdEncodingKey,
     left: &PlanBinding,
     right: &PlanBinding,
 ) -> Result<bool, PlanQueryError> {
     if left == right {
         return Ok(true);
     }
-    Ok(binding_to_value(store, None, left)? == binding_to_value(store, None, right)?)
+    Ok(binding_to_value(store, key, None, left)? == binding_to_value(store, key, None, right)?)
 }
 
 async fn execute_inline_procedure_call(
@@ -328,8 +332,11 @@ async fn execute_inline_procedure_call(
                 out.push(padded);
             }
         } else {
+            let key = crate::element_id_encoding::resolve_or_host_fixture(
+                ctx.execution.element_id_encoding_key(),
+            );
             for inner in sub_rows {
-                out.push(merge_inline_rows(ctx.store, &outer_row, inner)?);
+                out.push(merge_inline_rows(ctx.store, &key, &outer_row, inner)?);
             }
         }
     }

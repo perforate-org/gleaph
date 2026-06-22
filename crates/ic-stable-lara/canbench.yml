@@ -1,4 +1,6 @@
 # Optional comma-separated features after `canbench`, e.g. `bucket_row_grow_double`.
 # Used by `scripts/bench_bucket_row_grow_compare.sh`.
-build_cmd: "sh -c 'EXTRA=\"${CANBENCH_IC_STABLE_LARA_FEATURES:-}\"; CARGO_TARGET_DIR=../../target cargo build --release --target wasm32-unknown-unknown --features canbench${EXTRA:+,}${EXTRA}'"
-wasm_path: "../../target/wasm32-unknown-unknown/release/ic_stable_lara.wasm"
+# Dedicated CARGO_TARGET_DIR (../../target/canbench) so the canbench wasm never clobbers the
+# pocket-ic-e2e artifacts under ../../target (see crates/router/canbench.yml).
+build_cmd: "sh -c 'EXTRA=\"${CANBENCH_IC_STABLE_LARA_FEATURES:-}\"; CARGO_TARGET_DIR=../../target/canbench cargo build --release --target wasm32-unknown-unknown --features canbench${EXTRA:+,}${EXTRA}'"
+wasm_path: "../../target/canbench/wasm32-unknown-unknown/release/ic_stable_lara.wasm"
