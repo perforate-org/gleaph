@@ -98,8 +98,11 @@ The shard runs the physical plan against **local CSR** only. It does not call th
 
 The Router owns placement authority; graph shards do not. Writes anchored to existing data follow
 the anchor's shard(s) (index hits); a single DML statement may fan out to several shards (the
-federated saga), but an **anchored multi-DML bundle** is admitted only when it is a single-anchor
-threaded bundle whose anchor resolves to exactly one shard (ADR 0029 §6, Phase 5 contract 1). A
+federated saga). An **anchored multi-DML bundle** is admitted when it is a single-anchor threaded
+bundle (no cross-shard read): when its anchor resolves to one shard the whole bundle runs there
+atomically (ADR 0029 §6, Phase 5 contract 1); when the anchor fans out to several shards the bundle
+is dispatched per shard as a roll-forward saga — each shard atomic shard-locally, cross-shard
+convergence roll-forward (ADR 0029 §6, Phase 5 contract 2). A
 **completely-new (unanchored) write** — a *pure-insert* plan
 that contains at least one `INSERT` and no operator reading existing graph state
 (`gleaph_gql_planner::PhysicalPlan::is_pure_insert`) — is placed on the graph's **latest shard**:

@@ -408,8 +408,9 @@ Exit criteria:
 ## Phase 5: Multi-DML contract
 
 **Status: Rejection gate done. Contract 1 (one-shard atomic) implemented for completely-new
-INSERT-only bundles and the anchored single-shard subset. Roll-forward / staged contracts still
-planned.**
+INSERT-only bundles and the anchored single-shard subset. Contract 2 (roll-forward bundle)
+implemented for single-anchor threaded bundles that fan out to multiple shards. Staged distributed
+commit (contract 3) still reserved.**
 
 Goal: remove the existing partial multi-DML ambiguity.
 
@@ -460,7 +461,23 @@ Candidate future contracts:
 
    MATCH-based bundles with a second scan, a traversal, or independent per-statement matches remain
    rejected, since their cross-shard reads have no defined partial-application contract.
-2. **Roll-forward bundle:** persist a per-plan cursor and advertise saga semantics explicitly.
+2. **Roll-forward bundle** *(implemented):* a single-anchor threaded bundle whose leading anchor
+   resolves to **more than one shard** is dispatched per shard as a roll-forward saga, generalizing
+   the contract-1 anchored subset (which required the anchor to resolve to one shard) and reusing the
+   Phase 4 saga machinery that already fans a single DML statement across shards. Because the bundle
+   performs no cross-shard read (`is_single_anchor_threaded_bundle`), each shard runs the whole
+   multi-statement program over its own anchor rows **atomically shard-locally** (§1); cross-shard
+   convergence is **roll-forward, not all-or-nothing** — a shard that fails mid-bundle leaves the
+   mutation non-terminal (`CanonicalPending`) with the already-committed shards durable, and the saga
+   converges by idempotent retry (resumes only the outstanding shards, deduplicated by `mutation_id`)
+   and by the Phase 4 recovery timer for projection. The per-plan/per-shard cursor is the existing
+   `RouterMutationRecord` (per-shard `completed`/`projection_advanced`). The contract-1 dispatch-time
+   rejection of a multi-shard anchor is removed; the pre-dispatch gate (which admits only pure-insert
+   or single-anchor threaded bundles) is the single admission point, so a multi-DML bundle reaching
+   dispatch on a federated graph is structurally guaranteed to have no cross-shard read. Ad-hoc
+   execution only; prepared multi-DML on a federated graph stays rejected at registration. Partial
+   cross-shard visibility is possible while a saga is mid-flight; this is the explicit semantic
+   promise (no global rollback).
 3. **Staged distributed commit:** reserve for a named cross-shard all-or-nothing requirement.
 
 Tests:
@@ -473,15 +490,25 @@ Tests:
   INSERT-only subset: `router_places_completely_new_single_insert_on_latest_shard`,
   `router_places_completely_new_insert_bundle_on_latest_shard`, and `is_pure_insert_*` host unit
   tests. Done for the anchored single-shard subset:
-  `router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard`,
-  `router_rejects_anchored_multi_dml_bundle_when_anchor_spans_multiple_shards`, and
+  `router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard` and
   `is_single_anchor_threaded_bundle_*` host unit tests.)*
-- If roll-forward support is selected, retries resume at the persisted plan boundary without being
-  described as rollback atomicity. *(Planned with the roll-forward contract.)*
+- A supported bundle that fans out to many shards runs per shard as a roll-forward saga, and a retry
+  resumes at the persisted per-shard boundary without being described as rollback atomicity. *(Done
+  for the single-anchor threaded subset: `router_runs_anchored_multi_dml_bundle_across_shards_as_roll_forward_saga`
+  asserts both shards apply the bundle and the saga converges to `Completed`;
+  `router_recovers_anchored_multi_dml_roll_forward_saga_via_idempotent_retry` crashes a shard
+  mid-bundle, asserts `CanonicalPending`, that the autonomous timer leaves the canonical write pending
+  without double-applying, and that restart plus idempotent retry converges to `Completed`.)*
 
 Benchmarks:
 
-- Bundle validation and one-shard execution at representative statement counts.
+- Bundle validation and one-shard execution at representative statement counts. **Done.** One-shard
+  execution of an N-statement INSERT bundle in a single canonical segment is a graph canbench at N = 4
+  and N = 16 (`bench_graph_canonical_segment_insert_bundle_4` / `_16`, ~672K / ~1.32M instructions —
+  near-linear in statement count over fixed segment overhead; `crates/graph/canbench_results.yml`).
+  The multi-DML admission gate cost (`count_dml_statements` + `is_pure_insert` /
+  `is_single_anchor_threaded_bundle`) is a gql-planner criterion bench at N = 1/4/16/64
+  (`bundle_validation`, `crates/gql-planner/benches/planner_bench.rs`).
 
 Exit criteria:
 

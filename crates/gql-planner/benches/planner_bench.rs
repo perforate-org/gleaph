@@ -5,7 +5,7 @@
 use criterion::{BenchmarkId, Criterion, criterion_group, criterion_main};
 use gleaph_gql::parser;
 use gleaph_gql_planner::stats::TableStats;
-use gleaph_gql_planner::{build_plan, explain_plan};
+use gleaph_gql_planner::{build_block_plan, build_plan, explain_plan};
 
 // ════════════════════════════════════════════════════════════════════════════════
 // Helpers
@@ -284,6 +284,42 @@ fn bench_parse_vs_plan(c: &mut Criterion) {
     group.finish();
 }
 
+/// A pure-insert bundle of `n` top-level DML statements: `INSERT (:Person) NEXT INSERT (:Person) ...`.
+fn gen_insert_bundle(n: usize) -> String {
+    std::iter::repeat_n("INSERT (:Person)", n)
+        .collect::<Vec<_>>()
+        .join(" NEXT ")
+}
+
+/// ADR 0029 §6 (Phase 5) multi-DML admission gate cost: the per-bundle decision that classifies a
+/// write program as a structurally-safe contract 1/2 bundle. Measures only the gate predicates
+/// (`count_dml_statements` over the AST block plus `is_pure_insert` / `is_single_anchor_threaded_bundle`
+/// over the built plan), with parse + plan done once up front, since those are benched separately.
+fn bench_bundle_validation(c: &mut Criterion) {
+    use gleaph_gql::program_modification::count_dml_statements;
+
+    let mut group = c.benchmark_group("bundle_validation");
+    for n in [1, 4, 16, 64] {
+        let query = gen_insert_bundle(n);
+        let program = parser::parse(&query).expect("parse");
+        let block = program
+            .transaction_activity
+            .expect("tx")
+            .body
+            .expect("block");
+        let plan = build_block_plan(&block, None).expect("plan");
+        group.bench_with_input(BenchmarkId::new("pure_insert", n), &n, |b, _| {
+            b.iter(|| {
+                let count = count_dml_statements(&block);
+                let pure = plan.is_pure_insert();
+                let anchored = plan.is_single_anchor_threaded_bundle();
+                std::hint::black_box((count, pure, anchored))
+            });
+        });
+    }
+    group.finish();
+}
+
 criterion_group!(
     benches,
     bench_simple_filter,
@@ -294,5 +330,6 @@ criterion_group!(
     bench_triangle,
     bench_aggregation,
     bench_parse_vs_plan,
+    bench_bundle_validation,
 );
 criterion_main!(benches);

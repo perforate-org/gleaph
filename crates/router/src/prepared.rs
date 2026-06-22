@@ -229,9 +229,9 @@ async fn prepared_execute(
     let stats = graph_stats_for(graph_id);
     // ADR 0029 Phase 5: federated multi-DML bundles are rejected at registration (the AST is
     // available there), so a prepared plan that reaches dispatch is never a federated multi-DML
-    // bundle; pass a count of 1 so the runtime single-shard gate is a no-op. The anchored
-    // single-shard extension applies to ad-hoc execution only; prepared multi-DML on a federated
-    // graph stays rejected at registration.
+    // bundle. The contract 1/2 multi-DML admission (anchored single-shard and roll-forward fan-out)
+    // applies to ad-hoc execution only; prepared multi-DML on a federated graph stays rejected at
+    // registration, where the runtime shard count is not yet known.
     dispatch_plan_blob(
         graph_id,
         &v1.plan_blob,
@@ -240,7 +240,6 @@ async fn prepared_execute(
         &params,
         mode,
         client_mutation_key,
-        1,
         &stats,
     )
     .await

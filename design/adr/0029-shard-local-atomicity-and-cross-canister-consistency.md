@@ -217,11 +217,7 @@ existing data the bundle touches is the leading anchor's rows, it performs **no 
 when the anchor resolves to a single shard, the whole multi-statement program can run on that shard
 under the shard's single canonical critical section (§1), which applies every statement atomically
 and provides read-your-own-writes between them. The Router admits such a bundle past the pre-dispatch
-gate, resolves the leading anchor, and — only if the anchor actually spans more than one shard —
-rejects it with `RouterError::UnsupportedMultiDmlBundle` after resolution but before any shard
-executes or any saga state is recorded (no canonical state changes). The top-level DML statement
-count from the AST is threaded into dispatch so a single DML statement that fans out to many shards
-stays the federated saga (decision 4), not a rejection.
+gate and resolves the leading anchor; when it resolves to one shard the bundle runs there atomically.
 `detection: gleaph_gql_planner::PhysicalPlan::is_single_anchor_threaded_bundle`. This subset is
 enforced for ad-hoc execution; the runtime shard count is unknown at prepared-plan registration, so
 prepared multi-DML on a federated graph stays rejected at registration (the orthogonal
@@ -229,12 +225,27 @@ re-sharding-staleness caveat above still applies). MATCH-based bundles with a se
 traversal, or independent per-statement matches remain rejected by the §6 gate, since their
 cross-shard reads have no defined partial-application contract.
 
-Future support may choose, for the remaining (cross-shard) cases, one of two explicit contracts:
+**Contract 2 (roll-forward bundle), single-anchor threaded subset — implemented.** When the same
+single-anchor threaded bundle's leading anchor resolves to **more than one shard**, the Router no
+longer rejects it; it dispatches the whole bundle per shard as a roll-forward saga, generalizing the
+contract-1 anchored subset and reusing the Phase 4 saga machinery that already fans a single DML
+statement across shards (decision 4). Because the bundle performs no cross-shard read, each shard
+runs the entire multi-statement program over its own anchor rows atomically shard-locally (§1).
+Cross-shard convergence is **roll-forward, not all-or-nothing**: a shard that fails mid-bundle leaves
+the mutation non-terminal (`CanonicalPending`) with the already-committed shards durable; the saga
+converges by idempotent retry (resuming only the outstanding shards, deduplicated by `mutation_id`)
+and by the Phase 4 recovery timer for projection. The per-plan/per-shard cursor is the existing
+`RouterMutationRecord` (per-shard `completed` / `projection_advanced`). With this contract the
+contract-1 dispatch-time rejection of a multi-shard anchor is removed: the pre-dispatch §6 gate —
+which admits only pure-insert or single-anchor threaded bundles — is the single admission point, so a
+multi-DML bundle reaching dispatch on a federated graph is structurally guaranteed to have no
+cross-shard read, and no count-based runtime gate is needed (a single DML statement fanning out stays
+the decision-4 saga, unchanged). Partial cross-shard visibility is possible while a saga is
+mid-flight; this is the explicit semantic promise (no global rollback). Ad-hoc execution only;
+prepared multi-DML on a federated graph stays rejected at registration.
 
-- persist a per-plan cursor and advertise federated roll-forward saga semantics explicitly across
-  shards; or
-- use staged writes and a commit protocol for operations that genuinely require cross-shard
-  all-or-nothing visibility.
+The remaining (cross-shard-reading) cases may later use staged writes and a commit protocol for
+operations that genuinely require cross-shard all-or-nothing visibility (§7).
 
 Per-plan progress journaling improves roll-forward recovery but does not by itself provide
 Atomicity and must not be described as ACID.

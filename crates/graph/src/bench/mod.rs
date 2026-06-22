@@ -2033,6 +2033,46 @@ fn bench_graph_canonical_segment_insert_edge() -> canbench_rs::BenchResult {
     })
 }
 
+/// A multi-statement INSERT bundle compiled to a single plan of `n` `InsertVertex` ops. This is the
+/// shape contract 1/2 (ADR 0029 §6, Phase 5) executes on one shard: the whole bundle runs under the
+/// shard's single canonical critical section. Measures one-shard execution scaling with statement
+/// count.
+fn insert_bundle_mutation_plan(n: usize) -> PhysicalPlan {
+    plan(
+        (0..n)
+            .map(|_| PlanOp::InsertVertex {
+                variable: None,
+                labels: vec!["BenchMutBundleVertex".into()],
+                properties: vec![],
+            })
+            .collect(),
+    )
+}
+
+/// Canonical segment: a 4-statement INSERT bundle on one shard (ADR 0029 Phase 5 one-shard execution).
+#[bench(raw)]
+fn bench_graph_canonical_segment_insert_bundle_4() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let plan = insert_bundle_mutation_plan(4);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("canonical_segment_insert_bundle_4");
+        run_canonical_segment(black_box(store), black_box(&plan));
+    })
+}
+
+/// Canonical segment: a 16-statement INSERT bundle on one shard (ADR 0029 Phase 5 one-shard execution).
+#[bench(raw)]
+fn bench_graph_canonical_segment_insert_bundle_16() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let plan = insert_bundle_mutation_plan(16);
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("canonical_segment_insert_bundle_16");
+        run_canonical_segment(black_box(store), black_box(&plan));
+    })
+}
+
 #[cfg(test)]
 mod bench_setup_tests {
     use super::*;
@@ -2097,6 +2137,17 @@ mod bench_setup_tests {
             ),
         );
         assert_eq!(u32::from(store.vertex_count()), 1);
+    }
+
+    #[test]
+    fn canonical_segment_insert_bundle_bench_persists() {
+        let store = GraphStore::new();
+        run_canonical_segment(store, &insert_bundle_mutation_plan(4));
+        assert_eq!(
+            u32::from(store.vertex_count()),
+            4,
+            "the 4-statement bundle persists all four inserts in one canonical segment"
+        );
     }
 
     #[test]

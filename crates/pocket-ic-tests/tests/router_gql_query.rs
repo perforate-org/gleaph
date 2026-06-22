@@ -328,13 +328,14 @@ fn router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard() {
 }
 
 #[test]
-fn router_rejects_anchored_multi_dml_bundle_when_anchor_spans_multiple_shards() {
-    // ADR 0029 Phase 5 (contract 1, anchored single-shard): the same single-anchor bundle is
-    // rejected when its leading anchor resolves to more than one shard, because applying the
-    // multiple statements per-shard has no defined cross-shard partial-application contract. Here
-    // `age = 5` exists on both shards, so the anchor spans two shards and the bundle is rejected
-    // after anchor resolution but before any shard executes (no canonical state changes).
-    use gleaph_graph_kernel::federation::RouterError;
+fn router_runs_anchored_multi_dml_bundle_across_shards_as_roll_forward_saga() {
+    // ADR 0029 Phase 5 (contract 2, roll-forward bundle): a single-anchor threaded multi-DML bundle
+    // whose leading anchor fans out to more than one shard is dispatched per shard as a roll-forward
+    // saga. It performs no cross-shard read, so each shard runs the whole bundle over its own anchor
+    // rows atomically (shard-local), and cross-shard convergence is roll-forward. Here `age = 5`
+    // exists on both shards, so the SET + threaded INSERT bundle applies on both; the happy path
+    // (both shards reachable) converges to `Completed` and updates both shards' vertices.
+    use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
 
     let env = install_federation();
     let age = admin_intern_property(&env, "age");
@@ -343,27 +344,107 @@ fn router_rejects_anchored_multi_dml_bundle_when_anchor_spans_multiple_shards() 
         INDEX_AGE_NAME,
         INDEX_VERTEX_LABEL,
         "age",
-        "router_rejects_anchored_multi_dml_bundle_when_anchor_spans_multiple_shards",
+        "router_runs_anchored_multi_dml_bundle_across_shards_as_roll_forward_saga",
     );
     let source = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
     let dest = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 5);
     assert_eq!(source.global_vertex_id.shard_id, SOURCE_SHARD);
     assert_eq!(dest.global_vertex_id.shard_id, DEST_SHARD);
 
-    let err = gql_execute_idempotent_as_admin_expect_err(
+    let result = gql_execute_idempotent_result_as_admin(
         &env,
         "MATCH (n {age: 5}) SET n.age = 6 NEXT INSERT (n)-[:KNOWS]->(:Project)",
-        "router_rejects_anchored_multi_dml_bundle_when_anchor_spans_multiple_shards",
+        "router_runs_anchored_multi_dml_bundle_across_shards_as_roll_forward_saga",
     );
+    let token = result
+        .token
+        .expect("an admitted anchored multi-DML bundle issues a mutation token");
+    assert_eq!(
+        token.shards.len(),
+        2,
+        "the anchor fans out to both shards, so the bundle touches two shards"
+    );
+    assert_eq!(
+        result.phase,
+        Some(MutationLifecyclePhase::Completed),
+        "with both shards reachable the roll-forward saga converges immediately"
+    );
+
+    // The age = 6 read anchors on the age index and fans out to both shards; it confirms the SET
+    // applied on each. The threaded `INSERT (n)-[:KNOWS]->(:Project)` runs in the same shard-local
+    // atomic segment as the SET, so a `Completed` phase plus this read is sufficient evidence that
+    // the whole bundle committed on both shards.
+    let updated = gql_query_as_admin(&env, "MATCH (n {age: 6}) RETURN n");
+    assert_eq!(
+        updated.row_count, 2,
+        "both shards' anchor vertices were updated by the bundle"
+    );
+}
+
+#[test]
+fn router_recovers_anchored_multi_dml_roll_forward_saga_via_idempotent_retry() {
+    // ADR 0029 Phase 5 (contract 2, roll-forward bundle): the multi-DML fan-out is a saga, so a
+    // shard crashed mid-bundle leaves the mutation non-terminal (`CanonicalPending`) rather than
+    // corrupting state. The autonomous timer never re-applies canonical DML, so the saga stays
+    // pending while the shard is down; after it restarts, an idempotent retry on the same
+    // `client_mutation_key` resumes only the outstanding shard (the committed shard is deduplicated
+    // by `mutation_id`) and converges the bundle to `Completed`.
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
+
+    let env = install_federation();
+    let age = admin_intern_property(&env, "age");
+    create_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        INDEX_VERTEX_LABEL,
+        "age",
+        "router_recovers_anchored_multi_dml_roll_forward_saga_via_idempotent_retry",
+    );
+    let source = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
+    let dest = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 5);
+    assert_eq!(source.global_vertex_id.shard_id, SOURCE_SHARD);
+    assert_eq!(dest.global_vertex_id.shard_id, DEST_SHARD);
+
+    let key = "router_recovers_anchored_multi_dml_roll_forward_saga";
+    let bundle = "MATCH (n {age: 5}) SET n.age = 6 NEXT INSERT (n)-[:KNOWS]->(:Project)";
+
+    stop_graph_shard(&env, env.graph_dest);
+    let err = gql_execute_idempotent_as_admin_expect_err(&env, bundle, key);
     assert!(
-        matches!(
-            err,
-            RouterError::UnsupportedMultiDmlBundle {
-                dml_statements: 2,
-                shard_count: 2,
-            }
-        ),
-        "expected UnsupportedMultiDmlBundle for a 2-statement anchored bundle spanning 2 shards, got {err:?}"
+        matches!(err, RouterError::InvalidArgument(_)),
+        "a crashed shard fails the federated bundle, got {err:?}"
+    );
+
+    let pending = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+        .expect("status for the in-flight bundle saga");
+    assert_eq!(
+        pending.phase,
+        MutationLifecyclePhase::CanonicalPending,
+        "an outstanding canonical shard write leaves the bundle saga CanonicalPending"
+    );
+
+    run_router_recovery_timer(&env);
+    let still_pending = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
+        .expect("status after a recovery tick with the shard still down");
+    assert_eq!(
+        still_pending.phase,
+        MutationLifecyclePhase::CanonicalPending,
+        "the timer leaves an unavailable canonical shard pending (no double-apply)"
+    );
+
+    start_graph_shard(&env, env.graph_dest);
+    let resumed = gql_execute_idempotent_result_as_admin(&env, bundle, key);
+    assert_eq!(
+        resumed.phase,
+        Some(MutationLifecyclePhase::Completed),
+        "the idempotent retry resumes the outstanding shard and converges the bundle"
+    );
+
+    let updated = gql_query_as_admin(&env, "MATCH (n {age: 6}) RETURN n");
+    assert_eq!(
+        updated.row_count, 2,
+        "both shards' anchor vertices converged to the updated value"
     );
 }
 
