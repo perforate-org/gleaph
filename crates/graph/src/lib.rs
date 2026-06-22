@@ -102,6 +102,22 @@ fn ack_label_stats_deltas_through(through_seq: gleaph_graph_kernel::plan_exec::S
     canister::handlers::ack_label_stats_deltas_through(through_seq);
 }
 
+/// Router → graph (replicated read): per-claim `Acquire` commit proof from the pinned unique-effect
+/// outbox (ADR 0030). An `update` so the answer is replicated/certified.
+#[update(guard = "guard_router_canister")]
+fn read_unique_effect_proof(
+    claim_ids: Vec<gleaph_graph_kernel::federation::ClaimId>,
+) -> Vec<gleaph_graph_kernel::federation::UniqueAcquireProof> {
+    canister::handlers::read_unique_effect_proof(claim_ids)
+}
+
+/// Router → graph: per-effect ack (unpin) of unique effects after the Router has durably applied
+/// them (ADR 0030).
+#[update(guard = "guard_router_canister")]
+fn ack_unique_effects(effect_ids: Vec<gleaph_graph_kernel::federation::EffectId>) {
+    canister::handlers::ack_unique_effects(effect_ids);
+}
+
 #[cfg(feature = "pocket-ic-e2e")]
 #[update(guard = "guard_control_plane_admin")]
 async fn e2e_insert_vertex() -> Result<canister::types::E2eInsertVertexResult, String> {

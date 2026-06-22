@@ -15,6 +15,7 @@ mod posting_backfill;
 mod router_error;
 mod shard_detach;
 mod shard_id;
+mod unique_effect;
 
 pub use backfill_shard_state::BackfillShardState;
 pub use bulk_ingest_finalize::{
@@ -47,6 +48,9 @@ pub use posting_backfill::{
 pub use router_error::RouterError;
 pub use shard_detach::{ShardDetachCursor, ShardDetachPhase, ShardDetachStepResult};
 pub use shard_id::ShardId;
+pub use unique_effect::{
+    EffectId, UniqueAcquireEvidence, UniqueAcquireProof, UniqueEffectOp, UniqueEffectReceipt,
+};
 
 use crate::entry::GraphId;
 

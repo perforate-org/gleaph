@@ -206,6 +206,33 @@ pub fn get_mutation_journal_entry(
     GraphStore::new().get_mutation_journal_entry(mutation_id)
 }
 
+/// Router → graph (replicated read): the `Acquire` commit proof for each claim. `acquire` is
+/// `Some(UniqueAcquireEvidence { effect_id, owner_element_id })` iff a matching pinned `Acquire`
+/// effect exists (the `effect_id` lets the Router ack that exact effect after Confirm); `None` is
+/// authoritative non-commit while the reservation is non-terminal (ADR 0030 §Timeout). Runs as an
+/// update so the answer is replicated — a single-replica query is insufficient evidence to cancel a
+/// reservation.
+pub fn read_unique_effect_proof(
+    claim_ids: Vec<gleaph_graph_kernel::federation::ClaimId>,
+) -> Vec<gleaph_graph_kernel::federation::UniqueAcquireProof> {
+    let store = GraphStore::new();
+    claim_ids
+        .into_iter()
+        .map(
+            |claim_id| gleaph_graph_kernel::federation::UniqueAcquireProof {
+                claim_id,
+                acquire: store.unique_acquire_evidence(claim_id),
+            },
+        )
+        .collect()
+}
+
+/// Router → graph: unpin (ack) unique effects after the Router has durably applied them. Per-effect;
+/// acking one effect never unpins a sibling of the same mutation (ADR 0030).
+pub fn ack_unique_effects(effect_ids: Vec<gleaph_graph_kernel::federation::EffectId>) {
+    GraphStore::new().ack_unique_effects(effect_ids);
+}
+
 /// Smallest tracked mutation id whose graph-index postings are not yet applied, or
 /// `None` when all tracked index work has drained (ADR 0029 Phase 2 watermark). Router
 /// uses this to resolve a mutation token's index barrier: a read for mutation `M` is

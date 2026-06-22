@@ -15,6 +15,7 @@ pub(crate) mod label_stats_delta;
 pub(crate) mod metadata;
 pub(crate) mod property_catalog;
 pub(crate) mod repair_journal;
+pub(crate) mod unique_effect_outbox;
 pub(crate) mod vertex_labels;
 pub(crate) mod vertex_properties;
 
@@ -59,6 +60,9 @@ thread_local! {
 
     pub(crate) static INDEX_REPAIR_JOURNAL: RefCell<memory::StableRepairJournal> =
         RefCell::new(memory::init_index_repair_journal());
+
+    pub(crate) static UNIQUE_EFFECT_OUTBOX: RefCell<memory::StableUniqueEffectOutbox> =
+        RefCell::new(memory::init_unique_effect_outbox());
 }
 
 /// Forces the stable graph to initialize now. Called from `post_upgrade` so a

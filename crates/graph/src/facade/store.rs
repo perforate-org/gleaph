@@ -40,6 +40,7 @@ mod repair_journal;
 mod sidecar;
 #[cfg(test)]
 mod tests;
+mod unique_effect_outbox;
 mod vertex;
 mod vertex_delete;
 mod vertex_labels;

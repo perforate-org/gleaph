@@ -19,8 +19,13 @@ Last revised: 2026-06-22
 > (claim-set dedup → read-only preflight → all-or-nothing apply). Slice 3 deliberately classifies a
 > value held by another live mutation as retryable *in-flight* rather than attempting a reclaim — the
 > safe subset that never falsely admits a duplicate — because the generation-fenced reclaim proof
-> depends on the unique-effect outbox (slices 4–6). The remaining write-path TCC enforcement
-> (unique-effect outbox, fenced Try wired into INSERT, Confirm/Cancel, recovery) is **not yet
+> depends on the unique-effect outbox (slices 4–6). Slice 4 has landed the graph-shard **pinned
+> unique-effect outbox** (`UNIQUE_EFFECT_OUTBOX`, MemoryId 42, keyed by `EffectId`): per-effect
+> append/pin, `Acquire`-by-`ClaimId` and `Release`-by-`owner_element_id` matching, idempotent replay,
+> plus the Router-only **replicated `Acquire`-proof read** and **per-effect ack** endpoints
+> (`read_unique_effect_proof` / `ack_unique_effects`). The emit call-site inside the canonical DML
+> segment is wired in slice 5 (it needs the dispatch envelope to carry the claim). The remaining
+> write-path TCC enforcement (fenced Try wired into INSERT, Confirm/Cancel, recovery) is **not yet
 > built**, so the public
 > GQL dispatch refuses `CREATE`/`DROP CONSTRAINT` with `NotImplemented` rather than publishing an
 > unenforced uniqueness guarantee. This is the named-invariant strong protocol that

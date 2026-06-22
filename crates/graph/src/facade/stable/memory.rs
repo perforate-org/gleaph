@@ -74,6 +74,9 @@ const PENDING_VERTEX_PURGES: MemoryId = MemoryId::new(40);
 // --- Federated index repair journal (ADR 0023 D5) (1 memory) ---
 const INDEX_REPAIR_JOURNAL: MemoryId = MemoryId::new(41);
 
+// --- Cross-shard uniqueness: pinned unique-effect outbox (ADR 0030) (1 memory) ---
+const UNIQUE_EFFECT_OUTBOX: MemoryId = MemoryId::new(42);
+
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
 /// Initial slab capacity for both labeled orientations (grows as needed).
@@ -94,6 +97,8 @@ pub(crate) type StableGraphMutationJournal = super::label_stats_delta::GraphMuta
 pub(crate) type StablePendingPurges = StableRoaringBitmap<Memory>;
 /// Durable failed-flush index postings awaiting re-application (ADR 0023 D5).
 pub(crate) type StableRepairJournal = super::repair_journal::RepairJournal<Memory>;
+/// Pinned unique-effect receipts awaiting Router ack (ADR 0030).
+pub(crate) type StableUniqueEffectOutbox = super::unique_effect_outbox::UniqueEffectOutbox<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -204,5 +209,11 @@ pub(crate) fn init_pending_vertex_purges() -> StablePendingPurges {
 pub(crate) fn init_index_repair_journal() -> StableRepairJournal {
     super::repair_journal::RepairJournal::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(INDEX_REPAIR_JOURNAL)),
+    )
+}
+
+pub(crate) fn init_unique_effect_outbox() -> StableUniqueEffectOutbox {
+    super::unique_effect_outbox::UniqueEffectOutbox::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(UNIQUE_EFFECT_OUTBOX)),
     )
 }

@@ -590,6 +590,17 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "Failed-flush index postings persisted on compensation-success, re-applied by the maintenance driver and on post_upgrade",
             RebuildPath::None,
         ),
+        // Cross-shard uniqueness: pinned unique-effect outbox (ADR 0030)
+        region(
+            "UNIQUE_EFFECT_OUTBOX",
+            42,
+            StableMemoryClass::Canonical,
+            "cross-shard uniqueness",
+            "EffectId → UniqueEffectReceipt (Acquire/Release); pinned commit evidence until the \
+             Router acks. Canonical: un-acked effect absence is authoritative proof of non-commit, \
+             decoupled from the ADR 0027 journal retention",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1115,8 +1126,8 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 42);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(41));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 43);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(42));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,
