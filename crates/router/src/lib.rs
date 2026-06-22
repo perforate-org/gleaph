@@ -5,6 +5,7 @@ mod bench;
 
 mod bulk_ingest_finalize;
 mod canister;
+mod constraint_ddl;
 mod edge_backfill;
 mod edge_index_direction;
 mod execution_path;

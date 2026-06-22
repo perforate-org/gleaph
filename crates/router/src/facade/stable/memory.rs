@@ -8,10 +8,11 @@ use super::edge_payload_profiles::EdgePayloadProfileStore;
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::bidirectional_catalog::DenseIndexNamePolicy;
 use gleaph_graph_kernel::bidirectional_catalog::{
-    BidirectionalCatalog, DenseEdgeLabelPolicy, DenseMaxPlusOnePolicy, SparseFromOnePolicy,
+    BidirectionalCatalog, DenseConstraintNamePolicy, DenseEdgeLabelPolicy, DenseMaxPlusOnePolicy,
+    SparseFromOnePolicy,
 };
 use gleaph_graph_kernel::entry::{
-    EdgeLabelId, GraphId, GraphTypeId, IndexNameId, PropertyId, VertexLabelId,
+    ConstraintNameId, EdgeLabelId, GraphId, GraphTypeId, IndexNameId, PropertyId, VertexLabelId,
 };
 use gleaph_graph_kernel::federation::{
     BackfillShardState, EdgeBackfillShardState, ElementIdEncodingKey, GraphShardKey, ShardId,
@@ -23,6 +24,7 @@ use gleaph_auth::AuthState;
 use gleaph_gql_ic::graph_registry::GraphRegistryEntry;
 use gleaph_graph_catalog::GraphCatalog;
 
+use super::constraint_catalog::{ConstraintDefRecord, UniqueConstraintKey};
 use super::indexed_catalog::{IndexDefRecord, IndexedPropertyKey, NamedIndexKey};
 use candid::CandidType;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
@@ -82,6 +84,11 @@ const ROUTER_LABEL_STATS_PROJECTION: MemoryId = MemoryId::new(30);
 const ROUTER_LABEL_BACKFILL_STATE: MemoryId = MemoryId::new(31);
 const ROUTER_VERTEX_PROPERTY_BACKFILL_STATE: MemoryId = MemoryId::new(32);
 const ROUTER_EDGE_BACKFILL_STATE: MemoryId = MemoryId::new(33);
+
+// --- catalog: cross-shard uniqueness constraints (ADR 0030) ---
+const ROUTER_CONSTRAINT_NAME_BY_NAME: MemoryId = MemoryId::new(34);
+const ROUTER_CONSTRAINT_NAME_BY_ID: MemoryId = MemoryId::new(35);
+const ROUTER_UNIQUE_CONSTRAINTS: MemoryId = MemoryId::new(36);
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
@@ -197,6 +204,10 @@ pub(crate) type StableEdgePayloadProfileStore = EdgePayloadProfileStore<Memory>;
 pub(crate) type StableGqlGraphCatalog = GraphCatalog<Memory, Memory>;
 pub(crate) type StableGraphTypeNameCatalog =
     BidirectionalCatalog<GraphTypeId, Memory, Memory, SparseFromOnePolicy>;
+pub(crate) type StableConstraintNameCatalog =
+    GraphScopedNameCatalog<ConstraintNameId, Memory, Memory, DenseConstraintNamePolicy>;
+pub(crate) type StableUniqueConstraintMap =
+    BTreeMap<UniqueConstraintKey, ConstraintDefRecord, Memory>;
 
 // --- telemetry ---
 pub(crate) type StableLabelStatsMap =
@@ -321,6 +332,17 @@ pub(crate) fn init_graph_type_name_catalog() -> StableGraphTypeNameCatalog {
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_GRAPH_TYPE_BY_NAME)),
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_GRAPH_TYPE_BY_ID)),
     )
+}
+
+pub(crate) fn init_constraint_name_catalog() -> StableConstraintNameCatalog {
+    GraphScopedNameCatalog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_CONSTRAINT_NAME_BY_NAME)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_CONSTRAINT_NAME_BY_ID)),
+    )
+}
+
+pub(crate) fn init_unique_constraints() -> StableUniqueConstraintMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_UNIQUE_CONSTRAINTS)))
 }
 
 // --- telemetry ---

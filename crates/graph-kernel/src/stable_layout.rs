@@ -869,6 +869,30 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "GraphShardKey → cursor for edge property posting backfill admin",
             RebuildPath::None,
         ),
+        region(
+            "ROUTER_CONSTRAINT_NAME_BY_NAME",
+            34,
+            StableMemoryClass::Catalog,
+            "constraint name catalog",
+            "Graph-scoped constraint name → ConstraintNameId (ADR 0030)",
+            RebuildPath::None,
+        ),
+        region(
+            "ROUTER_CONSTRAINT_NAME_BY_ID",
+            35,
+            StableMemoryClass::Catalog,
+            "constraint name catalog",
+            "Graph-scoped ConstraintNameId → constraint name (ADR 0030)",
+            RebuildPath::None,
+        ),
+        region(
+            "ROUTER_UNIQUE_CONSTRAINTS",
+            36,
+            StableMemoryClass::Catalog,
+            "uniqueness constraint catalog",
+            "(graph_id, constraint_name_id) → ConstraintDefRecord (ADR 0030)",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1106,8 +1130,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 34);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(33));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 37);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(36));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].class,
             StableMemoryClass::Telemetry

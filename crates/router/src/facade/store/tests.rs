@@ -2183,3 +2183,104 @@ mod graph_type_catalog_vocabulary {
         ));
     }
 }
+
+mod uniqueness_constraints {
+    use crate::facade::stable::constraint_catalog::find_unique_constraint;
+    use crate::facade::stable::constraint_name_catalog::lookup_constraint_name_id;
+    use crate::facade::store::RouterStore;
+    use crate::facade::store::catalog_test_support::{GRAPH, setup};
+    use crate::state::RouterError;
+
+    #[test]
+    fn create_on_unused_label_succeeds_and_interns() {
+        let (store, _admin, graph_id) = setup();
+        // A read-only lookup must not intern the label.
+        assert!(store.lookup_vertex_label_id(graph_id, "User").is_err());
+        assert!(store.lookup_vertex_label_id(graph_id, "User").is_err());
+
+        store
+            .create_unique_constraint(graph_id, "user_email", false, "User", "email")
+            .expect("create constraint");
+
+        let label_id = store
+            .lookup_vertex_label_id(graph_id, "User")
+            .expect("label interned by CREATE");
+        let property_id = store
+            .lookup_property_id(graph_id, "email")
+            .expect("property interned by CREATE");
+        let name_id = lookup_constraint_name_id(graph_id, "user_email").expect("name interned");
+        let (found_name, def) =
+            find_unique_constraint(graph_id, label_id, property_id).expect("constraint registered");
+        assert_eq!(found_name, name_id);
+        assert_eq!(def.vertex_label_id, label_id);
+        assert_eq!(def.property_id, property_id);
+    }
+
+    #[test]
+    fn existing_label_is_rejected_even_at_zero_live_count() {
+        let (store, admin, graph_id) = setup();
+        // An admin-interned label has zero live elements but must still be rejected.
+        store
+            .admin_intern_vertex_label(admin, GRAPH, "User")
+            .expect("intern label");
+        let err = store
+            .create_unique_constraint(graph_id, "user_email", false, "User", "email")
+            .unwrap_err();
+        assert!(matches!(err, RouterError::Conflict(_)));
+        assert!(lookup_constraint_name_id(graph_id, "user_email").is_none());
+    }
+
+    #[test]
+    fn graph_type_interned_label_is_rejected() {
+        let (store, _admin, graph_id) = setup();
+        // Graph-type / catalog vocabulary interning uses this same commit path.
+        RouterStore::commit_intern_vertex_label_name(graph_id, "User").expect("intern label");
+        let err = store
+            .create_unique_constraint(graph_id, "user_email", false, "User", "email")
+            .unwrap_err();
+        assert!(matches!(err, RouterError::Conflict(_)));
+    }
+
+    #[test]
+    fn read_only_lookup_does_not_intern_label() {
+        let (store, _admin, graph_id) = setup();
+        assert!(store.lookup_vertex_label_id(graph_id, "Ghost").is_err());
+        // Still absent → CREATE on it succeeds (would fail if the lookup had interned it).
+        store
+            .create_unique_constraint(graph_id, "ghost_key", false, "Ghost", "k")
+            .expect("create constraint on still-unused label");
+    }
+
+    #[test]
+    fn failed_create_leaves_no_partial_state() {
+        let (store, _admin, graph_id) = setup();
+        store
+            .create_unique_constraint(graph_id, "dup", false, "Account", "handle")
+            .expect("create first");
+        // Reusing the same constraint name on a different brand-new label must fail in the
+        // read-only preflight (name already defined) before any catalog mutation.
+        let err = store
+            .create_unique_constraint(graph_id, "dup", false, "Member", "code")
+            .unwrap_err();
+        assert!(matches!(err, RouterError::Conflict(_)));
+        // The would-be new label and property were never interned, and no constraint exists.
+        assert!(store.lookup_vertex_label_id(graph_id, "Member").is_err());
+        assert!(store.lookup_property_id(graph_id, "code").is_err());
+    }
+
+    #[test]
+    fn drop_then_recreate_on_same_label_is_rejected() {
+        let (store, _admin, graph_id) = setup();
+        store
+            .create_unique_constraint(graph_id, "c", false, "User", "email")
+            .expect("create");
+        store
+            .drop_unique_constraint(graph_id, "c", false)
+            .expect("drop");
+        // The label remains interned after DROP, so re-CREATE on it is rejected (first cut).
+        let err = store
+            .create_unique_constraint(graph_id, "c2", false, "User", "email")
+            .unwrap_err();
+        assert!(matches!(err, RouterError::Conflict(_)));
+    }
+}

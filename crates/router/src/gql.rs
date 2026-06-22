@@ -543,6 +543,41 @@ async fn run_gql(
         return Ok(GqlQueryResult::row_count_only(0));
     }
 
+    if let Some(ddl) = crate::constraint_ddl::try_parse(query) {
+        let caller = msg_caller();
+        authorize_index_ddl(&caller)?;
+        if mode == GqlExecutionMode::Query && !force {
+            return Err(RouterError::ExecutionPathMismatch {
+                entrypoint: entrypoint.to_string(),
+                program_kind: "write".to_string(),
+                call_kind: "query".to_string(),
+                remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
+            });
+        }
+        let stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        let store = RouterStore::new();
+        let graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
+        match stmt {
+            crate::constraint_ddl::ConstraintDdlStatement::Create {
+                constraint_name,
+                if_not_exists,
+                label,
+                property,
+            } => store.create_unique_constraint(
+                graph_id,
+                &constraint_name,
+                if_not_exists,
+                &label,
+                &property,
+            )?,
+            crate::constraint_ddl::ConstraintDdlStatement::Drop {
+                constraint_name,
+                if_exists,
+            } => store.drop_unique_constraint(graph_id, &constraint_name, if_exists)?,
+        }
+        return Ok(GqlQueryResult::row_count_only(0));
+    }
+
     let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let flags = classify_program(&program);
     let caller = msg_caller();

@@ -2,6 +2,8 @@
 
 use std::cell::RefCell;
 
+pub(crate) mod constraint_catalog;
+pub(crate) mod constraint_name_catalog;
 pub(crate) mod edge_payload_profiles;
 pub(crate) mod graph_catalog;
 pub(crate) mod graph_type_catalog;
@@ -76,6 +78,14 @@ thread_local! {
 
     pub(crate) static ROUTER_GRAPH_TYPE_CATALOG: RefCell<memory::StableGraphTypeNameCatalog> =
         RefCell::new(memory::init_graph_type_name_catalog());
+
+    /// `graph-scoped constraint name → ConstraintNameId` catalog (ADR 0030).
+    pub(crate) static ROUTER_CONSTRAINT_NAME_CATALOG: RefCell<memory::StableConstraintNameCatalog> =
+        RefCell::new(memory::init_constraint_name_catalog());
+
+    /// `(graph, constraint_name_id) → unique constraint definition` (ADR 0030).
+    pub(crate) static ROUTER_UNIQUE_CONSTRAINTS: RefCell<memory::StableUniqueConstraintMap> =
+        RefCell::new(memory::init_unique_constraints());
 
     // --- telemetry ---
     pub(crate) static ROUTER_VERTEX_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =

@@ -1,3 +1,4 @@
+pub mod constraint_name;
 pub mod edge;
 pub mod edge_payload;
 pub mod graph;
@@ -11,6 +12,7 @@ pub mod vertex;
 pub mod vertex_ref;
 pub mod weight;
 
+pub use constraint_name::{CONSTRAINT_NAME_CATALOG_MAX, ConstraintNameId};
 pub use edge::{Edge, EdgeMeta, EdgeSlotIndex};
 pub use edge_payload::{
     DecodedEdgePayload, EdgePayload, EdgePayloadEncoding, EdgePayloadProfile,

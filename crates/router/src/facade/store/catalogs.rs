@@ -5,6 +5,10 @@ use super::super::stable::{
     ROUTER_VERTEX_LABEL_CATALOG,
 };
 use crate::facade::auth;
+use crate::facade::stable::constraint_catalog::{self as constraint_store, ConstraintDefRecord};
+use crate::facade::stable::constraint_name_catalog::{
+    intern_constraint_name, lookup_constraint_name_id,
+};
 use crate::facade::stable::edge_payload_profiles::EdgePayloadProfileStoreError;
 use crate::facade::stable::graph_catalog::{catalog_error_to_router, resolve_registered_graph_id};
 use crate::state::RouterError;
@@ -217,6 +221,81 @@ impl RouterStore {
         ROUTER_PROPERTY_CATALOG
             .with_borrow(|catalog| catalog.get_name(graph_id, property_id))
             .ok_or_else(|| RouterError::NotFound(format!("property id {}", property_id.raw())))
+    }
+
+    /// Declares a vertex single-property uniqueness constraint (ADR 0030, first cut).
+    ///
+    /// Declare-on-empty contract: the target label must be brand-new — never interned in this
+    /// graph's vertex label catalog. Labels intern only on DML `CreateIfMissing` (read plans
+    /// never intern), so an absent label structurally guarantees an empty domain. An already
+    /// interned label is always rejected, even at live count 0, including admin/graph-type
+    /// interned labels and labels left behind by a prior `DROP CONSTRAINT` (re-enablement on a
+    /// populated label is deferred to the future validate path).
+    ///
+    /// Label, property, and constraint registration happen in one no-`await` region; every
+    /// validation runs first in the read-only preflight, so a rejected `CREATE` leaves no
+    /// partial label/property/constraint state.
+    pub(crate) fn create_unique_constraint(
+        &self,
+        graph_id: GraphId,
+        constraint_name: &str,
+        if_not_exists: bool,
+        label: &str,
+        property: &str,
+    ) -> Result<(), RouterError> {
+        // --- preflight (read-only): all validation completes before any mutation ---
+        validate_metadata_name(constraint_name)?;
+        validate_metadata_name(label)?;
+        validate_metadata_name(property)?;
+
+        if let Some(id) = lookup_constraint_name_id(graph_id, constraint_name)
+            && constraint_store::constraint_record_exists(graph_id, id)
+        {
+            if if_not_exists {
+                return Ok(());
+            }
+            return Err(RouterError::Conflict(format!(
+                "constraint already exists: {constraint_name}"
+            )));
+        }
+
+        if self.lookup_vertex_label_id(graph_id, label).is_ok() {
+            return Err(RouterError::Conflict(format!(
+                "uniqueness constraint requires a brand-new vertex label; '{label}' already exists (ADR 0030 declare-on-empty)"
+            )));
+        }
+
+        // --- commit (single no-await region, all-or-nothing) ---
+        let property_id = Self::commit_intern_property_name(graph_id, property)?;
+        let vertex_label_id = Self::commit_intern_vertex_label_name(graph_id, label)?;
+        let constraint_name_id = intern_constraint_name(graph_id, constraint_name)?;
+        constraint_store::create_unique_constraint(
+            graph_id,
+            constraint_name_id,
+            ConstraintDefRecord {
+                vertex_label_id,
+                property_id,
+            },
+            false,
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn drop_unique_constraint(
+        &self,
+        graph_id: GraphId,
+        constraint_name: &str,
+        if_exists: bool,
+    ) -> Result<(), RouterError> {
+        validate_metadata_name(constraint_name)?;
+        let Some(id) = lookup_constraint_name_id(graph_id, constraint_name) else {
+            if if_exists {
+                return Ok(());
+            }
+            return Err(RouterError::NotFound(constraint_name.to_owned()));
+        };
+        constraint_store::drop_unique_constraint(graph_id, id, if_exists)?;
+        Ok(())
     }
 
     pub fn resolve_plan_labels(

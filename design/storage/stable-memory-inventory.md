@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-06-20
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–41 = 42 regions; router repack ADR 0011/0018/0019 = 34 regions, 0–33)
-Anchor timestamp: 2026-06-20 05:00:00 UTC +0000
+Last updated: 2026-06-22
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–41 = 42 regions; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog = 37 regions, 0–36)
+Anchor timestamp: 2026-06-22 00:00:00 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -30,7 +30,7 @@ this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same pa
 | Canister | Regions | Id range | Registry constant + test |
 |----------|---------|----------|--------------------------|
 | Graph | 42 | 0–41 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
-| Router | 34 | 0–33 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
+| Router | 37 | 0–36 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
 | Graph-index | 7 | 0–6 | `INDEX_STABLE_LAYOUT` — `index_layout_registry_matches_baseline` |
 
 The canonical/derived split for the router registry projections is pinned by
@@ -154,7 +154,7 @@ Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores va
 
 ## Router canister — stable regions
 
-Repacked 2026-06-17: placement removed, controllers merged into auth, MemoryIds compacted to **0–33** (34 regions). Regions grouped **auth → registry → runtime config → idempotency → catalog → telemetry → maintenance**. `ROUTER_GRAPHS` keyed by **`GraphId`**; `ShardRegistryEntry` stores **`graph_id: GraphId`**. `ROUTER_SHARDS` keyed by **`GraphShardKey { graph_id, shard_id }`**; `ROUTER_SHARD_BY_GRAPH` is **`Principal → GraphShardKey`**; shard listing per logical graph uses **`ROUTER_SHARDS_BY_GRAPH_ID`**.
+Repacked 2026-06-17: placement removed, controllers merged into auth, MemoryIds compacted to **0–33** (34 regions). ADR 0030 appended the uniqueness constraint catalog (**34–36**), bringing the total to **37 regions (0–36)**. Regions grouped **auth → registry → runtime config → idempotency → catalog → telemetry → maintenance → constraint catalog**. `ROUTER_GRAPHS` keyed by **`GraphId`**; `ShardRegistryEntry` stores **`graph_id: GraphId`**. `ROUTER_SHARDS` keyed by **`GraphShardKey { graph_id, shard_id }`**; `ROUTER_SHARD_BY_GRAPH` is **`Principal → GraphShardKey`**; shard listing per logical graph uses **`ROUTER_SHARDS_BY_GRAPH_ID`**.
 
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
@@ -201,8 +201,10 @@ Regions **1–2** (canonical), **3–4** (derived indexes), **`ROUTER_GRAPH_RUNT
 | 31 | `ROUTER_LABEL_BACKFILL_STATE` | `ROUTER_LABEL_BACKFILL_STATE` | `init_label_backfill_state` | maintenance | label backfill | **`GraphShardKey → BackfillShardState`**, one entry per shard (bounded by live shard count, not operations); the step's TOCTOU concurrency guard is a heap-local `INFLIGHT_BACKFILL` claim set (not stable — auto-released on upgrade), so the stable record is unchanged; entry purged on `unregister_shard` so a re-registered shard does not inherit a stale cursor |
 | 32 | `ROUTER_VERTEX_PROPERTY_BACKFILL_STATE` | `ROUTER_VERTEX_PROPERTY_BACKFILL_STATE` | `init_vertex_property_backfill_state` | maintenance | vertex property backfill | **`GraphShardKey → BackfillShardState`**; same heap-local claim guard and `unregister_shard` purge as region 31 |
 | 33 | `ROUTER_EDGE_BACKFILL_STATE` | `ROUTER_EDGE_BACKFILL_STATE` | `init_edge_backfill_state` | maintenance | edge backfill | **`GraphShardKey → EdgeBackfillShardState`**; same heap-local claim guard and `unregister_shard` purge as region 31 |
+| 34–35 | `ROUTER_CONSTRAINT_NAME_BY_NAME` / `ROUTER_CONSTRAINT_NAME_BY_ID` | `ROUTER_CONSTRAINT_NAME_CATALOG` | `init_constraint_name_catalog` | catalog | resolution | Graph-scoped constraint name ↔ **`ConstraintNameId`** per `GraphId` ([ADR 0030](../adr/0030-cross-shard-uniqueness-tcc-reservation.md)) |
+| 36 | `ROUTER_UNIQUE_CONSTRAINTS` | `ROUTER_UNIQUE_CONSTRAINTS` | `init_unique_constraints` | catalog | constraint DDL metadata | **`(GraphId, ConstraintNameId) → ConstraintDefRecord { vertex_label_id, property_id }`** — logical uniqueness constraint definitions, declare-on-empty (ADR 0030, first cut: vertex single-property). Reservation/enforcement regions land in later ADR 0030 slices |
 
-Router **34 regions** total (0–33).
+Router **37 regions** total (0–36).
 
 ### Router ephemeral
 
