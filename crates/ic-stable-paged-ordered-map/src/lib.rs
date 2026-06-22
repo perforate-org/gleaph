@@ -431,6 +431,21 @@ impl<M: Memory> StablePagedOrderedMap<M> {
         }
     }
 
+    /// Forward cursor over all `(key, value)` pairs in ascending key order.
+    ///
+    /// Iteration walks the active page chain sequentially (`first_page` then each
+    /// `next` link) and reads entries in-page, so the full traversal costs
+    /// `O(len)` reads with no per-key directory search. This is the cheap path for
+    /// whole-map scans, in contrast to repeated [`successor`](Self::successor)
+    /// calls which re-search the directory on every step.
+    pub fn iter(&self) -> Iter<'_, M> {
+        Iter {
+            map: self,
+            page: self.read_first_page(),
+            pos: 0,
+        }
+    }
+
     /// Walks directory + page list + free list and checks numeric invariants ([`DIR_CAP`] match, strictly increasing keys,
     /// sensible page links, freelist bookkeeping).
     ///
@@ -866,6 +881,43 @@ impl<M: Memory> StablePagedOrderedMap<M> {
     }
 }
 
+/// Ascending `(key, value)` cursor returned by [`StablePagedOrderedMap::iter`].
+///
+/// Holds the current page id and in-page position and follows page `next` links,
+/// so a complete scan reads each active page once without any directory search.
+pub struct Iter<'a, M: Memory> {
+    map: &'a StablePagedOrderedMap<M>,
+    page: u64,
+    pos: u16,
+}
+
+impl<M: Memory> Iterator for Iter<'_, M> {
+    type Item = (u64, u64);
+
+    fn next(&mut self) -> Option<Self::Item> {
+        while self.page != 0 {
+            let header = self.map.read_page_header(self.page);
+            if self.pos < header.len {
+                let entry = self.map.read_entry(self.page, self.pos);
+                self.pos += 1;
+                return Some(entry);
+            }
+            self.page = header.next;
+            self.pos = 0;
+        }
+        None
+    }
+}
+
+impl<'a, M: Memory> IntoIterator for &'a StablePagedOrderedMap<M> {
+    type Item = (u64, u64);
+    type IntoIter = Iter<'a, M>;
+
+    fn into_iter(self) -> Self::IntoIter {
+        self.iter()
+    }
+}
+
 fn write_header<M: Memory>(memory: &M, h: &HeaderV1) -> Result<(), GrowFailed> {
     safe_write(memory, OFFSET_MAGIC, &h.magic)?;
     safe_write(memory, OFFSET_VERSION, &[h.version])?;
@@ -1068,6 +1120,21 @@ mod tests {
         assert_eq!(m.first(), Some((0, 0)));
         assert_eq!(m.last(), Some((1990, 199)));
         m.validate().unwrap();
+    }
+
+    #[test]
+    fn iter_yields_ascending_across_pages() {
+        let m = map();
+        assert_eq!(m.iter().next(), None);
+        for i in (0..200u64).rev() {
+            m.insert(i * 10, i).unwrap();
+        }
+        let collected: Vec<(u64, u64)> = m.iter().collect();
+        assert_eq!(collected.len(), 200);
+        let expected: Vec<(u64, u64)> = (0..200u64).map(|i| (i * 10, i)).collect();
+        assert_eq!(collected, expected);
+        // IntoIterator for &map mirrors iter().
+        assert_eq!((&m).into_iter().count(), 200);
     }
 
     #[test]

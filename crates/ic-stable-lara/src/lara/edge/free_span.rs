@@ -288,16 +288,41 @@ impl<M: Memory> FreeSpanStore<M> {
     }
 
     /// Checks internal bin, record, and by-start index invariants.
+    ///
+    /// Strategy (sorted merge against the by-start index):
+    /// 1. Walk every size-class bin once, validating each record's flags,
+    ///    `bin_idx`, `prev_bin` back-link, and size class, and collect its
+    ///    `(start_slot, id)` pair. The walk is bounded by `active_count`, so a
+    ///    cycle or duplicate bin link is rejected instead of looping.
+    /// 2. Sort the collected pairs by start slot (pure in-heap CPU work).
+    /// 3. Walk the by-start index in ascending key order with a sequential
+    ///    cursor (no per-key directory search) and require it to reproduce
+    ///    exactly the same `(start_slot, id)` pairs.
+    ///
+    /// Step 3 establishes a bijection between allocatable bin records and
+    /// by-start entries: every bin record is indexed at its own start slot, and
+    /// the index holds no extra, missing, or mismatched entry. This is the
+    /// hazard that matters for correctness — an allocatable range absent from
+    /// by-start would let overlap checks miss it and hand the same physical
+    /// range out twice.
+    ///
+    /// Cost is `O(active)` reads plus an `O(active log active)` in-heap sort,
+    /// trading the previous `active` random index lookups for one sequential
+    /// index scan. The by-start cursor is advanced at most `active + 1` times,
+    /// so the routine terminates even if that index were internally cyclic.
     pub fn validate(&self) -> Result<(), FreeSpanError> {
         let active = self.read_active_count();
-        let mut counted = 0u64;
         let slots = self.read_record_slots();
-        let mut reached = std::collections::BTreeSet::new();
+        // Bounded by the real record count, so a corrupt `active_count` cannot
+        // force an oversized allocation here.
+        let mut bin_pairs: Vec<(u64, SpanId)> = Vec::with_capacity(active.min(slots) as usize);
         for bin in 0..BIN_COUNT {
             let mut prev = 0;
             let mut cur = self.read_bin_head(bin);
             while cur != 0 {
-                if cur > slots || !reached.insert(cur) {
+                // More reachable records than `active_count` means a cycle or a
+                // duplicate link; bound the walk instead of a heap visited set.
+                if cur > slots || bin_pairs.len() as u64 >= active {
                     return Err(FreeSpanError::BinInvariant);
                 }
                 let rec = self.read_record(cur);
@@ -308,28 +333,31 @@ impl<M: Memory> FreeSpanStore<M> {
                 {
                     return Err(FreeSpanError::BinInvariant);
                 }
+                bin_pairs.push((rec.start_slot, cur));
                 prev = cur;
                 cur = rec.next_bin;
             }
         }
-        for id in 1..=slots {
-            let rec = self.read_record(id);
-            if rec.flags == FLAG_ACTIVE {
-                counted += 1;
-                if !reached.contains(&id) {
-                    return Err(FreeSpanError::BinInvariant);
-                }
-                let got = self.by_start.borrow().get(rec.start_slot);
-                if got != Some(id) {
-                    return Err(FreeSpanError::BinInvariant);
-                }
-                let b = size_class(rec.len) as usize;
-                if b >= BIN_COUNT || rec.bin_idx as usize != b {
-                    return Err(FreeSpanError::BinInvariant);
-                }
+        if bin_pairs.len() as u64 != active {
+            return Err(FreeSpanError::BinInvariant);
+        }
+        bin_pairs.sort_unstable_by_key(|&(start, _)| start);
+        let by_start = self.by_start.borrow();
+        let mut index = by_start.iter();
+        let mut prev_start: Option<u64> = None;
+        for &(start, id) in &bin_pairs {
+            // Two bin records sharing a start slot cannot both be indexed.
+            if prev_start == Some(start) {
+                return Err(FreeSpanError::BinInvariant);
+            }
+            prev_start = Some(start);
+            match index.next() {
+                Some((k, v)) if k == start && v == id => {}
+                _ => return Err(FreeSpanError::BinInvariant),
             }
         }
-        if counted != active {
+        // Any leftover index entry is an untracked-record/orphan mismatch.
+        if index.next().is_some() {
             return Err(FreeSpanError::BinInvariant);
         }
         Ok(())

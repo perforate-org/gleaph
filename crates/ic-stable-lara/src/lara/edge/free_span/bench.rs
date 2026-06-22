@@ -117,6 +117,37 @@ fn bench_lara_free_span_store_best_fit_fallback_scan_4096() -> canbench_rs::Benc
     bench_best_fit_fallback_scan(helper::LARGE_N)
 }
 
+/// Measures the cost of reopening a populated free-span store. `init` runs the
+/// full reopen integrity sequence: `by_start.validate`, the
+/// `by_start.len == active_count` cross-check, and `FreeSpanStore::validate`.
+/// The population uses well-separated, non-coalescing spans so `active_count`
+/// equals `n`, which makes this the primary signal for reopen-path validation
+/// cost as the live free-span set grows.
+fn bench_reopen(n: u64) -> canbench_rs::BenchResult {
+    let (store_mem, by_start_mem) = populate_store(n).into_memories();
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lara_free_span_store_reopen");
+        let reopened = FreeSpanStore::init(store_mem.clone(), by_start_mem.clone())
+            .expect("reopen free span store");
+        black_box(reopened.len());
+    })
+}
+
+#[bench(raw)]
+fn bench_lara_free_span_store_reopen_256() -> canbench_rs::BenchResult {
+    bench_reopen(helper::SMALL_N)
+}
+
+#[bench(raw)]
+fn bench_lara_free_span_store_reopen_1024() -> canbench_rs::BenchResult {
+    bench_reopen(helper::MEDIUM_N)
+}
+
+#[bench(raw)]
+fn bench_lara_free_span_store_reopen_4096() -> canbench_rs::BenchResult {
+    bench_reopen(helper::LARGE_N)
+}
+
 /// Measures release-time coalescing of adjacent free spans in the current
 /// store. This protects predecessor/successor lookup plus replacement of
 /// neighboring records with a merged reusable range.
