@@ -177,8 +177,7 @@ pub(crate) fn load_graph_stats(graph_id: GraphId) -> RouterGraphStats {
 
     ROUTER_NAMED_INDEXES.with_borrow(|map| {
         let start = NamedIndexKey::new(graph_id, IndexNameId::from_raw(0));
-        let end = NamedIndexKey::new(graph_id_upper_bound(graph_id), IndexNameId::from_raw(0));
-        for entry in map.range((Bound::Included(start), Bound::Excluded(end))) {
+        for entry in map.range((Bound::Included(start), named_index_graph_upper(graph_id))) {
             let def = entry.value();
             if def.kind != IndexedPropertyKind::Edge {
                 continue;
@@ -294,8 +293,7 @@ pub(crate) fn edge_index_uses_property_label(
 ) -> bool {
     ROUTER_NAMED_INDEXES.with_borrow(|map| {
         let start = NamedIndexKey::new(graph_id, IndexNameId::from_raw(0));
-        let end = NamedIndexKey::new(graph_id_upper_bound(graph_id), IndexNameId::from_raw(0));
-        map.range((Bound::Included(start), Bound::Excluded(end)))
+        map.range((Bound::Included(start), named_index_graph_upper(graph_id)))
             .any(|entry| {
                 let def = entry.value();
                 def.kind == IndexedPropertyKind::Edge
@@ -308,9 +306,8 @@ pub(crate) fn edge_index_uses_property_label(
 pub(crate) fn purge_graph_indexes(graph_id: GraphId) {
     ROUTER_NAMED_INDEXES.with_borrow_mut(|map| {
         let start = NamedIndexKey::new(graph_id, IndexNameId::from_raw(0));
-        let end = NamedIndexKey::new(graph_id_upper_bound(graph_id), IndexNameId::from_raw(0));
         let keys: Vec<_> = map
-            .range((Bound::Included(start), Bound::Excluded(end)))
+            .range((Bound::Included(start), named_index_graph_upper(graph_id)))
             .map(|entry| *entry.key())
             .collect();
         for key in keys {
@@ -323,13 +320,8 @@ pub(crate) fn purge_graph_indexes(graph_id: GraphId) {
             IndexedPropertyKind::Vertex,
             PropertyId::from_raw(0),
         );
-        let end = IndexedPropertyKey::new(
-            graph_id_upper_bound(graph_id),
-            IndexedPropertyKind::Vertex,
-            PropertyId::from_raw(0),
-        );
         let keys: Vec<_> = set
-            .range((Bound::Included(start), Bound::Excluded(end)))
+            .range((Bound::Included(start), membership_graph_upper(graph_id)))
             .collect();
         for key in keys {
             set.remove(&key);
@@ -337,8 +329,34 @@ pub(crate) fn purge_graph_indexes(graph_id: GraphId) {
     });
 }
 
-fn graph_id_upper_bound(graph_id: GraphId) -> GraphId {
-    GraphId::from_raw(graph_id.raw().saturating_add(1))
+/// Exclusive upper bound of one graph's `NamedIndexKey` range. `graph_id` is the most-significant
+/// key component, so `[(graph_id, 0), (graph_id + 1, 0))` covers exactly that graph. At
+/// `GraphId::MAX` there is no `graph_id + 1`; the bound must be `Unbounded` (every remaining key
+/// belongs to the max graph) — a saturating `+1` would collapse to `(MAX, 0)` and yield an empty
+/// range, silently dropping the max graph's indexes.
+fn named_index_graph_upper(graph_id: GraphId) -> Bound<NamedIndexKey> {
+    match graph_id.raw().checked_add(1) {
+        Some(next) => Bound::Excluded(NamedIndexKey::new(
+            GraphId::from_raw(next),
+            IndexNameId::from_raw(0),
+        )),
+        None => Bound::Unbounded,
+    }
+}
+
+/// Exclusive upper bound of one graph's `IndexedPropertyKey` range. See
+/// [`named_index_graph_upper`]; the same `GraphId::MAX` reasoning applies. `Vertex` is the minimum
+/// `kind` tag, so the start/end at `kind = Vertex, property = 0` spans both vertex and edge
+/// membership keys for the graph.
+fn membership_graph_upper(graph_id: GraphId) -> Bound<IndexedPropertyKey> {
+    match graph_id.raw().checked_add(1) {
+        Some(next) => Bound::Excluded(IndexedPropertyKey::new(
+            GraphId::from_raw(next),
+            IndexedPropertyKind::Vertex,
+            PropertyId::from_raw(0),
+        )),
+        None => Bound::Unbounded,
+    }
 }
 
 fn edge_index_identity_exists(
@@ -349,8 +367,7 @@ fn edge_index_identity_exists(
 ) -> bool {
     ROUTER_NAMED_INDEXES.with_borrow(|map| {
         let start = NamedIndexKey::new(graph_id, IndexNameId::from_raw(0));
-        let end = NamedIndexKey::new(graph_id_upper_bound(graph_id), IndexNameId::from_raw(0));
-        map.range((Bound::Included(start), Bound::Excluded(end)))
+        map.range((Bound::Included(start), named_index_graph_upper(graph_id)))
             .any(|entry| {
                 let def = entry.value();
                 def.kind == IndexedPropertyKind::Edge
@@ -368,8 +385,7 @@ fn named_index_uses_property(
     property_id: PropertyId,
 ) -> bool {
     let start = NamedIndexKey::new(graph_id, IndexNameId::from_raw(0));
-    let end = NamedIndexKey::new(graph_id_upper_bound(graph_id), IndexNameId::from_raw(0));
-    map.range((Bound::Included(start), Bound::Excluded(end)))
+    map.range((Bound::Included(start), named_index_graph_upper(graph_id)))
         .any(|entry| {
             let def = entry.value();
             def.kind == kind && def.property_id == property_id
@@ -385,12 +401,7 @@ fn membership_range<'a>(
         IndexedPropertyKind::Vertex,
         PropertyId::from_raw(0),
     );
-    let end = IndexedPropertyKey::new(
-        graph_id_upper_bound(graph_id),
-        IndexedPropertyKind::Vertex,
-        PropertyId::from_raw(0),
-    );
-    set.range((Bound::Included(start), Bound::Excluded(end)))
+    set.range((Bound::Included(start), membership_graph_upper(graph_id)))
 }
 
 const fn kind_to_byte(kind: IndexedPropertyKind) -> u8 {
@@ -544,5 +555,69 @@ mod tests {
         assert!(!edge_index_uses_property_label(graph, property, knows));
         // (property, LIKES) is still indexed → must not be purged.
         assert!(edge_index_uses_property_label(graph, property, likes));
+    }
+
+    #[test]
+    fn range_scans_cover_the_max_graph_id() {
+        // Regression: a saturating `graph_id + 1` upper bound collapses to an empty range at
+        // GraphId::MAX, so every range scan (stats load, edge-label lookup, drop's
+        // last-reference check, purge) would silently skip the max graph. Exercise search,
+        // delete, and purge on GraphId::MAX with the `Unbounded` upper bound in place.
+        let graph = GraphId::from_raw(u32::MAX);
+        let vprop = PropertyId::from_raw(11);
+        let eprop = PropertyId::from_raw(21);
+        let knows = 3u16;
+
+        create_named_index(
+            graph,
+            IndexNameId::from_raw(1),
+            vertex_entry(),
+            vprop,
+            1,
+            0,
+            false,
+        )
+        .expect("create vertex idx");
+        create_named_index(
+            graph,
+            IndexNameId::from_raw(2),
+            edge_entry(),
+            eprop,
+            knows,
+            1,
+            false,
+        )
+        .expect("create edge idx");
+
+        // Search: range-backed stats load must see both indexed properties.
+        let stats = load_graph_stats(graph);
+        assert!(
+            stats.is_vertex_property_id_indexed(vprop),
+            "vertex index on max graph must load, not be skipped"
+        );
+        assert!(
+            stats.is_edge_property_id_indexed(eprop),
+            "edge index on max graph must load, not be skipped"
+        );
+        assert!(edge_index_uses_property_label(graph, eprop, knows));
+
+        // Delete: drop's range-backed last-reference check must unregister membership.
+        drop_named_index(graph, IndexNameId::from_raw(1), false).expect("drop vertex idx");
+        assert!(!is_property_registered(
+            graph,
+            IndexedPropertyKind::Vertex,
+            vprop
+        ));
+
+        // Purge: both range scans (named indexes + membership set) must clear the max graph.
+        purge_graph_indexes(graph);
+        let after = load_graph_stats(graph);
+        assert!(!after.is_edge_property_id_indexed(eprop));
+        assert!(!is_property_registered(
+            graph,
+            IndexedPropertyKind::Edge,
+            eprop
+        ));
+        assert!(!edge_index_uses_property_label(graph, eprop, knows));
     }
 }
