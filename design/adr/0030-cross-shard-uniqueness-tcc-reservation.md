@@ -1,14 +1,20 @@
 # 0030. Cross-shard uniqueness via Router-coordinated TCC reservation
 
 Date: 2026-06-22
-Status: accepted
+Status: accepted (partially implemented)
 Last revised: 2026-06-22
 
-> **Status note:** The decision is **accepted**, but **not yet implemented**. It is the named-invariant
-> strong protocol that [ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md) §7
-> requires before any cross-shard prepare/commit machinery is built; the acid roadmap tracks delivery
-> as Phase 5 contract 3 / Phase 6. Sections below are written as the contract the implementation must
-> satisfy, not as a description of current code.
+> **Status note:** The decision is **accepted**. Implementation is **partial: catalog/DDL only;
+> enforcement inactive.** Slice 1 has landed the logical constraint catalog (Router-owned
+> `ConstraintNameId` + `ROUTER_UNIQUE_CONSTRAINTS`) and `CREATE`/`DROP CONSTRAINT` parsing and
+> storage, under the declare-on-empty contract. Write-path TCC enforcement (reservation table,
+> unique-effect outbox, fenced Try/Confirm/Cancel, recovery) is **not yet built**, so the public
+> GQL dispatch refuses `CREATE`/`DROP CONSTRAINT` with `NotImplemented` rather than publishing an
+> unenforced uniqueness guarantee. This is the named-invariant strong protocol that
+> [ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md) §7 requires before any
+> cross-shard prepare/commit machinery is built; the acid roadmap tracks delivery as Phase 5
+> contract 3 / Phase 6. Sections below are written as the contract the implementation must satisfy;
+> except where this note says otherwise, they describe target behavior, not current code.
 >
 > **Revision 2026-06-22 #1 (post-review, APPROVE WITH CHANGES):** closed three uniqueness-violating
 > paths — (1) intra-mutation duplicate claims, now distinguished by `ClaimId` and rejected
@@ -559,7 +565,10 @@ follows from that asymmetry — what must be pre-resolvable is the *acquire* cla
 
 ## Required test and benchmark gate (Phase 6)
 
-Before this ADR moves to `accepted`/implemented, the implementation must add:
+The decision is already `accepted` and the catalog/DDL layer has landed (see the status note), but
+the constraint feature stays **unpublished** — the public dispatch returns `NotImplemented` — until
+enforcement is fully implemented. Before that gate opens and `CREATE`/`DROP CONSTRAINT` is accepted
+on the write path, the implementation must add:
 
 - failure-injection tests for **every** message boundary: Try-then-Router-trap, canonical-write
   failure after Try, Confirm-then-trap, concurrent same-value claims (one wins, loser retryable),

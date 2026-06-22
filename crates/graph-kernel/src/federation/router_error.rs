@@ -68,6 +68,11 @@ pub enum RouterError {
     ShardAlreadyRegistered,
     #[error("id exhausted: {0}")]
     IdExhausted(String),
+    /// A recognized operation whose implementation is intentionally inactive (e.g. a feature
+    /// landed in slices and not yet end-to-end). Distinct from `InvalidArgument`: the request is
+    /// well-formed, but the capability is not yet published. Not retryable.
+    #[error("not implemented: {0}")]
+    NotImplemented(String),
     #[error("internal: {0}")]
     Internal(String),
 }

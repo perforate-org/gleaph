@@ -1,8 +1,8 @@
 //! Federated label and property resolution catalogs (ADR 0018 graph-scoped vocabulary).
 
 use super::super::stable::{
-    ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_PAYLOAD_PROFILES, ROUTER_PROPERTY_CATALOG,
-    ROUTER_VERTEX_LABEL_CATALOG,
+    ROUTER_CONSTRAINT_NAME_CATALOG, ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_PAYLOAD_PROFILES,
+    ROUTER_PROPERTY_CATALOG, ROUTER_VERTEX_LABEL_CATALOG,
 };
 use crate::facade::auth;
 use crate::facade::stable::constraint_catalog::{self as constraint_store, ConstraintDefRecord};
@@ -234,7 +234,14 @@ impl RouterStore {
     ///
     /// Label, property, and constraint registration happen in one no-`await` region; every
     /// validation runs first in the read-only preflight, so a rejected `CREATE` leaves no
-    /// partial label/property/constraint state.
+    /// partial label/property/constraint state. Id-exhaustion is part of that preflight: each
+    /// catalog the commit will allocate from is capacity-checked via `peek_next_id` before the
+    /// first mutation, so the commit region cannot fail half-way and strand a label/property/name.
+    ///
+    /// Not yet reachable from the public GQL dispatch: CREATE/DROP CONSTRAINT returns
+    /// `NotImplemented` until write-path enforcement lands (ADR 0030 slice 5). Exercised directly
+    /// by unit tests in the meantime.
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn create_unique_constraint(
         &self,
         graph_id: GraphId,
@@ -265,6 +272,19 @@ impl RouterStore {
             )));
         }
 
+        // Capacity preflight: prove every id allocation the commit performs will succeed, so the
+        // no-await region cannot fail after interning the property or label. `peek_next_id` is
+        // read-only and returns the same error `get_or_insert` would on exhaustion.
+        ROUTER_PROPERTY_CATALOG
+            .with_borrow(|catalog| catalog.peek_next_id(graph_id, property))
+            .map_err(|e| catalog_error_to_router(e, "property"))?;
+        ROUTER_VERTEX_LABEL_CATALOG
+            .with_borrow(|catalog| catalog.peek_next_id(graph_id, label))
+            .map_err(|e| catalog_error_to_router(e, "vertex label"))?;
+        ROUTER_CONSTRAINT_NAME_CATALOG
+            .with_borrow(|catalog| catalog.peek_next_id(graph_id, constraint_name))
+            .map_err(|e| catalog_error_to_router(e, "constraint"))?;
+
         // --- commit (single no-await region, all-or-nothing) ---
         let property_id = Self::commit_intern_property_name(graph_id, property)?;
         let vertex_label_id = Self::commit_intern_vertex_label_name(graph_id, label)?;
@@ -281,6 +301,9 @@ impl RouterStore {
         Ok(())
     }
 
+    /// Drops a uniqueness constraint declaration. See [`Self::create_unique_constraint`] for why
+    /// this is not yet reachable from the public dispatch (ADR 0030 slice 5).
+    #[cfg_attr(not(test), allow(dead_code))]
     pub(crate) fn drop_unique_constraint(
         &self,
         graph_id: GraphId,

@@ -129,6 +129,24 @@ where
         Ok(id)
     }
 
+    /// Read-only capacity preflight: returns the id [`Self::get_or_insert`] would yield for
+    /// `name` without mutating the catalog. An already-mapped name returns its existing id (no
+    /// allocation); a new name allocates and validates the next id against the reserved id, the
+    /// configured max, and the id width, returning the same `CatalogError` `get_or_insert` would.
+    ///
+    /// Callers use this to prove a later no-`await` commit region cannot fail on id exhaustion:
+    /// run `peek_next_id` for every catalog touched during preflight, then commit knowing each
+    /// allocation will succeed.
+    pub fn peek_next_id(&self, graph_id: GraphId, name: &str) -> Result<Id, CatalogError<Id>> {
+        if let Some(id) = self.get_id(graph_id, name) {
+            return Ok(id);
+        }
+        let next = self.next_id_for_graph(graph_id)?;
+        let id = Id::from_raw_u32(next).ok_or(CatalogError::IdExhausted)?;
+        Self::validate_new_id(id)?;
+        Ok(id)
+    }
+
     pub fn clear_new(&mut self) {
         self.name_to_id.clear_new();
         self.id_to_name.clear_new();
@@ -164,12 +182,10 @@ where
         Policy::next_raw_id(existing)
     }
 
-    fn insert_mapping(
-        &mut self,
-        graph_id: GraphId,
-        name: &str,
-        id: Id,
-    ) -> Result<(), CatalogError<Id>> {
+    /// Single source of truth for which freshly-allocated ids are admissible: not the reserved
+    /// id and within the policy's configured max. Shared by [`Self::get_or_insert`] (via
+    /// `insert_mapping`) and [`Self::peek_next_id`] so the preflight and commit agree exactly.
+    fn validate_new_id(id: Id) -> Result<(), CatalogError<Id>> {
         if id == Policy::reserved_id() {
             return Err(CatalogError::ReservedId(id));
         }
@@ -178,6 +194,16 @@ where
         {
             return Err(CatalogError::MaxIdExceeded);
         }
+        Ok(())
+    }
+
+    fn insert_mapping(
+        &mut self,
+        graph_id: GraphId,
+        name: &str,
+        id: Id,
+    ) -> Result<(), CatalogError<Id>> {
+        Self::validate_new_id(id)?;
         let name_key = GraphScopedNameKey {
             graph_id,
             name: name.to_owned(),
@@ -204,7 +230,7 @@ where
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::bidirectional_catalog::DenseIndexNamePolicy;
+    use crate::bidirectional_catalog::{DenseIndexNamePolicy, DenseMaxPlusOnePolicy};
     use crate::entry::IndexNameId;
     use ic_stable_structures::VectorMemory;
 
@@ -213,6 +239,55 @@ mod tests {
 
     fn catalog() -> TestCatalog {
         GraphScopedNameCatalog::init(VectorMemory::default(), VectorMemory::default())
+    }
+
+    /// Tiny-capacity policy (max id = 1) so id exhaustion is reachable in a unit test without
+    /// inserting tens of thousands of entries.
+    struct CappedPolicy;
+    impl CatalogAllocationPolicy<IndexNameId> for CappedPolicy {
+        fn reserved_id() -> IndexNameId {
+            IndexNameId::default()
+        }
+        fn max_id() -> Option<IndexNameId> {
+            IndexNameId::from_raw_u32(1)
+        }
+        fn next_raw_id(
+            existing: impl Iterator<Item = u32>,
+        ) -> Result<u32, CatalogError<IndexNameId>> {
+            DenseMaxPlusOnePolicy::next_raw_id(existing)
+        }
+    }
+
+    type CappedCatalog =
+        GraphScopedNameCatalog<IndexNameId, VectorMemory, VectorMemory, CappedPolicy>;
+
+    #[test]
+    fn peek_next_id_is_readonly_and_matches_get_or_insert() {
+        let mut cat: CappedCatalog =
+            GraphScopedNameCatalog::init(VectorMemory::default(), VectorMemory::default());
+        let g = GraphId::from_raw(1);
+
+        // First allocation fits (id 1 == max). peek predicts it without mutating.
+        assert_eq!(cat.peek_next_id(g, "a").unwrap().raw(), 1);
+        let a = cat.get_or_insert(g, "a").unwrap();
+        assert_eq!(a.raw(), 1);
+
+        // Already-mapped name: peek returns the existing id, no allocation.
+        assert_eq!(cat.peek_next_id(g, "a").unwrap(), a);
+
+        // A new name would need id 2 > max 1: peek and get_or_insert reject identically...
+        assert!(matches!(
+            cat.peek_next_id(g, "b"),
+            Err(CatalogError::MaxIdExceeded)
+        ));
+        assert!(matches!(
+            cat.get_or_insert(g, "b"),
+            Err(CatalogError::MaxIdExceeded)
+        ));
+
+        // ...and neither the rejected peek nor the rejected insert left partial state.
+        assert_eq!(cat.get_id(g, "b"), None);
+        assert_eq!(cat.get_name(g, a), Some("a".to_owned()));
     }
 
     #[test]

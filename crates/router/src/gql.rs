@@ -554,28 +554,21 @@ async fn run_gql(
                 remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
             });
         }
-        let stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-        let store = RouterStore::new();
-        let graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
-        match stmt {
-            crate::constraint_ddl::ConstraintDdlStatement::Create {
-                constraint_name,
-                if_not_exists,
-                label,
-                property,
-            } => store.create_unique_constraint(
-                graph_id,
-                &constraint_name,
-                if_not_exists,
-                &label,
-                &property,
-            )?,
-            crate::constraint_ddl::ConstraintDdlStatement::Drop {
-                constraint_name,
-                if_exists,
-            } => store.drop_unique_constraint(graph_id, &constraint_name, if_exists)?,
-        }
-        return Ok(GqlQueryResult::row_count_only(0));
+        // Validate syntax so malformed constraint DDL is a precise `InvalidArgument` rather than
+        // an opaque `NotImplemented`.
+        let _stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        // ADR 0030 (partially implemented): the constraint catalog and CREATE/DROP CONSTRAINT
+        // parsing/storage exist (slice 1), but write-path TCC enforcement is not active until
+        // slice 5. Publishing an "active" UNIQUE constraint now would promise a uniqueness
+        // guarantee the write path does not yet enforce, so the public dispatch refuses the
+        // operation instead of silently accepting duplicates. The store-level
+        // `create_unique_constraint` / `drop_unique_constraint` remain exercised by unit tests
+        // and become reachable here when enforcement lands.
+        return Err(RouterError::NotImplemented(
+            "uniqueness constraints are accepted in design (ADR 0030) but write-path enforcement \
+             is not yet active; CREATE/DROP CONSTRAINT is temporarily disabled"
+                .to_string(),
+        ));
     }
 
     let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
