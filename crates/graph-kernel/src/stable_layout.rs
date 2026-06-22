@@ -893,6 +893,15 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "(graph_id, constraint_name_id) → ConstraintDefRecord (ADR 0030)",
             RebuildPath::None,
         ),
+        region(
+            "ROUTER_UNIQUE_RESERVATIONS",
+            37,
+            StableMemoryClass::Canonical,
+            "uniqueness reservation table",
+            "(graph_id, constraint_id, encoded_value) → reservation (TCC claim state; ADR 0030). \
+             Canonical: a Reserved-not-yet-committed claim has no outbox receipt to rebuild from",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1130,8 +1139,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 37);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(36));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 38);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(37));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].class,
             StableMemoryClass::Telemetry

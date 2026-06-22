@@ -68,6 +68,15 @@ pub enum RouterError {
     ShardAlreadyRegistered,
     #[error("id exhausted: {0}")]
     IdExhausted(String),
+    /// A uniqueness constraint would be violated (ADR 0030). **Not retryable**: the value is already
+    /// committed, or the same mutation claims one value twice. Resubmitting is rejected identically.
+    #[error("uniqueness violation: {0}")]
+    UniquenessViolation(String),
+    /// A uniqueness value is claimed by an in-flight or reclaiming mutation (ADR 0030).
+    /// **Retryable**: retry after the holding saga resolves (it then either frees the value or this
+    /// retry gets `UniquenessViolation`).
+    #[error("uniqueness reservation in flight: {0}")]
+    UniquenessReservationInFlight(String),
     /// A recognized operation whose implementation is intentionally inactive (e.g. a feature
     /// landed in slices and not yet end-to-end). Distinct from `InvalidArgument`: the request is
     /// well-formed, but the capability is not yet published. Not retryable.

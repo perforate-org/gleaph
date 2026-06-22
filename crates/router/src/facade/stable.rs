@@ -14,6 +14,7 @@ pub(crate) mod label_stats;
 pub(crate) mod layout;
 pub(crate) mod memory;
 pub(crate) mod prepared_catalog;
+pub(crate) mod reservation_catalog;
 
 thread_local! {
     // --- auth ---
@@ -86,6 +87,11 @@ thread_local! {
     /// `(graph, constraint_name_id) → unique constraint definition` (ADR 0030).
     pub(crate) static ROUTER_UNIQUE_CONSTRAINTS: RefCell<memory::StableUniqueConstraintMap> =
         RefCell::new(memory::init_unique_constraints());
+
+    /// `(graph, constraint_id, encoded_value) → reservation` — cross-shard uniqueness TCC table
+    /// (ADR 0030).
+    pub(crate) static ROUTER_UNIQUE_RESERVATIONS: RefCell<memory::StableUniqueReservationMap> =
+        RefCell::new(memory::init_unique_reservations());
 
     // --- telemetry ---
     pub(crate) static ROUTER_VERTEX_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =

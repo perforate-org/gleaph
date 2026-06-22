@@ -5,14 +5,23 @@ Status: accepted (partially implemented)
 Last revised: 2026-06-22
 
 > **Status note:** The decision is **accepted**. Implementation is **partial: catalog/DDL +
-> value encoding only; enforcement inactive.** Slice 1 has landed the logical constraint catalog
+> value encoding + reservation table & no-`await` Try only; enforcement inactive.** Slice 1 has
+> landed the logical constraint catalog
 > (Router-owned `ConstraintNameId` + `ROUTER_UNIQUE_CONSTRAINTS`) and `CREATE`/`DROP CONSTRAINT`
 > parsing and storage, under the declare-on-empty contract. Slice 2 has landed the canonical
 > `encoded_value` (`gleaph_gql_ic::unique_key`): the equality-injective reservation key built on the
 > property-index key encoding, with NULL→no-claim, non-finite(`NaN`/`±∞`)/unsupported/over-length
 > rejection, and the
-> shared `MAX_UNIQUE_ENCODED_VALUE_LEN` bound. Write-path TCC enforcement (reservation table,
-> unique-effect outbox, fenced Try/Confirm/Cancel, recovery) is **not yet built**, so the public
+> shared `MAX_UNIQUE_ENCODED_VALUE_LEN` bound. Slice 3 has landed the reservation table
+> (`ROUTER_UNIQUE_RESERVATIONS`, MemoryId 37, keyed by `(graph_id, constraint_id, encoded_value)`),
+> the `Reserved`/`Reclaiming`/`Committed` state-machine schema (immutable `ClaimId`,
+> `reclaim_generation`, `owner_element_id`, `proof_scope`), and the **no-`await` Try** transition
+> (claim-set dedup → read-only preflight → all-or-nothing apply). Slice 3 deliberately classifies a
+> value held by another live mutation as retryable *in-flight* rather than attempting a reclaim — the
+> safe subset that never falsely admits a duplicate — because the generation-fenced reclaim proof
+> depends on the unique-effect outbox (slices 4–6). The remaining write-path TCC enforcement
+> (unique-effect outbox, fenced Try wired into INSERT, Confirm/Cancel, recovery) is **not yet
+> built**, so the public
 > GQL dispatch refuses `CREATE`/`DROP CONSTRAINT` with `NotImplemented` rather than publishing an
 > unenforced uniqueness guarantee. This is the named-invariant strong protocol that
 > [ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md) §7 requires before any
@@ -178,9 +187,12 @@ owns the reservation locally.
     decision (conditioned on the generation it began with) cannot be falsely matched by a later proof
     — this closes the ABA hole that a state-nested generation would leave.
   - `proof_scope` is the **complete set of target shards** the claim may have committed on, copied
-    into the reservation at Try time. The reclaim/recovery proof reads it **from the reservation
-    itself**, so a GC'd `RouterMutationRecord` can never strand the proof (see Timeout and
-    Upgrade/retention).
+    into the reservation at Try time. Each entry pins the **canister identity** (`{ shard_id,
+    graph_canister }`), not a bare graph-local shard id: a shard id can be unregistered and reused by
+    a *different* canister, so a bare id would let the proof query the wrong (new) canister, see no
+    `Acquire`, and unsafely Cancel a claim that committed on the old one. The reclaim/recovery proof
+    reads it **from the reservation itself**, so a GC'd `RouterMutationRecord` can never strand the
+    proof (see Timeout and Upgrade/retention).
   - The owner is therefore a **claim**, not a mutation: two distinct claims in the same mutation are
     distinguishable, which is what makes an intra-mutation duplicate detectable (see Try).
   - Keying by the **exact canonical-encoded value bytes** (not a hash) avoids hash-collision false

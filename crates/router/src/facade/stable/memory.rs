@@ -26,6 +26,7 @@ use gleaph_graph_catalog::GraphCatalog;
 
 use super::constraint_catalog::{ConstraintDefRecord, UniqueConstraintKey};
 use super::indexed_catalog::{IndexDefRecord, IndexedPropertyKey, NamedIndexKey};
+use super::reservation_catalog::{ReservationRecord, UniqueReservationKey};
 use candid::CandidType;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
@@ -89,6 +90,7 @@ const ROUTER_EDGE_BACKFILL_STATE: MemoryId = MemoryId::new(33);
 const ROUTER_CONSTRAINT_NAME_BY_NAME: MemoryId = MemoryId::new(34);
 const ROUTER_CONSTRAINT_NAME_BY_ID: MemoryId = MemoryId::new(35);
 const ROUTER_UNIQUE_CONSTRAINTS: MemoryId = MemoryId::new(36);
+const ROUTER_UNIQUE_RESERVATIONS: MemoryId = MemoryId::new(37);
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
@@ -208,6 +210,8 @@ pub(crate) type StableConstraintNameCatalog =
     GraphScopedNameCatalog<ConstraintNameId, Memory, Memory, DenseConstraintNamePolicy>;
 pub(crate) type StableUniqueConstraintMap =
     BTreeMap<UniqueConstraintKey, ConstraintDefRecord, Memory>;
+pub(crate) type StableUniqueReservationMap =
+    BTreeMap<UniqueReservationKey, ReservationRecord, Memory>;
 
 // --- telemetry ---
 pub(crate) type StableLabelStatsMap =
@@ -343,6 +347,10 @@ pub(crate) fn init_constraint_name_catalog() -> StableConstraintNameCatalog {
 
 pub(crate) fn init_unique_constraints() -> StableUniqueConstraintMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_UNIQUE_CONSTRAINTS)))
+}
+
+pub(crate) fn init_unique_reservations() -> StableUniqueReservationMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_UNIQUE_RESERVATIONS)))
 }
 
 // --- telemetry ---
