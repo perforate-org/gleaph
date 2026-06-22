@@ -10,13 +10,14 @@ use gleaph_gql_ic::{IcWirePlanQueryResult, decode_gql_params_blob};
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_gql_planner::{PhysicalPlan, PlanOp, build_block_plan_with_schema};
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
+use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, PostingHit, ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanResult, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire, MutationId,
     MutationJournalState, MutationToken, MutationTokenShard, ReadMode, ShardEventSeq,
+    UniqueClaimDispatch,
 };
 use ic_cdk::api::msg_caller;
 
@@ -37,8 +38,9 @@ use crate::federation::{
     try_label_count_telemetry_fast_path, vertex_label_live_count,
 };
 use crate::graph_client::{
-    ack_label_stats_deltas_through, execute_plan_on_graph, get_mutation_journal_entry,
-    index_pending_min_mutation_id, list_pending_label_stats_deltas,
+    ack_label_stats_deltas_through, ack_unique_effects, execute_plan_on_graph,
+    get_mutation_journal_entry, index_pending_min_mutation_id, list_pending_label_stats_deltas,
+    read_unique_effect_proof,
 };
 use crate::index_catalog::graph_stats_for;
 use crate::index_lookup::{IndexLookup, RouterIndexLookup};
@@ -557,16 +559,18 @@ async fn run_gql(
         // Validate syntax so malformed constraint DDL is a precise `InvalidArgument` rather than
         // an opaque `NotImplemented`.
         let _stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-        // ADR 0030 (partially implemented): the constraint catalog and CREATE/DROP CONSTRAINT
-        // parsing/storage exist (slice 1), but write-path TCC enforcement is not active until
-        // slice 5. Publishing an "active" UNIQUE constraint now would promise a uniqueness
-        // guarantee the write path does not yet enforce, so the public dispatch refuses the
-        // operation instead of silently accepting duplicates. The store-level
-        // `create_unique_constraint` / `drop_unique_constraint` remain exercised by unit tests
-        // and become reachable here when enforcement lands.
+        // ADR 0030: CREATE/DROP CONSTRAINT stays disabled until the *full* uniqueness lifecycle is
+        // live. Slice 5a wires only the INSERT Try/Acquire/Confirm path; DELETE/REMOVE Release
+        // (slice 5b), the recovery reconciler (slice 6), and failure-injection coverage (slice 7)
+        // are not yet implemented. Publishing the DDL now would let a caller declare a UNIQUE
+        // constraint that is only half-enforced (no release on deletion, no crash recovery), which
+        // is a weaker, silently-wrong guarantee than refusing it. The store-level
+        // `create_unique_constraint` / `drop_unique_constraint` and the write-path enforcement
+        // remain exercised by unit tests and become reachable here when the lifecycle is complete.
         return Err(RouterError::NotImplemented(
-            "uniqueness constraints are accepted in design (ADR 0030) but write-path enforcement \
-             is not yet active; CREATE/DROP CONSTRAINT is temporarily disabled"
+            "uniqueness constraints are accepted in design (ADR 0030) but the full write-path \
+             lifecycle (insert + delete release + recovery) is not yet active; CREATE/DROP \
+             CONSTRAINT is temporarily disabled"
                 .to_string(),
         ));
     }
@@ -1054,6 +1058,29 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         },
     };
 
+    // ADR 0030 slice 5a: detect the cross-shard uniqueness claims this INSERT makes (admission gate
+    // + canonical `encoded_value`). Computed before dispatch so a rejected/over-scope constrained
+    // insert never records an envelope or reserves anything.
+    let unique_claims = match store.plan_unique_claims(
+        graph_id,
+        plans,
+        pmap,
+        &resolved_labels,
+        &resolved_properties,
+    ) {
+        Ok(claims) => claims,
+        Err(err) => {
+            release_routing_if_owner(
+                store,
+                caller,
+                graph_id,
+                client_mutation_key,
+                mutation_reservation,
+            )?;
+            return Err(err);
+        }
+    };
+
     let mut dispatches: Vec<ShardDispatch> = if let Some(record) = saved_record.as_ref()
         && !record.shards.is_empty()
     {
@@ -1164,6 +1191,25 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         routings_to_dispatches(routings)
     };
 
+    // ADR 0030 slice 5a single-shard gate. A claim's `Acquire` is attached to the one vertex its
+    // single shard creates; the same claim broadcast to multiple shards would let each commit a
+    // vertex with the same value. Refuse *before* recording the shard envelope — a rejection after
+    // the envelope record would strand a non-terminal saga that the recovery scan keeps revisiting.
+    if !unique_claims.is_empty() && dispatches.len() != 1 {
+        release_routing_if_owner(
+            store,
+            caller,
+            graph_id,
+            client_mutation_key,
+            mutation_reservation,
+        )?;
+        return Err(RouterError::NotImplemented(
+            "INSERT under a uniqueness constraint must route to a single shard \
+             (ADR 0030 slice 5a)"
+                .to_string(),
+        ));
+    }
+
     // ADR 0029 Phase 5 (contract 2, roll-forward bundle): a multi-DML bundle reaching dispatch on a
     // federated graph is already structurally safe (the pre-dispatch gate admits only pure-insert or
     // single-anchor threaded bundles, neither of which performs a cross-shard read). A pure-insert is
@@ -1215,6 +1261,39 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     let indexed_properties =
         crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
 
+    // ADR 0030 slice 5a: no-`await` Try. All fallible preflight above (routing resolution, the
+    // single-shard gate, envelope record, element-id key) has run, so the only step between this
+    // reservation and the canonical write is the synchronous setup below — there is no fallible
+    // early-return that could strand a reservation without a write. The reservation co-commits with
+    // the envelope at the first dispatch `await`; it is idempotent on replay. `dispatches.len() == 1`
+    // is already guaranteed by the pre-envelope gate.
+    if !unique_claims.is_empty()
+        && let Some(mutation_id) = mutation_id
+        && let Err(err) =
+            store.try_reserve_unique(graph_id, mutation_id, &unique_claims, &dispatches)
+    {
+        release_routing_if_owner(
+            store,
+            caller,
+            graph_id,
+            client_mutation_key,
+            mutation_reservation,
+        )?;
+        return Err(err);
+    }
+
+    // ADR 0030 slice 5a: the target(s) the dispatched `Acquire`s commit on, captured before the
+    // loop consumes `dispatches`, so Confirm can read the replicated proof afterward.
+    let unique_proof_targets: Vec<Principal> = if unique_claims.is_empty() {
+        Vec::new()
+    } else {
+        dispatches
+            .iter()
+            .map(|dispatch| dispatch.graph_canister)
+            .collect()
+    };
+    let dispatch_unique_claims = (!unique_claims.is_empty()).then(|| unique_claims.clone());
+
     let mut merged = empty_execute_plan_result();
     // ADR 0029 Phase 2: accumulate per-shard read-your-writes watermarks for the mutation
     // token as each shard completes (built live so it survives record compaction).
@@ -1233,6 +1312,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 resolved_labels: Some(resolved_labels.clone()),
                 resolved_properties: Some(resolved_properties.clone()),
                 indexed_properties: Some(indexed_properties.clone()),
+                unique_claims: dispatch_unique_claims.clone(),
             },
         )
         .await
@@ -1334,6 +1414,22 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         merge_execute_plan_result(&mut merged, result, merge_mode.clone())
             .map_err(RouterError::InvalidArgument)?;
     }
+    // ADR 0030 slice 5a: Confirm the cross-shard uniqueness reservations now that every shard's
+    // canonical write (and its pinned `Acquire`) is durable. Best-effort and idempotent — the
+    // canonical write cannot be rolled back, so a read/ack failure leaves the reservation `Reserved`
+    // for the slice-6 recovery reconciler rather than failing the (succeeded) mutation.
+    if let Some(mutation_id) = mutation_id
+        && !unique_claims.is_empty()
+    {
+        confirm_unique_reservations(
+            store,
+            graph_id,
+            mutation_id,
+            &unique_claims,
+            &unique_proof_targets,
+        )
+        .await;
+    }
     if let FederatedMergeMode::Aggregate(spec) = &merge_mode {
         apply_federated_aggregate_having(&mut merged, spec, pmap)
             .map_err(RouterError::InvalidArgument)?;
@@ -1392,6 +1488,75 @@ fn release_routing_if_owner(
         store.abandon_router_mutation_routing_reservation(caller, graph_id, key)?;
     }
     Ok(())
+}
+
+/// Confirm step of the cross-shard uniqueness TCC (ADR 0030 slice 5a).
+///
+/// Reads the replicated `Acquire` proof from each target the canonical write committed on, then for
+/// every claim that has durable evidence transitions its reservation `Reserved → Committed` and acks
+/// (unpins) the consumed effect. Best-effort by contract: the canonical write is already durable and
+/// cannot be rolled back, so a failed read/ack leaves the reservation `Reserved` for the slice-6
+/// recovery reconciler instead of failing the mutation that already succeeded.
+async fn confirm_unique_reservations(
+    store: &RouterStore,
+    graph_id: GraphId,
+    mutation_id: MutationId,
+    claims: &[UniqueClaimDispatch],
+    proof_targets: &[Principal],
+) {
+    let claim_ids: Vec<ClaimId> = claims
+        .iter()
+        .map(|claim| ClaimId::new(mutation_id, claim.claim_ordinal))
+        .collect();
+    for target in proof_targets {
+        let proofs = match read_unique_effect_proof(*target, claim_ids.clone()).await {
+            Ok(proofs) => proofs,
+            // Leave reservations `Reserved`; slice-6 recovery reconciles them.
+            Err(_) => continue,
+        };
+        let acked_effects =
+            confirm_proofs_collect_acks(store, graph_id, mutation_id, claims, proofs);
+        if !acked_effects.is_empty() {
+            let _ = ack_unique_effects(*target, acked_effects).await;
+        }
+    }
+}
+
+/// Decision core of [`confirm_unique_reservations`], factored out from the inter-canister I/O so it
+/// is unit-testable: given the proofs one target returned, confirm each backed claim and return the
+/// effect ids that may be acked. The two safety contracts live here:
+/// - **full `ClaimId` match**: the proof and the claim must agree on `(mutation_id, claim_ordinal)`,
+///   so a stale/foreign proof can never confirm or ack a claim it does not own;
+/// - **ack iff this claim owns the commit**: an effect is returned for ack whenever
+///   `confirm_unique_claim` returns `true`, i.e. the value is committed *by this claim* — either a
+///   fresh `Reserved → Committed` move or an idempotent re-confirm of an already-`Committed` claim.
+///   The idempotent case is intentional: a Confirm replayed after a previous ack failed must re-ack
+///   so the pinned effect is eventually unpinned. A `false` (missing/`Reclaiming`/terminal-by-another
+///   -claim/mismatched) must not ack, or it would unpin the sole durable commit evidence and make
+///   slice-6 recovery misread the value as uncommitted.
+fn confirm_proofs_collect_acks(
+    store: &RouterStore,
+    graph_id: GraphId,
+    mutation_id: MutationId,
+    claims: &[UniqueClaimDispatch],
+    proofs: Vec<gleaph_graph_kernel::federation::UniqueAcquireProof>,
+) -> Vec<EffectId> {
+    let mut acked_effects: Vec<EffectId> = Vec::new();
+    for proof in proofs {
+        let Some(evidence) = proof.acquire else {
+            continue;
+        };
+        let Some(claim) = claims
+            .iter()
+            .find(|claim| proof.claim_id == ClaimId::new(mutation_id, claim.claim_ordinal))
+        else {
+            continue;
+        };
+        if store.confirm_unique_claim(graph_id, mutation_id, claim, evidence.owner_element_id) {
+            acked_effects.push(evidence.effect_id);
+        }
+    }
+    acked_effects
 }
 
 fn request_fingerprint(plan_blob: &[u8], params: &[u8], mode: GqlExecutionMode) -> Vec<u8> {
@@ -2880,5 +3045,303 @@ mod tests {
             &ReadMode::AtLeast(token),
         ))
         .expect("no shard watermarks to satisfy");
+    }
+
+    /// ADR 0030 slice 5a: the single-shard admission gate must run *before* the saga envelope record
+    /// and Try, so a constrained insert that resolves to more than one shard is refused with no
+    /// reservation residue. The only way to reach the gate with >1 dispatch is a pre-recorded
+    /// multi-shard saga envelope (fresh routing of a pure insert always lands on one shard), so the
+    /// test seeds that envelope and drives the real dispatch path.
+    #[test]
+    fn single_shard_gate_rejects_constrained_multishard_dispatch_without_reservation_residue() {
+        use crate::facade::stable::constraint_name_catalog::lookup_constraint_name_id;
+        use crate::facade::stable::label_stats::RouterMutationShard;
+        use crate::facade::stable::reservation_catalog::{self, ProofShard, ReservationClaim};
+        use crate::facade::store::ClientMutationReservation;
+        use gleaph_gql::ast::{Expr, ExprKind};
+        use gleaph_gql_ic::{UniqueKeyOutcome, encode_unique_value};
+        use gleaph_gql_planner::plan::PropertyAssignment;
+        use gleaph_graph_kernel::federation::ShardId;
+        use gleaph_graph_kernel::plan_exec::{
+            ResolvedLabelTable, ResolvedProperty, ResolvedPropertyTable, ResolvedVertexLabel,
+        };
+
+        let store = store_with_shards();
+        let graph_id = tenant_main_graph_id();
+        let caller = Principal::anonymous();
+        let key = "ck-multishard";
+
+        store
+            .create_unique_constraint(graph_id, "user_email", false, "User", "email")
+            .expect("declare constraint");
+        let label_id = store
+            .lookup_vertex_label_id(graph_id, "User")
+            .expect("User interned");
+        let property_id = store
+            .lookup_property_id(graph_id, "email")
+            .expect("email interned");
+
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::InsertVertex {
+            variable: Some(Rc::from("n")),
+            labels: vec![NodeLabelRef::from("User")],
+            properties: vec![PropertyAssignment {
+                name: "email".into(),
+                value: Expr::new(ExprKind::Literal(Value::Text("a@x".into()))),
+            }],
+        }]);
+        let plan_blob = seeded_dml_bundle(&plan);
+        let fingerprint = request_fingerprint(&plan_blob, &[], GqlExecutionMode::Update);
+
+        // Seed a 2-shard saga envelope under this key so dispatch resolves to two dispatches.
+        let reservation: ClientMutationReservation = store
+            .reserve_mutation_id_for_client_key(caller, graph_id, key, fingerprint)
+            .expect("reserve mutation id");
+        assert!(reservation.routing_owner);
+        let resolved_labels = ResolvedLabelTable {
+            vertex: vec![ResolvedVertexLabel {
+                name: "User".into(),
+                id: label_id,
+            }],
+            edge: vec![],
+        };
+        let resolved_properties = ResolvedPropertyTable {
+            properties: vec![ResolvedProperty {
+                name: "email".into(),
+                id: property_id,
+            }],
+        };
+        store
+            .record_router_mutation_shards(
+                caller,
+                graph_id,
+                key,
+                resolved_labels,
+                resolved_properties,
+                vec![
+                    RouterMutationShard::new(ShardId::new(0), graph_principal(1), None),
+                    RouterMutationShard::new(ShardId::new(1), graph_principal(4), None),
+                ],
+            )
+            .expect("record 2-shard envelope");
+
+        let fake_index = FakeIndex::new(vec![]);
+        let err = futures::executor::block_on(dispatch_with_fake_index(
+            &store,
+            &fake_index,
+            &plan,
+            &plan_blob,
+            key,
+        ))
+        .expect_err("constrained insert fanning out to 2 shards must be refused");
+        assert!(matches!(err, RouterError::NotImplemented(_)), "got {err:?}");
+        // The gate ran before any index work.
+        assert_eq!(fake_index.calls(), 0);
+
+        // No reservation residue: a fresh mutation can reserve the same value (a stranded `Reserved`
+        // record would have returned `UniquenessReservationInFlight` here).
+        let constraint_id =
+            lookup_constraint_name_id(graph_id, "user_email").expect("constraint id");
+        let encoded = match encode_unique_value(&Value::Text("a@x".into())) {
+            UniqueKeyOutcome::Claim(bytes) => bytes,
+            other => panic!("expected a claim, got {other:?}"),
+        };
+        reservation_catalog::try_reserve(
+            graph_id,
+            999,
+            &[ReservationClaim {
+                constraint_id,
+                encoded_value: encoded,
+                claim_ordinal: 0,
+            }],
+            &[ProofShard::new(ShardId::new(0), graph_principal(1))],
+            1,
+        )
+        .expect("no residual reservation fences a later insert of the same value");
+    }
+
+    /// ADR 0030 slice 5a Confirm orchestration (`confirm_proofs_collect_acks`): the two safety
+    /// contracts that `confirm_reservation`'s own unit tests do not cover at the orchestration layer.
+    mod confirm_orchestration {
+        use super::super::confirm_proofs_collect_acks;
+        use crate::facade::stable::reservation_catalog::{self, ProofShard, ReservationClaim};
+        use crate::facade::store::RouterStore;
+        use candid::Principal;
+        use gleaph_graph_kernel::entry::{ConstraintNameId, GraphId};
+        use gleaph_graph_kernel::federation::{
+            ClaimId, EffectId, ShardId, UniqueAcquireEvidence, UniqueAcquireProof,
+        };
+        use gleaph_graph_kernel::plan_exec::UniqueClaimDispatch;
+
+        const CONSTRAINT: u16 = 5;
+
+        fn graph(seed: u32) -> GraphId {
+            GraphId::from_raw(910_000 + seed)
+        }
+
+        fn claims() -> Vec<UniqueClaimDispatch> {
+            vec![UniqueClaimDispatch {
+                claim_ordinal: 0,
+                constraint_id: ConstraintNameId::from_raw(CONSTRAINT),
+                encoded_value: b"v".to_vec(),
+            }]
+        }
+
+        fn seed_reserved(g: GraphId, mutation_id: u64) {
+            reservation_catalog::try_reserve(
+                g,
+                mutation_id,
+                &[ReservationClaim {
+                    constraint_id: ConstraintNameId::from_raw(CONSTRAINT),
+                    encoded_value: b"v".to_vec(),
+                    claim_ordinal: 0,
+                }],
+                &[ProofShard::new(ShardId::new(0), Principal::anonymous())],
+                1,
+            )
+            .expect("seed reserved");
+        }
+
+        fn proof(claim_id: ClaimId, acquire: Option<UniqueAcquireEvidence>) -> UniqueAcquireProof {
+            UniqueAcquireProof { claim_id, acquire }
+        }
+
+        fn evidence() -> UniqueAcquireEvidence {
+            UniqueAcquireEvidence {
+                effect_id: EffectId::new(10, 0),
+                owner_element_id: vec![7u8; 8],
+            }
+        }
+
+        /// A later `try_reserve` of the same value distinguishes the reservation's state without a
+        /// catalog peek: `Ok` ⇒ gone, `UniquenessViolation` ⇒ Committed, `…InFlight` ⇒ still Reserved.
+        fn second_try(g: GraphId) -> Result<(), crate::state::RouterError> {
+            reservation_catalog::try_reserve(
+                g,
+                20,
+                &[ReservationClaim {
+                    constraint_id: ConstraintNameId::from_raw(CONSTRAINT),
+                    encoded_value: b"v".to_vec(),
+                    claim_ordinal: 0,
+                }],
+                &[ProofShard::new(ShardId::new(0), Principal::anonymous())],
+                2,
+            )
+        }
+
+        #[test]
+        fn matching_proof_confirms_and_returns_effect_for_ack() {
+            let store = RouterStore::new();
+            let g = graph(1);
+            seed_reserved(g, 10);
+
+            let acks = confirm_proofs_collect_acks(
+                &store,
+                g,
+                10,
+                &claims(),
+                vec![proof(ClaimId::new(10, 0), Some(evidence()))],
+            );
+            assert_eq!(acks, vec![EffectId::new(10, 0)]);
+            // Reservation is now Committed.
+            assert!(matches!(
+                second_try(g),
+                Err(crate::state::RouterError::UniquenessViolation(_))
+            ));
+        }
+
+        #[test]
+        fn absent_acquire_is_not_acked_and_leaves_reservation_reserved() {
+            let store = RouterStore::new();
+            let g = graph(2);
+            seed_reserved(g, 10);
+
+            let acks = confirm_proofs_collect_acks(
+                &store,
+                g,
+                10,
+                &claims(),
+                vec![proof(ClaimId::new(10, 0), None)],
+            );
+            assert!(acks.is_empty(), "a non-commit proof must not ack");
+            assert!(matches!(
+                second_try(g),
+                Err(crate::state::RouterError::UniquenessReservationInFlight(_))
+            ));
+        }
+
+        #[test]
+        fn full_claim_id_mismatch_is_not_acked() {
+            let store = RouterStore::new();
+            let g = graph(3);
+            seed_reserved(g, 10);
+
+            // Same ordinal, different mutation: the full ClaimId does not match, so the proof is for
+            // a different mutation's claim and must be ignored.
+            let acks = confirm_proofs_collect_acks(
+                &store,
+                g,
+                10,
+                &claims(),
+                vec![proof(ClaimId::new(999, 0), Some(evidence()))],
+            );
+            assert!(acks.is_empty(), "a foreign ClaimId must not ack");
+            assert!(matches!(
+                second_try(g),
+                Err(crate::state::RouterError::UniquenessReservationInFlight(_))
+            ));
+        }
+
+        #[test]
+        fn confirm_returning_false_does_not_ack() {
+            // No reservation exists for the value, so `confirm_unique_claim` returns false; the
+            // effect must NOT be acked (acking would destroy the only commit evidence).
+            let store = RouterStore::new();
+            let g = graph(4);
+
+            let acks = confirm_proofs_collect_acks(
+                &store,
+                g,
+                10,
+                &claims(),
+                vec![proof(ClaimId::new(10, 0), Some(evidence()))],
+            );
+            assert!(
+                acks.is_empty(),
+                "a failed Reserved→Committed transition must not ack"
+            );
+        }
+
+        #[test]
+        fn already_committed_claim_re_acks_idempotently() {
+            // Confirm is idempotent: a replay against an already-`Committed` claim (e.g. the first
+            // Confirm committed but its ack call failed) must report the effect for ack again so the
+            // pinned `Acquire` is eventually unpinned.
+            let store = RouterStore::new();
+            let g = graph(5);
+            seed_reserved(g, 10);
+
+            let first = confirm_proofs_collect_acks(
+                &store,
+                g,
+                10,
+                &claims(),
+                vec![proof(ClaimId::new(10, 0), Some(evidence()))],
+            );
+            assert_eq!(first, vec![EffectId::new(10, 0)]);
+
+            // Reservation is now Committed; a replayed Confirm of the same claim re-acks.
+            let replay = confirm_proofs_collect_acks(
+                &store,
+                g,
+                10,
+                &claims(),
+                vec![proof(ClaimId::new(10, 0), Some(evidence()))],
+            );
+            assert_eq!(
+                replay,
+                vec![EffectId::new(10, 0)],
+                "idempotent re-confirm must re-ack so a previously-failed ack is retried"
+            );
+        }
     }
 }

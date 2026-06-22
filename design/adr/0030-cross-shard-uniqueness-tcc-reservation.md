@@ -4,8 +4,10 @@ Date: 2026-06-22
 Status: accepted (partially implemented)
 Last revised: 2026-06-22
 
-> **Status note:** The decision is **accepted**. Implementation is **partial: catalog/DDL +
-> value encoding + reservation table & no-`await` Try only; enforcement inactive.** Slice 1 has
+> **Status note:** The decision is **accepted**. Implementation is **partial: catalog/DDL + value
+> encoding + reservation table & no-`await` Try + pinned unique-effect outbox + the INSERT write-path
+> TCC wiring (Try/Acquire/Confirm); `CREATE`/`DROP CONSTRAINT` DDL stays gated off, and
+> delete-release/recovery/failure-injection are pending.** Slice 1 has
 > landed the logical constraint catalog
 > (Router-owned `ConstraintNameId` + `ROUTER_UNIQUE_CONSTRAINTS`) and `CREATE`/`DROP CONSTRAINT`
 > parsing and storage, under the declare-on-empty contract. Slice 2 has landed the canonical
@@ -23,12 +25,17 @@ Last revised: 2026-06-22
 > unique-effect outbox** (`UNIQUE_EFFECT_OUTBOX`, MemoryId 42, keyed by `EffectId`): per-effect
 > append/pin, `Acquire`-by-`ClaimId` and `Release`-by-`owner_element_id` matching, idempotent replay,
 > plus the Router-only **replicated `Acquire`-proof read** and **per-effect ack** endpoints
-> (`read_unique_effect_proof` / `ack_unique_effects`). The emit call-site inside the canonical DML
-> segment is wired in slice 5 (it needs the dispatch envelope to carry the claim). The remaining
-> write-path TCC enforcement (fenced Try wired into INSERT, Confirm/Cancel, recovery) is **not yet
-> built**, so the public
-> GQL dispatch refuses `CREATE`/`DROP CONSTRAINT` with `NotImplemented` rather than publishing an
-> unenforced uniqueness guarantee. This is the named-invariant strong protocol that
+> (`read_unique_effect_proof` / `ack_unique_effects`). Slice 5a has landed the **INSERT write-path
+> TCC**: Router admission (single-vertex pure `INSERT`, single-shard routing, Router-resolvable
+> literal/parameter constrained value), the fenced no-`await` Try wired into the dispatch path before
+> the canonical write, the dispatch envelope carrying the claim list (`ExecutePlanArgs.unique_claims`),
+> the shard-side `Acquire` emit inside the canonical DML segment, and Confirm/ack (replicated
+> proof read → `Reserved → Committed` **only on a successful transition** → per-effect ack). The
+> remaining write-path lifecycle — DELETE/REMOVE Release (slice 5b), the recovery reconciler (slice 6),
+> and failure-injection coverage (slice 7) — is **not yet built**, so the public GQL dispatch keeps
+> refusing `CREATE`/`DROP CONSTRAINT` with `NotImplemented`: publishing a constraint that is enforced
+> on insert but not on delete (or across crashes) would be a weaker, silently-wrong guarantee than
+> refusing it. This is the named-invariant strong protocol that
 > [ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md) §7 requires before any
 > cross-shard prepare/commit machinery is built; the acid roadmap tracks delivery as Phase 5
 > contract 3 / Phase 6. Sections below are written as the contract the implementation must satisfy;
@@ -92,6 +99,20 @@ Last revised: 2026-06-22
 > admitted (acquire); `DELETE`/`DETACH DELETE`/`REMOVE`/label-removal admitted at any cardinality
 > (release-only, no Try) so constrained elements can be deleted; every other acquiring shape (any
 > `SET`/replacement, row-multiplying INSERT) rejected at admission until the two-round protocol.
+>
+> **Revision 2026-06-22 #7 (slice 5a implementation landed):** the INSERT write-path TCC is now wired
+> end-to-end (Router admission → no-`await` Try → claim dispatch → shard `Acquire` emit →
+> Confirm/ack). Two implementation contracts hardened during review: (1) the **fallible preflight and
+> the single-shard gate both run before the shard-envelope record and before Try**, so a rejected or
+> over-scope constrained insert records no saga envelope and reserves nothing (a post-envelope
+> rejection would strand a non-terminal saga that the recovery scan revisits forever); (2) Confirm
+> acks an effect **iff the value is committed by that claim** — a fresh `Reserved → Committed`
+> transition **or** an idempotent re-confirm of an already-`Committed` claim (so a Confirm replayed
+> after a failed ack re-acks and the pinned effect is eventually unpinned) — and only after a **full
+> `ClaimId` (mutation + ordinal) match** of the proof. Acking on a missing/`Reclaiming`/
+> committed-by-another-claim/mismatched reservation would destroy the sole durable commit evidence. `CREATE`/`DROP CONSTRAINT`
+> remains `NotImplemented` (see status note): the lifecycle is not complete until delete-release
+> (5b), recovery (6), and failure-injection (7) land.
 
 ## Context
 

@@ -17,9 +17,10 @@ use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_gql_planner::{PlanBuildOptions, build_statement_plan_with_options};
+use gleaph_graph_kernel::federation::{ClaimId, EffectId, UniqueEffectOp, UniqueEffectReceipt};
 use gleaph_graph_kernel::plan_exec::{
     GqlExecutionMode as KernelGqlExecutionMode, LabelStatsDelta, MutationId, SeedBindingsWire,
-    ShardEventSeq,
+    ShardEventSeq, UniqueClaimDispatch,
 };
 use gleaph_graph_prepared::PreparedQueryRecord;
 use ic_stable_lara::VertexId;
@@ -267,6 +268,58 @@ fn record_mutation_procedure_rows(
 
 fn trap_wire_mutation_failure(error: crate::plan::PlanMutationError) -> ! {
     let message = format!("wire mutation failed inside DML atomic section: {error}");
+    #[cfg(target_family = "wasm")]
+    {
+        ic_cdk::trap(&message);
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        panic!("{message}");
+    }
+}
+
+/// Pins one `Acquire` receipt per dispatched uniqueness claim, all owned by the single element the
+/// segment created (ADR 0030 slice 5). The Router's admission gate guarantees this segment is a
+/// statically single-element INSERT, so every claim shares one `owner_element_id`; any other shape
+/// is an admission/dispatch invariant violation and traps (rolling back the whole atomic segment
+/// rather than recording mismatched commit evidence).
+fn emit_unique_acquires(
+    store: &GraphStore,
+    claims: &[UniqueClaimDispatch],
+    mutation_id: Option<MutationId>,
+    mutation: &PlanMutationBindings,
+) {
+    let Some(mutation_id) = mutation_id else {
+        unique_acquire_trap("uniqueness claims dispatched without a mutation_id");
+    };
+    let owner_vertex = match mutation.created_vertices.as_slice() {
+        [vertex_id] => *vertex_id,
+        created => unique_acquire_trap(&format!(
+            "expected exactly one created vertex for {} uniqueness claim(s), got {}",
+            claims.len(),
+            created.len()
+        )),
+    };
+    let owner_element_id = store
+        .path_vertex_element_id(owner_vertex)
+        .map(|id| id.to_bytes().to_vec())
+        .unwrap_or_else(|| {
+            unique_acquire_trap("owner element id unavailable after insert (no global vertex id)")
+        });
+    for claim in claims {
+        store.emit_unique_effect(UniqueEffectReceipt {
+            effect_id: EffectId::new(mutation_id, claim.claim_ordinal),
+            claim_id: Some(ClaimId::new(mutation_id, claim.claim_ordinal)),
+            owner_element_id: owner_element_id.clone(),
+            constraint_id: claim.constraint_id,
+            encoded_value: claim.encoded_value.clone(),
+            op: UniqueEffectOp::Acquire,
+        });
+    }
+}
+
+fn unique_acquire_trap(message: &str) -> ! {
+    let message = format!("unique-effect Acquire emit failed inside DML atomic section: {message}");
     #[cfg(target_family = "wasm")]
     {
         ic_cdk::trap(&message);
@@ -653,6 +706,7 @@ async fn apply_canonical_mutation_segment(
     emitted_delta_last_seq: &mut Option<ShardEventSeq>,
 ) -> Result<PlanMutationBindings, GqlRunError> {
     let empty_params = BTreeMap::new();
+    let unique_claims = execution.unique_claims.clone();
     let mutation =
         match execute_mutation_tail_async(store, mutation_ops, seed_rows, &empty_params, execution)
             .await
@@ -660,6 +714,12 @@ async fn apply_canonical_mutation_segment(
             Ok(mutation) => mutation,
             Err(error) => trap_wire_mutation_failure(error),
         };
+    // ADR 0030 slice 5: pin the cross-shard uniqueness `Acquire` receipts for the element created
+    // in this segment. This runs inside the same no-`await` canonical section as the write above, so
+    // the receipts commit (or roll back on trap) atomically with the canonical mutation.
+    if !unique_claims.is_empty() {
+        emit_unique_acquires(store, &unique_claims, mutation_id, &mutation);
+    }
     let has_delta = !mutation.label_stats_delta.vertex.is_empty()
         || !mutation.label_stats_delta.edge.is_empty();
     if let Some(mutation_id) = mutation_id
@@ -1154,6 +1214,52 @@ mod tests {
             labels: vec![label.into()],
             properties: vec![],
         }])
+    }
+
+    #[test]
+    fn emit_unique_acquires_pins_acquire_for_the_created_vertex() {
+        let store = GraphStore::new();
+        let vid = store
+            .insert_vertex_named(["AcqOwner"], Vec::<(&str, Value)>::new())
+            .expect("create owner vertex");
+        let expected_owner = store
+            .path_vertex_element_id(vid)
+            .expect("owner element id")
+            .to_bytes()
+            .to_vec();
+
+        let claims = vec![UniqueClaimDispatch {
+            claim_ordinal: 0,
+            constraint_id: gleaph_graph_kernel::entry::ConstraintNameId::from_raw(3),
+            encoded_value: b"alice".to_vec(),
+        }];
+        let bindings = PlanMutationBindings::with_created_vertices_for_test(vec![vid]);
+
+        emit_unique_acquires(&store, &claims, Some(42), &bindings);
+
+        let evidence = store
+            .unique_acquire_evidence(ClaimId::new(42, 0))
+            .expect("Acquire receipt pinned for the claim");
+        assert_eq!(evidence.effect_id, EffectId::new(42, 0));
+        assert_eq!(
+            evidence.owner_element_id, expected_owner,
+            "owner element id must be the created vertex's canonical id"
+        );
+    }
+
+    #[test]
+    #[should_panic(expected = "expected exactly one created vertex")]
+    fn emit_unique_acquires_traps_when_owner_is_ambiguous() {
+        // The single-element admission gate guarantees exactly one created vertex; a violation here
+        // is a contract breach that must trap inside the atomic section, not emit a wrong owner.
+        let store = GraphStore::new();
+        let claims = vec![UniqueClaimDispatch {
+            claim_ordinal: 0,
+            constraint_id: gleaph_graph_kernel::entry::ConstraintNameId::from_raw(3),
+            encoded_value: b"alice".to_vec(),
+        }];
+        let bindings = PlanMutationBindings::with_created_vertices_for_test(vec![]);
+        emit_unique_acquires(&store, &claims, Some(42), &bindings);
     }
 
     fn with_federation_routing(store: GraphStore) {

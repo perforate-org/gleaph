@@ -102,13 +102,6 @@ pub(crate) struct ProofShard {
 }
 
 impl ProofShard {
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "constructed from the dispatch envelope in ADR 0030 slice 5"
-        )
-    )]
     pub fn new(shard_id: ShardId, graph_canister: Principal) -> Self {
         Self {
             shard_id,
@@ -146,8 +139,9 @@ pub(crate) struct ReservationRecord {
     pub state: ReservationState,
     /// Persistent monotone fencing token, retained across `Reclaiming → Reserved` (ABA-safe).
     pub reclaim_generation: u64,
-    /// Canonical element that owns the value; `None` until Confirm. `Release` matches on this.
-    pub owner_element_id: Option<[u8; 16]>,
+    /// Canonical element that owns the value (its exact encoded element-id bytes); `None` until
+    /// Confirm. `Release` matches on this.
+    pub owner_element_id: Option<Vec<u8>>,
     pub reserved_at_ns: u64,
     /// Complete canister-resolved target set the claim may have committed on; the reclaim proof
     /// reads it from here, so a GC'd `RouterMutationRecord` cannot strand recovery.
@@ -205,13 +199,6 @@ pub(crate) struct ReservationClaim {
 /// - [`RouterError::Internal`] (non-retryable): a defensive backstop if an `encoded_value` exceeds
 ///   the shared `MAX_UNIQUE_ENCODED_VALUE_LEN`. The public `encode_unique_value` already rejects
 ///   over-length values, so reaching this means that contract was bypassed.
-#[cfg_attr(
-    not(test),
-    allow(
-        dead_code,
-        reason = "wired into the INSERT write path in ADR 0030 slice 5"
-    )
-)]
 pub(crate) fn try_reserve(
     graph_id: GraphId,
     mutation_id: MutationId,
@@ -336,21 +323,66 @@ pub(crate) fn try_reserve(
     Ok(())
 }
 
-fn graph_id_upper_bound(graph_id: GraphId) -> GraphId {
-    GraphId::from_raw(graph_id.raw().saturating_add(1))
+/// Confirm: `Reserved → Committed`, stamping the canonical `owner_element_id` (ADR 0030 slice 5).
+///
+/// Runs **after** the shard's canonical write is durable and its `Acquire` proof has been read, so
+/// it must be best-effort and idempotent: the canonical write cannot be rolled back, and a crashed
+/// Router resumes the same Confirm on replay. It therefore never traps and only ever advances its
+/// own `Reserved` claim:
+/// - missing record, or a record owned by a *different* claim: a no-op (`false`) — the reservation
+///   was reclaimed/superseded; the slice-6 recovery reconciler owns that case, not Confirm.
+/// - `Reclaiming`: left untouched (`false`) — a generation-fenced reclaim proof is authoritative.
+/// - already `Committed` by this claim: idempotent (`true`); the owner is not rewritten.
+/// - `Reserved` by this claim: transitions to `Committed`, stamping `owner_element_id`.
+pub(crate) fn confirm_reservation(
+    graph_id: GraphId,
+    claim_id: ClaimId,
+    constraint_id: ConstraintNameId,
+    encoded_value: &[u8],
+    owner_element_id: Vec<u8>,
+) -> bool {
+    let key = UniqueReservationKey::new(graph_id, constraint_id, encoded_value.to_vec());
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow_mut(|table| {
+        let Some(mut record) = table.get(&key) else {
+            return false;
+        };
+        if record.claim != claim_id {
+            return false;
+        }
+        match record.state {
+            ReservationState::Committed => true,
+            ReservationState::Reclaiming => false,
+            ReservationState::Reserved => {
+                record.state = ReservationState::Committed;
+                record.owner_element_id = Some(owner_element_id);
+                table.insert(key, record);
+                true
+            }
+        }
+    })
+}
+
+/// Exclusive upper bound of one graph's key range. `graph_id` is the most-significant key
+/// component, so `[(graph_id, ..), (graph_id + 1, ..))` covers exactly that graph. At
+/// `GraphId::MAX` there is no `graph_id + 1`; the bound must be `Unbounded` — a saturating `+1`
+/// would collapse to `(MAX, ..)` and yield an empty range, silently skipping the max graph.
+fn graph_range_upper(graph_id: GraphId) -> Bound<UniqueReservationKey> {
+    match graph_id.raw().checked_add(1) {
+        Some(next) => Bound::Excluded(UniqueReservationKey::new(
+            GraphId::from_raw(next),
+            ConstraintNameId::from_raw(0),
+            Vec::new(),
+        )),
+        None => Bound::Unbounded,
+    }
 }
 
 /// Removes every reservation for a graph (graph teardown). Mirrors the constraint catalog purge.
 pub(crate) fn purge_graph_reservations(graph_id: GraphId) {
     ROUTER_UNIQUE_RESERVATIONS.with_borrow_mut(|table| {
         let start = UniqueReservationKey::new(graph_id, ConstraintNameId::from_raw(0), Vec::new());
-        let end = UniqueReservationKey::new(
-            graph_id_upper_bound(graph_id),
-            ConstraintNameId::from_raw(0),
-            Vec::new(),
-        );
         let keys: Vec<_> = table
-            .range((Bound::Included(start), Bound::Excluded(end)))
+            .range((Bound::Included(start), graph_range_upper(graph_id)))
             .map(|entry| entry.key().clone())
             .collect();
         for key in keys {
@@ -385,13 +417,8 @@ mod tests {
         ROUTER_UNIQUE_RESERVATIONS.with_borrow(|table| {
             let start =
                 UniqueReservationKey::new(graph_id, ConstraintNameId::from_raw(0), Vec::new());
-            let end = UniqueReservationKey::new(
-                graph_id_upper_bound(graph_id),
-                ConstraintNameId::from_raw(0),
-                Vec::new(),
-            );
             table
-                .range((Bound::Included(start), Bound::Excluded(end)))
+                .range((Bound::Included(start), graph_range_upper(graph_id)))
                 .count()
         })
     }
@@ -428,7 +455,7 @@ mod tests {
             claim: ClaimId::new(42, 1),
             state: ReservationState::Reserved,
             reclaim_generation: 0,
-            owner_element_id: Some([9u8; 16]),
+            owner_element_id: Some(vec![9u8; 8]),
             reserved_at_ns: 123,
             proof_scope: vec![
                 ProofShard::new(ShardId::new(1), Principal::anonymous()),
@@ -583,6 +610,22 @@ mod tests {
     }
 
     #[test]
+    fn purge_and_count_cover_the_max_graph_id() {
+        // Regression: a saturating `graph_id + 1` upper bound collapses to an empty range at
+        // GraphId::MAX, so the count/purge range scans would skip the max graph (leaking
+        // reservations on teardown). The `Unbounded` upper bound covers it.
+        let g = GraphId::from_raw(u32::MAX);
+        try_reserve(g, 1, &[claim(1, b"x", 0)], &scope(1), 1).expect("reserve on max graph");
+        assert_eq!(
+            reservation_count(g),
+            1,
+            "reservation on the max graph must be counted, not skipped"
+        );
+        purge_graph_reservations(g);
+        assert_eq!(reservation_count(g), 0);
+    }
+
+    #[test]
     fn reused_claim_ordinal_across_distinct_values_is_nonretryable_violation() {
         // Two distinct values under one ordinal would mint the same ClaimId for two reservations,
         // making Slice 4's Acquire matching ambiguous. Rejected before any write.
@@ -653,5 +696,88 @@ mod tests {
         let at_bound = vec![0u8; MAX_UNIQUE_ENCODED_VALUE_LEN];
         try_reserve(g, 100, &[claim(1, &at_bound, 0)], &scope(1), 1).expect("at-bound admitted");
         assert_eq!(reservation_count(g), 1);
+    }
+
+    /// The constraint id used by the `claim(1, …)` helper, for `confirm_reservation` calls.
+    fn cid() -> ConstraintNameId {
+        ConstraintNameId::from_raw(1)
+    }
+
+    #[test]
+    fn confirm_transitions_reserved_to_committed_and_stamps_owner() {
+        let g = fresh_graph(20);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+
+        let owner = vec![7u8; 8];
+        let committed = confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", owner.clone());
+        assert!(committed, "matching Reserved claim must confirm");
+
+        let rec = lookup(g, 1, b"v").expect("record");
+        assert_eq!(rec.state, ReservationState::Committed);
+        assert_eq!(rec.owner_element_id, Some(owner));
+    }
+
+    #[test]
+    fn confirm_on_missing_record_is_a_noop_false() {
+        let g = fresh_graph(21);
+        // No reservation exists for this value.
+        let confirmed =
+            confirm_reservation(g, ClaimId::new(100, 0), cid(), b"absent", vec![1u8; 8]);
+        assert!(!confirmed);
+        assert_eq!(reservation_count(g), 0);
+    }
+
+    #[test]
+    fn confirm_with_mismatched_claim_is_a_noop_false() {
+        let g = fresh_graph(22);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+
+        // A different mutation's claim id must not commit this reservation.
+        let confirmed = confirm_reservation(g, ClaimId::new(999, 0), cid(), b"v", vec![1u8; 8]);
+        assert!(!confirmed, "foreign claim must not confirm");
+        let rec = lookup(g, 1, b"v").expect("record");
+        assert_eq!(rec.state, ReservationState::Reserved, "left untouched");
+        assert_eq!(rec.owner_element_id, None);
+    }
+
+    #[test]
+    fn confirm_on_reclaiming_is_fenced_false() {
+        let g = fresh_graph(23);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        force_state(g, b"v", ReservationState::Reclaiming);
+
+        // A generation-fenced reclaim proof is authoritative; Confirm must not override it.
+        let confirmed = confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", vec![1u8; 8]);
+        assert!(!confirmed, "Reclaiming must fence Confirm");
+        assert_eq!(
+            lookup(g, 1, b"v").unwrap().state,
+            ReservationState::Reclaiming
+        );
+    }
+
+    #[test]
+    fn confirm_is_idempotent_and_does_not_rewrite_owner() {
+        let g = fresh_graph(24);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        let first_owner = vec![7u8; 8];
+        assert!(confirm_reservation(
+            g,
+            ClaimId::new(100, 0),
+            cid(),
+            b"v",
+            first_owner.clone()
+        ));
+
+        // A replayed Confirm (e.g. different evidence bytes) is idempotent: still true, owner kept.
+        let confirmed = confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", vec![9u8; 8]);
+        assert!(
+            confirmed,
+            "replay of an already-committed claim is idempotent true"
+        );
+        assert_eq!(
+            lookup(g, 1, b"v").unwrap().owner_element_id,
+            Some(first_owner),
+            "owner is not rewritten on idempotent replay"
+        );
     }
 }

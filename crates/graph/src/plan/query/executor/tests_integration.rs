@@ -17,6 +17,7 @@ fn explicit_empty_resolved_table_fails_labeled_node_scan() {
                 resolved_labels: Some(ResolvedLabelTable::default()),
                 resolved_properties: Some(ResolvedPropertyTable::default()),
                 element_id_encoding_key: None,
+                unique_claims: Vec::new(),
             },
         )
         .expect_err("missing resolved node label must fail");
@@ -45,6 +46,7 @@ fn explicit_empty_resolved_table_fails_labeled_expand() {
             resolved_labels: Some(ResolvedLabelTable::default()),
             resolved_properties: Some(ResolvedPropertyTable::default()),
             element_id_encoding_key: None,
+            unique_claims: Vec::new(),
         },
         None,
     );

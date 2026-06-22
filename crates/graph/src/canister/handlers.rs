@@ -176,6 +176,7 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
             resolved_labels: args.resolved_labels,
             resolved_properties: args.resolved_properties,
             element_id_encoding_key: Some(args.element_id_encoding_key),
+            unique_claims: args.unique_claims.unwrap_or_default(),
         },
         seeds,
         args.mutation_id,
@@ -762,6 +763,7 @@ mod tests {
             resolved_labels: None,
             resolved_properties: None,
             indexed_properties: None,
+            unique_claims: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -820,6 +822,7 @@ mod tests {
             resolved_labels: None,
             resolved_properties: None,
             indexed_properties: None,
+            unique_claims: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -863,6 +866,7 @@ mod tests {
             resolved_labels: None,
             resolved_properties: None,
             indexed_properties: None,
+            unique_claims: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("missing seeds");
@@ -893,6 +897,7 @@ mod tests {
             resolved_labels: None,
             resolved_properties: None,
             indexed_properties: None,
+            unique_claims: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("shard mismatch");

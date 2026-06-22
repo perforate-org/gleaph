@@ -179,6 +179,23 @@ pub async fn finalize_bulk_ingest(
     call_graph_result(graph, "finalize_bulk_ingest", args).await
 }
 
+/// Replicated `Acquire` commit proof for each claim (ADR 0030 §Timeout). An `update` call so the
+/// answer is replicated: a single-replica query is insufficient evidence to act on absence.
+pub async fn read_unique_effect_proof(
+    graph: Principal,
+    claim_ids: Vec<gleaph_graph_kernel::federation::ClaimId>,
+) -> Result<Vec<gleaph_graph_kernel::federation::UniqueAcquireProof>, String> {
+    call_graph(graph, "read_unique_effect_proof", claim_ids).await
+}
+
+/// Unpins (acks) unique effects after the Router has durably applied them (ADR 0030, per-effect).
+pub async fn ack_unique_effects(
+    graph: Principal,
+    effect_ids: Vec<gleaph_graph_kernel::federation::EffectId>,
+) -> Result<(), String> {
+    call_graph(graph, "ack_unique_effects", effect_ids).await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -201,6 +218,7 @@ mod tests {
                 resolved_labels: None,
                 resolved_properties: None,
                 indexed_properties: None,
+                unique_claims: None,
             },
         );
         let err = futures::executor::block_on(fut).expect_err("native unavailable");

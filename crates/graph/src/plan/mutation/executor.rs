@@ -34,12 +34,28 @@ pub struct PlanMutationBindings {
     pub procedure_yields: BTreeMap<String, Value>,
     /// Last scalar rows produced by projecting procedure yields.
     pub procedure_rows: Vec<BTreeMap<String, Value>>,
+    /// Vertices created by `InsertVertex` ops in this segment, in execution order. Used by the
+    /// cross-shard uniqueness `Acquire` emit (ADR 0030 slice 5) so an anonymous `CREATE (:L {..})`
+    /// (no variable binding) still exposes its canonical element id.
+    pub created_vertices: Vec<VertexId>,
     forward_edge_insert_counts: BTreeMap<VertexId, u32>,
     /// Forward hubs from this DML batch (sources with enough edge inserts).
     pub hot_forward_vertices: Vec<VertexId>,
 }
 
 impl PlanMutationBindings {
+    /// Test-only constructor: a bindings value carrying just the created-vertex list, used to
+    /// exercise the ADR 0030 `Acquire` emit without running a full mutation segment (the
+    /// `forward_edge_insert_counts` field is module-private, so external test modules cannot use a
+    /// struct literal).
+    #[cfg(test)]
+    pub(crate) fn with_created_vertices_for_test(created_vertices: Vec<VertexId>) -> Self {
+        Self {
+            created_vertices,
+            ..Default::default()
+        }
+    }
+
     fn add_vertex_label_delta(&mut self, label: VertexLabelId, delta: i64) {
         add_label_delta(&mut self.label_stats_delta.vertex, label, delta);
     }
@@ -93,6 +109,7 @@ fn execute_ops_with_bindings(
                 for label_id in unique_labels {
                     bindings.add_vertex_label_delta(label_id, 1);
                 }
+                bindings.created_vertices.push(vertex_id);
                 if let Some(variable) = variable {
                     bindings.vertices.insert(variable.to_string(), vertex_id);
                 }
@@ -246,6 +263,7 @@ pub(crate) async fn apply_mutation_ops_async(
                 for label_id in unique_labels {
                     bindings.add_vertex_label_delta(label_id, 1);
                 }
+                bindings.created_vertices.push(vertex_id);
                 if let Some(variable) = variable {
                     bindings.vertices.insert(variable.to_string(), vertex_id);
                 }

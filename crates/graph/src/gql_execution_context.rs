@@ -8,7 +8,9 @@ use gleaph_gql::ast::ObjectName;
 use gleaph_gql_ic::principal_to_value;
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
-use gleaph_graph_kernel::plan_exec::{ResolvedLabelTable, ResolvedPropertyTable};
+use gleaph_graph_kernel::plan_exec::{
+    ResolvedLabelTable, ResolvedPropertyTable, UniqueClaimDispatch,
+};
 
 /// Carries data that is fixed for one GQL execution (adhoc, prepared, or plan replay).
 #[derive(Clone, Debug, Default)]
@@ -21,6 +23,9 @@ pub struct GqlExecutionContext {
     pub resolved_properties: Option<ResolvedPropertyTable>,
     /// Router-issued per-graph key for ELEMENT_ID and path element encoding.
     pub element_id_encoding_key: Option<[u8; 16]>,
+    /// Cross-shard uniqueness claims the canonical segment must `Acquire` for the element it creates
+    /// (ADR 0030 slice 5). Empty for non-constrained operations.
+    pub unique_claims: Vec<UniqueClaimDispatch>,
 }
 
 impl GqlExecutionContext {

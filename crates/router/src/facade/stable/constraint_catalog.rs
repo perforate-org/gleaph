@@ -96,8 +96,19 @@ impl Storable for ConstraintDefRecord {
     }
 }
 
-fn graph_id_upper_bound(graph_id: GraphId) -> GraphId {
-    GraphId::from_raw(graph_id.raw().saturating_add(1))
+/// Exclusive upper bound of one graph's key range. `graph_id` is the most-significant key
+/// component, so the half-open range `[(graph_id, 0), (graph_id + 1, 0))` covers exactly that
+/// graph. At `GraphId::MAX` there is no `graph_id + 1`; the bound must be `Unbounded` (every
+/// remaining key belongs to the max graph) — a saturating `+1` would collapse to `(MAX, 0)` and
+/// yield an empty range, silently dropping the max graph's constraints.
+fn graph_range_upper(graph_id: GraphId) -> Bound<UniqueConstraintKey> {
+    match graph_id.raw().checked_add(1) {
+        Some(next) => Bound::Excluded(UniqueConstraintKey::new(
+            GraphId::from_raw(next),
+            ConstraintNameId::from_raw(0),
+        )),
+        None => Bound::Unbounded,
+    }
 }
 
 /// Registers a new unique constraint definition. The caller guarantees, via the
@@ -146,11 +157,7 @@ pub(crate) fn drop_unique_constraint(
 }
 
 /// Returns the constraint guarding `(vertex_label_id, property_id)`, if any.
-/// Used by the write-path uniqueness gate (ADR 0030, later slice).
-#[allow(
-    dead_code,
-    reason = "enforcement wiring lands in a later ADR 0030 slice"
-)]
+/// Used by the write-path uniqueness gate (ADR 0030 slice 5).
 pub(crate) fn find_unique_constraint(
     graph_id: GraphId,
     vertex_label_id: VertexLabelId,
@@ -158,11 +165,7 @@ pub(crate) fn find_unique_constraint(
 ) -> Option<(ConstraintNameId, ConstraintDefRecord)> {
     ROUTER_UNIQUE_CONSTRAINTS.with_borrow(|map| {
         let start = UniqueConstraintKey::new(graph_id, ConstraintNameId::from_raw(0));
-        let end = UniqueConstraintKey::new(
-            graph_id_upper_bound(graph_id),
-            ConstraintNameId::from_raw(0),
-        );
-        map.range((Bound::Included(start), Bound::Excluded(end)))
+        map.range((Bound::Included(start), graph_range_upper(graph_id)))
             .find_map(|entry| {
                 let def = entry.value();
                 (def.vertex_label_id == vertex_label_id && def.property_id == property_id)
@@ -174,12 +177,8 @@ pub(crate) fn find_unique_constraint(
 pub(crate) fn purge_graph_constraints(graph_id: GraphId) {
     ROUTER_UNIQUE_CONSTRAINTS.with_borrow_mut(|map| {
         let start = UniqueConstraintKey::new(graph_id, ConstraintNameId::from_raw(0));
-        let end = UniqueConstraintKey::new(
-            graph_id_upper_bound(graph_id),
-            ConstraintNameId::from_raw(0),
-        );
         let keys: Vec<_> = map
-            .range((Bound::Included(start), Bound::Excluded(end)))
+            .range((Bound::Included(start), graph_range_upper(graph_id)))
             .map(|entry| *entry.key())
             .collect();
         for key in keys {
@@ -239,5 +238,29 @@ mod tests {
                 .expect("if exists")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn find_and_purge_cover_the_max_graph_id() {
+        // Regression: a saturating `graph_id + 1` upper bound collapses to an empty range at
+        // GraphId::MAX, so the constraint would be missed (and after DDL ships, duplicates would be
+        // admitted for the max graph). The `Unbounded` upper bound covers it.
+        let graph = GraphId::from_raw(u32::MAX);
+        let name = ConstraintNameId::from_raw(1);
+        let label = VertexLabelId::from_raw(7);
+        let property = PropertyId::from_raw(11);
+        let record = ConstraintDefRecord {
+            vertex_label_id: label,
+            property_id: property,
+        };
+        assert!(create_unique_constraint(graph, name, record, false).expect("create"));
+        assert_eq!(
+            find_unique_constraint(graph, label, property),
+            Some((name, record)),
+            "constraint on the max graph id must be found, not silently skipped"
+        );
+
+        purge_graph_constraints(graph);
+        assert_eq!(find_unique_constraint(graph, label, property), None);
     }
 }

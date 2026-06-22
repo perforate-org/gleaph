@@ -9,7 +9,7 @@
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
 
-use crate::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
+use crate::entry::{ConstraintNameId, EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
 use crate::federation::ShardId;
 
 /// Router-issued mutation id. `0` is reserved; ids are never reused.
@@ -47,6 +47,25 @@ pub struct ExecutePlanArgs {
     /// Router-sourced indexed-property catalog for this operation (ADR 0023 D1/D3).
     /// Consulted ephemerally by shard DML to decide which postings to maintain.
     pub indexed_properties: Option<crate::index::IndexedPropertyCatalog>,
+    /// Cross-shard uniqueness claims the shard must `Acquire` for the element it creates in this
+    /// segment (ADR 0030 slice 5). The Router has already reserved each `(constraint_id,
+    /// encoded_value)` via the no-`await` Try; the shard mints `ClaimId(mutation_id, claim_ordinal)`
+    /// and pins one `Acquire` receipt per claim so the Router can Confirm it. `None`/empty when the
+    /// operation touches no constrained property.
+    pub unique_claims: Option<Vec<UniqueClaimDispatch>>,
+}
+
+/// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
+///
+/// `claim_ordinal` is the claim's deterministic position within the mutation; combined with the
+/// envelope's `mutation_id` it yields the immutable `ClaimId` the Router reserved. `encoded_value`
+/// is the canonical key the Router already validated and reserved, carried verbatim so the shard's
+/// pinned receipt and the Router's reservation reference identical bytes.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct UniqueClaimDispatch {
+    pub claim_ordinal: u32,
+    pub constraint_id: ConstraintNameId,
+    pub encoded_value: Vec<u8>,
 }
 
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
@@ -440,6 +459,11 @@ mod tests {
                 }],
             }),
             indexed_properties: None,
+            unique_claims: Some(vec![UniqueClaimDispatch {
+                claim_ordinal: 0,
+                constraint_id: ConstraintNameId::from_raw(3),
+                encoded_value: vec![9, 8, 7],
+            }]),
         };
         let bytes = Encode!(&args).expect("encode");
         let decoded: ExecutePlanArgs = Decode!(&bytes, ExecutePlanArgs).expect("decode");

@@ -237,11 +237,12 @@ impl RouterStore {
     /// partial label/property/constraint state. Id-exhaustion is part of that preflight: each
     /// catalog the commit will allocate from is capacity-checked via `peek_next_id` before the
     /// first mutation, so the commit region cannot fail half-way and strand a label/property/name.
-    ///
-    /// Not yet reachable from the public GQL dispatch: CREATE/DROP CONSTRAINT returns
-    /// `NotImplemented` until write-path enforcement lands (ADR 0030 slice 5). Exercised directly
-    /// by unit tests in the meantime.
-    #[cfg_attr(not(test), allow(dead_code))]
+    // ADR 0030: reachable only from `CREATE CONSTRAINT` DDL, which is gated off until the full
+    // uniqueness lifecycle ships (see `gql::run_gql`). Exercised by store-level tests until then.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "CREATE CONSTRAINT DDL gated off (ADR 0030)")
+    )]
     pub(crate) fn create_unique_constraint(
         &self,
         graph_id: GraphId,
@@ -301,9 +302,13 @@ impl RouterStore {
         Ok(())
     }
 
-    /// Drops a uniqueness constraint declaration. See [`Self::create_unique_constraint`] for why
-    /// this is not yet reachable from the public dispatch (ADR 0030 slice 5).
-    #[cfg_attr(not(test), allow(dead_code))]
+    /// Drops a uniqueness constraint declaration.
+    // ADR 0030: reachable only from `DROP CONSTRAINT` DDL, which is gated off until the full
+    // uniqueness lifecycle ships (see `gql::run_gql`). Exercised by store-level tests until then.
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "DROP CONSTRAINT DDL gated off (ADR 0030)")
+    )]
     pub(crate) fn drop_unique_constraint(
         &self,
         graph_id: GraphId,

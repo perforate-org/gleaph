@@ -14,13 +14,6 @@ use gleaph_graph_kernel::plan_exec::MutationId;
 impl GraphStore {
     /// Appends (pins) one unique effect. Must run in the same atomic segment as the canonical write
     /// it evidences. Idempotent across deterministic replays (same `EffectId`).
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "appended from the canonical write segment in ADR 0030 slice 5"
-        )
-    )]
     pub(crate) fn emit_unique_effect(&self, receipt: UniqueEffectReceipt) {
         UNIQUE_EFFECT_OUTBOX.with_borrow_mut(|outbox| outbox.append(receipt));
     }
@@ -76,7 +69,7 @@ mod tests {
         UniqueEffectReceipt {
             effect_id: EffectId::new(mutation_id, ordinal),
             claim_id: Some(ClaimId::new(mutation_id, claim_ordinal)),
-            owner_element_id: [owner; 16],
+            owner_element_id: vec![owner; 8],
             constraint_id: ConstraintNameId::from_raw(1),
             encoded_value: vec![owner],
             op: UniqueEffectOp::Acquire,
@@ -87,7 +80,7 @@ mod tests {
         UniqueEffectReceipt {
             effect_id: EffectId::new(mutation_id, ordinal),
             claim_id: None,
-            owner_element_id: [owner; 16],
+            owner_element_id: vec![owner; 8],
             constraint_id: ConstraintNameId::from_raw(1),
             encoded_value: vec![owner],
             op: UniqueEffectOp::Release,
@@ -105,7 +98,7 @@ mod tests {
             store.unique_acquire_evidence(ClaimId::new(m, 0)),
             Some(UniqueAcquireEvidence {
                 effect_id: EffectId::new(m, 3),
-                owner_element_id: [7u8; 16],
+                owner_element_id: vec![7u8; 8],
             })
         );
         // A different claim_ordinal of the same mutation does not match.
@@ -131,7 +124,7 @@ mod tests {
             store.unique_acquire_evidence(ClaimId::new(m, 0)),
             Some(UniqueAcquireEvidence {
                 effect_id: EffectId::new(m, 0),
-                owner_element_id: [4u8; 16],
+                owner_element_id: vec![4u8; 8],
             })
         );
     }

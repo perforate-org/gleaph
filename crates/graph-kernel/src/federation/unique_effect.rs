@@ -47,15 +47,15 @@ pub enum UniqueEffectOp {
 /// Evidence that a claim's `Acquire` is pinned: the matching effect's `EffectId` (so the Router can
 /// ack *that* effect after Confirm — `claim_ordinal` and `effect_ordinal` are distinct concepts and
 /// neither derives the other) plus the canonical `owner_element_id`.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct UniqueAcquireEvidence {
     pub effect_id: EffectId,
-    pub owner_element_id: [u8; 16],
+    pub owner_element_id: Vec<u8>,
 }
 
 /// Replicated commit-proof answer for one claim (Router reclaim proof, ADR 0030 §Timeout).
 /// `acquire` is `Some` iff a matching `Acquire` effect is pinned on this shard.
-#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct UniqueAcquireProof {
     pub claim_id: ClaimId,
     pub acquire: Option<UniqueAcquireEvidence>,
@@ -72,8 +72,11 @@ pub struct UniqueEffectReceipt {
     pub effect_id: EffectId,
     /// `Some` for `Acquire` (the reserving claim); audit-only / `None` for `Release`.
     pub claim_id: Option<ClaimId>,
-    /// Canonical element that owns the value (encoded element id).
-    pub owner_element_id: [u8; 16],
+    /// Canonical element that owns the value: the exact encoded element-id bytes (a vertex id is 8
+    /// bytes, an edge id 12). Stored variable-length rather than a fixed buffer so different element
+    /// kinds never collide under an opaque padding convention; the Router treats it as an opaque tag
+    /// (`Acquire` Confirm stamps it; `Release` matches on it).
+    pub owner_element_id: Vec<u8>,
     pub constraint_id: ConstraintNameId,
     pub encoded_value: Vec<u8>,
     pub op: UniqueEffectOp,

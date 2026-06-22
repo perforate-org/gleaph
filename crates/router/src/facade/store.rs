@@ -13,6 +13,7 @@ mod idempotency;
 mod label_stats_projection;
 mod registry;
 mod registry_invariants;
+mod uniqueness;
 
 #[cfg(test)]
 mod tests;
