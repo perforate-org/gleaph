@@ -6,8 +6,10 @@ Last revised: 2026-06-22
 
 > **Status note:** The decision is **accepted**. Implementation is **partial: catalog/DDL + value
 > encoding + reservation table & no-`await` Try + pinned unique-effect outbox + the INSERT write-path
-> TCC wiring (Try/Acquire/Confirm) + the DELETE/REMOVE Release write-path wiring;
-> `CREATE`/`DROP CONSTRAINT` DDL stays gated off, and recovery/failure-injection are pending.** Slice 1 has
+> TCC wiring (Try/Acquire/Confirm) + the DELETE/REMOVE Release write-path wiring + the slice-6
+> recovery reconciler (reclaim Driver 1 + unified effect recovery Driver 2);
+> `CREATE`/`DROP CONSTRAINT` DDL stays gated off, and failure-injection / canbench coverage (slice 7)
+> are pending.** Slice 1 has
 > landed the logical constraint catalog
 > (Router-owned `ConstraintNameId` + `ROUTER_UNIQUE_CONSTRAINTS`) and `CREATE`/`DROP CONSTRAINT`
 > parsing and storage, under the declare-on-empty contract. Slice 2 has landed the canonical
@@ -46,8 +48,11 @@ Last revised: 2026-06-22
 > page cap so an arbitrary-cardinality DELETE cannot overflow the IC response), removing the
 > `Committed` reservation **matched by `owner_element_id`** and acking the effect page by page, while a
 > **held** release (Release-before-Acquire) is left pinned (the cursor still advances past it so
-> reconciliation terminates and slice-6 recovery revisits it). The
-> remaining write-path lifecycle — the recovery reconciler (slice 6) and failure-injection coverage
+> reconciliation terminates and slice-6 recovery revisits it). Slice 6 has landed the **recovery
+> reconciler** (see Revision #10): the reclaim Driver converges reservations from a generation-fenced
+> proof, and the unified effect-recovery Driver drains a durable discovery index to converge every
+> pinned `Acquire`/`Release`/orphan effect the inline path left behind. The
+> remaining write-path lifecycle — failure-injection / canbench coverage
 > (slice 7) — is **not yet built**, so the public GQL dispatch keeps
 > refusing `CREATE`/`DROP CONSTRAINT` with `NotImplemented`: publishing a constraint that is enforced
 > on insert but not on delete (or across crashes) would be a weaker, silently-wrong guarantee than
@@ -180,6 +185,90 @@ Last revised: 2026-06-22
 > constraint, a `SET` item that targets a constrained property, replaces all properties, or adds a
 > constrained label is refused with `NotImplemented`. DDL is still non-public so no external guarantee
 > was breached, but the gate must exist before `CREATE CONSTRAINT` is published.
+>
+> **Revision 2026-06-22 #10 (slice 6 implementation landed — recovery reconciler):** the autonomous
+> recovery layer is now wired into the existing self-rescheduling recovery timer
+> ([ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md) Phase 4) as **two
+> bounded, cursor-paged drivers** that ride the same tick with independent round-robin cursors and a
+> non-wasm no-op; both converge only the **safe subset** (the authority to free a value is always a
+> generation-fenced proof, never a timeout).
+>
+> **Driver 1 — reclaim reconciler** (`reclaim.rs`). Scans the reservation table for overdue
+> `Reserved` / `Reclaiming` / `Committed`-with-pending-ack entries and applies exactly one fenced
+> outcome each (per Timeout): *Acquire present on any reachable scope shard* → `Reclaiming@g →
+> Committed` + ack; *every scope shard reachable and explicitly absent* **and** the mutation is
+> irreversibly terminally failed → cancel; anything else → hold. Three correctness contracts were
+> hardened during review and are now binding:
+> - **Cancel needs an irreversible terminal-failure, not merely `Failed`.** A `RouterMutationRecord`
+>   that is `shards.is_empty() && completed_row_count.is_none()` could be re-driven `routing_in_progress`
+>   by a same-client-key retry, so it is not safe Cancel grounds. The record now carries a distinct,
+>   **irreversible `terminal_failure`** state; `is_terminal()`/lifecycle-phase prioritize it; a
+>   same-client-key retry of a terminal-failed mutation is refused (only a **new** client key may
+>   retry). Cancel is the conjunction of *all-scope-explicitly-absent* **and** *this irreversible
+>   terminal-failure*, applied with count-decrement in one **all-or-nothing** region:
+>   `reclaim_cancel_uncommitted` preflights every condition (record eligibility + `mutation_id`,
+>   reservation claim/generation fence, reverse-row/count) and only then applies the infallible
+>   terminal-fail + cancel + decrement — never a `false`/`Err` that leaves partial state (`Err` does
+>   not roll back on the IC; only a trap does).
+> - **Strict negative-proof classifier.** `AllAbsent` requires an **explicit `{ claim_id, acquire:
+>   None }` from every reachable scope shard**; an empty scope, a missing claim row, a malformed
+>   response, or any unreachable shard is `Inconclusive` → hold. An incomplete negative can never
+>   authorize a Cancel or an ack-reply-lost clear.
+> - **ClaimId + generation fence (ABA).** `cancel`/`hold` reclaim are keyed on the reclaim ticket's
+>   **`ClaimId` and `generation`** together, so a delayed callback for a deleted reservation A cannot
+>   Cancel/Hold a same-value reservation B that reused the generation.
+> - **Crash-after-commit re-ack.** `→ Committed` (both inline Confirm and reclaim commit) atomically
+>   stamps `pending_acquire_ack`; it is cleared **only after** the ack succeeds, so a crash between
+>   commit and ack re-discovers the `Committed`-pending entry and re-acks (Confirm replays return
+>   `ConfirmOutcome::{FreshlyCommitted, AlreadyCommitted, NotApplicable}`; the non-terminal count is
+>   decremented only on `FreshlyCommitted`). A `Committed`-pending entry whose proof is all-absent is
+>   the **ack-reply-lost** case and clears the marker; unreachable → hold.
+>
+> Terminal-record resolution (which `RouterMutationRecord` owns a reservation's claim, and is its GC
+> pin) is an **idempotency-owned reverse index** `MutationId → { client_key, nonterminal }` (region
+> 38), not a per-reservation client-key copy: `++` per fresh Try insert (idempotent replay does not
+> re-increment), `--` on `FreshlyCommitted` Confirm and on reclaim Cancel; `count > 0` GC-pins the
+> record; the row is removed with the record at zero. The pin count is **fail-closed**
+> (`checked_add().expect`/trap, client-key-consistency assert, trap on release underflow/missing) so
+> an undercount can never let a non-terminal sibling's record be GC'd.
+>
+> **Driver 2 — unified effect recovery** (`effect_recovery.rs`). Driver 1 is reservation-driven, but a
+> `Release` (whose releasing mutation differs from the original `Acquire`) and an **orphan `Acquire`**
+> (reservation gone) own no reservation it can find. Driver 2 drains the **`UNIQUE_EFFECT_PENDING`
+> discovery index** (region 39; this is the generalization of the Release-only "Release work
+> discovery" row below — it now covers **both** `Acquire` and `Release`). Each row
+> `(graph_id, mutation_id, shard_id) → PendingEffectRecord { schema_version, canister, client_key,
+> state: Active | Quarantined, next_retry_ns, attempts, diagnostic? }` is **registered before the
+> first dispatch `await`** for any dispatch that may emit a unique effect, so it co-commits with the
+> reservation/envelope. The value is a **versioned record** (so orphan diagnostics / quarantine fields
+> can extend it without a stable-layout break) and registration is **fail-closed on both identities**
+> — re-registering a key to a different `canister` or `client_key` traps. The row **GC-pins its owning
+> `RouterMutationRecord`** (its terminal-completion proof); the `client_key` is stored verbatim so the
+> record is resolvable for **any** effect kind, even after the shard is unregistered. Per row:
+> - **Termination gate:** drain only when the owning record is the **same `mutation_id`** *and*
+>   terminal (effect generation finished). A missing record (the GC pin should prevent it), a
+>   same-client-key retry that recycled the record onto a different mutation, or a still-non-terminal
+>   record → **hold**. This is what makes the orphan classification sound: a reservation-less `Acquire`
+>   is an orphan **only** after the mutation can emit no more effects.
+> - **Drain** (replicated paginated all-effects read `read_unique_mutation_effects`, cursor by
+>   `effect_ordinal`, **short page ≠ EOF; only an empty page is EOF**): a `Release` reconciles the
+>   reservation **durably first** and acks only on a proven free (else held — Release-before-Acquire);
+>   an `Acquire` **with** a reservation is **delegated to Driver 1** (never acked here); a
+>   reservation-less `Acquire` is an **orphan** — never acked, the row is **quarantined** with a
+>   persistent diagnostic and a long re-check backoff (`next_retry_ns`), keeping the row and evidence.
+> - **Removal** only after the termination gate passed **and** a fresh `cursor = None` re-scan is empty
+>   (every effect acked), which un-pins the owning record for GC.
+> - **No timer hot-loop / no going dark:** a `Quarantined` row inside its backoff is skipped without
+>   counting as lap work, but the sweep surfaces the **earliest `next_retry_ns`** so the timer re-arms a
+>   one-shot for that deadline instead of stopping when every row is quarantined.
+>
+> Retention order is unchanged from the contract: an effect stays pinned until acked (decoupled from
+> the ADR 0027 journal); a discovery row stays until its terminal-proof re-scan is empty; and the
+> owning record is non-evictable while either a non-terminal reservation (count > 0) or a discovery row
+> references it. `UNIQUE_RESERVATION_TTL_NS` (30 min, statically asserted `≥ ROUTING_LEASE_TTL_NS`)
+> only makes a `Reserved` entry *eligible* for a reclaim proof; cancel safety rests on terminal-failure
+> + proof, never on the TTL. `CREATE`/`DROP CONSTRAINT` remains `NotImplemented`: only failure-injection
+> / canbench coverage (slice 7) is left.
 
 ## Context
 
@@ -497,9 +586,13 @@ mutation reserves and commits the same value → two committed elements. The pro
    retrying the proof later under a fresh, higher generation.
 
 An **orphan `Acquire`** (a pinned `Acquire` effect whose reservation is absent) must **never** be
-acked and must **not** fabricate a reservation: the evidence is preserved (held) and counted in a
-diagnostic, because under the generation-fenced proof this state should not occur and silently
-discarding commit evidence would be unsafe.
+acked and must **not** fabricate a reservation: the evidence is preserved and surfaced as a
+persistent diagnostic, because under the generation-fenced proof this state should not occur and
+silently discarding commit evidence would be unsafe. The unified effect-recovery driver (Driver 2)
+classifies a reservation-less `Acquire` as an orphan **only after** confirming the owning mutation is
+terminal (its effect generation has finished — a still-non-terminal mutation is held, not orphaned),
+then **quarantines** the discovery row (`state = Quarantined`, a long `next_retry_ns` backoff, the
+diagnostic recorded) so the orphan is retained and re-checked without hot-looping the recovery timer.
 
 "Expired/abandoned" in the Try and Recovery rules means exactly the generation-fenced outcome of
 step 6. A reservation whose mutation reached canonical commit is always advanced to `Committed`,
@@ -520,14 +613,22 @@ never force-expired.
   by the ADR 0027 9-day journal eviction; they are pruned only after the Router has durably advanced
   and acked the matching reservation. This keeps the proof total while remaining bounded (one un-acked
   entry per in-flight unique effect).
-- **Release work discovery.** Held `Release` effects (Release-before-Acquire) stay pinned on the shard
-  after the inline post-commit reconciliation advances its cursor past them without acking. They are
-  rediscovered through a Router-owned, ADR-0030-independent index keyed in **row form**
-  `(graph_id, mutation_id, shard_id) → pinned graph_canister` (a row per target, so scans are bounded
-  and values stay small). A row is inserted when a release-capable mutation is dispatched and removed
-  **only after** the target's `Release` page — re-read from `cursor = None`, never inferred from a
-  tail empty page after a failed ack — comes back empty (all effects acked). While any row exists for
-  a mutation, its discovery source is retained: un-acked effects always remain rediscoverable.
+- **Effect work discovery (unified).** Effects the inline post-commit path left pinned — a held
+  `Release` (Release-before-Acquire), an `Acquire` whose inline Confirm/ack was lost, or an orphan
+  `Acquire` — are rediscovered through a Router-owned, ADR-0030-independent **unified discovery index**
+  keyed in **row form** `(graph_id, mutation_id, shard_id) → PendingEffectRecord` (a row per target,
+  so scans are bounded and values stay small). The row covers **both** `Acquire` and `Release`
+  dispatches (not Release-only), and its value is a **versioned record**
+  `{ schema_version, canister, client_key, state: Active | Quarantined, next_retry_ns, attempts,
+  diagnostic? }`: the pinned `canister` is the row's immutable identity (so recovery reaches the exact
+  canister even after the shard is unregistered/reused), and `client_key` resolves the owning
+  `RouterMutationRecord` for any effect kind (a `Release`/orphan owns no reservation, so the reverse
+  index cannot resolve them). Registration runs **before the first dispatch `await`** so it co-commits
+  with the reservation/envelope, and is **fail-closed** — re-registering a key to a different
+  `canister` or `client_key` traps. A row is removed **only after** the target's all-effects page —
+  re-read from `cursor = None`, never inferred from a tail empty page after a failed ack — comes back
+  empty (all effects acked). While any row exists for a mutation, its owning record is GC-pinned and
+  its un-acked effects always remain rediscoverable.
 - `Committed` reservations persist while the owning element exists (released on delete). `Reserved`
   entries are bounded by the amortized retention sweep (ADR 0025 mechanism, extended to scan
   reservations), which GCs only proof-confirmed abandoned reservations. Growth is bounded by the
@@ -673,6 +774,12 @@ follows from that asymmetry — what must be pre-resolvable is the *acquire* cla
   retention decoupled from the ADR 0027 9-day journal) and a **replicated read-only update endpoint**
   the Router uses to obtain a replicated presence/absence answer. Gate it behind the constraint being
   declared so non-constrained writes are unchanged.
+- Add the slice-6 recovery indexes (update the
+  [stable-memory inventory](../storage/stable-memory-inventory.md)): the reservation reverse index
+  `MutationId → { client_key, nonterminal }` (GC-pins the owning record while non-terminal
+  reservations remain) and the unified pending-effect discovery index
+  `(graph_id, mutation_id, shard_id) → PendingEffectRecord` (versioned value; GC-pins the owning
+  record while rows remain). Both are Router-local and additive; existing graphs are unaffected.
 - First cut declares a constraint **only before the constrained label can have elements** (graph/
   schema creation), so no validation scan is needed. Declaring on a populated, actively-written graph
   (the `Validating → Active/Inactive` state machine and backfill) is deferred to its own amendment.
