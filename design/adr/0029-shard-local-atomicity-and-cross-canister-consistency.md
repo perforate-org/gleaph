@@ -265,6 +265,11 @@ Every stronger protocol requires its own ADR or an amendment that names:
 - upgrade/reopen behavior and bounded retention;
 - conflict and retry semantics.
 
+The first named-invariant instance is cross-shard **uniqueness**, specified in
+[ADR 0030](0030-cross-shard-uniqueness-tcc-reservation.md) (accepted, implementation pending):
+Router-coordinated TCC with a
+Router-local reservation table (Try is a local stable CAS; the distributed write stays the §4 saga).
+
 ### 8. Preserve the boundary when the graph canister is split into more shards
 
 Splitting the graph canister into additional shards, and introducing shard-to-shard `await`, does

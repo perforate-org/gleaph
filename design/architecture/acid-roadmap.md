@@ -410,7 +410,9 @@ Exit criteria:
 **Status: Rejection gate done. Contract 1 (one-shard atomic) implemented for completely-new
 INSERT-only bundles and the anchored single-shard subset. Contract 2 (roll-forward bundle)
 implemented for single-anchor threaded bundles that fan out to multiple shards. Staged distributed
-commit (contract 3) still reserved.**
+commit (contract 3) still reserved — its first named invariant (cross-shard uniqueness) is specified
+in [ADR 0030](../adr/0030-cross-shard-uniqueness-tcc-reservation.md) (accepted, implementation
+pending).**
 
 Goal: remove the existing partial multi-DML ambiguity.
 
@@ -516,14 +518,18 @@ Exit criteria:
 
 ## Phase 6: Selective strong cross-shard invariants
 
-**Status: Deferred pending a concrete product invariant.**
+**Status: First invariant chosen — cross-shard uniqueness via Router-coordinated TCC, specified in
+[ADR 0030](../adr/0030-cross-shard-uniqueness-tcc-reservation.md) (accepted, implementation pending).
+Remaining triggers deferred pending a concrete product need.**
 
 Goal: add TCC, optimistic validation, or staged commit only where eventual roll-forward is
 insufficient.
 
 Candidate triggers:
 
-- a cross-shard uniqueness constraint;
+- a cross-shard uniqueness constraint — **selected**; see
+  [ADR 0030](../adr/0030-cross-shard-uniqueness-tcc-reservation.md) (Router-local reservation table,
+  Try = local stable CAS, distributed write stays the Phase 4 saga, Confirm/Cancel Router-local);
 - quota/capacity reservation;
 - atomic schema publication;
 - compare-and-set across owners;
