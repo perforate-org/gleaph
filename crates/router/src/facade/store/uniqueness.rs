@@ -27,11 +27,15 @@ use gleaph_graph_kernel::plan_exec::{
     UniqueClaimDispatch,
 };
 
+use candid::Principal;
+
 use crate::facade::stable::constraint_catalog::{
     constrained_properties_for_graph, find_unique_constraint,
 };
+use crate::facade::stable::label_stats::ClientMutationKey;
 use crate::facade::stable::reservation_catalog::{
-    self, ProofShard, ReleaseOutcome, ReservationClaim,
+    self, ConfirmOutcome, ProofShard, ReclaimCandidate, ReclaimTicket, ReleaseOutcome,
+    ReservationClaim, UniqueReservationKey,
 };
 use crate::federation::ShardDispatch;
 use crate::state::RouterError;
@@ -186,8 +190,10 @@ impl RouterStore {
         if constrained.is_empty() {
             return Ok(());
         }
-        let constrained_properties: BTreeSet<PropertyId> =
-            constrained.iter().map(|(_, property, _)| *property).collect();
+        let constrained_properties: BTreeSet<PropertyId> = constrained
+            .iter()
+            .map(|(_, property, _)| *property)
+            .collect();
         let constrained_labels: BTreeSet<VertexLabelId> =
             constrained.iter().map(|(label, _, _)| *label).collect();
 
@@ -224,10 +230,21 @@ impl RouterStore {
     /// canonical write is dispatched (ADR 0030). `dispatches` is the resolved target set; its
     /// `(shard_id, graph_canister)` identities are persisted as the reservation's `proof_scope` so
     /// slice-6 recovery can read the `Acquire` proof from the exact canister the claim may commit on.
+    ///
+    /// The reverse index that GC-pins the owning mutation record and resolves a reservation back to
+    /// it (ADR 0030 slice 6) is bumped here in lockstep. On the IC an `Err` does not roll back, so
+    /// both fallible checks run as read-only preflights *before* either write: the reservation
+    /// conflict scan inside [`reservation_catalog::try_reserve`] and the reverse-index count overflow
+    /// here. The overflow preflight uses the claim count as a conservative upper bound on fresh
+    /// inserts, so once it clears, the post-Try slot bump (by the real, `<=` fresh count) cannot
+    /// overflow and is infallible — leaving no path that writes a reservation without bumping the
+    /// count, or vice versa.
     pub(crate) fn try_reserve_unique(
         &self,
+        caller: Principal,
         graph_id: GraphId,
         mutation_id: MutationId,
+        client_key: &str,
         claims: &[UniqueClaimDispatch],
         dispatches: &[ShardDispatch],
     ) -> Result<(), RouterError> {
@@ -243,13 +260,50 @@ impl RouterStore {
             .iter()
             .map(|dispatch| ProofShard::new(dispatch.shard_id, dispatch.graph_canister))
             .collect();
-        reservation_catalog::try_reserve(
+        // Preflight (read-only): reject a reverse-index count overflow before any reservation is
+        // written. `claims.len()` is the maximum a Try could freshly insert.
+        let fresh_upper = u32::try_from(claims.len())
+            .map_err(|_| RouterError::Internal("unique claim count exceeds u32".to_string()))?;
+        self.preflight_reservation_slots(mutation_id, fresh_upper)?;
+        // Apply: `try_reserve` does its own conflict preflight, then inserts; on success it reports
+        // the real fresh-insert count. No `await` separates it from the slot bump, so the overflow
+        // guarantee from the preflight still holds and the bump is infallible.
+        let fresh = reservation_catalog::try_reserve(
             graph_id,
             mutation_id,
             &reservation_claims,
             &proof_scope,
             ic_time_ns(),
-        )
+        )?;
+        let key = ClientMutationKey::new(caller, graph_id, client_key.to_owned());
+        self.apply_reservation_slots(mutation_id, &key, fresh);
+        Ok(())
+    }
+
+    /// Decrement the non-terminal reservation count for `mutation_id` after a `FreshlyCommitted`
+    /// Confirm (ADR 0030 slice 6): that reservation has left the non-terminal set, so it no longer
+    /// pins the owning record. Infallible; a missing reverse row is a no-op.
+    pub(crate) fn release_unique_reservation_slot(&self, mutation_id: MutationId) {
+        self.release_reservation_slot(mutation_id);
+    }
+
+    /// Register the slice-6 discovery row for a dispatch that may emit a unique effect (ADR 0030
+    /// slice 6). Called once per dispatch shard **before the first dispatch `await`**, so it
+    /// co-commits with the reservation/envelope; idempotent on replay. The pinned `canister` is
+    /// stored verbatim so recovery reaches the exact canister even after the shard is unregistered.
+    pub(crate) fn register_pending_unique_effect(
+        &self,
+        graph_id: GraphId,
+        mutation_id: MutationId,
+        shard_id: gleaph_graph_kernel::federation::ShardId,
+        canister: candid::Principal,
+    ) {
+        crate::facade::stable::unique_effect_pending::register(
+            graph_id,
+            mutation_id,
+            shard_id,
+            canister,
+        );
     }
 
     /// Confirm one claim, stamping the canonical owner (ADR 0030). Runs after the shard's `Acquire`
@@ -257,14 +311,19 @@ impl RouterStore {
     /// is committed *by this claim* — a fresh `Reserved → Committed` move **or** a replay of an
     /// already-`Committed` claim (so a Confirm retried after a failed ack still reports committed and
     /// the effect is re-acked); `false` when the record is missing/`Reclaiming`/owned by another
-    /// claim. See [`reservation_catalog::confirm_reservation`].
+    /// claim. `effect_id` is the proven `Acquire` effect; it is stamped as `pending_acquire_ack` in
+    /// the same `→ Committed` write so a crash before the ack leaves the still-pinned `Acquire`
+    /// re-discoverable by slice-6 recovery. The returned [`ConfirmOutcome`] tells the caller whether
+    /// to ack (`FreshlyCommitted`/`AlreadyCommitted`) and whether to decrement the mutation's
+    /// non-terminal count (`FreshlyCommitted` only). See [`reservation_catalog::confirm_reservation`].
     pub(crate) fn confirm_unique_claim(
         &self,
         graph_id: GraphId,
         mutation_id: MutationId,
         claim: &UniqueClaimDispatch,
         owner_element_id: Vec<u8>,
-    ) -> bool {
+        effect_id: gleaph_graph_kernel::federation::EffectId,
+    ) -> ConfirmOutcome {
         let claim_id =
             gleaph_graph_kernel::federation::ClaimId::new(mutation_id, claim.claim_ordinal);
         reservation_catalog::confirm_reservation(
@@ -273,7 +332,21 @@ impl RouterStore {
             claim.constraint_id,
             &claim.encoded_value,
             owner_element_id,
+            effect_id,
         )
+    }
+
+    /// Clear `pending_acquire_ack` after the `Acquire` effect has been acked (unpinned). Idempotent
+    /// and claim-fenced; a no-op (`false`) for a missing/non-`Committed`/foreign record or one whose
+    /// ack was already cleared. See [`reservation_catalog::clear_acquire_ack`].
+    pub(crate) fn clear_unique_acquire_ack(
+        &self,
+        graph_id: GraphId,
+        constraint_id: gleaph_graph_kernel::entry::ConstraintNameId,
+        encoded_value: &[u8],
+        claim_id: gleaph_graph_kernel::federation::ClaimId,
+    ) -> bool {
+        reservation_catalog::clear_acquire_ack(graph_id, constraint_id, encoded_value, claim_id)
     }
 }
 
@@ -295,6 +368,147 @@ impl RouterStore {
                 },
             )
             .collect()
+    }
+
+    /// Begin a generation-fenced reclaim proof for a `Reserved` value (ADR 0030 slice 6 §Timeout):
+    /// `Reserved → Reclaiming`, checked-incrementing the persistent generation, returning the fence.
+    /// Bounded, cursor-based work discovery for the reclaim reconciler (ADR 0030 slice 6, Driver 1):
+    /// the next slice of reservations needing reconciliation (`Reserved` past TTL, any `Reclaiming`,
+    /// or `Committed` with a pending ack), the next cursor, and the count scanned. Read-only.
+    pub(crate) fn scan_unique_reclaim_candidates(
+        &self,
+        start_after: Option<&UniqueReservationKey>,
+        budget: usize,
+        now: u64,
+    ) -> (Vec<ReclaimCandidate>, Option<UniqueReservationKey>, u32) {
+        reservation_catalog::scan_reclaim_candidates(start_after, budget, now)
+    }
+
+    /// `None` aborts the proof (the entry is absent or not `Reserved`). No `await`.
+    pub(crate) fn begin_unique_reclaim(
+        &self,
+        graph_id: GraphId,
+        constraint_id: gleaph_graph_kernel::entry::ConstraintNameId,
+        encoded_value: &[u8],
+    ) -> Option<ReclaimTicket> {
+        reservation_catalog::begin_reclaim(graph_id, constraint_id, encoded_value)
+    }
+
+    /// Resume an interrupted reclaim proof (entry already `Reclaiming`) under its current generation,
+    /// without bumping it (ADR 0030 slice 6). `None` if not `Reclaiming`.
+    pub(crate) fn resume_unique_reclaim(
+        &self,
+        graph_id: GraphId,
+        constraint_id: gleaph_graph_kernel::entry::ConstraintNameId,
+        encoded_value: &[u8],
+    ) -> Option<ReclaimTicket> {
+        reservation_catalog::resume_reclaim(graph_id, constraint_id, encoded_value)
+    }
+
+    /// Apply a reclaim proof's **commit** outcome under the fence (`Reclaiming@g → Committed`,
+    /// stamping the owner). Returns `true` iff applied — the caller may then ack the `Acquire`.
+    pub(crate) fn apply_unique_reclaim_commit(
+        &self,
+        graph_id: GraphId,
+        constraint_id: gleaph_graph_kernel::entry::ConstraintNameId,
+        encoded_value: &[u8],
+        claim_id: gleaph_graph_kernel::federation::ClaimId,
+        generation: u64,
+        owner_element_id: Vec<u8>,
+        effect_id: gleaph_graph_kernel::federation::EffectId,
+    ) -> bool {
+        reservation_catalog::apply_reclaim_commit(
+            graph_id,
+            constraint_id,
+            encoded_value,
+            claim_id,
+            generation,
+            owner_element_id,
+            effect_id,
+        )
+    }
+
+    /// Atomically cancel an uncommitted reclaim (`Reclaiming@g → removed`) under the **full** ADR 0030
+    /// slice-6 cancel authority, with no `await` and **no partial state** on any failure. On the IC a
+    /// non-trapping early return does not roll back, so every fallible condition is checked in a
+    /// read-only preflight *before* any mutation; only when all hold is the unified apply performed,
+    /// and the apply provably cannot fail:
+    ///
+    /// Preflight (read-only, no mutation): the reverse-index row resolves the owning record (its
+    /// presence also proves the non-terminal count is `>= 1`); the reservation is `Reclaiming@g`
+    /// owned by `claim_id`; and the record is terminal-failure eligible — `mutation_id` matches and
+    /// it is either already terminally failed (idempotent for a sibling reservation) or an
+    /// uncommitted dispatch (envelope present, no canonical shard completed, routing released).
+    ///
+    /// Apply (only after every preflight passed): record the irreversible terminal failure, remove
+    /// the reservation (its fence was just preflighted, so this cannot fail — asserted, and a trap
+    /// would roll back the whole message rather than leave partial state), and decrement the
+    /// non-terminal count (the row was just preflighted, so the fail-closed release cannot trap).
+    ///
+    /// Returns `true` iff cancelled. `false` (any preflight failed) means the caller must `hold`; no
+    /// terminal failure, reservation removal, or count change has occurred.
+    pub(crate) fn reclaim_cancel_uncommitted(
+        &self,
+        graph_id: GraphId,
+        constraint_id: gleaph_graph_kernel::entry::ConstraintNameId,
+        encoded_value: &[u8],
+        claim_id: gleaph_graph_kernel::federation::ClaimId,
+        generation: u64,
+        error: String,
+    ) -> bool {
+        let mutation_id = claim_id.mutation_id;
+        // Preflight: owner + count>=1 (the row exists iff count>=1) and the reservation fence.
+        let Some(client_key) = self.reservation_index_client_key(mutation_id) else {
+            return false;
+        };
+        if !reservation_catalog::is_reclaiming_at(
+            graph_id,
+            constraint_id,
+            encoded_value,
+            claim_id,
+            generation,
+        ) {
+            return false;
+        }
+        // Apply: terminal-fail mutates ONLY when it returns true (record-side eligibility preflight
+        // and apply are one fenced op); a false leaves no state to undo.
+        if !self.terminally_fail_uncommitted_dispatch(&client_key, mutation_id, error) {
+            return false;
+        }
+        let removed = reservation_catalog::cancel_reclaim(
+            graph_id,
+            constraint_id,
+            encoded_value,
+            claim_id,
+            generation,
+        );
+        assert!(
+            removed,
+            "preflighted reclaim cancel must apply atomically (ADR 0030 slice 6)"
+        );
+        self.release_reservation_slot(mutation_id);
+        true
+    }
+
+    /// Release the reclaim fence without resolving (`Reclaiming@g → Reserved`, keeping `g`), for an
+    /// unreachable/unknown shard or a non-terminal/missing owning mutation (ADR 0030 slice 6
+    /// §Timeout step 7). Fenced on `claim_id` + generation for the same ABA reason as
+    /// [`Self::reclaim_cancel_uncommitted`]. Returns `true` iff reverted.
+    pub(crate) fn hold_unique_reclaim(
+        &self,
+        graph_id: GraphId,
+        constraint_id: gleaph_graph_kernel::entry::ConstraintNameId,
+        encoded_value: &[u8],
+        claim_id: gleaph_graph_kernel::federation::ClaimId,
+        generation: u64,
+    ) -> bool {
+        reservation_catalog::hold_reclaim(
+            graph_id,
+            constraint_id,
+            encoded_value,
+            claim_id,
+            generation,
+        )
     }
 
     /// Reconcile one shard-emitted `Release` effect against the reservation table (ADR 0030 slice

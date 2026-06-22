@@ -177,6 +177,34 @@ impl Storable for ClientMutationKey {
     }
 }
 
+/// Reverse index row `mutation_id → (ClientMutationKey, nonterminal reservation count)` (ADR 0030
+/// slice 6). It exists **iff** `nonterminal > 0`: created when a mutation's first unique reservation
+/// is taken (Try) and removed when its last non-terminal reservation leaves (`FreshlyCommitted`
+/// Confirm, or reclaim Cancel). It lets the reclaim reconciler resolve a reservation's `ClaimId`
+/// (`mutation_id`) to the owning `RouterMutationRecord`, and pins that record against TTL GC while
+/// any non-terminal reservation still depends on it for a terminal-failure decision.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct MutationReservationIndexEntry {
+    pub client_key: ClientMutationKey,
+    pub nonterminal: u32,
+}
+
+impl Storable for MutationReservationIndexEntry {
+    const BOUND: Bound = Bound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode MutationReservationIndexEntry"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode MutationReservationIndexEntry")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode MutationReservationIndexEntry")
+    }
+}
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
 pub struct RouterMutationRecord {
     pub mutation_id: MutationId,
@@ -197,6 +225,15 @@ pub struct RouterMutationRecord {
     /// operators. `None` until a recovery step records why a saga cannot yet converge.
     #[serde(default)]
     pub last_error: Option<String>,
+    /// **Irreversible** terminal-failure marker (ADR 0030 slice 6). `Some(error)` means the
+    /// mutation failed permanently and must **not** be re-dispatched under this client key — a
+    /// retry returns the stored error verbatim, so only a *new* client key may attempt the work
+    /// again. Distinct from the *retryable* `Failed` lifecycle phase (`shards.is_empty() &&
+    /// completed_row_count.is_none()`), which a same-key retry can still re-route. It is the only
+    /// state the reclaim reconciler may use as Cancel grounds: it guarantees no later canonical
+    /// dispatch for this mutation can still arrive and commit after the proof's absence read.
+    #[serde(default)]
+    pub terminal_failure: Option<String>,
 }
 
 impl RouterMutationRecord {
@@ -212,17 +249,43 @@ impl RouterMutationRecord {
             shards: Vec::new(),
             routing_lease_ns: Some(created_at_ns),
             last_error: None,
+            terminal_failure: None,
         }
     }
 
-    /// `true` once the saga reaches a terminal phase (`Completed` or `Failed`). Terminal
-    /// records are the only ones eligible for TTL eviction; non-terminal sagas are retained
-    /// as recovery targets (ADR 0029 Phase 4).
+    /// `true` once the saga reaches a terminal phase. An irreversible `terminal_failure` takes
+    /// priority (it forces [`Self::lifecycle_phase`] to `Failed`); otherwise terminality is the
+    /// progress-derived `Completed`/`Failed`. Terminal records are the only ones eligible for TTL
+    /// eviction (gated additionally by the non-terminal reservation count in ADR 0030 slice 6);
+    /// non-terminal sagas are retained as recovery targets (ADR 0029 Phase 4).
     pub fn is_terminal(&self) -> bool {
         matches!(
             self.lifecycle_phase(),
             MutationLifecyclePhase::Completed | MutationLifecyclePhase::Failed
         )
+    }
+
+    /// `true` once the saga is **irreversibly** terminally failed (ADR 0030 slice 6): a same-key
+    /// retry returns the stored error rather than re-dispatching.
+    pub fn is_terminally_failed(&self) -> bool {
+        self.terminal_failure.is_some()
+    }
+
+    /// `true` while a unique-reservation-holding mutation is eligible to be flipped to irreversible
+    /// `terminal_failure` by the reclaim reconciler (ADR 0030 slice 6): a durable dispatch envelope
+    /// exists, **no** shard's canonical write has committed, routing is released, and it is not
+    /// already terminal-failed.
+    ///
+    /// Try runs *after* the dispatch envelope is recorded, so a reservation-holding record always
+    /// has `shards` populated — the reachable predicate is "envelope present **and** no completed
+    /// canonical shard", not `shards.is_empty()`. The proof's other half (every `proof_scope` shard
+    /// reachable and reporting the `Acquire` absent) is the caller's responsibility; this is only the
+    /// record-side gate. Any other state (`Routing`, a completed canonical shard) must `hold`.
+    pub fn is_uncommitted_dispatch(&self) -> bool {
+        self.terminal_failure.is_none()
+            && !self.routing_in_progress
+            && !self.shards.is_empty()
+            && self.shards.iter().all(|shard| !shard.completed)
     }
 
     /// Derive the ADR 0029 federated mutation lifecycle phase from the existing saga
@@ -234,6 +297,12 @@ impl RouterMutationRecord {
     /// while a required canonical shard outcome or a required projection watermark is still
     /// outstanding.
     pub fn lifecycle_phase(&self) -> MutationLifecyclePhase {
+        // An irreversible terminal failure (ADR 0030 slice 6) is authoritative over the
+        // progress-derived phase: a reclaim-cancelled mutation reports `Failed` even though it still
+        // carries a dispatch envelope (its canonical write never committed).
+        if self.terminal_failure.is_some() {
+            return MutationLifecyclePhase::Failed;
+        }
         // A pinned row count is the terminal "all canonical + all projections converged"
         // signal; the heavy shard fan-out is compacted away once it is set.
         if self.completed_row_count.is_some() {

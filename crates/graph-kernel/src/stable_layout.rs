@@ -913,6 +913,27 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
              Canonical: a Reserved-not-yet-committed claim has no outbox receipt to rebuild from",
             RebuildPath::None,
         ),
+        region(
+            "ROUTER_MUTATION_RESERVATION_INDEX",
+            38,
+            StableMemoryClass::Canonical,
+            "uniqueness reservation reverse index",
+            "mutation_id → (ClientMutationKey, nonterminal reservation count) (ADR 0030 slice 6). \
+             Canonical: GC-pins the owning mutation record while non-terminal reservations remain \
+             and resolves a reservation claim to its record for reclaim",
+            RebuildPath::None,
+        ),
+        region(
+            "ROUTER_UNIQUE_EFFECT_PENDING",
+            39,
+            StableMemoryClass::Canonical,
+            "pending unique-effect discovery index",
+            "(graph_id, mutation_id, shard_id) → pinned graph canister (ADR 0030 slice 6). \
+             Canonical: the durable discovery source for Driver 2's unified effect recovery, \
+             including orphan Acquires no reservation can find; registered before the first \
+             dispatch await and removed only after the shard re-enumerates empty",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1150,8 +1171,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 38);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(37));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 40);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(39));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].class,
             StableMemoryClass::Telemetry

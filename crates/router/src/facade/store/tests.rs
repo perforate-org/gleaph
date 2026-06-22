@@ -1681,6 +1681,267 @@ fn expired_routing_lease_is_reclaimable_by_retry() {
     assert!(reclaimed.routing_owner);
 }
 
+// ADR 0030 slice 6: a terminally-failed mutation is irreversible — a same-key retry must return
+// the stored terminal error verbatim instead of re-routing. Try runs after the dispatch envelope is
+// recorded, so the cancelable state is "envelope present + no committed canonical shard", and only a
+// new client key may attempt the work again.
+#[test]
+fn terminally_failed_mutation_blocks_same_key_retry() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let caller = graph_principal(7);
+
+    // Uncommitted dispatch: a durable envelope exists but no shard's canonical write committed.
+    // `insert_mutation_record_with_shards` uses mutation_id 1 and `fp` as the fingerprint.
+    let key = insert_mutation_record_with_shards(caller, "k", 0, vec![shard_with(0, false, false)]);
+    assert!(
+        store.terminally_fail_uncommitted_dispatch(&key, 1, "uniqueness reclaim cancelled".into()),
+        "an uncommitted-dispatch record can be terminal-ized"
+    );
+    // Idempotent: a sibling reservation of the same already-failed mutation is still cancelable.
+    assert!(
+        store.terminally_fail_uncommitted_dispatch(&key, 1, "other".into()),
+        "already-terminal mutation reports cancelable (idempotent)"
+    );
+
+    // Same key + same fingerprint, within TTL: the stored terminal error is returned, not a retry.
+    assert_eq!(
+        store.reserve_mutation_id_for_client_key_at(
+            caller,
+            tenant_main_graph_id(),
+            "k",
+            b"fp".to_vec(),
+            1,
+        ),
+        Err(RouterError::Conflict("uniqueness reclaim cancelled".into())),
+        "a terminally-failed mutation must not be re-dispatched under the same key"
+    );
+}
+
+// ADR 0030 slice 6: terminal-ization is fenced on the uncommitted-dispatch predicate + mutation_id.
+// A re-routed (`Routing`) mutation, one whose canonical write completed on a shard, an id mismatch
+// (recycled key), or a missing record must all be refused so the reconciler holds.
+#[test]
+fn terminal_failure_is_refused_unless_uncommitted_dispatch() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    // Routing: a retry reclaimed the key and is re-dispatching.
+    let routing = insert_mutation_record(graph_principal(1), "routing", 0, true);
+    assert!(
+        !store.terminally_fail_uncommitted_dispatch(&routing, 1, "late cancel".into()),
+        "a Routing mutation must not be terminal-ized"
+    );
+
+    // Canonical-committed: a shard's canonical write committed, so the value may be live.
+    let committed = insert_mutation_record_with_shards(
+        graph_principal(2),
+        "committed",
+        0,
+        vec![shard_with(0, true, false)],
+    );
+    assert!(
+        !store.terminally_fail_uncommitted_dispatch(&committed, 1, "late cancel".into()),
+        "a mutation with a completed canonical shard must not be terminal-ized"
+    );
+
+    // Mutation-id mismatch: a recycled client key must not be terminal-ized by another mutation.
+    let uncommitted = insert_mutation_record_with_shards(
+        graph_principal(3),
+        "uncommitted",
+        0,
+        vec![shard_with(0, false, false)],
+    );
+    assert!(
+        !store.terminally_fail_uncommitted_dispatch(&uncommitted, 999, "wrong id".into()),
+        "an id mismatch must be refused"
+    );
+    assert!(
+        store.terminally_fail_uncommitted_dispatch(&uncommitted, 1, "right id".into()),
+        "the matching id is eligible"
+    );
+
+    // Missing record: nothing to flip.
+    let missing = ClientMutationKey::new(graph_principal(4), tenant_main_graph_id(), "gone".into());
+    assert!(!store.terminally_fail_uncommitted_dispatch(&missing, 1, "x".into()));
+}
+
+// ADR 0030 slice 6: the reverse index counts a mutation's non-terminal reservations — fresh inserts
+// at Try bump it (creating the row, pinned to the owning client key), each FreshlyCommitted/Cancel
+// release decrements, and the row (and pin) only vanishes at zero. A unique high mutation_id keeps
+// the global-keyed reverse index isolated from records using the default test id.
+#[test]
+fn reservation_slot_count_increments_and_releases_to_zero() {
+    let store = RouterStore::new();
+    let caller = graph_principal(71);
+    let mid: u64 = 9_100_001;
+    let key = ClientMutationKey::new(caller, GraphId::from_raw(71), "rk-count".into());
+
+    // A fresh count of zero (a pure idempotent replay) creates no row and pins nothing.
+    store.apply_reservation_slots(mid, &key, 0);
+    assert!(store.reservation_index_client_key(mid).is_none());
+
+    // Two fresh inserts then one more accumulate to three, pinned to `key`.
+    store.apply_reservation_slots(mid, &key, 2);
+    store.apply_reservation_slots(mid, &key, 1);
+    assert_eq!(store.reservation_index_client_key(mid), Some(key.clone()));
+
+    // The row survives until the third release drains the count to zero.
+    store.release_reservation_slot(mid);
+    store.release_reservation_slot(mid);
+    assert_eq!(store.reservation_index_client_key(mid), Some(key));
+    store.release_reservation_slot(mid);
+    assert!(store.reservation_index_client_key(mid).is_none());
+}
+
+// ADR 0030 slice 6: the GC pin is fail-closed. A release with no counted reservation is an
+// under-count that could un-pin a still-referenced record, so it traps (rolling back the offending
+// Confirm/Cancel) rather than masking the inconsistency with a no-op.
+#[test]
+#[should_panic(expected = "no reverse index row")]
+fn reservation_slot_release_without_count_traps() {
+    let store = RouterStore::new();
+    store.release_reservation_slot(9_150_001);
+}
+
+// ADR 0030 slice 6: a `mutation_id` maps to exactly one client key; a bump that finds a row owned by
+// a different key is corruption and must trap, not silently re-pin under the wrong owner.
+#[test]
+#[should_panic(expected = "owned by a different client key")]
+fn reservation_slot_apply_rejects_mismatched_owner() {
+    let store = RouterStore::new();
+    let mid: u64 = 9_160_001;
+    let first = ClientMutationKey::new(graph_principal(74), GraphId::from_raw(74), "rk-a".into());
+    let second = ClientMutationKey::new(graph_principal(75), GraphId::from_raw(75), "rk-b".into());
+    store.apply_reservation_slots(mid, &first, 1);
+    store.apply_reservation_slots(mid, &second, 1);
+}
+
+// ADR 0030 slice 6: the count-overflow guard is a read-only preflight that runs before any
+// reservation is written, so a Try that would overflow `u32` is rejected with nothing mutated.
+#[test]
+fn reservation_slot_overflow_preflight_rejects_before_apply() {
+    let store = RouterStore::new();
+    let caller = graph_principal(72);
+    let mid: u64 = 9_200_001;
+    let key = ClientMutationKey::new(caller, GraphId::from_raw(72), "rk-of".into());
+
+    // Drive the count to one below the ceiling (apply saturates; the test needs no preflight).
+    store.apply_reservation_slots(mid, &key, u32::MAX - 1);
+
+    // One more fits exactly; five would overflow and is refused.
+    assert!(store.preflight_reservation_slots(mid, 1).is_ok());
+    assert!(matches!(
+        store.preflight_reservation_slots(mid, 5),
+        Err(RouterError::Internal(_))
+    ));
+    // The refused preflight mutated nothing: the owning key is unchanged.
+    assert_eq!(store.reservation_index_client_key(mid), Some(key));
+}
+
+// ADR 0030 slice 6: a terminal, past-TTL record stays GC-pinned while it still owns a non-terminal
+// reservation (the reclaim reconciler needs it for a terminal-failure decision), and is evicted —
+// along with its reverse row — only once that last reservation is released.
+#[test]
+fn gc_pin_retains_terminal_record_until_reservation_released() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let now = CLIENT_MUTATION_KEY_TTL_NS * 2;
+    let caller = graph_principal(73);
+    let mid: u64 = 9_300_001;
+    let key = ClientMutationKey::new(caller, tenant_main_graph_id(), "rk-gc".into());
+
+    // Terminal (Failed: no envelope, no canonical write) and well past the TTL window.
+    let mut record = RouterMutationRecord::new(mid, 0, b"fp".to_vec());
+    record.routing_in_progress = false;
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
+    assert!(
+        store
+            .router_mutation_record(caller, tenant_main_graph_id(), "rk-gc")
+            .expect("record")
+            .is_terminal()
+    );
+
+    // Pin it: a non-terminal reservation still depends on this record.
+    store.apply_reservation_slots(mid, &key, 1);
+    store
+        .admin_sweep_expired_client_mutation_keys_at(admin, None, 100_000, now)
+        .expect("sweep");
+    assert!(
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key).is_some()),
+        "a pinned terminal record must survive TTL GC"
+    );
+    assert!(store.reservation_index_client_key(mid).is_some());
+
+    // Release the last reservation; the reverse row goes immediately, and GC may now reclaim the
+    // record (and idempotently the reverse row) together.
+    store.release_reservation_slot(mid);
+    assert!(store.reservation_index_client_key(mid).is_none());
+    store
+        .admin_sweep_expired_client_mutation_keys_at(admin, None, 100_000, now)
+        .expect("sweep");
+    assert!(
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key).is_none()),
+        "an unpinned terminal record past TTL must be evicted"
+    );
+    assert!(store.reservation_index_client_key(mid).is_none());
+}
+
+// ADR 0030 slice 6: a terminal, past-TTL record with no reservation (e.g. a constrained DELETE's
+// Release, or an orphan) still stays GC-pinned while a pending unique-effect discovery row remains —
+// Driver 2 reads this record's completion state before it removes the row — and is evicted only once
+// the last pending row is gone.
+#[test]
+fn gc_pin_retains_terminal_record_until_pending_effect_removed() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    let now = CLIENT_MUTATION_KEY_TTL_NS * 2;
+    let caller = graph_principal(74);
+    let mid: u64 = 9_300_101;
+    let shard = gleaph_graph_kernel::federation::ShardId::new(0);
+    let key = ClientMutationKey::new(caller, tenant_main_graph_id(), "rk-pe".into());
+
+    // Terminal (Failed: no envelope, no canonical write) and well past the TTL window.
+    let mut record = RouterMutationRecord::new(mid, 0, b"fp".to_vec());
+    record.routing_in_progress = false;
+    ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| m.insert(key.clone(), record));
+
+    // Pin it via a pending-effect row (no reservation reverse-row exists for this mutation).
+    store.register_pending_unique_effect(tenant_main_graph_id(), mid, shard, caller);
+    assert!(store.reservation_index_client_key(mid).is_none());
+    store
+        .admin_sweep_expired_client_mutation_keys_at(admin, None, 100_000, now)
+        .expect("sweep");
+    assert!(
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key).is_some()),
+        "a terminal record with a pending-effect row must survive TTL GC"
+    );
+
+    // Remove the last pending row; the record may now be reclaimed.
+    crate::facade::stable::unique_effect_pending::remove(tenant_main_graph_id(), mid, shard);
+    store
+        .admin_sweep_expired_client_mutation_keys_at(admin, None, 100_000, now)
+        .expect("sweep");
+    assert!(
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| m.get(&key).is_none()),
+        "a terminal record past TTL with no pending row must be evicted"
+    );
+}
+
 // ADR 0029 Phase 4: the recovery driver's scan returns only sagas it can safely converge —
 // non-terminal records that already have a persisted dispatch envelope (shards) and are not
 // held by an active routing lease.

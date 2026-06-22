@@ -484,11 +484,22 @@ mutation reserves and commits the same value → two committed elements. The pro
    this proof's result and re-evaluate from step 1.
 5. if **any** shard reports an `Acquire` effect for this `ClaimId` → committed: **Confirm** (never
    cancel), regardless of elapsed time; then ack that effect by its `EffectId`.
-6. only if **all** shards in `proof_scope` are reachable and **all** report the entry absent → never
-   committed: **Cancel / steal**;
+6. **Cancel / steal** only when **both** hold: (a) the owning mutation is **terminally `Failed`** in
+   its `RouterMutationRecord` (so no in-flight or future dispatch can still land an `Acquire` after
+   this proof's absence read), **and** (b) **all** shards in `proof_scope` are reachable and **all**
+   report the entry absent. Absence alone is insufficient — an already-sent canonical dispatch could
+   arrive and commit after the proof. If the record is **missing or non-terminal**, do **not** cancel:
+   revert to `Reserved` (keep `reclaim_generation = g`) and **hold**. (A non-terminal reservation's
+   `RouterMutationRecord` is therefore retained as its terminal proof and is non-evictable until the
+   reservation leaves `Reserved`/`Reclaiming`.)
 7. if **any** shard is unreachable or its answer is unknown → revert `state = Reserved` **keeping
    `reclaim_generation = g`** (never decremented or reset) and **hold** (no cancel, no steal),
    retrying the proof later under a fresh, higher generation.
+
+An **orphan `Acquire`** (a pinned `Acquire` effect whose reservation is absent) must **never** be
+acked and must **not** fabricate a reservation: the evidence is preserved (held) and counted in a
+diagnostic, because under the generation-fenced proof this state should not occur and silently
+discarding commit evidence would be unsafe.
 
 "Expired/abandoned" in the Try and Recovery rules means exactly the generation-fenced outcome of
 step 6. A reservation whose mutation reached canonical commit is always advanced to `Committed`,
@@ -498,15 +509,25 @@ never force-expired.
 
 - `UNIQUE_RESERVATIONS` is in Router stable memory; it survives upgrade. `post_upgrade` re-arms the
   recovery timer, which reconciles reservations against the pinned outbox on reopen.
-- **GC ordering safety.** The reclaim proof depends only on the reservation's own `proof_scope` and
-  the pinned outbox, never on the `RouterMutationRecord`, so a `RouterMutationRecord` GC'd first
-  cannot strand a reservation. As defense in depth, a `RouterMutationRecord` referenced by any
-  non-terminal reservation is **non-evictable** until that reservation is terminal (consistent with
-  ADR 0029 Phase 4's exclusion of non-terminal sagas from TTL eviction).
+- **GC ordering safety.** The reclaim proof's *read* depends only on the reservation's own
+  `proof_scope` and the pinned outbox, never on the `RouterMutationRecord`. The **Cancel** decision
+  additionally consults the record for the terminal-`Failed` predicate, but **fails safe**: a missing
+  or non-terminal record makes recovery **hold**, never cancel. As both a safety and liveness measure,
+  a `RouterMutationRecord` referenced by any reservation still in `Reserved`/`Reclaiming` is
+  **non-evictable** until that reservation leaves those states (consistent with ADR 0029 Phase 4's
+  exclusion of non-terminal sagas from TTL eviction), so the terminal proof is available when needed.
 - **Outbox retention.** Unique-effect outbox entries are pinned until acked and so are *not* governed
   by the ADR 0027 9-day journal eviction; they are pruned only after the Router has durably advanced
   and acked the matching reservation. This keeps the proof total while remaining bounded (one un-acked
   entry per in-flight unique effect).
+- **Release work discovery.** Held `Release` effects (Release-before-Acquire) stay pinned on the shard
+  after the inline post-commit reconciliation advances its cursor past them without acking. They are
+  rediscovered through a Router-owned, ADR-0030-independent index keyed in **row form**
+  `(graph_id, mutation_id, shard_id) → pinned graph_canister` (a row per target, so scans are bounded
+  and values stay small). A row is inserted when a release-capable mutation is dispatched and removed
+  **only after** the target's `Release` page — re-read from `cursor = None`, never inferred from a
+  tail empty page after a failed ack — comes back empty (all effects acked). While any row exists for
+  a mutation, its discovery source is retained: un-acked effects always remain rediscoverable.
 - `Committed` reservations persist while the owning element exists (released on delete). `Reserved`
   entries are bounded by the amortized retention sweep (ADR 0025 mechanism, extended to scan
   reservations), which GCs only proof-confirmed abandoned reservations. Growth is bounded by the

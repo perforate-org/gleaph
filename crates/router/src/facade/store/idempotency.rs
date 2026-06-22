@@ -1,9 +1,11 @@
 //! Mutation idempotency and client mutation journal.
 
 use super::super::stable::label_stats::{
-    ClientMutationKey, RouterMutationRecord, RouterMutationShard,
+    ClientMutationKey, MutationReservationIndexEntry, RouterMutationRecord, RouterMutationShard,
 };
-use super::super::stable::{ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER};
+use super::super::stable::{
+    ROUTER_MUTATION_BY_CLIENT_KEY, ROUTER_MUTATION_COUNTER, ROUTER_MUTATION_RESERVATION_INDEX,
+};
 use super::{
     CLIENT_MUTATION_KEY_TTL_NS, ClientMutationReservation, ROUTING_LEASE_TTL_NS, RouterStore,
     ic_time_ns, validate_client_mutation_key,
@@ -34,6 +36,27 @@ pub(crate) fn reset_mutation_gc_cursor_for_test() {
     MUTATION_GC_CURSOR.with_borrow_mut(|cursor| *cursor = None);
 }
 
+/// Non-terminal reservation count for `mutation_id` from the reverse index (ADR 0030 slice 6).
+/// The row exists iff the count is non-zero, so a missing row reads as `0`.
+fn reservation_slot_count_raw(mutation_id: MutationId) -> u32 {
+    ROUTER_MUTATION_RESERVATION_INDEX
+        .with_borrow(|idx| idx.get(&mutation_id).map_or(0, |entry| entry.nonterminal))
+}
+
+/// `true` while `mutation_id` still owns at least one non-terminal reservation — its record must
+/// not be GC'd, since the reclaim reconciler needs it to make a terminal-failure decision.
+fn reservation_slot_pinned_raw(mutation_id: MutationId) -> bool {
+    reservation_slot_count_raw(mutation_id) > 0
+}
+
+/// `true` while `(graph_id, mutation_id)` still owns at least one pending unique-effect discovery
+/// row — its record must not be GC'd, since Driver 2 reads this record's terminal completion state
+/// before it removes the row (ADR 0030 slice 6). A `Release`/orphan mutation has no reservation, so
+/// this is its only GC pin.
+fn pending_effect_pinned_raw(graph_id: GraphId, mutation_id: MutationId) -> bool {
+    crate::facade::stable::unique_effect_pending::pending_effect_pinned(graph_id, mutation_id)
+}
+
 /// Scan up to `budget` records starting strictly after `start_after`, removing those
 /// past [`CLIENT_MUTATION_KEY_TTL_NS`] that are not actively routing. Returns
 /// `(scanned, removed, last_examined_key)`. `created_at_ns` on the record stays the sole
@@ -45,7 +68,10 @@ fn evict_expired_client_mutation_keys(
 ) -> (u32, u32, Option<ClientMutationKey>) {
     let mut scanned: u32 = 0;
     let mut last_key: Option<ClientMutationKey> = None;
-    let mut expired: Vec<ClientMutationKey> = Vec::new();
+    // Each evictable candidate is captured with its `mutation_id` so the apply removes the reverse
+    // index row in lockstep with the record (ADR 0030 slice 6): one read-only preflight, then a
+    // failure-free apply, never a partial removal.
+    let mut expired: Vec<(ClientMutationKey, MutationId)> = Vec::new();
     ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow(|m| {
         let lower = match start_after {
             Some(key) => Bound::Excluded(key.clone()),
@@ -59,10 +85,19 @@ fn evict_expired_client_mutation_keys(
             // saga (CanonicalPending / CanonicalCommitted / ProjectionPending / Routing) is
             // retained as a recovery target so the recovery driver can still converge it;
             // evicting it would silently strand unfinished cross-canister work.
+            //
+            // ADR 0030 slice 6: even a *terminal* record stays pinned while it still owns a
+            // non-terminal reservation — the reclaim reconciler resolves a reservation's claim to
+            // this record to decide a terminal failure, so evicting it would strand that claim.
+            // It also stays pinned while any pending unique-effect discovery row remains, since
+            // Driver 2 reads this record's completion state before removing the row (the only pin a
+            // Release/orphan mutation has, as it owns no reservation).
             if record.is_terminal()
                 && now.saturating_sub(record.created_at_ns) > CLIENT_MUTATION_KEY_TTL_NS
+                && !reservation_slot_pinned_raw(record.mutation_id)
+                && !pending_effect_pinned_raw(key.graph_id, record.mutation_id)
             {
-                expired.push(key.clone());
+                expired.push((key.clone(), record.mutation_id));
             }
             last_key = Some(key);
         }
@@ -70,8 +105,16 @@ fn evict_expired_client_mutation_keys(
     let removed = expired.len() as u32;
     if removed > 0 {
         ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
-            for key in &expired {
+            for (key, _) in &expired {
                 m.remove(key);
+            }
+        });
+        // Defensive: the reverse row is already absent for an unpinned mutation (it is removed when
+        // the last non-terminal reservation leaves), but remove it here too so record and reverse
+        // row can never diverge.
+        ROUTER_MUTATION_RESERVATION_INDEX.with_borrow_mut(|idx| {
+            for (_, mutation_id) in &expired {
+                idx.remove(mutation_id);
             }
         });
     }
@@ -140,6 +183,13 @@ impl RouterStore {
                 return Err(RouterError::Conflict(
                     "client_mutation_key was already used for a different request".into(),
                 ));
+            }
+            // ADR 0030 slice 6: a terminally-failed mutation is irreversible — never re-dispatch it
+            // under this key. The reclaim reconciler relies on this: once it cancels a reservation
+            // on terminal-failure grounds, no later canonical write for this mutation can arrive, so
+            // the same key must keep returning the stored terminal error (a new key starts fresh).
+            if let Some(error) = &record.terminal_failure {
+                return Err(RouterError::Conflict(error.clone()));
             }
             if record.routing_in_progress {
                 // ADR 0029 Phase 4: honor an unexpired routing lease, but let a retry
@@ -291,6 +341,159 @@ impl RouterStore {
             }
             Ok(())
         })
+    }
+
+    /// Establish irreversible terminal-failure as Cancel grounds for the reclaim reconciler (ADR
+    /// 0030 slice 6), no `await`. Returns `true` iff — after this call — mutation `mutation_id` under
+    /// `key` is terminally failed, so the caller may cancel its reservation **and** decrement the
+    /// non-terminal count in this same message. The record-side gate (the proof's all-`proof_scope`-
+    /// absent half is the caller's):
+    /// - `mutation_id` must match the record (guards a recycled/reused client key);
+    /// - already `terminal_failure` ⇒ `true` (idempotent — a *sibling* reservation of the same
+    ///   already-failed mutation is still cancelable, and the predicate below would reject it);
+    /// - otherwise eligible only if [`RouterMutationRecord::is_uncommitted_dispatch`]: a durable
+    ///   dispatch envelope exists but no shard's canonical write committed and routing is released.
+    ///
+    /// The predicate re-check is the recovery race guard: between the proof's absence read and this
+    /// commit, a same-key retry may have re-routed the mutation (`Routing`) or a canonical write may
+    /// have completed on a shard. Either makes it ineligible, the flip is refused (`false`), and the
+    /// caller must `hold` rather than cancel.
+    pub(crate) fn terminally_fail_uncommitted_dispatch(
+        &self,
+        key: &ClientMutationKey,
+        mutation_id: MutationId,
+        error: String,
+    ) -> bool {
+        ROUTER_MUTATION_BY_CLIENT_KEY.with_borrow_mut(|m| {
+            let Some(mut record) = m.get(key) else {
+                return false;
+            };
+            if record.mutation_id != mutation_id {
+                return false;
+            }
+            if record.terminal_failure.is_some() {
+                return true;
+            }
+            if !record.is_uncommitted_dispatch() {
+                return false;
+            }
+            record.terminal_failure = Some(error);
+            m.insert(key.clone(), record);
+            true
+        })
+    }
+
+    /// Read-only overflow preflight for the non-terminal reservation count of `mutation_id` (ADR
+    /// 0030 slice 6). `fresh_upper` is the *maximum* number of reservations a Try could freshly
+    /// insert (its claim count); the actual fresh count is `<= fresh_upper`. Returns `Err` if even
+    /// that upper bound would overflow `u32`, so the count is rejected **before** any reservation is
+    /// written. Once this passes, [`apply_reservation_slots`](Self::apply_reservation_slots) with the
+    /// real fresh count is infallible. Mutates nothing.
+    pub(crate) fn preflight_reservation_slots(
+        &self,
+        mutation_id: MutationId,
+        fresh_upper: u32,
+    ) -> Result<(), RouterError> {
+        reservation_slot_count_raw(mutation_id)
+            .checked_add(fresh_upper)
+            .ok_or_else(|| {
+                RouterError::Internal(format!(
+                    "non-terminal reservation count overflow for mutation {mutation_id}"
+                ))
+            })
+            .map(|_| ())
+    }
+
+    /// Apply of a Try's fresh reservations to the reverse index (ADR 0030 slice 6): bump
+    /// `mutation_id`'s non-terminal count by `fresh`, creating the row (pinned to `key`) on the
+    /// first reservation. Must run in the same no-`await` message as the reservation insert and only
+    /// after [`preflight_reservation_slots`](Self::preflight_reservation_slots) has cleared overflow.
+    /// A `fresh` of zero (a pure idempotent replay) is a no-op, so replays never create a row.
+    ///
+    /// This is a GC-pin safety mechanism, so it is **fail-closed**: rather than masking a corrupt
+    /// count, it traps (rolling back the whole message) if an existing row is owned by a different
+    /// client key — `mutation_id` maps to exactly one [`ClientMutationKey`] — or if the bump
+    /// overflows despite the preflight (which would mean the preflight was bypassed). On the IC a
+    /// trap is the only rollback, so an inconsistency must trap here, not be silently absorbed.
+    pub(crate) fn apply_reservation_slots(
+        &self,
+        mutation_id: MutationId,
+        key: &ClientMutationKey,
+        fresh: u32,
+    ) {
+        if fresh == 0 {
+            return;
+        }
+        ROUTER_MUTATION_RESERVATION_INDEX.with_borrow_mut(|idx| {
+            let nonterminal = match idx.get(&mutation_id) {
+                Some(existing) => {
+                    assert!(
+                        &existing.client_key == key,
+                        "reverse index row for mutation {mutation_id} is owned by a different \
+                         client key; a mutation_id must map to exactly one ClientMutationKey \
+                         (ADR 0030 slice 6 invariant)"
+                    );
+                    existing.nonterminal.checked_add(fresh).unwrap_or_else(|| {
+                        panic!(
+                            "non-terminal reservation count for mutation {mutation_id} overflowed \
+                             on apply despite the overflow preflight (ADR 0030 slice 6 invariant)"
+                        )
+                    })
+                }
+                None => fresh,
+            };
+            idx.insert(
+                mutation_id,
+                MutationReservationIndexEntry {
+                    client_key: key.clone(),
+                    nonterminal,
+                },
+            );
+        });
+    }
+
+    /// Release of one non-terminal reservation slot for `mutation_id` (ADR 0030 slice 6): decrement
+    /// the count on a `FreshlyCommitted` Confirm or a reclaim Cancel, removing the row when it
+    /// reaches zero (which un-pins the owning record for TTL GC).
+    ///
+    /// This is a GC-pin safety mechanism, so it is **fail-closed**: every release must correspond to
+    /// a reservation counted at Try, so a missing row (or a stored count already at zero, which the
+    /// row invariant forbids) is an under-count that would let a pinned record be GC'd while a
+    /// non-terminal sibling reservation still depends on it. Rather than mask it with a no-op, this
+    /// traps, rolling back the Confirm/Cancel that issued the bad release in the same message.
+    pub(crate) fn release_reservation_slot(&self, mutation_id: MutationId) {
+        ROUTER_MUTATION_RESERVATION_INDEX.with_borrow_mut(|idx| {
+            let mut entry = idx.get(&mutation_id).unwrap_or_else(|| {
+                panic!(
+                    "reservation slot release for mutation {mutation_id} with no reverse index row: \
+                     a Confirm/Cancel decremented a reservation that was never counted at Try \
+                     (ADR 0030 slice 6 invariant)"
+                )
+            });
+            entry.nonterminal = entry.nonterminal.checked_sub(1).unwrap_or_else(|| {
+                panic!(
+                    "reservation slot release for mutation {mutation_id} at zero count: the reverse \
+                     index row must not exist with a zero count (ADR 0030 slice 6 invariant)"
+                )
+            });
+            if entry.nonterminal == 0 {
+                idx.remove(&mutation_id);
+            } else {
+                idx.insert(mutation_id, entry);
+            }
+        });
+    }
+
+    /// Resolve a reservation's claim (`mutation_id`) to the owning record's [`ClientMutationKey`] via
+    /// the reverse index (ADR 0030 slice 6). The reclaim reconciler uses this to find the record for
+    /// a terminal-failure decision; a missing row means no non-terminal reservation remains, so the
+    /// reconciler must `hold` rather than guess.
+    pub(crate) fn reservation_index_client_key(
+        &self,
+        mutation_id: MutationId,
+    ) -> Option<ClientMutationKey> {
+        ROUTER_MUTATION_RESERVATION_INDEX
+            .with_borrow(|idx| idx.get(&mutation_id).map(|entry| entry.client_key))
     }
 
     /// Bounded scan for sagas the recovery driver can converge: non-terminal records that

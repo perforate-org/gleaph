@@ -25,6 +25,7 @@ use crate::execution_path::check_adhoc_execution_path;
 #[cfg(target_family = "wasm")]
 use crate::facade::stable::label_stats::ClientMutationKey;
 use crate::facade::stable::label_stats::RouterMutationShard;
+use crate::facade::stable::reservation_catalog::ConfirmOutcome;
 use crate::facade::store::RouterStore;
 use crate::facade::store::uniqueness::plan_can_release;
 use crate::federation::{
@@ -1295,8 +1296,15 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     // is already guaranteed by the pre-envelope gate.
     if !unique_claims.is_empty()
         && let Some(mutation_id) = mutation_id
-        && let Err(err) =
-            store.try_reserve_unique(graph_id, mutation_id, &unique_claims, &dispatches)
+        && let Some(key) = client_mutation_key
+        && let Err(err) = store.try_reserve_unique(
+            caller,
+            graph_id,
+            mutation_id,
+            key,
+            &unique_claims,
+            &dispatches,
+        )
     {
         release_routing_if_owner(
             store,
@@ -1332,6 +1340,25 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             .map(|dispatch| dispatch.graph_canister)
             .collect()
     };
+
+    // ADR 0030 slice 6: register the pending unique-effect discovery rows before the first dispatch
+    // `await`, so they co-commit with the reservation/envelope. Any dispatch carrying `unique_claims`
+    // (an `Acquire`) or `constrained_properties` (a `Release`) may pin an effect; a crash after that
+    // shard's canonical write but before the inline Confirm/reconcile leaves these rows as Driver 2's
+    // only durable handle back to the pinned canister (the inline happy path runs first; Driver 2
+    // removes a row only after the shard re-enumerates empty).
+    if let Some(mutation_id) = mutation_id
+        && (!unique_claims.is_empty() || !constrained_properties.is_empty())
+    {
+        for dispatch in &dispatches {
+            store.register_pending_unique_effect(
+                graph_id,
+                mutation_id,
+                dispatch.shard_id,
+                dispatch.graph_canister,
+            );
+        }
+    }
 
     let mut merged = empty_execute_plan_result();
     // ADR 0029 Phase 2: accumulate per-shard read-your-writes watermarks for the mutation
@@ -1562,34 +1589,52 @@ async fn confirm_unique_reservations(
             // Leave reservations `Reserved`; slice-6 recovery reconciles them.
             Err(_) => continue,
         };
-        let acked_effects =
-            confirm_proofs_collect_acks(store, graph_id, mutation_id, claims, proofs);
-        if !acked_effects.is_empty() {
-            let _ = ack_unique_effects(*target, acked_effects).await;
+        let confirmed = confirm_proofs_collect_acks(store, graph_id, mutation_id, claims, proofs);
+        if confirmed.is_empty() {
+            continue;
+        }
+        let acked_effects: Vec<EffectId> = confirmed.iter().map(|(effect, _)| *effect).collect();
+        // Clear `pending_acquire_ack` **only** after the ack succeeds (the effect is durably
+        // unpinned). On a failed ack the records stay `Committed` with a pending ack, so slice-6
+        // recovery re-discovers and re-acks them; clearing first would strand the pinned effect.
+        if ack_unique_effects(*target, acked_effects).await.is_ok() {
+            for (_, claim) in &confirmed {
+                store.clear_unique_acquire_ack(
+                    graph_id,
+                    claim.constraint_id,
+                    &claim.encoded_value,
+                    ClaimId::new(mutation_id, claim.claim_ordinal),
+                );
+            }
         }
     }
 }
 
 /// Decision core of [`confirm_unique_reservations`], factored out from the inter-canister I/O so it
-/// is unit-testable: given the proofs one target returned, confirm each backed claim and return the
-/// effect ids that may be acked. The two safety contracts live here:
+/// is unit-testable: given the proofs one target returned, confirm each backed claim and return, for
+/// every claim that owns its commit, the `(effect_id, claim)` pair the caller acks then clears. The
+/// safety contracts live here:
 /// - **full `ClaimId` match**: the proof and the claim must agree on `(mutation_id, claim_ordinal)`,
 ///   so a stale/foreign proof can never confirm or ack a claim it does not own;
-/// - **ack iff this claim owns the commit**: an effect is returned for ack whenever
-///   `confirm_unique_claim` returns `true`, i.e. the value is committed *by this claim* — either a
-///   fresh `Reserved → Committed` move or an idempotent re-confirm of an already-`Committed` claim.
-///   The idempotent case is intentional: a Confirm replayed after a previous ack failed must re-ack
-///   so the pinned effect is eventually unpinned. A `false` (missing/`Reclaiming`/terminal-by-another
-///   -claim/mismatched) must not ack, or it would unpin the sole durable commit evidence and make
-///   slice-6 recovery misread the value as uncommitted.
-fn confirm_proofs_collect_acks(
+/// - **ack iff this claim owns the commit**: a pair is returned whenever `confirm_unique_claim`
+///   returns `true`, i.e. the value is committed *by this claim* — either a fresh `Reserved →
+///   Committed` move or an idempotent re-confirm of an already-`Committed` claim. The idempotent case
+///   is intentional: a Confirm replayed after a previous ack failed must re-ack so the pinned effect
+///   is eventually unpinned. A `false` (missing/`Reclaiming`/terminal-by-another-claim/mismatched)
+///   must not ack, or it would unpin the sole durable commit evidence and make slice-6 recovery
+///   misread the value as uncommitted.
+///
+/// Confirm stamps `pending_acquire_ack = effect_id` atomically with `→ Committed`; the caller clears
+/// it only after the returned effects are acked, so the ack is crash-safe (recovery re-acks any that
+/// were committed but not yet unpinned).
+fn confirm_proofs_collect_acks<'a>(
     store: &RouterStore,
     graph_id: GraphId,
     mutation_id: MutationId,
-    claims: &[UniqueClaimDispatch],
+    claims: &'a [UniqueClaimDispatch],
     proofs: Vec<gleaph_graph_kernel::federation::UniqueAcquireProof>,
-) -> Vec<EffectId> {
-    let mut acked_effects: Vec<EffectId> = Vec::new();
+) -> Vec<(EffectId, &'a UniqueClaimDispatch)> {
+    let mut acked: Vec<(EffectId, &'a UniqueClaimDispatch)> = Vec::new();
     for proof in proofs {
         let Some(evidence) = proof.acquire else {
             continue;
@@ -1600,11 +1645,29 @@ fn confirm_proofs_collect_acks(
         else {
             continue;
         };
-        if store.confirm_unique_claim(graph_id, mutation_id, claim, evidence.owner_element_id) {
-            acked_effects.push(evidence.effect_id);
+        // Ack on both committed outcomes (the idempotent re-ack retries a previously failed ack);
+        // `NotApplicable` (missing/`Reclaiming`/foreign) must not ack. The non-terminal count is
+        // decremented only on `FreshlyCommitted` — that reservation just left the non-terminal set,
+        // so it no longer pins the owning record (slice-6 reverse index). An idempotent re-confirm
+        // was already decremented on its first `FreshlyCommitted`, so it must not double-decrement.
+        match store.confirm_unique_claim(
+            graph_id,
+            mutation_id,
+            claim,
+            evidence.owner_element_id,
+            evidence.effect_id,
+        ) {
+            ConfirmOutcome::FreshlyCommitted => {
+                store.release_unique_reservation_slot(mutation_id);
+                acked.push((evidence.effect_id, claim));
+            }
+            ConfirmOutcome::AlreadyCommitted => {
+                acked.push((evidence.effect_id, claim));
+            }
+            ConfirmOutcome::NotApplicable => {}
         }
     }
-    acked_effects
+    acked
 }
 
 /// Page size for the Router's paginated `Release` reconciliation (ADR 0030 slice 5b). The shard
@@ -3289,6 +3352,7 @@ mod tests {
     /// contracts that `confirm_reservation`'s own unit tests do not cover at the orchestration layer.
     mod confirm_orchestration {
         use super::super::confirm_proofs_collect_acks;
+        use crate::facade::stable::label_stats::ClientMutationKey;
         use crate::facade::stable::reservation_catalog::{self, ProofShard, ReservationClaim};
         use crate::facade::store::RouterStore;
         use candid::Principal;
@@ -3312,7 +3376,7 @@ mod tests {
             }]
         }
 
-        fn seed_reserved(g: GraphId, mutation_id: u64) {
+        fn seed_reserved(store: &RouterStore, g: GraphId, mutation_id: u64) {
             reservation_catalog::try_reserve(
                 g,
                 mutation_id,
@@ -3325,10 +3389,27 @@ mod tests {
                 1,
             )
             .expect("seed reserved");
+            // Mirror the production Try: a fresh reservation also bumps the reverse-index count that
+            // a `FreshlyCommitted` Confirm decrements (ADR 0030 slice 6). A constant key keeps the
+            // `mutation_id → ClientMutationKey` mapping consistent across these single-claim seeds.
+            store.apply_reservation_slots(mutation_id, &seed_key(), 1);
+        }
+
+        fn seed_key() -> ClientMutationKey {
+            ClientMutationKey::new(
+                Principal::anonymous(),
+                GraphId::from_raw(0),
+                "confirm-orch".into(),
+            )
         }
 
         fn proof(claim_id: ClaimId, acquire: Option<UniqueAcquireEvidence>) -> UniqueAcquireProof {
             UniqueAcquireProof { claim_id, acquire }
+        }
+
+        /// Project the `(effect_id, claim)` pairs down to the acked effect ids.
+        fn effect_ids(acks: &[(EffectId, &UniqueClaimDispatch)]) -> Vec<EffectId> {
+            acks.iter().map(|(effect, _)| *effect).collect()
         }
 
         fn evidence() -> UniqueAcquireEvidence {
@@ -3352,22 +3433,24 @@ mod tests {
                 &[ProofShard::new(ShardId::new(0), Principal::anonymous())],
                 2,
             )
+            .map(|_| ())
         }
 
         #[test]
         fn matching_proof_confirms_and_returns_effect_for_ack() {
             let store = RouterStore::new();
             let g = graph(1);
-            seed_reserved(g, 10);
+            seed_reserved(&store, g, 10);
 
+            let dispatches = claims();
             let acks = confirm_proofs_collect_acks(
                 &store,
                 g,
                 10,
-                &claims(),
+                &dispatches,
                 vec![proof(ClaimId::new(10, 0), Some(evidence()))],
             );
-            assert_eq!(acks, vec![EffectId::new(10, 0)]);
+            assert_eq!(effect_ids(&acks), vec![EffectId::new(10, 0)]);
             // Reservation is now Committed.
             assert!(matches!(
                 second_try(g),
@@ -3379,13 +3462,14 @@ mod tests {
         fn absent_acquire_is_not_acked_and_leaves_reservation_reserved() {
             let store = RouterStore::new();
             let g = graph(2);
-            seed_reserved(g, 10);
+            seed_reserved(&store, g, 10);
 
+            let dispatches = claims();
             let acks = confirm_proofs_collect_acks(
                 &store,
                 g,
                 10,
-                &claims(),
+                &dispatches,
                 vec![proof(ClaimId::new(10, 0), None)],
             );
             assert!(acks.is_empty(), "a non-commit proof must not ack");
@@ -3399,15 +3483,16 @@ mod tests {
         fn full_claim_id_mismatch_is_not_acked() {
             let store = RouterStore::new();
             let g = graph(3);
-            seed_reserved(g, 10);
+            seed_reserved(&store, g, 10);
 
             // Same ordinal, different mutation: the full ClaimId does not match, so the proof is for
             // a different mutation's claim and must be ignored.
+            let dispatches = claims();
             let acks = confirm_proofs_collect_acks(
                 &store,
                 g,
                 10,
-                &claims(),
+                &dispatches,
                 vec![proof(ClaimId::new(999, 0), Some(evidence()))],
             );
             assert!(acks.is_empty(), "a foreign ClaimId must not ack");
@@ -3424,11 +3509,12 @@ mod tests {
             let store = RouterStore::new();
             let g = graph(4);
 
+            let dispatches = claims();
             let acks = confirm_proofs_collect_acks(
                 &store,
                 g,
                 10,
-                &claims(),
+                &dispatches,
                 vec![proof(ClaimId::new(10, 0), Some(evidence()))],
             );
             assert!(
@@ -3444,27 +3530,28 @@ mod tests {
             // pinned `Acquire` is eventually unpinned.
             let store = RouterStore::new();
             let g = graph(5);
-            seed_reserved(g, 10);
+            seed_reserved(&store, g, 10);
 
+            let dispatches = claims();
             let first = confirm_proofs_collect_acks(
                 &store,
                 g,
                 10,
-                &claims(),
+                &dispatches,
                 vec![proof(ClaimId::new(10, 0), Some(evidence()))],
             );
-            assert_eq!(first, vec![EffectId::new(10, 0)]);
+            assert_eq!(effect_ids(&first), vec![EffectId::new(10, 0)]);
 
             // Reservation is now Committed; a replayed Confirm of the same claim re-acks.
             let replay = confirm_proofs_collect_acks(
                 &store,
                 g,
                 10,
-                &claims(),
+                &dispatches,
                 vec![proof(ClaimId::new(10, 0), Some(evidence()))],
             );
             assert_eq!(
-                replay,
+                effect_ids(&replay),
                 vec![EffectId::new(10, 0)],
                 "idempotent re-confirm must re-ack so a previously-failed ack is retried"
             );
@@ -3511,12 +3598,25 @@ mod tests {
 
         fn commit(g: GraphId, owner: &[u8]) {
             reserve(g);
-            assert!(reservation_catalog::confirm_reservation(
+            assert_eq!(
+                reservation_catalog::confirm_reservation(
+                    g,
+                    ClaimId::new(10, 0),
+                    cid(),
+                    b"v",
+                    owner.to_vec(),
+                    EffectId::new(10, 0)
+                ),
+                reservation_catalog::ConfirmOutcome::FreshlyCommitted
+            );
+            // Model the steady state a `Release` reconciles against: the `Acquire` was already
+            // acked/unpinned, so the owner-matched Release removes the reservation rather than
+            // holding to protect a still-pinned Acquire.
+            assert!(reservation_catalog::clear_acquire_ack(
                 g,
-                ClaimId::new(10, 0),
                 cid(),
                 b"v",
-                owner.to_vec()
+                ClaimId::new(10, 0)
             ));
         }
 

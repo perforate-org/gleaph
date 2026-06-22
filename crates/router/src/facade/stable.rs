@@ -15,6 +15,7 @@ pub(crate) mod layout;
 pub(crate) mod memory;
 pub(crate) mod prepared_catalog;
 pub(crate) mod reservation_catalog;
+pub(crate) mod unique_effect_pending;
 
 thread_local! {
     // --- auth ---
@@ -92,6 +93,19 @@ thread_local! {
     /// (ADR 0030).
     pub(crate) static ROUTER_UNIQUE_RESERVATIONS: RefCell<memory::StableUniqueReservationMap> =
         RefCell::new(memory::init_unique_reservations());
+
+    /// `mutation_id → (ClientMutationKey, nonterminal reservation count)` reverse index — resolves a
+    /// reservation's claim to its owning mutation record and GC-pins that record while non-terminal
+    /// reservations remain (ADR 0030 slice 6).
+    pub(crate) static ROUTER_MUTATION_RESERVATION_INDEX:
+        RefCell<memory::StableMutationReservationIndex> =
+        RefCell::new(memory::init_mutation_reservation_index());
+
+    /// `(graph_id, mutation_id, shard_id) → pinned graph canister` — durable discovery rows for the
+    /// slice-6 unified effect recovery (Driver 2), registered before the first dispatch await for any
+    /// dispatch that may emit a unique Acquire/Release effect (ADR 0030 slice 6).
+    pub(crate) static ROUTER_UNIQUE_EFFECT_PENDING: RefCell<memory::StableUniqueEffectPendingMap> =
+        RefCell::new(memory::init_unique_effect_pending());
 
     // --- telemetry ---
     pub(crate) static ROUTER_VERTEX_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =

@@ -19,7 +19,7 @@ use std::ops::Bound;
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_gql_ic::MAX_UNIQUE_ENCODED_VALUE_LEN;
 use gleaph_graph_kernel::entry::{ConstraintNameId, GraphId};
-use gleaph_graph_kernel::federation::{ClaimId, ShardId};
+use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId};
 use gleaph_graph_kernel::plan_exec::MutationId;
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
@@ -30,6 +30,18 @@ use crate::state::RouterError;
 /// Maximum encoded reservation-key byte length: `graph_id` (4) + `constraint_id` (2) + the canonical
 /// `encoded_value` bound shared with `gleaph_gql_ic::unique_key`.
 const MAX_RESERVATION_KEY_LEN: usize = 6 + MAX_UNIQUE_ENCODED_VALUE_LEN;
+
+/// Minimum age before a `Reserved` reservation is *eligible* for a reclaim proof (ADR 0030
+/// §Timeout). The TTL only gates **eligibility** — it is never the authority to cancel, which comes
+/// solely from the generation-fenced proof (terminal-`Failed` mutation **and** every `proof_scope`
+/// shard reachable and reporting the `Acquire` absent). It is set well above the routing-lease
+/// window ([`ROUTING_LEASE_TTL_NS`], its documented lower bound) plus the canonical dispatch round
+/// trip, so a slow-but-live saga is never needlessly reclaimed while still in flight.
+pub(crate) const UNIQUE_RESERVATION_TTL_NS: u64 = 30 * 60 * 1_000_000_000;
+
+// The eligibility window must dominate the routing lease: while a routing lease can still be live (or
+// freshly reclaimed for retry), reclaiming the value's reservation would be wasted work.
+const _: () = assert!(UNIQUE_RESERVATION_TTL_NS >= crate::facade::store::ROUTING_LEASE_TTL_NS);
 
 /// Reservation key: the exact canonical-encoded value bytes (not a hash) under a constraint.
 ///
@@ -146,6 +158,13 @@ pub(crate) struct ReservationRecord {
     /// Complete canister-resolved target set the claim may have committed on; the reclaim proof
     /// reads it from here, so a GC'd `RouterMutationRecord` cannot strand recovery.
     pub proof_scope: Vec<ProofShard>,
+    /// The `Acquire` effect proven at `→ Committed` whose ack (unpin) has **not** been confirmed.
+    /// Set atomically with the `→ Committed` transition (normal Confirm and reclaim commit) and
+    /// cleared only after the ack succeeds, so a Router crash between commit and ack leaves a durable
+    /// trail: a `Committed` record with `Some(..)` is the slice-6 reconciler's re-discovery handle
+    /// for the still-pinned `Acquire`. `None` once acked (or for records that never committed).
+    #[serde(default)]
+    pub pending_acquire_ack: Option<EffectId>,
 }
 
 /// Versioned stable envelope (ADR 0007), so the record schema can evolve across upgrades.
@@ -187,6 +206,11 @@ pub(crate) struct ReservationClaim {
 /// first (mutating nothing), returns `Err` before any write on the first conflict, and only then,
 /// in the same message with no intervening `await`, inserts all reservations together.
 ///
+/// On success returns the number of **fresh** reservations inserted (idempotent replays insert
+/// nothing). The caller uses this to bump the non-terminal reservation count for `mutation_id` by
+/// exactly the fresh count (ADR 0030 slice 6 reverse index); the count overflow must be preflighted
+/// by the caller *before* this apply, since this apply itself is infallible.
+///
 /// Errors:
 /// - [`RouterError::UniquenessViolation`] (non-retryable): an intra-mutation duplicate value, a
 ///   duplicate `claim_ordinal` in the set, a value already `Committed`, a value `Reserved` by a
@@ -205,7 +229,7 @@ pub(crate) fn try_reserve(
     claims: &[ReservationClaim],
     proof_scope: &[ProofShard],
     now_ns: u64,
-) -> Result<(), RouterError> {
+) -> Result<u32, RouterError> {
     // Phase 1 — claim set. Reject, deterministically and non-retryably:
     //   (a) duplicate `(constraint_id, encoded_value)` — the same value claimed twice;
     //   (b) duplicate `claim_ordinal` — two values sharing one `ClaimId`, which would make Slice 4's
@@ -304,6 +328,7 @@ pub(crate) fn try_reserve(
 
     // Phase 3 — apply: no conflict and no `await` since preflight, so the classification still
     // holds. Insert every new reservation together; already-reserved claims need no write.
+    let fresh = to_insert.len() as u32;
     ROUTER_UNIQUE_RESERVATIONS.with_borrow_mut(|table| {
         for (key, claim_id) in to_insert {
             table.insert(
@@ -315,12 +340,28 @@ pub(crate) fn try_reserve(
                     owner_element_id: None,
                     reserved_at_ns: now_ns,
                     proof_scope: scope.clone(),
+                    pending_acquire_ack: None,
                 },
             );
         }
     });
 
-    Ok(())
+    Ok(fresh)
+}
+
+/// Outcome of a [`confirm_reservation`] attempt (ADR 0030). Distinguishes the **fresh** transition
+/// — the only one that leaves the non-terminal reservation set — from an idempotent re-confirm, so
+/// the caller decrements its mutation's non-terminal count exactly once.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ConfirmOutcome {
+    /// `Reserved → Committed` happened now: ack the `Acquire` **and** decrement the non-terminal
+    /// count for this reservation's mutation.
+    FreshlyCommitted,
+    /// Already `Committed` by this claim (idempotent replay): ack the `Acquire` again so a previously
+    /// failed ack is retried, but the count was already decremented on the fresh transition.
+    AlreadyCommitted,
+    /// Missing record, a different claim's reservation, or `Reclaiming`: no ack, no count change.
+    NotApplicable,
 }
 
 /// Confirm: `Reserved → Committed`, stamping the canonical `owner_element_id` (ADR 0030 slice 5).
@@ -331,35 +372,322 @@ pub(crate) fn try_reserve(
 /// own `Reserved` claim:
 /// - missing record, or a record owned by a *different* claim: a no-op (`false`) — the reservation
 ///   was reclaimed/superseded; the slice-6 recovery reconciler owns that case, not Confirm.
-/// - `Reclaiming`: left untouched (`false`) — a generation-fenced reclaim proof is authoritative.
-/// - already `Committed` by this claim: idempotent (`true`); the owner is not rewritten.
-/// - `Reserved` by this claim: transitions to `Committed`, stamping `owner_element_id`.
+/// - `Reclaiming`: left untouched ([`ConfirmOutcome::NotApplicable`]) — a generation-fenced reclaim
+///   proof is authoritative.
+/// - already `Committed` by this claim: idempotent ([`ConfirmOutcome::AlreadyCommitted`]); the owner
+///   and `pending_acquire_ack` are not rewritten (an earlier ack may already have cleared the latter
+///   — re-acking is harmless, but it must **not** decrement the non-terminal count again).
+/// - `Reserved` by this claim: transitions to `Committed` ([`ConfirmOutcome::FreshlyCommitted`]),
+///   stamping `owner_element_id` **and** `pending_acquire_ack = Some(effect_id)` in the same stable
+///   write, so a crash before the ack leaves the still-pinned `Acquire` re-discoverable (a
+///   `Committed` record with a pending ack). This is the only outcome that leaves the non-terminal
+///   set, so the caller decrements the reservation's mutation count **only** on it.
 pub(crate) fn confirm_reservation(
     graph_id: GraphId,
     claim_id: ClaimId,
     constraint_id: ConstraintNameId,
     encoded_value: &[u8],
     owner_element_id: Vec<u8>,
+    effect_id: EffectId,
+) -> ConfirmOutcome {
+    let key = UniqueReservationKey::new(graph_id, constraint_id, encoded_value.to_vec());
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow_mut(|table| {
+        let Some(mut record) = table.get(&key) else {
+            return ConfirmOutcome::NotApplicable;
+        };
+        if record.claim != claim_id {
+            return ConfirmOutcome::NotApplicable;
+        }
+        match record.state {
+            ReservationState::Committed => ConfirmOutcome::AlreadyCommitted,
+            ReservationState::Reclaiming => ConfirmOutcome::NotApplicable,
+            ReservationState::Reserved => {
+                record.state = ReservationState::Committed;
+                record.owner_element_id = Some(owner_element_id);
+                record.pending_acquire_ack = Some(effect_id);
+                table.insert(key, record);
+                ConfirmOutcome::FreshlyCommitted
+            }
+        }
+    })
+}
+
+/// Clear `pending_acquire_ack` after the `Acquire` effect's ack (unpin) has succeeded (ADR 0030
+/// slice 6). Idempotent and fenced: only a `Committed` record owned by `claim_id` is cleared, so a
+/// stale callback from a superseded claim cannot suppress a live record's re-ack. Returns `true` iff
+/// it cleared a previously-pending ack (i.e. the reconciler may stop re-discovering this `Acquire`).
+pub(crate) fn clear_acquire_ack(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+    encoded_value: &[u8],
+    claim_id: ClaimId,
 ) -> bool {
     let key = UniqueReservationKey::new(graph_id, constraint_id, encoded_value.to_vec());
     ROUTER_UNIQUE_RESERVATIONS.with_borrow_mut(|table| {
         let Some(mut record) = table.get(&key) else {
             return false;
         };
-        if record.claim != claim_id {
+        if record.claim != claim_id
+            || record.state != ReservationState::Committed
+            || record.pending_acquire_ack.is_none()
+        {
             return false;
         }
-        match record.state {
-            ReservationState::Committed => true,
-            ReservationState::Reclaiming => false,
-            ReservationState::Reserved => {
-                record.state = ReservationState::Committed;
-                record.owner_element_id = Some(owner_element_id);
-                table.insert(key, record);
-                true
-            }
+        record.pending_acquire_ack = None;
+        table.insert(key, record);
+        true
+    })
+}
+
+/// A captured fence for an in-flight generation-fenced reclaim proof (ADR 0030 §Timeout). The proof
+/// reads `proof_scope` for a `ClaimId`-matched `Acquire`, then applies its outcome **only** if the
+/// entry is still `Reclaiming` with `reclaim_generation == generation`.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReclaimTicket {
+    pub claim: ClaimId,
+    pub generation: u64,
+    pub proof_scope: Vec<ProofShard>,
+}
+
+/// Begin a reclaim proof for a `Reserved` value (ADR 0030 §Timeout step 1): atomically and with **no
+/// `await`**, checked-increment the persistent `reclaim_generation` to a fresh `g` and set
+/// `Reclaiming`, capturing the fence the proof re-checks against. While `Reclaiming`, Try fences the
+/// value, so no claim can commit during the proof. Returns `None` (abort the proof) when the entry
+/// is absent or not `Reserved` (already `Reclaiming`/`Committed`), or — defensively — when the
+/// generation would overflow `u64` (astronomically unreachable; leaves the entry untouched).
+pub(crate) fn begin_reclaim(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+    encoded_value: &[u8],
+) -> Option<ReclaimTicket> {
+    let key = UniqueReservationKey::new(graph_id, constraint_id, encoded_value.to_vec());
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow_mut(|table| {
+        let mut record = table.get(&key)?;
+        if record.state != ReservationState::Reserved {
+            return None;
+        }
+        let generation = record.reclaim_generation.checked_add(1)?;
+        record.reclaim_generation = generation;
+        record.state = ReservationState::Reclaiming;
+        let ticket = ReclaimTicket {
+            claim: record.claim,
+            generation,
+            proof_scope: record.proof_scope.clone(),
+        };
+        table.insert(key, record);
+        Some(ticket)
+    })
+}
+
+/// Resume an interrupted reclaim proof (ADR 0030 §Timeout): the entry is already `Reclaiming` (e.g.
+/// the Router crashed mid-proof, or the prior proof held), so return its **current** fence without
+/// bumping the generation — the in-flight proof never lost the fence. `None` if not `Reclaiming`.
+pub(crate) fn resume_reclaim(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+    encoded_value: &[u8],
+) -> Option<ReclaimTicket> {
+    let key = UniqueReservationKey::new(graph_id, constraint_id, encoded_value.to_vec());
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow(|table| {
+        let record = table.get(&key)?;
+        if record.state != ReservationState::Reclaiming {
+            return None;
+        }
+        Some(ReclaimTicket {
+            claim: record.claim,
+            generation: record.reclaim_generation,
+            proof_scope: record.proof_scope,
+        })
+    })
+}
+
+/// Read-only check that the entry is `Reclaiming`, owned by `claim_id`, at `reclaim_generation == g`
+/// — exactly the fence [`cancel_reclaim`] enforces (ADR 0030 slice 6). The atomic cancel preflights
+/// this **before** any record mutation, so a later `cancel_reclaim` in the same no-`await` region is
+/// guaranteed to apply: terminal-failure is never recorded for a reservation that cannot be removed.
+pub(crate) fn is_reclaiming_at(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+    encoded_value: &[u8],
+    claim_id: ClaimId,
+    g: u64,
+) -> bool {
+    let key = UniqueReservationKey::new(graph_id, constraint_id, encoded_value.to_vec());
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow(|table| {
+        table.get(&key).is_some_and(|record| {
+            record.claim == claim_id
+                && record.state == ReservationState::Reclaiming
+                && record.reclaim_generation == g
+        })
+    })
+}
+
+/// Apply a reclaim proof's **commit** outcome under the fence (ADR 0030 §Timeout step 5): only if the
+/// entry is still `Reclaiming` with `reclaim_generation == g` and owned by `claim_id`, transition to
+/// `Committed` and stamp `owner_element_id`. Returns `true` iff applied (the caller may then ack the
+/// `Acquire`). A diverged generation/state or foreign claim → `false` (discard this proof's result).
+pub(crate) fn apply_reclaim_commit(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+    encoded_value: &[u8],
+    claim_id: ClaimId,
+    g: u64,
+    owner_element_id: Vec<u8>,
+    effect_id: EffectId,
+) -> bool {
+    let key = UniqueReservationKey::new(graph_id, constraint_id, encoded_value.to_vec());
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow_mut(|table| {
+        let Some(mut record) = table.get(&key) else {
+            return false;
+        };
+        if record.claim != claim_id
+            || record.state != ReservationState::Reclaiming
+            || record.reclaim_generation != g
+        {
+            return false;
+        }
+        record.state = ReservationState::Committed;
+        record.owner_element_id = Some(owner_element_id);
+        // Same contract as normal Confirm: the proven `Acquire` is still pinned until the reconciler
+        // acks it, so record it as pending in the same write that commits.
+        record.pending_acquire_ack = Some(effect_id);
+        table.insert(key, record);
+        true
+    })
+}
+
+/// Apply a reclaim proof's **cancel** outcome under the fence (ADR 0030 §Timeout step 6): only if the
+/// entry is still `Reclaiming` with `reclaim_generation == g`, remove the reservation, freeing the
+/// value. Returns `true` iff removed. This enforces the proof's full fence — `Reclaiming`, owned by
+/// `claim_id`, at `reclaim_generation == g` — but **not** the safety predicate; the caller must
+/// already have established the latter (the owning mutation is terminally `Failed` **and** every
+/// `proof_scope` shard was reachable and reported the `Acquire` absent).
+///
+/// The `claim_id` match is load-bearing for ABA safety: `reclaim_generation` resets to 0 on a fresh
+/// `try_reserve`, so a *new* reservation B at the same key can re-reach the same generation `g` a
+/// deleted reservation A's in-flight proof captured. Without the claim check, A's delayed Cancel
+/// callback (`A.claim`, `g`) would match and wrongly remove B; the differing `ClaimId` rejects it.
+pub(crate) fn cancel_reclaim(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+    encoded_value: &[u8],
+    claim_id: ClaimId,
+    g: u64,
+) -> bool {
+    let key = UniqueReservationKey::new(graph_id, constraint_id, encoded_value.to_vec());
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow_mut(|table| {
+        let Some(record) = table.get(&key) else {
+            return false;
+        };
+        if record.claim == claim_id
+            && record.state == ReservationState::Reclaiming
+            && record.reclaim_generation == g
+        {
+            table.remove(&key);
+            true
+        } else {
+            false
         }
     })
+}
+
+/// Release the reclaim fence without resolving (ADR 0030 §Timeout step 7): an unreachable/unknown
+/// shard, or a non-terminal/missing owning mutation, means the proof cannot safely commit or cancel.
+/// Revert `Reclaiming@g → Reserved` **keeping** `reclaim_generation = g` (never reset), so the next
+/// proof runs under a strictly higher generation. Fenced on `claim_id` + `Reclaiming@g` for the same
+/// ABA reason as [`cancel_reclaim`] — a stale callback from a deleted-then-recreated key must not
+/// revert the live reservation. No-op (`false`) unless the full fence matches.
+pub(crate) fn hold_reclaim(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+    encoded_value: &[u8],
+    claim_id: ClaimId,
+    g: u64,
+) -> bool {
+    let key = UniqueReservationKey::new(graph_id, constraint_id, encoded_value.to_vec());
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow_mut(|table| {
+        let Some(mut record) = table.get(&key) else {
+            return false;
+        };
+        if record.claim == claim_id
+            && record.state == ReservationState::Reclaiming
+            && record.reclaim_generation == g
+        {
+            record.state = ReservationState::Reserved;
+            table.insert(key, record);
+            true
+        } else {
+            false
+        }
+    })
+}
+
+/// A reservation the slice-6 reclaim reconciler (Driver 1) must act on, captured by the no-`await`
+/// work-discovery scan so the async proof/ack phase has every field it needs without re-reading
+/// (the record may change between scan and apply; each transition re-checks its own fence).
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct ReclaimCandidate {
+    pub key: UniqueReservationKey,
+    pub claim: ClaimId,
+    pub state: ReservationState,
+    pub reclaim_generation: u64,
+    pub proof_scope: Vec<ProofShard>,
+    pub pending_acquire_ack: Option<EffectId>,
+}
+
+/// Bounded, cursor-based work discovery for the reclaim reconciler (ADR 0030 slice 6, Driver 1).
+/// Scans up to `budget` reservations after `start_after` across the whole keyspace and returns those
+/// needing reconciliation, plus the last key examined (the next cursor) and the count scanned.
+///
+/// A reservation needs reconciliation when it is:
+/// - `Reserved` and at least [`UNIQUE_RESERVATION_TTL_NS`] old — eligible for a fresh reclaim proof
+///   (the TTL gates *eligibility* only; the cancel authority is the generation-fenced proof);
+/// - `Reclaiming` (any age) — a prior proof began (and may have been interrupted by a crash); it
+///   must be resumed under its existing fence so the value is never left fenced forever;
+/// - `Committed` with a `pending_acquire_ack` (any age) — the `→ Committed` write is durable but the
+///   `Acquire` ack was never confirmed, so the still-pinned effect must be re-acked or its
+///   ack-reply-lost cleared.
+///
+/// Read-only: it never mutates the table, so the cursor can advance even when a candidate is later
+/// held; the next lap re-discovers anything still needing work.
+pub(crate) fn scan_reclaim_candidates(
+    start_after: Option<&UniqueReservationKey>,
+    budget: usize,
+    now: u64,
+) -> (Vec<ReclaimCandidate>, Option<UniqueReservationKey>, u32) {
+    let mut scanned: u32 = 0;
+    let mut last_key: Option<UniqueReservationKey> = None;
+    let mut candidates: Vec<ReclaimCandidate> = Vec::new();
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow(|table| {
+        let lower = match start_after {
+            Some(key) => Bound::Excluded(key.clone()),
+            None => Bound::Unbounded,
+        };
+        for entry in table.range((lower, Bound::Unbounded)).take(budget) {
+            let key = entry.key().clone();
+            let record = entry.value();
+            scanned += 1;
+            let needs = match record.state {
+                ReservationState::Reserved => {
+                    now.saturating_sub(record.reserved_at_ns) >= UNIQUE_RESERVATION_TTL_NS
+                }
+                ReservationState::Reclaiming => true,
+                ReservationState::Committed => record.pending_acquire_ack.is_some(),
+            };
+            if needs {
+                candidates.push(ReclaimCandidate {
+                    key: key.clone(),
+                    claim: record.claim,
+                    state: record.state,
+                    reclaim_generation: record.reclaim_generation,
+                    proof_scope: record.proof_scope.clone(),
+                    pending_acquire_ack: record.pending_acquire_ack,
+                });
+            }
+            last_key = Some(key);
+        }
+    });
+    (candidates, last_key, scanned)
 }
 
 /// Outcome of reconciling one `Release` effect against the reservation table (ADR 0030 slice 5b).
@@ -382,7 +710,10 @@ pub(crate) enum ReleaseOutcome {
 /// - **missing record** → `Applied` (nothing reserved; the value is already free — re-ack-safe);
 /// - **`Reserved`/`Reclaiming`**, or `Committed` with no stamped owner → `Held` (Release-before-
 ///   Acquire: the owner is undetermined; do not ack, reconcile the `Acquire` first);
-/// - **`Committed`, owner == effect owner** → remove the reservation, `Applied`;
+/// - **`Committed`, owner == effect owner, `Acquire` still pending ack** → `Held` (removing the
+///   reservation now would orphan the still-pinned `Acquire`, whose only re-discovery handle is this
+///   record; ack the `Acquire` first, which clears `pending_acquire_ack`, then this Release applies);
+/// - **`Committed`, owner == effect owner, `Acquire` acked** → remove the reservation, `Applied`;
 /// - **`Committed`, owner != effect owner** → a different element took the value over; the `Release`
 ///   is stale → `Applied` (no-op ack), leaving the live reservation intact.
 pub(crate) fn release_reservation(
@@ -401,8 +732,12 @@ pub(crate) fn release_reservation(
             ReservationState::Committed => match record.owner_element_id.as_deref() {
                 None => ReleaseOutcome::Held,
                 Some(owner) if owner == owner_element_id => {
-                    table.remove(&key);
-                    ReleaseOutcome::Applied
+                    if record.pending_acquire_ack.is_some() {
+                        ReleaseOutcome::Held
+                    } else {
+                        table.remove(&key);
+                        ReleaseOutcome::Applied
+                    }
                 }
                 Some(_) => ReleaseOutcome::Applied,
             },
@@ -509,6 +844,7 @@ mod tests {
                 ProofShard::new(ShardId::new(1), Principal::anonymous()),
                 ProofShard::new(ShardId::new(2), Principal::management_canister()),
             ],
+            pending_acquire_ack: Some(EffectId::new(42, 3)),
         };
         let decoded = ReservationRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
         assert_eq!(decoded, record);
@@ -751,27 +1087,48 @@ mod tests {
         ConstraintNameId::from_raw(1)
     }
 
+    /// A representative `Acquire` effect id stamped at `→ Committed`.
+    fn eid() -> EffectId {
+        EffectId::new(100, 0)
+    }
+
     #[test]
     fn confirm_transitions_reserved_to_committed_and_stamps_owner() {
         let g = fresh_graph(20);
         try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
 
         let owner = vec![7u8; 8];
-        let committed = confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", owner.clone());
-        assert!(committed, "matching Reserved claim must confirm");
+        let committed =
+            confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", owner.clone(), eid());
+        assert_eq!(
+            committed,
+            ConfirmOutcome::FreshlyCommitted,
+            "matching Reserved claim must freshly commit"
+        );
 
         let rec = lookup(g, 1, b"v").expect("record");
         assert_eq!(rec.state, ReservationState::Committed);
         assert_eq!(rec.owner_element_id, Some(owner));
+        assert_eq!(
+            rec.pending_acquire_ack,
+            Some(eid()),
+            "Confirm stamps the Acquire as pending-ack until it is unpinned"
+        );
     }
 
     #[test]
     fn confirm_on_missing_record_is_a_noop_false() {
         let g = fresh_graph(21);
         // No reservation exists for this value.
-        let confirmed =
-            confirm_reservation(g, ClaimId::new(100, 0), cid(), b"absent", vec![1u8; 8]);
-        assert!(!confirmed);
+        let confirmed = confirm_reservation(
+            g,
+            ClaimId::new(100, 0),
+            cid(),
+            b"absent",
+            vec![1u8; 8],
+            eid(),
+        );
+        assert_eq!(confirmed, ConfirmOutcome::NotApplicable);
         assert_eq!(reservation_count(g), 0);
     }
 
@@ -781,8 +1138,13 @@ mod tests {
         try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
 
         // A different mutation's claim id must not commit this reservation.
-        let confirmed = confirm_reservation(g, ClaimId::new(999, 0), cid(), b"v", vec![1u8; 8]);
-        assert!(!confirmed, "foreign claim must not confirm");
+        let confirmed =
+            confirm_reservation(g, ClaimId::new(999, 0), cid(), b"v", vec![1u8; 8], eid());
+        assert_eq!(
+            confirmed,
+            ConfirmOutcome::NotApplicable,
+            "foreign claim must not confirm"
+        );
         let rec = lookup(g, 1, b"v").expect("record");
         assert_eq!(rec.state, ReservationState::Reserved, "left untouched");
         assert_eq!(rec.owner_element_id, None);
@@ -795,8 +1157,13 @@ mod tests {
         force_state(g, b"v", ReservationState::Reclaiming);
 
         // A generation-fenced reclaim proof is authoritative; Confirm must not override it.
-        let confirmed = confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", vec![1u8; 8]);
-        assert!(!confirmed, "Reclaiming must fence Confirm");
+        let confirmed =
+            confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", vec![1u8; 8], eid());
+        assert_eq!(
+            confirmed,
+            ConfirmOutcome::NotApplicable,
+            "Reclaiming must fence Confirm"
+        );
         assert_eq!(
             lookup(g, 1, b"v").unwrap().state,
             ReservationState::Reclaiming
@@ -808,19 +1175,26 @@ mod tests {
         let g = fresh_graph(24);
         try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
         let first_owner = vec![7u8; 8];
-        assert!(confirm_reservation(
-            g,
-            ClaimId::new(100, 0),
-            cid(),
-            b"v",
-            first_owner.clone()
-        ));
+        assert_eq!(
+            confirm_reservation(
+                g,
+                ClaimId::new(100, 0),
+                cid(),
+                b"v",
+                first_owner.clone(),
+                eid()
+            ),
+            ConfirmOutcome::FreshlyCommitted
+        );
 
-        // A replayed Confirm (e.g. different evidence bytes) is idempotent: still true, owner kept.
-        let confirmed = confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", vec![9u8; 8]);
-        assert!(
+        // A replayed Confirm (e.g. different evidence bytes) is idempotent: AlreadyCommitted (still
+        // ack-able so a previously failed ack retries), owner kept, count not decremented again.
+        let confirmed =
+            confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", vec![9u8; 8], eid());
+        assert_eq!(
             confirmed,
-            "replay of an already-committed claim is idempotent true"
+            ConfirmOutcome::AlreadyCommitted,
+            "replay of an already-committed claim is idempotent"
         );
         assert_eq!(
             lookup(g, 1, b"v").unwrap().owner_element_id,
@@ -829,16 +1203,15 @@ mod tests {
         );
     }
 
-    /// Reserve then Confirm a value to a known owner, the precondition a `Release` reconciles.
+    /// Reserve then Confirm a value to a known owner, and clear the Acquire-ack pending flag to model
+    /// the steady state a `Release` reconciles against (the Acquire was already unpinned).
     fn reserve_and_commit(g: GraphId, value: &[u8], owner: &[u8]) {
         try_reserve(g, 100, &[claim(1, value, 0)], &scope(1), 1).expect("reserve");
-        assert!(confirm_reservation(
-            g,
-            ClaimId::new(100, 0),
-            cid(),
-            value,
-            owner.to_vec()
-        ));
+        assert_eq!(
+            confirm_reservation(g, ClaimId::new(100, 0), cid(), value, owner.to_vec(), eid()),
+            ConfirmOutcome::FreshlyCommitted
+        );
+        assert!(clear_acquire_ack(g, cid(), value, ClaimId::new(100, 0)));
     }
 
     #[test]
@@ -917,6 +1290,253 @@ mod tests {
             lookup(g, 1, b"v").unwrap().state,
             ReservationState::Reclaiming
         );
+    }
+
+    #[test]
+    fn begin_reclaim_fences_reserved_and_bumps_generation() {
+        let g = fresh_graph(40);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+
+        let ticket = begin_reclaim(g, cid(), b"v").expect("reserved is reclaimable");
+        assert_eq!(ticket.claim, ClaimId::new(100, 0));
+        assert_eq!(ticket.generation, 1, "generation 0 -> 1");
+        assert_eq!(ticket.proof_scope, scope(1));
+        let rec = lookup(g, 1, b"v").expect("record");
+        assert_eq!(rec.state, ReservationState::Reclaiming);
+        assert_eq!(rec.reclaim_generation, 1);
+    }
+
+    #[test]
+    fn begin_reclaim_aborts_when_not_reserved() {
+        let g = fresh_graph(41);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        force_state(g, b"v", ReservationState::Committed);
+        assert_eq!(
+            begin_reclaim(g, cid(), b"v"),
+            None,
+            "Committed not reclaimable"
+        );
+        assert_eq!(
+            begin_reclaim(g, cid(), b"absent"),
+            None,
+            "missing not reclaimable"
+        );
+    }
+
+    #[test]
+    fn resume_reclaim_returns_current_fence_without_bumping() {
+        let g = fresh_graph(42);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        let first = begin_reclaim(g, cid(), b"v").expect("begin");
+        // Crash/restart: the entry is still Reclaiming@1; resume must reuse generation 1.
+        let resumed = resume_reclaim(g, cid(), b"v").expect("resume");
+        assert_eq!(resumed.generation, first.generation);
+        assert_eq!(resumed.claim, first.claim);
+        assert_eq!(
+            lookup(g, 1, b"v").unwrap().reclaim_generation,
+            1,
+            "resume must not bump the generation"
+        );
+        assert_eq!(resume_reclaim(g, cid(), b"absent"), None);
+    }
+
+    #[test]
+    fn apply_reclaim_commit_under_fence_transitions_and_stamps_owner() {
+        let g = fresh_graph(43);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        let t = begin_reclaim(g, cid(), b"v").expect("begin");
+        let owner = vec![7u8; 8];
+        assert!(apply_reclaim_commit(
+            g,
+            cid(),
+            b"v",
+            t.claim,
+            t.generation,
+            owner.clone(),
+            eid()
+        ));
+        let rec = lookup(g, 1, b"v").expect("record");
+        assert_eq!(rec.state, ReservationState::Committed);
+        assert_eq!(rec.owner_element_id, Some(owner));
+        assert_eq!(
+            rec.pending_acquire_ack,
+            Some(eid()),
+            "reclaim commit stamps the Acquire as pending-ack, same as normal Confirm"
+        );
+    }
+
+    #[test]
+    fn apply_reclaim_commit_discarded_when_generation_advanced() {
+        // ABA fence: a stale proof from generation g must not apply after a newer proof bumped it.
+        let g = fresh_graph(44);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        let stale = begin_reclaim(g, cid(), b"v").expect("begin g=1");
+        // Hold reverts to Reserved keeping g=1; a fresh begin bumps to g=2.
+        assert!(hold_reclaim(g, cid(), b"v", stale.claim, stale.generation));
+        let fresh = begin_reclaim(g, cid(), b"v").expect("begin g=2");
+        assert_eq!(fresh.generation, 2);
+
+        assert!(
+            !apply_reclaim_commit(
+                g,
+                cid(),
+                b"v",
+                stale.claim,
+                stale.generation,
+                vec![1u8; 8],
+                eid()
+            ),
+            "stale generation must be discarded"
+        );
+        assert_eq!(
+            lookup(g, 1, b"v").unwrap().state,
+            ReservationState::Reclaiming,
+            "still under the fresh proof"
+        );
+    }
+
+    #[test]
+    fn cancel_reclaim_removes_only_under_matching_fence() {
+        let g = fresh_graph(45);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        let t = begin_reclaim(g, cid(), b"v").expect("begin");
+        // Wrong generation does not cancel.
+        assert!(!cancel_reclaim(g, cid(), b"v", t.claim, t.generation + 1));
+        assert!(lookup(g, 1, b"v").is_some());
+        // Matching generation removes the reservation (value freed).
+        assert!(cancel_reclaim(g, cid(), b"v", t.claim, t.generation));
+        assert!(lookup(g, 1, b"v").is_none());
+    }
+
+    #[test]
+    fn hold_reclaim_reverts_to_reserved_keeping_generation() {
+        let g = fresh_graph(46);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        let t = begin_reclaim(g, cid(), b"v").expect("begin");
+        assert!(hold_reclaim(g, cid(), b"v", t.claim, t.generation));
+        let rec = lookup(g, 1, b"v").expect("record");
+        assert_eq!(
+            rec.state,
+            ReservationState::Reserved,
+            "reverted to Reserved"
+        );
+        assert_eq!(
+            rec.reclaim_generation, t.generation,
+            "generation retained, never reset (ABA-safe)"
+        );
+        // A subsequent begin bumps strictly higher.
+        assert_eq!(begin_reclaim(g, cid(), b"v").unwrap().generation, 2);
+    }
+
+    #[test]
+    fn cancel_reclaim_rejects_stale_claim_after_delete_and_re_reserve() {
+        // ABA across reservation identities: A is reclaimed/cancelled, then B reserves the *same*
+        // value and reaches the *same* generation (reset to 0 on re-reserve). A's delayed Cancel
+        // callback (A.claim, g) must not remove B; only the matching claim+generation may.
+        let g = fresh_graph(47);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve A");
+        let a = begin_reclaim(g, cid(), b"v").expect("begin A");
+        assert!(
+            cancel_reclaim(g, cid(), b"v", a.claim, a.generation),
+            "A removed"
+        );
+
+        // B re-reserves the freed value; a fresh begin reaches the same generation as A's proof.
+        try_reserve(g, 200, &[claim(1, b"v", 0)], &scope(1), 2).expect("reserve B");
+        let b = begin_reclaim(g, cid(), b"v").expect("begin B");
+        assert_eq!(
+            a.generation, b.generation,
+            "same generation, different claim"
+        );
+        assert_ne!(a.claim, b.claim);
+
+        assert!(
+            !cancel_reclaim(g, cid(), b"v", a.claim, a.generation),
+            "A's stale callback must not cancel B under the matching generation"
+        );
+        assert!(lookup(g, 1, b"v").is_some(), "B intact");
+        assert!(
+            cancel_reclaim(g, cid(), b"v", b.claim, b.generation),
+            "B's own fence cancels B"
+        );
+    }
+
+    #[test]
+    fn hold_reclaim_rejects_stale_claim_after_delete_and_re_reserve() {
+        let g = fresh_graph(48);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve A");
+        let a = begin_reclaim(g, cid(), b"v").expect("begin A");
+        assert!(
+            cancel_reclaim(g, cid(), b"v", a.claim, a.generation),
+            "A removed"
+        );
+
+        try_reserve(g, 200, &[claim(1, b"v", 0)], &scope(1), 2).expect("reserve B");
+        let b = begin_reclaim(g, cid(), b"v").expect("begin B");
+        assert_eq!(a.generation, b.generation);
+
+        assert!(
+            !hold_reclaim(g, cid(), b"v", a.claim, a.generation),
+            "A's stale callback must not revert B"
+        );
+        assert_eq!(
+            lookup(g, 1, b"v").unwrap().state,
+            ReservationState::Reclaiming,
+            "B stays under its own proof"
+        );
+        assert!(
+            hold_reclaim(g, cid(), b"v", b.claim, b.generation),
+            "B's own fence holds B"
+        );
+    }
+
+    #[test]
+    fn clear_acquire_ack_clears_only_matching_committed_claim() {
+        let g = fresh_graph(49);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        assert_eq!(
+            confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", vec![7u8; 8], eid()),
+            ConfirmOutcome::FreshlyCommitted
+        );
+        assert_eq!(lookup(g, 1, b"v").unwrap().pending_acquire_ack, Some(eid()));
+
+        // A foreign claim must not clear a live record's pending ack.
+        assert!(!clear_acquire_ack(g, cid(), b"v", ClaimId::new(999, 0)));
+        assert_eq!(lookup(g, 1, b"v").unwrap().pending_acquire_ack, Some(eid()));
+
+        // The owning claim clears it; a second clear is an idempotent no-op (already cleared).
+        assert!(clear_acquire_ack(g, cid(), b"v", ClaimId::new(100, 0)));
+        assert_eq!(lookup(g, 1, b"v").unwrap().pending_acquire_ack, None);
+        assert!(!clear_acquire_ack(g, cid(), b"v", ClaimId::new(100, 0)));
+    }
+
+    #[test]
+    fn release_is_held_while_acquire_ack_pending_then_applies_after_clear() {
+        // The owner matches, but the Acquire is still pinned (pending ack). Removing the reservation
+        // now would orphan that Acquire (its only re-discovery handle is this record), so the Release
+        // is held until the Acquire is acked (which clears the pending flag), then it applies.
+        let g = fresh_graph(50);
+        let owner = vec![7u8; 8];
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        assert_eq!(
+            confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", owner.clone(), eid()),
+            ConfirmOutcome::FreshlyCommitted
+        );
+
+        assert_eq!(
+            release_reservation(g, cid(), b"v", &owner),
+            ReleaseOutcome::Held,
+            "owner-matched Release is held while the Acquire is still pending ack"
+        );
+        assert!(lookup(g, 1, b"v").is_some(), "reservation kept while held");
+
+        assert!(clear_acquire_ack(g, cid(), b"v", ClaimId::new(100, 0)));
+        assert_eq!(
+            release_reservation(g, cid(), b"v", &owner),
+            ReleaseOutcome::Applied,
+            "after the Acquire is acked, the Release applies and removes the reservation"
+        );
+        assert!(lookup(g, 1, b"v").is_none());
     }
 
     #[test]

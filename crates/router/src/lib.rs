@@ -38,6 +38,7 @@ mod peer_sync;
 mod planner_stats;
 mod prepared;
 mod rbac;
+mod reclaim;
 mod recovery;
 mod seed;
 pub mod state;

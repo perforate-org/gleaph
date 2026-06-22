@@ -1,7 +1,7 @@
 # Stable-memory inventory
 
 Last updated: 2026-06-22
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–42 = 43 regions, incl. ADR 0030 unique-effect outbox; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table = 38 regions, 0–37)
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–42 = 43 regions, incl. ADR 0030 unique-effect outbox; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index = 40 regions, 0–39)
 Anchor timestamp: 2026-06-22 00:00:00 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
@@ -30,7 +30,7 @@ this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same pa
 | Canister | Regions | Id range | Registry constant + test |
 |----------|---------|----------|--------------------------|
 | Graph | 42 | 0–41 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
-| Router | 37 | 0–36 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
+| Router | 40 | 0–39 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
 | Graph-index | 7 | 0–6 | `INDEX_STABLE_LAYOUT` — `index_layout_registry_matches_baseline` |
 
 The canonical/derived split for the router registry projections is pinned by
@@ -155,7 +155,7 @@ Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores va
 
 ## Router canister — stable regions
 
-Repacked 2026-06-17: placement removed, controllers merged into auth, MemoryIds compacted to **0–33** (34 regions). ADR 0030 appended the uniqueness constraint catalog (**34–36**) and the uniqueness reservation table (**37**), bringing the total to **38 regions (0–37)**. Regions grouped **auth → registry → runtime config → idempotency → catalog → telemetry → maintenance → constraint catalog → reservation table**. `ROUTER_GRAPHS` keyed by **`GraphId`**; `ShardRegistryEntry` stores **`graph_id: GraphId`**. `ROUTER_SHARDS` keyed by **`GraphShardKey { graph_id, shard_id }`**; `ROUTER_SHARD_BY_GRAPH` is **`Principal → GraphShardKey`**; shard listing per logical graph uses **`ROUTER_SHARDS_BY_GRAPH_ID`**.
+Repacked 2026-06-17: placement removed, controllers merged into auth, MemoryIds compacted to **0–33** (34 regions). ADR 0030 appended the uniqueness constraint catalog (**34–36**), the uniqueness reservation table (**37**), and the slice-6 reservation reverse index (**38**) and pending unique-effect discovery index (**39**), bringing the total to **40 regions (0–39)**. Regions grouped **auth → registry → runtime config → idempotency → catalog → telemetry → maintenance → constraint catalog → reservation table → reservation reverse index → pending-effect discovery**. `ROUTER_GRAPHS` keyed by **`GraphId`**; `ShardRegistryEntry` stores **`graph_id: GraphId`**. `ROUTER_SHARDS` keyed by **`GraphShardKey { graph_id, shard_id }`**; `ROUTER_SHARD_BY_GRAPH` is **`Principal → GraphShardKey`**; shard listing per logical graph uses **`ROUTER_SHARDS_BY_GRAPH_ID`**.
 
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
@@ -205,8 +205,10 @@ Regions **1–2** (canonical), **3–4** (derived indexes), **`ROUTER_GRAPH_RUNT
 | 34–35 | `ROUTER_CONSTRAINT_NAME_BY_NAME` / `ROUTER_CONSTRAINT_NAME_BY_ID` | `ROUTER_CONSTRAINT_NAME_CATALOG` | `init_constraint_name_catalog` | catalog | resolution | Graph-scoped constraint name ↔ **`ConstraintNameId`** per `GraphId` ([ADR 0030](../adr/0030-cross-shard-uniqueness-tcc-reservation.md)) |
 | 36 | `ROUTER_UNIQUE_CONSTRAINTS` | `ROUTER_UNIQUE_CONSTRAINTS` | `init_unique_constraints` | catalog | constraint DDL metadata | **`(GraphId, ConstraintNameId) → ConstraintDefRecord { vertex_label_id, property_id }`** — logical uniqueness constraint definitions, declare-on-empty (ADR 0030, first cut: vertex single-property) |
 | 37 | `ROUTER_UNIQUE_RESERVATIONS` | `ROUTER_UNIQUE_RESERVATIONS` | `init_unique_reservations` | canonical | uniqueness reservation table | **`(GraphId, ConstraintNameId, encoded_value) → ReservationRecord { claim, state, reclaim_generation, owner_element_id, reserved_at_ns, proof_scope }`** — cross-shard uniqueness TCC claims (ADR 0030). Canonical: a `Reserved`-not-yet-`Committed` claim has no outbox receipt to rebuild from. Slice 3 implements the no-`await` Try; Confirm/Cancel + reclaim land in slices 4–6 |
+| 38 | `ROUTER_MUTATION_RESERVATION_INDEX` | `ROUTER_MUTATION_RESERVATION_INDEX` | `init_mutation_reservation_index` | canonical | uniqueness reservation reverse index | **`MutationId → MutationReservationIndexEntry { client_key, nonterminal }`** — reverse index that resolves a reservation's claim (`MutationId`) to its owning `RouterMutationRecord` and GC-pins that record while non-terminal reservations remain (ADR 0030 slice 6). The row exists **iff** `nonterminal > 0`: `++` per fresh insert at Try, `--` on `FreshlyCommitted` Confirm and on reclaim Cancel; removed at zero |
+| 39 | `ROUTER_UNIQUE_EFFECT_PENDING` | `ROUTER_UNIQUE_EFFECT_PENDING` | `init_unique_effect_pending` | canonical | pending unique-effect discovery index | **`(GraphId, MutationId, ShardId) → PendingEffectRecord { schema_version, canister, state: Active \| Quarantined, next_retry_ns, attempts, diagnostic? }`** — durable discovery source for Driver 2's unified effect recovery (ADR 0030 slice 6). Registered before the first dispatch `await` for any dispatch that may emit a unique `Acquire`/`Release`, so it co-commits with the reservation/envelope. The pinned `canister` is the row's immutable identity, stored verbatim (not re-derived from the shard registry) so recovery reaches the exact canister even after the shard is unregistered/reused; `register` is **fail-closed** (re-registering the same key to a different canister traps). This is the only handle to an orphan `Acquire` whose reservation is gone (parked `Quarantined` on a long backoff, never acked). The value is a **versioned record** so the diagnostic/quarantine/backoff fields evolve without a breaking value-layout change. While any row remains the owning `RouterMutationRecord` is **GC-pinned** (Driver 2 reads its completion state); a row is removed only after the shard re-enumerates the mutation's effects empty (all acked) |
 
-Router **38 regions** total (0–37).
+Router **40 regions** total (0–39).
 
 ### Router ephemeral
 

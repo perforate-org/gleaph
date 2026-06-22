@@ -22,6 +22,12 @@
 #[cfg(target_family = "wasm")]
 const RECOVERY_SCAN_BUDGET: usize = 16;
 
+/// Reservations examined per tick by the ADR 0030 slice-6 reclaim reconciler (Driver 1). Separate,
+/// smaller budget than the projection scan: each candidate can fan out cross-canister `Acquire`
+/// proof reads, so its per-tick instruction cost is higher.
+#[cfg(target_family = "wasm")]
+const RECLAIM_SCAN_BUDGET: usize = 8;
+
 /// Delay between ticks while a lap is still in progress (more keyspace to scan).
 #[cfg(target_family = "wasm")]
 const RECOVERY_FLOOR_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
@@ -47,6 +53,15 @@ thread_local! {
     /// `true` if the lap currently in progress has found at least one recoverable saga; used
     /// to decide whether to start another lap once the cursor wraps.
     static RECOVERY_LAP_FOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
+    /// Round-robin scan cursor for the ADR 0030 slice-6 reclaim reconciler over the reservation
+    /// table. Independent of the projection cursor; `None` starts a fresh reclaim lap.
+    static RECLAIM_CURSOR: std::cell::RefCell<
+        Option<crate::facade::stable::reservation_catalog::UniqueReservationKey>,
+    > = const { std::cell::RefCell::new(None) };
+    /// `true` if the reclaim lap in progress has found at least one candidate on **any** of its
+    /// pages. Accumulated across pages (reset only when a fresh lap begins) so a lap that found held
+    /// work on an earlier page still reschedules even if its final page is empty.
+    static RECLAIM_LAP_FOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Schedules the recovery timer iff one is not already armed or running. Idempotent and
@@ -111,19 +126,36 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
         let _ = crate::gql::recover_mutation_record(&store, &key).await;
     }
 
+    // ADR 0030 slice 6: drive a bounded slice of the reservation table through the reclaim
+    // reconciler (Driver 1) on the same tick, with its own round-robin cursor. Best-effort: an
+    // unreachable shard leaves the reservation held for the next lap.
+    let reclaim_start = RECLAIM_CURSOR.with_borrow(Clone::clone);
+    if reclaim_start.is_none() {
+        // Beginning a fresh reclaim lap.
+        RECLAIM_LAP_FOUND.with(|f| f.set(false));
+    }
+    let (reclaim_next, reclaim_found) =
+        crate::reclaim::run_reclaim_pass(reclaim_start, RECLAIM_SCAN_BUDGET, ic_cdk::api::time())
+            .await;
+    if reclaim_found {
+        RECLAIM_LAP_FOUND.with(|f| f.set(true));
+    }
+    RECLAIM_CURSOR.with_borrow_mut(|c| *c = reclaim_next.clone());
+
     // Advance the cursor. A short scan (fewer than the budget) means we reached the end of
     // the keyspace, so reset to start a fresh lap next time.
     let lap_complete = scanned < RECOVERY_SCAN_BUDGET as u32;
     let next_cursor = if lap_complete { None } else { last_examined };
     RECOVERY_CURSOR.with_borrow_mut(|c| *c = next_cursor.clone());
 
-    if next_cursor.is_some() {
-        // Mid-lap: keep scanning promptly.
+    if next_cursor.is_some() || reclaim_next.is_some() {
+        // Mid-lap on either driver: keep scanning promptly.
         return Some(RECOVERY_FLOOR_DELAY);
     }
-    // Lap complete: start another (backed-off) lap only if this lap found work; otherwise
-    // stop and let the next mutation re-arm the timer.
-    if RECOVERY_LAP_FOUND.with(std::cell::Cell::get) {
+    // Both laps complete: start another (backed-off) lap only if the just-finished lap found work on
+    // either driver (accumulated across all pages); otherwise stop and let the next mutation re-arm.
+    if RECOVERY_LAP_FOUND.with(std::cell::Cell::get) || RECLAIM_LAP_FOUND.with(std::cell::Cell::get)
+    {
         Some(RECOVERY_RELAXED_DELAY)
     } else {
         None
