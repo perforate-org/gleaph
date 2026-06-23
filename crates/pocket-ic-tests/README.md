@@ -55,3 +55,6 @@ cargo test -p gleaph-pocket-ic-tests -- --nocapture
 | `adr0030_constraint_drop_lifecycle::recreate_blocked_until_pending_effect_drained` | ADR 0030 slice 9: completion gate keeps `Dropping` while a pinned effect remains ("no reservations" is insufficient) |
 | `adr0030_constraint_drop_lifecycle::drop_survives_upgrade` | ADR 0030 slice 9: the `Dropping → Removed` lifecycle converges across a canister upgrade |
 | `adr0030_constraint_drop_lifecycle::drop_does_not_disable_unrelated_constraints` | ADR 0030 slice 9: dropping one constraint does not weaken an unrelated one |
+| `adr0030_uniqueness_shard_local_fast_path::shard_local_global_enforces_and_frees_on_delete` | ADR 0030 slice 10: single-shard CREATE freezes to `ShardLocalGlobal`; local-table enforces (duplicate → `UniquenessViolation`) and a DELETE frees the value by owner match |
+| `adr0030_uniqueness_shard_local_fast_path::shard_local_global_drop_drains_local_table_and_allows_recreate` | ADR 0030 slice 10: `DROP CONSTRAINT` holds `Dropping` until the owning shard's local table drains, then the name is reusable |
+| `adr0030_uniqueness_shard_local_fast_path::shard_local_global_survives_upgrade` | ADR 0030 slice 10: the `ShardLocalGlobal` local unique table persists across a canister upgrade |
