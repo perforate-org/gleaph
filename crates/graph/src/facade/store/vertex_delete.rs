@@ -58,6 +58,7 @@ impl GraphStore {
         vertex_id: VertexId,
     ) -> Result<(), GraphStoreError> {
         self.commit_clear_vertex_properties(vertex_id);
+        self.commit_clear_vertex_embeddings(vertex_id);
 
         let vertex = self.vertex(vertex_id).ok_or_else(|| {
             GraphStoreError::Graph(DeferredBidirectionalLabeledError::VertexOutOfRange {

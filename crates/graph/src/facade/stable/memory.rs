@@ -4,6 +4,7 @@
 use super::edge_alias::EdgeAliasIndex;
 use super::edge_properties::EdgePropertyStore;
 use super::metadata::{GraphMetadata, StableGraphMetadata};
+use super::vertex_embeddings::VertexEmbeddingStore;
 use super::vertex_labels::VertexLabelStore;
 use super::vertex_properties::VertexPropertyStore;
 use gleaph_graph_kernel::entry::Edge;
@@ -58,7 +59,7 @@ const REV_PAYLOAD_BLOBS: MemoryId = MemoryId::new(29);
 const MAINTENANCE_QUEUE: MemoryId = MemoryId::new(30);
 const DIRTY_WORK_ITEMS: MemoryId = MemoryId::new(31);
 
-// --- Graph facade (9 memories) ---
+// --- Graph facade core (8 memories) ---
 const VERTEX_LABEL_SETS: MemoryId = MemoryId::new(32);
 const VERTEX_PROPERTIES: MemoryId = MemoryId::new(33);
 const EDGE_PROPERTIES: MemoryId = MemoryId::new(34);
@@ -80,6 +81,9 @@ const UNIQUE_EFFECT_OUTBOX: MemoryId = MemoryId::new(42);
 // --- ShardLocalGlobal fast path: graph-shard-local unique value table (ADR 0030 slice 10) (1 memory) ---
 const GRAPH_LOCAL_UNIQUE_VALUES: MemoryId = MemoryId::new(43);
 
+// --- Canonical vertex embeddings (ADR 0031) (1 memory) ---
+const VERTEX_EMBEDDINGS: MemoryId = MemoryId::new(44);
+
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
 /// Initial slab capacity for both labeled orientations (grows as needed).
@@ -90,6 +94,7 @@ pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 pub(crate) type StableGraph = DeferredBidirectionalLabeledLaraGraph<Edge, Memory>;
 pub(crate) type StableVertexLabelStore = VertexLabelStore<Memory>;
 pub(crate) type StableVertexPropertyStore = VertexPropertyStore<Memory>;
+pub(crate) type StableVertexEmbeddingStore = VertexEmbeddingStore<Memory>;
 pub(crate) type StableEdgePropertyStore = EdgePropertyStore<Memory>;
 pub(crate) type StableEdgeAliasIndex = EdgeAliasIndex<Memory>;
 pub(crate) type StableMetadata = StableGraphMetadata<Memory>;
@@ -170,6 +175,10 @@ pub(crate) fn init_vertex_label_store() -> StableVertexLabelStore {
 
 pub(crate) fn init_vertex_property_store() -> StableVertexPropertyStore {
     VertexPropertyStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_PROPERTIES)))
+}
+
+pub(crate) fn init_vertex_embedding_store() -> StableVertexEmbeddingStore {
+    VertexEmbeddingStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_EMBEDDINGS)))
 }
 
 pub(crate) fn init_edge_property_store() -> StableEdgePropertyStore {

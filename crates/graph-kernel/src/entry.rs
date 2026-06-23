@@ -1,6 +1,7 @@
 pub mod constraint_name;
 pub mod edge;
 pub mod edge_payload;
+pub mod embedding_name;
 pub mod graph;
 pub mod graph_type_id;
 pub mod index_name;
@@ -19,6 +20,7 @@ pub use edge_payload::{
     EdgePayloadProfileError, MAX_EDGE_PAYLOAD_BYTES, PreparedEdgePayloadDecoder,
     decode_edge_payload, decode_edge_weight,
 };
+pub use embedding_name::{EMBEDDING_NAME_CATALOG_MAX, EmbeddingNameId};
 pub use graph::GraphId;
 pub use graph_type_id::GraphTypeId;
 pub use index_name::{INDEX_NAME_CATALOG_MAX, IndexNameId};

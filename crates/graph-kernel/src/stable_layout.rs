@@ -613,6 +613,17 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
              constraints; freed by owner-matched release, drained by the DROP purge",
             RebuildPath::None,
         ),
+        // Canonical vertex embeddings (ADR 0031)
+        region(
+            "VERTEX_EMBEDDINGS",
+            44,
+            StableMemoryClass::Canonical,
+            "embeddings",
+            "(VertexId, EmbeddingNameId) → StoredEmbedding { encoding, dims, version, bytes }: \
+             canonical fixed-dimension F32 vertex embeddings owned by the graph shard; source for \
+             future derived vector-index backfill",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1159,8 +1170,8 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 44);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(43));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 45);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(44));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,

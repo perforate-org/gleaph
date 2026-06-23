@@ -4,9 +4,10 @@ Date: 2026-06-23
 Status: accepted (planned)
 Last revised: 2026-06-23
 
-> **Status note:** The boundary decision is accepted. Implementation is planned.
-> This ADR fixes ownership and consistency contracts before any stable layout,
-> Candid API, or query operator is committed.
+> **Status note:** The boundary decision is accepted. Slice 1 (the canonical graph-owned
+> vertex embedding store) is implemented; the derived vector-index canister, repair/backfill,
+> Candid API, and query operators remain planned. This ADR fixes ownership and consistency
+> contracts before the derived stable layout, Candid API, or query operator is committed.
 
 ## Context
 

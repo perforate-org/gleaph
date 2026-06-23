@@ -1,15 +1,20 @@
 # Vector index
 
 Last updated: 2026-06-23
-Anchor timestamp: 2026-06-23 05:51:03 UTC +0000
+Anchor timestamp: 2026-06-23 06:39:47 UTC +0000
 
 ## Status
 
-**Planned** — [ADR 0031](../adr/0031-vertex-embedding-store-and-derived-vector-index.md)
+**Partially implemented** — [ADR 0031](../adr/0031-vertex-embedding-store-and-derived-vector-index.md)
 accepts the ownership boundary: graph shards own canonical vertex embeddings, vector index
 canisters own derived candidate-generation structures, and Router owns vector query orchestration.
 
-No vector-index stable regions, Candid APIs, or query operators are implemented yet.
+Slice 1 is implemented: the graph-owned canonical `VertexEmbeddingStore` (fixed-dimension `F32`,
+stable region `VERTEX_EMBEDDINGS` / MemoryId 44) plus shared `EmbeddingNameId` / `VectorEncoding`
+types in `graph-kernel`.
+
+The derived vector-index canister, repair/backfill path, Candid search APIs, and query operators are
+not implemented yet.
 
 ## Purpose
 
@@ -53,34 +58,42 @@ Vertex embeddings and edge payload vectors are separate concepts.
 planned for vertex semantic embeddings so the graph shard can enforce dimensions, encoding,
 versioning, delete behavior, and rebuild/backfill into derived vector indexes.
 
-## Planned canonical vertex embedding store
+## Canonical vertex embedding store
 
-The exact stable key shape is intentionally deferred. Candidate shapes:
+**Implemented (slice 1).** The canonical key shape is committed:
 
 ```text
 (VertexId, EmbeddingNameId) -> EmbeddingRecord
 ```
 
-or:
+The key is vertex-major and big-endian fixed-width (6 bytes) so delete can enumerate all
+embeddings owned by one vertex. Backfill-by-embedding-name is deliberately not optimized in the
+canonical store; a later derived embedding-name index may be added when vector-index backfill needs
+it.
 
-```text
-(EmbeddingSlotId, VertexId) -> EmbeddingRecord
-```
+This records the accepted trade-off: `(VertexId, EmbeddingNameId)` favors per-vertex delete
+enumeration over whole-embedding-name scans. A future `(EmbeddingNameId, VertexId)` access path may
+be added as **derived** state when vector-index backfill needs it, but it must not become a second
+canonical store.
 
-Minimum record shape:
+Record shape (graph facade `StoredEmbedding`, stable region `VERTEX_EMBEDDINGS`, MemoryId 44):
 
 ```text
 EmbeddingRecord {
   encoding: F32,
-  dims,
-  version,
-  vector_ref_or_inline_bytes,
+  dims: u16,
+  version: u64,   // 1 on insert, +1 per update; 0 reserved = unset / no record
+  bytes,          // inline little-endian f32 components, byte width = dims * 4
 }
 ```
 
-Initial implementation should support only fixed-dimension `F32`. Later encodings such as `F16` or
-quantized `I8` require explicit design updates because they affect byte-width validation, scoring,
-and backfill.
+The slice supports only fixed-dimension `F32`. `EmbeddingNameId(0)` is reserved and rejected at the
+write boundary. Dimension changes on an existing embedding are rejected (`DimensionMismatch`):
+re-embedding at a different dimension under the same `EmbeddingNameId` requires remove + insert or a
+new embedding name. The stored bytes are a manual, length-prefixed layout led by a `schema_version`
+tag; an unknown schema or encoding tag traps on read because an incompatible stable layout requires
+a migration. Later encodings such as `F16` or quantized `I8` require explicit design updates because
+they affect byte-width validation, scoring, and backfill.
 
 ## Derived vector index model
 
@@ -125,7 +138,7 @@ state wins when derived state disagrees.
 
 ## Design gates before implementation
 
-- Choose vertex embedding key shape and stable region classification.
+- [done, slice 1] Choose vertex embedding key shape and stable region classification.
 - Define vector index wire types in `graph-kernel`.
 - Define bounded candidate page/cursor APIs.
 - Define mutation delta and repair journal representation.

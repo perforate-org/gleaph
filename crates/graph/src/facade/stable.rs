@@ -17,6 +17,7 @@ pub(crate) mod metadata;
 pub(crate) mod property_catalog;
 pub(crate) mod repair_journal;
 pub(crate) mod unique_effect_outbox;
+pub(crate) mod vertex_embeddings;
 pub(crate) mod vertex_labels;
 pub(crate) mod vertex_properties;
 
@@ -33,6 +34,10 @@ thread_local! {
 
     pub(crate) static VERTEX_PROPERTIES: RefCell<memory::StableVertexPropertyStore> = RefCell::new(
         memory::init_vertex_property_store()
+    );
+
+    pub(crate) static VERTEX_EMBEDDINGS: RefCell<memory::StableVertexEmbeddingStore> = RefCell::new(
+        memory::init_vertex_embedding_store()
     );
 
     pub(crate) static EDGE_PROPERTIES: RefCell<memory::StableEdgePropertyStore> = RefCell::new(

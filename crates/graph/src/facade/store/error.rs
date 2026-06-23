@@ -1,6 +1,9 @@
 //! Graph store error type and conversions.
 
-use super::super::{PropertyCatalogError, VertexLabelStoreError, VertexPropertyStoreError};
+use super::super::{
+    PropertyCatalogError, VertexEmbeddingStoreError, VertexLabelStoreError,
+    VertexPropertyStoreError,
+};
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::{
     DeferredBidirectionalLabeledError, VertexId, labeled::BucketLabelKey as LaraLabelId,
@@ -14,6 +17,7 @@ pub enum GraphStoreError {
     PropertyCatalog(PropertyCatalogError),
     VertexLabel(VertexLabelStoreError),
     PropertyValue(VertexPropertyStoreError),
+    Embedding(VertexEmbeddingStoreError),
     /// `DELETE` vertex without `DETACH` while the vertex still has incident edges.
     VertexNotDetached {
         vertex_id: VertexId,
@@ -55,6 +59,7 @@ impl fmt::Display for GraphStoreError {
             Self::PropertyCatalog(err) => write!(f, "{err}"),
             Self::VertexLabel(err) => write!(f, "{err}"),
             Self::PropertyValue(err) => write!(f, "{err}"),
+            Self::Embedding(err) => write!(f, "{err}"),
             Self::VertexNotDetached { vertex_id } => write!(
                 f,
                 "cannot delete vertex {vertex_id:?} without DETACH while it still has incident edges"
@@ -111,6 +116,7 @@ impl std::error::Error for GraphStoreError {
             Self::PropertyCatalog(err) => Some(err),
             Self::VertexLabel(err) => Some(err),
             Self::PropertyValue(err) => Some(err),
+            Self::Embedding(err) => Some(err),
             Self::PendingPurgeTracking(err) => Some(err),
             Self::VertexNotDetached { .. }
             | Self::EdgeNotFound { .. }
@@ -145,5 +151,11 @@ impl From<VertexLabelStoreError> for GraphStoreError {
 impl From<VertexPropertyStoreError> for GraphStoreError {
     fn from(value: VertexPropertyStoreError) -> Self {
         Self::PropertyValue(value)
+    }
+}
+
+impl From<VertexEmbeddingStoreError> for GraphStoreError {
+    fn from(value: VertexEmbeddingStoreError) -> Self {
+        Self::Embedding(value)
     }
 }

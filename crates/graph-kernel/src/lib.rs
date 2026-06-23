@@ -10,3 +10,4 @@ pub mod path;
 pub mod plan_exec;
 pub mod scoped_name_catalog;
 pub mod stable_layout;
+pub mod vector_index;

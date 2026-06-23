@@ -21,6 +21,7 @@ Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
 | 2026-06-12 | ADR 0009 phase D: retired graph `EDGE_EQUALITY_POSTINGS`; graph 40 regions (facade 32–39). |
 | 2026-06-12 | canbench: `cold_touch_40` 574.83 K / 5,121 pages; graph stable reopen 487.30 K / 5,760 pages (post-0009). |
 | 2026-06-12 | ADR 0009 follow-up: index catalog row layout — `ROUTER_NAMED_INDEXES` (22) + `ROUTER_INDEXED_PROPERTY_SET` (23); router **24** regions (0–23). |
+| 2026-06-23 | ADR 0031 slice 1: added canonical graph `VERTEX_EMBEDDINGS` (44); graph **45** regions (facade 32–44). |
 
 ## Context
 
