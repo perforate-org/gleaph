@@ -344,6 +344,49 @@ pub(crate) fn scan(
     (rows, last_key, scanned)
 }
 
+/// Bounded, cursor-based pending-effect row scan **scoped to one graph** (ADR 0030 slice 9): up to
+/// `budget` rows after `start_after` within `graph_id`, plus the last key examined (the next cursor)
+/// and the count scanned. Read-only. The drop-drain pending-effect probe ([`crate::constraint_drop`])
+/// pages this across recovery ticks — carrying `start_after` as its row cursor — so a graph with many
+/// pending rows is walked in bounded slices rather than materialized whole. A short page
+/// (`scanned < budget`) is the graph row-lap end-of-stream. Rows registered behind an advancing
+/// cursor are caught by the constraint record's `drop_scan_generation` token, not by this scan.
+#[cfg_attr(
+    not(target_family = "wasm"),
+    allow(
+        dead_code,
+        reason = "driven by the wasm recovery timer (drop-drain lane)"
+    )
+)]
+pub(crate) fn scan_graph_rows(
+    graph_id: GraphId,
+    start_after: Option<&UniqueEffectPendingKey>,
+    budget: usize,
+) -> (Vec<PendingEffectRow>, Option<UniqueEffectPendingKey>, u32) {
+    let mut scanned: u32 = 0;
+    let mut last_key: Option<UniqueEffectPendingKey> = None;
+    let mut rows: Vec<PendingEffectRow> = Vec::new();
+    ROUTER_UNIQUE_EFFECT_PENDING.with_borrow(|table| {
+        let lower = match start_after {
+            Some(key) => Bound::Excluded(*key),
+            None => Bound::Included(UniqueEffectPendingKey::new(graph_id, 0, ShardId::new(0))),
+        };
+        for entry in table
+            .range((lower, graph_range_upper(graph_id)))
+            .take(budget)
+        {
+            let key = *entry.key();
+            scanned += 1;
+            rows.push(PendingEffectRow {
+                key,
+                record: entry.value(),
+            });
+            last_key = Some(key);
+        }
+    });
+    (rows, last_key, scanned)
+}
+
 /// Exclusive upper bound of one graph's key range (`graph_id` is the most-significant component).
 /// `Unbounded` at `GraphId::MAX`, where a saturating `+1` would collapse to an empty range and skip
 /// the max graph.
@@ -548,6 +591,41 @@ mod tests {
                 (1, ShardId::new(9)),
                 (2, ShardId::new(1)),
             ]
+        );
+    }
+
+    #[test]
+    fn scan_graph_rows_is_bounded_graph_scoped_and_cursors() {
+        let c = Principal::anonymous();
+        register(g(6), 1, ShardId::new(0), c, ck());
+        register(g(6), 2, ShardId::new(0), c, ck());
+        register(g(6), 3, ShardId::new(0), c, ck());
+        // A neighbouring graph must never appear in g(6)'s scan.
+        register(g(7), 1, ShardId::new(0), c, ck());
+
+        // First bounded page: two rows, more remain (full page).
+        let (page1, cursor1, scanned1) = scan_graph_rows(g(6), None, 2);
+        assert_eq!(scanned1, 2);
+        assert!(page1.iter().all(|r| r.key.graph_id == g(6)));
+        let cursor1 = cursor1.expect("a full page yields a cursor");
+
+        // Second page resumes after the cursor and reaches the graph end (short page = EOF).
+        let (page2, _cursor2, scanned2) = scan_graph_rows(g(6), Some(&cursor1), 2);
+        assert_eq!(
+            scanned2, 1,
+            "only the third g(6) row remains; g(7) is out of scope"
+        );
+        assert!(page2.iter().all(|r| r.key.graph_id == g(6)));
+
+        let seen: Vec<u64> = page1
+            .iter()
+            .chain(page2.iter())
+            .map(|r| r.key.mutation_id)
+            .collect();
+        assert_eq!(
+            seen,
+            vec![1, 2, 3],
+            "the two pages cover every g(6) row in order"
         );
     }
 

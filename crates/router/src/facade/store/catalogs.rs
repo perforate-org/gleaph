@@ -5,7 +5,9 @@ use super::super::stable::{
     ROUTER_PROPERTY_CATALOG, ROUTER_VERTEX_LABEL_CATALOG,
 };
 use crate::facade::auth;
-use crate::facade::stable::constraint_catalog::{self as constraint_store, ConstraintDefRecord};
+use crate::facade::stable::constraint_catalog::{
+    self as constraint_store, ConstraintDefRecord, ConstraintLifecycle,
+};
 use crate::facade::stable::constraint_name_catalog::{
     intern_constraint_name, lookup_constraint_name_id,
 };
@@ -253,14 +255,28 @@ impl RouterStore {
         validate_metadata_name(property)?;
 
         if let Some(id) = lookup_constraint_name_id(graph_id, constraint_name)
-            && constraint_store::constraint_record_exists(graph_id, id)
+            && let Some(record) =
+                constraint_store::find_unique_constraint_any_lifecycle(graph_id, id)
         {
-            if if_not_exists {
-                return Ok(());
+            match record.state {
+                // ADR 0030 slice 9: the same `ConstraintNameId` is reused after `Removed`, so a
+                // re-CREATE must wait until the drop-drain completion gate has purged every
+                // reservation and pending effect for the id. Until then, reject transiently — even
+                // under IF NOT EXISTS, since the name is being removed, not "already present".
+                ConstraintLifecycle::Dropping => {
+                    return Err(RouterError::Conflict(format!(
+                        "constraint {constraint_name} is being dropped; retry after cleanup completes"
+                    )));
+                }
+                ConstraintLifecycle::Active => {
+                    if if_not_exists {
+                        return Ok(());
+                    }
+                    return Err(RouterError::Conflict(format!(
+                        "constraint already exists: {constraint_name}"
+                    )));
+                }
             }
-            return Err(RouterError::Conflict(format!(
-                "constraint already exists: {constraint_name}"
-            )));
         }
 
         if self.lookup_vertex_label_id(graph_id, label).is_ok() {
@@ -289,36 +305,22 @@ impl RouterStore {
         constraint_store::create_unique_constraint(
             graph_id,
             constraint_name_id,
-            ConstraintDefRecord {
-                vertex_label_id,
-                property_id,
-            },
+            ConstraintDefRecord::new_active(vertex_label_id, property_id),
             false,
         )?;
         Ok(())
     }
 
-    /// Drops a uniqueness constraint **definition only** (ADR 0030 Revision #15).
-    //
-    // INCOMPLETE — definition-only, NOT publishable. This removes the `ROUTER_UNIQUE_CONSTRAINTS`
-    // record but deliberately does **not** invalidate the constraint's `ROUTER_UNIQUE_RESERVATIONS`
-    // entries or drain in-flight sagas, and the name→id mapping in `ROUTER_CONSTRAINT_NAME_CATALOG`
-    // survives. Two hazards therefore block publication and are deferred to a dedicated DROP-lifecycle
-    // slice (draining/purge state machine + regression tests):
-    //   1. `Committed` reservations (and any pinned outbox effects) persist after the definition is
-    //      gone — the value is never released;
-    //   2. a later `CREATE` reusing the dropped name re-interns the **same** `ConstraintNameId`, so
-    //      stale reservations keyed by that id would falsely reject values under the new constraint.
-    // `DROP CONSTRAINT` DDL stays gated off in `gql::run_gql` until that slice lands; this path is
-    // exercised only by store-level tests of the definition catalog until then.
-    #[cfg_attr(
-        not(test),
-        allow(
-            dead_code,
-            reason = "DROP CONSTRAINT DDL gated off (ADR 0030 Revision #15)"
-        )
-    )]
-    pub(crate) fn drop_unique_constraint(
+    /// Initiates `DROP CONSTRAINT` (ADR 0030 slice 9): synchronously flips the constraint
+    /// `Active → Dropping` and returns immediately. The actual cleanup — draining every reservation
+    /// and pending unique effect keyed by the dropped `ConstraintNameId`, then deleting the record
+    /// (`Removed`) — runs asynchronously in the drop-drain recovery lane ([`crate::constraint_drop`]).
+    ///
+    /// While `Dropping`, the constraint is inactive for new acquires (new INSERTs proceed
+    /// unconstrained) but still captures `Release` effects, and a same-name re-CREATE is rejected
+    /// (`Conflict`) until the completion gate proves the id is safe to reuse. Idempotent on a
+    /// constraint already `Dropping`; with `if_exists`, an absent constraint is a no-op.
+    pub(crate) fn begin_drop_unique_constraint(
         &self,
         graph_id: GraphId,
         constraint_name: &str,
@@ -331,7 +333,7 @@ impl RouterStore {
             }
             return Err(RouterError::NotFound(constraint_name.to_owned()));
         };
-        constraint_store::drop_unique_constraint(graph_id, id, if_exists)?;
+        constraint_store::begin_drop(graph_id, id, if_exists, super::ic_time_ns())?;
         Ok(())
     }
 

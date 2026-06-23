@@ -33,6 +33,11 @@ const RECLAIM_SCAN_BUDGET: usize = 8;
 #[cfg(target_family = "wasm")]
 const EFFECT_SCAN_BUDGET: usize = 8;
 
+/// Constraint records examined per tick by the ADR 0030 slice-9 drop-drain driver (Driver 3). Small
+/// budget: each `Dropping` constraint can purge a reservation page and page each shard's outbox.
+#[cfg(target_family = "wasm")]
+const CONSTRAINT_DROP_SCAN_BUDGET: usize = 8;
+
 /// Delay between ticks while a lap is still in progress (more keyspace to scan).
 #[cfg(target_family = "wasm")]
 const RECOVERY_FLOOR_DELAY: core::time::Duration = core::time::Duration::from_secs(2);
@@ -79,6 +84,14 @@ thread_local! {
     /// reset only when a fresh lap begins). When no driver has urgent work, the timer still re-arms
     /// for this deadline so an all-quarantined keyspace is re-checked rather than going dark.
     static EFFECT_LAP_WAKE_NS: std::cell::Cell<Option<u64>> = const { std::cell::Cell::new(None) };
+    /// Round-robin scan cursor for the ADR 0030 slice-9 drop-drain driver (Driver 3) over the
+    /// constraint catalog. Independent of the other cursors; `None` starts a fresh drop-drain lap.
+    static CONSTRAINT_DROP_CURSOR: std::cell::RefCell<
+        Option<crate::facade::stable::constraint_catalog::UniqueConstraintKey>,
+    > = const { std::cell::RefCell::new(None) };
+    /// `true` if the drop-drain lap in progress has found a `Dropping` constraint still needing work
+    /// on **any** of its pages (accumulated; reset only when a fresh lap begins).
+    static CONSTRAINT_DROP_LAP_FOUND: std::cell::Cell<bool> = const { std::cell::Cell::new(false) };
 }
 
 /// Schedules the recovery timer iff one is not already armed or running. Idempotent and
@@ -189,13 +202,36 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
     let effect_next = effect_outcome.next_cursor;
     EFFECT_CURSOR.with_borrow_mut(|c| *c = effect_next);
 
+    // ADR 0030 slice 9: drive a bounded slice of the constraint catalog through the drop-drain
+    // driver (Driver 3) on the same tick, with its own round-robin cursor. Best-effort: a constraint
+    // whose reservations/effects have not fully drained is held for the next lap.
+    let drop_start = CONSTRAINT_DROP_CURSOR.with_borrow(Clone::clone);
+    if drop_start.is_none() {
+        // Beginning a fresh drop-drain lap.
+        CONSTRAINT_DROP_LAP_FOUND.with(|f| f.set(false));
+    }
+    let (drop_next, drop_found) = crate::constraint_drop::run_constraint_drop_pass(
+        drop_start,
+        CONSTRAINT_DROP_SCAN_BUDGET,
+        ic_cdk::api::time(),
+    )
+    .await;
+    if drop_found {
+        CONSTRAINT_DROP_LAP_FOUND.with(|f| f.set(true));
+    }
+    CONSTRAINT_DROP_CURSOR.with_borrow_mut(|c| *c = drop_next);
+
     // Advance the cursor. A short scan (fewer than the budget) means we reached the end of
     // the keyspace, so reset to start a fresh lap next time.
     let lap_complete = scanned < RECOVERY_SCAN_BUDGET as u32;
     let next_cursor = if lap_complete { None } else { last_examined };
     RECOVERY_CURSOR.with_borrow_mut(|c| *c = next_cursor.clone());
 
-    if next_cursor.is_some() || reclaim_next.is_some() || effect_next.is_some() {
+    if next_cursor.is_some()
+        || reclaim_next.is_some()
+        || effect_next.is_some()
+        || drop_next.is_some()
+    {
         // Mid-lap on any driver: keep scanning promptly.
         return Some(RECOVERY_FLOOR_DELAY);
     }
@@ -204,6 +240,7 @@ async fn run_recovery_pass() -> Option<core::time::Duration> {
     if RECOVERY_LAP_FOUND.with(std::cell::Cell::get)
         || RECLAIM_LAP_FOUND.with(std::cell::Cell::get)
         || EFFECT_LAP_FOUND.with(std::cell::Cell::get)
+        || CONSTRAINT_DROP_LAP_FOUND.with(std::cell::Cell::get)
     {
         return Some(RECOVERY_RELAXED_DELAY);
     }

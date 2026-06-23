@@ -9,6 +9,7 @@ mod test_fault;
 mod bulk_ingest_finalize;
 mod canister;
 mod constraint_ddl;
+mod constraint_drop;
 mod edge_backfill;
 mod edge_index_direction;
 mod effect_recovery;

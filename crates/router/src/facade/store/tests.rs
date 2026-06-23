@@ -2446,7 +2446,7 @@ mod graph_type_catalog_vocabulary {
 }
 
 mod uniqueness_constraints {
-    use crate::facade::stable::constraint_catalog::find_unique_constraint;
+    use crate::facade::stable::constraint_catalog::find_active_unique_constraint;
     use crate::facade::stable::constraint_name_catalog::lookup_constraint_name_id;
     use crate::facade::store::RouterStore;
     use crate::facade::store::catalog_test_support::{GRAPH, setup};
@@ -2470,8 +2470,8 @@ mod uniqueness_constraints {
             .lookup_property_id(graph_id, "email")
             .expect("property interned by CREATE");
         let name_id = lookup_constraint_name_id(graph_id, "user_email").expect("name interned");
-        let (found_name, def) =
-            find_unique_constraint(graph_id, label_id, property_id).expect("constraint registered");
+        let (found_name, def) = find_active_unique_constraint(graph_id, label_id, property_id)
+            .expect("constraint registered");
         assert_eq!(found_name, name_id);
         assert_eq!(def.vertex_label_id, label_id);
         assert_eq!(def.property_id, property_id);
@@ -2536,12 +2536,37 @@ mod uniqueness_constraints {
             .create_unique_constraint(graph_id, "c", false, "User", "email")
             .expect("create");
         store
-            .drop_unique_constraint(graph_id, "c", false)
+            .begin_drop_unique_constraint(graph_id, "c", false)
             .expect("drop");
-        // The label remains interned after DROP, so re-CREATE on it is rejected (first cut).
+        // The label remains interned while the constraint is Dropping, so re-CREATE with a new name
+        // on the same label is rejected by the declare-on-empty (brand-new-label) contract.
         let err = store
             .create_unique_constraint(graph_id, "c2", false, "User", "email")
             .unwrap_err();
         assert!(matches!(err, RouterError::Conflict(_)));
+    }
+
+    #[test]
+    fn recreate_same_name_while_dropping_is_rejected() {
+        let (store, _admin, graph_id) = setup();
+        store
+            .create_unique_constraint(graph_id, "c", false, "User", "email")
+            .expect("create");
+        store
+            .begin_drop_unique_constraint(graph_id, "c", false)
+            .expect("drop");
+        // The same name is a tombstone while Dropping: re-CREATE (even on a brand-new label, even
+        // with IF NOT EXISTS) is rejected transiently until the drain completes (Removed).
+        let err = store
+            .create_unique_constraint(graph_id, "c", false, "Member", "code")
+            .unwrap_err();
+        assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+        let err = store
+            .create_unique_constraint(graph_id, "c", true, "Member", "code")
+            .unwrap_err();
+        assert!(
+            matches!(err, RouterError::Conflict(_)),
+            "IF NOT EXISTS does not bypass the tombstone, got {err:?}"
+        );
     }
 }

@@ -1,16 +1,16 @@
-//! PocketIC: ADR 0030 slice 8 — public `CREATE CONSTRAINT` publication (and `DROP` still gated).
+//! PocketIC: ADR 0030 slices 8–9 — public `CREATE`/`DROP CONSTRAINT` publication.
 //!
-//! Slice 8 publishes `CREATE CONSTRAINT` over the real ingress seam (Candid →
-//! `gql_execute_idempotent` / `gql_query`). The full enforcement lifecycle (Try/Acquire/Confirm,
-//! Release, recovery, failure-injection) shipped in slices 5–7; this slice only opens the public
-//! DDL surface. The dispatch must therefore:
+//! Slice 8 published `CREATE CONSTRAINT` and slice 9 published `DROP CONSTRAINT` over the real
+//! ingress seam (Candid → `gql_execute_idempotent` / `gql_query`). The full enforcement lifecycle
+//! (Try/Acquire/Confirm, Release, recovery, failure-injection) shipped in slices 5–7. The dispatch
+//! must therefore:
 //!   1. require admin/manager authorization (before doing anything else),
 //!   2. reject the read entrypoint (write DDL on a `query` call),
 //!   3. accept a well-formed `CREATE CONSTRAINT` (declare-on-empty) and then *enforce* it,
 //!   4. surface store-level refusals precisely (`Conflict` for re-declare / non-empty label,
 //!      `InvalidArgument` for malformed DDL), and
-//!   5. still refuse `DROP CONSTRAINT` with `NotImplemented` (its draining lifecycle is a later
-//!      slice — ADR 0030 Revision #15).
+//!   5. accept `DROP CONSTRAINT` and immediately stop enforcing it (the drain-to-`Removed` lifecycle
+//!      is covered by `adr0030_constraint_drop_lifecycle.rs` — ADR 0030 Revision #18).
 
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::federation::RouterError;
@@ -181,39 +181,52 @@ fn create_constraint_requires_authorization() {
     );
 }
 
-/// `DROP CONSTRAINT` stays publicly `NotImplemented`: its reservation-draining lifecycle is a
-/// separate slice (ADR 0030 Revision #15), so it must never be silently accepted — and the refused
-/// DROP must not weaken the existing constraint, which keeps enforcing uniqueness.
+/// `DROP CONSTRAINT` is published (ADR 0030 slice 9): it is accepted over the public ingress
+/// (row_count 0), synchronously flips the constraint `Active → Dropping`, and immediately stops
+/// enforcing — a value that was rejected as a duplicate while `Active` now inserts unconstrained.
+/// (The full drain-to-`Removed` lifecycle is covered in `adr0030_constraint_drop_lifecycle.rs`.)
 #[test]
-fn drop_constraint_is_not_implemented() {
+fn drop_constraint_is_published_and_stops_enforcing() {
     let env = install_single_shard_federation();
-    gql_execute_idempotent_as_admin(&env, &create_for(LABEL), "s8-drop-seed");
+    gql_execute_idempotent_as_admin(&env, &create_for(LABEL), "s9-drop-seed");
 
-    let err = gql_execute_idempotent_as_admin_expect_err(
-        &env,
-        &format!("DROP CONSTRAINT {CONSTRAINT}"),
-        "s8-drop",
-    );
-    assert!(
-        matches!(err, RouterError::NotImplemented(_)),
-        "DROP CONSTRAINT must remain NotImplemented until its lifecycle slice, got {err:?}"
-    );
-
-    // The refused DROP left the constraint intact: a first INSERT commits, a same-value second is
-    // still rejected non-retryably.
+    // Enforced while Active: a same-value duplicate is rejected non-retryably.
     gql_execute_idempotent_as_admin(
         &env,
         &insert_user(LABEL, "drop@example.com"),
-        "s8-drop-ins-1",
+        "s9-drop-ins-1",
     );
     let dup = gql_execute_idempotent_as_admin_expect_err(
         &env,
         &insert_user(LABEL, "drop@example.com"),
-        "s8-drop-ins-dup",
+        "s9-drop-ins-dup",
     );
     assert!(
         matches!(dup, RouterError::UniquenessViolation(_)),
-        "the constraint still enforces after a refused DROP: duplicate must be UniquenessViolation, got {dup:?}"
+        "the constraint enforces before DROP: duplicate must be UniquenessViolation, got {dup:?}"
+    );
+
+    // DROP is accepted and reports no rows.
+    let dropped = gql_execute_idempotent_result_as_admin(
+        &env,
+        &format!("DROP CONSTRAINT {CONSTRAINT}"),
+        "s9-drop",
+    );
+    assert_eq!(
+        dropped.row_count, 0,
+        "DROP CONSTRAINT is a write DDL that reports no rows"
+    );
+
+    // Once Dropping, the constraint no longer enforces: the previously-rejected value now inserts.
+    gql_execute_idempotent_as_admin(
+        &env,
+        &insert_user(LABEL, "drop@example.com"),
+        "s9-drop-ins-2",
+    );
+    let live = gql_query_as_admin(&env, &format!("MATCH (n:{LABEL}) RETURN n"));
+    assert_eq!(
+        live.row_count, 2,
+        "after DROP the duplicate is admitted unconstrained: both vertices exist"
     );
 }
 

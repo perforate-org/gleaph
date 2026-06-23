@@ -30,7 +30,8 @@ use gleaph_graph_kernel::plan_exec::{
 use candid::Principal;
 
 use crate::facade::stable::constraint_catalog::{
-    constrained_properties_for_graph, find_unique_constraint,
+    active_constrained_properties_for_graph, bump_drop_scan_generation,
+    constrained_properties_for_graph, find_active_unique_constraint,
 };
 use crate::facade::stable::label_stats::ClientMutationKey;
 use crate::facade::stable::reservation_catalog::{
@@ -113,8 +114,11 @@ impl RouterStore {
                     else {
                         continue;
                     };
+                    // ADR 0030 slice 9: a `Dropping` constraint is absent for new acquires, so the
+                    // active-only lookup makes a new INSERT proceed unconstrained while the
+                    // constraint drains.
                     let Some((constraint_id, _)) =
-                        find_unique_constraint(graph_id, vertex_label_id, property_id)
+                        find_active_unique_constraint(graph_id, vertex_label_id, property_id)
                     else {
                         continue;
                     };
@@ -186,7 +190,9 @@ impl RouterStore {
         graph_id: GraphId,
         plans: &[PhysicalPlan],
     ) -> Result<(), RouterError> {
-        let constrained = constrained_properties_for_graph(graph_id);
+        // ADR 0030 slice 9: only `Active` constraints gate new constrained writes. A `Dropping`
+        // constraint must not refuse a `SET` — new DML proceeds unconstrained while it drains.
+        let constrained = active_constrained_properties_for_graph(graph_id);
         if constrained.is_empty() {
             return Ok(());
         }
@@ -307,6 +313,11 @@ impl RouterStore {
             canister,
             client_key,
         );
+        // ADR 0030 slice 9: a new pending-effect row may have been registered behind the drop-drain
+        // driver's scan cursor. Bump the scan-invalidation token on every `Dropping` constraint in
+        // this graph so the driver re-laps rather than reaching a false-clean completion. A no-op
+        // when no constraint is `Dropping`; conservative bumps only cost an extra lap.
+        bump_drop_scan_generation(graph_id);
     }
 
     /// Remove one slice-6 discovery row (Driver 2): called only after a fresh `cursor=None`
@@ -469,12 +480,14 @@ impl RouterStore {
     ) -> Result<bool, RouterError> {
         let vertex_label_id = self.lookup_vertex_label_id(graph_id, label)?;
         let property_id = self.lookup_property_id(graph_id, property)?;
-        let (constraint_id, _) = find_unique_constraint(graph_id, vertex_label_id, property_id)
-            .ok_or_else(|| {
-                RouterError::InvalidArgument(
-                    "no unique constraint for (label, property)".to_string(),
-                )
-            })?;
+        let (constraint_id, _) = find_active_unique_constraint(
+            graph_id,
+            vertex_label_id,
+            property_id,
+        )
+        .ok_or_else(|| {
+            RouterError::InvalidArgument("no unique constraint for (label, property)".to_string())
+        })?;
         let encoded_value = match encode_unique_value(&Value::Text(value.to_string())) {
             UniqueKeyOutcome::Claim(encoded) => encoded,
             UniqueKeyOutcome::NoClaim => {

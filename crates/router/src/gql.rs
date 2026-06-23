@@ -565,8 +565,9 @@ async fn run_gql(
         // Phase-6-validated through slice 7 (INSERT Try/Acquire/Confirm, DELETE/REMOVE Release, slice-6
         // recovery, slice-7 failure-injection + canbench). This is an API-surface change only: the
         // declare-on-empty store path, validation, capacity preflight, and stable layouts are unchanged.
-        // DROP CONSTRAINT stays NotImplemented until its dedicated reservation-draining lifecycle slice
-        // lands (reservation invalidation + saga draining + ConstraintNameId-reuse guard — Revision #15).
+        // ADR 0030 slice 9: DROP CONSTRAINT is published — it synchronously flips the constraint
+        // `Active → Dropping` and returns; recovery's drop-drain lane drains every reservation and
+        // pending effect for the dropped `ConstraintNameId`, then deletes the record (`Removed`).
         match stmt {
             crate::constraint_ddl::ConstraintDdlStatement::Create {
                 constraint_name,
@@ -585,12 +586,16 @@ async fn run_gql(
                 )?;
                 return Ok(GqlQueryResult::row_count_only(0));
             }
-            crate::constraint_ddl::ConstraintDdlStatement::Drop { .. } => {
-                return Err(RouterError::NotImplemented(
-                    "DROP CONSTRAINT is not yet published: it requires a dedicated reservation-\
-                     draining lifecycle slice (ADR 0030 Revision #15); CREATE CONSTRAINT is available"
-                        .to_string(),
-                ));
+            crate::constraint_ddl::ConstraintDdlStatement::Drop {
+                constraint_name,
+                if_exists,
+            } => {
+                let store = RouterStore::new();
+                let graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
+                store.begin_drop_unique_constraint(graph_id, &constraint_name, if_exists)?;
+                // Arm recovery so the drop-drain lane converges the constraint to `Removed`.
+                crate::recovery::arm_if_needed();
+                return Ok(GqlQueryResult::row_count_only(0));
             }
         }
     }

@@ -779,6 +779,143 @@ fn graph_range_upper(graph_id: GraphId) -> Bound<UniqueReservationKey> {
     }
 }
 
+/// Exclusive upper bound of one `(graph_id, constraint_id)` prefix. When `constraint_id` is
+/// `u16::MAX` the prefix spills into the next graph, so it falls back to the graph range upper (which
+/// is `Unbounded` at `GraphId::MAX`).
+fn constraint_range_upper(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+) -> Bound<UniqueReservationKey> {
+    match constraint_id.raw().checked_add(1) {
+        Some(next) => Bound::Excluded(UniqueReservationKey::new(
+            graph_id,
+            ConstraintNameId::from_raw(next),
+            Vec::new(),
+        )),
+        None => graph_range_upper(graph_id),
+    }
+}
+
+/// `true` iff any reservation row exists for `(graph_id, constraint_id)` (ADR 0030 slice 9). The
+/// drop-drain completion gate uses this as the precise "no reservations remain" check, independent of
+/// the bounded per-tick purge budget. Read-only.
+pub(crate) fn constraint_has_reservations(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+) -> bool {
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow(|table| {
+        let start = UniqueReservationKey::new(graph_id, constraint_id, Vec::new());
+        table
+            .range((
+                Bound::Included(start),
+                constraint_range_upper(graph_id, constraint_id),
+            ))
+            .next()
+            .is_some()
+    })
+}
+
+/// Outcome of one bounded [`purge_constraint_reservations`] page (ADR 0030 slice 9).
+#[cfg_attr(
+    not(target_family = "wasm"),
+    allow(
+        dead_code,
+        reason = "driven by the wasm recovery timer (drop-drain lane)"
+    )
+)]
+#[derive(Clone, Debug, Default, PartialEq, Eq)]
+pub(crate) struct ConstraintPurgeOutcome {
+    /// Clean `Committed` reservations removed this page (their values are now free).
+    pub removed: u32,
+    /// `Reserved` reservations kicked into `Reclaiming` so Driver 1 resolves them promptly.
+    pub kicked: u32,
+    /// Next cursor (`None` when the constraint prefix was fully scanned within budget).
+    pub cursor: Option<UniqueReservationKey>,
+    /// `true` when the prefix scan reached its end within budget (a full prefix lap completed).
+    pub done: bool,
+}
+
+/// Drop-drain purge of one constraint's reservations, bounded to `budget` rows after `start_after`
+/// within the `(graph_id, constraint_id)` prefix (ADR 0030 slice 9). Per row:
+/// - `Committed` with no pending `Acquire` ack ⇒ **remove** (frees the value);
+/// - `Committed` with a pending ack ⇒ **skip** (Driver 1 must clear the ack first, else removing it
+///   would orphan the still-pinned `Acquire`);
+/// - `Reserved` ⇒ **kick** a reclaim proof early via [`begin_reclaim`] (bypassing the TTL eligibility
+///   since the constraint is going away) so Driver 1 resolves it; never bare-deleted;
+/// - `Reclaiming` ⇒ leave untouched (Driver 1 resumes the in-flight proof).
+///
+/// The cancel authority is unchanged — DROP never authorizes a bare delete of a `Reserved`/
+/// `Reclaiming` entry; a value is only freed by a clean-`Committed` removal here or by Driver 1's
+/// generation-fenced proof (terminal-failure + all-scope-absent).
+#[cfg_attr(
+    not(target_family = "wasm"),
+    allow(
+        dead_code,
+        reason = "driven by the wasm recovery timer (drop-drain lane)"
+    )
+)]
+pub(crate) fn purge_constraint_reservations(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+    start_after: Option<&UniqueReservationKey>,
+    budget: usize,
+) -> ConstraintPurgeOutcome {
+    // Phase 1 (read-only): classify a bounded slice of the prefix.
+    let mut scanned: u32 = 0;
+    let mut last_key: Option<UniqueReservationKey> = None;
+    let mut to_remove: Vec<UniqueReservationKey> = Vec::new();
+    let mut to_kick: Vec<UniqueReservationKey> = Vec::new();
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow(|table| {
+        let lower = match start_after {
+            Some(key) => Bound::Excluded(key.clone()),
+            None => Bound::Included(UniqueReservationKey::new(
+                graph_id,
+                constraint_id,
+                Vec::new(),
+            )),
+        };
+        for entry in table
+            .range((lower, constraint_range_upper(graph_id, constraint_id)))
+            .take(budget)
+        {
+            let key = entry.key().clone();
+            let record = entry.value();
+            scanned += 1;
+            match record.state {
+                ReservationState::Committed if record.pending_acquire_ack.is_none() => {
+                    to_remove.push(key.clone());
+                }
+                ReservationState::Reserved => to_kick.push(key.clone()),
+                // Committed-with-pending-ack and Reclaiming: leave for Driver 1.
+                ReservationState::Committed | ReservationState::Reclaiming => {}
+            }
+            last_key = Some(key);
+        }
+    });
+
+    // Phase 2 (apply): remove clean Committed, kick Reserved into Reclaiming.
+    let removed = to_remove.len() as u32;
+    ROUTER_UNIQUE_RESERVATIONS.with_borrow_mut(|table| {
+        for key in to_remove {
+            table.remove(&key);
+        }
+    });
+    let mut kicked: u32 = 0;
+    for key in to_kick {
+        if begin_reclaim(graph_id, key.constraint_id, &key.encoded_value).is_some() {
+            kicked += 1;
+        }
+    }
+
+    let done = scanned < budget as u32;
+    ConstraintPurgeOutcome {
+        removed,
+        kicked,
+        cursor: if done { None } else { last_key },
+        done,
+    }
+}
+
 /// Removes every reservation for a graph (graph teardown). Mirrors the constraint catalog purge.
 pub(crate) fn purge_graph_reservations(graph_id: GraphId) {
     ROUTER_UNIQUE_RESERVATIONS.with_borrow_mut(|table| {
@@ -1574,5 +1711,104 @@ mod tests {
             lookup(g, 1, b"v").is_some(),
             "kept while owner undetermined"
         );
+    }
+
+    #[test]
+    fn constraint_has_reservations_tracks_prefix_presence() {
+        let g = fresh_graph(60);
+        assert!(!constraint_has_reservations(g, cid()));
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        assert!(constraint_has_reservations(g, cid()));
+        // A different constraint id is a different prefix.
+        assert!(!constraint_has_reservations(
+            g,
+            ConstraintNameId::from_raw(2)
+        ));
+    }
+
+    #[test]
+    fn purge_removes_clean_committed_and_frees_value() {
+        let g = fresh_graph(61);
+        reserve_and_commit(g, b"v", &[7u8; 8]); // commits + clears the Acquire ack
+        let outcome = purge_constraint_reservations(g, cid(), None, 256);
+        assert_eq!(outcome.removed, 1);
+        assert!(outcome.done);
+        assert!(lookup(g, 1, b"v").is_none(), "clean committed value freed");
+        assert!(!constraint_has_reservations(g, cid()));
+    }
+
+    #[test]
+    fn purge_skips_committed_with_pending_ack() {
+        // A Committed reservation whose Acquire is still pending ack must not be removed — that would
+        // orphan the pinned Acquire. Driver 1 clears the ack first.
+        let g = fresh_graph(62);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        confirm_reservation(g, ClaimId::new(100, 0), cid(), b"v", vec![7u8; 8], eid());
+        let outcome = purge_constraint_reservations(g, cid(), None, 256);
+        assert_eq!(outcome.removed, 0);
+        assert!(
+            lookup(g, 1, b"v").is_some(),
+            "pending-ack committed reservation is kept"
+        );
+    }
+
+    #[test]
+    fn purge_kicks_reserved_into_reclaiming() {
+        // A Reserved entry is never bare-deleted; it is kicked into Reclaiming so Driver 1 resolves
+        // it under the full cancel authority.
+        let g = fresh_graph(63);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        let outcome = purge_constraint_reservations(g, cid(), None, 256);
+        assert_eq!(outcome.removed, 0);
+        assert_eq!(outcome.kicked, 1);
+        assert_eq!(
+            lookup(g, 1, b"v").unwrap().state,
+            ReservationState::Reclaiming,
+            "Reserved kicked into Reclaiming, not deleted"
+        );
+    }
+
+    #[test]
+    fn purge_leaves_reclaiming_untouched() {
+        let g = fresh_graph(64);
+        try_reserve(g, 100, &[claim(1, b"v", 0)], &scope(1), 1).expect("reserve");
+        force_state(g, b"v", ReservationState::Reclaiming);
+        let outcome = purge_constraint_reservations(g, cid(), None, 256);
+        assert_eq!(outcome.removed, 0);
+        assert_eq!(outcome.kicked, 0);
+        assert_eq!(
+            lookup(g, 1, b"v").unwrap().state,
+            ReservationState::Reclaiming,
+            "Reclaiming left for Driver 1 to resume"
+        );
+    }
+
+    #[test]
+    fn purge_is_bounded_and_cursors_across_pages() {
+        let g = fresh_graph(65);
+        // Three clean committed values; a budget of 2 leaves a cursor for the third.
+        for (i, v) in [b"a".as_slice(), b"b".as_slice(), b"c".as_slice()]
+            .iter()
+            .enumerate()
+        {
+            try_reserve(g, 100 + i as u64, &[claim(1, v, 0)], &scope(1), 1).expect("reserve");
+            confirm_reservation(
+                g,
+                ClaimId::new(100 + i as u64, 0),
+                cid(),
+                v,
+                vec![7u8; 8],
+                eid(),
+            );
+            clear_acquire_ack(g, cid(), v, ClaimId::new(100 + i as u64, 0));
+        }
+        let first = purge_constraint_reservations(g, cid(), None, 2);
+        assert_eq!(first.removed, 2);
+        assert!(!first.done, "more remain");
+        let cursor = first.cursor.expect("cursor for the next page");
+        let second = purge_constraint_reservations(g, cid(), Some(&cursor), 2);
+        assert_eq!(second.removed, 1);
+        assert!(second.done);
+        assert!(!constraint_has_reservations(g, cid()));
     }
 }

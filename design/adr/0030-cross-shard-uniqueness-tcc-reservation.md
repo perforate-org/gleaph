@@ -11,15 +11,15 @@ Last revised: 2026-06-23
 > failure-injection / canbench gate (the Phase-6 test/benchmark gate is satisfied — see Revision #14).
 > Publication is split into explicit follow-up slices, none of them a Phase-6 gap: (1) **Slice 8 has
 > landed** — `CREATE CONSTRAINT` is published over the public Candid/GQL ingress through the
-> already-tested declare-on-empty store path (see Revision #16); (2) **Slice 9 is planned** — a
-> dedicated DROP-lifecycle slice publishes `DROP CONSTRAINT` only after its draining/purge protocol lands; and
+> already-tested declare-on-empty store path (see Revision #16); (2) **Slice 9 has landed** — a
+> dedicated DROP-lifecycle slice publishes `DROP CONSTRAINT` over an `Active → Dropping → Removed`
+> lifecycle with a full completion gate (see Revision #18); and
 > (3) **Slice 10 is planned** — the `ShardLocalGlobal` fast path may bypass the federated TCC
 > machinery only when the Router can prove the graph-wide unique value space being enforced is wholly
 > owned by one shard. DROP
-> currently removes only the constraint definition, so
-> reservation invalidation, in-flight saga draining, and a `ConstraintNameId`-reuse guard (re-`CREATE`
-> of a dropped name reuses its id against stale reservations, risking false rejects) are not yet
-> implemented (see Revision #15).** Slice 1 has
+> now flips the constraint `Active → Dropping` synchronously and the drop-drain recovery lane drains
+> every reservation and pending unique effect keyed by the dropped `ConstraintNameId` before deleting
+> the record (`Removed`), at which point the name/id is provably safe to reuse (see Revision #18).** Slice 1 has
 > landed the logical constraint catalog
 > (Router-owned `ConstraintNameId` + `ROUTER_UNIQUE_CONSTRAINTS`) and `CREATE`/`DROP CONSTRAINT`
 > parsing and storage, under the declare-on-empty contract. Slice 2 has landed the canonical
@@ -72,10 +72,14 @@ Last revised: 2026-06-23
 > persisted canbench baselines. **The Phase-6 test/benchmark gate is satisfied.**
 > `CREATE CONSTRAINT` DDL is now **published** (Slice 8, Revision #16): a well-formed declaration over
 > the public ingress declares the constraint on the already-tested declare-on-empty path and the value
-> is enforced from that point. `DROP CONSTRAINT` stays `NotImplemented`; it
-> additionally requires a dedicated lifecycle slice (reservation invalidation, in-flight saga draining,
-> and a `ConstraintNameId`-reuse guard) before it can be published — see Revision #15 / planned
-> Slice 9. Slice 10 is a planned performance slice, not a correctness gate: it may add the
+> is enforced from that point. `DROP CONSTRAINT` DDL is also now **published** (Slice 9, Revision #18):
+> a DROP synchronously flips the constraint `Active → Dropping` (excluding it from new acquire planning
+> so new DML proceeds unconstrained, and blocking same-name re-`CREATE` with `Conflict`) and returns;
+> the drop-drain recovery lane then drains every reservation and pending unique effect for the dropped
+> `ConstraintNameId` and deletes the record (`Removed`), after which the name/id is safe to reuse. The
+> `ConstraintNameId`-reuse guard is the **full completion gate** — no reservations **and** no pending
+> unique effects for the `constraint_id` **and** no non-terminal pinned mutation records; "no
+> reservations only" is explicitly insufficient. Slice 10 is a planned performance slice, not a correctness gate: it may add the
 > `ShardLocalGlobal` execution strategy for graph-wide UNIQUE only when the graph/label/constraint
 > scope is proven single-shard; otherwise the existing `FederatedTcc` strategy remains the enforcement
 > path. `ShardLocalScoped` names a future scoped-uniqueness extension, not Slice 10.
@@ -491,6 +495,14 @@ Last revised: 2026-06-23
 > `ConstraintNameId` reuse from observing stale reservations. Its regression suite must include at
 > least drop-with-live-reservations, drop-then-recreate-same-name-different-label, and
 > drop-during-saga.
+> Slice 9 intentionally chooses **tombstoned name reuse** rather than generation-fenced reservation
+> keys: `ROUTER_UNIQUE_RESERVATIONS` keeps its existing stable key shape
+> `(graph_id, constraint_id, encoded_value)` and does **not** introduce enum/versioned reservation
+> keys. While the constraint name/id is `Dropping`, same-name `CREATE` is rejected (retry after
+> cleanup); only after cleanup reaches `Removed` may the name/id be reused. If future UX requires
+> immediate same-name re-`CREATE` while old cleanup continues, that is a separate stable-memory
+> migration to a V2 reservation region keyed by
+> `(graph_id, constraint_id, constraint_generation, encoded_value)`.
 >
 > **Slice 10** is a performance-only `ShardLocalGlobal` enforcement fast path. The strategy taxonomy is
 > **`FederatedTcc | ShardLocalGlobal | ShardLocalScoped`**, but Slice 10 implements only
@@ -509,6 +521,40 @@ Last revised: 2026-06-23
 > existing labels with validation/backfill (`Validating → Active/Inactive`), constrained value changes
 > through `SET` / full property replacement, composite multi-property UNIQUE keys, edge uniqueness,
 > and cross-graph uniqueness.
+>
+> **Revision 2026-06-23 #18 (Slice 9 — publish DROP lifecycle; landed):** `DROP CONSTRAINT` is now
+> published over the public Candid/GQL ingress with an `Active → Dropping → Removed` lifecycle. The
+> `ConstraintDefRecord` gains a `state: ConstraintLifecycle { Active | Dropping }`, a `dropping_at_ns`
+> diagnostic, and a `drop_scan_generation` drop-drain scan-invalidation token, moved into a versioned
+> stable envelope (`Removed` is the terminal **absence** of the record after the completion gate — no
+> persisted enum value). DROP synchronously flips `Active → Dropping` and returns; the generic
+> `find_unique_constraint` is replaced by purpose-split lookups (`find_active_unique_constraint` for
+> new acquire planning so a `Dropping` constraint is **absent** and new DML proceeds unconstrained;
+> `find_unique_constraint_for_release` keeps `Dropping` constraints in the release/drain path;
+> `find_unique_constraint_any_lifecycle` backs the same-name re-`CREATE` tombstone, which returns
+> `Conflict` until `Removed`). A third recovery lane (Driver 3, `constraint_drop.rs`) drains each
+> `Dropping` constraint: a bounded `purge_constraint_reservations` page removes clean `Committed`
+> reservations, skips `Committed`-with-pending-ack, and early-kicks `Reserved`/`Reclaiming` into
+> Driver 1 (Cancel stays gated on terminal-failure + all-`proof_scope`-absent; DROP never bare-deletes
+> a held reservation). The constraint transitions to `Removed` (record deleted) only when the **full
+> completion gate** holds: no reservations remain **and** a complete lap of `UNIQUE_EFFECT_PENDING`
+> rows for the graph finds **no row that could carry the `constraint_id`** **and** `drop_scan_generation`
+> is unchanged across the lap (it is bumped whenever a pending-effect row is registered while any
+> constraint in the graph is `Dropping`, conservatively re-lapping on idempotent replay). A pending
+> row holds the drop unless its **owning mutation is terminal** (so it can emit no further effects)
+> **and** its shard outbox pins no effect carrying the `constraint_id`; a **non-terminal** owning
+> mutation is held because it can still emit an `Acquire`/`Release` for the `constraint_id` *after* the
+> record is deleted. The probe is bounded and round-robin like the other recovery lanes: it pages the
+> graph's pending rows with a per-constraint row cursor carried across recovery ticks (never
+> materializing the whole graph), and a lap is clean only once the row cursor reaches the graph end
+> with no held row. "No reservations only" — and even "no currently-pinned effect" — is **insufficient**:
+> because the id is reused after `Removed`, a leftover pinned **or not-yet-emitted-but-still-possible**
+> `Acquire`/`Release` could otherwise be drained by Driver 2 against the re-`CREATE`d constraint. The tombstone keeps `ROUTER_UNIQUE_RESERVATIONS`'s existing key shape
+> `(graph_id, constraint_id, encoded_value)` unchanged (per Revision #17). Tested by
+> `adr0030_constraint_drop_lifecycle.rs` (releases committed values; drop-then-recreate-same-name;
+> dropping-admits-new-inserts-but-blocks-recreate; drop-during-in-flight-insert; the completion-gate
+> regression recreate-blocked-until-pending-effect-drained; drop-survives-upgrade;
+> drop-does-not-disable-unrelated-constraints) plus catalog/reservation lib unit tests.
 
 ## Context
 
@@ -915,14 +961,32 @@ serialization point):
   `Inactive` on failure. `post_upgrade`/recovery must either resume a `Validating` scan or safely
   abort it to `Inactive` (never silently land in `Active` without a completed scan). This is its own
   ADR amendment.
-- **DROP (planned Slice 9; not yet published):** dropping a constraint atomically invalidates its
-  reservations; a write observes the constraint as fully present or fully absent, never half-dropped.
-  In-flight reservations for a dropping constraint are drained (their sagas complete or cancel) under
-  the same proof rules. The planned lifecycle must prevent new acquiring claims once a constraint is
-  `Dropping`, preserve or recover any pinned unique effects until their owning sagas are terminal,
-  purge/invalidate all reservations keyed by the dropped `ConstraintNameId`, and fence same-name id
-  reuse until stale state is gone. Until this lifecycle lands, public `DROP CONSTRAINT` remains
-  `NotImplemented`; the current store helper is definition-only and not a public contract.
+- **DROP (Slice 9; published — Revision #18):** `DROP CONSTRAINT` synchronously flips the constraint
+  `Active → Dropping` and returns; recovery drains it and deletes the record (`Removed`), at which
+  point the `ConstraintNameId` is safe to reuse. While `Dropping`, the constraint is **absent for new
+  acquires** (new constrained DML proceeds unconstrained — no claim, no `Acquire`), while the
+  release/drain path still includes it so in-flight `DELETE`/`REMOVE` capture `Release` effects.
+  Same-name re-`CREATE` is rejected with `Conflict` (tombstone) while `Dropping`, and succeeds only
+  after `Removed`. The drop-drain recovery lane (Driver 3) purges reservations keyed by the dropped
+  `ConstraintNameId` in bounded pages — clean `Committed` removed (value freed), `Committed`-with-
+  pending-ack skipped (Driver 1 clears the ack first so the pinned `Acquire` is never orphaned),
+  `Reserved`/`Reclaiming` early-kicked into Driver 1 (Cancel stays gated on terminal-failure + all-
+  `proof_scope`-absent; DROP never bare-deletes a held reservation). The constraint reaches `Removed`
+  only when the **full completion gate** holds: **no reservations remain AND a complete lap of the
+  graph's `UNIQUE_EFFECT_PENDING` rows finds no row that could carry the `constraint_id` AND
+  `drop_scan_generation` is unchanged across the lap.** A pending row holds the drop unless its owning
+  mutation is **terminal** (no further effects possible) *and* its outbox pins no effect for the
+  `constraint_id`; a **non-terminal** owning mutation is held, since it can still emit an
+  `Acquire`/`Release` for the `constraint_id` after the record is deleted. The probe is bounded and
+  cursored across recovery ticks like the other lanes. "No reservations only" — and even "no
+  currently-pinned effect" — is **insufficient**: because the id is reused after `Removed`, a leftover
+  pinned **or still-possible** `Acquire`/`Release` carrying this `constraint_id` could otherwise be
+  drained by Driver 2 against the re-`CREATE`d constraint. The reservation stable key remains
+  `(graph_id, constraint_id, encoded_value)`; no enum/versioned key or `constraint_generation`
+  component is introduced (tombstone reuse, per Revision #17). A generation-fenced key would be a later
+  V2-region migration if immediate same-name re-`CREATE` while old cleanup continues becomes a product
+  requirement. The raw record-delete helper is recovery-only (`remove_dropped_constraint_record`); DROP
+  is a state transition, never a direct catalog delete.
 - **Ownership:** uniqueness is owned by the constraint, never by an index. Multiple named indexes on
   the same property are access paths and do not each impose uniqueness; only a declared constraint
   does.
@@ -1089,16 +1153,16 @@ amendments:
 ## Required test and benchmark gate (Phase 6)
 
 The decision is already `accepted` and the catalog/DDL layer has landed (see the status note). The
-Phase-6 gate below is satisfied, and `CREATE CONSTRAINT` is now published over the public ingress
-(Slice 8); `DROP CONSTRAINT` still returns `NotImplemented`. The gate the implementation had to add:
+Phase-6 gate below is satisfied, and both `CREATE CONSTRAINT` (Slice 8) and `DROP CONSTRAINT`
+(Slice 9) are now published over the public ingress. The gate the implementation had to add:
 
 > **Status (Revision #13, corrected by #14): the test/benchmark gate IS satisfied.** Every
 > ADR-required scenario below is covered by a passing unit, PocketIC e2e, or canbench artifact.
 > **Slice 8 (Revision #16) has published `CREATE CONSTRAINT`** over the public Candid/GQL ingress
-> (publication tests in `adr0030_constraint_dispatch.rs`). `DROP` remains `NotImplemented`: it is
-> **not** publishable on the gate alone — it needs a dedicated lifecycle slice (reservation
-> invalidation + saga draining + `ConstraintNameId`-reuse guard, with regression tests) — see
-> Revision #15 / planned Slice 9. Slice 10 is a planned `ShardLocalGlobal` performance optimization
+> (publication tests in `adr0030_constraint_dispatch.rs`). **Slice 9 (Revision #18) has published
+> `DROP CONSTRAINT`** with the `Active → Dropping → Removed` lifecycle (reservation invalidation +
+> saga draining + the full `ConstraintNameId`-reuse completion gate), tested in
+> `adr0030_constraint_drop_lifecycle.rs`. Slice 10 is a planned `ShardLocalGlobal` performance optimization
 > for provably single-shard-owned graph-wide constraint scopes and does not change the Phase-6
 > correctness gate; `ShardLocalScoped` is deferred.
 >

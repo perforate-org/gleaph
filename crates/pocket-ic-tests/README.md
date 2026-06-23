@@ -47,4 +47,11 @@ cargo test -p gleaph-pocket-ic-tests -- --nocapture
 | `adr0030_constraint_dispatch::edge_create_constraint_is_invalid_argument` | ADR 0030 slice 8: unsupported edge `CREATE CONSTRAINT` over public ingress → `InvalidArgument` |
 | `adr0030_constraint_dispatch::create_constraint_on_query_entrypoint_is_path_mismatch` | ADR 0030: constraint DDL on the `query` entrypoint → `ExecutionPathMismatch` |
 | `adr0030_constraint_dispatch::create_constraint_requires_authorization` | ADR 0030: non-admin `CREATE CONSTRAINT` → `Forbidden` before any other check |
-| `adr0030_constraint_dispatch::drop_constraint_is_not_implemented` | ADR 0030: `DROP CONSTRAINT` stays `NotImplemented` while the created constraint keeps enforcing |
+| `adr0030_constraint_dispatch::drop_constraint_is_published_and_stops_enforcing` | ADR 0030 slice 9: public `DROP CONSTRAINT` succeeds and immediately stops enforcing (duplicate now admitted) |
+| `adr0030_constraint_drop_lifecycle::drop_constraint_releases_committed_values` | ADR 0030 slice 9: DROP frees committed values; after drain the value is unconstrained |
+| `adr0030_constraint_drop_lifecycle::drop_then_recreate_same_name_different_label` | ADR 0030 slice 9: same-name re-CREATE → `Conflict` while `Dropping`, succeeds after `Removed` |
+| `adr0030_constraint_drop_lifecycle::dropping_constraint_admits_new_inserts_but_blocks_recreate` | ADR 0030 slice 9: `Dropping` admits new INSERTs unconstrained but tombstones same-name re-CREATE |
+| `adr0030_constraint_drop_lifecycle::drop_during_in_flight_insert` | ADR 0030 slice 9: DROP drains a held (`Reserved`) reservation; the dropped name is reusable |
+| `adr0030_constraint_drop_lifecycle::recreate_blocked_until_pending_effect_drained` | ADR 0030 slice 9: completion gate keeps `Dropping` while a pinned effect remains ("no reservations" is insufficient) |
+| `adr0030_constraint_drop_lifecycle::drop_survives_upgrade` | ADR 0030 slice 9: the `Dropping → Removed` lifecycle converges across a canister upgrade |
+| `adr0030_constraint_drop_lifecycle::drop_does_not_disable_unrelated_constraints` | ADR 0030 slice 9: dropping one constraint does not weaken an unrelated one |
