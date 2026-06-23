@@ -30,8 +30,8 @@ use gleaph_graph_kernel::plan_exec::{
 use candid::Principal;
 
 use crate::facade::stable::constraint_catalog::{
-    active_constrained_properties_for_graph, bump_drop_scan_generation,
-    constrained_properties_for_graph, find_active_unique_constraint,
+    UniqueEnforcementStrategy, active_constrained_properties_for_graph, bump_drop_scan_generation,
+    constrained_properties_for_graph_with_strategy, find_active_unique_constraint,
 };
 use crate::facade::stable::label_stats::ClientMutationKey;
 use crate::facade::stable::reservation_catalog::{
@@ -62,16 +62,62 @@ fn static_value(expr: &Expr, params: &BTreeMap<String, Value>) -> Option<Value> 
     }
 }
 
+/// One `ShardLocalGlobal` claim and the pinned identity of the constraint's recorded owning shard
+/// (ADR 0030 slice 10). The dispatch path verifies, fail-closed, that the graph's single live shard
+/// still matches `owning_shard` before routing the claim to the local fast path.
+#[derive(Clone, Debug)]
+pub(crate) struct LocalUniqueClaim {
+    pub dispatch: UniqueClaimDispatch,
+    pub owning_shard: ProofShard,
+}
+
+/// The uniqueness claims an admitted `INSERT` makes, partitioned by the constraint's frozen
+/// enforcement strategy (ADR 0030 slice 10). `federated` claims go through the Router Try/Acquire/
+/// Confirm protocol; `local` claims are enforced entirely inside the one owning shard's local table.
+#[derive(Clone, Debug, Default)]
+pub(crate) struct PlannedUniqueClaims {
+    pub federated: Vec<UniqueClaimDispatch>,
+    pub local: Vec<LocalUniqueClaim>,
+}
+
+impl PlannedUniqueClaims {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.federated.is_empty() && self.local.is_empty()
+    }
+}
+
+/// Constrained `(vertex_label, property)` dispatch sets partitioned by enforcement strategy (ADR
+/// 0030 slice 10). `federated` values free via a pinned outbox `Release`; `local` values free
+/// directly in the owning shard's local unique table (owner-matched).
+#[derive(Clone, Debug, Default)]
+pub(crate) struct ConstrainedDispatchSplit {
+    pub federated: Vec<ConstrainedPropertyDispatch>,
+    pub local: Vec<ConstrainedPropertyDispatch>,
+}
+
+impl ConstrainedDispatchSplit {
+    #[cfg_attr(
+        not(test),
+        allow(dead_code, reason = "exercised by the dispatch-split unit tests")
+    )]
+    pub(crate) fn is_empty(&self) -> bool {
+        self.federated.is_empty() && self.local.is_empty()
+    }
+}
+
 impl RouterStore {
-    /// Detects the cross-shard uniqueness claims an admitted `INSERT` makes (ADR 0030 slice 5a).
+    /// Detects the cross-shard uniqueness claims an admitted `INSERT` makes (ADR 0030 slice 5a),
+    /// partitioned by each constraint's frozen enforcement strategy (ADR 0030 slice 10).
     ///
-    /// Returns the claims in deterministic order (`claim_ordinal` = position), or an empty vector
-    /// when the insert touches no constrained property (or only sets it to `NULL`, which makes no
-    /// claim). Errors:
+    /// Returns the claims in deterministic order (`claim_ordinal` = position within its partition),
+    /// or empty partitions when the insert touches no constrained property (or only sets it to
+    /// `NULL`, which makes no claim). Errors:
     /// - [`RouterError::NotImplemented`]: a constrained insert outside the first-cut envelope — more
     ///   than one created vertex, or a constrained value that is not a literal/bound parameter.
     /// - [`RouterError::InvalidArgument`]: a constrained value that cannot be a uniqueness key
     ///   (non-finite float, unsupported type, or over the length bound).
+    /// - [`RouterError::Internal`]: a `ShardLocalGlobal` constraint with no recorded owning shard
+    ///   (an invariant violation; rejected fail-closed rather than routed unsafely).
     pub(crate) fn plan_unique_claims(
         &self,
         graph_id: GraphId,
@@ -79,7 +125,7 @@ impl RouterStore {
         params: &BTreeMap<String, Value>,
         resolved_labels: &ResolvedLabelTable,
         resolved_properties: &ResolvedPropertyTable,
-    ) -> Result<Vec<UniqueClaimDispatch>, RouterError> {
+    ) -> Result<PlannedUniqueClaims, RouterError> {
         let insert_vertices: Vec<(
             &[gleaph_gql_planner::plan::NodeLabelRef],
             &[gleaph_gql_planner::plan::PropertyAssignment],
@@ -94,7 +140,7 @@ impl RouterStore {
             })
             .collect();
 
-        let mut claims: Vec<UniqueClaimDispatch> = Vec::new();
+        let mut planned = PlannedUniqueClaims::default();
         for (labels, properties) in &insert_vertices {
             for assignment in *properties {
                 let Some(property_id) = resolved_properties
@@ -117,7 +163,7 @@ impl RouterStore {
                     // ADR 0030 slice 9: a `Dropping` constraint is absent for new acquires, so the
                     // active-only lookup makes a new INSERT proceed unconstrained while the
                     // constraint drains.
-                    let Some((constraint_id, _)) =
+                    let Some((constraint_id, def)) =
                         find_active_unique_constraint(graph_id, vertex_label_id, property_id)
                     else {
                         continue;
@@ -130,14 +176,36 @@ impl RouterStore {
                         )));
                     };
                     match encode_unique_value(&value) {
-                        UniqueKeyOutcome::Claim(encoded_value) => {
-                            let claim_ordinal = claims.len() as u32;
-                            claims.push(UniqueClaimDispatch {
-                                claim_ordinal,
-                                constraint_id,
-                                encoded_value,
-                            });
-                        }
+                        // ADR 0030 slice 10: route each claim by the constraint's frozen strategy.
+                        UniqueKeyOutcome::Claim(encoded_value) => match def.strategy {
+                            UniqueEnforcementStrategy::FederatedTcc => {
+                                let claim_ordinal = planned.federated.len() as u32;
+                                planned.federated.push(UniqueClaimDispatch {
+                                    claim_ordinal,
+                                    constraint_id,
+                                    encoded_value,
+                                });
+                            }
+                            UniqueEnforcementStrategy::ShardLocalGlobal => {
+                                // The owning shard is pinned at CREATE; its absence is an invariant
+                                // violation. Reject fail-closed rather than route unsafely.
+                                let Some(owning_shard) = def.owning_shard.clone() else {
+                                    return Err(RouterError::Internal(format!(
+                                        "ShardLocalGlobal constraint {constraint_id} has no \
+                                         recorded owning shard"
+                                    )));
+                                };
+                                let claim_ordinal = planned.local.len() as u32;
+                                planned.local.push(LocalUniqueClaim {
+                                    dispatch: UniqueClaimDispatch {
+                                        claim_ordinal,
+                                        constraint_id,
+                                        encoded_value,
+                                    },
+                                    owning_shard,
+                                });
+                            }
+                        },
                         // SQL semantics: a NULL/absent constrained value reserves nothing.
                         UniqueKeyOutcome::NoClaim => {}
                         UniqueKeyOutcome::Rejected(reason) => {
@@ -162,7 +230,7 @@ impl RouterStore {
         //    row and claim the same value many times under one owner assumption.
         // 2. single `InsertVertex`: rejects a literal multi-vertex insert (`INSERT (a), (b)`), which
         //    has no single owner for the claim.
-        if !claims.is_empty() {
+        if !planned.is_empty() {
             let read_prefixed_or_amplified =
                 insert_vertices.len() != 1 || !plans.iter().all(PhysicalPlan::is_pure_insert);
             if read_prefixed_or_amplified {
@@ -173,7 +241,7 @@ impl RouterStore {
                 ));
             }
         }
-        Ok(claims)
+        Ok(planned)
     }
 
     /// Refuses `SET` writes that would touch a uniqueness-constrained value before the two-phase
@@ -423,22 +491,29 @@ impl RouterStore {
 
 impl RouterStore {
     /// The constrained `(vertex_label, property, constraint)` set to dispatch to a shard whose
-    /// mutation can delete/remove a constrained element (ADR 0030 slice 5b), so it can pin one
-    /// `Release` per freed value. Empty when the graph declares no constraint.
+    /// mutation can delete/remove a constrained element (ADR 0030 slice 5b), partitioned by
+    /// enforcement strategy (ADR 0030 slice 10): `federated` values free via an outbox `Release`,
+    /// `local` values free directly in the owning shard's local table. Empty when the graph declares
+    /// no constraint.
     pub(crate) fn constrained_property_dispatch(
         &self,
         graph_id: GraphId,
-    ) -> Vec<ConstrainedPropertyDispatch> {
-        constrained_properties_for_graph(graph_id)
-            .into_iter()
-            .map(
-                |(vertex_label_id, property_id, constraint_id)| ConstrainedPropertyDispatch {
-                    vertex_label_id,
-                    property_id,
-                    constraint_id,
-                },
-            )
-            .collect()
+    ) -> ConstrainedDispatchSplit {
+        let mut split = ConstrainedDispatchSplit::default();
+        for (vertex_label_id, property_id, constraint_id, strategy) in
+            constrained_properties_for_graph_with_strategy(graph_id)
+        {
+            let dispatch = ConstrainedPropertyDispatch {
+                vertex_label_id,
+                property_id,
+                constraint_id,
+            };
+            match strategy {
+                UniqueEnforcementStrategy::FederatedTcc => split.federated.push(dispatch),
+                UniqueEnforcementStrategy::ShardLocalGlobal => split.local.push(dispatch),
+            }
+        }
+        split
     }
 
     /// Begin a generation-fenced reclaim proof for a `Reserved` value (ADR 0030 slice 6 §Timeout):
@@ -737,13 +812,15 @@ mod tests {
         let claims = store
             .plan_unique_claims(graph_id, &plans, &BTreeMap::new(), &labels, &properties)
             .expect("admitted");
-        assert_eq!(claims.len(), 1);
-        assert_eq!(claims[0].claim_ordinal, 0);
+        // No shard is registered in `setup()`, so the constraint is FederatedTcc.
+        assert!(claims.local.is_empty());
+        assert_eq!(claims.federated.len(), 1);
+        assert_eq!(claims.federated[0].claim_ordinal, 0);
         let expected = match encode_unique_value(&Value::Text("a@example.com".into())) {
             UniqueKeyOutcome::Claim(bytes) => bytes,
             other => panic!("expected a claim, got {other:?}"),
         };
-        assert_eq!(claims[0].encoded_value, expected);
+        assert_eq!(claims.federated[0].encoded_value, expected);
     }
 
     #[test]
@@ -755,12 +832,13 @@ mod tests {
         let claims = store
             .plan_unique_claims(graph_id, &plans, &params, &labels, &properties)
             .expect("admitted");
-        assert_eq!(claims.len(), 1);
+        assert!(claims.local.is_empty());
+        assert_eq!(claims.federated.len(), 1);
         let expected = match encode_unique_value(&Value::Text("p@example.com".into())) {
             UniqueKeyOutcome::Claim(bytes) => bytes,
             other => panic!("expected a claim, got {other:?}"),
         };
-        assert_eq!(claims[0].encoded_value, expected);
+        assert_eq!(claims.federated[0].encoded_value, expected);
     }
 
     #[test]
@@ -860,8 +938,10 @@ mod tests {
     fn constrained_property_dispatch_lists_declared_constraints() {
         let (store, graph_id, _labels, _properties) = setup_user_email_constraint();
         let dispatched = store.constrained_property_dispatch(graph_id);
-        assert_eq!(dispatched.len(), 1);
-        let entry = &dispatched[0];
+        // FederatedTcc (no shard registered in `setup()`), so the entry is on the federated side.
+        assert!(dispatched.local.is_empty());
+        assert_eq!(dispatched.federated.len(), 1);
+        let entry = &dispatched.federated[0];
         assert_eq!(
             entry.vertex_label_id,
             store.lookup_vertex_label_id(graph_id, "User").unwrap()

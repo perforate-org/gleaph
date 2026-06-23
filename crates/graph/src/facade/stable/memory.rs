@@ -77,6 +77,9 @@ const INDEX_REPAIR_JOURNAL: MemoryId = MemoryId::new(41);
 // --- Cross-shard uniqueness: pinned unique-effect outbox (ADR 0030) (1 memory) ---
 const UNIQUE_EFFECT_OUTBOX: MemoryId = MemoryId::new(42);
 
+// --- ShardLocalGlobal fast path: graph-shard-local unique value table (ADR 0030 slice 10) (1 memory) ---
+const GRAPH_LOCAL_UNIQUE_VALUES: MemoryId = MemoryId::new(43);
+
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
 /// Initial slab capacity for both labeled orientations (grows as needed).
@@ -99,6 +102,8 @@ pub(crate) type StablePendingPurges = StableRoaringBitmap<Memory>;
 pub(crate) type StableRepairJournal = super::repair_journal::RepairJournal<Memory>;
 /// Pinned unique-effect receipts awaiting Router ack (ADR 0030).
 pub(crate) type StableUniqueEffectOutbox = super::unique_effect_outbox::UniqueEffectOutbox<Memory>;
+/// Graph-shard-local unique values for `ShardLocalGlobal` constraints (ADR 0030 slice 10).
+pub(crate) type StableGraphLocalUniqueTable = super::local_unique::GraphLocalUniqueTable<Memory>;
 
 thread_local! {
     static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -215,5 +220,11 @@ pub(crate) fn init_index_repair_journal() -> StableRepairJournal {
 pub(crate) fn init_unique_effect_outbox() -> StableUniqueEffectOutbox {
     super::unique_effect_outbox::UniqueEffectOutbox::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(UNIQUE_EFFECT_OUTBOX)),
+    )
+}
+
+pub(crate) fn init_graph_local_unique_table() -> StableGraphLocalUniqueTable {
+    super::local_unique::GraphLocalUniqueTable::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(GRAPH_LOCAL_UNIQUE_VALUES)),
     )
 }

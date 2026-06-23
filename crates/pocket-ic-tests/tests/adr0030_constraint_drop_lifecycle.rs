@@ -15,11 +15,11 @@
 use candid::Encode;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, arm_graph_unique_ack_fault, gql_execute_idempotent_as_admin,
+    FederationEnv, arm_graph_unique_ack_fault_all_shards, gql_execute_idempotent_as_admin,
     gql_execute_idempotent_as_admin_expect_err, gql_execute_idempotent_result_as_admin,
-    gql_query_as_admin, graph_unique_outbox_len, install_single_shard_federation,
-    run_router_recovery_after_reservation_ttl, run_router_recovery_timer, start_graph_shard,
-    stop_graph_shard, wasm_bytes,
+    gql_query_as_admin, graph_unique_outbox_len_all_shards, install_federation,
+    install_single_shard_federation, run_router_recovery_after_reservation_ttl,
+    run_router_recovery_timer, start_graph_shard, stop_graph_shard, wasm_bytes,
 };
 
 const CONSTRAINT: &str = "user_email";
@@ -247,23 +247,26 @@ fn drop_during_in_flight_insert() {
 /// and the name become reusable.
 #[test]
 fn recreate_blocked_until_pending_effect_drained() {
-    let env = install_single_shard_federation();
+    // Two shards (`install_federation`) so the constraint freezes to FederatedTcc and the pinned
+    // `Acquire` outbox effect this gate depends on exists; ADR 0030 slice 10's single-shard
+    // `ShardLocalGlobal` fast path keeps no reservation/outbox effect at all.
+    let env = install_federation();
     gql_execute_idempotent_as_admin(
         &env,
         &create_for(CONSTRAINT, LABEL, PROPERTY),
         "s9-gate-create",
     );
 
-    // Pin the Acquire: the shard traps the Router's ack, so Confirm commits the reservation
+    // Pin the Acquire: the owning shard traps the Router's ack, so Confirm commits the reservation
     // (pending_acquire_ack set) but the effect stays pinned in the outbox.
-    arm_graph_unique_ack_fault(&env, env.graph_source, GRAPH_FAULT_TRAP_ON_UNIQUE_ACK);
+    arm_graph_unique_ack_fault_all_shards(&env, GRAPH_FAULT_TRAP_ON_UNIQUE_ACK);
     gql_execute_idempotent_as_admin(
         &env,
         &insert(LABEL, PROPERTY, "g@example.com"),
         "s9-gate-ins",
     );
     assert_eq!(
-        graph_unique_outbox_len(&env, env.graph_source),
+        graph_unique_outbox_len_all_shards(&env),
         1,
         "the Acquire is pinned because the Router's ack trapped"
     );
@@ -284,10 +287,10 @@ fn recreate_blocked_until_pending_effect_drained() {
 
     // Clear the fault and drive recovery: the pinned Acquire is acked, the reservation purged, and
     // the gate finally holds — the record is Removed and the name reusable.
-    arm_graph_unique_ack_fault(&env, env.graph_source, GRAPH_FAULT_NONE);
+    arm_graph_unique_ack_fault_all_shards(&env, GRAPH_FAULT_NONE);
     run_router_recovery_after_reservation_ttl(&env);
     assert_eq!(
-        graph_unique_outbox_len(&env, env.graph_source),
+        graph_unique_outbox_len_all_shards(&env),
         0,
         "recovery acked the pinned Acquire"
     );

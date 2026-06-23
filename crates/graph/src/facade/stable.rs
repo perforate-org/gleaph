@@ -12,6 +12,7 @@ pub(crate) mod memory;
 pub(crate) mod edge_alias;
 pub(crate) mod edge_properties;
 pub(crate) mod label_stats_delta;
+pub(crate) mod local_unique;
 pub(crate) mod metadata;
 pub(crate) mod property_catalog;
 pub(crate) mod repair_journal;
@@ -63,6 +64,9 @@ thread_local! {
 
     pub(crate) static UNIQUE_EFFECT_OUTBOX: RefCell<memory::StableUniqueEffectOutbox> =
         RefCell::new(memory::init_unique_effect_outbox());
+
+    pub(crate) static GRAPH_LOCAL_UNIQUE_VALUES: RefCell<memory::StableGraphLocalUniqueTable> =
+        RefCell::new(memory::init_graph_local_unique_table());
 }
 
 /// Forces the stable graph to initialize now. Called from `post_upgrade` so a

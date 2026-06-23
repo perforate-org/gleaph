@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-06-22
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–42 = 43 regions, incl. ADR 0030 unique-effect outbox; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index = 40 regions, 0–39)
-Anchor timestamp: 2026-06-22 00:00:00 UTC +0000
+Last updated: 2026-06-23
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–43 = 44 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index = 40 regions, 0–39)
+Anchor timestamp: 2026-06-23 03:47:17 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -29,7 +29,7 @@ this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same pa
 
 | Canister | Regions | Id range | Registry constant + test |
 |----------|---------|----------|--------------------------|
-| Graph | 42 | 0–41 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
+| Graph | 44 | 0–43 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
 | Router | 40 | 0–39 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
 | Graph-index | 7 | 0–6 | `INDEX_STABLE_LAYOUT` — `index_layout_registry_matches_baseline` |
 
@@ -138,8 +138,9 @@ Repacked 2026-06-11. **Removed:** property name catalog, `VERTEX_LOGICAL_IDS`, f
 | 40 | `PENDING_VERTEX_PURGES` | `PENDING_VERTEX_PURGES` | `init_pending_vertex_purges` | maintenance | vertex delete | Tombstoned vertices mid-purge (ADR 0021); insert is fail-closed and runs before the tombstone (a failed insert aborts the delete, never leaving ungated ghost edges); rebuildable by scanning tombstoned vertices with surviving incident edges (no API) |
 | 41 | `INDEX_REPAIR_JOURNAL` | `INDEX_REPAIR_JOURNAL` | `init_index_repair_journal` | maintenance | federated index repair | Failed-flush index postings persisted on compensation-success (ADR 0023 D5); re-applied by the maintenance driver each tick and on `post_upgrade`, removed on success. Value type is `RepairJournalEntry { mutation_id, op }` (ADR 0029 Phase 2): each entry carries the originating federated `mutation_id` (`0` = untracked sentinel) so `index_pending_min_mutation_id()` derives the mutation-linked index watermark (smallest unapplied tracked mutation). **Backward-incompatible repack**: the value schema changed in place from a bare `RepairPostingOp` to `RepairJournalEntry`; pre-existing entries in the old layout are not migrated (no production deployment) |
 | 42 | `UNIQUE_EFFECT_OUTBOX` | `UNIQUE_EFFECT_OUTBOX` | `init_unique_effect_outbox` | canonical | cross-shard uniqueness | **`EffectId { mutation_id, effect_ordinal } → UniqueEffectReceipt { claim_id?, owner_element_id, constraint_id, encoded_value, op: Acquire \| Release }`** (ADR 0030). Pinned commit evidence: each unique-affecting canonical segment appends one receipt per effect; an effect stays pinned until the Router acks its `EffectId` (per-effect, never unpinning a sibling). Canonical: a `Reserved`-not-yet-committed claim has no receipt, so un-acked-effect *absence* is authoritative proof of non-commit — decoupled from the 9-day journal eviction (region 39 / ADR 0027). Replicated `Acquire`-by-`ClaimId` proof read + per-effect ack are Router-only update endpoints. Append is idempotent across deterministic replays. Emit wiring into the DML segment lands in slice 5 |
+| 43 | `GRAPH_LOCAL_UNIQUE_VALUES` | `GRAPH_LOCAL_UNIQUE_VALUES` | `init_graph_local_unique_table` | canonical | shard-local global uniqueness | **`(constraint_id, encoded_value) → LocalUniqueRecord { owner_element_id }`** (ADR 0030 slice 10). Canonical source of truth for `ShardLocalGlobal` unique constraints: a graph proven single-shard at CREATE enforces graph-wide uniqueness entirely in its one owning shard's local table, bypassing the Router reservation/`UNIQUE_EFFECT_OUTBOX` path. The acquire path preflights all claims and inserts them inside the canonical write segment (all-or-nothing); a delete/remove frees the value by owner match; the DROP drain purges the constraint's entries and gates `Removed` on the range being empty. The key omits `graph_id` because one graph canister hosts exactly one graph/shard. No `Acquire`/`Release` receipts and no Router reservations are ever written for these constraints |
 
-Graph facade **43 regions** total (32 LARA + 11 facade). Retired 2026-06-12: `EDGE_PAYLOAD_PROFILES` → router SSOT ([ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md)); `EDGE_EQUALITY_POSTINGS` → graph-index ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)).
+Graph facade **44 regions** total (32 LARA + 12 facade). Retired 2026-06-12: `EDGE_PAYLOAD_PROFILES` → router SSOT ([ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md)); `EDGE_EQUALITY_POSTINGS` → graph-index ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)).
 
 Property **names** are router-owned (`ROUTER_PROPERTY_CATALOG`); graph stores values by `PropertyId` only.
 

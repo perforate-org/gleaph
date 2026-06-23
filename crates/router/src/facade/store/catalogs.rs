@@ -6,13 +6,16 @@ use super::super::stable::{
 };
 use crate::facade::auth;
 use crate::facade::stable::constraint_catalog::{
-    self as constraint_store, ConstraintDefRecord, ConstraintLifecycle,
+    self as constraint_store, ConstraintDefRecord, ConstraintLifecycle, UniqueEnforcementStrategy,
 };
 use crate::facade::stable::constraint_name_catalog::{
     intern_constraint_name, lookup_constraint_name_id,
 };
 use crate::facade::stable::edge_payload_profiles::EdgePayloadProfileStoreError;
-use crate::facade::stable::graph_catalog::{catalog_error_to_router, resolve_registered_graph_id};
+use crate::facade::stable::graph_catalog::{
+    catalog_error_to_router, list_live_shards_for_graph_id, resolve_registered_graph_id,
+};
+use crate::facade::stable::reservation_catalog::ProofShard;
 use crate::state::RouterError;
 use crate::types::{EdgeLabelId, PropertyId, VertexLabelId};
 use candid::Principal;
@@ -298,6 +301,22 @@ impl RouterStore {
             .with_borrow(|catalog| catalog.peek_next_id(graph_id, constraint_name))
             .map_err(|e| catalog_error_to_router(e, "constraint"))?;
 
+        // ADR 0030 slice 10: freeze the enforcement strategy at CREATE from the same live-shard
+        // definition dispatch uses. A graph with exactly one live (index-attached) shard enforces
+        // graph-wide uniqueness entirely inside that one shard's local table (the `ShardLocalGlobal`
+        // fast path); any other topology uses the federated TCC path. The owning shard's full
+        // identity (`shard_id` + `graph_canister`) is pinned via `ProofShard` so shard-id reuse
+        // cannot later mis-route enforcement or DROP purge. Read-only, so it stays outside the
+        // no-await commit region below.
+        let live_shards = list_live_shards_for_graph_id(graph_id)?;
+        let (strategy, owning_shard) = match live_shards.as_slice() {
+            [only] => (
+                UniqueEnforcementStrategy::ShardLocalGlobal,
+                Some(ProofShard::new(only.shard_id, only.graph_canister)),
+            ),
+            _ => (UniqueEnforcementStrategy::FederatedTcc, None),
+        };
+
         // --- commit (single no-await region, all-or-nothing) ---
         let property_id = Self::commit_intern_property_name(graph_id, property)?;
         let vertex_label_id = Self::commit_intern_vertex_label_name(graph_id, label)?;
@@ -305,7 +324,7 @@ impl RouterStore {
         constraint_store::create_unique_constraint(
             graph_id,
             constraint_name_id,
-            ConstraintDefRecord::new_active(vertex_label_id, property_id),
+            ConstraintDefRecord::new_active(vertex_label_id, property_id, strategy, owning_shard),
             false,
         )?;
         Ok(())

@@ -30,6 +30,14 @@ pub struct GqlExecutionContext {
     /// for each freed value when it deletes/removes a constrained element (ADR 0030 slice 5b). Empty
     /// for operations that cannot release a constrained value.
     pub constrained_properties: Vec<ConstrainedPropertyDispatch>,
+    /// `ShardLocalGlobal` fast-path claims (ADR 0030 slice 10): the canonical segment preflights all
+    /// of them against the local unique table and, only if all are clean, inserts them inside the
+    /// same segment. Not reserved through the Router. Empty for non-`ShardLocalGlobal` operations.
+    pub local_unique_claims: Vec<UniqueClaimDispatch>,
+    /// Constrained `(vertex_label, property)` set for `ShardLocalGlobal` constraints (ADR 0030 slice
+    /// 10): a delete/remove of such an element frees its value directly in the local unique table
+    /// (owner-matched) instead of pinning an outbox `Release`. Empty otherwise.
+    pub local_constrained_properties: Vec<ConstrainedPropertyDispatch>,
 }
 
 impl GqlExecutionContext {

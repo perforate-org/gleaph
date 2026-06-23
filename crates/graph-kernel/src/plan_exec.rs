@@ -59,6 +59,17 @@ pub struct ExecutePlanArgs {
     /// constraint catalog (no persistent shard-side catalog; ADR 0023). `None`/empty when the
     /// operation cannot release a constrained value.
     pub constrained_properties: Option<Vec<ConstrainedPropertyDispatch>>,
+    /// `ShardLocalGlobal` fast-path claims (ADR 0030 slice 10). Unlike `unique_claims`, these were
+    /// **not** reserved through the Router (no Try/Acquire/Confirm). The single owning shard enforces
+    /// graph-wide uniqueness entirely in its local unique table: it preflights every claim against
+    /// the table and, only if all are clean, inserts them inside the same canonical write segment.
+    /// `None`/empty when no constrained property uses the `ShardLocalGlobal` strategy.
+    pub local_unique_claims: Option<Vec<UniqueClaimDispatch>>,
+    /// Constrained `(vertex_label, property)` set for `ShardLocalGlobal` constraints (ADR 0030 slice
+    /// 10). A delete/remove of such an element frees its value directly in the local unique table
+    /// (owner-matched), rather than pinning an outbox `Release`. `None`/empty when no constrained
+    /// property uses the `ShardLocalGlobal` strategy.
+    pub local_constrained_properties: Option<Vec<ConstrainedPropertyDispatch>>,
 }
 
 /// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
@@ -488,6 +499,16 @@ mod tests {
                 vertex_label_id: VertexLabelId::from_raw(2),
                 property_id: PropertyId::from_raw(1),
                 constraint_id: ConstraintNameId::from_raw(3),
+            }]),
+            local_unique_claims: Some(vec![UniqueClaimDispatch {
+                claim_ordinal: 0,
+                constraint_id: ConstraintNameId::from_raw(4),
+                encoded_value: vec![5, 6],
+            }]),
+            local_constrained_properties: Some(vec![ConstrainedPropertyDispatch {
+                vertex_label_id: VertexLabelId::from_raw(2),
+                property_id: PropertyId::from_raw(1),
+                constraint_id: ConstraintNameId::from_raw(4),
             }]),
         };
         let bytes = Encode!(&args).expect("encode");

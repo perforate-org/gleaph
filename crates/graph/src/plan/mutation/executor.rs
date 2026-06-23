@@ -55,6 +55,10 @@ pub struct PlanMutationBindings {
     /// **before** the canonical delete so the property value and owner element id are still readable
     /// (ADR 0030 slice 5b). The `Release` emit (`emit_unique_releases`) pins one receipt per entry.
     pub released_unique_values: Vec<PendingUniqueRelease>,
+    /// Like `released_unique_values` but for `ShardLocalGlobal` constraints (ADR 0030 slice 10):
+    /// these are freed directly in the owning shard's local unique table (owner-matched) rather than
+    /// pinned as outbox `Release` receipts.
+    pub released_local_unique_values: Vec<PendingUniqueRelease>,
     forward_edge_insert_counts: BTreeMap<VertexId, u32>,
     /// Forward hubs from this DML batch (sources with enough edge inserts).
     pub hot_forward_vertices: Vec<VertexId>,
@@ -223,6 +227,7 @@ fn execute_ops_with_bindings(
                     vertex_id,
                     false,
                     &execution.constrained_properties,
+                    &execution.local_constrained_properties,
                     bindings,
                 )?;
                 store.delete_vertex(vertex_id)?;
@@ -242,6 +247,7 @@ fn execute_ops_with_bindings(
                     vertex_id,
                     true,
                     &execution.constrained_properties,
+                    &execution.local_constrained_properties,
                     bindings,
                 )?;
                 store.detach_delete_vertex(vertex_id)?;
@@ -402,6 +408,7 @@ pub(crate) async fn apply_mutation_ops_async(
                     vertex_id,
                     false,
                     &execution.constrained_properties,
+                    &execution.local_constrained_properties,
                     bindings,
                 )?;
                 store.delete_vertex(vertex_id)?;
@@ -421,6 +428,7 @@ pub(crate) async fn apply_mutation_ops_async(
                     vertex_id,
                     true,
                     &execution.constrained_properties,
+                    &execution.local_constrained_properties,
                     bindings,
                 )?;
                 store.detach_delete_vertex(vertex_id)?;
@@ -681,19 +689,33 @@ fn execute_remove_item(
             };
 
             if let Some(vertex_id) = bindings.vertices.get(variable.as_ref()).copied() {
-                // ADR 0030 slice 5b: removing a constrained property frees its reserved value —
-                // capture the `Release` before the value is gone.
-                if !execution.constrained_properties.is_empty() {
+                // ADR 0030 slice 5b / slice 10: removing a constrained property frees its reserved
+                // value — capture the `Release` (federated outbox, and `ShardLocalGlobal` local
+                // table) before the value is gone. Owner resolution is shared across both passes.
+                if !execution.constrained_properties.is_empty()
+                    || !execution.local_constrained_properties.is_empty()
+                {
                     let element_id_key = crate::element_id_encoding::resolve_or_host_fixture(
                         execution.element_id_encoding_key(),
                     );
+                    let mut owner_cache: Option<Vec<u8>> = None;
                     capture_remove_property_releases(
                         store,
                         &element_id_key,
                         vertex_id,
                         property_id,
                         &execution.constrained_properties,
-                        bindings,
+                        &mut owner_cache,
+                        &mut bindings.released_unique_values,
+                    );
+                    capture_remove_property_releases(
+                        store,
+                        &element_id_key,
+                        vertex_id,
+                        property_id,
+                        &execution.local_constrained_properties,
+                        &mut owner_cache,
+                        &mut bindings.released_local_unique_values,
                     );
                 }
                 store.remove_vertex_property(vertex_id, property_id);
@@ -727,17 +749,31 @@ fn execute_remove_item(
                 // ADR 0030 slice 5b: dropping a label removes the applicability of its
                 // `(label, property)` constraints — capture each freed value before the label is
                 // gone (only when the vertex actually carried the label).
-                if had_label && !execution.constrained_properties.is_empty() {
+                if had_label
+                    && (!execution.constrained_properties.is_empty()
+                        || !execution.local_constrained_properties.is_empty())
+                {
                     let element_id_key = crate::element_id_encoding::resolve_or_host_fixture(
                         execution.element_id_encoding_key(),
                     );
+                    let mut owner_cache: Option<Vec<u8>> = None;
                     capture_remove_label_releases(
                         store,
                         &element_id_key,
                         vertex_id,
                         label_id,
                         &execution.constrained_properties,
-                        bindings,
+                        &mut owner_cache,
+                        &mut bindings.released_unique_values,
+                    );
+                    capture_remove_label_releases(
+                        store,
+                        &element_id_key,
+                        vertex_id,
+                        label_id,
+                        &execution.local_constrained_properties,
+                        &mut owner_cache,
+                        &mut bindings.released_local_unique_values,
                     );
                 }
                 let vertex = store.remove_vertex_label(vertex_id, vertex, label_id);
@@ -882,6 +918,7 @@ fn collect_vertex_delete_label_deltas(
     vertex_id: VertexId,
     include_incident_edges: bool,
     constrained: &[ConstrainedPropertyDispatch],
+    local_constrained: &[ConstrainedPropertyDispatch],
     bindings: &mut PlanMutationBindings,
 ) -> Result<(), PlanMutationError> {
     if let Some(vertex) = store.vertex(vertex_id) {
@@ -889,6 +926,10 @@ fn collect_vertex_delete_label_deltas(
         for &label_id in &labels {
             bindings.add_vertex_label_delta(label_id, -1);
         }
+        // ADR 0030 slice 5b / slice 10: capture the freed values for both the federated (outbox
+        // `Release`) and `ShardLocalGlobal` (local-table) paths. The owner element id is resolved
+        // once per vertex and shared across both passes.
+        let mut owner_cache: Option<Vec<u8>> = None;
         if !constrained.is_empty() {
             collect_vertex_release_effects(
                 store,
@@ -896,7 +937,19 @@ fn collect_vertex_delete_label_deltas(
                 vertex_id,
                 &labels,
                 constrained,
-                bindings,
+                &mut owner_cache,
+                &mut bindings.released_unique_values,
+            );
+        }
+        if !local_constrained.is_empty() {
+            collect_vertex_release_effects(
+                store,
+                element_id_key,
+                vertex_id,
+                &labels,
+                local_constrained,
+                &mut owner_cache,
+                &mut bindings.released_local_unique_values,
             );
         }
     }
@@ -915,20 +968,13 @@ fn collect_vertex_release_effects(
     vertex_id: VertexId,
     labels: &[VertexLabelId],
     constrained: &[ConstrainedPropertyDispatch],
-    bindings: &mut PlanMutationBindings,
+    owner_cache: &mut Option<Vec<u8>>,
+    out: &mut Vec<PendingUniqueRelease>,
 ) {
     let label_set: BTreeSet<VertexLabelId> = labels.iter().copied().collect();
-    let mut owner_cache: Option<Vec<u8>> = None;
     for entry in constrained {
         if label_set.contains(&entry.vertex_label_id) {
-            capture_constrained_release(
-                store,
-                element_id_key,
-                vertex_id,
-                entry,
-                &mut owner_cache,
-                bindings,
-            );
+            capture_constrained_release(store, element_id_key, vertex_id, entry, owner_cache, out);
         }
     }
 }
@@ -942,24 +988,17 @@ fn capture_remove_property_releases(
     vertex_id: VertexId,
     property_id: PropertyId,
     constrained: &[ConstrainedPropertyDispatch],
-    bindings: &mut PlanMutationBindings,
+    owner_cache: &mut Option<Vec<u8>>,
+    out: &mut Vec<PendingUniqueRelease>,
 ) {
     let Some(vertex) = store.vertex(vertex_id) else {
         return;
     };
     let label_set: BTreeSet<VertexLabelId> =
         store.vertex_labels(vertex_id, vertex).into_iter().collect();
-    let mut owner_cache: Option<Vec<u8>> = None;
     for entry in constrained {
         if entry.property_id == property_id && label_set.contains(&entry.vertex_label_id) {
-            capture_constrained_release(
-                store,
-                element_id_key,
-                vertex_id,
-                entry,
-                &mut owner_cache,
-                bindings,
-            );
+            capture_constrained_release(store, element_id_key, vertex_id, entry, owner_cache, out);
         }
     }
 }
@@ -973,19 +1012,12 @@ fn capture_remove_label_releases(
     vertex_id: VertexId,
     label_id: VertexLabelId,
     constrained: &[ConstrainedPropertyDispatch],
-    bindings: &mut PlanMutationBindings,
+    owner_cache: &mut Option<Vec<u8>>,
+    out: &mut Vec<PendingUniqueRelease>,
 ) {
-    let mut owner_cache: Option<Vec<u8>> = None;
     for entry in constrained {
         if entry.vertex_label_id == label_id {
-            capture_constrained_release(
-                store,
-                element_id_key,
-                vertex_id,
-                entry,
-                &mut owner_cache,
-                bindings,
-            );
+            capture_constrained_release(store, element_id_key, vertex_id, entry, owner_cache, out);
         }
     }
 }
@@ -1003,7 +1035,7 @@ fn capture_constrained_release(
     vertex_id: VertexId,
     entry: &ConstrainedPropertyDispatch,
     owner_cache: &mut Option<Vec<u8>>,
-    bindings: &mut PlanMutationBindings,
+    out: &mut Vec<PendingUniqueRelease>,
 ) {
     let Some(value) = store.vertex_property(vertex_id, entry.property_id) else {
         return;
@@ -1022,7 +1054,7 @@ fn capture_constrained_release(
                 )
             })
     });
-    bindings.released_unique_values.push(PendingUniqueRelease {
+    out.push(PendingUniqueRelease {
         constraint_id: entry.constraint_id,
         encoded_value,
         owner_element_id: owner.clone(),
@@ -1827,6 +1859,7 @@ mod tests {
             vid,
             false,
             &constrained,
+            &[],
             &mut bindings,
         )
         .expect("collect release");
@@ -1869,6 +1902,7 @@ mod tests {
             vid,
             false,
             &constrained,
+            &[],
             &mut bindings,
         )
         .expect("collect");
@@ -1902,13 +1936,15 @@ mod tests {
         }];
         let mut bindings = PlanMutationBindings::default();
 
+        let mut owner_cache: Option<Vec<u8>> = None;
         capture_remove_property_releases(
             &store,
             &ElementIdEncodingKey::host_test_fixture(),
             vid,
             email,
             &constrained,
-            &mut bindings,
+            &mut owner_cache,
+            &mut bindings.released_unique_values,
         );
 
         assert_eq!(bindings.released_unique_values.len(), 1);
@@ -1936,13 +1972,15 @@ mod tests {
         }];
         let mut bindings = PlanMutationBindings::default();
 
+        let mut owner_cache: Option<Vec<u8>> = None;
         capture_remove_property_releases(
             &store,
             &ElementIdEncodingKey::host_test_fixture(),
             vid,
             email,
             &constrained,
-            &mut bindings,
+            &mut owner_cache,
+            &mut bindings.released_unique_values,
         );
 
         assert!(bindings.released_unique_values.is_empty());
@@ -1972,13 +2010,15 @@ mod tests {
         }];
         let mut bindings = PlanMutationBindings::default();
 
+        let mut owner_cache: Option<Vec<u8>> = None;
         capture_remove_label_releases(
             &store,
             &ElementIdEncodingKey::host_test_fixture(),
             vid,
             label,
             &constrained,
-            &mut bindings,
+            &mut owner_cache,
+            &mut bindings.released_unique_values,
         );
 
         assert_eq!(bindings.released_unique_values.len(), 1);
@@ -2007,13 +2047,15 @@ mod tests {
         }];
         let mut bindings = PlanMutationBindings::default();
 
+        let mut owner_cache: Option<Vec<u8>> = None;
         capture_remove_label_releases(
             &store,
             &ElementIdEncodingKey::host_test_fixture(),
             vid,
             label,
             &constrained,
-            &mut bindings,
+            &mut owner_cache,
+            &mut bindings.released_unique_values,
         );
 
         assert!(bindings.released_unique_values.is_empty());
@@ -2059,6 +2101,7 @@ mod tests {
             &ElementIdEncodingKey::host_test_fixture(),
             a,
             true,
+            &[],
             &[],
             &mut bindings,
         )

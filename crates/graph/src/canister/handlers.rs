@@ -178,6 +178,8 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
             element_id_encoding_key: Some(args.element_id_encoding_key),
             unique_claims: args.unique_claims.unwrap_or_default(),
             constrained_properties: args.constrained_properties.unwrap_or_default(),
+            local_unique_claims: args.local_unique_claims.unwrap_or_default(),
+            local_constrained_properties: args.local_constrained_properties.unwrap_or_default(),
         },
         seeds,
         args.mutation_id,
@@ -261,6 +263,20 @@ pub fn read_unique_mutation_effects(
 ) -> Vec<gleaph_graph_kernel::federation::UniqueEffectReceipt> {
     let limit = (limit as usize).min(MAX_RELEASE_EFFECTS_PAGE);
     GraphStore::new().unique_effects_page(mutation_id, after_ordinal, limit)
+}
+
+/// Router → graph (DROP drain, ADR 0030 slice 10): delete up to `budget` of a `ShardLocalGlobal`
+/// constraint's local unique entries and report whether that constraint's local range is now empty.
+/// The Router gates the terminal `Removed` transition on this returning `true` from the **exact
+/// recorded owning canister**; an unreachable owner or a `false` keeps the constraint `Dropping`.
+/// An update so the purge is replicated.
+pub fn purge_local_unique_constraint(
+    constraint_id: gleaph_graph_kernel::entry::ConstraintNameId,
+    budget: u32,
+) -> bool {
+    GraphStore::new()
+        .local_unique_purge(constraint_id, budget as usize)
+        .done
 }
 
 /// Router → graph: unpin (ack) unique effects after the Router has durably applied them. Per-effect;
@@ -838,6 +854,8 @@ mod tests {
             indexed_properties: None,
             unique_claims: None,
             constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -898,6 +916,8 @@ mod tests {
             indexed_properties: None,
             unique_claims: None,
             constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -943,6 +963,8 @@ mod tests {
             indexed_properties: None,
             unique_claims: None,
             constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("missing seeds");
@@ -975,6 +997,8 @@ mod tests {
             indexed_properties: None,
             unique_claims: None,
             constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("shard mismatch");

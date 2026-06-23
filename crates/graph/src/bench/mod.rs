@@ -2183,6 +2183,117 @@ fn bench_graph_unique_outbox_effects_page_256() -> canbench_rs::BenchResult {
     })
 }
 
+// --- ADR 0030 slice 10 `ShardLocalGlobal` local-unique-table benches (graph-shard fast path) ---
+//
+// The `ShardLocalGlobal` fast path enforces a graph-wide UNIQUE constraint entirely inside the one
+// owning shard's local table (`GRAPH_LOCAL_UNIQUE_VALUES`): no Router reservation, no pinned
+// unique-effect outbox, and no inter-canister ack round. These measure that path's real per-op cost
+// so it can be compared against the FederatedTcc legs benchmarked above and in the Router crate
+// (Router `try_reserve`/`confirm`/`cancel` in `crates/router/src/bench.rs`; graph `unique_outbox_*`
+// here):
+//   - acquire: the preflight `contains` (absent) + `insert` the canonical write segment performs
+//     all-or-nothing for a single-element INSERT;
+//   - duplicate reject: the preflight `contains` hit done before returning `UniquenessViolation`
+//     (no canonical write, no Router round-trip);
+//   - free: the owner-matched `remove_if_owner` a constrained DELETE performs in its canonical
+//     segment (no outbox `Release`, no Router reconcile);
+//   - DROP purge: one bounded drain page over a populated table (the slice-9 drain branch the
+//     drop-drain recovery lane calls per tick for a `ShardLocalGlobal` constraint).
+//
+// Each bench uses a distinct `constraint_id` so the shared thread-local table does not collide
+// across benches in the same canister instance.
+
+fn local_unique_value(ordinal: u32) -> Vec<u8> {
+    format!("bench-local-value-{ordinal:08}").into_bytes()
+}
+
+fn local_unique_owner(ordinal: u32) -> Vec<u8> {
+    u64::from(ordinal).to_le_bytes().to_vec()
+}
+
+/// `ShardLocalGlobal` acquire for one claim: preflight `contains` (absent) + `insert`.
+#[bench(raw)]
+fn bench_graph_local_unique_acquire_1() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let constraint = ConstraintNameId::from_raw(11);
+    let value = local_unique_value(0);
+    let owner = local_unique_owner(0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("local_unique_acquire_1");
+        let present = store.local_unique_contains(black_box(constraint), black_box(&value));
+        assert!(
+            !present,
+            "acquire bench preflight must see the value absent"
+        );
+        store.local_unique_insert(
+            black_box(constraint),
+            black_box(value.clone()),
+            black_box(owner.clone()),
+        );
+    })
+}
+
+/// `ShardLocalGlobal` duplicate rejection: the preflight `contains` hit on an already-claimed value.
+#[bench(raw)]
+fn bench_graph_local_unique_duplicate_reject_1() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let constraint = ConstraintNameId::from_raw(12);
+    let value = local_unique_value(0);
+    store.local_unique_insert(constraint, value.clone(), local_unique_owner(0));
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("local_unique_duplicate_reject_1");
+        let present = store.local_unique_contains(black_box(constraint), black_box(&value));
+        assert!(
+            present,
+            "duplicate-reject bench preflight must see the value present"
+        );
+        black_box(present);
+    })
+}
+
+/// `ShardLocalGlobal` free: the owner-matched `remove_if_owner` a constrained DELETE performs.
+#[bench(raw)]
+fn bench_graph_local_unique_release_owner_match_1() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let constraint = ConstraintNameId::from_raw(13);
+    let value = local_unique_value(0);
+    let owner = local_unique_owner(0);
+    store.local_unique_insert(constraint, value.clone(), owner.clone());
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("local_unique_release_owner_match_1");
+        let removed = store.local_unique_remove_if_owner(
+            black_box(constraint),
+            black_box(&value),
+            black_box(&owner),
+        );
+        assert!(removed, "release bench must free the owner-matched value");
+        black_box(removed);
+    })
+}
+
+/// `ShardLocalGlobal` DROP drain: one bounded purge page over a 256-entry local table.
+#[bench(raw)]
+fn bench_graph_local_unique_purge_page_256() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let constraint = ConstraintNameId::from_raw(14);
+    for ordinal in 0..256u32 {
+        store.local_unique_insert(
+            constraint,
+            local_unique_value(ordinal),
+            local_unique_owner(ordinal),
+        );
+    }
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("local_unique_purge_page_256");
+        let progress = store.local_unique_purge(black_box(constraint), black_box(256));
+        assert_eq!(
+            progress.removed, 256,
+            "the purge page drains all seeded entries"
+        );
+        black_box(progress.done);
+    })
+}
+
 #[cfg(test)]
 mod bench_setup_tests {
     use super::*;
@@ -2563,5 +2674,37 @@ mod bench_setup_tests {
             &expand_plan_for_label("BenchExpandEdge", false, None),
         );
         assert_eq!(result.rows.len(), HUB_OUT as usize);
+    }
+
+    /// The local-unique benches must measure real table work, not an early return: the acquire
+    /// preflight sees the value absent then claims it, and the owner-matched release frees it.
+    #[test]
+    fn local_unique_acquire_release_bench_fixture_mutates_table() {
+        let store = GraphStore::new();
+        let constraint = ConstraintNameId::from_raw(15);
+        let value = local_unique_value(0);
+        let owner = local_unique_owner(0);
+        assert!(!store.local_unique_contains(constraint, &value));
+        store.local_unique_insert(constraint, value.clone(), owner.clone());
+        assert!(store.local_unique_contains(constraint, &value));
+        assert!(store.local_unique_remove_if_owner(constraint, &value, &owner));
+        assert!(!store.local_unique_contains(constraint, &value));
+    }
+
+    #[test]
+    fn local_unique_purge_bench_fixture_drains_full_page() {
+        let store = GraphStore::new();
+        let constraint = ConstraintNameId::from_raw(16);
+        for ordinal in 0..256u32 {
+            store.local_unique_insert(
+                constraint,
+                local_unique_value(ordinal),
+                local_unique_owner(ordinal),
+            );
+        }
+        let progress = store.local_unique_purge(constraint, 256);
+        assert_eq!(progress.removed, 256);
+        assert!(progress.done);
+        assert!(store.local_unique_is_empty(constraint));
     }
 }

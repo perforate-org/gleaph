@@ -231,6 +231,23 @@ pub async fn ack_unique_effects(
     call_graph(graph, "ack_unique_effects", effect_ids).await
 }
 
+/// DROP drain (ADR 0030 slice 10): purge one bounded page of a `ShardLocalGlobal` constraint's local
+/// unique entries on its **owning shard** and report whether that constraint's local table is now
+/// empty. An `update` so the purge is replicated. The Router gates the terminal `Removed` on
+/// `Ok(true)`; an unreachable owner (`Err`) keeps the constraint `Dropping`.
+pub async fn purge_local_unique_constraint(
+    graph: Principal,
+    constraint_id: gleaph_graph_kernel::entry::ConstraintNameId,
+    budget: u32,
+) -> Result<bool, String> {
+    call_graph_args(
+        graph,
+        "purge_local_unique_constraint",
+        &(constraint_id, budget),
+    )
+    .await
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -255,6 +272,8 @@ mod tests {
                 indexed_properties: None,
                 unique_claims: None,
                 constrained_properties: None,
+                local_unique_claims: None,
+                local_constrained_properties: None,
             },
         );
         let err = futures::executor::block_on(fut).expect_err("native unavailable");

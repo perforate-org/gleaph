@@ -42,13 +42,15 @@
 use std::cell::RefCell;
 use std::collections::HashMap;
 
-use crate::facade::stable::constraint_catalog::{self, DroppingConstraint, UniqueConstraintKey};
-use crate::facade::stable::reservation_catalog;
+use crate::facade::stable::constraint_catalog::{
+    self, DroppingConstraint, UniqueConstraintKey, UniqueEnforcementStrategy,
+};
+use crate::facade::stable::reservation_catalog::{self, ProofShard};
 use crate::facade::stable::unique_effect_pending::{
     self, PendingEffectRow, UniqueEffectPendingKey,
 };
 use crate::facade::store::RouterStore;
-use crate::graph_client::read_unique_mutation_effects;
+use crate::graph_client::{purge_local_unique_constraint, read_unique_mutation_effects};
 use gleaph_graph_kernel::entry::{ConstraintNameId, GraphId};
 
 /// Reservations purged per constraint per pass. Bounded so a constraint with a large committed-value
@@ -84,6 +86,17 @@ const PROBE_ROW_PAGE: usize = 32;
     )
 )]
 const EFFECT_PROBE_PAGE: u32 = 256;
+
+/// Local unique entries purged per `ShardLocalGlobal` constraint per pass (ADR 0030 slice 10). The
+/// owning shard clamps to its own bound; a constraint with a large local value set drains across laps.
+#[cfg_attr(
+    not(target_family = "wasm"),
+    allow(
+        dead_code,
+        reason = "driven by the wasm recovery timer (drop-drain lane)"
+    )
+)]
+const LOCAL_PURGE_PAGE: u32 = 256;
 
 thread_local! {
     /// Ephemeral, in-memory drop-drain probe state per `Dropping` constraint. Not stable: on upgrade
@@ -316,6 +329,16 @@ async fn drain_constraint(store: &RouterStore, dc: DroppingConstraint) -> DrainO
     let graph_id = dc.graph_id;
     let constraint_id = dc.constraint_name_id;
 
+    // ADR 0030 slice 10: a `ShardLocalGlobal` constraint never used reservations or outbox effects,
+    // so its DROP drains the owning shard's local unique table directly and gates `Removed` on that
+    // table being empty — it must never traverse the federated reservation/effect gates below.
+    if let Some(rec) =
+        constraint_catalog::find_unique_constraint_any_lifecycle(graph_id, constraint_id)
+        && rec.strategy == UniqueEnforcementStrategy::ShardLocalGlobal
+    {
+        return drain_shard_local_constraint(graph_id, constraint_id, rec.owning_shard).await;
+    }
+
     // 1. Purge one bounded page of this constraint's reservations (frees clean Committed, kicks
     //    Reserved). Re-scanned from the prefix start each pass: removed rows disappear, so successive
     //    passes make progress; Reserved/Reclaiming/pending-ack rows are converged by Driver 1.
@@ -387,6 +410,44 @@ async fn drain_constraint(store: &RouterStore, dc: DroppingConstraint) -> DrainO
             clear_probe_lap(graph_id, constraint_id);
             DrainOutcome::Done
         }
+    }
+}
+
+/// Drain one `Dropping` `ShardLocalGlobal` constraint (ADR 0030 slice 10): purge one bounded page of
+/// the owning shard's local unique table for this constraint and transition `Dropping → Removed` only
+/// once that shard confirms the constraint's local range is empty.
+///
+/// Fail-closed: the purge targets the **exact recorded owning canister** (`ProofShard.graph_canister`),
+/// so shard-id reuse cannot misroute it. A record without an `owning_shard`, a still-non-empty table,
+/// or an unreachable owner all **hold** the constraint `Dropping` rather than risk a premature
+/// `Removed` while local values may still exist.
+#[cfg_attr(
+    not(target_family = "wasm"),
+    allow(
+        dead_code,
+        reason = "driven by the wasm recovery timer (drop-drain lane)"
+    )
+)]
+async fn drain_shard_local_constraint(
+    graph_id: GraphId,
+    constraint_id: ConstraintNameId,
+    owning_shard: Option<ProofShard>,
+) -> DrainOutcome {
+    // A `ShardLocalGlobal` record must carry its owning shard identity; without it the local table
+    // cannot be proven drained, so hold rather than delete the record.
+    let Some(owning) = owning_shard else {
+        return DrainOutcome::Pending;
+    };
+    match purge_local_unique_constraint(owning.graph_canister, constraint_id, LOCAL_PURGE_PAGE)
+        .await
+    {
+        // The owner confirms its local table for this constraint is empty: safe to reuse the id.
+        Ok(true) => {
+            constraint_catalog::remove_dropped_constraint_record(graph_id, constraint_id);
+            DrainOutcome::Done
+        }
+        // Entries remain (`Ok(false)`) or the owner was unreachable (`Err`): hold for a later lap.
+        Ok(false) | Err(_) => DrainOutcome::Pending,
     }
 }
 

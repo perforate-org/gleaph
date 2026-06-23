@@ -19,9 +19,9 @@ use candid::Principal;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
     GRAPH_NAME, gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
-    gql_query_as_admin, install_single_shard_federation, run_router_recovery_timer,
-    start_graph_shard, stop_graph_shard, test_declare_unique_constraint,
-    test_declare_unique_constraint_as,
+    gql_query_as_admin, install_federation, install_single_shard_federation,
+    run_router_recovery_timer, start_graph_shards_all, stop_graph_shards_all,
+    test_declare_unique_constraint, test_declare_unique_constraint_as,
 };
 
 const CONSTRAINT: &str = "acct_email";
@@ -101,12 +101,15 @@ fn constrained_insert_commits_and_rejects_duplicate() {
 /// permanently taken.
 #[test]
 fn in_flight_reservation_refuses_competitor_retryably() {
-    let env = install_single_shard_federation();
+    // Two shards (`install_federation`) so the constraint freezes to FederatedTcc; ADR 0030 slice 10's
+    // single-shard `ShardLocalGlobal` fast path has no Router-held reservation for a competitor to hit.
+    let env = install_federation();
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
     // Stall the canonical write after Try: the reservation co-commits with the envelope (no-await),
-    // then the dispatch to the stopped shard fails, leaving the value `Reserved` by a live mutation.
-    stop_graph_shard(&env, env.graph_source);
+    // then the dispatch to the stopped owning shard fails, leaving the value `Reserved` by a live
+    // mutation. Both shards are stopped so the stall is agnostic to which one owns the value.
+    stop_graph_shards_all(&env);
     let stalled = gql_execute_idempotent_as_admin_expect_err(
         &env,
         &insert_account("c@example.com"),
@@ -125,8 +128,8 @@ fn in_flight_reservation_refuses_competitor_retryably() {
         "a value Reserved by an in-flight mutation must refuse competitors retryably, got {competitor:?}"
     );
 
-    // Cleanup so the harness teardown leaves a reachable shard.
-    start_graph_shard(&env, env.graph_source);
+    // Cleanup so the harness teardown leaves reachable shards.
+    start_graph_shards_all(&env);
 }
 
 /// `SET` on a constrained property is deferred (`NotImplemented`) until the acquire/release protocol

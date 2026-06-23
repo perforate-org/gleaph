@@ -12,16 +12,22 @@
 //!
 //! `CREATE CONSTRAINT` stays publicly `NotImplemented`; the constraint is declared through the
 //! `pocket-ic-e2e` seam `test_declare_unique_constraint`.
+//!
+//! These run on a two-shard federation (`install_federation`): ADR 0030 slice 10 freezes a constraint
+//! created on a single-shard graph to the `ShardLocalGlobal` fast path, which bypasses the federated
+//! reservation / outbox / ack machinery these traps target. A constrained value routes by hash to one
+//! of the two shards, so the fault/outbox/journal probes act on both shards to stay value-agnostic.
 
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
     GRAPH_NAME, admin_sweep_mutation_keys, advance_past_journal_eviction,
-    arm_graph_unique_ack_fault, arm_router_fault, evict_graph_mutation_journal,
-    gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
-    gql_execute_idempotent_as_admin_expect_trap, gql_execute_idempotent_pair_concurrent_as_admin,
-    gql_query_as_admin, graph_mutation_journal_len, graph_unique_outbox_len,
-    install_single_shard_federation, run_router_recovery_after_reservation_ttl, start_graph_shard,
-    stop_graph_shard, test_declare_unique_constraint, test_force_reclaiming,
+    arm_graph_unique_ack_fault_all_shards, arm_router_fault,
+    evict_graph_mutation_journal_all_shards, gql_execute_idempotent_as_admin,
+    gql_execute_idempotent_as_admin_expect_err, gql_execute_idempotent_as_admin_expect_trap,
+    gql_execute_idempotent_pair_concurrent_as_admin, gql_query_as_admin,
+    graph_mutation_journal_len_all_shards, graph_unique_outbox_len_all_shards, install_federation,
+    run_router_recovery_after_reservation_ttl, start_graph_shards_all, stop_graph_shards_all,
+    test_declare_unique_constraint, test_force_reclaiming,
 };
 
 const CONSTRAINT: &str = "acct_email";
@@ -49,7 +55,7 @@ fn live_count(env: &gleaph_pocket_ic_tests::FederationEnv) -> u64 {
 /// commits, and the trapped key left no stranded reservation.
 #[test]
 fn try_then_router_trap_rolls_back_reservation() {
-    let env = install_single_shard_federation();
+    let env = install_federation();
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
     arm_router_fault(&env, FAULT_TRAP_AFTER_TRY);
@@ -84,7 +90,7 @@ fn try_then_router_trap_rolls_back_reservation() {
 /// `Acquire` present, Confirms it (never cancels) — the reservation is re-confirmable, never lost.
 #[test]
 fn confirm_then_trap_reservation_is_reconfirmed_by_recovery() {
-    let env = install_single_shard_federation();
+    let env = install_federation();
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
     arm_router_fault(&env, FAULT_TRAP_BEFORE_CONFIRM);
@@ -135,17 +141,17 @@ fn confirm_then_trap_reservation_is_reconfirmed_by_recovery() {
 /// successful reuse is positive proof the marker was cleared.
 #[test]
 fn confirm_ack_failure_is_reacked_by_recovery() {
-    let env = install_single_shard_federation();
+    let env = install_federation();
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
-    // Make the shard trap when the Router acks the `Acquire`. Confirm still commits (Reserved →
+    // Make the owning shard trap when the Router acks the `Acquire`. Confirm still commits (Reserved →
     // Committed + pending_acquire_ack persisted) but the ack call rejects, so the effect stays
     // pinned; the mutation itself succeeds because Confirm is best-effort.
-    arm_graph_unique_ack_fault(&env, env.graph_source, GRAPH_FAULT_TRAP_ON_UNIQUE_ACK);
+    arm_graph_unique_ack_fault_all_shards(&env, GRAPH_FAULT_TRAP_ON_UNIQUE_ACK);
     gql_execute_idempotent_as_admin(&env, &insert_account("ack@example.com"), "ack-fault");
     assert_eq!(live_count(&env), 1, "the canonical write committed");
     assert_eq!(
-        graph_unique_outbox_len(&env, env.graph_source),
+        graph_unique_outbox_len_all_shards(&env),
         1,
         "the Acquire is still pinned because the Router's ack trapped after Confirm"
     );
@@ -153,10 +159,10 @@ fn confirm_ack_failure_is_reacked_by_recovery() {
     // Clear the fault in its own committed message, then drive recovery: the reclaim driver scans the
     // `Committed`-with-`pending_acquire_ack` reservation, re-reads the proof, re-acks the effect, and
     // clears the pending marker — unpinning the outbox effect.
-    arm_graph_unique_ack_fault(&env, env.graph_source, GRAPH_FAULT_NONE);
+    arm_graph_unique_ack_fault_all_shards(&env, GRAPH_FAULT_NONE);
     run_router_recovery_after_reservation_ttl(&env);
     assert_eq!(
-        graph_unique_outbox_len(&env, env.graph_source),
+        graph_unique_outbox_len_all_shards(&env),
         0,
         "recovery re-acked the pinned Acquire and cleared pending_acquire_ack"
     );
@@ -202,11 +208,11 @@ fn confirm_ack_failure_is_reacked_by_recovery() {
 /// fault clears, recovery re-acks and the value is durably committed.
 #[test]
 fn outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed() {
-    let env = install_single_shard_federation();
+    let env = install_federation();
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
     // Keep the `Acquire` pinned no matter how often recovery runs: every ack traps until cleared.
-    arm_graph_unique_ack_fault(&env, env.graph_source, GRAPH_FAULT_TRAP_ON_UNIQUE_ACK);
+    arm_graph_unique_ack_fault_all_shards(&env, GRAPH_FAULT_TRAP_ON_UNIQUE_ACK);
     gql_execute_idempotent_as_admin(&env, &insert_account("o@example.com"), "outbox");
     assert_eq!(
         live_count(&env),
@@ -217,11 +223,11 @@ fn outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed() {
     // Baselines (shard reachable): the graph journaled the completed write, and the `Acquire` is
     // pinned in the outbox.
     assert!(
-        graph_mutation_journal_len(&env, env.graph_source) >= 1,
+        graph_mutation_journal_len_all_shards(&env) >= 1,
         "the committed write was recorded in the graph mutation journal"
     );
     assert_eq!(
-        graph_unique_outbox_len(&env, env.graph_source),
+        graph_unique_outbox_len_all_shards(&env),
         1,
         "the Acquire is pinned in the outbox"
     );
@@ -231,7 +237,7 @@ fn outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed() {
     // 9-day window, so the journal drains to empty.
     advance_past_journal_eviction(&env);
     assert_eq!(
-        evict_graph_mutation_journal(&env, env.graph_source),
+        evict_graph_mutation_journal_all_shards(&env),
         0,
         "the 9-day-old graph mutation journal entry is evicted past the ADR 0027 window"
     );
@@ -240,7 +246,7 @@ fn outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed() {
     // retention is independent of the journal), and the held reservation GC-pins the router record so
     // a full mutation-key sweep past the 7-day TTL evicts nothing.
     assert_eq!(
-        graph_unique_outbox_len(&env, env.graph_source),
+        graph_unique_outbox_len_all_shards(&env),
         1,
         "the pinned Acquire survives graph-journal eviction (decoupled retention)"
     );
@@ -252,10 +258,10 @@ fn outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed() {
 
     // Clear the fault: recovery now re-acks the still-pinned `Acquire` (read via the surviving
     // outbox, not the evicted journal) and the value is durably committed — never wrongly cancelled.
-    arm_graph_unique_ack_fault(&env, env.graph_source, GRAPH_FAULT_NONE);
+    arm_graph_unique_ack_fault_all_shards(&env, GRAPH_FAULT_NONE);
     run_router_recovery_after_reservation_ttl(&env);
     assert_eq!(
-        graph_unique_outbox_len(&env, env.graph_source),
+        graph_unique_outbox_len_all_shards(&env),
         0,
         "after the fault clears, recovery re-acks and unpins the surviving Acquire"
     );
@@ -282,12 +288,12 @@ fn outbox_pinned_reservation_survives_journal_eviction_and_is_confirmed() {
 /// abandoned reservation and the value is reusable.
 #[test]
 fn reclaiming_fences_same_claim_retry() {
-    let env = install_single_shard_federation();
+    let env = install_federation();
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
-    // Held reservation: stop the shard so the no-`await` Try persists `Reserved` but the canonical
-    // dispatch fails — no `Acquire` is ever written.
-    stop_graph_shard(&env, env.graph_source);
+    // Held reservation: stop both shards so the no-`await` Try persists `Reserved` but the canonical
+    // dispatch (to whichever shard owns the value) fails — no `Acquire` is ever written.
+    stop_graph_shards_all(&env);
     let _ = gql_execute_idempotent_as_admin_expect_err(
         &env,
         &insert_account("r@example.com"),
@@ -310,9 +316,9 @@ fn reclaiming_fences_same_claim_retry() {
         "a same-ClaimId retry during Reclaiming is fenced as in-flight, got {fenced:?}"
     );
 
-    // Convergence: shard reachable, `Acquire` proven absent ⇒ recovery cancels the abandoned
+    // Convergence: shards reachable, `Acquire` proven absent ⇒ recovery cancels the abandoned
     // reservation, freeing the value for a fresh key.
-    start_graph_shard(&env, env.graph_source);
+    start_graph_shards_all(&env);
     run_router_recovery_after_reservation_ttl(&env);
 
     gql_execute_idempotent_as_admin(
@@ -332,7 +338,7 @@ fn reclaiming_fences_same_claim_retry() {
 /// `Acquire` first, after which the held `Release` applies and the value becomes reusable.
 #[test]
 fn release_before_acquire_is_held_until_acquire_reconciled() {
-    let env = install_single_shard_federation();
+    let env = install_federation();
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
     // Commit the canonical write but trap before Confirm: the reservation is `Reserved` with no
@@ -388,7 +394,7 @@ fn release_before_acquire_is_held_until_acquire_reconciled() {
 /// vertex exists.
 #[test]
 fn concurrent_same_value_one_wins_loser_rejected() {
-    let env = install_single_shard_federation();
+    let env = install_federation();
     test_declare_unique_constraint(&env, GRAPH_NAME, CONSTRAINT, LABEL, PROPERTY);
 
     let insert = insert_account("race@example.com");

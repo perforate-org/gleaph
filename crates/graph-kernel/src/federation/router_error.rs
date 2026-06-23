@@ -85,3 +85,26 @@ pub enum RouterError {
     #[error("internal: {0}")]
     Internal(String),
 }
+
+/// Wire-error prefix a graph shard's `ShardLocalGlobal` uniqueness violation carries back to the
+/// Router across the `Result<_, String>` execute-plan boundary (ADR 0030 slice 10). Unlike the
+/// `FederatedTcc` path — where the Router detects duplicates at its own reservation Try — a
+/// `ShardLocalGlobal` duplicate is detected on the owning shard, so the Router recognizes this prefix
+/// to re-type the returned string as [`RouterError::UniquenessViolation`] (non-retryable) instead of
+/// a generic `InvalidArgument`. Kept in lockstep with the `UniquenessViolation` `Display` by
+/// `uniqueness_violation_prefix_matches_display`.
+pub const UNIQUENESS_VIOLATION_WIRE_PREFIX: &str = "uniqueness violation: ";
+
+#[cfg(test)]
+mod tests {
+    use super::{RouterError, UNIQUENESS_VIOLATION_WIRE_PREFIX};
+
+    #[test]
+    fn uniqueness_violation_prefix_matches_display() {
+        let rendered = RouterError::UniquenessViolation("x".to_string()).to_string();
+        assert!(
+            rendered.starts_with(UNIQUENESS_VIOLATION_WIRE_PREFIX),
+            "the wire prefix must match the RouterError Display, got {rendered:?}"
+        );
+    }
+}

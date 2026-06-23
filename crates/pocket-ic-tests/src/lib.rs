@@ -1534,6 +1534,49 @@ pub fn evict_graph_mutation_journal(env: &FederationEnv, shard: Principal) -> u6
     update_as_router(env, shard, "e2e_evict_mutation_journal", ())
 }
 
+// --- two-shard (`install_federation`) FederatedTcc helpers (ADR 0030 slice 10) ---
+//
+// Slice 10 froze single-shard constraints to the `ShardLocalGlobal` fast path, which bypasses the
+// federated reservation / outbox / ack machinery. Tests that exercise that machinery must run on a
+// two-shard graph (`install_federation`), where a constrained value routes by hash to *one* of the
+// two shards. These helpers act on *both* shards so a test stays agnostic to which one owns the value.
+
+/// Arm/clear the unique-ack fault on both shards of a two-shard federation (PocketIC E2E).
+pub fn arm_graph_unique_ack_fault_all_shards(env: &FederationEnv, code: u8) {
+    arm_graph_unique_ack_fault(env, env.graph_source, code);
+    arm_graph_unique_ack_fault(env, env.graph_dest, code);
+}
+
+/// Sum of currently pinned (un-acked) unique effects across both shards (PocketIC E2E).
+pub fn graph_unique_outbox_len_all_shards(env: &FederationEnv) -> u64 {
+    graph_unique_outbox_len(env, env.graph_source) + graph_unique_outbox_len(env, env.graph_dest)
+}
+
+/// Sum of mutation-journal entries across both shards (PocketIC E2E).
+pub fn graph_mutation_journal_len_all_shards(env: &FederationEnv) -> u64 {
+    graph_mutation_journal_len(env, env.graph_source)
+        + graph_mutation_journal_len(env, env.graph_dest)
+}
+
+/// Evict the mutation journal on both shards and return the summed remaining entry count (PocketIC E2E).
+pub fn evict_graph_mutation_journal_all_shards(env: &FederationEnv) -> u64 {
+    evict_graph_mutation_journal(env, env.graph_source)
+        + evict_graph_mutation_journal(env, env.graph_dest)
+}
+
+/// Stop both shards of a two-shard federation so a constrained value's canonical dispatch fails no
+/// matter which shard owns it (PocketIC E2E).
+pub fn stop_graph_shards_all(env: &FederationEnv) {
+    stop_graph_shard(env, env.graph_source);
+    stop_graph_shard(env, env.graph_dest);
+}
+
+/// Start both shards of a two-shard federation (PocketIC E2E).
+pub fn start_graph_shards_all(env: &FederationEnv) {
+    start_graph_shard(env, env.graph_source);
+    start_graph_shard(env, env.graph_dest);
+}
+
 /// Test-only (`pocket-ic-e2e`): force a `Reserved` reservation for `(label, property, value)` into
 /// `Reclaiming` (admin). Returns whether the transition happened. See `gleaph_router` `test_fault`
 /// neighbours; used by the ADR 0030 reclaim-during-retry fence test.

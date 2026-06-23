@@ -17,6 +17,7 @@ use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_gql_planner::{PlanBuildOptions, build_statement_plan_with_options};
+use gleaph_graph_kernel::entry::ConstraintNameId;
 use gleaph_graph_kernel::federation::{
     ClaimId, EffectId, ElementIdEncodingKey, UniqueEffectOp, UniqueEffectReceipt,
 };
@@ -153,6 +154,10 @@ pub enum GqlRunError {
     Plan(String),
     Query(crate::plan::PlanQueryError),
     Mutation(crate::plan::PlanMutationError),
+    /// A `ShardLocalGlobal` local-table claim conflicts (ADR 0030 slice 10): either two claims in
+    /// this mutation collide, or the value is already owned. Detected in the all-or-nothing preflight
+    /// **before** any canonical write, so the mutation aborts cleanly with no partial state.
+    UniquenessViolation(String),
 }
 
 impl std::fmt::Display for GqlRunError {
@@ -162,6 +167,11 @@ impl std::fmt::Display for GqlRunError {
             Self::Plan(s) => write!(f, "plan error: {s}"),
             Self::Query(e) => write!(f, "{e}"),
             Self::Mutation(e) => write!(f, "{e}"),
+            Self::UniquenessViolation(s) => write!(
+                f,
+                "{}{s}",
+                gleaph_graph_kernel::federation::UNIQUENESS_VIOLATION_WIRE_PREFIX
+            ),
         }
     }
 }
@@ -318,6 +328,67 @@ fn emit_unique_acquires(
             encoded_value: claim.encoded_value.clone(),
             op: UniqueEffectOp::Acquire,
         });
+    }
+}
+
+/// All-or-nothing preflight for `ShardLocalGlobal` local-table claims (ADR 0030 slice 10), run
+/// before any canonical write. Rejects a claim that collides with another claim in the same mutation
+/// or with a value already present in the local table. Returns
+/// [`GqlRunError::UniquenessViolation`] on the first conflict so the mutation aborts cleanly with no
+/// partial state; on `Ok` every claim is provably insertable.
+fn preflight_local_unique_claims(
+    store: &GraphStore,
+    claims: &[UniqueClaimDispatch],
+) -> Result<(), GqlRunError> {
+    let mut seen: std::collections::BTreeSet<(ConstraintNameId, &[u8])> =
+        std::collections::BTreeSet::new();
+    for claim in claims {
+        if !seen.insert((claim.constraint_id, claim.encoded_value.as_slice())) {
+            return Err(GqlRunError::UniquenessViolation(format!(
+                "constraint {} value claimed twice in one mutation",
+                claim.constraint_id
+            )));
+        }
+        if store.local_unique_contains(claim.constraint_id, &claim.encoded_value) {
+            return Err(GqlRunError::UniquenessViolation(format!(
+                "constraint {} value already exists",
+                claim.constraint_id
+            )));
+        }
+    }
+    Ok(())
+}
+
+/// Inserts the preflighted `ShardLocalGlobal` claims into the local unique table (ADR 0030 slice
+/// 10), all owned by the single element this segment created — mirroring [`emit_unique_acquires`]'
+/// owner resolution. Runs inside the no-`await` canonical section. Any shape other than a single
+/// created vertex is an admission/dispatch invariant violation and traps (rolling back the segment).
+fn apply_local_unique_acquires(
+    store: &GraphStore,
+    element_id_key: &ElementIdEncodingKey,
+    claims: &[UniqueClaimDispatch],
+    mutation: &PlanMutationBindings,
+) {
+    let owner_vertex = match mutation.created_vertices.as_slice() {
+        [vertex_id] => *vertex_id,
+        created => unique_acquire_trap(&format!(
+            "expected exactly one created vertex for {} local uniqueness claim(s), got {}",
+            claims.len(),
+            created.len()
+        )),
+    };
+    let owner_element_id = store
+        .path_vertex_element_id(element_id_key, owner_vertex)
+        .map(|id| id.to_bytes().to_vec())
+        .unwrap_or_else(|| {
+            unique_acquire_trap("owner element id unavailable after insert (no global vertex id)")
+        });
+    for claim in claims {
+        store.local_unique_insert(
+            claim.constraint_id,
+            claim.encoded_value.clone(),
+            owner_element_id.clone(),
+        );
     }
 }
 
@@ -755,10 +826,17 @@ async fn apply_canonical_mutation_segment(
 ) -> Result<PlanMutationBindings, GqlRunError> {
     let empty_params = BTreeMap::new();
     let unique_claims = execution.unique_claims.clone();
+    let local_unique_claims = execution.local_unique_claims.clone();
     // Resolve the router-issued encoding key into owned data for this no-`await` canonical segment;
     // the `Acquire`/`Release` owner element ids are encoded synchronously below.
     let element_id_key =
         crate::element_id_encoding::resolve_or_host_fixture(execution.element_id_encoding_key());
+    // ADR 0030 slice 10: all-or-nothing preflight of the ShardLocalGlobal claims **before** any
+    // canonical write. Reject an intra-mutation duplicate or an already-present value here, so the
+    // local inserts below either all apply with the canonical write or none do — no partial state.
+    if !local_unique_claims.is_empty() {
+        preflight_local_unique_claims(store, &local_unique_claims)?;
+    }
     let mutation =
         match execute_mutation_tail_async(store, mutation_ops, seed_rows, &empty_params, execution)
             .await
@@ -778,12 +856,31 @@ async fn apply_canonical_mutation_segment(
             &mutation,
         );
     }
+    // ADR 0030 slice 10: insert the preflighted ShardLocalGlobal claims into the local unique table,
+    // owned by the element this segment created, inside the same no-`await` section as the canonical
+    // write (so they commit or roll back atomically with it). The preflight above proved every claim
+    // is clean, so these inserts cannot collide.
+    if !local_unique_claims.is_empty() {
+        apply_local_unique_acquires(store, &element_id_key, &local_unique_claims, &mutation);
+    }
     // ADR 0030 slice 5b: pin one `Release` receipt per constrained value this segment freed
     // (captured pre-delete in `mutation.released_unique_values`), in the same atomic section. The
     // `effect_ordinal` cursor is carried across the mutation's segments so multi-statement DELETEs
     // never re-mint an `EffectId`.
     if !mutation.released_unique_values.is_empty() {
         emit_unique_releases(store, mutation_id, next_release_ordinal, &mutation);
+    }
+    // ADR 0030 slice 10: free `ShardLocalGlobal` values directly in this shard's local unique table,
+    // owner-matched so a value already reclaimed by another element is never wrongly removed. Runs in
+    // the same no-`await` atomic section, so the canonical delete and the local free commit together.
+    if !mutation.released_local_unique_values.is_empty() {
+        for release in &mutation.released_local_unique_values {
+            store.local_unique_remove_if_owner(
+                release.constraint_id,
+                &release.encoded_value,
+                &release.owner_element_id,
+            );
+        }
     }
     let has_delta = !mutation.label_stats_delta.vertex.is_empty()
         || !mutation.label_stats_delta.edge.is_empty();
@@ -1289,6 +1386,47 @@ mod tests {
             labels: vec![label.into()],
             properties: vec![],
         }])
+    }
+
+    fn local_claim(constraint: u16, value: &[u8]) -> UniqueClaimDispatch {
+        UniqueClaimDispatch {
+            claim_ordinal: 0,
+            constraint_id: gleaph_graph_kernel::entry::ConstraintNameId::from_raw(constraint),
+            encoded_value: value.to_vec(),
+        }
+    }
+
+    /// ADR 0030 slice 10 all-or-nothing acquire preflight: a fully-absent claim set passes, so the
+    /// canonical write and the local inserts may proceed together.
+    #[test]
+    fn preflight_local_unique_claims_accepts_a_clean_set() {
+        let store = GraphStore::new();
+        let claims = vec![local_claim(60, b"a"), local_claim(60, b"b")];
+        assert!(preflight_local_unique_claims(&store, &claims).is_ok());
+    }
+
+    /// Two claims in the same mutation collide: rejected before any write, so no partial local state.
+    #[test]
+    fn preflight_local_unique_claims_rejects_intra_mutation_duplicate() {
+        let store = GraphStore::new();
+        let claims = vec![local_claim(61, b"dup"), local_claim(61, b"dup")];
+        assert!(matches!(
+            preflight_local_unique_claims(&store, &claims),
+            Err(GqlRunError::UniquenessViolation(_))
+        ));
+    }
+
+    /// A claim whose value is already owned in the local table is rejected (graph-wide uniqueness).
+    #[test]
+    fn preflight_local_unique_claims_rejects_value_already_present() {
+        let store = GraphStore::new();
+        let constraint = gleaph_graph_kernel::entry::ConstraintNameId::from_raw(62);
+        store.local_unique_insert(constraint, b"taken".to_vec(), vec![1u8; 8]);
+        let claims = vec![local_claim(62, b"taken")];
+        assert!(matches!(
+            preflight_local_unique_claims(&store, &claims),
+            Err(GqlRunError::UniquenessViolation(_))
+        ));
     }
 
     #[test]

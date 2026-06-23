@@ -14,9 +14,10 @@ Last revised: 2026-06-23
 > already-tested declare-on-empty store path (see Revision #16); (2) **Slice 9 has landed** — a
 > dedicated DROP-lifecycle slice publishes `DROP CONSTRAINT` over an `Active → Dropping → Removed`
 > lifecycle with a full completion gate (see Revision #18); and
-> (3) **Slice 10 is planned** — the `ShardLocalGlobal` fast path may bypass the federated TCC
-> machinery only when the Router can prove the graph-wide unique value space being enforced is wholly
-> owned by one shard. DROP
+> (3) **Slice 10 has landed** — the `ShardLocalGlobal` fast path bypasses the federated TCC
+> machinery for a constraint proven single-shard-owned at CREATE, enforcing graph-wide uniqueness in
+> the owning shard's local table; the strategy is frozen at CREATE and a second-shard registration is
+> refused while such a constraint exists (see Revision #19). DROP
 > now flips the constraint `Active → Dropping` synchronously and the drop-drain recovery lane drains
 > every reservation and pending unique effect keyed by the dropped `ConstraintNameId` before deleting
 > the record (`Removed`), at which point the name/id is provably safe to reuse (see Revision #18).** Slice 1 has
@@ -79,10 +80,11 @@ Last revised: 2026-06-23
 > `ConstraintNameId` and deletes the record (`Removed`), after which the name/id is safe to reuse. The
 > `ConstraintNameId`-reuse guard is the **full completion gate** — no reservations **and** no pending
 > unique effects for the `constraint_id` **and** no non-terminal pinned mutation records; "no
-> reservations only" is explicitly insufficient. Slice 10 is a planned performance slice, not a correctness gate: it may add the
-> `ShardLocalGlobal` execution strategy for graph-wide UNIQUE only when the graph/label/constraint
-> scope is proven single-shard; otherwise the existing `FederatedTcc` strategy remains the enforcement
-> path. `ShardLocalScoped` names a future scoped-uniqueness extension, not Slice 10.
+> reservations only" is explicitly insufficient. Slice 10 is a landed performance slice (Revision #19),
+> not a correctness gate: it adds the `ShardLocalGlobal` execution strategy for graph-wide UNIQUE,
+> frozen at CREATE when the graph has exactly one live shard; otherwise the existing `FederatedTcc`
+> strategy remains the enforcement path. `ShardLocalScoped` names a future scoped-uniqueness extension,
+> not Slice 10.
 > This is the named-invariant
 > strong protocol that
 > [ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md) §7 requires before any
@@ -555,6 +557,68 @@ Last revised: 2026-06-23
 > dropping-admits-new-inserts-but-blocks-recreate; drop-during-in-flight-insert; the completion-gate
 > regression recreate-blocked-until-pending-effect-drained; drop-survives-upgrade;
 > drop-does-not-disable-unrelated-constraints) plus catalog/reservation lib unit tests.
+>
+> **Revision 2026-06-23 #19 (Slice 10 — `ShardLocalGlobal` UNIQUE fast path; landed):** a UNIQUE
+> constraint created on a graph with **exactly one live shard** is now enforced entirely inside that
+> owning shard, bypassing the federated TCC reservation/outbox path while keeping graph-wide
+> semantics. The strategy is **frozen at CREATE**: `ConstraintDefRecord` gains
+> `strategy: UniqueEnforcementStrategy { FederatedTcc | ShardLocalGlobal }` and
+> `owning_shard: Option<ProofShard>` (the V1→V2 stable envelope decodes pre-slice-10 records as
+> `FederatedTcc`/`None`). `create_unique_constraint` chooses `ShardLocalGlobal` only when
+> `list_live_shards_for_graph_id` returns a single shard, pinning that shard's **full identity**
+> (`ProofShard { shard_id, graph_canister }`) so shard-id reuse cannot later mis-route enforcement or
+> the DROP purge. To keep the proof valid for the constraint's lifetime, `admin_register_shard`
+> **rejects** adding a second shard to a graph while any `Active`/`Dropping` `ShardLocalGlobal`
+> constraint exists (`Conflict`); the dispatch path is a defensive backstop that, if the sole live
+> shard ever stops matching the recorded `owning_shard`, **rejects the mutation fail-closed and never
+> falls back to `FederatedTcc`** (which could not see the local values and might admit a duplicate).
+>
+> Enforcement uses a new canonical graph region, `GRAPH_LOCAL_UNIQUE_VALUES` (MemoryId 43):
+> `(constraint_id, encoded_value) → LocalUniqueRecord { owner_element_id }`. The Router partitions a
+> mutation's claims/constrained-properties by stored strategy and carries the `ShardLocalGlobal`
+> portion on `ExecutePlanArgs` (`local_unique_claims`, `local_constrained_properties`), which never
+> mint Router reservations. On the shard, the acquire path is **all-or-nothing**: it preflights every
+> local claim (rejecting an intra-mutation duplicate or an already-owned value with
+> `UniquenessViolation`) **before** the canonical write, then inserts all entries inside the same
+> no-`await` segment, so a partial local state can never persist. A delete/remove frees its value by
+> **owner match** (`local_unique_remove_if_owner`) directly in the table — no outbox `Release`. The
+> key omits `graph_id` because one graph canister hosts exactly one graph/shard.
+>
+> DROP reuses the Slice 9 drain (Driver 3) but branches on strategy: a `Dropping` `ShardLocalGlobal`
+> constraint is drained by calling a bounded `purge_local_unique_constraint` update on the **exact
+> recorded owning canister**, and transitions to `Removed` only when that canister confirms the
+> constraint's local range is empty; a missing `owning_shard`, a still-non-empty table, or an
+> unreachable owner all **hold** `Dropping`.
+>
+> Because a `ShardLocalGlobal` duplicate is caught on the owning shard (the Router runs no reservation
+> Try for it), its violation crosses the `execute_plan` `Result<_, String>` boundary as a string. Both
+> the shard's `GqlRunError::UniquenessViolation` `Display` and the Router's boundary mapping share the
+> `UNIQUENESS_VIOLATION_WIRE_PREFIX` sentinel (`graph-kernel`, kept in lockstep with the `RouterError`
+> `Display` by a unit test), so the Router **re-types** the returned string to the non-retryable
+> `RouterError::UniquenessViolation` instead of a generic `InvalidArgument` — surfacing the same error
+> the `FederatedTcc` path returns directly.
+>
+> Tested by router unit (`local_claims_enforceable` topology/identity-mismatch fail-closed), graph unit
+> (local-table insert/contains/owner-matched-release/bounded-purge, acquire preflight
+> accept/intra-dup/already-present), the layout registry (graph region count 43→44), and PocketIC e2e
+> (`adr0030_uniqueness_shard_local_fast_path`: enforce/free-on-delete, DROP drains the local table then
+> the name is reusable, survives upgrade). Freezing single-shard CREATE to `ShardLocalGlobal` means the
+> federated reservation/outbox/trap suites can no longer use a single-shard install, so the
+> `failure-injection`, `lifecycle` (in-flight competitor), and `drop-lifecycle` (pinned-effect gate)
+> e2e tests now run on the two-shard `install_federation`, probing both shards so they stay agnostic to
+> which shard a value routes to.
+>
+> **Canbench (graph, `bench_graph_local_unique_*`, 2026-06-23, canbench 0.4.0 / PocketIC 14.0.0):** the
+> local-table fast path is a single in-segment op with no inter-canister legs — acquire (preflight
+> `contains` + `insert`) **≈63.1 K** instructions, duplicate reject (preflight `contains` hit) **≈5.2 K**,
+> owner-matched free (`remove_if_owner`) **≈144.2 K**, and one 256-entry DROP purge page **≈35.1 M**. For
+> contrast, the `FederatedTcc` single-claim happy path spends those instructions across four separate
+> messages: Router `try_reserve_1` ≈305 K + graph `unique_outbox_append_1` ≈167.6 K + Router
+> `confirm_reservation` ≈1.06 M + Router `clear_acquire_ack` ≈783 K (≈2.3 M total, plus the inter-canister
+> round-trips themselves). So for a single-shard graph the fast path removes three cross-canister hops and
+> the reservation/outbox storage, with the acquire itself ~30× cheaper in instructions. This is a narrow
+> per-op artifact for the local-table primitives, not a full end-to-end performance gate.
+> `ShardLocalScoped` remains a future scope-wide extension, not part of Slice 10.
 
 ## Context
 
@@ -1037,18 +1101,22 @@ follows from that asymmetry — what must be pre-resolvable is the *acquire* cla
   declaring a constraint on an already-populated, actively-written graph (backfill); cross-graph
   uniqueness.
 
-### Enforcement strategies (planned Slice 10)
+### Enforcement strategies (`ShardLocalGlobal` landed — Slice 10, Revision #19)
 
 The strategy taxonomy is **`FederatedTcc | ShardLocalGlobal | ShardLocalScoped`**:
 
 - **`FederatedTcc` (general graph-wide path):** Router reservation + graph unique-effect outbox +
   Confirm/Release + recovery. This remains mandatory whenever a graph-wide constraint's value space
   may span multiple shards.
-- **`ShardLocalGlobal` (planned Slice 10 fast path):** the constraint semantics remain graph-wide, but
-  the Router proves the graph/label/constraint value space is wholly owned by one shard. The shard
-  then updates shard-local unique state in the same atomic canonical segment as the element
-  write/release, using the same `encoded_value` rules. It removes the Router Try, `Acquire` outbox,
-  proof read, ack, and reclaim/effect recovery from that mutation's hot path.
+- **`ShardLocalGlobal` (landed Slice 10 fast path — Revision #19):** the constraint semantics remain
+  graph-wide, but the strategy is frozen at CREATE when the graph has exactly one live shard, whose
+  full `ProofShard { shard_id, graph_canister }` identity is pinned as the constraint's `owning_shard`
+  (and a second-shard registration is then refused). The shard updates shard-local unique state
+  (`GRAPH_LOCAL_UNIQUE_VALUES`, MemoryId 43) in the same atomic canonical segment as the element
+  write/release, using the same `encoded_value` rules — all-or-nothing preflight on acquire,
+  owner-matched free on delete/remove. It removes the Router Try, `Acquire` outbox, proof read, ack,
+  and reclaim/effect recovery from that mutation's hot path. If the sole live shard ever stops
+  matching `owning_shard`, the mutation is rejected fail-closed (never `FederatedTcc` fallback).
 - **`ShardLocalScoped` (deferred semantic extension):** the constraint itself is scope-wide rather
   than graph-wide, for example partition/tenant-scoped uniqueness where the unique key includes the
   routing partition and the Router proves that partition maps to the same shard. This requires DDL,
@@ -1162,9 +1230,12 @@ Phase-6 gate below is satisfied, and both `CREATE CONSTRAINT` (Slice 8) and `DRO
 > (publication tests in `adr0030_constraint_dispatch.rs`). **Slice 9 (Revision #18) has published
 > `DROP CONSTRAINT`** with the `Active → Dropping → Removed` lifecycle (reservation invalidation +
 > saga draining + the full `ConstraintNameId`-reuse completion gate), tested in
-> `adr0030_constraint_drop_lifecycle.rs`. Slice 10 is a planned `ShardLocalGlobal` performance optimization
-> for provably single-shard-owned graph-wide constraint scopes and does not change the Phase-6
-> correctness gate; `ShardLocalScoped` is deferred.
+> `adr0030_constraint_drop_lifecycle.rs`. **Slice 10 (Revision #19) has landed the `ShardLocalGlobal`
+> performance fast path** for single-shard graph-wide constraint scopes (frozen at CREATE), tested in
+> `adr0030_uniqueness_shard_local_fast_path.rs`; it does not change the Phase-6 correctness gate.
+> `ShardLocalScoped` is deferred. The Slice 10 fast-path cost is now measured by canbench
+> (`bench_graph_local_unique_*` in `crates/graph/src/bench/mod.rs`); see Revision #19 for the numbers.
+> This is a narrow per-op artifact for the local-table path, not a broad end-to-end performance gate.
 >
 > **Covered by PocketIC e2e** (`crates/pocket-ic-tests/tests/adr0030_uniqueness_lifecycle.rs`,
 > `adr0030_uniqueness_recovery.rs`):

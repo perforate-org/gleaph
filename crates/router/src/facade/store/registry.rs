@@ -15,6 +15,7 @@ use super::super::stable::{
 #[cfg(test)]
 use super::registry_invariants::check_registry_invariants;
 use crate::facade::auth;
+use crate::facade::stable::constraint_catalog;
 #[cfg(not(feature = "pocket-ic-e2e"))]
 use crate::index_sync;
 use crate::state::RouterError;
@@ -772,6 +773,22 @@ impl RouterStore {
                     .await;
             }
             return Ok(());
+        }
+
+        // ADR 0030 slice 10: a graph must not scale from one to multiple shards while any
+        // `Active`/`Dropping` `ShardLocalGlobal` constraint exists. Such a constraint enforces its
+        // graph-wide uniqueness entirely inside its single owning shard's local table; a new shard
+        // would not see those values, so adding one could silently admit duplicates. This branch is
+        // a brand-new shard (the graph canister is not already registered), so a non-empty shard set
+        // here means the registration would make the graph multi-shard.
+        if !list_shards_for_graph_id(graph_id)?.is_empty()
+            && constraint_catalog::has_shard_local_global_constraint(graph_id)
+        {
+            return Err(RouterError::Conflict(
+                "cannot register a second shard while shard-local global unique constraints exist; \
+                 drop or migrate those constraints first"
+                    .into(),
+            ));
         }
 
         let allocated_shard_id = next_graph_local_shard_id(graph_id);

@@ -144,6 +144,17 @@ fn ack_unique_effects(effect_ids: Vec<gleaph_graph_kernel::federation::EffectId>
     canister::handlers::ack_unique_effects(effect_ids);
 }
 
+/// Router → graph: bounded purge of a `ShardLocalGlobal` constraint's local unique entries for the
+/// DROP drain, returning whether the constraint's local table is now empty (ADR 0030 slice 10). An
+/// update so the purge is replicated.
+#[update(guard = "guard_router_canister")]
+fn purge_local_unique_constraint(
+    constraint_id: gleaph_graph_kernel::entry::ConstraintNameId,
+    budget: u32,
+) -> bool {
+    canister::handlers::purge_local_unique_constraint(constraint_id, budget)
+}
+
 #[cfg(feature = "pocket-ic-e2e")]
 #[update(guard = "guard_control_plane_admin")]
 async fn e2e_insert_vertex() -> Result<canister::types::E2eInsertVertexResult, String> {

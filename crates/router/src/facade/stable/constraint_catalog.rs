@@ -16,6 +16,7 @@ use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
 
 use crate::facade::stable::ROUTER_UNIQUE_CONSTRAINTS;
+use crate::facade::stable::reservation_catalog::ProofShard;
 use crate::state::RouterError;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord)]
@@ -44,8 +45,24 @@ pub(crate) enum ConstraintLifecycle {
     Dropping,
 }
 
-/// First cut (ADR 0030): vertex single-property uniqueness only.
+/// How a unique constraint's graph-wide guarantee is enforced (ADR 0030 slice 10). The strategy is
+/// **frozen at CREATE** and stored on the record; it never changes for the constraint's lifetime.
+///
+/// - `FederatedTcc`: the general path — Router try/reserve/confirm across all live shards.
+/// - `ShardLocalGlobal`: a single-shard fast path — the graph had exactly one live shard at CREATE,
+///   so graph-wide uniqueness is enforced entirely inside that one owning shard's local unique
+///   table (no Router reservations). A second shard cannot be registered while any `Active`/
+///   `Dropping` `ShardLocalGlobal` constraint exists, and a stored `ShardLocalGlobal` constraint is
+///   enforced **fail-closed** — it never falls back to `FederatedTcc` (its values live only in the
+///   owning shard's local table, so a federated fallback could not see them and could admit a duplicate).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub(crate) enum UniqueEnforcementStrategy {
+    FederatedTcc,
+    ShardLocalGlobal,
+}
+
+/// First cut (ADR 0030): vertex single-property uniqueness only.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub(crate) struct ConstraintDefRecord {
     pub vertex_label_id: VertexLabelId,
     pub property_id: PropertyId,
@@ -58,25 +75,51 @@ pub(crate) struct ConstraintDefRecord {
     /// can detect a row registered behind its cursor mid-lap and re-lap. This is **not** part of the
     /// reservation key and is unrelated to `reclaim_generation`.
     pub drop_scan_generation: u64,
+    /// Enforcement strategy, frozen at CREATE (ADR 0030 slice 10).
+    pub strategy: UniqueEnforcementStrategy,
+    /// For `ShardLocalGlobal`: the **pinned identity** of the one owning shard (`shard_id` **and**
+    /// `graph_canister`), so shard-id reuse cannot mis-route enforcement or DROP purge. Always `None`
+    /// for `FederatedTcc`.
+    pub owning_shard: Option<ProofShard>,
 }
 
 impl ConstraintDefRecord {
-    /// A freshly declared, `Active` constraint with no drop state.
-    pub(crate) fn new_active(vertex_label_id: VertexLabelId, property_id: PropertyId) -> Self {
+    /// A freshly declared, `Active` constraint with no drop state and a frozen enforcement strategy.
+    pub(crate) fn new_active(
+        vertex_label_id: VertexLabelId,
+        property_id: PropertyId,
+        strategy: UniqueEnforcementStrategy,
+        owning_shard: Option<ProofShard>,
+    ) -> Self {
         Self {
             vertex_label_id,
             property_id,
             state: ConstraintLifecycle::Active,
             dropping_at_ns: None,
             drop_scan_generation: 0,
+            strategy,
+            owning_shard,
         }
     }
+}
+
+/// Frozen pre-slice-10 layout of [`ConstraintDefRecord`] (ADR 0030 slice 9). Persisted records
+/// written before slice 10 decode through this arm and upgrade to `FederatedTcc` with no owning
+/// shard — the only strategy that existed at the time.
+#[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
+struct ConstraintDefRecordV1 {
+    vertex_label_id: VertexLabelId,
+    property_id: PropertyId,
+    state: ConstraintLifecycle,
+    dropping_at_ns: Option<u64>,
+    drop_scan_generation: u64,
 }
 
 /// Versioned stable envelope (ADR 0007), so the constraint record schema can evolve across upgrades.
 #[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
 enum ConstraintDefStableRecord {
-    V1(ConstraintDefRecord),
+    V1(ConstraintDefRecordV1),
+    V2(ConstraintDefRecord),
 }
 
 /// Outcome of a [`begin_drop`] transition (ADR 0030 slice 9).
@@ -134,16 +177,28 @@ impl Storable for ConstraintDefRecord {
     const BOUND: StorableBound = StorableBound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(&ConstraintDefStableRecord::V1(*self)).expect("encode constraint def"))
+        Cow::Owned(
+            Encode!(&ConstraintDefStableRecord::V2(self.clone())).expect("encode constraint def"),
+        )
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&ConstraintDefStableRecord::V1(self)).expect("encode constraint def")
+        Encode!(&ConstraintDefStableRecord::V2(self)).expect("encode constraint def")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         match Decode!(bytes.as_ref(), ConstraintDefStableRecord).expect("decode constraint def") {
-            ConstraintDefStableRecord::V1(v1) => v1,
+            // Pre-slice-10 records predate enforcement strategies: every constraint was federated.
+            ConstraintDefStableRecord::V1(v1) => ConstraintDefRecord {
+                vertex_label_id: v1.vertex_label_id,
+                property_id: v1.property_id,
+                state: v1.state,
+                dropping_at_ns: v1.dropping_at_ns,
+                drop_scan_generation: v1.drop_scan_generation,
+                strategy: UniqueEnforcementStrategy::FederatedTcc,
+                owning_shard: None,
+            },
+            ConstraintDefStableRecord::V2(v2) => v2,
         }
     }
 }
@@ -324,12 +379,19 @@ pub(crate) fn find_active_unique_constraint(
 }
 
 /// All constrained `(vertex_label_id, property_id, constraint_name_id)` triples for a graph in **any**
-/// lifecycle (`Active` + `Dropping`), in catalog-key order (ADR 0030 slice 5b / slice 9). The
-/// release/drain path uses this: a `Dropping` constraint still captures `Release` effects so old
-/// ownership is reconciled while the constraint drains.
-pub(crate) fn constrained_properties_for_graph(
+/// lifecycle (`Active` + `Dropping`), with each constraint's enforcement strategy, in catalog-key
+/// order (ADR 0030 slice 5b / slice 9 / slice 10). The release/drain path uses this: a `Dropping`
+/// constraint still captures releases so old ownership is reconciled while it drains, and the
+/// strategy partitions freed values into the federated outbox-`Release` path versus the
+/// `ShardLocalGlobal` local-table release in one catalog scan.
+pub(crate) fn constrained_properties_for_graph_with_strategy(
     graph_id: GraphId,
-) -> Vec<(VertexLabelId, PropertyId, ConstraintNameId)> {
+) -> Vec<(
+    VertexLabelId,
+    PropertyId,
+    ConstraintNameId,
+    UniqueEnforcementStrategy,
+)> {
     ROUTER_UNIQUE_CONSTRAINTS.with_borrow(|map| {
         let start = UniqueConstraintKey::new(graph_id, ConstraintNameId::from_raw(0));
         map.range((Bound::Included(start), graph_range_upper(graph_id)))
@@ -339,6 +401,7 @@ pub(crate) fn constrained_properties_for_graph(
                     def.vertex_label_id,
                     def.property_id,
                     entry.key().constraint_name_id,
+                    def.strategy,
                 )
             })
             .collect()
@@ -367,6 +430,19 @@ pub(crate) fn active_constrained_properties_for_graph(
     })
 }
 
+/// Whether the graph has any **non-terminal** (`Active` or `Dropping`) `ShardLocalGlobal` constraint
+/// (ADR 0030 slice 10). The second-shard registration guard uses this: while such a constraint
+/// exists, the graph must not scale from one to multiple live shards, because the constraint's
+/// existing values live only in the owning shard's local table and would become invisible to the
+/// federated path. `Dropping` is included since drop cleanup still depends on that local state.
+pub(crate) fn has_shard_local_global_constraint(graph_id: GraphId) -> bool {
+    ROUTER_UNIQUE_CONSTRAINTS.with_borrow(|map| {
+        let start = UniqueConstraintKey::new(graph_id, ConstraintNameId::from_raw(0));
+        map.range((Bound::Included(start), graph_range_upper(graph_id)))
+            .any(|entry| entry.value().strategy == UniqueEnforcementStrategy::ShardLocalGlobal)
+    })
+}
+
 pub(crate) fn purge_graph_constraints(graph_id: GraphId) {
     ROUTER_UNIQUE_CONSTRAINTS.with_borrow_mut(|map| {
         let start = UniqueConstraintKey::new(graph_id, ConstraintNameId::from_raw(0));
@@ -383,6 +459,18 @@ pub(crate) fn purge_graph_constraints(graph_id: GraphId) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use candid::Principal;
+    use gleaph_graph_kernel::federation::ShardId;
+
+    /// A `FederatedTcc` active record (the default for tests that predate slice 10).
+    fn fed(label: u16, property: u32) -> ConstraintDefRecord {
+        ConstraintDefRecord::new_active(
+            VertexLabelId::from_raw(label),
+            PropertyId::from_raw(property),
+            UniqueEnforcementStrategy::FederatedTcc,
+            None,
+        )
+    }
 
     #[test]
     fn unique_constraint_key_storable_roundtrip() {
@@ -393,15 +481,35 @@ mod tests {
 
     #[test]
     fn constraint_def_record_storable_roundtrip() {
+        // ShardLocalGlobal + a pinned owning shard exercises the V2 envelope end to end.
         let record = ConstraintDefRecord {
             vertex_label_id: VertexLabelId::from_raw(3),
             property_id: PropertyId::from_raw(42),
             state: ConstraintLifecycle::Dropping,
             dropping_at_ns: Some(99),
             drop_scan_generation: 7,
+            strategy: UniqueEnforcementStrategy::ShardLocalGlobal,
+            owning_shard: Some(ProofShard::new(ShardId::new(0), Principal::anonymous())),
         };
-        let decoded = ConstraintDefRecord::from_bytes(Cow::Owned(record.into_bytes()));
+        let decoded = ConstraintDefRecord::from_bytes(Cow::Owned(record.clone().into_bytes()));
         assert_eq!(decoded, record);
+    }
+
+    #[test]
+    fn v1_records_decode_as_federated() {
+        // A record persisted before slice 10 (V1 envelope) must upgrade to FederatedTcc/no-owner.
+        let v1 = ConstraintDefStableRecord::V1(ConstraintDefRecordV1 {
+            vertex_label_id: VertexLabelId::from_raw(3),
+            property_id: PropertyId::from_raw(42),
+            state: ConstraintLifecycle::Active,
+            dropping_at_ns: None,
+            drop_scan_generation: 0,
+        });
+        let bytes = Encode!(&v1).expect("encode v1");
+        let decoded = ConstraintDefRecord::from_bytes(Cow::Owned(bytes));
+        assert_eq!(decoded.strategy, UniqueEnforcementStrategy::FederatedTcc);
+        assert_eq!(decoded.owning_shard, None);
+        assert_eq!(decoded.vertex_label_id, VertexLabelId::from_raw(3));
     }
 
     #[test]
@@ -410,14 +518,14 @@ mod tests {
         let name = ConstraintNameId::from_raw(1);
         let label = VertexLabelId::from_raw(7);
         let property = PropertyId::from_raw(11);
-        let record = ConstraintDefRecord::new_active(label, property);
-        assert!(create_unique_constraint(graph, name, record, false).expect("create"));
+        let record = fed(7, 11);
+        assert!(create_unique_constraint(graph, name, record.clone(), false).expect("create"));
         assert_eq!(
             find_active_unique_constraint(graph, label, property),
-            Some((name, record))
+            Some((name, record.clone()))
         );
         // Duplicate without IF NOT EXISTS conflicts.
-        assert!(create_unique_constraint(graph, name, record, false).is_err());
+        assert!(create_unique_constraint(graph, name, record.clone(), false).is_err());
         // Idempotent with IF NOT EXISTS.
         assert!(!create_unique_constraint(graph, name, record, true).expect("idempotent"));
 
@@ -440,8 +548,7 @@ mod tests {
     fn drop_is_idempotent_while_dropping() {
         let graph = GraphId::from_raw(900_010);
         let name = ConstraintNameId::from_raw(1);
-        let record =
-            ConstraintDefRecord::new_active(VertexLabelId::from_raw(1), PropertyId::from_raw(1));
+        let record = fed(1, 1);
         assert!(create_unique_constraint(graph, name, record, false).expect("create"));
         assert_eq!(
             begin_drop(graph, name, false, 1).expect("first drop"),
@@ -473,20 +580,8 @@ mod tests {
         let graph = GraphId::from_raw(900_012);
         let active = ConstraintNameId::from_raw(1);
         let dropping = ConstraintNameId::from_raw(2);
-        create_unique_constraint(
-            graph,
-            active,
-            ConstraintDefRecord::new_active(VertexLabelId::from_raw(1), PropertyId::from_raw(1)),
-            false,
-        )
-        .expect("create active");
-        create_unique_constraint(
-            graph,
-            dropping,
-            ConstraintDefRecord::new_active(VertexLabelId::from_raw(2), PropertyId::from_raw(2)),
-            false,
-        )
-        .expect("create dropping");
+        create_unique_constraint(graph, active, fed(1, 1), false).expect("create active");
+        create_unique_constraint(graph, dropping, fed(2, 2), false).expect("create dropping");
         begin_drop(graph, dropping, false, 1).expect("drop");
 
         bump_drop_scan_generation(graph);
@@ -513,20 +608,8 @@ mod tests {
         let graph = GraphId::from_raw(900_013);
         let active = ConstraintNameId::from_raw(1);
         let dropping = ConstraintNameId::from_raw(2);
-        create_unique_constraint(
-            graph,
-            active,
-            ConstraintDefRecord::new_active(VertexLabelId::from_raw(1), PropertyId::from_raw(1)),
-            false,
-        )
-        .expect("active");
-        create_unique_constraint(
-            graph,
-            dropping,
-            ConstraintDefRecord::new_active(VertexLabelId::from_raw(2), PropertyId::from_raw(2)),
-            false,
-        )
-        .expect("dropping");
+        create_unique_constraint(graph, active, fed(1, 1), false).expect("active");
+        create_unique_constraint(graph, dropping, fed(2, 2), false).expect("dropping");
         begin_drop(graph, dropping, false, 1).expect("drop");
 
         let (rows, _cursor, scanned) = scan_dropping_constraints(None, 4096);
@@ -540,19 +623,44 @@ mod tests {
     fn remove_dropped_record_only_removes_dropping() {
         let graph = GraphId::from_raw(900_014);
         let name = ConstraintNameId::from_raw(1);
-        create_unique_constraint(
-            graph,
-            name,
-            ConstraintDefRecord::new_active(VertexLabelId::from_raw(1), PropertyId::from_raw(1)),
-            false,
-        )
-        .expect("create");
+        create_unique_constraint(graph, name, fed(1, 1), false).expect("create");
         // An Active record is never removed by the recovery-only terminal delete.
         assert!(!remove_dropped_constraint_record(graph, name));
         assert!(find_unique_constraint_any_lifecycle(graph, name).is_some());
         begin_drop(graph, name, false, 1).expect("drop");
         assert!(remove_dropped_constraint_record(graph, name));
         assert!(find_unique_constraint_any_lifecycle(graph, name).is_none());
+    }
+
+    #[test]
+    fn has_shard_local_global_constraint_tracks_active_and_dropping() {
+        let graph = GraphId::from_raw(900_020);
+        let other = GraphId::from_raw(900_021);
+        let fed_name = ConstraintNameId::from_raw(1);
+        let slg_name = ConstraintNameId::from_raw(2);
+
+        // A federated-only graph never reports a shard-local-global constraint.
+        create_unique_constraint(graph, fed_name, fed(1, 1), false).expect("create fed");
+        assert!(!has_shard_local_global_constraint(graph));
+
+        // Add a ShardLocalGlobal constraint: now reported, scoped to this graph only.
+        let slg = ConstraintDefRecord::new_active(
+            VertexLabelId::from_raw(2),
+            PropertyId::from_raw(2),
+            UniqueEnforcementStrategy::ShardLocalGlobal,
+            Some(ProofShard::new(ShardId::new(0), Principal::anonymous())),
+        );
+        create_unique_constraint(graph, slg_name, slg, false).expect("create slg");
+        assert!(has_shard_local_global_constraint(graph));
+        assert!(!has_shard_local_global_constraint(other));
+
+        // Still reported while Dropping (drop cleanup depends on the owning shard's local table).
+        begin_drop(graph, slg_name, false, 1).expect("drop slg");
+        assert!(has_shard_local_global_constraint(graph));
+
+        // Only gone once the record is removed (Removed).
+        assert!(remove_dropped_constraint_record(graph, slg_name));
+        assert!(!has_shard_local_global_constraint(graph));
     }
 
     #[test]
@@ -564,8 +672,8 @@ mod tests {
         let name = ConstraintNameId::from_raw(1);
         let label = VertexLabelId::from_raw(7);
         let property = PropertyId::from_raw(11);
-        let record = ConstraintDefRecord::new_active(label, property);
-        assert!(create_unique_constraint(graph, name, record, false).expect("create"));
+        let record = fed(7, 11);
+        assert!(create_unique_constraint(graph, name, record.clone(), false).expect("create"));
         assert_eq!(
             find_active_unique_constraint(graph, label, property),
             Some((name, record)),

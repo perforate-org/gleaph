@@ -15,9 +15,9 @@ use gleaph_graph_kernel::index::{
     IndexIntersectionRequest, IndexIntersectionResult, PostingHit, ValuePostingCount,
 };
 use gleaph_graph_kernel::plan_exec::{
-    ConstrainedPropertyDispatch, ExecutePlanResult, GqlExecutionMode, GqlQueryResult,
-    GraphMutationJournalEntryWire, MutationId, MutationJournalState, MutationToken,
-    MutationTokenShard, ReadMode, ShardEventSeq, UniqueClaimDispatch,
+    ExecutePlanResult, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire, MutationId,
+    MutationJournalState, MutationToken, MutationTokenShard, ReadMode, ShardEventSeq,
+    UniqueClaimDispatch,
 };
 use ic_cdk::api::msg_caller;
 
@@ -27,7 +27,9 @@ use crate::facade::stable::label_stats::ClientMutationKey;
 use crate::facade::stable::label_stats::RouterMutationShard;
 use crate::facade::stable::reservation_catalog::ConfirmOutcome;
 use crate::facade::store::RouterStore;
-use crate::facade::store::uniqueness::plan_can_release;
+use crate::facade::store::uniqueness::{
+    ConstrainedDispatchSplit, LocalUniqueClaim, plan_can_release,
+};
 use crate::federation::{
     AggregateIndexFastPath, FederatedMergeMode, SeedHits, ShardDispatch, ShardingPolicy,
     apply_federated_aggregate_having, collect_label_hits_for_shards,
@@ -965,6 +967,26 @@ fn attach_mutation_phase(
     }
 }
 
+/// Whether every `ShardLocalGlobal` local claim can still be enforced fail-closed (ADR 0030 slice
+/// 10): the graph must currently have **exactly one** live shard whose `(shard_id, graph_canister)`
+/// identity equals each claim's recorded `owning_shard`. Any other topology — no live shard, a
+/// second shard, or the same `shard_id` re-homed on a different canister — means the owning shard's
+/// local table can no longer prove graph-wide uniqueness, so the mutation must be rejected. The
+/// caller never falls back to FederatedTcc (which cannot see the local values). Factored out of the
+/// dispatch path so this safety-critical decision is unit-testable without the dispatch machinery.
+fn local_claims_enforceable(
+    live_shards: &[ShardRegistryEntry],
+    local_claims: &[LocalUniqueClaim],
+) -> bool {
+    let [sole] = live_shards else {
+        return false;
+    };
+    local_claims.iter().all(|claim| {
+        sole.shard_id == claim.owning_shard.shard_id
+            && sole.graph_canister == claim.owning_shard.graph_canister
+    })
+}
+
 #[allow(clippy::too_many_arguments)]
 async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     graph_id: GraphId,
@@ -1101,7 +1123,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     // ADR 0030 slice 5a: detect the cross-shard uniqueness claims this INSERT makes (admission gate
     // + canonical `encoded_value`). Computed before dispatch so a rejected/over-scope constrained
     // insert never records an envelope or reserves anything.
-    let unique_claims = match store.plan_unique_claims(
+    let planned_claims = match store.plan_unique_claims(
         graph_id,
         plans,
         pmap,
@@ -1120,16 +1142,23 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
             return Err(err);
         }
     };
+    // ADR 0030 slice 10: `unique_claims` are the FederatedTcc claims (Try/Acquire/Confirm);
+    // `local_claims` are the ShardLocalGlobal fast-path claims (no Router reservation).
+    let unique_claims = planned_claims.federated;
+    let local_claims = planned_claims.local;
 
     // ADR 0030 slice 5b: a mutation that can delete/remove a constrained element carries the graph's
-    // constrained `(label, property)` set so the shard pins one `Release` per freed value. Release is
-    // admission-free (no Try, any cardinality, any shard count): the Router reconciles the emitted
-    // `Release` effects by `owner_element_id` after the canonical write.
-    let constrained_properties: Vec<ConstrainedPropertyDispatch> = if plan_can_release(plans) {
+    // constrained `(label, property)` set so the shard frees each value. Release is admission-free
+    // (no Try, any cardinality, any shard count). ADR 0030 slice 10 partitions it: federated values
+    // free via a pinned outbox `Release` the Router reconciles by `owner_element_id`; local values
+    // free directly in the owning shard's local table.
+    let constrained_split = if plan_can_release(plans) {
         store.constrained_property_dispatch(graph_id)
     } else {
-        Vec::new()
+        ConstrainedDispatchSplit::default()
     };
+    let constrained_properties = constrained_split.federated;
+    let local_constrained_properties = constrained_split.local;
 
     let mut dispatches: Vec<ShardDispatch> = if let Some(record) = saved_record.as_ref()
         && !record.shards.is_empty()
@@ -1245,7 +1274,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     // single shard creates; the same claim broadcast to multiple shards would let each commit a
     // vertex with the same value. Refuse *before* recording the shard envelope — a rejection after
     // the envelope record would strand a non-terminal saga that the recovery scan keeps revisiting.
-    if !unique_claims.is_empty() && dispatches.len() != 1 {
+    if (!unique_claims.is_empty() || !local_claims.is_empty()) && dispatches.len() != 1 {
         release_routing_if_owner(
             store,
             caller,
@@ -1256,6 +1285,30 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
         return Err(RouterError::NotImplemented(
             "INSERT under a uniqueness constraint must route to a single shard \
              (ADR 0030 slice 5a)"
+                .to_string(),
+        ));
+    }
+
+    // ADR 0030 slice 10: fail-closed gate for ShardLocalGlobal claims. Such a constraint's existing
+    // values live ONLY in its single owning shard's local table — they are never mirrored into
+    // Router reservations. So if the graph no longer has exactly that recorded owning shard as its
+    // sole live shard (a second shard appeared, the shard is gone, or the live shard's canister
+    // differs), the local fast path can no longer prove graph-wide uniqueness. Reject the mutation
+    // fail-closed; never fall back to FederatedTcc, which would not see the local values and could
+    // admit a duplicate. (The unit-2 registration guard makes this unreachable in normal operation;
+    // this is the defensive backstop.)
+    if !local_claims.is_empty() && !local_claims_enforceable(&shards, &local_claims) {
+        release_routing_if_owner(
+            store,
+            caller,
+            graph_id,
+            client_mutation_key,
+            mutation_reservation,
+        )?;
+        return Err(RouterError::Conflict(
+            "shard-local global unique constraint can no longer be enforced: the graph's live \
+             shard no longer matches the constraint's recorded owning shard; refusing \
+             fail-closed (no FederatedTcc fallback)"
                 .to_string(),
         ));
     }
@@ -1352,6 +1405,15 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     let dispatch_unique_claims = (!unique_claims.is_empty()).then(|| unique_claims.clone());
     let dispatch_constrained_properties =
         (!constrained_properties.is_empty()).then(|| constrained_properties.clone());
+    // ADR 0030 slice 10: the ShardLocalGlobal fast-path payloads carried on the same dispatch.
+    let dispatch_local_unique_claims = (!local_claims.is_empty()).then(|| {
+        local_claims
+            .iter()
+            .map(|claim| claim.dispatch.clone())
+            .collect::<Vec<_>>()
+    });
+    let dispatch_local_constrained_properties =
+        (!local_constrained_properties.is_empty()).then(|| local_constrained_properties.clone());
     // ADR 0030 slice 5b: every target a constrained delete/remove dispatched to, so the post-commit
     // pass can read each shard's `Release` effects and reconcile them. Captured before the loop
     // consumes `dispatches`.
@@ -1416,6 +1478,8 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 indexed_properties: Some(indexed_properties.clone()),
                 unique_claims: dispatch_unique_claims.clone(),
                 constrained_properties: dispatch_constrained_properties.clone(),
+                local_unique_claims: dispatch_local_unique_claims.clone(),
+                local_constrained_properties: dispatch_local_constrained_properties.clone(),
             },
         )
         .await
@@ -1472,6 +1536,15 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                         label_stats_seq: entry.emitted_delta_last_seq,
                     });
                     continue;
+                }
+                // ADR 0030 slice 10: a `ShardLocalGlobal` duplicate is detected on the owning shard
+                // (no Router-side reservation Try), so its violation arrives here as a string. Re-type
+                // it to the non-retryable `UniquenessViolation` the FederatedTcc path returns directly,
+                // instead of a generic `InvalidArgument`.
+                if let Some(detail) = err
+                    .strip_prefix(gleaph_graph_kernel::federation::UNIQUENESS_VIOLATION_WIRE_PREFIX)
+                {
+                    return Err(RouterError::UniquenessViolation(detail.to_string()));
                 }
                 return Err(RouterError::InvalidArgument(err));
             }
@@ -2062,6 +2135,72 @@ mod tests {
 
     fn graph_principal(byte: u8) -> Principal {
         Principal::self_authenticating([byte; 32])
+    }
+
+    /// ADR 0030 slice 10 fail-closed gate: a `ShardLocalGlobal` mutation may only proceed when the
+    /// graph still has exactly one live shard whose `(shard_id, graph_canister)` identity matches the
+    /// claim's recorded owning shard. Every other topology must be rejected (never FederatedTcc
+    /// fallback), so this proves `local_claims_enforceable` returns the safe decision in each shape.
+    #[test]
+    fn local_claims_enforceable_only_when_sole_live_shard_matches_owner() {
+        use crate::facade::stable::reservation_catalog::ProofShard;
+        use crate::facade::store::uniqueness::LocalUniqueClaim;
+        use crate::gql::local_claims_enforceable;
+        use gleaph_graph_kernel::entry::ConstraintNameId;
+        use gleaph_graph_kernel::federation::ShardRegistryEntry;
+        use gleaph_graph_kernel::plan_exec::UniqueClaimDispatch;
+
+        let graph_id = GraphId::from_raw(7);
+        let owner_canister = graph_principal(1);
+        let owner_shard = ShardId::new(0);
+
+        let shard = |shard_id: ShardId, canister: Principal| ShardRegistryEntry {
+            shard_id,
+            graph_canister: canister,
+            index_canister: Principal::anonymous(),
+            graph_id,
+            registered_at_ns: 0,
+            index_attached: true,
+        };
+        let claim = |shard_id: ShardId, canister: Principal| LocalUniqueClaim {
+            dispatch: UniqueClaimDispatch {
+                claim_ordinal: 0,
+                constraint_id: ConstraintNameId::from_raw(1),
+                encoded_value: b"v".to_vec(),
+            },
+            owning_shard: ProofShard::new(shard_id, canister),
+        };
+        let claims = vec![claim(owner_shard, owner_canister)];
+
+        // Sole live shard with the exact recorded identity: enforceable.
+        assert!(local_claims_enforceable(
+            &[shard(owner_shard, owner_canister)],
+            &claims
+        ));
+
+        // No live shard: cannot prove uniqueness — reject.
+        assert!(!local_claims_enforceable(&[], &claims));
+
+        // A second shard appeared (scale-out): reject fail-closed.
+        assert!(!local_claims_enforceable(
+            &[
+                shard(owner_shard, owner_canister),
+                shard(ShardId::new(1), graph_principal(2)),
+            ],
+            &claims
+        ));
+
+        // Same shard_id but re-homed on a different canister: identity mismatch — reject.
+        assert!(!local_claims_enforceable(
+            &[shard(owner_shard, graph_principal(9))],
+            &claims
+        ));
+
+        // Different shard_id on the (otherwise sole) live shard: identity mismatch — reject.
+        assert!(!local_claims_enforceable(
+            &[shard(ShardId::new(5), owner_canister)],
+            &claims
+        ));
     }
 
     fn register_test_graph(store: &RouterStore, admin: Principal, name: &str) {

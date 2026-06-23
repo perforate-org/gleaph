@@ -601,6 +601,18 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
              decoupled from the ADR 0027 journal retention",
             RebuildPath::None,
         ),
+        // ShardLocalGlobal unique fast path: shard-local unique value table (ADR 0030 slice 10)
+        region(
+            "GRAPH_LOCAL_UNIQUE_VALUES",
+            43,
+            StableMemoryClass::Canonical,
+            "shard-local global uniqueness",
+            "(constraint_id, encoded_value) → LocalUniqueRecord { owner_element_id }: graph-wide \
+             unique values for single-shard graphs enforced entirely in the owning shard, bypassing \
+             the federated reservation/outbox path. Canonical source of truth for ShardLocalGlobal \
+             constraints; freed by owner-matched release, drained by the DROP purge",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1147,8 +1159,8 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 43);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(42));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 44);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(43));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,
@@ -1161,6 +1173,10 @@ mod tests {
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[41].symbol,
             "INDEX_REPAIR_JOURNAL"
+        );
+        assert_eq!(
+            GRAPH_STABLE_LAYOUT.regions[43].symbol,
+            "GRAPH_LOCAL_UNIQUE_VALUES"
         );
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[35].class,

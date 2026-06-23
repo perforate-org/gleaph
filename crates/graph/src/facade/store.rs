@@ -31,6 +31,7 @@ pub(crate) mod helpers;
 mod label_stats_delta;
 mod labels;
 mod local_indexes;
+mod local_unique;
 mod lookup;
 mod maintenance;
 mod metadata;

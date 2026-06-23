@@ -1000,6 +1000,54 @@ benches:
         instructions: 181832
         heap_increase: 0
         stable_memory_increase: 128
+  bench_graph_local_unique_acquire_1:
+    total:
+      calls: 1
+      instructions: 63086
+      heap_increase: 0
+      stable_memory_increase: 128
+    scopes:
+      local_unique_acquire_1:
+        calls: 1
+        instructions: 62015
+        heap_increase: 0
+        stable_memory_increase: 128
+  bench_graph_local_unique_duplicate_reject_1:
+    total:
+      calls: 1
+      instructions: 5161
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      local_unique_duplicate_reject_1:
+        calls: 1
+        instructions: 4152
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_graph_local_unique_purge_page_256:
+    total:
+      calls: 1
+      instructions: 35109566
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      local_unique_purge_page_256:
+        calls: 1
+        instructions: 35108557
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_graph_local_unique_release_owner_match_1:
+    total:
+      calls: 1
+      instructions: 144179
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      local_unique_release_owner_match_1:
+        calls: 1
+        instructions: 143170
+        heap_increase: 0
+        stable_memory_increase: 0
   bench_graph_payload_first_incoming_log_backed_selective_match:
     total:
       calls: 1

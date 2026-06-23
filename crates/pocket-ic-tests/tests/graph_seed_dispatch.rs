@@ -68,6 +68,8 @@ fn graph_execute_plan_query_skips_index_scan_with_seed_bindings() {
             indexed_properties: None,
             unique_claims: None,
             constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
         },
     );
 
@@ -92,6 +94,8 @@ fn execute_plan_args_without_seeds_preserves_plan_blob_roundtrip() {
         indexed_properties: None,
         unique_claims: None,
         constrained_properties: None,
+        local_unique_claims: None,
+        local_constrained_properties: None,
     };
     let bytes = Encode!(&args).expect("encode args");
     let decoded: ExecutePlanArgs = Decode!(&bytes, ExecutePlanArgs).expect("decode args");
@@ -123,6 +127,8 @@ fn graph_execute_plan_query_rejects_index_scan_without_seeds() {
             indexed_properties: None,
             unique_claims: None,
             constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
         },
     );
 
