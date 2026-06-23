@@ -42,10 +42,12 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | [storage/bulk-ingest-finalize.md](storage/bulk-ingest-finalize.md) | implemented | GraphStore + canister + GQL `CALL` + router auto-finalize + WSP canbench baseline |
 | [security/rbac-and-prepared.md](security/rbac-and-prepared.md) | draft | Roles and prepared queries |
 | [index/property-index.md](index/property-index.md) | draft | graph-index and router seed routing |
+| [index/vector-index.md](index/vector-index.md) | planned | Graph-owned vertex embeddings and derived vector index candidate generation |
 | [index/capacity-planning.md](index/capacity-planning.md) | planned | 500 GiB limits, posting size formulas, split thresholds |
 | [adr/README.md](adr/README.md) | draft | How we record decisions |
 | [adr/0001-labeled-segment-slide.md](adr/0001-labeled-segment-slide.md) | accepted | Labeled physical layer → PMA leaf segment slide |
 | [adr/0029-shard-local-atomicity-and-cross-canister-consistency.md](adr/0029-shard-local-atomicity-and-cross-canister-consistency.md) | accepted | Shard-local atomic writes plus durable asynchronous projection and federated saga consistency |
+| [adr/0031-vertex-embedding-store-and-derived-vector-index.md](adr/0031-vertex-embedding-store-and-derived-vector-index.md) | accepted (planned) | Vertex embedding store and derived vector index canister |
 
 ## Conventions
 

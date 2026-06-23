@@ -65,5 +65,6 @@ Last revised: YYYY-MM-DD
 | [0028](0028-per-graph-tenancy-metadata-reads.md) | Per-graph tenancy on router metadata reads: owner/admins ACL + Admin superuser + own-shard allow; NotFound non-disclosure; reject anonymous owner/admin at registration | accepted |
 | [0029](0029-shard-local-atomicity-and-cross-canister-consistency.md) | Shard-local atomicity and asynchronous cross-canister consistency | accepted |
 | [0030](0030-cross-shard-uniqueness-tcc-reservation.md) | Cross-shard uniqueness via Router-coordinated TCC reservation | accepted (partially implemented) |
+| [0031](0031-vertex-embedding-store-and-derived-vector-index.md) | Vertex embedding store and derived vector index canister | accepted (planned) |
 
 When adding an ADR, link it from the relevant design doc and update this table.
