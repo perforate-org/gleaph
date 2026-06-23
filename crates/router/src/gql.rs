@@ -560,20 +560,39 @@ async fn run_gql(
         }
         // Validate syntax so malformed constraint DDL is a precise `InvalidArgument` rather than
         // an opaque `NotImplemented`.
-        let _stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-        // ADR 0030: the enforcement lifecycle is complete through slice 7 (INSERT Try/Acquire/Confirm,
-        // DELETE/REMOVE Release, the slice-6 recovery reconciler, and the slice-7 failure-injection +
-        // canbench gate — the Phase-6 gate is satisfied). CREATE/DROP CONSTRAINT nonetheless stays
-        // gated for two distinct reasons (ADR 0030 Revisions #14–#15): CREATE publication is a
-        // deliberate decision held for final architectural review, and DROP additionally needs a
-        // dedicated lifecycle slice (reservation invalidation + saga draining + ConstraintNameId-reuse
-        // guard) before it is safe to publish — `drop_unique_constraint` is definition-only today.
-        return Err(RouterError::NotImplemented(
-            "uniqueness constraints are enforced end-to-end (ADR 0030) but CREATE/DROP CONSTRAINT \
-             DDL is not yet published: CREATE publication is pending final architectural review, and \
-             DROP additionally requires a dedicated reservation-draining lifecycle slice"
-                .to_string(),
-        ));
+        let stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        // ADR 0030 slice 8: CREATE CONSTRAINT is published — the enforcement lifecycle is complete and
+        // Phase-6-validated through slice 7 (INSERT Try/Acquire/Confirm, DELETE/REMOVE Release, slice-6
+        // recovery, slice-7 failure-injection + canbench). This is an API-surface change only: the
+        // declare-on-empty store path, validation, capacity preflight, and stable layouts are unchanged.
+        // DROP CONSTRAINT stays NotImplemented until its dedicated reservation-draining lifecycle slice
+        // lands (reservation invalidation + saga draining + ConstraintNameId-reuse guard — Revision #15).
+        match stmt {
+            crate::constraint_ddl::ConstraintDdlStatement::Create {
+                constraint_name,
+                if_not_exists,
+                label,
+                property,
+            } => {
+                let store = RouterStore::new();
+                let graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
+                store.create_unique_constraint(
+                    graph_id,
+                    &constraint_name,
+                    if_not_exists,
+                    &label,
+                    &property,
+                )?;
+                return Ok(GqlQueryResult::row_count_only(0));
+            }
+            crate::constraint_ddl::ConstraintDdlStatement::Drop { .. } => {
+                return Err(RouterError::NotImplemented(
+                    "DROP CONSTRAINT is not yet published: it requires a dedicated reservation-\
+                     draining lifecycle slice (ADR 0030 Revision #15); CREATE CONSTRAINT is available"
+                        .to_string(),
+                ));
+            }
+        }
     }
 
     let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;

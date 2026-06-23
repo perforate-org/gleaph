@@ -237,12 +237,8 @@ impl RouterStore {
     /// partial label/property/constraint state. Id-exhaustion is part of that preflight: each
     /// catalog the commit will allocate from is capacity-checked via `peek_next_id` before the
     /// first mutation, so the commit region cannot fail half-way and strand a label/property/name.
-    // ADR 0030: reachable only from `CREATE CONSTRAINT` DDL, which is gated off until the full
-    // uniqueness lifecycle ships (see `gql::run_gql`). Exercised by store-level tests until then.
-    #[cfg_attr(
-        not(test),
-        allow(dead_code, reason = "CREATE CONSTRAINT DDL gated off (ADR 0030)")
-    )]
+    // ADR 0030 slice 8: published — reached from `CREATE CONSTRAINT` DDL (`gql::run_gql`) and from the
+    // `pocket-ic-e2e` declaration seam. Enforces the declare-on-empty (brand-new-label) contract.
     pub(crate) fn create_unique_constraint(
         &self,
         graph_id: GraphId,

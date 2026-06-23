@@ -2,16 +2,18 @@
 
 Date: 2026-06-22
 Status: accepted (partially implemented)
-Last revised: 2026-06-22
+Last revised: 2026-06-23
 
 > **Status note:** The decision is **accepted**. Implementation is **complete through slice 7:
 > catalog/DDL + value encoding + reservation table & no-`await` Try + pinned unique-effect outbox + the
 > INSERT write-path TCC (Try/Acquire/Confirm) + the DELETE/REMOVE Release write-path + the slice-6
 > recovery reconciler (reclaim Driver 1 + unified effect recovery Driver 2) + the slice-7
 > failure-injection / canbench gate (the Phase-6 test/benchmark gate is satisfied — see Revision #14).
-> Two items remain before `CREATE`/`DROP CONSTRAINT` is published, neither a Phase-6 gap: (1) the
-> deliberately separate CREATE publication decision, held for final architectural review; and (2) a
-> dedicated DROP-lifecycle slice — DROP currently removes only the constraint definition, so
+> Publication is split into two explicit follow-up slices, neither a Phase-6 gap: (1) **Slice 8 has
+> landed** — `CREATE CONSTRAINT` is published over the public Candid/GQL ingress through the
+> already-tested declare-on-empty store path (see Revision #16); and (2) a later dedicated
+> DROP-lifecycle slice publishes `DROP CONSTRAINT` only after its draining/purge protocol lands. DROP
+> currently removes only the constraint definition, so
 > reservation invalidation, in-flight saga draining, and a `ConstraintNameId`-reuse guard (re-`CREATE`
 > of a dropped name reuses its id against stale reservations, risking false rejects) are not yet
 > implemented (see Revision #15).** Slice 1 has
@@ -65,8 +67,9 @@ Last revised: 2026-06-22
 > reclaim-during-retry, Release-before-Acquire) pass on PocketIC, and both the Router-local
 > Try/Confirm/Cancel/reclaim overhead and the graph-shard outbox append/ack + storage-growth have
 > persisted canbench baselines. **The Phase-6 test/benchmark gate is satisfied.**
-> DDL `CREATE`/`DROP CONSTRAINT` nonetheless stays `NotImplemented`. For `CREATE` the only remaining
-> step is the deliberately separate publication flip, held for final architectural review; `DROP`
+> `CREATE CONSTRAINT` DDL is now **published** (Slice 8, Revision #16): a well-formed declaration over
+> the public ingress declares the constraint on the already-tested declare-on-empty path and the value
+> is enforced from that point. `DROP CONSTRAINT` stays `NotImplemented`; it
 > additionally requires a dedicated lifecycle slice (reservation invalidation, in-flight saga draining,
 > and a `ConstraintNameId`-reuse guard) before it can be published — see Revision #15. This is the named-invariant
 > strong protocol that
@@ -430,6 +433,46 @@ Last revised: 2026-06-22
 > tests: drop-with-live-reservations, drop-then-recreate-same-name-different-label, drop-during-saga).
 > Until it lands, `DROP CONSTRAINT` stays `NotImplemented`; `drop_unique_constraint` remains
 > store-test-only and is documented as definition-only. The Phase-6 gate itself is unaffected.
+>
+> **Revision 2026-06-23 #16 (Slice 8 — publish CREATE only; landed):** this slice publishes the
+> already-implemented, Phase-6-validated **`CREATE CONSTRAINT` path only**. This is an
+> API-surface change, not a new storage/protocol slice: parsing, authorization, declare-on-empty
+> preflight, catalog registration, Try/Acquire/Confirm/Release enforcement, recovery, and stable-memory
+> layouts remain unchanged. `DROP CONSTRAINT` stays explicitly `NotImplemented` until the separate
+> DROP-lifecycle slice from Revision #15 lands.
+>
+> Slice 8 must preserve these dispatch contracts:
+>
+> - preserve the existing public-dispatch ordering: recognize constraint DDL, authenticate/authorize
+>   first via `authorize_index_ddl` (so an unauthorized caller receives `Forbidden` without learning
+>   syntax/catalog state), then enforce the write-on-query `ExecutionPathMismatch` gate, then validate
+>   syntax before any catalog mutation;
+> - keep malformed CREATE/unsupported edge constraints as precise `InvalidArgument` errors for an
+>   authorized write-path caller rather than falling through to generic GQL or `NotImplemented`;
+> - dispatch `ConstraintDdlStatement::Create` to `RouterStore::create_unique_constraint`, preserving
+>   `IF NOT EXISTS`, metadata validation, capacity preflight, and the structural **brand-new label**
+>   requirement; no scan/count-based emptiness check is introduced;
+> - dispatch `ConstraintDdlStatement::Drop` to a dedicated `NotImplemented` response and never call
+>   the current definition-only `drop_unique_constraint` path.
+>
+> Slice 8's publication tests must use the public Candid/GQL ingress (not the `pocket-ic-e2e`
+> declaration seam) and prove: admin CREATE succeeds; a constrained INSERT is enforced end to end;
+> same-value duplicates are rejected; non-admin CREATE leaves no catalog state; query-path CREATE is
+> rejected without mutation; malformed/edge CREATE keeps its precise error; existing-label CREATE is
+> rejected by declare-on-empty; `IF NOT EXISTS` is idempotent; and DROP remains `NotImplemented` while
+> the created constraint continues to enforce uniqueness. The test-only declaration seam may remain
+> for fault injection, but it is no longer the publication proof.
+>
+> _Landed:_ `gql::run_gql` now dispatches `ConstraintDdlStatement::Create` to
+> `RouterStore::create_unique_constraint` (resolving the default/HOME graph), preserving the
+> authorize → write-on-query path gate → syntax-validation ordering; `Drop` returns a dedicated
+> `NotImplemented`. The `create_unique_constraint` dead-code gate is removed (it is now a live ingress
+> path). Public-ingress publication tests live in `adr0030_constraint_dispatch` (CREATE success +
+> enforced duplicate rejection, re-declare `Conflict` / `IF NOT EXISTS` no-op, existing-label
+> `Conflict`, malformed + unsupported-edge `InvalidArgument`, query-path `ExecutionPathMismatch`,
+> non-admin `Forbidden` proven to leave no catalog state, DROP `NotImplemented` with the existing
+> constraint still enforcing). The `pocket-ic-e2e` declaration seam is retained for the
+> failure-injection and lifecycle suites only.
 
 ## Context
 
@@ -964,16 +1007,15 @@ follows from that asymmetry — what must be pre-resolvable is the *acquire* cla
 
 ## Required test and benchmark gate (Phase 6)
 
-The decision is already `accepted` and the catalog/DDL layer has landed (see the status note), but
-the constraint feature stays **unpublished** — the public dispatch returns `NotImplemented` — until
-enforcement is fully implemented. Before that gate opens and `CREATE`/`DROP CONSTRAINT` is accepted
-on the write path, the implementation must add:
+The decision is already `accepted` and the catalog/DDL layer has landed (see the status note). The
+Phase-6 gate below is satisfied, and `CREATE CONSTRAINT` is now published over the public ingress
+(Slice 8); `DROP CONSTRAINT` still returns `NotImplemented`. The gate the implementation had to add:
 
 > **Status (Revision #13, corrected by #14): the test/benchmark gate IS satisfied.** Every
-> ADR-required scenario below is covered by a passing unit, PocketIC e2e, or canbench artifact. The DDL
-> nonetheless stays `NotImplemented`. For `CREATE` the remaining step is the deliberately separate
-> publication flip, held for final architectural review — not a test or benchmark gap. `DROP` is
-> **not** publishable on the gate alone: it needs a dedicated lifecycle slice (reservation
+> ADR-required scenario below is covered by a passing unit, PocketIC e2e, or canbench artifact.
+> **Slice 8 (Revision #16) has published `CREATE CONSTRAINT`** over the public Candid/GQL ingress
+> (publication tests in `adr0030_constraint_dispatch.rs`). `DROP` remains `NotImplemented`: it is
+> **not** publishable on the gate alone — it needs a dedicated lifecycle slice (reservation
 > invalidation + saga draining + `ConstraintNameId`-reuse guard, with regression tests) — see
 > Revision #15.
 >

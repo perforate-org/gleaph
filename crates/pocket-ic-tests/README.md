@@ -40,6 +40,11 @@ cargo test -p gleaph-pocket-ic-tests -- --nocapture
 | `router_graph_type_catalog::catalog_create_graph_unregistered_name_rejected` | ADR 0013: `CREATE GRAPH` without federation registration → `NotFound` |
 | `router_graph_type_catalog::catalog_drop_graph_type_cascades_typed_binding` | ADR 0013: `DROP GRAPH TYPE` removes type; rebinding fails |
 | `router_graph_type_catalog::catalog_typed_schema_rejects_undirected_match_on_directed_edge` | ADR 0013: typed schema rejects `MATCH` edge direction mismatch at ingress |
-| `adr0030_constraint_dispatch::create_and_drop_constraint_dispatch_is_not_implemented` | ADR 0030: public `CREATE`/`DROP CONSTRAINT` returns `NotImplemented` (enforcement inactive) |
+| `adr0030_constraint_dispatch::create_constraint_publishes_and_enforces` | ADR 0030 slice 8: public `CREATE CONSTRAINT` succeeds and enforces (duplicate INSERT → `UniquenessViolation`) |
+| `adr0030_constraint_dispatch::duplicate_create_constraint_conflicts_unless_if_not_exists` | ADR 0030 slice 8: re-declare → `Conflict`; `IF NOT EXISTS` is an idempotent no-op |
+| `adr0030_constraint_dispatch::create_constraint_on_existing_label_is_rejected` | ADR 0030 slice 8: `CREATE CONSTRAINT` on an existing label → `Conflict` (declare-on-empty) |
+| `adr0030_constraint_dispatch::malformed_create_constraint_is_invalid_argument` | ADR 0030 slice 8: malformed constraint DDL → `InvalidArgument` |
+| `adr0030_constraint_dispatch::edge_create_constraint_is_invalid_argument` | ADR 0030 slice 8: unsupported edge `CREATE CONSTRAINT` over public ingress → `InvalidArgument` |
 | `adr0030_constraint_dispatch::create_constraint_on_query_entrypoint_is_path_mismatch` | ADR 0030: constraint DDL on the `query` entrypoint → `ExecutionPathMismatch` |
 | `adr0030_constraint_dispatch::create_constraint_requires_authorization` | ADR 0030: non-admin `CREATE CONSTRAINT` → `Forbidden` before any other check |
+| `adr0030_constraint_dispatch::drop_constraint_is_not_implemented` | ADR 0030: `DROP CONSTRAINT` stays `NotImplemented` while the created constraint keeps enforcing |

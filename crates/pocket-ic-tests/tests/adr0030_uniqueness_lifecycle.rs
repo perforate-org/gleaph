@@ -11,8 +11,9 @@
 //!     covers it — never admitted unguarded;
 //!   - a `DELETE` releases the reservation so the value becomes reusable.
 //!
-//! `CREATE CONSTRAINT` DDL stays publicly `NotImplemented`; the constraint is declared through the
-//! `pocket-ic-e2e` test seam `test_declare_unique_constraint` (admin-authorized, declare-on-empty).
+//! `CREATE CONSTRAINT` DDL is published (slice 8; covered by `adr0030_constraint_dispatch`). These
+//! lifecycle tests still declare through the `pocket-ic-e2e` seam `test_declare_unique_constraint`
+//! (admin-authorized, declare-on-empty) to isolate the enforcement lifecycle from DDL parsing.
 
 use candid::Principal;
 use gleaph_graph_kernel::federation::RouterError;
