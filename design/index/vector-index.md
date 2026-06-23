@@ -1,7 +1,7 @@
 # Vector index
 
 Last updated: 2026-06-23
-Anchor timestamp: 2026-06-23 06:39:47 UTC +0000
+Anchor timestamp: 2026-06-23 14:36:46 UTC +0000
 
 ## Status
 
@@ -14,7 +14,9 @@ stable region `VERTEX_EMBEDDINGS` / MemoryId 44) plus shared `EmbeddingNameId` /
 types in `graph-kernel`.
 
 The derived vector-index canister, repair/backfill path, Candid search APIs, and query operators are
-not implemented yet.
+not implemented yet. The standard vector-index kind is `ivf_flat`; `flat` remains a
+small-index/debug baseline, and later `ivf_pq` or experimental `hnsw` implementations must preserve
+the same canonical/derived boundary.
 
 ## Purpose
 
@@ -30,7 +32,9 @@ into a standalone vector database.
 
 ## Non-goals
 
-- Committing an IVF, PQ, or HNSW stable-memory layout.
+- Committing PQ or HNSW stable-memory layouts.
+- Using CSR as a vector-index stable-memory layout or snapshot format.
+- Exposing physical index kinds in GQL query syntax.
 - Defining public GraphRAG syntax.
 - Replacing edge payload vectors used by traversal predicates.
 - Moving canonical vertex or edge state into an index canister.
@@ -40,8 +44,8 @@ into a standalone vector database.
 | Layer | Owns | Must not own |
 |-------|------|--------------|
 | Router | vector index target resolution, auth, planning integration, fan-out, merge, seed construction | canonical vectors, ANN storage internals |
-| Graph | canonical vertex embeddings, vertex delete/update semantics, embedding backfill source | ANN posting lists, centroid assignment, cross-canister query merge |
-| Vector index canister | derived full-vector copies, Flat/IVF/PQ/HNSW search structures, candidate scoring | final graph results, traversal, property filtering, vertex existence |
+| Graph | canonical vertex embeddings, vertex delete/update semantics, embedding backfill source | ANN partitions, centroid assignment, cross-canister query merge |
+| Vector index canister | derived full-vector copies, `ivf_flat`/`flat`/future `ivf_pq`/future `hnsw` search structures, candidate scoring | final graph results, traversal, property filtering, vertex existence |
 | GQL portable crates | generic language and planning structures only | Gleaph/IC-specific vector storage or canister assumptions |
 
 ## Vertex embeddings vs edge payload vectors
@@ -54,9 +58,9 @@ Vertex embeddings and edge payload vectors are separate concepts.
 | Edge payload vector | Graph canister / LARA edge payload | traversal-critical edge-local vector predicate during expand |
 | Vector index entry | Vector index canister | derived search structure for candidate generation |
 
-`EdgePayloadEncoding::VectorF32` remains valid for edge-local predicates. A vertex embedding store is
-planned for vertex semantic embeddings so the graph shard can enforce dimensions, encoding,
-versioning, delete behavior, and rebuild/backfill into derived vector indexes.
+`EdgePayloadEncoding::VectorF32` remains valid for edge-local predicates. The canonical vertex
+embedding store exists for vertex semantic embeddings so the graph shard can enforce dimensions,
+encoding, versioning, delete behavior, and rebuild/backfill into derived vector indexes.
 
 ## Canonical vertex embedding store
 
@@ -114,6 +118,103 @@ VectorSubject =
 Phase 1 should support vertex subjects first. Edge subjects are deferred until there is a concrete
 need to externalize edge-payload vector search from graph execution.
 
+### Derived vector storage
+
+Vector index canisters store derived full-vector copies in partition-local fixed-width vector pages.
+`VectorId` is index-local:
+
+```text
+(index_id, vector_id) -> one vector slot
+```
+
+Placement is resolved through the index definition and slot map:
+
+```text
+VECTOR_INDEX_DEFS[index_id] -> { kind: ivf_flat, encoding, dims, metric, active_version, ... }
+VECTOR_ID_TO_SLOT[(index_id, vector_id)] -> SlotRef { version, partition_id, page_id, slot, generation }
+VECTOR_SUBJECT_TO_ID[(index_id, subject)] -> { vector_id, generation }
+```
+
+Each page is both a storage unit and a scoring unit:
+
+```text
+VECTOR_PAGE[(index_id, version, partition_id, page_id)] ->
+  header {
+    encoding,
+    dims,
+    stride_bytes,
+    len,
+    live_len,
+    tombstone_bitmap,
+    next_page,
+  }
+  slot_table [vector_id, generation, flags]
+  vector_bytes [slot0][slot1]...[slotN]
+```
+
+The first derived store supports `F32` only. The structure is still encoding-aware: different
+dimensions or encodings use different indexes or physical page families, mirroring the LabeledLARA
+pattern where owner metadata fixes the byte width before reading. Vector ids are not reused in the
+first implementation; deletes set tombstone bits so stale slot references remain safe until cleanup.
+
+Updates append a new slot and tombstone the old slot. Search reads selected pages into heap buffers
+and performs SIMD exact scoring over page-local contiguous vector bytes.
+
+### IVF stable layout
+
+`ivf_flat` is the standard vector-index kind. It uses SPANN-inspired partition pages: stable-backed
+centroids, optional bounded heap centroid cache, balanced partition assignment, query-aware pruning,
+and exact full-vector rerank. CSR is intentionally not part of the vector-index stable layout or
+future snapshot format:
+
+```text
+IVF_CENTROIDS[(index_id, version, partition_id)] -> centroid vector
+IVF_CENTROID_META[index_id] -> { active_version, dims, nlist, encoding, metric, centroid_epoch }
+IVF_PARTITION_HEADS[(index_id, version, partition_id)] ->
+  { first_page, mutable_page, page_count, live_len }
+VECTOR_PAGE[(index_id, version, partition_id, page_id)] -> fixed-width vector page
+```
+
+The search path scores the query against the heap centroid cache, reads a bounded number of
+centroid-selected partition pages, skips tombstoned slots, and performs exact SIMD rerank over the
+page-local vector bytes. Balanced partition assignment and query-aware pruning are part of the first
+`ivf_flat` contract; closure replication, PQ, and HNSW are later optimizations. If partition-locality
+benchmarks fail, the preferred fixes are page sizing, balanced assignment, read-budget pruning,
+tombstone cleanup, and encoding-specific page reads, not CSR conversion.
+
+### IC implementation gates
+
+`ivf_flat` is the standard vector-index kind only if the implementation preserves IC execution and
+upgrade constraints:
+
+- centroid metadata is authoritative in stable memory; heap centroid cache is derived acceleration;
+- cache miss behavior is explicit: either `CacheNotReady` or a bounded stable centroid scan fallback;
+- rebuild writes a shadow `version` and publishes by atomically switching `active_version`;
+- balanced partition assignment is required before publishing a rebuilt index;
+- partition maintenance records `live_len`, `page_count`, and tombstone ratio;
+- partitions whose tombstone ratio or page count crosses a threshold enter cleanup/rebuild;
+- search enforces page/read/instruction budgets before reading vector pages; and
+- canbench compares `ivf_flat` against a `flat` exact-scan baseline at the same dataset size.
+
+### Query syntax and algorithm selection
+
+GQL query syntax should express vector-search intent, not physical index selection. Queries name the
+embedding field, query vector, metric-compatible scoring, top-k, thresholds, and rerank needs. They
+should not name `ivf_flat`, `ivf_pq`, or `hnsw` directly.
+
+Algorithm choice belongs to index definition or Router/index configuration:
+
+```text
+algorithm: "ivf_flat"
+metric: "cosine" | "l2"
+dims: 1536
+encoding: "f32"
+```
+
+This keeps future `ivf_pq`, `hnsw`, or `flat` implementations behind the same query semantics.
+Query-time knobs, if needed, should be semantic quality or cost hints rather than direct access to
+internal index structures.
+
 ## Consistency and rebuild
 
 The vector index follows the graph-index pattern:
@@ -127,23 +228,41 @@ The vector index follows the graph-index pattern:
 Derived vector-index lag follows the same high-level rule as other derived indexes: canonical graph
 state wins when derived state disagrees.
 
+Rebuild is a bounded maintenance state machine:
+
+```text
+CollectSample(cursor)
+TrainCentroids(iteration, batch_cursor)
+AssignVectors(cursor)
+Publish(active_version)
+Cleanup(old_version_cursor)
+```
+
+The publish step must be metadata-only from the query path's perspective: once `active_version`
+changes, searches use the new centroid metadata and partition pages. Old pages are deleted by
+bounded cleanup after publication.
+
 ## Algorithm roadmap
 
 | Phase | Algorithm | Status | Purpose |
 |-------|-----------|--------|---------|
-| 1 | Flat exact search | planned | prove storage, repair, backfill, pagination, and query integration |
-| 2 | IVF_FLAT | planned | bounded centroid/list candidate generation plus exact rerank |
+| 1 | IVF_FLAT (`ivf_flat`) | planned | standard vector index: centroid routing, partition pages, query-aware pruning, exact rerank |
+| 2 | Flat (`flat`) | planned | exact scan over all vector pages for small indexes, debugging, and correctness baselines |
 | 3 | IVF_PQ | planned | compressed approximate scoring plus full-vector rerank |
 | 4 | HNSW | experimental planned | only after update/delete/repair and IC instruction bounds are specified |
 
 ## Design gates before implementation
 
 - [done, slice 1] Choose vertex embedding key shape and stable region classification.
-- Define vector index wire types in `graph-kernel`.
-- Define bounded candidate page/cursor APIs.
+- [done, slice 1] Define canonical embedding ids and encoding types in `graph-kernel`.
+- Define derived vector-index wire types and bounded candidate page/cursor APIs.
+- Define `ivf_flat` index-definition metadata and keep algorithm choice out of query syntax.
 - Define mutation delta and repair journal representation.
 - Define backfill cursor and delete/tombstone behavior.
-- Add canbench targets for write, flush, backfill, and Flat search.
+- Define centroid cache miss behavior.
+- Define shadow-version rebuild, balanced assignment, publish, and cleanup.
+- Define partition tombstone cleanup thresholds.
+- Add canbench targets for write, flush, backfill, centroid warmup, `flat`, and `ivf_flat` search.
 
 ## Related documents
 
