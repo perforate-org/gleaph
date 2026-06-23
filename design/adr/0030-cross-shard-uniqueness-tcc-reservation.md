@@ -9,10 +9,13 @@ Last revised: 2026-06-23
 > INSERT write-path TCC (Try/Acquire/Confirm) + the DELETE/REMOVE Release write-path + the slice-6
 > recovery reconciler (reclaim Driver 1 + unified effect recovery Driver 2) + the slice-7
 > failure-injection / canbench gate (the Phase-6 test/benchmark gate is satisfied — see Revision #14).
-> Publication is split into two explicit follow-up slices, neither a Phase-6 gap: (1) **Slice 8 has
+> Publication is split into explicit follow-up slices, none of them a Phase-6 gap: (1) **Slice 8 has
 > landed** — `CREATE CONSTRAINT` is published over the public Candid/GQL ingress through the
-> already-tested declare-on-empty store path (see Revision #16); and (2) a later dedicated
-> DROP-lifecycle slice publishes `DROP CONSTRAINT` only after its draining/purge protocol lands. DROP
+> already-tested declare-on-empty store path (see Revision #16); (2) **Slice 9 is planned** — a
+> dedicated DROP-lifecycle slice publishes `DROP CONSTRAINT` only after its draining/purge protocol lands; and
+> (3) **Slice 10 is planned** — the `ShardLocalGlobal` fast path may bypass the federated TCC
+> machinery only when the Router can prove the graph-wide unique value space being enforced is wholly
+> owned by one shard. DROP
 > currently removes only the constraint definition, so
 > reservation invalidation, in-flight saga draining, and a `ConstraintNameId`-reuse guard (re-`CREATE`
 > of a dropped name reuses its id against stale reservations, risking false rejects) are not yet
@@ -71,7 +74,12 @@ Last revised: 2026-06-23
 > the public ingress declares the constraint on the already-tested declare-on-empty path and the value
 > is enforced from that point. `DROP CONSTRAINT` stays `NotImplemented`; it
 > additionally requires a dedicated lifecycle slice (reservation invalidation, in-flight saga draining,
-> and a `ConstraintNameId`-reuse guard) before it can be published — see Revision #15. This is the named-invariant
+> and a `ConstraintNameId`-reuse guard) before it can be published — see Revision #15 / planned
+> Slice 9. Slice 10 is a planned performance slice, not a correctness gate: it may add the
+> `ShardLocalGlobal` execution strategy for graph-wide UNIQUE only when the graph/label/constraint
+> scope is proven single-shard; otherwise the existing `FederatedTcc` strategy remains the enforcement
+> path. `ShardLocalScoped` names a future scoped-uniqueness extension, not Slice 10.
+> This is the named-invariant
 > strong protocol that
 > [ADR 0029](0029-shard-local-atomicity-and-cross-canister-consistency.md) §7 requires before any
 > cross-shard prepare/commit machinery is built; the acid roadmap tracks delivery as Phase 5
@@ -473,6 +481,34 @@ Last revised: 2026-06-23
 > non-admin `Forbidden` proven to leave no catalog state, DROP `NotImplemented` with the existing
 > constraint still enforcing). The `pocket-ic-e2e` declaration seam is retained for the
 > failure-injection and lifecycle suites only.
+>
+> **Revision 2026-06-23 #17 (planned Slice 9/10 and post-first-cut extensions):** the remaining ADR
+> 0030 work is split into two named slices after CREATE publication. **Slice 9** is the required DROP
+> lifecycle before `DROP CONSTRAINT` can be published: add a constraint state machine
+> (`Active → Dropping → Removed` or an equivalent explicit lifecycle), stop new acquiring claims for a
+> dropping constraint, drain or fence in-flight sagas that can still emit unique effects, purge or
+> invalidate every reservation keyed by the dropped `ConstraintNameId`, and prevent same-name
+> `ConstraintNameId` reuse from observing stale reservations. Its regression suite must include at
+> least drop-with-live-reservations, drop-then-recreate-same-name-different-label, and
+> drop-during-saga.
+>
+> **Slice 10** is a performance-only `ShardLocalGlobal` enforcement fast path. The strategy taxonomy is
+> **`FederatedTcc | ShardLocalGlobal | ShardLocalScoped`**, but Slice 10 implements only
+> `ShardLocalGlobal`: the constraint semantics remain graph-wide, and the local fast path is sound
+> only when the Router can prove the constraint's full graph-wide value space is single-shard-owned
+> (for example, the logical graph or the constrained label/constraint scope is structurally pinned to
+> one shard). A mutation merely resolving to one dispatch (`dispatches.len() == 1`) is **not**
+> sufficient for a graph-wide UNIQUE constraint: the same value may already exist on another shard. If
+> the single-shard ownership proof holds, the shard may check and update a local unique table in the
+> same atomic canonical segment as the INSERT/DELETE/REMOVE, using the same canonical `encoded_value`;
+> otherwise the mutation must use `FederatedTcc`. `ShardLocalScoped` — partition/tenant-scoped
+> uniqueness where the unique key includes the routing partition — changes the constraint semantics
+> from graph-wide to scope-wide and is a separate extension, not part of Slice 10.
+>
+> The first-cut exclusions remain explicitly deferred as later amendments: adding constraints to
+> existing labels with validation/backfill (`Validating → Active/Inactive`), constrained value changes
+> through `SET` / full property replacement, composite multi-property UNIQUE keys, edge uniqueness,
+> and cross-graph uniqueness.
 
 ## Context
 
@@ -879,9 +915,14 @@ serialization point):
   `Inactive` on failure. `post_upgrade`/recovery must either resume a `Validating` scan or safely
   abort it to `Inactive` (never silently land in `Active` without a completed scan). This is its own
   ADR amendment.
-- **DROP:** dropping a constraint atomically invalidates its reservations; a write observes the
-  constraint as fully present or fully absent, never half-dropped. In-flight reservations for a
-  dropping constraint are drained (their sagas complete or cancel) under the same proof rules.
+- **DROP (planned Slice 9; not yet published):** dropping a constraint atomically invalidates its
+  reservations; a write observes the constraint as fully present or fully absent, never half-dropped.
+  In-flight reservations for a dropping constraint are drained (their sagas complete or cancel) under
+  the same proof rules. The planned lifecycle must prevent new acquiring claims once a constraint is
+  `Dropping`, preserve or recover any pinned unique effects until their owning sagas are terminal,
+  purge/invalidate all reservations keyed by the dropped `ConstraintNameId`, and fence same-name id
+  reuse until stale state is gone. Until this lifecycle lands, public `DROP CONSTRAINT` remains
+  `NotImplemented`; the current store helper is definition-only and not a public contract.
 - **Ownership:** uniqueness is owned by the constraint, never by an index. Multiple named indexes on
   the same property are access paths and do not each impose uniqueness; only a declared constraint
   does.
@@ -931,6 +972,46 @@ follows from that asymmetry — what must be pre-resolvable is the *acquire* cla
 - **Also out (deferred):** composite multi-property unique keys; relationship-endpoint uniqueness;
   declaring a constraint on an already-populated, actively-written graph (backfill); cross-graph
   uniqueness.
+
+### Enforcement strategies (planned Slice 10)
+
+The strategy taxonomy is **`FederatedTcc | ShardLocalGlobal | ShardLocalScoped`**:
+
+- **`FederatedTcc` (general graph-wide path):** Router reservation + graph unique-effect outbox +
+  Confirm/Release + recovery. This remains mandatory whenever a graph-wide constraint's value space
+  may span multiple shards.
+- **`ShardLocalGlobal` (planned Slice 10 fast path):** the constraint semantics remain graph-wide, but
+  the Router proves the graph/label/constraint value space is wholly owned by one shard. The shard
+  then updates shard-local unique state in the same atomic canonical segment as the element
+  write/release, using the same `encoded_value` rules. It removes the Router Try, `Acquire` outbox,
+  proof read, ack, and reclaim/effect recovery from that mutation's hot path.
+- **`ShardLocalScoped` (deferred semantic extension):** the constraint itself is scope-wide rather
+  than graph-wide, for example partition/tenant-scoped uniqueness where the unique key includes the
+  routing partition and the Router proves that partition maps to the same shard. This requires DDL,
+  backfill, and query-semantics design separate from Slice 10.
+- **Not sufficient:** a particular mutation having exactly one dispatch is not by itself proof that a
+  graph-wide unique value does not already exist on another shard. `dispatches.len() == 1` can be a
+  routing fact about the new write, not a scope proof about all existing values.
+
+### Deferred extensions after the first cut
+
+These are intentionally outside the Slice 8–10 completion scope and require separate design/test
+amendments:
+
+- **Existing-label constraints with validation/backfill:** `Validating → Active/Inactive`, write
+  fencing during validation, shard scan/retry semantics, and upgrade recovery for an in-progress scan.
+- **`SET` / full property replacement value changes:** two-round graph-evaluates-then-Router-reserves
+  protocol for row-dependent target selection, including acquire-new + release-old ordering.
+- **Composite multi-property UNIQUE:** canonical tuple encoding, NULL/missing tuple semantics,
+  per-component bounds, and migration/backfill behavior.
+- **Edge uniqueness:** edge type / endpoint identity semantics, edge-property release capture, and
+  admission rules distinct from vertex labels.
+- **Cross-graph uniqueness:** a different authority boundary than this ADR's per-graph Router table;
+  it likely needs an explicit global namespace/authority rather than reusing graph-scoped
+  `UNIQUE_RESERVATIONS`.
+- **`ShardLocalScoped` scoped uniqueness:** partition/tenant-scoped uniqueness where the constraint's
+  meaning is scope-wide rather than graph-wide; this is a semantic extension, not the Slice 10
+  graph-wide fast path.
 
 ## Consequences
 
@@ -1017,7 +1098,9 @@ Phase-6 gate below is satisfied, and `CREATE CONSTRAINT` is now published over t
 > (publication tests in `adr0030_constraint_dispatch.rs`). `DROP` remains `NotImplemented`: it is
 > **not** publishable on the gate alone — it needs a dedicated lifecycle slice (reservation
 > invalidation + saga draining + `ConstraintNameId`-reuse guard, with regression tests) — see
-> Revision #15.
+> Revision #15 / planned Slice 9. Slice 10 is a planned `ShardLocalGlobal` performance optimization
+> for provably single-shard-owned graph-wide constraint scopes and does not change the Phase-6
+> correctness gate; `ShardLocalScoped` is deferred.
 >
 > **Covered by PocketIC e2e** (`crates/pocket-ic-tests/tests/adr0030_uniqueness_lifecycle.rs`,
 > `adr0030_uniqueness_recovery.rs`):
