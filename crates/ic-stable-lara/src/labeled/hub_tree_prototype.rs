@@ -167,7 +167,8 @@ impl HubBucketTree {
     /// Descending scan that reads **only the key** (never deserializes the value).
     /// Experiment probe: isolates the B-tree traversal + key-deser floor from the
     /// value-deserialization cost, to test whether shrinking/splitting the value
-    /// can help scans (ADR 0022 Stage 2b).
+    /// can help scans (ADR 0022 Stage 2b). Bench-only probe (see `labeled/bench.rs`).
+    #[cfg(feature = "canbench")]
     pub(crate) fn for_each_descending_key_only<F: FnMut(u32)>(
         &self,
         vertex: u32,
@@ -201,12 +202,14 @@ impl HubBucketTree {
 /// `EdgePayloadStore`/`EdgePropertyStore`, never in the slab row). Used to test
 /// whether shrinking the B-tree value from 10 to 4 bytes recovers scan cost
 /// (ADR 0022 Stage 2b). Same `(vertex, label, seq)` key and semantics as
-/// [`HubBucketTree`].
+/// [`HubBucketTree`]. Bench-only variant (see `labeled/bench.rs`).
+#[cfg(feature = "canbench")]
 pub(crate) struct HubTargetTree {
     map: StableBTreeMap<HubEdgeKey, u32, VectorMemory>,
     next_seq: u32,
 }
 
+#[cfg(feature = "canbench")]
 impl HubTargetTree {
     pub(crate) fn new(memory: VectorMemory) -> Self {
         Self {
