@@ -2295,3 +2295,48 @@ fn partition_health_unknown_index_errors() {
         VectorIndexError::UnknownIndex
     );
 }
+
+#[test]
+fn slab_stats_dual_write_rollback_keeps_live_and_counts_tombstone() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    drive_into_building(&store, INDEX_ID); // -> Building (dual-write)
+
+    let before = store
+        .admin_vector_slab_stats(router(), Some(INDEX_ID))
+        .expect("stats");
+    // Force the shadow append to fail; the active append succeeds first and is then rolled back
+    // (tombstoned) by vector_upsert.
+    crate::facade::stable::page_store::arm_append_failure(1);
+    let err = store
+        .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
+        .expect_err("shadow grow failure propagates");
+    assert_eq!(err, VectorIndexError::StableGrowFailed);
+    let after = store
+        .admin_vector_slab_stats(router(), Some(INDEX_ID))
+        .expect("stats");
+
+    assert_eq!(
+        after.scope.physical_live_row_count, before.scope.physical_live_row_count,
+        "rolled-back active row is not counted as physically live"
+    );
+    assert_eq!(
+        after.scope.tombstone_row_count,
+        before.scope.tombstone_row_count + 1,
+        "the compensated active row is counted as a tombstone"
+    );
+}
+
+#[test]
+fn slab_stats_rejects_non_router_caller() {
+    let store = fresh_store();
+    assert_eq!(
+        store
+            .admin_vector_slab_stats(shard_canister(), None)
+            .unwrap_err(),
+        VectorIndexError::Unauthorized
+    );
+}

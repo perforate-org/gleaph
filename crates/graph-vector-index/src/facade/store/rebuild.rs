@@ -35,7 +35,7 @@ use crate::records::{
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorIndexError, VectorMetric, VectorPartitionHealthSummary,
-    VectorRebuildPhase, VectorRebuildStatus,
+    VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats,
 };
 use ic_stable_structures::storable::Storable;
 use rapidhash::{HashSetExt, RapidHashSet};
@@ -752,6 +752,23 @@ impl VectorIndexStore {
             page_count,
             max_partition_live_rows,
         })
+    }
+
+    /// Derived slab-space observability for the ADR 0032 page store (maintenance, not search truth).
+    /// Whole-slab physical facts are global; `index_id` (`None` = all indexes) scopes only the
+    /// logical row/referenced-byte counters and the version breakdown. Reads only `VECTOR_PAGE_META`
+    /// + the slab header — never row bytes or `VECTOR_SUBJECT_TO_ID`, and it mutates nothing.
+    ///
+    /// **Unbounded** full page-meta scan (a bounded cursor snapshot is a deferred follow-up).
+    /// Router-guarded `#[query]`. It is purely derived, so an unknown/empty index yields zero scope
+    /// counters rather than an error.
+    pub fn admin_vector_slab_stats(
+        &self,
+        caller: Principal,
+        index_id: Option<u32>,
+    ) -> Result<VectorSlabStats, VectorIndexError> {
+        self.assert_router_caller(caller)?;
+        Ok(PAGE_STORE.with_borrow(|store| store.stats_for_index(index_id)))
     }
 
     /// Atomically publishes a `ReadyToPublish` rebuild (ADR 0031 Slice 7). **O(1)**: completeness is

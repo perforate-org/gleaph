@@ -8,7 +8,7 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorPartitionHealthSummary, VectorRebuildStatus, VectorSearchRequest,
-    VectorSearchResult,
+    VectorSearchResult, VectorSlabStats,
 };
 use ic_cdk::api::msg_caller;
 
@@ -102,5 +102,11 @@ pub(crate) fn admin_vector_partition_health(
 ) -> Result<VectorPartitionHealthSummary, String> {
     VectorIndexStore::new()
         .admin_vector_partition_health(msg_caller(), index_id)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_slab_stats(index_id: Option<u32>) -> Result<VectorSlabStats, String> {
+    VectorIndexStore::new()
+        .admin_vector_slab_stats(msg_caller(), index_id)
         .map_err(|e| e.to_string())
 }

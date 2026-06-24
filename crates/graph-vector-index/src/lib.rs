@@ -32,7 +32,7 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorPartitionHealthSummary, VectorRebuildStatus, VectorSearchRequest,
-    VectorSearchResult,
+    VectorSearchResult, VectorSlabStats,
 };
 use ic_cdk_macros::{init, query, update};
 
@@ -123,6 +123,14 @@ fn admin_vector_rebuild_cleanup_step(
 #[query(guard = "guard_router_canister")]
 fn admin_vector_partition_health(index_id: u32) -> Result<VectorPartitionHealthSummary, String> {
     canister::admin_vector_partition_health(index_id)
+}
+
+/// Derived slab-space observability for the ADR 0032 page store. Maintenance/diagnostic data only,
+/// not search truth; an unbounded full page-meta scan. `index_id` (`null` = all indexes) scopes only
+/// the logical counters; the `slab` physical facts are always whole-slab global.
+#[query(guard = "guard_router_canister")]
+fn admin_vector_slab_stats(index_id: Option<u32>) -> Result<VectorSlabStats, String> {
+    canister::admin_vector_slab_stats(index_id)
 }
 
 ic_cdk::export_candid!();

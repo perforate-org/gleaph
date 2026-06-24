@@ -102,6 +102,20 @@ contract: `VECTOR_SUBJECT_TO_ID` remains the live-clock/source-of-truth row, whi
 partition-scan hot path (the region is retained; the search path re-validates each candidate against
 `VECTOR_SUBJECT_TO_ID.current_slot_for(active)`).
 
+The slab store exposes a derived, admin-only observability query (`admin_vector_slab_stats`,
+router-guarded) over the ADR 0032 page store. It is maintenance observation, not search truth: it is
+computed purely from `VECTOR_PAGE_META` plus the slab header, never reads row bytes or
+`VECTOR_SUBJECT_TO_ID`, and never feeds search/mutation/rebuild/freshness decisions —
+`VECTOR_SUBJECT_TO_ID` remains the freshness source of truth. Because `VECTOR_ROW_SLAB` is a single
+global allocation domain, the physical slab facts (`slab_size_bytes`, `occupied_tail_bytes`,
+`referenced_page_bytes_global`, `estimated_unreferenced_bytes`) are always whole-slab global, while
+an optional `index_id` scopes only the logical counters and the per-version breakdown. The reported
+`physical_live_row_count` is `VectorPageMeta.live_count` (physical non-tombstone rows), which can
+exceed the searchable count because the search freshness check skips stale/meta-drift rows; the
+dead-space estimate is approximate and intentionally conservative (it grows as cleanup deletes page
+meta without rewinding the slab tail). The query is an unbounded full page-meta scan for this slice;
+a bounded `cursor + max_pages` snapshot and any allocator/compaction work remain deferred.
+
 Still deferred to Slice 9+: tombstone-ratio / total-row partition health (needs a page scan or new
 persisted counters), full/balanced k-means and k-means++ init, partition tombstone-cleanup
 thresholds, candidate pagination, query ranking/merge, a heap centroid cache, PQ/HNSW, and

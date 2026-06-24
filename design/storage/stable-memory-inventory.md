@@ -286,6 +286,14 @@ page-format migration. Each row carries a derived `subject_locator` that retires
 freshness source of truth. `VECTOR_PARTITION_HEADS` (MemoryId 9) remains the per-partition
 allocator/counter owner and is deliberately outside the composite store.
 
+A derived, router-guarded admin query (`admin_vector_slab_stats`) reports slab-space observability
+over these two regions: whole-slab physical facts (size, `occupied_tail`, global referenced bytes,
+conservative dead-space estimate) plus optional per-`index_id`/per-version logical counters. Because
+`VECTOR_ROW_SLAB` is a single global allocation domain, the physical facts are always global while
+`index_id` scopes only the logical counters. It reads only `VECTOR_PAGE_META` + the slab header
+(never row bytes or `VECTOR_SUBJECT_TO_ID`) and is currently an **unbounded** full page-meta scan
+(a bounded cursor snapshot is deferred). It is diagnostic only and never affects search/freshness.
+
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
 | 0 | `VECTOR_INDEX_ROUTER` | `VECTOR_INDEX_ROUTER` | `init_router` | canonical | router authorization | — |

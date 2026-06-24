@@ -30,7 +30,10 @@ use super::memory::{Memory, StablePageMetaMap, init_page_meta, init_row_slab};
 use crate::facade::stable::VECTOR_PARTITION_HEADS;
 use crate::records::{PageKey, PartitionKey, SlotRef, VectorIndexDef};
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::vector_index::{VectorIndexError, VectorSubject};
+use gleaph_graph_kernel::vector_index::{
+    VectorIndexError, VectorSlabGlobalStats, VectorSlabScopeStats, VectorSlabStats,
+    VectorSlabVersionStats, VectorSubject,
+};
 use ic_stable_structures::Memory as _;
 use ic_stable_structures::storable::{Bound, Storable};
 use std::borrow::Cow;
@@ -805,6 +808,101 @@ impl VectorSlabStore {
         DropProgress { cursor, exhausted }
     }
 
+    /// Derived, admin-only slab-space observability (ADR 0032 follow-up slice). Computes whole-slab
+    /// physical facts plus logical counters scoped to `index_id` (`None` = all indexes), in a single
+    /// pass over `VECTOR_PAGE_META`.
+    ///
+    /// **Unbounded**: it scans every page-meta entry (even for `Some(index_id)`, because the global
+    /// dead-space estimate needs the whole slab). This is acceptable for admin/debug use; a bounded
+    /// `cursor + max_pages` snapshot is a deferred follow-up.
+    ///
+    /// Reads only page meta + the slab header/size — never row bytes, `VECTOR_SUBJECT_TO_ID`, or any
+    /// mutation. `physical_live_row_count` is `VectorPageMeta.live_count` (physical non-tombstone),
+    /// not subject-freshness.
+    pub(crate) fn stats_for_index(&self, index_id: Option<u32>) -> VectorSlabStats {
+        let mut referenced_global: u64 = 0;
+        let mut scope_referenced: u64 = 0;
+        let mut scope_pages: u64 = 0;
+        let mut scope_rows: u64 = 0;
+        let mut scope_live: u64 = 0;
+        let mut scope_tombstones: u64 = 0;
+        let mut versions: Vec<VectorSlabVersionStats> = Vec::new();
+
+        // Page-meta entries are sorted by `PageKey`, so `(index_id, index_version)` groups are
+        // contiguous: accumulate into the current group and flush on key change.
+        let mut current: Option<VectorSlabVersionStats> = None;
+        for entry in self.meta.iter() {
+            let key = entry.key();
+            let m = entry.value();
+            let bytes = checked_page_span(m.capacity, m.row_stride).unwrap_or(0);
+            referenced_global = referenced_global.saturating_add(bytes);
+
+            if index_id.is_some_and(|id| key.index_id != id) {
+                continue;
+            }
+            scope_referenced = scope_referenced.saturating_add(bytes);
+            scope_pages = scope_pages.saturating_add(1);
+            scope_rows = scope_rows.saturating_add(m.row_count as u64);
+            scope_live = scope_live.saturating_add(m.live_count as u64);
+            scope_tombstones = scope_tombstones.saturating_add(m.tombstone_count as u64);
+
+            match current.as_mut() {
+                Some(v) if v.index_id == key.index_id && v.index_version == key.index_version => {
+                    v.page_count = v.page_count.saturating_add(1);
+                    v.row_count = v.row_count.saturating_add(m.row_count as u64);
+                    v.physical_live_row_count = v
+                        .physical_live_row_count
+                        .saturating_add(m.live_count as u64);
+                    v.tombstone_row_count = v
+                        .tombstone_row_count
+                        .saturating_add(m.tombstone_count as u64);
+                    v.referenced_page_bytes = v.referenced_page_bytes.saturating_add(bytes);
+                }
+                _ => {
+                    if let Some(v) = current.take() {
+                        versions.push(v);
+                    }
+                    current = Some(VectorSlabVersionStats {
+                        index_id: key.index_id,
+                        index_version: key.index_version,
+                        page_count: 1,
+                        row_count: m.row_count as u64,
+                        physical_live_row_count: m.live_count as u64,
+                        tombstone_row_count: m.tombstone_count as u64,
+                        referenced_page_bytes: bytes,
+                    });
+                }
+            }
+        }
+        if let Some(v) = current.take() {
+            versions.push(v);
+        }
+
+        let slab_size_bytes = self.slab.size().saturating_mul(WASM_PAGE_SIZE);
+        let estimated_unreferenced_bytes = self
+            .occupied_tail
+            .saturating_sub(SLAB_HEADER_LEN)
+            .saturating_sub(referenced_global);
+
+        VectorSlabStats {
+            slab: VectorSlabGlobalStats {
+                slab_size_bytes,
+                occupied_tail_bytes: self.occupied_tail,
+                referenced_page_bytes_global: referenced_global,
+                estimated_unreferenced_bytes,
+            },
+            scope: VectorSlabScopeStats {
+                index_id,
+                referenced_page_bytes: scope_referenced,
+                page_count: scope_pages,
+                row_count: scope_rows,
+                physical_live_row_count: scope_live,
+                tombstone_row_count: scope_tombstones,
+            },
+            versions,
+        }
+    }
+
     // --- Test-only inspection helpers ---
 
     #[cfg(test)]
@@ -1214,5 +1312,174 @@ mod tests {
         let slab = mm.get(SLAB_ID);
         slab.write(slab_offset, &[0u8; 4]);
         let _ = open(&mm);
+    }
+
+    #[test]
+    fn stats_fresh_store_is_empty() {
+        let mm = fresh_mm();
+        let stats = open(&mm).stats_for_index(None);
+        assert_eq!(stats.slab.occupied_tail_bytes, SLAB_HEADER_LEN);
+        assert_eq!(stats.slab.referenced_page_bytes_global, 0);
+        assert_eq!(stats.slab.estimated_unreferenced_bytes, 0);
+        assert_eq!(stats.scope.page_count, 0);
+        assert_eq!(stats.scope.row_count, 0);
+        assert_eq!(stats.scope.physical_live_row_count, 0);
+        assert_eq!(stats.scope.tombstone_row_count, 0);
+        assert!(stats.versions.is_empty());
+    }
+
+    #[test]
+    fn stats_append_grows_pages_and_referenced_bytes() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(2);
+        let mut store = open(&mm);
+        store
+            .append_row(1, 1, 0, &d, 1, 1, subject(1), &bytes(0.0, 0.0))
+            .unwrap();
+        store
+            .append_row(1, 1, 0, &d, 2, 1, subject(2), &bytes(1.0, 1.0))
+            .unwrap();
+        let span = page_span(2, d.stride_bytes); // one full page
+        let stats = store.stats_for_index(None);
+        assert_eq!(stats.scope.page_count, 1);
+        assert_eq!(stats.scope.row_count, 2);
+        assert_eq!(stats.scope.physical_live_row_count, 2);
+        assert_eq!(stats.scope.tombstone_row_count, 0);
+        assert_eq!(stats.scope.referenced_page_bytes, span);
+        assert_eq!(stats.slab.referenced_page_bytes_global, span);
+        // tail == header + the one reserved page span; no dead space yet.
+        assert_eq!(stats.slab.occupied_tail_bytes, SLAB_HEADER_LEN + span);
+        assert_eq!(stats.slab.estimated_unreferenced_bytes, 0);
+    }
+
+    #[test]
+    fn stats_tombstone_moves_live_to_tombstone_without_touching_bytes() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(2);
+        let mut store = open(&mm);
+        let s0 = store
+            .append_row(1, 1, 0, &d, 1, 1, subject(1), &bytes(0.0, 0.0))
+            .unwrap();
+        store
+            .append_row(1, 1, 0, &d, 2, 1, subject(2), &bytes(1.0, 1.0))
+            .unwrap();
+        let before = store.stats_for_index(None);
+        assert!(store.tombstone_row(1, s0));
+        let after = store.stats_for_index(None);
+        assert_eq!(
+            after.scope.physical_live_row_count,
+            before.scope.physical_live_row_count - 1
+        );
+        assert_eq!(
+            after.scope.tombstone_row_count,
+            before.scope.tombstone_row_count + 1
+        );
+        assert_eq!(after.scope.row_count, before.scope.row_count);
+        assert_eq!(
+            after.scope.referenced_page_bytes,
+            before.scope.referenced_page_bytes
+        );
+        assert_eq!(
+            after.slab.referenced_page_bytes_global,
+            before.slab.referenced_page_bytes_global
+        );
+    }
+
+    #[test]
+    fn stats_drop_version_pages_increases_estimated_dead_space() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(1); // one page per row
+        let mut store = open(&mm);
+        for v in 0..3u32 {
+            store
+                .append_row(1, 1, 0, &d, v as u64, 1, subject(v), &bytes(v as f32, 0.0))
+                .unwrap();
+        }
+        let before = store.stats_for_index(None);
+        assert_eq!(before.scope.page_count, 3);
+        assert_eq!(before.slab.estimated_unreferenced_bytes, 0);
+        let tail_before = before.slab.occupied_tail_bytes;
+
+        assert!(store.drop_version_pages(1, 1, None, 100).exhausted);
+        let after = store.stats_for_index(None);
+        assert_eq!(after.scope.page_count, 0);
+        assert_eq!(after.slab.referenced_page_bytes_global, 0);
+        assert_eq!(
+            after.slab.occupied_tail_bytes, tail_before,
+            "no slab tail rewind this slice"
+        );
+        assert_eq!(
+            after.slab.estimated_unreferenced_bytes,
+            tail_before - SLAB_HEADER_LEN,
+            "all referenced bytes became leaked dead space"
+        );
+        assert!(after.slab.estimated_unreferenced_bytes > before.slab.estimated_unreferenced_bytes);
+    }
+
+    #[test]
+    fn stats_scope_filters_logical_counters_but_slab_facts_stay_global() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(1); // one page per row → easy page counting
+        let mut store = open(&mm);
+        // index 1 version 1: 2 rows; index 1 version 2: 1 row; index 2 version 1: 1 row.
+        store
+            .append_row(1, 1, 0, &d, 1, 1, subject(1), &bytes(0.0, 0.0))
+            .unwrap();
+        store
+            .append_row(1, 1, 0, &d, 2, 1, subject(2), &bytes(1.0, 0.0))
+            .unwrap();
+        store
+            .append_row(1, 2, 0, &d, 3, 1, subject(3), &bytes(2.0, 0.0))
+            .unwrap();
+        store
+            .append_row(2, 1, 0, &d, 4, 1, subject(4), &bytes(3.0, 0.0))
+            .unwrap();
+        let span = page_span(1, d.stride_bytes);
+
+        let global = store.stats_for_index(None);
+        assert_eq!(global.scope.page_count, 4);
+        assert_eq!(global.scope.row_count, 4);
+        assert_eq!(global.slab.referenced_page_bytes_global, 4 * span);
+        assert_eq!(global.versions.len(), 3);
+        assert_eq!(
+            (
+                global.versions[0].index_id,
+                global.versions[0].index_version,
+                global.versions[0].page_count
+            ),
+            (1, 1, 2)
+        );
+        assert_eq!(
+            (
+                global.versions[1].index_id,
+                global.versions[1].index_version,
+                global.versions[1].page_count
+            ),
+            (1, 2, 1)
+        );
+        assert_eq!(
+            (
+                global.versions[2].index_id,
+                global.versions[2].index_version,
+                global.versions[2].page_count
+            ),
+            (2, 1, 1)
+        );
+
+        let scoped = store.stats_for_index(Some(1));
+        assert_eq!(scoped.scope.index_id, Some(1));
+        assert_eq!(
+            scoped.scope.page_count, 3,
+            "index 1 across versions 1 and 2"
+        );
+        assert_eq!(scoped.scope.referenced_page_bytes, 3 * span);
+        assert_eq!(scoped.versions.len(), 2);
+        assert!(scoped.versions.iter().all(|v| v.index_id == 1));
+        // Physical slab facts are whole-slab global regardless of the index filter.
+        assert_eq!(scoped.slab, global.slab);
     }
 }

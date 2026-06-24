@@ -266,6 +266,90 @@ pub struct VectorPartitionHealthSummary {
     pub max_partition_live_rows: u64,
 }
 
+/// Derived, admin-only slab-space observability for the ADR 0032 vector slab page store.
+///
+/// **Maintenance observation, not search truth.** Computed purely from `VECTOR_PAGE_META` plus the
+/// slab header; it never reads row bytes or `VECTOR_SUBJECT_TO_ID`, and never feeds search,
+/// mutation, rebuild, or freshness decisions. Dead-space figures are approximate and intentionally
+/// conservative.
+///
+/// `slab` holds whole-slab physical facts that are always global (the `VECTOR_ROW_SLAB` region is a
+/// single allocation domain shared by every index/version), even when a query scopes the logical
+/// counters to one `index_id`. `scope` and `versions` carry the logical counters for the queried
+/// scope.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct VectorSlabStats {
+    /// Whole-slab physical facts (always global, never scoped by `index_id`).
+    pub slab: VectorSlabGlobalStats,
+    /// Logical counters for the queried scope (one `index_id`, or all indexes).
+    pub scope: VectorSlabScopeStats,
+    /// Per-`(index_id, index_version)` breakdown for the queried scope.
+    pub versions: Vec<VectorSlabVersionStats>,
+}
+
+/// Whole-slab physical facts for [`VectorSlabStats`]. Always global: the `VECTOR_ROW_SLAB` region is
+/// one allocation domain shared by all indexes and versions, so these fields are identical
+/// regardless of any `index_id` filter.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+)]
+pub struct VectorSlabGlobalStats {
+    /// Total bytes backing the raw slab region (`Memory::size() * wasm_page_size`).
+    pub slab_size_bytes: u64,
+    /// Bytes the slab considers allocated (the slab header's `occupied_tail`).
+    pub occupied_tail_bytes: u64,
+    /// Sum of every referenced page's span across the whole slab (all indexes/versions).
+    pub referenced_page_bytes_global: u64,
+    /// Approximate leaked/dead bytes:
+    /// `occupied_tail_bytes - slab_header_len - referenced_page_bytes_global`, saturating at zero.
+    /// Conservative; grows as cleanup deletes page meta without rewinding the slab tail.
+    pub estimated_unreferenced_bytes: u64,
+}
+
+/// Logical counters aggregated over the queried scope for [`VectorSlabStats`].
+///
+/// When `index_id` is `Some(id)` these cover only `id`; when `None` they aggregate every index.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+)]
+pub struct VectorSlabScopeStats {
+    /// The queried index filter (`None` = all indexes).
+    pub index_id: Option<u32>,
+    /// Sum of referenced page spans within the scope.
+    pub referenced_page_bytes: u64,
+    /// Page-meta entries within the scope.
+    pub page_count: u64,
+    /// Physical rows (live + tombstoned) within the scope.
+    pub row_count: u64,
+    /// Physical non-tombstone rows (`VectorPageMeta.live_count`) within the scope. **Not**
+    /// subject-freshness: ADR 0032 lets the search freshness check skip stale/meta-drift rows, so
+    /// this can exceed the number of searchable rows.
+    pub physical_live_row_count: u64,
+    /// Tombstoned rows within the scope.
+    pub tombstone_row_count: u64,
+}
+
+/// Per-`(index_id, index_version)` slab counters for [`VectorSlabStats::versions`].
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+)]
+pub struct VectorSlabVersionStats {
+    /// Owning index.
+    pub index_id: u32,
+    /// Physical index generation.
+    pub index_version: u64,
+    /// Page-meta entries for this version.
+    pub page_count: u64,
+    /// Physical rows (live + tombstoned) for this version.
+    pub row_count: u64,
+    /// Physical non-tombstone rows for this version (see [`VectorSlabScopeStats::physical_live_row_count`]).
+    pub physical_live_row_count: u64,
+    /// Tombstoned rows for this version.
+    pub tombstone_row_count: u64,
+    /// Sum of referenced page spans for this version.
+    pub referenced_page_bytes: u64,
+}
+
 /// Vector-index canister mutation/sync/admin/search failure.
 ///
 /// Single error type for the canister: mutation endpoints return it over the wire; admin endpoints
@@ -484,6 +568,48 @@ mod tests {
         };
         let bytes = Encode!(&result).expect("encode result");
         assert_eq!(Decode!(&bytes, VectorSearchResult).expect("decode"), result);
+    }
+
+    #[test]
+    fn slab_stats_candid_roundtrip() {
+        let stats = VectorSlabStats {
+            slab: VectorSlabGlobalStats {
+                slab_size_bytes: 131_072,
+                occupied_tail_bytes: 96_000,
+                referenced_page_bytes_global: 64_000,
+                estimated_unreferenced_bytes: 31_968,
+            },
+            scope: VectorSlabScopeStats {
+                index_id: Some(7),
+                referenced_page_bytes: 48_000,
+                page_count: 3,
+                row_count: 120,
+                physical_live_row_count: 100,
+                tombstone_row_count: 20,
+            },
+            versions: vec![
+                VectorSlabVersionStats {
+                    index_id: 7,
+                    index_version: 1,
+                    page_count: 2,
+                    row_count: 80,
+                    physical_live_row_count: 70,
+                    tombstone_row_count: 10,
+                    referenced_page_bytes: 32_000,
+                },
+                VectorSlabVersionStats {
+                    index_id: 7,
+                    index_version: 2,
+                    page_count: 1,
+                    row_count: 40,
+                    physical_live_row_count: 30,
+                    tombstone_row_count: 10,
+                    referenced_page_bytes: 16_000,
+                },
+            ],
+        };
+        let bytes = Encode!(&stats).expect("encode");
+        assert_eq!(Decode!(&bytes, VectorSlabStats).expect("decode"), stats);
     }
 
     #[test]
