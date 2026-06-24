@@ -1180,6 +1180,15 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
              rows; fullness bounded by slots_per_page from the index def",
             RebuildPath::Named("vertex_embedding_backfill"),
         ),
+        region(
+            "VECTOR_ID_TO_SUBJECT",
+            11,
+            StableMemoryClass::Derived,
+            "vector id reverse map",
+            "(index_id, vector_id) → VectorSubject: reverse locator for partition-page search \
+             (ADR 0031 Slice 6); VECTOR_SUBJECT_TO_ID remains the freshness source of truth",
+            RebuildPath::Named("vertex_embedding_backfill"),
+        ),
     ],
 };
 
@@ -1480,8 +1489,8 @@ mod tests {
     #[test]
     fn vector_index_layout_registry_matches_baseline() {
         assert_layout(&VECTOR_INDEX_STABLE_LAYOUT);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 11);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(10));
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 12);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(11));
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[4].symbol,
             "VECTOR_INDEX_DEFS"
@@ -1505,6 +1514,15 @@ mod tests {
             "VECTOR_SUBJECT_TO_ID"
         );
         assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.regions[10].symbol, "VECTOR_PAGE");
+        // ADR 0031 Slice 6: reverse locator for partition-page search, derived/rebuildable.
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[11].symbol,
+            "VECTOR_ID_TO_SUBJECT"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[11].class,
+            StableMemoryClass::Derived
+        );
     }
 
     #[test]

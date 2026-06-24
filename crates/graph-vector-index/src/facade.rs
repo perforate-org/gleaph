@@ -5,3 +5,6 @@ pub(crate) mod stable;
 mod store;
 
 pub use store::VectorIndexStore;
+
+#[cfg(feature = "canbench")]
+pub(crate) use store::SearchTuning;

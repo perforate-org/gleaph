@@ -25,6 +25,7 @@ Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
 | 2026-06-23 | ADR 0031 slice 1: added canonical graph `VERTEX_EMBEDDINGS` (44); graph **45** regions (facade 32–44). |
 | 2026-06-23 | ADR 0031 slice 2: new `graph-vector-index` canister; `VECTOR_INDEX_STABLE_LAYOUT` **11** regions (0–10); MemoryId 6 (`IVF_CENTROIDS`) reserved-empty for Slice 4. |
 | 2026-06-24 | ADR 0031 slice 4: added canonical graph `VERTEX_EMBEDDING_INCARNATIONS` (45) for the delete-spanning incarnation fence; graph **46** regions (facade 32–45). Added Router `ROUTER_VECTOR_DISPATCH_ACTIVATION` (43) global activation flag; router **44** regions (0–43). |
+| 2026-06-24 | ADR 0031 slice 6: added `graph-vector-index` `VECTOR_ID_TO_SUBJECT` (11), a derived `(index_id, vector_id) → VectorSubject` reverse locator for the partition-page search path; `VECTOR_INDEX_STABLE_LAYOUT` **12** regions (0–11). |
 
 ## Context
 
@@ -107,7 +108,7 @@ Code source of truth:
 | Graph — facade | 8 | 32–39 | Properties, labels, aliases, label stats delta log, mutation journal |
 | Router | 44 | 0–43 | Grouped auth → registry → runtime config → idempotency → catalog → telemetry → maintenance → constraint catalog/reservations (ADR 0030, 34–39) → embedding-name catalog + vector-index defs (ADR 0031 Slice 3, 40–42) → vector dispatch activation flag (ADR 0031 Slice 4, 43); `ROUTER_GRAPH_RUNTIME_CONFIG` at MemoryId 5 |
 | Graph-index | 7 | 0–6 | Router auth, shard catalog, ownership config, then derived postings |
-| Graph-vector-index | 11 | 0–10 | Router auth, shard catalog, ownership config, index defs + allocators, centroid meta, reserved centroids, subject clock, id→slot, partition heads, pages (ADR 0031 Slice 2) |
+| Graph-vector-index | 12 | 0–11 | Router auth, shard catalog, ownership config, index defs + allocators, centroid meta, reserved centroids, subject clock, id→slot, partition heads, pages (ADR 0031 Slice 2), id→subject reverse locator (ADR 0031 Slice 6) |
 
 Ephemeral heap state (pending posting queues on graph canisters) is **not**
 part of this layout; see inventory § ephemeral. Router prepared plans are **stable**

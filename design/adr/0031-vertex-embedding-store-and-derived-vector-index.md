@@ -83,10 +83,49 @@ Last revised: 2026-06-24
 > intentionally degenerate IVF (one partition, exact scoring); a `crates/graph-vector-index` canbench
 > exact-scan suite (dims 128/384/768 × top_k 10/100) establishes the Slice 6 baseline.
 >
-> IVF centroid training, `nprobe` partition pruning, candidate pagination, query ranking/merge,
-> per-index/per-embedding fan-out, GQL vector-search syntax, and `VectorSubject::Edge` remain Slice 6+.
-> This ADR fixes ownership, consistency, the standard `ivf_flat` vector-index kind, and the first
-> derived vector-index stable-memory shape before the GQL query operator is committed.
+> `nprobe` partition pruning landed in Slice 6 (below). Production IVF centroid training, candidate
+> pagination, query ranking/merge, per-index/per-embedding fan-out, GQL vector-search syntax, and
+> `VectorSubject::Edge` remain Slice 7+. This ADR fixes ownership, consistency, the standard
+> `ivf_flat` vector-index kind, and the first derived vector-index stable-memory shape before the GQL
+> query operator is committed.
+>
+> **Slice 6 (implemented): `ivf_flat` partition-page read path.** Slice 6 lands the first real
+> `ivf_flat` read path beyond the exact scan. It adds **one stable region**, `VECTOR_ID_TO_SUBJECT`
+> (MemoryId 11), a derived `(index_id, vector_id) → VectorSubject` reverse **locator** maintained in
+> lockstep with `VECTOR_ID_TO_SLOT` on insert/resurrect/remove and rebuilt by the same
+> `vertex_embedding_backfill` path (`VECTOR_INDEX_STABLE_LAYOUT` is now **12** regions, 0–11). A new
+> `partition_page_scan` scores the query against the index's centroids (`IVF_CENTROIDS`), selects the
+> `nprobe` nearest partitions, and range-scans only those partitions' `VECTOR_PAGE` chains; each
+> scanned row is reverse-mapped to its subject and re-validated against `VECTOR_SUBJECT_TO_ID` (not
+> deleted, matching `vector_id`, and `slot` pointing at exactly this page/slot/generation) before
+> scoring, so `VECTOR_SUBJECT_TO_ID` remains the single freshness source of truth and the reverse map
+> is only a locator. `vector_search` selects the path: exact subject-map scan when `nlist <= 1` or the
+> centroids are not ready/current, partition-page scan otherwise; a stale/incomplete centroid set
+> falls back to the exact scan with **no error**. `nprobe` is the only recall knob and the selected
+> partitions are scanned in full, so the result is the exact top-k over those partitions with **no
+> mid-scan budget** that could silently truncate it; the in-canister default is `nprobe = min(4,
+> nlist)` (clamped to `1..=nlist`), and the public Router/kernel request stays algorithm-neutral
+> (no `nprobe` on the wire — an internal `vector_search_tuned` varies it for tests/benchmarks only).
+>
+> Production cannot yet create `nlist > 1` indexes, so Slice 6 partitioned/centroid layouts are
+> produced by **test/bench-only seed helpers** (`seed_ivf_for_test`); the production mutation path
+> still appends to `partition_id = 0` (correct only while `nlist == 1`, the only `nlist` any
+> production def has). **Seeded multi-partition indexes are therefore immutable after seeding in Slice
+> 6** — mutating one would hide fresh writes for `nprobe < nlist`; centroid-aware mutation assignment
+> is owned by Slice 7. A canbench suite over clustered seeded datasets (dims 128/384/768 × `nlist`
+> 16/64 × `nprobe` 1/4/8/16) records that `nprobe = nlist` returns the **same result set** as the exact
+> scan at higher instruction cost (centroid + reverse-map lookups) while lower `nprobe` measurably
+> reduces cost.
+>
+> **Slice 7 rebuild design gate (required, not implemented in Slice 6).** Production centroid training
+> and a bounded **shadow-version rebuild** (build partition pages for a new `index_version`, then
+> atomically publish it) must not lose canonical mutations that arrive mid-build. The required
+> concurrency model is **dual-write to both the active and shadow `index_version` while a build is
+> active**, keeping mutation ownership inside the vector canister's mutation boundary so the published
+> shadow is consistent at swap time. Quiesce and delta-replay are rejected (operational cost and a
+> reintroduced watermark/clock design, respectively). Production k-means / balanced assignment,
+> shadow-version rebuild + atomic publish + dual-write, partition tombstone cleanup, a heap centroid
+> cache, GQL vector syntax, `VectorSubject::Edge`, and distributed fan-out remain Slice 7+.
 
 ## Context
 
@@ -219,6 +258,7 @@ vector resolves through a slot reference:
 VECTOR_INDEX_DEFS[index_id] -> { kind: ivf_flat, encoding, dims, metric, active_version, ... }
 VECTOR_ID_TO_SLOT[(index_id, vector_id)] -> SlotRef { version, partition_id, page_id, slot, generation }
 VECTOR_SUBJECT_TO_ID[(index_id, subject)] -> { vector_id, generation }
+VECTOR_ID_TO_SUBJECT[(index_id, vector_id)] -> VectorSubject   # Slice 6 reverse locator (partition-page scan)
 ```
 
 `ivf_flat` stores full-vector bytes in partition-local fixed-width pages:

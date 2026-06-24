@@ -4,8 +4,8 @@ use super::VectorIndexStore;
 use crate::facade::stable::memory::{ShardCanisterCatalogInsertError, VectorIndexOwnershipConfig};
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, OWNERSHIP_CONFIG, SHARD_CANISTER_CATALOG, VECTOR_ID_TO_SLOT,
-    VECTOR_INDEX_DEFS, VECTOR_INDEX_ROUTER, VECTOR_PAGE, VECTOR_PARTITION_HEADS,
-    VECTOR_SUBJECT_TO_ID,
+    VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS, VECTOR_INDEX_ROUTER, VECTOR_PAGE,
+    VECTOR_PARTITION_HEADS, VECTOR_SUBJECT_TO_ID,
 };
 use crate::init::VectorIndexInitArgs;
 use crate::records::SubjectKey;
@@ -37,6 +37,7 @@ impl VectorIndexStore {
         IVF_CENTROIDS.with_borrow_mut(|m| m.clear_new());
         VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.clear_new());
         VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.clear_new());
+        VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.clear_new());
         VECTOR_PARTITION_HEADS.with_borrow_mut(|m| m.clear_new());
         VECTOR_PAGE.with_borrow_mut(|m| m.clear_new());
         VECTOR_INDEX_ROUTER.with_borrow_mut(|router| {
@@ -157,16 +158,17 @@ impl VectorIndexStore {
         for key in &to_remove {
             let entry = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(key));
             if let Some(entry) = entry
-                && !entry.deleted {
-                    if let Some(slot) = entry.slot {
-                        self.tombstone_slot(key.index_id, slot);
-                    }
-                    if let Some(vector_id) = entry.vector_id {
-                        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| {
-                            m.remove(&crate::records::VectorIdKey::new(key.index_id, vector_id))
-                        });
-                    }
+                && !entry.deleted
+            {
+                if let Some(slot) = entry.slot {
+                    self.tombstone_slot(key.index_id, slot);
                 }
+                if let Some(vector_id) = entry.vector_id {
+                    let id_key = crate::records::VectorIdKey::new(key.index_id, vector_id);
+                    VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.remove(&id_key));
+                    VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&id_key));
+                }
+            }
             VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(key));
         }
 

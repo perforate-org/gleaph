@@ -1,7 +1,7 @@
 # Vector index
 
-Last updated: 2026-06-23
-Anchor timestamp: 2026-06-23 22:55:58 UTC +0000
+Last updated: 2026-06-24
+Anchor timestamp: 2026-06-24 08:58:25 UTC +0000
 
 ## Status
 
@@ -56,12 +56,47 @@ change): correctness and freshness come from the subject map, which is already t
 which subjects are live and at which slot. The kernel adds `VectorSearchRequest` / `VectorSearchHit`
 / `VectorSearchResult` and `MAX_VECTOR_SEARCH_TOP_K` (1024).
 
-The search is intentionally degenerate IVF: one partition, exact scoring, no pruning. IVF centroid
-training, `nprobe` partition pruning, candidate pagination, query ranking/merge, page self-describing
-rows / reverse map (for partition scans), PQ/HNSW, and `VectorSubject::Edge` are deferred to Slice 6+.
-The standard vector-index kind is `ivf_flat`; `flat` is collapsed into degenerate `ivf_flat` rather
-than a separate kind, and later `ivf_pq` or experimental `hnsw` implementations must preserve the same
+Slice 6 is implemented: the first real `ivf_flat` **partition-page read path**. It adds a derived
+`VECTOR_ID_TO_SUBJECT` (MemoryId 11) reverse locator and a `partition_page_scan` that scores the
+query against the index's centroids, selects the `nprobe` nearest partitions, and scans only those
+partitions' page chains. Each scanned `PageRow` is reverse-mapped (`VECTOR_ID_TO_SUBJECT`) back to
+its subject and re-validated against `VECTOR_SUBJECT_TO_ID` (not deleted, `vector_id` matches, `slot`
+points at exactly this page/slot/generation) before scoring, so `VECTOR_SUBJECT_TO_ID` stays the
+single freshness source of truth and the reverse map is only a locator. `vector_search` selects the
+read path: it uses the **exact subject-map scan** (Slice 5) when `nlist <= 1` or the centroids are
+not ready/current, and the partition-page scan otherwise; a stale or incomplete centroid set falls
+back to the exact scan with no error. `nprobe` is the only recall knob — the selected partitions are
+scanned **in full**, so the result is the exact top-k over those partitions and there is no mid-scan
+budget that could silently truncate it (`VectorSearchResult` carries no partial/cursor marker). The
+in-canister default is `nprobe = min(4, nlist)` (clamped to `1..=nlist`); the public Router/kernel
+request stays algorithm-neutral (no `nprobe` on the wire), and an internal `vector_search_tuned`
+varies `nprobe` for tests/benchmarks only.
+
+Production cannot yet create `nlist > 1` indexes (centroid training / shadow rebuild is deferred to
+Slice 7), so Slice 6 partitioned/centroid layouts are produced by test/bench-only seed helpers
+(`seed_ivf_for_test`). **Seeded multi-partition indexes are immutable after seeding in Slice 6:** the
+production mutation path still appends to `partition_id = 0` (correct only while `nlist == 1`, the
+only `nlist` any production def has), so mutating a seeded `nlist > 1` index would hide fresh writes
+for `nprobe < nlist`. Centroid-aware mutation assignment is owned by Slice 7. The exact scan remains
+the degenerate path for all production indexes today.
+
+Still deferred to Slice 7+: IVF centroid training, shadow-version rebuild + atomic publish, candidate
+pagination, query ranking/merge, a heap centroid cache, PQ/HNSW, and `VectorSubject::Edge`. The
+standard vector-index kind is `ivf_flat`; `flat` is collapsed into degenerate `ivf_flat` rather than a
+separate kind, and later `ivf_pq` or experimental `hnsw` implementations must preserve the same
 canonical/derived boundary.
+
+### Slice 7 rebuild design gate (concurrency)
+
+A bounded shadow-version rebuild (training real centroids, building partition pages for a new
+`index_version`, then atomically publishing it) must not lose canonical mutations that arrive while
+the build is in flight. The required concurrency model is **dual-write to both the active and the
+shadow `index_version` while a build is active**, so the mutation ownership stays inside the vector
+canister's mutation boundary and the published shadow is consistent at swap time. Quiesce (stop
+canonical sync during rebuild) and delta-replay (reconcile a change log at publish via a
+watermark/clock) are explicitly rejected: quiesce is operationally costly and delta-replay reintroduces
+the watermark design that dual-write avoids. This gate is documented here but **not implemented in
+Slice 6**.
 
 ## Version naming glossary
 
@@ -378,7 +413,7 @@ bounded cleanup after publication.
 
 | Phase | Algorithm | Status | Purpose |
 |-------|-----------|--------|---------|
-| 1 | IVF_FLAT (`ivf_flat`) | exact scan implemented (Slice 5); centroid routing / partition pruning / rerank planned (Slice 6+) | standard vector index: centroid routing, partition pages, query-aware pruning, exact rerank |
+| 1 | IVF_FLAT (`ivf_flat`) | exact scan implemented (Slice 5); centroid routing + `nprobe` partition-page scan implemented over seeded fixtures (Slice 6); production centroid training / shadow rebuild planned (Slice 7+) | standard vector index: centroid routing, partition pages, query-aware pruning, exact rerank |
 | 2 | Flat (`flat`) | subsumed by degenerate `ivf_flat` exact scan (Slice 5) | exact scan over all vector pages for small indexes, debugging, and correctness baselines |
 | 3 | IVF_PQ | planned | compressed approximate scoring plus full-vector rerank |
 | 4 | HNSW | experimental planned | only after update/delete/repair and IC instruction bounds are specified |
@@ -395,7 +430,11 @@ bounded cleanup after publication.
 - Define shadow-version rebuild, balanced assignment, publish, and cleanup.
 - Define partition tombstone cleanup thresholds.
 - [done, slice 5] Add canbench targets for exact `ivf_flat` search (`crates/graph-vector-index`,
-  dims 128/384/768 × top_k 10/100). Centroid-warmup / pruned-search benches remain for Slice 6+.
+  dims 128/384/768 × top_k 10/100).
+- [done, slice 6] Add canbench targets for the partition-page scan over clustered seeded datasets
+  (dims 128/384/768 × `nlist` 16/64 × `nprobe` 1/4/8/16): `nprobe = nlist` is the exact-parity upper
+  bound (matching result set, higher instruction cost than exact due to centroid + reverse-map
+  lookups), and lower `nprobe` measurably reduces cost. Centroid-warmup benches remain for Slice 7+.
 
 ## Related documents
 

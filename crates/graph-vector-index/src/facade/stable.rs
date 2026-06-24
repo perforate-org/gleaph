@@ -36,4 +36,7 @@ thread_local! {
 
     pub(crate) static VECTOR_PAGE: RefCell<memory::StablePageMap> =
         RefCell::new(memory::init_pages());
+
+    pub(crate) static VECTOR_ID_TO_SUBJECT: RefCell<memory::StableIdToSubjectMap> =
+        RefCell::new(memory::init_id_to_subject());
 }

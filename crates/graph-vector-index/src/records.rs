@@ -152,6 +152,30 @@ impl Storable for VectorIdKey {
     }
 }
 
+/// Storable wrapper for a `VectorSubject` value in `VECTOR_ID_TO_SUBJECT` (ADR 0031 Slice 6).
+///
+/// `ic_stable_structures::BTreeMap` values must implement `Storable`; the kernel `VectorSubject`
+/// only derives Candid/Serde. Wrapping it here keeps the ICP `Storable` impl a vector-index concern
+/// (the reverse-map locator) rather than leaking into `graph-kernel`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct VectorSubjectRecord(pub VectorSubject);
+
+impl Storable for VectorSubjectRecord {
+    const BOUND: Bound = Bound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode VectorSubjectRecord"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode VectorSubjectRecord")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), VectorSubjectRecord).expect("decode VectorSubjectRecord")
+    }
+}
+
 /// `(index_id, index_version, partition_id)` key for `VECTOR_PARTITION_HEADS` and `IVF_CENTROIDS`.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PartitionKey {
@@ -540,6 +564,15 @@ mod tests {
             next_vector_id: 1,
         };
         assert_eq!(VectorIndexDef::from_bytes(def.to_bytes()), def);
+    }
+
+    #[test]
+    fn vector_subject_record_storable_roundtrip() {
+        let record = VectorSubjectRecord(VectorSubject::Vertex {
+            shard_id: ShardId::new(3),
+            vertex_id: 77,
+        });
+        assert_eq!(VectorSubjectRecord::from_bytes(record.to_bytes()), record);
     }
 
     #[test]

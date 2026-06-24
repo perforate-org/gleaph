@@ -9,6 +9,12 @@ mod authorization;
 mod mutation;
 mod search;
 
+#[cfg(feature = "canbench")]
+pub(crate) use search::SearchTuning;
+
+#[cfg(any(test, feature = "canbench"))]
+mod seed;
+
 #[cfg(test)]
 mod tests;
 

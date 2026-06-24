@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-06-23
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag = 44 regions, 0–43; graph-vector-index: ADR 0031 Slice 2 = 11 regions, 0–10)
-Anchor timestamp: 2026-06-23 22:55:58 UTC +0000
+Last updated: 2026-06-24
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag = 44 regions, 0–43; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map = 12 regions, 0–11)
+Anchor timestamp: 2026-06-24 08:58:25 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -33,7 +33,7 @@ this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same pa
 | Graph | 46 | 0–45 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
 | Router | 44 | 0–43 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
 | Graph-index | 7 | 0–6 | `INDEX_STABLE_LAYOUT` — `index_layout_registry_matches_baseline` |
-| Graph-vector-index | 11 | 0–10 | `VECTOR_INDEX_STABLE_LAYOUT` — `vector_index_layout_registry_matches_baseline` |
+| Graph-vector-index | 12 | 0–11 | `VECTOR_INDEX_STABLE_LAYOUT` — `vector_index_layout_registry_matches_baseline` |
 
 The canonical/derived split for the router registry projections is pinned by
 `router_registry_canonical_derived_split_matches_inventory`.
@@ -243,9 +243,9 @@ Router **44 regions** total (0–43).
 
 ## Graph-vector-index canister — stable regions
 
-New in ADR 0031 Slice 2. **11 regions (MemoryId 0–10).** The entire derived state is rebuildable
-from canonical graph embeddings via `vertex_embedding_backfill`, so every derived region shares the
-`"vertex_embedding_backfill"` rebuild path in `VECTOR_INDEX_STABLE_LAYOUT`
+New in ADR 0031 Slice 2; extended in Slice 6. **12 regions (MemoryId 0–11).** The entire derived
+state is rebuildable from canonical graph embeddings via `vertex_embedding_backfill`, so every
+derived region shares the `"vertex_embedding_backfill"` rebuild path in `VECTOR_INDEX_STABLE_LAYOUT`
 (`crates/graph-kernel/src/stable_layout.rs`). Code source of truth for runtime `MemoryId` constants:
 `crates/graph-vector-index/src/facade/stable/memory.rs`. The degenerate `ivf_flat` foundation runs
 with `nlist = 1` / `partition_id = 0` and no centroids; MemoryId 6 (`IVF_CENTROIDS`) is allocated but
@@ -256,6 +256,13 @@ Metadata ownership split: `VECTOR_INDEX_DEFS` (MemoryId 4) is authoritative for 
 contract, and the durable `next_vector_id` allocator); `IVF_CENTROID_META` (MemoryId 5) holds only
 centroid-specific derived state. The durable `next_page_id` allocator lives in each
 `PartitionHead` (MemoryId 9).
+
+Slice 6 adds `VECTOR_ID_TO_SUBJECT` (MemoryId 11): a `(index_id, vector_id) → VectorSubject`
+reverse locator used by the partition-page search path to resolve a scanned page row back to its
+subject. It is maintained in lockstep with `VECTOR_ID_TO_SLOT` on insert/resurrect/remove and is a
+pure locator — `VECTOR_SUBJECT_TO_ID` (MemoryId 7) remains the single source of truth for
+liveness/freshness (the row is only scored after re-validating the subject entry's `vector_id`,
+`slot`, and `generation`).
 
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
@@ -270,6 +277,7 @@ centroid-specific derived state. The durable `next_page_id` allocator lives in e
 | 8 | `VECTOR_ID_TO_SLOT` | `VECTOR_ID_TO_SLOT` | `init_id_to_slot` | derived | vector-id → slot map | `vertex_embedding_backfill` |
 | 9 | `VECTOR_PARTITION_HEADS` | `VECTOR_PARTITION_HEADS` | `init_partition_heads` | derived | partition page chains + `next_page_id` allocator | `vertex_embedding_backfill` |
 | 10 | `VECTOR_PAGE` | `VECTOR_PAGE` | `init_pages` | derived | fixed-capacity vector pages | `vertex_embedding_backfill` |
+| 11 | `VECTOR_ID_TO_SUBJECT` | `VECTOR_ID_TO_SUBJECT` | `init_id_to_subject` | derived | vector-id → subject reverse locator (**Slice 6**) | `vertex_embedding_backfill` |
 
 ---
 

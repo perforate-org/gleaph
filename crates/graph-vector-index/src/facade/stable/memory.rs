@@ -15,7 +15,7 @@ use std::cell::RefCell;
 
 use crate::records::{
     IvfCentroidMeta, PageKey, PartitionHead, PartitionKey, SlotRef, SubjectKey, SubjectMapEntry,
-    VectorIdKey, VectorIndexDef, VectorPage,
+    VectorIdKey, VectorIndexDef, VectorPage, VectorSubjectRecord,
 };
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
@@ -33,6 +33,7 @@ const VECTOR_SUBJECT_TO_ID: MemoryId = MemoryId::new(7);
 const VECTOR_ID_TO_SLOT: MemoryId = MemoryId::new(8);
 const VECTOR_PARTITION_HEADS: MemoryId = MemoryId::new(9);
 const VECTOR_PAGE: MemoryId = MemoryId::new(10);
+const VECTOR_ID_TO_SUBJECT: MemoryId = MemoryId::new(11);
 
 pub(crate) type StableRouterCell = Cell<Principal, Memory>;
 pub(crate) type StableOwnershipConfigCell = Cell<VectorIndexOwnershipConfig, Memory>;
@@ -45,6 +46,7 @@ pub(crate) type StableSubjectMap = BTreeMap<SubjectKey, SubjectMapEntry, Memory>
 pub(crate) type StableIdToSlotMap = BTreeMap<VectorIdKey, SlotRef, Memory>;
 pub(crate) type StablePartitionHeadsMap = BTreeMap<PartitionKey, PartitionHead, Memory>;
 pub(crate) type StablePageMap = BTreeMap<PageKey, VectorPage, Memory>;
+pub(crate) type StableIdToSubjectMap = BTreeMap<VectorIdKey, VectorSubjectRecord, Memory>;
 
 /// Graph ownership config (ADR 0031 Slice 4 target model B). Unlike `graph-index`
 /// `IndexOwnershipConfig`, a derived vector index has **one target per graph** that owns *every*
@@ -194,6 +196,10 @@ pub(crate) fn init_partition_heads() -> StablePartitionHeadsMap {
 
 pub(crate) fn init_pages() -> StablePageMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_PAGE)))
+}
+
+pub(crate) fn init_id_to_subject() -> StableIdToSubjectMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_ID_TO_SUBJECT)))
 }
 
 #[cfg(test)]

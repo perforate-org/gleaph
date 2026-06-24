@@ -9,12 +9,12 @@ use super::{
     PAGE_HEADER_BYTES, VectorIndexStore,
 };
 use crate::facade::stable::{
-    IVF_CENTROID_META, VECTOR_ID_TO_SLOT, VECTOR_INDEX_DEFS, VECTOR_PAGE, VECTOR_PARTITION_HEADS,
-    VECTOR_SUBJECT_TO_ID,
+    IVF_CENTROID_META, VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS, VECTOR_PAGE,
+    VECTOR_PARTITION_HEADS, VECTOR_SUBJECT_TO_ID,
 };
 use crate::records::{
     IvfCentroidMeta, PageKey, PageRow, PartitionKey, SlotRef, SubjectKey, SubjectMapEntry,
-    VectorIdKey, VectorIndexDef, VectorPage,
+    VectorIdKey, VectorIndexDef, VectorPage, VectorSubjectRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -99,18 +99,22 @@ impl VectorIndexStore {
         })
     }
 
-    /// Appends a vector row into the active partition `0` page chain, rolling a new page when the
+    /// Appends a vector row into the given partition's page chain, rolling a new page when the
     /// mutable page reaches `slots_per_page`. Bumps the durable `next_page_id` allocator.
-    fn append_slot(
+    ///
+    /// Production callers pass `DEGENERATE_PARTITION_ID` (every production def is `nlist == 1`);
+    /// the `partition_id` parameter is what lets the Slice 6 seed helpers populate `nlist > 1`
+    /// partition chains and is forward-useful for the Slice 7 rebuild.
+    pub(super) fn append_slot(
         &self,
         index_id: u32,
         index_version: u64,
+        partition_id: u32,
         slots_per_page: u32,
         vector_id: u64,
         generation: u64,
         bytes: Vec<u8>,
     ) -> SlotRef {
-        let partition_id = DEGENERATE_PARTITION_ID;
         let head_key = PartitionKey::new(index_id, index_version, partition_id);
         VECTOR_PARTITION_HEADS.with_borrow_mut(|heads| {
             VECTOR_PAGE.with_borrow_mut(|pages| {
@@ -254,9 +258,9 @@ impl VectorIndexStore {
                         self.tombstone_slot(op.index_id, slot);
                     }
                     if let Some(vector_id) = entry.vector_id {
-                        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| {
-                            m.remove(&VectorIdKey::new(op.index_id, vector_id))
-                        });
+                        let id_key = VectorIdKey::new(op.index_id, vector_id);
+                        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.remove(&id_key));
+                        VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&id_key));
                     }
                 }
                 self.insert_new_subject(op, active, def.slots_per_page, key)?;
@@ -287,6 +291,7 @@ impl VectorIndexStore {
                 let new_slot = self.append_slot(
                     op.index_id,
                     active,
+                    DEGENERATE_PARTITION_ID,
                     def.slots_per_page,
                     vector_id,
                     generation,
@@ -324,13 +329,15 @@ impl VectorIndexStore {
         let slot = self.append_slot(
             op.index_id,
             active,
+            DEGENERATE_PARTITION_ID,
             slots_per_page,
             vector_id,
             FIRST_ALLOCATION,
             op.bytes.clone(),
         );
-        VECTOR_ID_TO_SLOT
-            .with_borrow_mut(|m| m.insert(VectorIdKey::new(op.index_id, vector_id), slot));
+        let id_key = VectorIdKey::new(op.index_id, vector_id);
+        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.insert(id_key, slot));
+        VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.insert(id_key, VectorSubjectRecord(op.subject)));
         VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
             m.insert(
                 key,
@@ -401,9 +408,9 @@ impl VectorIndexStore {
                         self.tombstone_slot(op.index_id, slot);
                     }
                     if let Some(vector_id) = entry.vector_id {
-                        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| {
-                            m.remove(&VectorIdKey::new(op.index_id, vector_id))
-                        });
+                        let id_key = VectorIdKey::new(op.index_id, vector_id);
+                        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.remove(&id_key));
+                        VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&id_key));
                     }
                 }
                 VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
@@ -439,8 +446,9 @@ impl VectorIndexStore {
                 let slot = entry.slot.expect("live entry has a slot");
                 let vector_id = entry.vector_id.expect("live entry has a vector_id");
                 self.tombstone_slot(op.index_id, slot);
-                VECTOR_ID_TO_SLOT
-                    .with_borrow_mut(|m| m.remove(&VectorIdKey::new(op.index_id, vector_id)));
+                let id_key = VectorIdKey::new(op.index_id, vector_id);
+                VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.remove(&id_key));
+                VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&id_key));
                 VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                     m.insert(
                         key,
@@ -521,5 +529,16 @@ impl VectorIndexStore {
     #[cfg(test)]
     pub(crate) fn id_to_slot_for_test(&self, index_id: u32, vector_id: u64) -> Option<SlotRef> {
         VECTOR_ID_TO_SLOT.with_borrow(|m| m.get(&VectorIdKey::new(index_id, vector_id)))
+    }
+
+    #[cfg(test)]
+    pub(crate) fn id_to_subject_for_test(
+        &self,
+        index_id: u32,
+        vector_id: u64,
+    ) -> Option<gleaph_graph_kernel::vector_index::VectorSubject> {
+        VECTOR_ID_TO_SUBJECT
+            .with_borrow(|m| m.get(&VectorIdKey::new(index_id, vector_id)))
+            .map(|r| r.0)
     }
 }

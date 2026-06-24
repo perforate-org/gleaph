@@ -901,3 +901,392 @@ fn search_empty_index_returns_no_hits() {
     let result = store.vector_search(&search_value(1.0, 10)).expect("search");
     assert!(result.hits.is_empty());
 }
+
+// --- ADR 0031 Slice 6: reverse map maintenance (VECTOR_ID_TO_SUBJECT) ---
+
+#[test]
+fn reverse_map_inserted_on_upsert() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    assert_eq!(
+        store.id_to_subject_for_test(INDEX_ID, 1),
+        Some(subject(7)),
+        "new subject inserts its reverse-map entry"
+    );
+}
+
+#[test]
+fn reverse_map_removed_on_remove() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    store
+        .vector_remove(shard_canister(), &remove_op(7, 2))
+        .unwrap();
+    assert_eq!(
+        store.id_to_subject_for_test(INDEX_ID, 1),
+        None,
+        "remove drops the reverse-map entry alongside the id→slot entry"
+    );
+}
+
+#[test]
+fn reverse_map_resurrect_drops_old_id_and_adds_fresh() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec_inc(7, 1, 1, 1.0))
+        .unwrap();
+    store
+        .vector_remove(shard_canister(), &remove_op_inc(7, 1, 2))
+        .unwrap();
+    // Fresh incarnation resurrects with a brand-new vector_id (2).
+    store
+        .vector_upsert(shard_canister(), &upsert_vec_inc(7, 2, 1, 9.0))
+        .unwrap();
+    assert_eq!(store.id_to_subject_for_test(INDEX_ID, 1), None);
+    assert_eq!(store.id_to_subject_for_test(INDEX_ID, 2), Some(subject(7)));
+}
+
+#[test]
+fn reverse_map_unchanged_on_same_incarnation_newer_version() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    // Same incarnation, newer version reuses the live vector_id (1); the reverse map is untouched.
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 2, 5.0))
+        .unwrap();
+    assert_eq!(store.id_to_subject_for_test(INDEX_ID, 1), Some(subject(7)));
+    assert_eq!(store.id_to_subject_for_test(INDEX_ID, 2), None);
+}
+
+#[test]
+fn reverse_map_unchanged_on_stale_replay() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 2, 5.0))
+        .unwrap();
+    // Stale replay within the live incarnation (version < clock) is a no-op.
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    assert_eq!(store.id_to_subject_for_test(INDEX_ID, 1), Some(subject(7)));
+}
+
+// --- ADR 0031 Slice 6: partition-page search over seeded ivf_flat fixtures ---
+
+use super::search::SearchTuning;
+
+/// A constant-valued `f32` vector of `DIMS` components (mirrors `vec_bytes`).
+fn cvec(value: f32) -> Vec<f32> {
+    vec![value; DIMS as usize]
+}
+
+/// Centroids at 0 and 10: vectors near 0 land in partition 0, vectors near 10 in partition 1.
+fn two_clusters() -> Vec<Vec<f32>> {
+    vec![cvec(0.0), cvec(10.0)]
+}
+
+/// (subjects 1,2 cluster near centroid 0; subjects 3,4 cluster near centroid 1).
+fn clustered_vectors() -> Vec<(VectorSubject, Vec<f32>)> {
+    vec![
+        (subject(1), cvec(0.0)),
+        (subject(2), cvec(1.0)),
+        (subject(3), cvec(9.0)),
+        (subject(4), cvec(10.0)),
+    ]
+}
+
+fn tuned(nprobe: u32) -> SearchTuning {
+    SearchTuning { nprobe }
+}
+
+#[test]
+fn partition_scan_parity_with_exact_at_nprobe_equals_nlist() {
+    let store = fresh_store();
+    // Index 1: partitioned (nlist = 2).
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    // Index 2: degenerate (nlist = 1) so vector_search uses the exact subject-map scan.
+    let exact_index = INDEX_ID + 100;
+    let exact_vectors: Vec<_> = clustered_vectors();
+    store.seed_ivf_for_test(
+        exact_index,
+        VectorEncoding::F32,
+        DIMS,
+        &[cvec(0.0)],
+        &exact_vectors,
+    );
+
+    let partitioned = store
+        .vector_search_tuned(&search_value(0.5, 10), tuned(2))
+        .expect("partition scan");
+    let mut exact_req = search_value(0.5, 10);
+    exact_req.index_id = exact_index;
+    let exact = store.vector_search(&exact_req).expect("exact scan");
+
+    let p: Vec<_> = partitioned
+        .hits
+        .iter()
+        .map(|h| (h.subject, h.distance))
+        .collect();
+    let e: Vec<_> = exact.hits.iter().map(|h| (h.subject, h.distance)).collect();
+    assert_eq!(p, e, "nprobe = nlist partition scan equals exact scan");
+    assert_eq!(p.len(), 4, "all seeded vectors returned");
+}
+
+#[test]
+fn partition_scan_nprobe_one_selects_single_partition() {
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    // Query near centroid 0: nprobe = 1 selects partition 0 only.
+    let result = store
+        .vector_search_tuned(&search_value(0.0, 10), tuned(1))
+        .expect("partition scan");
+    let subjects: Vec<_> = result.hits.iter().map(|h| h.subject).collect();
+    assert_eq!(
+        subjects,
+        vec![subject(1), subject(2)],
+        "only partition 0 members"
+    );
+    assert!(!subjects.contains(&subject(3)));
+    assert!(!subjects.contains(&subject(4)));
+}
+
+#[test]
+fn partition_scan_isolation_other_partition_not_scored() {
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    // Query near centroid 1: nprobe = 1 selects partition 1 only.
+    let result = store
+        .vector_search_tuned(&search_value(10.0, 10), tuned(1))
+        .expect("partition scan");
+    let subjects: Vec<_> = result.hits.iter().map(|h| h.subject).collect();
+    assert_eq!(
+        subjects,
+        vec![subject(4), subject(3)],
+        "only partition 1 members, nearest first"
+    );
+}
+
+#[test]
+fn partition_scan_default_nprobe_used_by_vector_search() {
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    // Default nprobe = min(4, nlist) = 2 = nlist, so the default path scans both partitions.
+    let result = store
+        .vector_search(&search_value(0.5, 10))
+        .expect("default search");
+    assert_eq!(result.hits.len(), 4);
+}
+
+#[test]
+fn partition_scan_skips_deleted_subject_entry() {
+    use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
+    use crate::records::{SubjectKey, SubjectMapEntry};
+
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    let entry = store
+        .subject_entry_for_test(INDEX_ID, subject(1))
+        .expect("seeded entry");
+    VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
+        m.insert(
+            SubjectKey::new(INDEX_ID, subject(1)),
+            SubjectMapEntry {
+                deleted: true,
+                ..entry
+            },
+        )
+    });
+    let result = store
+        .vector_search_tuned(&search_value(0.0, 10), tuned(2))
+        .expect("partition scan");
+    assert!(result.hits.iter().all(|h| h.subject != subject(1)));
+}
+
+#[test]
+fn partition_scan_skips_missing_reverse_entry() {
+    use crate::facade::stable::VECTOR_ID_TO_SUBJECT;
+    use crate::records::VectorIdKey;
+
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    // Drop the reverse-map entry for vector_id 1 (subject 1): the page row can no longer be resolved.
+    VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&VectorIdKey::new(INDEX_ID, 1)));
+    let result = store
+        .vector_search_tuned(&search_value(0.0, 10), tuned(2))
+        .expect("partition scan");
+    assert!(result.hits.iter().all(|h| h.subject != subject(1)));
+}
+
+#[test]
+fn partition_scan_skips_vector_id_mismatch() {
+    use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
+    use crate::records::{SubjectKey, SubjectMapEntry};
+
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    let entry = store
+        .subject_entry_for_test(INDEX_ID, subject(1))
+        .expect("seeded entry");
+    // Subject entry points at a different vector_id than the page row references.
+    VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
+        m.insert(
+            SubjectKey::new(INDEX_ID, subject(1)),
+            SubjectMapEntry {
+                vector_id: Some(9999),
+                ..entry
+            },
+        )
+    });
+    let result = store
+        .vector_search_tuned(&search_value(0.0, 10), tuned(2))
+        .expect("partition scan");
+    assert!(result.hits.iter().all(|h| h.subject != subject(1)));
+}
+
+#[test]
+fn partition_scan_skips_slot_drift() {
+    use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
+    use crate::records::{SlotRef, SubjectKey, SubjectMapEntry};
+
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    let entry = store
+        .subject_entry_for_test(INDEX_ID, subject(1))
+        .expect("seeded entry");
+    let drifted = SlotRef {
+        generation: entry.slot.unwrap().generation + 1,
+        ..entry.slot.unwrap()
+    };
+    VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
+        m.insert(
+            SubjectKey::new(INDEX_ID, subject(1)),
+            SubjectMapEntry {
+                slot: Some(drifted),
+                ..entry
+            },
+        )
+    });
+    let result = store
+        .vector_search_tuned(&search_value(0.0, 10), tuned(2))
+        .expect("partition scan");
+    assert!(result.hits.iter().all(|h| h.subject != subject(1)));
+}
+
+#[test]
+fn stale_centroids_fall_back_to_exact_scan() {
+    use crate::facade::stable::IVF_CENTROID_META;
+    use crate::records::IvfCentroidMeta;
+
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    // Mark the centroids stale (trained against a different index version): search must fall back to
+    // the exact subject-map scan, which ignores nprobe and scans every live subject.
+    IVF_CENTROID_META.with_borrow_mut(|m| {
+        m.insert(
+            INDEX_ID,
+            IvfCentroidMeta {
+                centroid_ready: true,
+                centroid_epoch: 1,
+                trained_index_version: 999,
+            },
+        )
+    });
+    // nprobe = 1 would restrict to one partition if the partition scan ran; the exact fallback
+    // returns all four regardless.
+    let result = store
+        .vector_search_tuned(&search_value(0.0, 10), tuned(1))
+        .expect("exact fallback");
+    assert_eq!(
+        result.hits.len(),
+        4,
+        "stale centroids => exact scan over all subjects"
+    );
+}
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn tuned_nprobe_zero_panics() {
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    let _ = store.vector_search_tuned(&search_value(0.0, 10), tuned(0));
+}
+
+#[test]
+#[should_panic(expected = "out of range")]
+fn tuned_nprobe_above_nlist_panics() {
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    let _ = store.vector_search_tuned(&search_value(0.0, 10), tuned(3));
+}
