@@ -151,16 +151,21 @@ fn slot_bytes_cached(
     Some(row.bytes.clone())
 }
 
-/// Reads centroids `0..nlist` for `(index_id, active_version)`, returning `None` unless exactly
-/// `nlist` centroids of `dims` components are present (a partial/stale centroid set is not ready).
-fn read_centroids(def: &VectorIndexDef, index_id: u32) -> Option<Vec<Vec<f32>>> {
-    let active = def.active_index_version;
-    let mut centroids = Vec::with_capacity(def.nlist as usize);
+/// Reads centroids `0..nlist` for `(index_id, version)`, returning `None` unless exactly `nlist`
+/// centroids of `dims` components are present (a partial/stale centroid set is not ready). Shared by
+/// search (active version) and the rebuild build/publish paths (shadow target version, Slice 7).
+pub(super) fn read_centroids_at(
+    index_id: u32,
+    version: u64,
+    nlist: u32,
+    dims: u16,
+) -> Option<Vec<Vec<f32>>> {
+    let mut centroids = Vec::with_capacity(nlist as usize);
     IVF_CENTROIDS.with_borrow(|m| {
-        for p in 0..def.nlist {
-            let bytes = m.get(&PartitionKey::new(index_id, active, p))?;
+        for p in 0..nlist {
+            let bytes = m.get(&PartitionKey::new(index_id, version, p))?;
             let centroid = decode_f32(&bytes);
-            if centroid.len() != def.dims as usize {
+            if centroid.len() != dims as usize {
                 return None;
             }
             centroids.push(centroid);
@@ -168,6 +173,29 @@ fn read_centroids(def: &VectorIndexDef, index_id: u32) -> Option<Vec<Vec<f32>>> 
         Some(())
     })?;
     Some(centroids)
+}
+
+/// Reads centroids `0..nlist` for `(index_id, active_version)`, returning `None` unless exactly
+/// `nlist` centroids of `dims` components are present (a partial/stale centroid set is not ready).
+fn read_centroids(def: &VectorIndexDef, index_id: u32) -> Option<Vec<Vec<f32>>> {
+    read_centroids_at(index_id, def.active_index_version, def.nlist, def.dims)
+}
+
+/// Nearest-centroid partition id for an encoded vector (ADR 0031 Slice 6/7). Ties break to the
+/// lowest partition id. Shared by the rebuild shadow build, dual-write shadow append, and
+/// post-publish `nlist > 1` active upserts.
+pub(super) fn assign_partition(centroids: &[Vec<f32>], bytes: &[u8]) -> u32 {
+    let vector = decode_f32(bytes);
+    let mut best = 0u32;
+    let mut best_d = f32::INFINITY;
+    for (p, centroid) in centroids.iter().enumerate() {
+        let d = l2_squared_f32(centroid, &vector);
+        if d < best_d {
+            best_d = d;
+            best = p as u32;
+        }
+    }
+    best
 }
 
 /// Whether the index has a ready, current, complete centroid set for the partition-page scan.
@@ -272,14 +300,21 @@ impl VectorIndexStore {
         // Mode selection: exact subject scan for degenerate or untrained indexes; otherwise the
         // partition-page scan. A stale/incomplete centroid set falls back to exact (no error).
         if def.nlist <= 1 || !centroids_ready(&def, req.index_id) {
-            Ok(self.exact_subject_scan(req, &query))
+            Ok(self.exact_subject_scan(req, def.active_index_version, &query))
         } else {
             Ok(self.partition_page_scan(req, &def, &query, tuning))
         }
     }
 
-    /// Slice 5 exact scan: walk every live subject of the index and score its current slot.
-    fn exact_subject_scan(&self, req: &VectorSearchRequest, query: &[f32]) -> VectorSearchResult {
+    /// Slice 5 exact scan: walk every live subject of the index and score its current slot. The live
+    /// slot is resolved via `current_slot_for(active)` (ADR 0031 Slice 7) so a post-publish exact
+    /// fallback reads the new active version (`shadow_slot`), never the stale old `entry.slot`.
+    fn exact_subject_scan(
+        &self,
+        req: &VectorSearchRequest,
+        active_index_version: u64,
+        query: &[f32],
+    ) -> VectorSearchResult {
         let mut cache: HashMap<PageKey, VectorPage> = HashMap::new();
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
 
@@ -294,7 +329,7 @@ impl VectorIndexStore {
                 if value.deleted {
                     continue;
                 }
-                let Some(slot) = value.slot else {
+                let Some(slot) = value.current_slot_for(active_index_version) else {
                     continue;
                 };
                 let Some(bytes) =
@@ -331,7 +366,7 @@ impl VectorIndexStore {
         // `centroids_ready` already verified the set is complete; default to exact-equivalent empty
         // if it somehow vanished between the gate and here.
         let Some(centroids) = read_centroids(def, req.index_id) else {
-            return self.exact_subject_scan(req, query);
+            return self.exact_subject_scan(req, def.active_index_version, query);
         };
         let active = def.active_index_version;
         let selected = select_partitions(&centroids, query, tuning.nprobe);
@@ -402,7 +437,10 @@ impl VectorIndexStore {
             slot: slot_idx,
             generation,
         };
-        if entry.slot != Some(expected) {
+        // Pages are scanned at the active version, so the subject's live slot for that version
+        // (active `slot`, or `shadow_slot` once an atomic publish flips active onto the rebuilt one)
+        // must point at exactly this row (ADR 0031 Slice 7).
+        if entry.current_slot_for(page_key.index_version) != Some(expected) {
             return None;
         }
         let distance = l2_squared_f32(query, &decode_f32(bytes));

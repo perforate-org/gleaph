@@ -7,7 +7,7 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
-    VectorEmbeddingSyncOp, VectorSearchRequest, VectorSearchResult,
+    VectorEmbeddingSyncOp, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
 };
 use ic_cdk::api::msg_caller;
 
@@ -48,4 +48,50 @@ pub(crate) fn vector_search(
     req: VectorSearchRequest,
 ) -> Result<VectorSearchResult, VectorIndexError> {
     VectorIndexStore::new().vector_search(&req)
+}
+
+pub(crate) fn admin_start_vector_rebuild(
+    index_id: u32,
+    nlist: u32,
+    sample_limit: u32,
+) -> Result<(), String> {
+    VectorIndexStore::new()
+        .admin_start_vector_rebuild(msg_caller(), index_id, nlist, sample_limit)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_rebuild_step(
+    index_id: u32,
+    max_subjects: u32,
+) -> Result<VectorRebuildStatus, String> {
+    VectorIndexStore::new()
+        .admin_vector_rebuild_step(msg_caller(), index_id, max_subjects)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_rebuild_status(index_id: u32) -> Result<VectorRebuildStatus, String> {
+    VectorIndexStore::new()
+        .admin_vector_rebuild_status(msg_caller(), index_id)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_publish_vector_rebuild(index_id: u32) -> Result<(), String> {
+    VectorIndexStore::new()
+        .admin_publish_vector_rebuild(msg_caller(), index_id)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_abort_vector_rebuild(index_id: u32) -> Result<(), String> {
+    VectorIndexStore::new()
+        .admin_abort_vector_rebuild(msg_caller(), index_id)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_rebuild_cleanup_step(
+    index_id: u32,
+    max_work: u32,
+) -> Result<VectorRebuildStatus, String> {
+    VectorIndexStore::new()
+        .admin_vector_rebuild_cleanup_step(msg_caller(), index_id, max_work)
+        .map_err(|e| e.to_string())
 }

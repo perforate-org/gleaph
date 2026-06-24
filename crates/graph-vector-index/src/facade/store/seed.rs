@@ -133,6 +133,7 @@ impl VectorIndexStore {
                         stored_embedding_version: 1,
                         deleted: false,
                         slot: Some(slot),
+                        shadow_slot: None,
                         vector_id: Some(vector_id),
                     },
                 )

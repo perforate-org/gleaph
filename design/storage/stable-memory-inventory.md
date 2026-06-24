@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
 Last updated: 2026-06-24
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag = 44 regions, 0–43; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map = 12 regions, 0–11)
-Anchor timestamp: 2026-06-24 08:58:25 UTC +0000
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag = 44 regions, 0–43; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state = 13 regions, 0–12)
+Anchor timestamp: 2026-06-24 10:36:29 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -243,7 +243,7 @@ Router **44 regions** total (0–43).
 
 ## Graph-vector-index canister — stable regions
 
-New in ADR 0031 Slice 2; extended in Slice 6. **12 regions (MemoryId 0–11).** The entire derived
+New in ADR 0031 Slice 2; extended in Slice 6 and Slice 7. **13 regions (MemoryId 0–12).** The entire derived
 state is rebuildable from canonical graph embeddings via `vertex_embedding_backfill`, so every
 derived region shares the `"vertex_embedding_backfill"` rebuild path in `VECTOR_INDEX_STABLE_LAYOUT`
 (`crates/graph-kernel/src/stable_layout.rs`). Code source of truth for runtime `MemoryId` constants:
@@ -264,6 +264,15 @@ pure locator — `VECTOR_SUBJECT_TO_ID` (MemoryId 7) remains the single source o
 liveness/freshness (the row is only scored after re-validating the subject entry's `vector_id`,
 `slot`, and `generation`).
 
+Slice 7 adds `VECTOR_REBUILD_STATE` (MemoryId 12): a `index_id → VectorRebuildStateRecord` holding
+the per-index bounded shadow-version rebuild lifecycle (`Idle`/`Sampling`/`Building`/
+`ReadyToPublish`/`Cleaning`/`Aborting`/`Failed`), each long-running phase carrying a resume cursor so
+admin steps stay bounded. It is derived (reconstructible by re-running a rebuild from the active
+version) and shares the `vertex_embedding_backfill` rebuild path. Slice 7 also extends the
+`VECTOR_SUBJECT_TO_ID` value (`SubjectMapEntry`) with a second `shadow_slot: Option<SlotRef>`
+(serde-default, no repack) so an atomic publish stays metadata-only; search resolves the live slot
+via `current_slot_for(active_index_version)`.
+
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
 | 0 | `VECTOR_INDEX_ROUTER` | `VECTOR_INDEX_ROUTER` | `init_router` | canonical | router authorization | — |
@@ -278,6 +287,7 @@ liveness/freshness (the row is only scored after re-validating the subject entry
 | 9 | `VECTOR_PARTITION_HEADS` | `VECTOR_PARTITION_HEADS` | `init_partition_heads` | derived | partition page chains + `next_page_id` allocator | `vertex_embedding_backfill` |
 | 10 | `VECTOR_PAGE` | `VECTOR_PAGE` | `init_pages` | derived | fixed-capacity vector pages | `vertex_embedding_backfill` |
 | 11 | `VECTOR_ID_TO_SUBJECT` | `VECTOR_ID_TO_SUBJECT` | `init_id_to_subject` | derived | vector-id → subject reverse locator (**Slice 6**) | `vertex_embedding_backfill` |
+| 12 | `VECTOR_REBUILD_STATE` | `VECTOR_REBUILD_STATE` | `init_rebuild_state` | derived | bounded shadow-version rebuild lifecycle (**Slice 7**) | `vertex_embedding_backfill` |
 
 ---
 

@@ -389,10 +389,36 @@ pub struct SubjectMapEntry {
     pub stored_embedding_version: u64,
     /// True once removed; the row is retained as a tombstone clock.
     pub deleted: bool,
-    /// `Some` when live; `None` once deleted.
+    /// `Some` when live; `None` once deleted. Points at the live slot in the **active** index
+    /// version while no rebuild is collapsing this subject.
     pub slot: Option<SlotRef>,
+    /// Live slot in a rebuild's shadow (target) index version, maintained by dual-write while a
+    /// rebuild is `Building`/`ReadyToPublish` (ADR 0031 Slice 7). `#[serde(default)]` so any row
+    /// predating the field decodes as `None`. Collapsed into `slot` by post-publish cleanup.
+    #[serde(default)]
+    pub shadow_slot: Option<SlotRef>,
     /// `Some` when live; `None` once deleted — `VectorId` is never reused.
     pub vector_id: Option<u64>,
+}
+
+impl SubjectMapEntry {
+    /// Resolves the live slot for `active_index_version`: the active `slot` when it matches, else the
+    /// `shadow_slot` when it matches (after an atomic publish flips the active version onto the
+    /// rebuilt one), else `None`. Both search paths and the rebuild-aware mutation path resolve the
+    /// live slot through this so freshness is never read off the wrong version (ADR 0031 Slice 7).
+    pub fn current_slot_for(&self, active_index_version: u64) -> Option<SlotRef> {
+        if let Some(slot) = self.slot
+            && slot.index_version == active_index_version
+        {
+            return Some(slot);
+        }
+        if let Some(shadow) = self.shadow_slot
+            && shadow.index_version == active_index_version
+        {
+            return Some(shadow);
+        }
+        None
+    }
 }
 
 impl Storable for SubjectMapEntry {
@@ -473,6 +499,70 @@ impl Storable for VectorPage {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         Decode!(bytes.as_ref(), VectorPage).expect("decode VectorPage")
+    }
+}
+
+/// Durable per-index rebuild lifecycle (`VECTOR_REBUILD_STATE`, ADR 0031 Slice 7).
+///
+/// Every long-running phase carries a resume cursor (subject keys / page keys as `Storable` bytes)
+/// so each `*_step` honors the bounded-execution contract. `Sampling.candidates` holds the chosen
+/// centroid bytes until they are written to `IVF_CENTROIDS` on the transition to `Building`; its
+/// size is bounded by `MAX_NLIST * stride_bytes`. `Cleaning`/`Aborting` carry the `nlist` they must
+/// tear down because `publish` overwrites `def.nlist`.
+#[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum VectorRebuildStateRecord {
+    #[default]
+    Idle,
+    Sampling {
+        target_index_version: u64,
+        nlist: u32,
+        sample_limit: u32,
+        cursor: Option<Vec<u8>>,
+        subjects_scanned: u64,
+        candidates: Vec<Vec<u8>>,
+    },
+    Building {
+        target_index_version: u64,
+        nlist: u32,
+        cursor: Option<Vec<u8>>,
+        subjects_processed: u64,
+    },
+    ReadyToPublish {
+        target_index_version: u64,
+        nlist: u32,
+    },
+    Cleaning {
+        old_version: u64,
+        old_nlist: u32,
+        target_index_version: u64,
+        subject_cursor: Option<Vec<u8>>,
+        page_cursor: Option<Vec<u8>>,
+    },
+    Aborting {
+        target_index_version: u64,
+        target_nlist: u32,
+        subject_cursor: Option<Vec<u8>>,
+        page_cursor: Option<Vec<u8>>,
+    },
+    Failed {
+        target_index_version: u64,
+        reason: String,
+    },
+}
+
+impl Storable for VectorRebuildStateRecord {
+    const BOUND: Bound = Bound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode VectorRebuildStateRecord"))
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode VectorRebuildStateRecord")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), VectorRebuildStateRecord).expect("decode VectorRebuildStateRecord")
     }
 }
 
@@ -588,8 +678,123 @@ mod tests {
                 slot: 2,
                 generation: 1,
             }),
+            shadow_slot: Some(SlotRef {
+                index_version: 2,
+                partition_id: 3,
+                page_id: 0,
+                slot: 2,
+                generation: 1,
+            }),
             vector_id: Some(5),
         };
         assert_eq!(SubjectMapEntry::from_bytes(entry.to_bytes()), entry);
+    }
+
+    /// Pre-Slice-7 `SubjectMapEntry` (no `shadow_slot`) must still decode, defaulting to `None`.
+    /// Encodes the legacy 5-field Candid record shape and asserts forward-compatible decode.
+    #[test]
+    fn subject_entry_pre_slice7_bytes_decode_with_no_shadow_slot() {
+        #[derive(CandidType)]
+        struct LegacySubjectMapEntry {
+            embedding_incarnation: u64,
+            stored_embedding_version: u64,
+            deleted: bool,
+            slot: Option<SlotRef>,
+            vector_id: Option<u64>,
+        }
+        let legacy = LegacySubjectMapEntry {
+            embedding_incarnation: 7,
+            stored_embedding_version: 2,
+            deleted: false,
+            slot: Some(SlotRef {
+                index_version: 1,
+                partition_id: 0,
+                page_id: 0,
+                slot: 4,
+                generation: 1,
+            }),
+            vector_id: Some(9),
+        };
+        let bytes = Encode!(&legacy).expect("encode legacy entry");
+        let decoded = SubjectMapEntry::from_bytes(Cow::Owned(bytes));
+        assert_eq!(decoded.embedding_incarnation, 7);
+        assert_eq!(decoded.vector_id, Some(9));
+        assert_eq!(decoded.shadow_slot, None, "missing field defaults to None");
+    }
+
+    #[test]
+    fn rebuild_state_record_storable_roundtrip() {
+        for state in [
+            VectorRebuildStateRecord::Idle,
+            VectorRebuildStateRecord::Sampling {
+                target_index_version: 2,
+                nlist: 8,
+                sample_limit: 1024,
+                cursor: Some(vec![1, 2, 3]),
+                subjects_scanned: 17,
+                candidates: vec![vec![0u8; 16], vec![1u8; 16]],
+            },
+            VectorRebuildStateRecord::Building {
+                target_index_version: 2,
+                nlist: 8,
+                cursor: None,
+                subjects_processed: 42,
+            },
+            VectorRebuildStateRecord::ReadyToPublish {
+                target_index_version: 2,
+                nlist: 8,
+            },
+            VectorRebuildStateRecord::Cleaning {
+                old_version: 1,
+                old_nlist: 1,
+                target_index_version: 2,
+                subject_cursor: Some(vec![9]),
+                page_cursor: None,
+            },
+            VectorRebuildStateRecord::Aborting {
+                target_index_version: 2,
+                target_nlist: 8,
+                subject_cursor: None,
+                page_cursor: Some(vec![7]),
+            },
+            VectorRebuildStateRecord::Failed {
+                target_index_version: 2,
+                reason: "insufficient live vectors".to_string(),
+            },
+        ] {
+            assert_eq!(
+                VectorRebuildStateRecord::from_bytes(state.to_bytes()),
+                state
+            );
+        }
+    }
+
+    #[test]
+    fn current_slot_for_resolves_active_then_shadow() {
+        let active = SlotRef {
+            index_version: 1,
+            partition_id: 0,
+            page_id: 0,
+            slot: 0,
+            generation: 1,
+        };
+        let shadow = SlotRef {
+            index_version: 2,
+            partition_id: 5,
+            page_id: 0,
+            slot: 0,
+            generation: 1,
+        };
+        let entry = SubjectMapEntry {
+            embedding_incarnation: 1,
+            stored_embedding_version: 1,
+            deleted: false,
+            slot: Some(active),
+            shadow_slot: Some(shadow),
+            vector_id: Some(1),
+        };
+        assert_eq!(entry.current_slot_for(1), Some(active));
+        assert_eq!(entry.current_slot_for(2), Some(shadow));
+        assert_eq!(entry.current_slot_for(3), None);
     }
 }

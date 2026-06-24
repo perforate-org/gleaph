@@ -4,6 +4,8 @@
 //! (`VECTOR_SUBJECT_TO_ID`), never by comparing stored bytes — except the single
 //! same-version-different-payload conflict guard on a live row. See ADR 0031 Slice 2.
 
+use super::rebuild::rebuild_state_of;
+use super::search::{assign_partition, read_centroids_at};
 use super::{
     DEFAULT_MAX_PAGE_BYTES, DEGENERATE_PARTITION_ID, FIRST_ALLOCATION, INITIAL_INDEX_VERSION,
     PAGE_HEADER_BYTES, VectorIndexStore,
@@ -14,12 +16,51 @@ use crate::facade::stable::{
 };
 use crate::records::{
     IvfCentroidMeta, PageKey, PageRow, PartitionKey, SlotRef, SubjectKey, SubjectMapEntry,
-    VectorIdKey, VectorIndexDef, VectorPage, VectorSubjectRecord,
+    VectorIdKey, VectorIndexDef, VectorPage, VectorRebuildStateRecord, VectorSubjectRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorIndexKind, VectorMetric,
 };
+
+/// How a mutation must mirror its live effect across index versions during a rebuild (ADR 0031
+/// Slice 7). Derived per-op from the durable rebuild state of `op.index_id`.
+#[derive(Clone, Copy, Debug)]
+enum RebuildMutationMode {
+    /// No rebuild, or a phase with no shadow version yet / no longer (`Idle`/`Sampling`/`Failed`/
+    /// `Aborting`): operate only on the active version via `current_slot_for(active)`.
+    ActiveOnly,
+    /// `Building`/`ReadyToPublish`: mirror the live effect into both the active and the shadow
+    /// (`target`) version so the shadow stays publish-complete.
+    DualWrite { target: u64, target_nlist: u32 },
+    /// Post-publish `Cleaning`: the active version is already `target`; operate active-only via
+    /// `current_slot_for(active)`. State-changing mutations collapse the touched subject
+    /// (`slot = target, shadow = None`); pure idempotent no-ops are left to cleanup.
+    Cleaning,
+}
+
+/// Resolves the per-op rebuild mutation mode from the durable rebuild state.
+fn rebuild_mutation_mode(index_id: u32) -> RebuildMutationMode {
+    match rebuild_state_of(index_id) {
+        VectorRebuildStateRecord::Building {
+            target_index_version,
+            nlist,
+            ..
+        }
+        | VectorRebuildStateRecord::ReadyToPublish {
+            target_index_version,
+            nlist,
+        } => RebuildMutationMode::DualWrite {
+            target: target_index_version,
+            target_nlist: nlist,
+        },
+        VectorRebuildStateRecord::Cleaning { .. } => RebuildMutationMode::Cleaning,
+        VectorRebuildStateRecord::Idle
+        | VectorRebuildStateRecord::Sampling { .. }
+        | VectorRebuildStateRecord::Aborting { .. }
+        | VectorRebuildStateRecord::Failed { .. } => RebuildMutationMode::ActiveOnly,
+    }
+}
 
 /// Computes `slots_per_page` from a page byte budget and stride, rejecting a `< 1` capacity.
 fn slots_per_page_for(max_page_bytes: u32, stride_bytes: u32) -> Result<u32, VectorIndexError> {
@@ -192,7 +233,7 @@ impl VectorIndexStore {
         });
     }
 
-    fn read_slot_bytes(&self, index_id: u32, slot: SlotRef) -> Option<Vec<u8>> {
+    pub(super) fn read_slot_bytes(&self, index_id: u32, slot: SlotRef) -> Option<Vec<u8>> {
         let page_key = PageKey::new(
             index_id,
             slot.index_version,
@@ -206,6 +247,36 @@ impl VectorIndexStore {
                     .map(|row| row.bytes.clone())
             })
         })
+    }
+
+    /// Partition for an append on the **active** version: degenerate partition `0` when `nlist <= 1`,
+    /// otherwise the nearest active centroid (ADR 0031 Slice 6/7). A missing/incomplete active
+    /// centroid set falls back to partition `0` (the same fail-soft the search path uses). This is
+    /// what makes a published `nlist > 1` index mutable.
+    fn active_partition(&self, def: &VectorIndexDef, index_id: u32, bytes: &[u8]) -> u32 {
+        if def.nlist <= 1 {
+            return DEGENERATE_PARTITION_ID;
+        }
+        match read_centroids_at(index_id, def.active_index_version, def.nlist, def.dims) {
+            Some(centroids) => assign_partition(&centroids, bytes),
+            None => DEGENERATE_PARTITION_ID,
+        }
+    }
+
+    /// Partition for an append into the rebuild's **shadow** (`target`) version: nearest target
+    /// centroid (the shadow always has `nlist > 1` ready centroids by construction).
+    fn shadow_partition(
+        &self,
+        index_id: u32,
+        target: u64,
+        target_nlist: u32,
+        dims: u16,
+        bytes: &[u8],
+    ) -> u32 {
+        match read_centroids_at(index_id, target, target_nlist, dims) {
+            Some(centroids) => assign_partition(&centroids, bytes),
+            None => DEGENERATE_PARTITION_ID,
+        }
     }
 
     /// Applies an upsert, ordered by the pair `(embedding_incarnation, embedding_version)` against
@@ -239,12 +310,13 @@ impl VectorIndexStore {
             return Err(VectorIndexError::ByteWidthMismatch);
         }
         let active = def.active_index_version;
+        let mode = rebuild_mutation_mode(op.index_id);
         let key = SubjectKey::new(op.index_id, op.subject);
         let existing = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key));
 
         let Some(entry) = existing else {
             // New subject: allocate a fresh VectorId and create a live slot.
-            self.insert_new_subject(op, active, def.slots_per_page, key)?;
+            self.insert_new_subject(op, &def, mode, key)?;
             return Ok(());
         };
 
@@ -252,10 +324,16 @@ impl VectorIndexStore {
             std::cmp::Ordering::Less => Ok(()), // stale older-incarnation replay: no-op
             std::cmp::Ordering::Greater => {
                 // Fresh incarnation: resurrect with a brand-new VectorId. Tombstone any live slot of
-                // the older incarnation first so it does not orphan.
+                // the older incarnation (active, and the shadow while dual-writing) so it does not
+                // orphan.
                 if !entry.deleted {
-                    if let Some(slot) = entry.slot {
-                        self.tombstone_slot(op.index_id, slot);
+                    if let Some(active_slot) = entry.current_slot_for(active) {
+                        self.tombstone_slot(op.index_id, active_slot);
+                    }
+                    if let RebuildMutationMode::DualWrite { .. } = mode
+                        && let Some(shadow_slot) = entry.shadow_slot
+                    {
+                        self.tombstone_slot(op.index_id, shadow_slot);
                     }
                     if let Some(vector_id) = entry.vector_id {
                         let id_key = VectorIdKey::new(op.index_id, vector_id);
@@ -263,7 +341,7 @@ impl VectorIndexStore {
                         VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&id_key));
                     }
                 }
-                self.insert_new_subject(op, active, def.slots_per_page, key)?;
+                self.insert_new_subject(op, &def, mode, key)?;
                 Ok(())
             }
             std::cmp::Ordering::Equal => {
@@ -277,21 +355,30 @@ impl VectorIndexStore {
                     return Ok(()); // stale replay within the live incarnation
                 }
                 if op.embedding_version == clock {
-                    let slot = entry.slot.expect("live entry has a slot");
+                    let slot = entry
+                        .current_slot_for(active)
+                        .expect("live entry has a slot");
                     let stored = self.read_slot_bytes(op.index_id, slot).unwrap_or_default();
                     if stored == op.bytes {
+                        // Pure idempotent no-op: nothing changes. During `Cleaning` this intentionally
+                        // does *not* collapse `shadow_slot -> slot` (collapse-on-touch only applies to
+                        // state-changing mutations); search stays correct via `current_slot_for` and
+                        // the subject is collapsed later by `cleanup_step`.
                         return Ok(());
                     }
                     return Err(VectorIndexError::EmbeddingVersionConflict);
                 }
                 // newer version within the live incarnation: append a new slot, reuse the live id.
-                let old_slot = entry.slot.expect("live entry has a slot");
+                let old_slot = entry
+                    .current_slot_for(active)
+                    .expect("live entry has a slot");
                 let vector_id = entry.vector_id.expect("live entry has a vector_id");
                 let generation = old_slot.generation + 1;
+                let active_partition = self.active_partition(&def, op.index_id, &op.bytes);
                 let new_slot = self.append_slot(
                     op.index_id,
                     active,
-                    DEGENERATE_PARTITION_ID,
+                    active_partition,
                     def.slots_per_page,
                     vector_id,
                     generation,
@@ -301,6 +388,35 @@ impl VectorIndexStore {
                 VECTOR_ID_TO_SLOT.with_borrow_mut(|m| {
                     m.insert(VectorIdKey::new(op.index_id, vector_id), new_slot)
                 });
+                // Mirror into the shadow version while dual-writing; collapse (shadow = None)
+                // otherwise, so a `Cleaning`-window touch normalizes the subject to the target slot.
+                let shadow_slot = match mode {
+                    RebuildMutationMode::DualWrite {
+                        target,
+                        target_nlist,
+                    } => {
+                        if let Some(old_shadow) = entry.shadow_slot {
+                            self.tombstone_slot(op.index_id, old_shadow);
+                        }
+                        let partition = self.shadow_partition(
+                            op.index_id,
+                            target,
+                            target_nlist,
+                            def.dims,
+                            &op.bytes,
+                        );
+                        Some(self.append_slot(
+                            op.index_id,
+                            target,
+                            partition,
+                            def.slots_per_page,
+                            vector_id,
+                            generation,
+                            op.bytes.clone(),
+                        ))
+                    }
+                    RebuildMutationMode::ActiveOnly | RebuildMutationMode::Cleaning => None,
+                };
                 VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                     m.insert(
                         key,
@@ -309,6 +425,7 @@ impl VectorIndexStore {
                             stored_embedding_version: op.embedding_version,
                             deleted: false,
                             slot: Some(new_slot),
+                            shadow_slot,
                             vector_id: Some(vector_id),
                         },
                     )
@@ -318,19 +435,24 @@ impl VectorIndexStore {
         }
     }
 
+    /// Inserts a brand-new (or resurrected) live subject. The active row is assigned to its active
+    /// partition; while dual-writing, a mirror row is also appended into the shadow `target` version
+    /// and recorded in `shadow_slot` (ADR 0031 Slice 7).
     fn insert_new_subject(
         &self,
         op: &VectorEmbeddingSyncOp,
-        active: u64,
-        slots_per_page: u32,
+        def: &VectorIndexDef,
+        mode: RebuildMutationMode,
         key: SubjectKey,
     ) -> Result<(), VectorIndexError> {
+        let active = def.active_index_version;
         let vector_id = self.alloc_vector_id(op.index_id)?;
+        let active_partition = self.active_partition(def, op.index_id, &op.bytes);
         let slot = self.append_slot(
             op.index_id,
             active,
-            DEGENERATE_PARTITION_ID,
-            slots_per_page,
+            active_partition,
+            def.slots_per_page,
             vector_id,
             FIRST_ALLOCATION,
             op.bytes.clone(),
@@ -338,6 +460,25 @@ impl VectorIndexStore {
         let id_key = VectorIdKey::new(op.index_id, vector_id);
         VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.insert(id_key, slot));
         VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.insert(id_key, VectorSubjectRecord(op.subject)));
+        let shadow_slot = match mode {
+            RebuildMutationMode::DualWrite {
+                target,
+                target_nlist,
+            } => {
+                let partition =
+                    self.shadow_partition(op.index_id, target, target_nlist, def.dims, &op.bytes);
+                Some(self.append_slot(
+                    op.index_id,
+                    target,
+                    partition,
+                    def.slots_per_page,
+                    vector_id,
+                    FIRST_ALLOCATION,
+                    op.bytes.clone(),
+                ))
+            }
+            RebuildMutationMode::ActiveOnly | RebuildMutationMode::Cleaning => None,
+        };
         VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
             m.insert(
                 key,
@@ -346,6 +487,7 @@ impl VectorIndexStore {
                     stored_embedding_version: op.embedding_version,
                     deleted: false,
                     slot: Some(slot),
+                    shadow_slot,
                     vector_id: Some(vector_id),
                 },
             )
@@ -379,6 +521,10 @@ impl VectorIndexStore {
             return Err(VectorIndexError::MutationKindMismatch);
         }
         self.assert_caller_owns_subject(caller, op.subject.shard_id())?;
+        let mode = rebuild_mutation_mode(op.index_id);
+        let active = VECTOR_INDEX_DEFS
+            .with_borrow(|defs| defs.get(&op.index_id))
+            .map(|def| def.active_index_version);
         let key = SubjectKey::new(op.index_id, op.subject);
         let existing = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key));
 
@@ -391,6 +537,7 @@ impl VectorIndexStore {
                         stored_embedding_version: op.embedding_version,
                         deleted: true,
                         slot: None,
+                        shadow_slot: None,
                         vector_id: None,
                     },
                 )
@@ -398,14 +545,26 @@ impl VectorIndexStore {
             return Ok(());
         };
 
+        // Live active slot resolved against the active version (`shadow_slot` once published into
+        // `Cleaning`); falls back to `entry.slot` only if the def somehow vanished.
+        let active_live_slot = active
+            .and_then(|a| entry.current_slot_for(a))
+            .or(entry.slot);
+
         match op.embedding_incarnation.cmp(&entry.embedding_incarnation) {
             std::cmp::Ordering::Less => Ok(()), // stale older-incarnation remove: no-op (fenced)
             std::cmp::Ordering::Greater => {
                 // Authoritative remove for a newer, as-yet-unseen incarnation: tombstone any live
-                // slot and record the deleted clock at the op's incarnation.
+                // slot (active, and the shadow while dual-writing) and record the deleted clock at
+                // the op's incarnation.
                 if !entry.deleted {
-                    if let Some(slot) = entry.slot {
+                    if let Some(slot) = active_live_slot {
                         self.tombstone_slot(op.index_id, slot);
+                    }
+                    if let RebuildMutationMode::DualWrite { .. } = mode
+                        && let Some(shadow_slot) = entry.shadow_slot
+                    {
+                        self.tombstone_slot(op.index_id, shadow_slot);
                     }
                     if let Some(vector_id) = entry.vector_id {
                         let id_key = VectorIdKey::new(op.index_id, vector_id);
@@ -421,6 +580,7 @@ impl VectorIndexStore {
                             stored_embedding_version: op.embedding_version,
                             deleted: true,
                             slot: None,
+                            shadow_slot: None,
                             vector_id: None,
                         },
                     )
@@ -442,10 +602,16 @@ impl VectorIndexStore {
                     }
                     return Ok(());
                 }
-                // live, op.embedding_version >= clock: tombstone the active slot.
-                let slot = entry.slot.expect("live entry has a slot");
+                // live, op.embedding_version >= clock: tombstone the active slot (and shadow while
+                // dual-writing).
+                let slot = active_live_slot.expect("live entry has a slot");
                 let vector_id = entry.vector_id.expect("live entry has a vector_id");
                 self.tombstone_slot(op.index_id, slot);
+                if let RebuildMutationMode::DualWrite { .. } = mode
+                    && let Some(shadow_slot) = entry.shadow_slot
+                {
+                    self.tombstone_slot(op.index_id, shadow_slot);
+                }
                 let id_key = VectorIdKey::new(op.index_id, vector_id);
                 VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.remove(&id_key));
                 VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&id_key));
@@ -457,6 +623,7 @@ impl VectorIndexStore {
                             stored_embedding_version: op.embedding_version,
                             deleted: true,
                             slot: None,
+                            shadow_slot: None,
                             vector_id: None,
                         },
                     )

@@ -39,4 +39,7 @@ thread_local! {
 
     pub(crate) static VECTOR_ID_TO_SUBJECT: RefCell<memory::StableIdToSubjectMap> =
         RefCell::new(memory::init_id_to_subject());
+
+    pub(crate) static VECTOR_REBUILD_STATE: RefCell<memory::StableRebuildStateMap> =
+        RefCell::new(memory::init_rebuild_state());
 }

@@ -7,6 +7,7 @@
 
 mod authorization;
 mod mutation;
+mod rebuild;
 mod search;
 
 #[cfg(feature = "canbench")]
@@ -35,6 +36,36 @@ pub(crate) const INITIAL_INDEX_VERSION: u64 = 1;
 
 /// First `VectorId` / `generation`; `0` is reserved as "none".
 pub(crate) const FIRST_ALLOCATION: u64 = 1;
+
+/// Upper bound on a production rebuild's `nlist` (ADR 0031 Slice 7). Bounds the centroid/head counts
+/// and the durable `Sampling.candidates` vector so worst-case rebuild-state bytes
+/// (`MAX_NLIST * stride_bytes`) and the O(`nlist`) teardown reads/deletes stay within budget.
+pub(crate) const MAX_NLIST: u32 = 1024;
+
+/// Upper bound on the number of live subjects a rebuild's `Sampling` phase will examine while
+/// collecting centroid candidates (ADR 0031 Slice 7). Bounds the total sampling work.
+pub(crate) const MAX_REBUILD_SAMPLE_LIMIT: u32 = 1_000_000;
+
+/// Canister-side ceiling on the per-step work (`max_subjects` / `max_work`) any rebuild step or
+/// cleanup step will perform in one message (ADR 0031 Slice 7). The caller-supplied budget is
+/// clamped to `1..=MAX_REBUILD_STEP_WORK` so a Router that passes a huge value (e.g. `u32::MAX`)
+/// still cannot force an O(N) scan/drop in a single message. Mirrors
+/// `MAX_DETACH_EXAMINE_PER_STEP`'s bounded-step precedent.
+pub(crate) const MAX_REBUILD_STEP_WORK: u32 = 20_000;
+
+/// Canister-side ceiling on the transient vector bytes a single `Sampling`/`Building` step buffers
+/// on the heap before processing (ADR 0031 Slice 7). The row-count cap [`MAX_REBUILD_STEP_WORK`]
+/// alone does not bound heap use because each buffered vector is `stride_bytes` wide and
+/// `stride_bytes` scales with `dims`; a step therefore also breaks once cumulative read bytes reach
+/// this budget (always processing at least one row first, so forward progress is guaranteed even
+/// when a single vector exceeds the budget).
+pub(crate) const MAX_REBUILD_STEP_VECTOR_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Upper bound on the durable `Sampling.candidates` byte size (`nlist * stride_bytes`), enforced at
+/// `admin_start_vector_rebuild` (ADR 0031 Slice 7). `MAX_NLIST` alone does not bound the candidate
+/// bytes because `stride_bytes` scales with `dims`; this caps the worst-case `VectorRebuildStateRecord`
+/// size so a router-guarded (but malformed) start cannot create an oversized stable value.
+pub(crate) const MAX_REBUILD_CANDIDATE_BYTES: u32 = 8 * 1024 * 1024;
 
 /// Stateless facade over vector-index stable structures initialized in [`super::stable`].
 #[derive(Clone, Copy, Debug, Default)]

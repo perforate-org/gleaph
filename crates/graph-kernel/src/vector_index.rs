@@ -203,6 +203,40 @@ pub struct VectorSearchResult {
     pub hits: Vec<VectorSearchHit>,
 }
 
+/// Phase tag of a per-index rebuild lifecycle (ADR 0031 Slice 7). Mirrors the durable
+/// `VectorRebuildStateRecord` but carries no cursors or per-subject collections — only a bounded
+/// scalar snapshot for the admin status query.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+)]
+pub enum VectorRebuildPhase {
+    Idle,
+    Sampling,
+    Building,
+    ReadyToPublish,
+    Cleaning,
+    Aborting,
+    Failed,
+}
+
+/// Bounded scalar snapshot of a rebuild's progress (ADR 0031 Slice 7).
+///
+/// The response is O(1): it never carries candidate centroid bytes or any per-subject collection,
+/// so a status query stays within a fixed reply budget regardless of index size.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct VectorRebuildStatus {
+    pub phase: VectorRebuildPhase,
+    /// The shadow (target) index version being built, or `0` when `Idle`.
+    pub target_index_version: u64,
+    /// The target `nlist` of the rebuild (`Sampling`/`Building`/`ReadyToPublish`/`Aborting`), the
+    /// old `nlist` during `Cleaning`, or `0` when `Idle`/`Failed`.
+    pub nlist: u32,
+    /// Subjects shadowed so far during `Building` (`0` in other phases).
+    pub subjects_processed: u64,
+    /// Distinct centroid candidates collected so far during `Sampling` (`0` in other phases).
+    pub candidates_collected: u32,
+}
+
 /// Vector-index canister mutation/sync/admin/search failure.
 ///
 /// Single error type for the canister: mutation endpoints return it over the wire; admin endpoints
@@ -251,6 +285,16 @@ pub enum VectorIndexError {
     AllocatorOverflow,
     /// `top_k` on a vector search is `0` or exceeds [`MAX_VECTOR_SEARCH_TOP_K`].
     InvalidSearchTopK,
+    /// A rebuild is already in flight for the index (ADR 0031 Slice 7); abort it first.
+    RebuildAlreadyActive,
+    /// No rebuild is in flight for the index (step/status/publish/abort with nothing to do).
+    NoActiveRebuild,
+    /// Publish requested while the rebuild is not yet `ReadyToPublish`.
+    RebuildNotReadyToPublish,
+    /// Publish requested but completeness invariants are not satisfied (e.g. centroids missing).
+    RebuildIncomplete,
+    /// Invalid rebuild parameters (`nlist` / `sample_limit` out of range, wrong encoding/metric).
+    InvalidRebuildParams,
 }
 
 impl std::fmt::Display for VectorIndexError {
@@ -282,6 +326,11 @@ impl std::fmt::Display for VectorIndexError {
             Self::InvalidPageCapacity => "index page capacity yields fewer than one slot per page",
             Self::AllocatorOverflow => "vector index allocator overflow",
             Self::InvalidSearchTopK => "search top_k must be in 1..=MAX_VECTOR_SEARCH_TOP_K",
+            Self::RebuildAlreadyActive => "a vector rebuild is already active for this index",
+            Self::NoActiveRebuild => "no vector rebuild is active for this index",
+            Self::RebuildNotReadyToPublish => "vector rebuild is not ready to publish",
+            Self::RebuildIncomplete => "vector rebuild completeness invariants are not satisfied",
+            Self::InvalidRebuildParams => "invalid vector rebuild parameters",
         };
         f.write_str(text)
     }

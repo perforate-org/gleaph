@@ -18,7 +18,8 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorSearchRequest, VectorSubject,
+    VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorRebuildPhase, VectorSearchRequest,
+    VectorSubject,
 };
 use std::hint::black_box;
 
@@ -188,3 +189,120 @@ partitioned_bench!(bench_ivf_d384_nlist64_nprobe8, 384, 64, 8);
 partitioned_bench!(bench_ivf_d768_nlist16_nprobe1, 768, 16, 1);
 partitioned_bench!(bench_ivf_d768_nlist16_nprobe4, 768, 16, 4);
 partitioned_bench!(bench_ivf_d768_nlist64_nprobe8, 768, 64, 8);
+
+// --- ADR 0031 Slice 7: production shadow-version rebuild + dual-write ---
+
+const REBUILD_N: u32 = 1024;
+
+/// Drives a full rebuild (start -> bounded steps -> publish) of a degenerate index of `n` distinct
+/// vectors into `nlist` partitions. Steps run in `n`-sized batches.
+fn run_full_rebuild(store: &VectorIndexStore, n: u32, nlist: u32) {
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1)
+        .expect("start");
+    loop {
+        let status = store
+            .admin_vector_rebuild_step(router(), INDEX_ID, n)
+            .expect("step");
+        match status.phase {
+            VectorRebuildPhase::ReadyToPublish => break,
+            VectorRebuildPhase::Failed => panic!("rebuild failed"),
+            _ => {}
+        }
+    }
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+}
+
+/// Advances a freshly-started rebuild into `Building` (centroids written) without shadowing any
+/// subject yet, so a follow-up `Building` step measures shadow-append cost in isolation.
+fn start_into_building(store: &VectorIndexStore, n: u32, nlist: u32) {
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1)
+        .expect("start");
+    loop {
+        let status = store
+            .admin_vector_rebuild_step(router(), INDEX_ID, n)
+            .expect("sampling step");
+        if status.phase == VectorRebuildPhase::Building {
+            break;
+        }
+        assert_eq!(status.phase, VectorRebuildPhase::Sampling);
+    }
+}
+
+fn new_subject_upsert(dims: u16, vid: u32, value: f32) -> VectorEmbeddingSyncOp {
+    VectorEmbeddingSyncOp {
+        index_id: INDEX_ID,
+        embedding_name_id: 0,
+        subject: VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: vid,
+        },
+        embedding_incarnation: 1,
+        embedding_version: 1,
+        encoding: VectorEncoding::F32,
+        dims,
+        bytes: vec_bytes(dims, value),
+        remove: false,
+    }
+}
+
+macro_rules! rebuild_full_bench {
+    ($name:ident, $dims:expr, $nlist:expr) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            let store = setup_search_store($dims, REBUILD_N);
+            canbench_rs::bench_fn(|| {
+                let _scope = canbench_rs::bench_scope(stringify!($name));
+                run_full_rebuild(&store, REBUILD_N, $nlist);
+            })
+        }
+    };
+}
+
+rebuild_full_bench!(bench_rebuild_full_d128_nlist16, 128, 16);
+rebuild_full_bench!(bench_rebuild_full_d384_nlist16, 384, 16);
+rebuild_full_bench!(bench_rebuild_full_d768_nlist64, 768, 64);
+
+/// Cost of one `Building` step that shadows all `REBUILD_N` subjects into their nearest partition.
+#[bench(raw)]
+fn bench_rebuild_building_step_d128_nlist16() -> canbench_rs::BenchResult {
+    let store = setup_search_store(128, REBUILD_N);
+    start_into_building(&store, REBUILD_N, 16);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_rebuild_building_step_d128_nlist16");
+        let status = store
+            .admin_vector_rebuild_step(router(), INDEX_ID, REBUILD_N)
+            .expect("building step");
+        black_box(status);
+    })
+}
+
+/// Baseline: a normal new-subject upsert with no rebuild in flight.
+#[bench(raw)]
+fn bench_upsert_normal_d128() -> canbench_rs::BenchResult {
+    let store = setup_search_store(128, REBUILD_N);
+    let op = new_subject_upsert(128, REBUILD_N + 1, 7.0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_upsert_normal_d128");
+        store
+            .vector_upsert(shard_owner(), black_box(&op))
+            .expect("upsert");
+    })
+}
+
+/// A new-subject upsert while `Building`: dual-writes into both the active and shadow versions.
+#[bench(raw)]
+fn bench_upsert_dualwrite_d128_nlist16() -> canbench_rs::BenchResult {
+    let store = setup_search_store(128, REBUILD_N);
+    start_into_building(&store, REBUILD_N, 16);
+    let op = new_subject_upsert(128, REBUILD_N + 1, 7.0);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_upsert_dualwrite_d128_nlist16");
+        store
+            .vector_upsert(shard_owner(), black_box(&op))
+            .expect("upsert");
+    })
+}

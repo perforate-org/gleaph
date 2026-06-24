@@ -83,9 +83,10 @@ Last revised: 2026-06-24
 > intentionally degenerate IVF (one partition, exact scoring); a `crates/graph-vector-index` canbench
 > exact-scan suite (dims 128/384/768 × top_k 10/100) establishes the Slice 6 baseline.
 >
-> `nprobe` partition pruning landed in Slice 6 (below). Production IVF centroid training, candidate
-> pagination, query ranking/merge, per-index/per-embedding fan-out, GQL vector-search syntax, and
-> `VectorSubject::Edge` remain Slice 7+. This ADR fixes ownership, consistency, the standard
+> `nprobe` partition pruning landed in Slice 6 (below). Production IVF centroid training + shadow
+> rebuild + dual-write landed in Slice 7 (below). Candidate pagination, query ranking/merge,
+> per-index/per-embedding fan-out, GQL vector-search syntax, k-means/balanced assignment, and
+> `VectorSubject::Edge` remain Slice 8+. This ADR fixes ownership, consistency, the standard
 > `ivf_flat` vector-index kind, and the first derived vector-index stable-memory shape before the GQL
 > query operator is committed.
 >
@@ -117,15 +118,35 @@ Last revised: 2026-06-24
 > scan at higher instruction cost (centroid + reverse-map lookups) while lower `nprobe` measurably
 > reduces cost.
 >
-> **Slice 7 rebuild design gate (required, not implemented in Slice 6).** Production centroid training
-> and a bounded **shadow-version rebuild** (build partition pages for a new `index_version`, then
-> atomically publish it) must not lose canonical mutations that arrive mid-build. The required
-> concurrency model is **dual-write to both the active and shadow `index_version` while a build is
-> active**, keeping mutation ownership inside the vector canister's mutation boundary so the published
-> shadow is consistent at swap time. Quiesce and delta-replay are rejected (operational cost and a
-> reintroduced watermark/clock design, respectively). Production k-means / balanced assignment,
-> shadow-version rebuild + atomic publish + dual-write, partition tombstone cleanup, a heap centroid
-> cache, GQL vector syntax, `VectorSubject::Edge`, and distributed fan-out remain Slice 7+.
+> **Slice 7 (implemented): production centroid training + shadow-version rebuild + dual-write.** Slice
+> 7 turns the Slice 6 seeded partition fixtures into production-created `nlist > 1` indexes and lifts
+> the Slice 6 "seeded multi-partition indexes are immutable" limitation: published `nlist > 1` indexes
+> are now mutable because the active append routes by centroid whenever the active `nlist > 1`. It adds
+> **one stable region**, `VECTOR_REBUILD_STATE` (MemoryId 12), a derived per-index rebuild lifecycle
+> (`Idle` → `Sampling` → bounded `Building` steps → `ReadyToPublish` → `Cleaning` → `Idle`, with
+> `Aborting` and a sampling-only `Failed`), and extends the `SubjectMapEntry` value with a second
+> `shadow_slot` (serde-default, no repack) so publish is metadata-only (`VECTOR_INDEX_STABLE_LAYOUT`
+> is now **13** regions, 0–12). Search resolves the live slot via
+> `current_slot_for(active_index_version)` — the active `slot` while it matches, else the `shadow_slot`
+> after the atomic version flip — across both read paths.
+>
+> Every long-running phase is **bounded and cursor-resumable**: `Sampling` collects exactly `nlist`
+> distinct centroid candidates and writes the target centroids, `Building` shadows every live subject
+> into its nearest target partition, `Cleaning` collapses `shadow_slot → slot` and drops the old
+> version's pages, and `Aborting` drops the shadow version's pages. `admin_publish_vector_rebuild` is
+> **O(1)** (completeness is an invariant of `Building` + dual-write, not a re-scan) and flips
+> `active_index_version` + `nlist` + centroid metadata atomically. A rebuild must not lose canonical
+> mutations that arrive mid-build, so the concurrency model is **dual-write to both the active and
+> shadow `index_version` while the build is `Building`/`ReadyToPublish`**, plus collapse-on-touch
+> during `Cleaning` (any state-changing mutation collapses the touched subject; a pure idempotent
+> no-op is left for `cleanup_step`); `vector_upsert` / `vector_remove` remain the only mutation
+> boundary. Quiesce and
+> delta-replay are rejected: quiesce blocks normal graph writes during training, and delta-replay
+> reintroduces a watermark/clock reconciliation surface after Slice 4 already established
+> incarnation-ordered mutation delivery. Slice 7 trains centroids by **sampling distinct live
+> vectors** with nearest-centroid assignment; production-quality k-means/balanced assignment,
+> partition tombstone-cleanup thresholds, a heap centroid cache, GQL vector syntax,
+> `VectorSubject::Edge`, and distributed fan-out remain Slice 8+ follow-ups.
 
 ## Context
 
@@ -259,7 +280,13 @@ VECTOR_INDEX_DEFS[index_id] -> { kind: ivf_flat, encoding, dims, metric, active_
 VECTOR_ID_TO_SLOT[(index_id, vector_id)] -> SlotRef { version, partition_id, page_id, slot, generation }
 VECTOR_SUBJECT_TO_ID[(index_id, subject)] -> { vector_id, generation }
 VECTOR_ID_TO_SUBJECT[(index_id, vector_id)] -> VectorSubject   # Slice 6 reverse locator (partition-page scan)
+VECTOR_REBUILD_STATE[index_id] -> rebuild lifecycle             # Slice 7 bounded shadow-version rebuild
 ```
+
+The Slice 7 `SubjectMapEntry` value (the `VECTOR_SUBJECT_TO_ID` row, simplified above) additionally
+carries a second `shadow_slot: Option<SlotRef>` alongside the active `slot`; search resolves the live
+slot via `current_slot_for(active_index_version)` so the atomic publish is a metadata-only version
+flip rather than an O(N) subject rewrite.
 
 `ivf_flat` stores full-vector bytes in partition-local fixed-width pages:
 
@@ -374,12 +401,84 @@ Required IC implementation gates:
 - cache miss behavior is explicit: either fail closed with `CacheNotReady` or use a bounded stable
   centroid scan fallback chosen by the API contract;
 - rebuild creates a shadow `version` and publishes it by atomically switching `active_version`;
-- balanced partition assignment is required, not an optional optimization;
+- a shadow rebuild is consistency-safe only if vector mutations dual-write to active and shadow
+  versions while the build is active;
+- production mutation assignment for `nlist > 1` indexes must use centroid-aware partition placement,
+  not the Slice 6 test/bench-only seeded fixture shortcut;
+- balanced partition assignment is required before `ivf_flat` is considered production-optimized, not
+  an optional optimization;
 - partition maintenance tracks `live_len`, `page_count`, and tombstone ratio so cleanup/rebuild can
   be queued before dead slots dominate read cost;
-- every search path enforces page/read/instruction budgets before reading vector pages; and
+- any future page/read/instruction budget that can stop a scan early must surface an explicit
+  partial/cursor/error contract; Slice 6 intentionally has no silent mid-scan truncation; and
 - `flat` baseline canbench results must be kept so `ivf_flat` recall, latency, and cycle costs are
   compared against exact scan at the same dataset size.
+
+### 7.1 Slice 7 rebuild contract (implemented)
+
+Slice 7 does not change the canonical/derived boundary: graph shards remain authoritative for
+embeddings and the vector index canister remains a derived candidate generator. The new state and
+invariants live inside the vector index canister.
+
+Rebuild state is persisted in the `VECTOR_REBUILD_STATE` stable region (MemoryId 12), registered in
+`VECTOR_INDEX_STABLE_LAYOUT` and reflected in ADR 0007 and the stable-memory inventory. Every
+long-running phase carries a resume cursor so admin steps stay bounded:
+
+```text
+VECTOR_REBUILD_STATE[index_id] ->
+  Idle
+  | Sampling { target_index_version, nlist, sample_limit, subject_cursor, candidates }
+  | Building { target_index_version, nlist, subject_cursor }
+  | ReadyToPublish { target_index_version, nlist }
+  | Cleaning { old_index_version, old_nlist, subject_cursor, page_cursor }
+  | Aborting { target_index_version, target_nlist, subject_cursor, page_cursor }
+  | Failed { target_index_version, reason }   # sampling-only; nothing persisted
+```
+
+Execution flow:
+
+1. `admin_start_vector_rebuild(index_id, nlist, sample_limit)` is **O(1)**: it validates params
+   (`2 <= nlist <= MAX_NLIST`, `nlist <= sample_limit <= MAX_REBUILD_SAMPLE_LIMIT`,
+   `nlist * stride_bytes <= MAX_REBUILD_CANDIDATE_BYTES` so the durable `Sampling.candidates` cannot
+   grow oversized for large-`dims` indexes, `F32`/`L2Squared`, `Idle`) and records `Sampling` with a
+   shadow `target_index_version` greater than `active_index_version`. It does not scan subjects or
+   write centroids.
+2. Bounded `admin_vector_rebuild_step(index_id, max_subjects)` drives `Sampling` (collect exactly
+   `nlist` distinct centroid candidates, then write the target centroids) and then `Building` (read
+   each live subject's current bytes, assign to its nearest target centroid, and append rows into the
+   shadow version only), reaching `ReadyToPublish`. Each step is bounded on both axes — the caller's
+   `max_subjects` is clamped to `1..=MAX_REBUILD_STEP_WORK` (row count) and the step also breaks once
+   the transient vector bytes it buffers on the heap reach `MAX_REBUILD_STEP_VECTOR_BYTES` (since
+   `stride_bytes` scales with `dims`), always buffering at least one vector to guarantee progress — so
+   neither a malformed huge `max_subjects` nor a large `dims` can make one message perform an
+   unbounded scan or buffer unbounded heap bytes. Insufficient distinct live vectors ends in `Failed`
+   (sampling-only, O(1) recoverable to `Idle` via abort).
+3. While `Building` or `ReadyToPublish` is active, `vector_upsert` and `vector_remove` dual-write:
+   they update the active version used by current search and the shadow version being prepared for
+   publish. Stale replay, remove, update, resurrection, and incarnation ordering are identical in both
+   versions.
+4. `admin_publish_vector_rebuild(index_id)` is **O(1)** — completeness is an invariant established by
+   `Building` + dual-write, so it performs no live-subject scan — and atomically switches
+   `VectorIndexDef.active_index_version`, `nlist`, and centroid metadata to the shadow version, then
+   enters `Cleaning`. Empty partitions are allowed.
+5. `admin_vector_rebuild_cleanup_step(index_id, max_work)` drives the bounded post-publish `Cleaning`
+   teardown (collapse `shadow_slot → slot`, repoint the reverse locator, drop the old version's
+   pages/heads/centroids) back to `Idle`, and the bounded `Aborting` teardown after an abort.
+   `max_work` is clamped to `1..=MAX_REBUILD_STEP_WORK` like the rebuild step.
+6. `admin_abort_vector_rebuild(index_id)` returns straight to `Idle` from `Sampling`/`Failed` (nothing
+   persisted) or enters bounded `Aborting` from `Building`/`ReadyToPublish`, keeping the active version
+   unchanged and dropping the shadow version's pages so it is unreachable from search.
+
+The required tests are:
+
+- upsert during rebuild is visible after publish;
+- remove during rebuild does not resurrect after publish;
+- delete/reinsert during rebuild preserves the newer incarnation after publish;
+- stale repair replay cannot create a shadow-only live row;
+- abort never changes search results;
+- publish switches search to the target version only after completeness checks;
+- `nprobe = nlist` after publish matches the exact subject-map scan; and
+- mutation write cost during rebuild is measured separately from normal mutation cost.
 
 ### 8. Query syntax stays semantic; algorithm choice belongs to index definition
 
@@ -472,17 +571,32 @@ future ADR proves that physical index selection must be user-visible.
 3. **[done, slice 1]** Add a graph-owned `VertexEmbeddingStore` with fixed-dimension `F32` records first.
 4. **[done, slice 2]** Add vector-index mutation deltas, volatile pending flush, durable repair journal integration, and
    bounded backfill from graph shards.
-5. **[partial, slice 2]** Add `graph-vector-index` canister with index-local `VectorId`s, partition-local fixed-width
-   `F32` vector pages, tombstones, and attach/detach. (`ivf_flat` search and paginated candidate APIs remain Slice 4+.)
-6. Add router target resolution and query seed integration.
-7. Add algorithm-neutral GQL/query planning integration and keep `algorithm: "ivf_flat"` in index
-   definition/config, not query syntax.
-8. Add `ivf_flat` rebuild state machine: sample collection, centroid training, balanced assignment,
-   shadow-version publish, and old-version cleanup.
-9. Add centroid cache warmup and explicit cache-miss behavior.
-10. Add tombstone cleanup/rebuild thresholds for partitions.
-11. Add canbench baselines for embedding write, flush, backfill, centroid warmup, `flat`, and
-   `ivf_flat` search.
+5. **[done, slice 2/4]** Add `graph-vector-index` canister with index-local `VectorId`s,
+   partition-local fixed-width `F32` vector pages, tombstones, graph-scoped ownership, attach/detach,
+   and incarnation-ordered idempotence.
+6. **[done, slice 3/4]** Add Router vector-index catalog, target resolution, activation flag,
+   graph-local vector routing, shard attach readiness, and bounded vector backfill.
+7. **[done, slice 5]** Add router-guarded exact `ivf_flat` search over the live subject map, plus
+   canbench exact-scan baselines.
+8. **[done, slice 6]** Add `VECTOR_ID_TO_SUBJECT`, partition-page search, internal `nprobe`, seeded
+   partition fixtures, and partitioned-search canbench baselines.
+9. **[done, slice 7]** Add the bounded rebuild lifecycle state machine (`VECTOR_REBUILD_STATE`,
+   MemoryId 12) and admin surface: start/step/status/publish/abort/cleanup for a shadow
+   `index_version`.
+10. **[done, slice 7]** Add dual-write mutation semantics while a shadow rebuild is active:
+    active + shadow writes for upsert, remove, update, resurrection, and stale replay handling, plus
+    collapse-on-touch for state-changing mutations during `Cleaning` (a pure idempotent no-op is left
+    for `cleanup_step`).
+11. **[done, slice 7]** Add centroid training MVP and production `nlist > 1` creation: sampled distinct
+    centroids, nearest-centroid partition assignment, O(1) completeness, and atomic
+    `active_index_version` publish via the two-slot `SubjectMapEntry` (`shadow_slot` +
+    `current_slot_for`).
+12. **[planned, slice 8+]** Add balanced/k-means assignment, partition tombstone cleanup thresholds,
+    centroid cache warmup, and explicit cache-miss behavior.
+13. **[planned, slice 8+]** Add algorithm-neutral GQL/query planning integration and keep
+    `algorithm: "ivf_flat"` in index definition/config, not query syntax.
+14. **[ongoing]** Keep canbench baselines for embedding write, flush, backfill, exact scan,
+    partitioned `ivf_flat`, rebuild/training, and future centroid warmup.
 
 ## Required design updates
 

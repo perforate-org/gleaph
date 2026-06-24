@@ -1290,3 +1290,701 @@ fn tuned_nprobe_above_nlist_panics() {
     );
     let _ = store.vector_search_tuned(&search_value(0.0, 10), tuned(3));
 }
+
+// --- ADR 0031 Slice 7: production shadow-version rebuild + dual-write ---
+
+use crate::facade::stable::{IVF_CENTROIDS, VECTOR_PAGE, VECTOR_PARTITION_HEADS};
+use crate::records::{PageKey, PartitionKey};
+use gleaph_graph_kernel::vector_index::VectorRebuildPhase;
+
+/// Index version of the first production rebuild's shadow (active starts at 1).
+const TARGET_V: u64 = 2;
+
+/// Seeds `count` live subjects via production upserts with distinct values `0.0..count` so a rebuild
+/// can sample distinct centroids. Returns nothing; subjects are `subject(1..=count)`.
+fn seed_distinct(store: &VectorIndexStore, count: u32) {
+    for v in 1..=count {
+        store
+            .vector_upsert(shard_canister(), &upsert_vec(v, 1, (v - 1) as f32))
+            .expect("seed upsert");
+    }
+}
+
+/// Drives `admin_vector_rebuild_step` (small batch to exercise cursor resumption) until the phase
+/// leaves `Sampling`/`Building`, returning the terminal status.
+fn drive_steps(
+    store: &VectorIndexStore,
+    index_id: u32,
+) -> gleaph_graph_kernel::vector_index::VectorRebuildStatus {
+    for _ in 0..100_000 {
+        let status = store
+            .admin_vector_rebuild_step(router(), index_id, 1)
+            .expect("step");
+        match status.phase {
+            VectorRebuildPhase::Sampling | VectorRebuildPhase::Building => continue,
+            _ => return status,
+        }
+    }
+    panic!("rebuild steps did not terminate");
+}
+
+/// Drives `admin_vector_rebuild_cleanup_step` (one unit at a time) until `Idle`, returning the step
+/// count so a test can assert teardown was bounded across multiple messages.
+fn drive_cleanup(store: &VectorIndexStore, index_id: u32) -> u32 {
+    for steps in 1..=100_000u32 {
+        let status = store
+            .admin_vector_rebuild_cleanup_step(router(), index_id, 1)
+            .expect("cleanup");
+        if status.phase == VectorRebuildPhase::Idle {
+            return steps;
+        }
+    }
+    panic!("cleanup did not finish");
+}
+
+fn target_centroid_count(index_id: u32, version: u64, nlist: u32) -> u32 {
+    IVF_CENTROIDS.with_borrow(|m| {
+        (0..nlist)
+            .filter(|p| m.get(&PartitionKey::new(index_id, version, *p)).is_some())
+            .count() as u32
+    })
+}
+
+#[test]
+fn rebuild_start_is_o1_and_enters_sampling() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    let status = store
+        .admin_vector_rebuild_status(router(), INDEX_ID)
+        .expect("status");
+    assert_eq!(status.phase, VectorRebuildPhase::Sampling);
+    assert_eq!(status.target_index_version, TARGET_V);
+    assert_eq!(
+        status.candidates_collected, 0,
+        "start collects no candidates"
+    );
+    assert_eq!(
+        target_centroid_count(INDEX_ID, TARGET_V, 2),
+        0,
+        "start writes no centroids"
+    );
+}
+
+#[test]
+fn rebuild_sampling_writes_nlist_centroids_then_builds_to_ready() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    let status = drive_steps(&store, INDEX_ID);
+    assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
+    assert_eq!(
+        target_centroid_count(INDEX_ID, TARGET_V, 2),
+        2,
+        "exactly nlist centroids written"
+    );
+    // Every live subject has a shadow slot at the target version.
+    for v in 1..=4u32 {
+        let entry = store.subject_entry_for_test(INDEX_ID, subject(v)).unwrap();
+        let shadow = entry.shadow_slot.expect("shadow slot");
+        assert_eq!(shadow.index_version, TARGET_V);
+    }
+}
+
+#[test]
+fn rebuild_start_rejects_invalid_params() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    // nlist < 2
+    assert_eq!(
+        store
+            .admin_start_vector_rebuild(router(), INDEX_ID, 1, 100)
+            .unwrap_err(),
+        VectorIndexError::InvalidRebuildParams
+    );
+    // sample_limit < nlist
+    assert_eq!(
+        store
+            .admin_start_vector_rebuild(router(), INDEX_ID, 4, 3)
+            .unwrap_err(),
+        VectorIndexError::InvalidRebuildParams
+    );
+    // nlist > MAX_NLIST
+    assert_eq!(
+        store
+            .admin_start_vector_rebuild(
+                router(),
+                INDEX_ID,
+                super::MAX_NLIST + 1,
+                super::MAX_NLIST + 1
+            )
+            .unwrap_err(),
+        VectorIndexError::InvalidRebuildParams
+    );
+}
+
+#[test]
+fn rebuild_start_rejects_oversized_candidate_bytes() {
+    let store = fresh_store();
+    // A large-dim index: `nlist * stride_bytes` for the durable `Sampling.candidates` exceeds the
+    // candidate-byte budget even though `nlist <= MAX_NLIST`, because `stride_bytes` scales with dims.
+    let big_dims: u16 = 2100; // stride = 8400 bytes (F32)
+    let stride = big_dims as usize * 4;
+    let op = VectorEmbeddingSyncOp {
+        index_id: INDEX_ID,
+        embedding_name_id: 0,
+        subject: subject(1),
+        embedding_incarnation: 1,
+        embedding_version: 1,
+        encoding: VectorEncoding::F32,
+        dims: big_dims,
+        bytes: vec![0u8; stride],
+        remove: false,
+    };
+    store
+        .vector_upsert(shard_canister(), &op)
+        .expect("seed large-dim upsert");
+    assert!(
+        super::MAX_NLIST as usize * stride > super::MAX_REBUILD_CANDIDATE_BYTES as usize,
+        "fixture must exceed the candidate-byte cap"
+    );
+    assert_eq!(
+        store
+            .admin_start_vector_rebuild(router(), INDEX_ID, super::MAX_NLIST, super::MAX_NLIST)
+            .unwrap_err(),
+        VectorIndexError::InvalidRebuildParams
+    );
+}
+
+#[test]
+fn rebuild_step_and_cleanup_accept_oversized_caller_budget() {
+    // A huge caller budget (`u32::MAX`) is clamped, never rejected: step/cleanup still succeed and
+    // drive the rebuild to completion. (The exact `1..=MAX_REBUILD_STEP_WORK` clamp is unit-tested in
+    // `rebuild::tests::clamp_step_work_bounds_caller_budget`.)
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    let mut status = store
+        .admin_vector_rebuild_step(router(), INDEX_ID, u32::MAX)
+        .expect("step accepts u32::MAX");
+    while matches!(
+        status.phase,
+        VectorRebuildPhase::Sampling | VectorRebuildPhase::Building
+    ) {
+        status = store
+            .admin_vector_rebuild_step(router(), INDEX_ID, u32::MAX)
+            .expect("step accepts u32::MAX");
+    }
+    assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+    for _ in 0..100_000 {
+        let status = store
+            .admin_vector_rebuild_cleanup_step(router(), INDEX_ID, u32::MAX)
+            .expect("cleanup accepts u32::MAX");
+        if status.phase == VectorRebuildPhase::Idle {
+            return;
+        }
+    }
+    panic!("clamped cleanup did not finish");
+}
+
+#[test]
+fn rebuild_step_is_bounded_by_per_step_vector_bytes() {
+    // With a tiny injected byte budget (one vector's worth), each `Sampling`/`Building` step buffers
+    // exactly one vector and breaks, so the contract "a step does not finish in one message; a cursor
+    // survives" is observable on a small fixture (no `MAX_REBUILD_STEP_WORK`-sized seeding needed).
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    let one_vector = STRIDE as u64;
+
+    // First sampling step buffers one vector -> one candidate, not yet enough for nlist=2.
+    let status = store
+        .rebuild_step_with_budget(INDEX_ID, u32::MAX, one_vector)
+        .expect("sampling step");
+    assert_eq!(status.phase, VectorRebuildPhase::Sampling);
+    assert_eq!(
+        status.candidates_collected, 1,
+        "byte budget truncates sampling to one buffered vector per step"
+    );
+
+    // Second sampling step buffers the second distinct vector -> nlist centroids -> Building.
+    let status = store
+        .rebuild_step_with_budget(INDEX_ID, u32::MAX, one_vector)
+        .expect("sampling step");
+    assert_eq!(status.phase, VectorRebuildPhase::Building);
+
+    // First building step shadows exactly one subject, then breaks on the byte budget.
+    let status = store
+        .rebuild_step_with_budget(INDEX_ID, u32::MAX, one_vector)
+        .expect("building step");
+    assert_eq!(status.phase, VectorRebuildPhase::Building);
+    assert_eq!(
+        status.subjects_processed, 1,
+        "byte budget truncates building to one buffered vector per step"
+    );
+
+    // Remaining subjects finish across further byte-bounded steps.
+    let mut status = status;
+    for _ in 0..100 {
+        if status.phase == VectorRebuildPhase::ReadyToPublish {
+            break;
+        }
+        status = store
+            .rebuild_step_with_budget(INDEX_ID, u32::MAX, one_vector)
+            .expect("building step");
+    }
+    assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
+
+    // The byte-bounded build is equivalent to an unbounded one: parity with the exact scan holds.
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+    drive_cleanup(&store, INDEX_ID);
+    for v in 1..=4u32 {
+        let entry = store.subject_entry_for_test(INDEX_ID, subject(v)).unwrap();
+        let slot = entry.slot.expect("collapsed live slot");
+        assert_eq!(slot.index_version, TARGET_V);
+        assert_eq!(entry.shadow_slot, None);
+    }
+}
+
+#[test]
+fn rebuild_already_active_is_rejected() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    assert_eq!(
+        store
+            .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+            .unwrap_err(),
+        VectorIndexError::RebuildAlreadyActive
+    );
+}
+
+#[test]
+fn rebuild_sampling_fails_on_insufficient_distinct_vectors_then_recovers() {
+    let store = fresh_store();
+    // Three live subjects but only ONE distinct value: cannot form 2 distinct centroids.
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(1, 1, 5.0))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(2, 1, 5.0))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(3, 1, 5.0))
+        .unwrap();
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    let status = drive_steps(&store, INDEX_ID);
+    assert_eq!(status.phase, VectorRebuildPhase::Failed);
+
+    // Failed recovers to Idle via abort (O(1), nothing persisted), then a new rebuild can start.
+    store
+        .admin_abort_vector_rebuild(router(), INDEX_ID)
+        .expect("abort failed");
+    assert_eq!(
+        store
+            .admin_vector_rebuild_status(router(), INDEX_ID)
+            .unwrap()
+            .phase,
+        VectorRebuildPhase::Idle
+    );
+    // Add two distinct values so a fresh rebuild can now sample 2 centroids.
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(10, 1, 0.0))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(11, 1, 1.0))
+        .unwrap();
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("restart after recovery");
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+}
+
+#[test]
+fn publish_rejected_before_ready() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    // Still Sampling.
+    assert_eq!(
+        store
+            .admin_publish_vector_rebuild(router(), INDEX_ID)
+            .unwrap_err(),
+        VectorIndexError::RebuildNotReadyToPublish
+    );
+}
+
+#[test]
+fn publish_switches_to_partition_search_with_exact_parity() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    let before = store.vector_search(&search_value(1.5, 10)).expect("exact");
+
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+
+    let def = store.def_for_test(INDEX_ID).unwrap();
+    assert_eq!(def.active_index_version, TARGET_V);
+    assert_eq!(def.nlist, 2);
+
+    // Default search now runs the partition scan (nprobe clamps to nlist=2 == full scan == exact).
+    let after = store
+        .vector_search(&search_value(1.5, 10))
+        .expect("partition");
+    assert_eq!(after.hits, before.hits);
+    // nprobe = nlist parity is explicit too.
+    let tuned_after = store
+        .vector_search_tuned(&search_value(1.5, 10), tuned(2))
+        .expect("tuned");
+    assert_eq!(tuned_after.hits, before.hits);
+}
+
+#[test]
+fn upsert_during_building_survives_publish() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    // Reach Building (centroids written), then insert a new subject mid-rebuild.
+    store
+        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
+        .expect("sampling step");
+    let status = store
+        .admin_vector_rebuild_status(router(), INDEX_ID)
+        .unwrap();
+    assert_eq!(status.phase, VectorRebuildPhase::Building);
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
+        .expect("dual-write upsert");
+    let entry = store.subject_entry_for_test(INDEX_ID, subject(99)).unwrap();
+    assert!(
+        entry.shadow_slot.is_some(),
+        "dual-write created a shadow slot"
+    );
+
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+    let after = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert!(
+        after.hits.iter().any(|h| h.subject == subject(99)),
+        "subject inserted during Building is searchable after publish"
+    );
+}
+
+#[test]
+fn remove_during_building_does_not_resurrect_after_publish() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    store
+        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
+        .expect("sampling step"); // -> Building
+    // Remove subject 4 while dual-writing.
+    store
+        .vector_remove(shard_canister(), &remove_op(4, 2))
+        .expect("remove during building");
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+    let after = store.vector_search(&search_value(3.0, 10)).expect("search");
+    assert!(
+        !after.hits.iter().any(|h| h.subject == subject(4)),
+        "removed subject must not resurrect after publish"
+    );
+}
+
+#[test]
+fn mutation_during_cleaning_collapses_on_touch() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+    // Now in Cleaning; subject 2 is not yet collapsed (slot @ old version, shadow @ target).
+    let pre = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
+    assert_eq!(pre.slot.unwrap().index_version, 1);
+    assert_eq!(pre.shadow_slot.unwrap().index_version, TARGET_V);
+
+    // Touch subject 2: a newer-version upsert must operate on the target version and collapse it.
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(2, 2, 1.0))
+        .expect("upsert during cleaning");
+    let post = store.subject_entry_for_test(INDEX_ID, subject(2)).unwrap();
+    assert_eq!(
+        post.slot.unwrap().index_version,
+        TARGET_V,
+        "collapsed to target"
+    );
+    assert_eq!(post.shadow_slot, None, "shadow cleared on touch");
+
+    // Cleanup finishes and search stays correct.
+    drive_cleanup(&store, INDEX_ID);
+    let after = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert!(after.hits.iter().any(|h| h.subject == subject(2)));
+}
+
+#[test]
+fn cleanup_is_bounded_and_resumable_to_idle() {
+    let store = fresh_store();
+    seed_distinct(&store, 6);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+    let steps = drive_cleanup(&store, INDEX_ID);
+    assert!(steps > 1, "teardown spanned multiple bounded steps");
+    // Old-version pages are gone; the index is fully on the target version.
+    let old_pages = VECTOR_PAGE.with_borrow(|m| {
+        m.range((
+            std::ops::Bound::Included(PageKey::new(INDEX_ID, 1, 0, 0)),
+            std::ops::Bound::Excluded(PageKey::new(INDEX_ID, TARGET_V, 0, 0)),
+        ))
+        .count()
+    });
+    assert_eq!(old_pages, 0, "old-version pages dropped");
+    let after = store.vector_search(&search_value(2.0, 10)).expect("search");
+    assert_eq!(after.hits.len(), 6);
+}
+
+#[test]
+fn abort_during_building_is_bounded_and_leaves_active_unchanged() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    let before = store.vector_search(&search_value(1.5, 10)).expect("exact");
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    store
+        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
+        .expect("sampling -> building");
+    assert_eq!(
+        store
+            .admin_vector_rebuild_status(router(), INDEX_ID)
+            .unwrap()
+            .phase,
+        VectorRebuildPhase::Building
+    );
+    store
+        .admin_abort_vector_rebuild(router(), INDEX_ID)
+        .expect("abort");
+    drive_cleanup(&store, INDEX_ID);
+
+    // Active version unchanged; shadow pages and centroids gone.
+    let def = store.def_for_test(INDEX_ID).unwrap();
+    assert_eq!(def.active_index_version, 1);
+    assert_eq!(def.nlist, 1);
+    assert_eq!(target_centroid_count(INDEX_ID, TARGET_V, 2), 0);
+    let after = store.vector_search(&search_value(1.5, 10)).expect("exact");
+    assert_eq!(after.hits, before.hits, "active search unchanged by abort");
+    // A fresh rebuild can start again.
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("restart after abort");
+}
+
+#[test]
+fn abort_from_sampling_is_immediate_idle() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    store
+        .admin_abort_vector_rebuild(router(), INDEX_ID)
+        .expect("abort from sampling");
+    assert_eq!(
+        store
+            .admin_vector_rebuild_status(router(), INDEX_ID)
+            .unwrap()
+            .phase,
+        VectorRebuildPhase::Idle
+    );
+}
+
+#[test]
+fn post_publish_nlist_gt_1_upsert_assigns_nearest_partition() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+    drive_cleanup(&store, INDEX_ID);
+
+    // Index is now published nlist=2 with no active rebuild. A new upsert must assign by centroid.
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(50, 1, 0.0))
+        .expect("post-publish upsert");
+    let entry = store.subject_entry_for_test(INDEX_ID, subject(50)).unwrap();
+    let slot = entry.slot.unwrap();
+    assert_eq!(slot.index_version, TARGET_V);
+    assert_eq!(
+        slot.partition_id, 0,
+        "value 0 lands in centroid-0 partition"
+    );
+    let after = store.vector_search(&search_value(0.0, 10)).expect("search");
+    assert!(after.hits.iter().any(|h| h.subject == subject(50)));
+}
+
+#[test]
+fn second_rebuild_from_partitioned_active() {
+    let store = fresh_store();
+    seed_distinct(&store, 6);
+    // First rebuild to nlist=2 and fully publish + clean.
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start 1");
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish 1");
+    drive_cleanup(&store, INDEX_ID);
+    let before = store
+        .vector_search(&search_value(2.5, 10))
+        .expect("exact-ish");
+
+    // Second rebuild to nlist=3 from the partitioned (nlist=2) active version.
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 3, 100)
+        .expect("start 2");
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish 2");
+    let def = store.def_for_test(INDEX_ID).unwrap();
+    assert_eq!(def.active_index_version, 3);
+    assert_eq!(def.nlist, 3);
+    drive_cleanup(&store, INDEX_ID);
+
+    // Parity to the pre-second-rebuild result at nprobe = nlist (full scan).
+    let after = store
+        .vector_search_tuned(&search_value(2.5, 10), tuned(3))
+        .expect("tuned");
+    assert_eq!(after.hits, before.hits);
+}
+
+#[test]
+fn publish_succeeds_with_an_empty_partition() {
+    let store = fresh_store();
+    // Subjects: values 0, 10, 5, 0, 10. The val-5 subject (3) becomes centroid 2's source but is
+    // removed during Building, leaving centroid 2's partition empty.
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(1, 1, 0.0))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(2, 1, 10.0))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(3, 1, 5.0))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(4, 1, 0.0))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(5, 1, 10.0))
+        .unwrap();
+
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 3, 100)
+        .expect("start");
+    // One large sampling step writes the 3 centroids [0, 10, 5] and enters Building.
+    store
+        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
+        .expect("sampling");
+    assert_eq!(
+        store
+            .admin_vector_rebuild_status(router(), INDEX_ID)
+            .unwrap()
+            .phase,
+        VectorRebuildPhase::Building
+    );
+    // Remove the val-5 subject so no live vector is nearest to centroid 2.
+    store
+        .vector_remove(shard_canister(), &remove_op(3, 2))
+        .expect("remove val-5");
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+
+    // Partition 2 received no vector: no head materialized for it (empty partition is valid).
+    let head_p2 =
+        VECTOR_PARTITION_HEADS.with_borrow(|m| m.get(&PartitionKey::new(INDEX_ID, TARGET_V, 2)));
+    assert!(head_p2.is_none(), "empty partition materializes no head");
+
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish tolerates empty partition");
+    // Full-scan search returns the four remaining live subjects.
+    let after = store
+        .vector_search_tuned(&search_value(0.0, 10), tuned(3))
+        .expect("search");
+    assert_eq!(after.hits.len(), 4);
+}

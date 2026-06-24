@@ -1189,6 +1189,15 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
              (ADR 0031 Slice 6); VECTOR_SUBJECT_TO_ID remains the freshness source of truth",
             RebuildPath::Named("vertex_embedding_backfill"),
         ),
+        region(
+            "VECTOR_REBUILD_STATE",
+            12,
+            StableMemoryClass::Derived,
+            "vector rebuild lifecycle",
+            "index_id → VectorRebuildStateRecord: bounded shadow-version rebuild state machine \
+             (ADR 0031 Slice 7); reconstructible by re-running a rebuild from the active version",
+            RebuildPath::Named("vertex_embedding_backfill"),
+        ),
     ],
 };
 
@@ -1489,8 +1498,8 @@ mod tests {
     #[test]
     fn vector_index_layout_registry_matches_baseline() {
         assert_layout(&VECTOR_INDEX_STABLE_LAYOUT);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 12);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(11));
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 13);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(12));
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[4].symbol,
             "VECTOR_INDEX_DEFS"
@@ -1521,6 +1530,15 @@ mod tests {
         );
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[11].class,
+            StableMemoryClass::Derived
+        );
+        // ADR 0031 Slice 7: bounded shadow-version rebuild state machine, derived/rebuildable.
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[12].symbol,
+            "VECTOR_REBUILD_STATE"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[12].class,
             StableMemoryClass::Derived
         );
     }
