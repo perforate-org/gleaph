@@ -40,11 +40,18 @@ fn subject(vertex_id: u32) -> VectorSubject {
     }
 }
 
-fn upsert_op(vertex_id: u32, embedding_version: u64, fill: u8) -> VectorEmbeddingSyncOp {
+/// Upsert at an explicit `(incarnation, version)` clock (ADR 0031 Slice 4).
+fn upsert_op_inc(
+    vertex_id: u32,
+    embedding_incarnation: u64,
+    embedding_version: u64,
+    fill: u8,
+) -> VectorEmbeddingSyncOp {
     VectorEmbeddingSyncOp {
         index_id: INDEX_ID,
         embedding_name_id: 0,
         subject: subject(vertex_id),
+        embedding_incarnation,
         embedding_version,
         encoding: VectorEncoding::F32,
         dims: DIMS,
@@ -53,17 +60,33 @@ fn upsert_op(vertex_id: u32, embedding_version: u64, fill: u8) -> VectorEmbeddin
     }
 }
 
-fn remove_op(vertex_id: u32, embedding_version: u64) -> VectorEmbeddingSyncOp {
+/// Remove at an explicit `(incarnation, version)` clock (ADR 0031 Slice 4).
+fn remove_op_inc(
+    vertex_id: u32,
+    embedding_incarnation: u64,
+    embedding_version: u64,
+) -> VectorEmbeddingSyncOp {
     VectorEmbeddingSyncOp {
         index_id: INDEX_ID,
         embedding_name_id: 0,
         subject: subject(vertex_id),
+        embedding_incarnation,
         embedding_version,
         encoding: VectorEncoding::F32,
         dims: DIMS,
         bytes: Vec::new(),
         remove: true,
     }
+}
+
+/// First-incarnation upsert (the common single-incarnation case).
+fn upsert_op(vertex_id: u32, embedding_version: u64, fill: u8) -> VectorEmbeddingSyncOp {
+    upsert_op_inc(vertex_id, 1, embedding_version, fill)
+}
+
+/// First-incarnation remove (the common single-incarnation case).
+fn remove_op(vertex_id: u32, embedding_version: u64) -> VectorEmbeddingSyncOp {
+    remove_op_inc(vertex_id, 1, embedding_version)
 }
 
 #[test]
@@ -195,48 +218,75 @@ fn remove_missing_subject_writes_tombstone_clock() {
 }
 
 #[test]
-fn upsert_to_deleted_subject_resurrects_regardless_of_version() {
-    // The canister trusts delivered upserts: a tombstoned subject is resurrected with a fresh
-    // VectorId even when the upsert version is <= the tombstone clock. Stale-replay protection
-    // lives in the graph repair-drain (canonical re-derivation), not here, because the canonical
-    // embedding_version resets on re-insert and cannot be ordered against the clock.
+fn same_incarnation_upsert_to_deleted_subject_is_noop() {
+    // Under incarnation fencing, an upsert at the *same* incarnation as a tombstone is a stale
+    // replay: a genuine reinsert carries a strictly greater incarnation. So it must NOT resurrect.
     let store = fresh_store();
     store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
+        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
         .unwrap();
     store
-        .vector_upsert(shard_canister(), &upsert_op(7, 2, 0xBB))
+        .vector_remove(shard_canister(), &remove_op_inc(7, 1, u64::MAX))
+        .unwrap();
+    // Stale same-incarnation upsert (e.g. a journaled replay) lands behind the tombstone clock.
+    store
+        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
+        .expect("stale replay no-op");
+
+    let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
+    assert!(entry.deleted, "same-incarnation upsert cannot resurrect");
+    assert_eq!(entry.vector_id, None);
+}
+
+#[test]
+fn newer_incarnation_upsert_resurrects_with_fresh_id() {
+    // Resurrection requires a strictly greater incarnation, mirroring the canonical store bumping
+    // the incarnation on each delete/reinsert. The fresh incarnation lands a brand-new VectorId.
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
         .unwrap();
     store
-        .vector_remove(shard_canister(), &remove_op(7, 2))
+        .vector_remove(shard_canister(), &remove_op_inc(7, 1, u64::MAX))
         .unwrap();
-    // Re-insert at version 1 (canonical reset) lands behind a clock of 2: still resurrects.
+    // Reinsert at incarnation 2, version 1 (canonical version reset): resurrects.
     store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
+        .vector_upsert(shard_canister(), &upsert_op_inc(7, 2, 1, 0xBB))
         .unwrap();
 
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
-    assert!(!entry.deleted, "delivered upsert resurrects the subject");
+    assert!(!entry.deleted, "newer-incarnation upsert resurrects");
+    assert_eq!(entry.embedding_incarnation, 2);
     assert_eq!(entry.stored_embedding_version, 1);
     let new_id = entry.vector_id.expect("resurrected entry has a vector_id");
     assert_eq!(new_id, 2, "fresh VectorId allocated; old id retired");
     assert!(store.id_to_slot_for_test(INDEX_ID, new_id).is_some());
+    assert_eq!(store.id_to_slot_for_test(INDEX_ID, 1), None);
 }
 
 #[test]
-fn upsert_after_missing_remove_clock_resurrects() {
-    // A remove on a never-inserted subject writes a tombstone clock; a subsequent upsert is a
-    // delivered re-insert and resurrects with a fresh id (graph drain guards against stale ones).
+fn newer_incarnation_upsert_after_missing_remove_clock_resurrects() {
+    // A remove on a never-inserted subject writes a tombstone clock at its incarnation; only a
+    // strictly newer incarnation resurrects (a same-incarnation replay stays a no-op).
     let store = fresh_store();
     store
-        .vector_remove(shard_canister(), &remove_op(7, 5))
+        .vector_remove(shard_canister(), &remove_op_inc(7, 1, 5))
         .unwrap();
     store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
+        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
+        .expect("same-incarnation replay no-op");
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(7))
+            .unwrap()
+            .deleted
+    );
+    store
+        .vector_upsert(shard_canister(), &upsert_op_inc(7, 2, 1, 0xAA))
         .unwrap();
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
-    assert!(!entry.deleted, "delivered upsert resurrects after a clock");
-    assert_eq!(entry.stored_embedding_version, 1);
+    assert!(!entry.deleted, "newer incarnation resurrects after a clock");
+    assert_eq!(entry.embedding_incarnation, 2);
     assert!(entry.vector_id.is_some());
 }
 
@@ -244,7 +294,7 @@ fn upsert_after_missing_remove_clock_resurrects() {
 fn reinsert_after_delete_allocates_fresh_vector_id() {
     let store = fresh_store();
     store
-        .vector_upsert(shard_canister(), &upsert_op(7, 1, 0xAA))
+        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
         .unwrap();
     let first_id = store
         .subject_entry_for_test(INDEX_ID, subject(7))
@@ -254,10 +304,11 @@ fn reinsert_after_delete_allocates_fresh_vector_id() {
     assert_eq!(first_id, 1);
 
     store
-        .vector_remove(shard_canister(), &remove_op(7, 2))
+        .vector_remove(shard_canister(), &remove_op_inc(7, 1, 2))
         .unwrap();
+    // The canonical reinsert bumps the incarnation to 2.
     store
-        .vector_upsert(shard_canister(), &upsert_op(7, 3, 0xCC))
+        .vector_upsert(shard_canister(), &upsert_op_inc(7, 2, 1, 0xCC))
         .unwrap();
 
     let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
@@ -267,6 +318,61 @@ fn reinsert_after_delete_allocates_fresh_vector_id() {
     assert_eq!(new_id, 2);
     assert_eq!(store.id_to_slot_for_test(INDEX_ID, first_id), None);
     assert!(store.id_to_slot_for_test(INDEX_ID, new_id).is_some());
+}
+
+#[test]
+fn stale_older_incarnation_remove_cannot_tombstone_newer_live() {
+    // The reverse-orphan race: a late repair-drain remove for the *deleted* incarnation arrives
+    // after a newer reinsert already advanced the clock. The incarnation fence makes it a no-op.
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
+        .unwrap();
+    store
+        .vector_remove(shard_canister(), &remove_op_inc(7, 1, u64::MAX))
+        .unwrap();
+    // Reinsert at incarnation 2 (live again, fresh id).
+    store
+        .vector_upsert(shard_canister(), &upsert_op_inc(7, 2, 1, 0xBB))
+        .unwrap();
+    let live_id = store
+        .subject_entry_for_test(INDEX_ID, subject(7))
+        .unwrap()
+        .vector_id
+        .unwrap();
+
+    // Late blind remove for the OLD incarnation with the authoritative max version: must no-op.
+    store
+        .vector_remove(shard_canister(), &remove_op_inc(7, 1, u64::MAX))
+        .expect("stale older-incarnation remove is fenced");
+
+    let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
+    assert!(
+        !entry.deleted,
+        "newer live incarnation survives a stale remove"
+    );
+    assert_eq!(entry.embedding_incarnation, 2);
+    assert_eq!(entry.vector_id, Some(live_id));
+    assert!(store.id_to_slot_for_test(INDEX_ID, live_id).is_some());
+}
+
+#[test]
+fn newer_incarnation_remove_on_live_tombstones() {
+    // A remove for a strictly newer incarnation than the live clock authoritatively tombstones the
+    // live slot (e.g. the upsert for that incarnation never arrived).
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_op_inc(7, 1, 1, 0xAA))
+        .unwrap();
+    store
+        .vector_remove(shard_canister(), &remove_op_inc(7, 2, u64::MAX))
+        .unwrap();
+    let entry = store.subject_entry_for_test(INDEX_ID, subject(7)).unwrap();
+    assert!(entry.deleted);
+    assert_eq!(entry.embedding_incarnation, 2);
+    assert_eq!(entry.slot, None);
+    assert_eq!(entry.vector_id, None);
+    assert_eq!(store.id_to_slot_for_test(INDEX_ID, 1), None);
 }
 
 #[test]
@@ -385,34 +491,60 @@ fn init_rejects_anonymous_router() {
 }
 
 #[test]
-fn attach_rejects_anonymous_principal_and_out_of_range() {
+fn attach_rejects_anonymous_principal() {
     let store = fresh_store();
     assert_eq!(
         store
             .admin_attach_shard_canister(
                 router(),
                 GraphId::from_raw(1),
-                1,
-                0,
                 ShardId::new(0),
                 Principal::anonymous(),
             )
             .unwrap_err(),
         VectorIndexError::InvalidPrincipalInRegistry
     );
-    // group [0,1) does not contain shard 5.
+}
+
+#[test]
+fn single_target_owns_all_shards_of_one_graph() {
+    let store = VectorIndexStore::new();
+    store
+        .init_from_args(&VectorIndexInitArgs {
+            router_canister: router(),
+        })
+        .expect("init");
+    let graph = GraphId::from_raw(1);
+    // One vector target owns *every* shard of the graph (ADR 0031 Slice 4 target model B). Shard 0
+    // pins the graph; a *different* shard of the SAME graph must also attach (the old property-index
+    // group model rejected this with GraphOwnershipMismatch — the bug this guards against).
+    store
+        .admin_attach_shard_canister(
+            router(),
+            graph,
+            ShardId::new(0),
+            Principal::from_slice(&[10]),
+        )
+        .expect("attach shard 0");
+    store
+        .admin_attach_shard_canister(
+            router(),
+            graph,
+            ShardId::new(1),
+            Principal::from_slice(&[11]),
+        )
+        .expect("attach shard 1 to the same single target");
+    // A shard belonging to a *different* graph is rejected — one target per graph.
     assert_eq!(
         store
             .admin_attach_shard_canister(
                 router(),
-                GraphId::from_raw(1),
-                1,
-                0,
-                ShardId::new(5),
-                Principal::from_slice(&[7]),
+                GraphId::from_raw(2),
+                ShardId::new(0),
+                Principal::from_slice(&[12]),
             )
             .unwrap_err(),
-        VectorIndexError::ShardOutOfRangeForGroup
+        VectorIndexError::GraphOwnershipMismatch
     );
 }
 
@@ -425,8 +557,6 @@ fn attach_rejects_non_router_caller() {
             .admin_attach_shard_canister(
                 not_router,
                 GraphId::from_raw(1),
-                1,
-                0,
                 ShardId::new(0),
                 shard_canister(),
             )

@@ -4,16 +4,21 @@
 //! is the home for vector-index wire types. Slice 1 carried only the canonical embedding encoding.
 //! Slice 2 adds the derived sync/mutation wire surface (`VectorIndexKind`, `VectorMetric`,
 //! `VectorSubject`, `VectorEmbeddingSyncOp`, `IndexedEmbeddingCatalog`, `VectorIndexError`).
-//! Search/cursor types are deliberately deferred to Slice 4+ (Router catalog + target resolution
-//! is Slice 3; search/centroids are Slice 4+).
+//! Search/cursor types are deliberately deferred to Slice 5+ (Router catalog + target resolution
+//! is Slice 3; incarnation-fenced production activation is Slice 4; search/centroids are Slice 5+).
 //!
 //! # Version naming glossary
 //!
-//! Three distinct concepts that are never conflated in code or wire:
+//! Four distinct concepts that are never conflated in code or wire:
 //!
+//! - `embedding_incarnation` (graph canonical store, ADR 0031 Slice 4): delete-spanning ordering
+//!   fence per `(VertexId, EmbeddingNameId)` identity. Strictly increases across each delete/reinsert
+//!   and is never reset. The vector canister orders sync ops by `(embedding_incarnation,
+//!   embedding_version)`, so a stale remove cannot tombstone a newer live vector.
+//! - `embedding_version` (graph canonical store): `StoredEmbedding.version`; the per-incarnation
+//!   update counter (resets to `1` on each fresh incarnation), carried on sync ops and the repair
+//!   journal and consulted only within an incarnation for sync/repair idempotence.
 //! - `index_version` (vector-index canister): physical index generation; page/partition head keys.
-//! - `embedding_version` (graph canonical store): `StoredEmbedding.version`; carried on sync ops and
-//!   the repair journal, and the *only* field consulted for sync/repair idempotence.
 //! - `generation` (vector-index canister): slot/entity handle incarnation for append-and-tombstone.
 
 use crate::federation::ShardId;
@@ -94,15 +99,26 @@ impl VectorSubject {
 /// Graph shard → vector-index canister: one derived embedding mutation.
 ///
 /// `bytes` is REQUIRED for an upsert (`remove = false`) and EMPTY for a remove (`remove = true`);
-/// idempotence is decided **only** by `embedding_version` against the retained subject clock and
-/// never reads `bytes`. `encoding`/`dims` on a remove op are ignored by the canister.
+/// idempotence is decided by the ordered pair `(embedding_incarnation, embedding_version)` against
+/// the retained subject clock and never reads `bytes`. `encoding`/`dims` on a remove op are ignored
+/// by the canister.
+///
+/// Contract (ADR 0031 Slice 4): `embedding_incarnation > 0`; an upsert carries `embedding_version >
+/// 0`; a remove carries the deleted record's incarnation and an empty `bytes`. No in-flight ops
+/// predate this field in production (dispatch was inert before activation), so it is a required
+/// field rather than an `Option`.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct VectorEmbeddingSyncOp {
     pub index_id: u32,
-    /// Routing filter only until the Router catalog lands (Slice 3).
+    /// Routing filter; resolved against the Router catalog at activation (Slice 3+).
     pub embedding_name_id: u16,
     pub subject: VectorSubject,
-    /// Canonical `StoredEmbedding.version` from the graph `VertexEmbeddingStore`.
+    /// Graph-owned delete-spanning ordering fence (ADR 0031 Slice 4). Strictly increases across each
+    /// delete/reinsert of the identity; the canister orders by `(embedding_incarnation,
+    /// embedding_version)`.
+    pub embedding_incarnation: u64,
+    /// Canonical `StoredEmbedding.version` from the graph `VertexEmbeddingStore`; the per-incarnation
+    /// update counter.
     pub embedding_version: u64,
     pub encoding: VectorEncoding,
     pub dims: u16,
@@ -164,11 +180,14 @@ pub enum VectorIndexError {
     InvalidPrincipalInRegistry,
     /// `shard_id` or principal is already attached to a different counterpart.
     ShardCanisterAlreadyAttached,
-    /// The canister is already bound to a different graph/group.
+    /// The vector canister is already bound to a different graph (a vector target owns the whole
+    /// graph, so attaching a shard of another graph is rejected).
     GraphOwnershipMismatch,
-    /// Invalid index group configuration (e.g. zero group size).
+    /// Invalid index group configuration (e.g. zero group size). Retained for wire compatibility;
+    /// vector attach no longer uses property-index group sharding.
     InvalidIndexGroupConfig,
-    /// `shard_id` is outside the attached index group range.
+    /// `shard_id` is outside the attached index group range. Retained for wire compatibility;
+    /// vector attach no longer uses property-index group sharding.
     ShardOutOfRangeForGroup,
     /// Caller is not an attached graph shard for the requested `shard_id`.
     ShardNotAttached,
@@ -203,7 +222,7 @@ impl std::fmt::Display for VectorIndexError {
                 "shard/canister attachment already exists with a different counterpart"
             }
             Self::GraphOwnershipMismatch => {
-                "vector index canister is already bound to a different graph/group"
+                "vector index canister is already bound to a different graph"
             }
             Self::InvalidIndexGroupConfig => "invalid index group configuration",
             Self::ShardOutOfRangeForGroup => "shard id is outside the attached index group range",
@@ -248,6 +267,7 @@ mod tests {
                 shard_id: ShardId::new(2),
                 vertex_id: 42,
             },
+            embedding_incarnation: 5,
             embedding_version: 9,
             encoding: VectorEncoding::F32,
             dims: 4,
@@ -267,6 +287,7 @@ mod tests {
                 shard_id: ShardId::new(0),
                 vertex_id: 1,
             },
+            embedding_incarnation: 1,
             embedding_version: 2,
             encoding: VectorEncoding::F32,
             dims: 4,
@@ -277,6 +298,7 @@ mod tests {
         let decoded = Decode!(&bytes, VectorEmbeddingSyncOp).expect("decode");
         assert!(decoded.remove);
         assert!(decoded.bytes.is_empty());
+        assert_eq!(decoded.embedding_incarnation, 1);
     }
 
     #[test]

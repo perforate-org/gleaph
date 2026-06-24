@@ -9,13 +9,17 @@
 //! needed here.
 //!
 //! Vector ops (ADR 0031) are not replayed verbatim. Because the canonical Graph
-//! store resets `embedding_version` to `1` on re-insert, a stored vector op
-//! cannot be ordered against the vector canister's tombstone clock. Instead each
-//! vector entry is *reconciled* against the canonical store at drain time
-//! (canonical wins): if the subject still owns the embedding we deliver a
-//! current upsert; if it was deleted we deliver a remove, discarding the stale
-//! op. A vector entry with no configured vector client is skipped (left durable)
-//! so it never wedges the property repairs queued after it.
+//! store resets `embedding_version` to `1` on re-insert, a stored vector op's
+//! version alone cannot be ordered against the vector canister's clock. Instead
+//! each vector entry is *reconciled* against the canonical store at drain time
+//! (canonical wins): if the subject still owns the embedding we deliver a current
+//! upsert re-derived with the canonical `(embedding_incarnation, embedding_version)`;
+//! if it was deleted we deliver a remove stamped with the persisted (delete-spanning)
+//! incarnation. Since the incarnation strictly increases across each reinsert and the
+//! vector canister orders by `(incarnation, version)` (ADR 0031 Slice 4), the
+//! reconcile remove is incarnation-fenced: it can no longer tombstone a newer
+//! reinsert that raced ahead of it. A vector entry with no configured vector client
+//! is skipped (left durable) so it never wedges the property repairs queued after it.
 
 use crate::facade::{GraphStore, RepairPostingOp};
 use crate::index::lookup::PropertyIndexLookup;
@@ -32,12 +36,13 @@ const REPAIR_DRAIN_BATCH: usize = 128;
 
 /// `embedding_version` stamped on a reconcile-driven remove when the canonical
 /// store no longer owns the subject. The journaled op's own version cannot be
-/// trusted: it may be *older* than a newer live slot already in the vector index,
-/// in which case the canister would no-op the remove (`version < clock`) and the
-/// derived vector would be orphaned once the drain drops the journal entry. A
-/// canonical-wins removal therefore uses the maximum clock so it unconditionally
-/// supersedes any live slot. This does not block re-inserts: an upsert to a
-/// deleted subject resurrects with a fresh `VectorId` regardless of version.
+/// trusted: it may be *older* than a newer live slot of the **same incarnation**
+/// already in the vector index, in which case the canister would no-op the remove
+/// (`version < clock`) and the derived vector would be orphaned once the drain
+/// drops the journal entry. A canonical-wins removal therefore uses the maximum
+/// version so it supersedes any live slot **within its incarnation**. The remove
+/// also carries the canonical delete-spanning incarnation (ADR 0031 Slice 4), so a
+/// strictly newer reinsert (higher incarnation) is never tombstoned by this remove.
 const RECONCILE_TOMBSTONE_VERSION: u64 = u64::MAX;
 
 /// Outcome of re-applying a single journal entry.
@@ -154,24 +159,18 @@ async fn apply(
 /// the embedding, otherwise a remove. This discards stale upserts whose subject
 /// was deleted, so they cannot resurrect a tombstoned vector.
 ///
-/// # Slice 3 activation gate (not yet production-correct)
+/// Both branches re-derive the canonical delete-spanning `embedding_incarnation`
+/// (ADR 0031 Slice 4) rather than trusting the journaled op:
 ///
-/// This is a **Slice 2 scaffold that runs only while vector dispatch is inert**
-/// (no production `IndexedEmbeddingCatalog` is injected, so no vector ops are ever
-/// journaled). It is **not** a correct production convergence path: the
-/// canonical-deleted branch sends a *blind* remove (it reads canonical as absent,
-/// then awaits the cross-canister remove). Because `embedding_version` resets on
-/// re-insert it cannot order this remove against a concurrent re-insert's
-/// direct-flush upsert, so a blind remove cannot avoid both forward-orphan (stale
-/// version no-ops, derived vector survives a delete) and reverse-orphan (a
-/// `u64::MAX` remove racing a re-insert tombstones a live vector). Once the
-/// reconcile entry is dropped there is no source to re-detect the divergence.
-///
-/// Before Slice 3 injects a production catalog, a delete-spanning monotonic
-/// incarnation/epoch (carried on sync ops, ordered by the vector canister) MUST
-/// be added so removes and re-inserts order independent of arrival. See ADR 0031
-/// and `design/index/vector-index.md` ("Slice 3 activation gate"). Do not enable
-/// catalog-backed dispatch in production before that fencing lands.
+/// - **Present** -> upsert with the canonical `(incarnation, version)`. If a
+///   delete + reinsert happened since the op was journaled, `incarnation_for` now
+///   returns the *new* incarnation, so the replay cannot regress the clock.
+/// - **Absent** -> remove stamped with the persisted (deleted) incarnation and
+///   `embedding_version = RECONCILE_TOMBSTONE_VERSION`. Because the incarnation
+///   strictly increases on reinsert and the vector canister orders by
+///   `(incarnation, version)`, a remove for the deleted incarnation can never
+///   tombstone a newer reinsert that raced ahead of the drain. This closes the
+///   reverse-orphan race that made the Slice 2 blind remove unsafe to activate.
 async fn reconcile_vector_op(
     vx: &dyn VectorIndexLookup,
     op: &VectorEmbeddingSyncOp,
@@ -179,12 +178,19 @@ async fn reconcile_vector_op(
     let VectorSubject::Vertex { vertex_id, .. } = op.subject;
     let vid = VertexId::from(vertex_id);
     let name = EmbeddingNameId::from_raw(op.embedding_name_id);
-    match GraphStore::new().vertex_embedding(vid, name) {
+    let store = GraphStore::new();
+    match store.vertex_embedding(vid, name) {
         Some(record) => {
+            // A live record always has an incarnation; fall back to the op's stamped incarnation
+            // for any pre-Slice-4 record that predates the incarnation map.
+            let embedding_incarnation = store
+                .vertex_embedding_incarnation(vid, name)
+                .unwrap_or(op.embedding_incarnation);
             vx.vector_upsert(VectorEmbeddingSyncOp {
                 index_id: op.index_id,
                 embedding_name_id: op.embedding_name_id,
                 subject: op.subject,
+                embedding_incarnation,
                 embedding_version: record.version,
                 encoding: record.encoding,
                 dims: record.dims,
@@ -194,10 +200,17 @@ async fn reconcile_vector_op(
             .await
         }
         None => {
+            // The incarnation high-water mark survives the canonical remove, so it is the deleted
+            // incarnation. Fall back to the op's stamped incarnation if the identity was never
+            // written (e.g. a pre-Slice-4 journal entry).
+            let embedding_incarnation = store
+                .vertex_embedding_incarnation(vid, name)
+                .unwrap_or(op.embedding_incarnation);
             vx.vector_remove(VectorEmbeddingSyncOp {
                 index_id: op.index_id,
                 embedding_name_id: op.embedding_name_id,
                 subject: op.subject,
+                embedding_incarnation,
                 embedding_version: RECONCILE_TOMBSTONE_VERSION,
                 encoding: op.encoding,
                 dims: op.dims,
@@ -376,6 +389,8 @@ mod tests {
         upserts: AtomicUsize,
         removes: AtomicUsize,
         last_remove_version: AtomicU64,
+        last_remove_incarnation: AtomicU64,
+        last_upsert_incarnation: AtomicU64,
     }
 
     impl RecordingVectorIndex {
@@ -384,6 +399,8 @@ mod tests {
                 upserts: AtomicUsize::new(0),
                 removes: AtomicUsize::new(0),
                 last_remove_version: AtomicU64::new(0),
+                last_remove_incarnation: AtomicU64::new(0),
+                last_upsert_incarnation: AtomicU64::new(0),
             }
         }
     }
@@ -392,9 +409,11 @@ mod tests {
     impl VectorIndexLookup for RecordingVectorIndex {
         async fn vector_upsert(
             &self,
-            _op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
+            op: gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp,
         ) -> Result<(), PlanQueryError> {
             self.upserts.fetch_add(1, Ordering::SeqCst);
+            self.last_upsert_incarnation
+                .store(op.embedding_incarnation, Ordering::SeqCst);
             Ok(())
         }
 
@@ -405,6 +424,8 @@ mod tests {
             self.removes.fetch_add(1, Ordering::SeqCst);
             self.last_remove_version
                 .store(op.embedding_version, Ordering::SeqCst);
+            self.last_remove_incarnation
+                .store(op.embedding_incarnation, Ordering::SeqCst);
             Ok(())
         }
     }
@@ -421,6 +442,7 @@ mod tests {
                     shard_id: ShardId::new(0),
                     vertex_id,
                 },
+                embedding_incarnation: 1,
                 embedding_version: 1,
                 encoding: VectorEncoding::F32,
                 dims: 1,
@@ -453,6 +475,11 @@ mod tests {
             pollster::block_on(drain_once(&index, Some(&vector))).expect("drain succeeds");
             assert_eq!(vector.upserts.load(Ordering::SeqCst), 2);
             assert_eq!(vector.removes.load(Ordering::SeqCst), 0);
+            assert_eq!(
+                vector.last_upsert_incarnation.load(Ordering::SeqCst),
+                1,
+                "reconcile re-derives the canonical incarnation"
+            );
             assert!(graph.repair_journal_is_empty());
         });
     }
@@ -476,6 +503,41 @@ mod tests {
                 vector.last_remove_version.load(Ordering::SeqCst),
                 u64::MAX,
                 "canonical-wins remove uses an authoritative tombstone clock, not the stale op version"
+            );
+            assert_eq!(
+                vector.last_remove_incarnation.load(Ordering::SeqCst),
+                1,
+                "reconcile remove carries the deleted incarnation so it cannot tombstone a newer reinsert"
+            );
+            assert!(graph.repair_journal_is_empty());
+        });
+    }
+
+    #[test]
+    fn drain_reconcile_reinsert_re_derives_new_incarnation() {
+        use gleaph_graph_kernel::vector_index::VectorEncoding;
+        with_routing(|graph| {
+            let vid = VertexId::from(1u32);
+            let name = EmbeddingNameId::from_raw(1);
+            // Delete + reinsert bumps the canonical incarnation to 2 after the stale op (stamped
+            // incarnation 1) was journaled.
+            graph
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 1, vec![0, 0, 0, 0])
+                .expect("first insert");
+            graph.remove_vertex_embedding(vid, name).expect("remove");
+            graph
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 1, vec![0, 0, 0, 0])
+                .expect("reinsert");
+            graph.repair_journal_append(0, [vector_upsert_op(1)]);
+
+            let index = CountingIndex::new(0);
+            let vector = RecordingVectorIndex::new();
+            pollster::block_on(drain_once(&index, Some(&vector))).expect("drain succeeds");
+            assert_eq!(vector.upserts.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                vector.last_upsert_incarnation.load(Ordering::SeqCst),
+                2,
+                "the stale replay cannot regress the clock below the live reinsert incarnation"
             );
             assert!(graph.repair_journal_is_empty());
         });

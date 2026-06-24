@@ -109,6 +109,19 @@ pub struct AdminRegisterShardArgs {
     pub logical_graph_name: String,
 }
 
+/// Admin: wire (or retrofit) a derived vector-index target onto an already-registered shard and
+/// drive the attach handshake (ADR 0031 Slice 4). The Router records the target in the shard
+/// registry, calls the graph shard's router-guarded `admin_set_vector_index_canister` so its
+/// **local** `FederationRouting` carries the target, attaches the shard to the vector canister, and
+/// only then flips the durable `vector_index_attached` readiness bit. Idempotent; serves both fresh
+/// and existing (upgraded) shards. Rejects an anonymous target.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminAttachVectorIndexShardArgs {
+    pub logical_graph_name: String,
+    pub shard_id: ShardId,
+    pub vector_index_canister: Principal,
+}
+
 /// One router-orchestrated batch of label posting backfill on a graph shard.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AdminLabelBackfillStepArgs {
@@ -233,7 +246,7 @@ pub struct AdminLabelStatsProjectionStepResult {
 #[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum VectorIndexActivationStateView {
     Registered,
-    DispatchBlockedMissingIncarnationFence,
+    DispatchBlocked,
     DispatchEnabled,
 }
 
@@ -279,14 +292,29 @@ pub struct VectorIndexActivationStatus {
     pub blocked_reason: Option<String>,
 }
 
-/// Admin: request a derived vector-index backfill step (ADR 0031 Slice 3). In Slice 3 this surface
-/// **fails closed** (`VectorDispatchActivationBlocked`) for production execution — no graph backfill
-/// endpoint is wired until incarnation fencing activates dispatch. It exists so operators can probe
-/// the activation gate and so the admin contract is stable across the activation slice.
+/// Admin: drive one bounded derived vector-index backfill step on a graph shard (ADR 0031 Slice 5).
+/// The caller supplies an explicit resume cursor (`start_vertex_id`) and budget (`max_vertices`) and
+/// loops, feeding [`AdminVectorIndexBackfillStepResult::next_vertex_id`] until `done`. Fails closed
+/// (`VectorDispatchActivationBlocked`) while dispatch is not ready (global flag off or shards not
+/// vector-attached).
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct AdminVectorIndexBackfillStepArgs {
     pub logical_graph_name: String,
     pub index_id: u32,
+    pub shard_id: ShardId,
+    pub start_vertex_id: LocalVertexId,
+    /// Maximum local vertices to scan on the shard in this step (clamped to ≥ 1 by the worker).
+    pub max_vertices: u32,
+}
+
+/// Progress from one derived vector-index backfill step (ADR 0031 Slice 5).
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct AdminVectorIndexBackfillStepResult {
+    pub shard_id: ShardId,
+    pub next_vertex_id: LocalVertexId,
+    pub vertices_processed: u32,
+    pub embeddings_synced: u32,
+    pub done: bool,
 }
 
 #[cfg(test)]

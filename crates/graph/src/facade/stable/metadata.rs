@@ -51,6 +51,9 @@ pub enum GraphMetadataError {
     /// A federation-routing principal (`router_canister` or `index_canister`) was the anonymous
     /// principal, which can never be a trusted federation identity.
     AnonymousFederationPrincipal(&'static str),
+    /// A federation-routing mutation (e.g. setting the derived vector-index target, ADR 0031
+    /// Slice 4) was attempted on a graph that has no federation routing configured.
+    MissingFederationRouting,
 }
 
 impl fmt::Display for GraphMetadataError {
@@ -60,6 +63,10 @@ impl fmt::Display for GraphMetadataError {
             GraphMetadataError::AnonymousFederationPrincipal(field) => write!(
                 f,
                 "federation routing {field} must not be the anonymous principal"
+            ),
+            GraphMetadataError::MissingFederationRouting => write!(
+                f,
+                "graph has no federation routing; cannot set a derived vector-index target"
             ),
         }
     }

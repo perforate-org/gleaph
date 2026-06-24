@@ -167,6 +167,10 @@ pub enum VertexEmbeddingStoreError {
     DimensionMismatch { existing: u16, requested: u16 },
     /// Version counter would overflow `u64`.
     VersionOverflow,
+    /// Delete-spanning incarnation counter would overflow `u64` (ADR 0031 Slice 4). The incarnation
+    /// is the vector-sync ordering fence; wrapping it to `0`/`1` would let a stale remove tombstone a
+    /// live vector, so this is a hard checked failure rather than a silent wrap.
+    IncarnationOverflow,
 }
 
 impl fmt::Display for VertexEmbeddingStoreError {
@@ -186,20 +190,38 @@ impl fmt::Display for VertexEmbeddingStoreError {
                  (dimension changes require remove + insert or a new embedding name)"
             ),
             Self::VersionOverflow => write!(f, "embedding version counter overflow"),
+            Self::IncarnationOverflow => write!(f, "embedding incarnation counter overflow"),
         }
     }
 }
 
 impl std::error::Error for VertexEmbeddingStoreError {}
 
+/// Result of a successful [`VertexEmbeddingStore::set`].
+///
+/// `incarnation` is the delete-spanning identity counter (ADR 0031 Slice 4): it strictly increases
+/// across each delete/reinsert of a `(VertexId, EmbeddingNameId)` and is never reset, while
+/// `version` is the per-incarnation update counter (resets to `1` on each fresh incarnation). The
+/// vector canister orders writes by `(incarnation, version)`.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct EmbeddingWrite {
+    pub incarnation: u64,
+    pub version: u64,
+}
+
 pub struct VertexEmbeddingStore<M: Memory> {
     embeddings: StableBTreeMap<VertexEmbeddingKey, StoredEmbedding, M>,
+    /// Delete-spanning incarnation high-water mark per identity. Unlike `embeddings`, an entry here
+    /// is **kept across `remove`** so a later reinsert allocates a strictly greater incarnation and
+    /// a stale derived-index remove can never tombstone the newer live vector (ADR 0031 Slice 4).
+    incarnations: StableBTreeMap<VertexEmbeddingKey, u64, M>,
 }
 
 impl<M: Memory> VertexEmbeddingStore<M> {
-    pub fn init(memory: M) -> Self {
+    pub fn init(embeddings: M, incarnations: M) -> Self {
         Self {
-            embeddings: StableBTreeMap::init(memory),
+            embeddings: StableBTreeMap::init(embeddings),
+            incarnations: StableBTreeMap::init(incarnations),
         }
     }
 
@@ -215,11 +237,28 @@ impl<M: Memory> VertexEmbeddingStore<M> {
             .get(&VertexEmbeddingKey::new(vertex_id, embedding_name_id))
     }
 
+    /// The delete-spanning incarnation for a `(VertexId, EmbeddingNameId)`, if it has ever been
+    /// written. Survives `remove`, so the repair drain can stamp a canonical-absent remove with the
+    /// last live incarnation (ADR 0031 Slice 4).
+    pub fn incarnation_for(
+        &self,
+        vertex_id: VertexId,
+        embedding_name_id: EmbeddingNameId,
+    ) -> Option<u64> {
+        if embedding_name_id.is_reserved() {
+            return None;
+        }
+        self.incarnations
+            .get(&VertexEmbeddingKey::new(vertex_id, embedding_name_id))
+    }
+
     /// Inserts or updates a vertex embedding.
     ///
-    /// On insert `version` starts at `1`; on update it is the previous version plus one. Dimension
-    /// changes on an existing embedding are rejected: changing dims requires remove + insert or a
-    /// new embedding name.
+    /// On a live record `version` is the previous version plus one and the incarnation is unchanged.
+    /// When no live record exists (first insert, or reinsert after a remove) a fresh incarnation is
+    /// allocated (`previous_incarnation + 1`, starting at `1`) and `version` resets to `1`.
+    /// Dimension changes on an existing live record are rejected: changing dims requires remove +
+    /// insert or a new embedding name.
     pub fn set(
         &mut self,
         vertex_id: VertexId,
@@ -227,7 +266,7 @@ impl<M: Memory> VertexEmbeddingStore<M> {
         encoding: VectorEncoding,
         dims: u16,
         bytes: Vec<u8>,
-    ) -> Result<u64, VertexEmbeddingStoreError> {
+    ) -> Result<EmbeddingWrite, VertexEmbeddingStoreError> {
         if embedding_name_id.is_reserved() {
             return Err(VertexEmbeddingStoreError::ReservedEmbeddingName);
         }
@@ -242,7 +281,7 @@ impl<M: Memory> VertexEmbeddingStore<M> {
             });
         }
         let key = VertexEmbeddingKey::new(vertex_id, embedding_name_id);
-        let version = match self.embeddings.get(&key) {
+        let write = match self.embeddings.get(&key) {
             Some(existing) => {
                 if existing.dims != dims {
                     return Err(VertexEmbeddingStoreError::DimensionMismatch {
@@ -250,35 +289,63 @@ impl<M: Memory> VertexEmbeddingStore<M> {
                         requested: dims,
                     });
                 }
-                existing
+                // Live record: keep the incarnation, bump the version.
+                let incarnation = self.incarnations.get(&key).unwrap_or(1);
+                let version = existing
                     .version
                     .checked_add(1)
-                    .ok_or(VertexEmbeddingStoreError::VersionOverflow)?
+                    .ok_or(VertexEmbeddingStoreError::VersionOverflow)?;
+                EmbeddingWrite {
+                    incarnation,
+                    version,
+                }
             }
-            None => 1,
+            None => {
+                // First insert or reinsert after remove: allocate a strictly greater incarnation
+                // (the high-water mark persists across removes) and reset the version.
+                let incarnation = match self.incarnations.get(&key) {
+                    Some(previous) => previous
+                        .checked_add(1)
+                        .ok_or(VertexEmbeddingStoreError::IncarnationOverflow)?,
+                    None => 1,
+                };
+                EmbeddingWrite {
+                    incarnation,
+                    version: 1,
+                }
+            }
         };
+        self.incarnations.insert(key, write.incarnation);
         self.embeddings.insert(
             key,
             StoredEmbedding {
                 encoding,
                 dims,
-                version,
+                version: write.version,
                 bytes,
             },
         );
-        Ok(version)
+        Ok(write)
     }
 
+    /// Removes the live record, **keeping** the incarnation high-water mark. Returns the removed
+    /// record paired with its incarnation so the caller can stamp an incarnation-fenced derived
+    /// remove (ADR 0031 Slice 4).
     pub fn remove(
         &mut self,
         vertex_id: VertexId,
         embedding_name_id: EmbeddingNameId,
-    ) -> Option<StoredEmbedding> {
+    ) -> Option<(StoredEmbedding, u64)> {
         if embedding_name_id.is_reserved() {
             return None;
         }
-        self.embeddings
-            .remove(&VertexEmbeddingKey::new(vertex_id, embedding_name_id))
+        let key = VertexEmbeddingKey::new(vertex_id, embedding_name_id);
+        let record = self.embeddings.remove(&key)?;
+        // The incarnations entry is intentionally retained as a high-water mark. A live record
+        // written before Slice 4 has no incarnation entry; treat it as the implicit first
+        // incarnation (1), matching the `set` live branch.
+        let incarnation = self.incarnations.get(&key).unwrap_or(1);
+        Some((record, incarnation))
     }
 
     /// Embedding name ids owned by `vertex_id`, in key order.
@@ -320,8 +387,11 @@ impl<M: Memory> VertexEmbeddingStore<M> {
         }
     }
 
-    pub fn into_memory(self) -> M {
-        self.embeddings.into_memory()
+    pub fn into_memories(self) -> (M, M) {
+        (
+            self.embeddings.into_memory(),
+            self.incarnations.into_memory(),
+        )
     }
 }
 
@@ -331,7 +401,7 @@ mod tests {
     use ic_stable_structures::VectorMemory;
 
     fn store() -> VertexEmbeddingStore<VectorMemory> {
-        VertexEmbeddingStore::init(VectorMemory::default())
+        VertexEmbeddingStore::init(VectorMemory::default(), VectorMemory::default())
     }
 
     fn vec_bytes(values: &[f32]) -> Vec<u8> {
@@ -349,17 +419,21 @@ mod tests {
             store
                 .set(vid, name, VectorEncoding::F32, 4, bytes.clone())
                 .unwrap(),
-            1
+            EmbeddingWrite {
+                incarnation: 1,
+                version: 1,
+            }
         );
         let record = store.get(vid, name).expect("record present");
         assert_eq!(record.dims, 4);
         assert_eq!(record.version, 1);
         assert_eq!(record.encoding, VectorEncoding::F32);
         assert_eq!(record.bytes, bytes);
+        assert_eq!(store.incarnation_for(vid, name), Some(1));
     }
 
     #[test]
-    fn update_bumps_version_and_replaces_bytes() {
+    fn update_bumps_version_not_incarnation_and_replaces_bytes() {
         let mut store = store();
         let vid = VertexId::from(7);
         let name = EmbeddingNameId::from_raw(1);
@@ -372,15 +446,19 @@ mod tests {
             store
                 .set(vid, name, VectorEncoding::F32, 2, new_bytes.clone())
                 .unwrap(),
-            2
+            EmbeddingWrite {
+                incarnation: 1,
+                version: 2,
+            }
         );
         let record = store.get(vid, name).expect("record present");
         assert_eq!(record.version, 2);
         assert_eq!(record.bytes, new_bytes);
+        assert_eq!(store.incarnation_for(vid, name), Some(1));
     }
 
     #[test]
-    fn remove_embedding() {
+    fn remove_keeps_incarnation_and_reinsert_bumps_it() {
         let mut store = store();
         let vid = VertexId::from(7);
         let name = EmbeddingNameId::from_raw(1);
@@ -388,9 +466,59 @@ mod tests {
         store
             .set(vid, name, VectorEncoding::F32, 1, vec_bytes(&[1.0]))
             .unwrap();
-        assert!(store.remove(vid, name).is_some());
-        assert!(store.remove(vid, name).is_none());
+        store
+            .set(vid, name, VectorEncoding::F32, 1, vec_bytes(&[2.0]))
+            .unwrap();
+
+        let (record, incarnation) = store.remove(vid, name).expect("removed record");
+        assert_eq!(record.version, 2);
+        assert_eq!(incarnation, 1);
+        // The live record is gone but the incarnation high-water mark survives the remove.
         assert!(store.get(vid, name).is_none());
+        assert_eq!(store.incarnation_for(vid, name), Some(1));
+        assert!(store.remove(vid, name).is_none());
+
+        // Reinsert allocates a strictly greater incarnation and resets the version.
+        assert_eq!(
+            store
+                .set(vid, name, VectorEncoding::F32, 1, vec_bytes(&[3.0]))
+                .unwrap(),
+            EmbeddingWrite {
+                incarnation: 2,
+                version: 1,
+            }
+        );
+        assert_eq!(store.incarnation_for(vid, name), Some(2));
+    }
+
+    #[test]
+    fn incarnation_for_is_none_until_first_write() {
+        let store = store();
+        assert_eq!(
+            store.incarnation_for(VertexId::from(7), EmbeddingNameId::from_raw(1)),
+            None
+        );
+    }
+
+    #[test]
+    fn rejects_incarnation_overflow_on_reinsert() {
+        let mut store = store();
+        let vid = VertexId::from(7);
+        let name = EmbeddingNameId::from_raw(1);
+
+        // Seed the incarnation high-water mark at u64::MAX with no live record, so the next insert
+        // would overflow the fence. Reaching u64::MAX through the public API is infeasible.
+        store
+            .incarnations
+            .insert(VertexEmbeddingKey::new(vid, name), u64::MAX);
+
+        let err = store
+            .set(vid, name, VectorEncoding::F32, 1, vec_bytes(&[1.0]))
+            .unwrap_err();
+        assert_eq!(err, VertexEmbeddingStoreError::IncarnationOverflow);
+        // The failed insert must not allocate a live record.
+        assert!(store.get(vid, name).is_none());
+        assert_eq!(store.incarnation_for(vid, name), Some(u64::MAX));
     }
 
     #[test]
@@ -534,12 +662,13 @@ mod tests {
         store
             .set(vid, name, VectorEncoding::F32, 4, bytes.clone())
             .unwrap();
-        let memory = store.into_memory();
+        let (embeddings_mem, incarnations_mem) = store.into_memories();
 
-        let reopened = VertexEmbeddingStore::init(memory);
+        let reopened = VertexEmbeddingStore::init(embeddings_mem, incarnations_mem);
         let record = reopened.get(vid, name).expect("record present");
         assert_eq!(record.version, 1);
         assert_eq!(record.dims, 4);
         assert_eq!(record.bytes, bytes);
+        assert_eq!(reopened.incarnation_for(vid, name), Some(1));
     }
 }

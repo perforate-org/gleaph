@@ -19,7 +19,12 @@ use crate::facade::stable::constraint_catalog;
 #[cfg(not(feature = "pocket-ic-e2e"))]
 use crate::index_sync;
 use crate::state::RouterError;
-use crate::types::{AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ShardId};
+use crate::types::{
+    AdminAttachVectorIndexShardArgs, AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus,
+    ShardId,
+};
+#[cfg(not(feature = "pocket-ic-e2e"))]
+use crate::vector_sync;
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GraphShardKey, ShardRegistryEntry};
@@ -425,6 +430,162 @@ impl RouterStore {
         }
     }
 
+    /// Records this shard's derived vector-index target and durable readiness bit (ADR 0031
+    /// Slice 4). The final step of the vector attach handshake; the `vector_index_attached` bit is
+    /// the registry-side proxy for "graph-local routing set *and* shard attached to the vector
+    /// canister", mirroring `index_attached`.
+    fn commit_set_shard_vector_attached(
+        graph_id: GraphId,
+        shard_id: ShardId,
+        vector_index_canister: Principal,
+        vector_index_attached: bool,
+    ) -> Result<(), RouterError> {
+        let key = GraphShardKey::new(graph_id, shard_id);
+        ROUTER_SHARDS.with_borrow_mut(|shards| {
+            let mut entry = shards.get(&key).ok_or(RouterError::ShardNotRegistered)?;
+            entry.vector_index_canister = Some(vector_index_canister);
+            entry.vector_index_attached = vector_index_attached;
+            shards.insert(key, entry);
+            Ok::<(), RouterError>(())
+        })?;
+        Self::verify_registry_invariants_after_commit()
+    }
+
+    #[cfg(not(feature = "pocket-ic-e2e"))]
+    async fn finish_shard_vector_attach(
+        &self,
+        graph_id: GraphId,
+        shard_id: ShardId,
+        vector_index_canister: Principal,
+        graph_canister: Principal,
+    ) -> Result<(), RouterError> {
+        // Step 1: make the shard's *local* routing carry the target before anything observes it as
+        // ready. If this fails we never recorded readiness, so there is nothing to roll back.
+        vector_sync::admin_set_graph_vector_index_canister(graph_canister, vector_index_canister)
+            .await
+            .map_err(RouterError::Internal)?;
+        // Step 2: attach the shard to the vector canister so it accepts the shard's subject sync.
+        // The vector canister is the single target for the whole graph (ADR 0031 Slice 4), so it
+        // owns shards by `graph_id` alone — no property-index group descriptor is sent (sending the
+        // property `index_group_size` would split a multi-shard graph into per-shard groups the
+        // single target rejects).
+        vector_sync::admin_attach_shard_to_vector(
+            vector_index_canister,
+            graph_id,
+            shard_id,
+            graph_canister,
+        )
+        .await
+        .map_err(RouterError::Internal)?;
+        // Step 3: only now flip the durable readiness bit; the predicate gates dispatch on it.
+        Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_index_canister, true)
+    }
+
+    async fn complete_shard_vector_attach(
+        &self,
+        graph_id: GraphId,
+        shard_id: ShardId,
+        vector_index_canister: Principal,
+        graph_canister: Principal,
+    ) -> Result<(), RouterError> {
+        #[cfg(feature = "pocket-ic-e2e")]
+        {
+            let _ = graph_canister;
+            Self::commit_set_shard_vector_attached(graph_id, shard_id, vector_index_canister, true)
+        }
+
+        #[cfg(not(feature = "pocket-ic-e2e"))]
+        {
+            self.finish_shard_vector_attach(
+                graph_id,
+                shard_id,
+                vector_index_canister,
+                graph_canister,
+            )
+            .await
+        }
+    }
+
+    /// Wires (or retrofits) a derived vector-index target onto an already-registered, index-attached
+    /// shard and drives the attach handshake (ADR 0031 Slice 4). Idempotent: a shard already
+    /// attached to the same target is a no-op. Enforces **one vector-index target per graph** —
+    /// every attached shard of the graph must point at the same vector canister.
+    pub async fn admin_attach_vector_index_shard(
+        &self,
+        caller: Principal,
+        args: AdminAttachVectorIndexShardArgs,
+    ) -> Result<(), RouterError> {
+        auth::require_admin(&caller)?;
+        if args.vector_index_canister == Principal::anonymous() {
+            return Err(RouterError::InvalidArgument(
+                "vector_index_canister must not be the anonymous principal".into(),
+            ));
+        }
+        validate_metadata_name(&args.logical_graph_name)?;
+        let graph_id = resolve_registered_graph_id(&args.logical_graph_name)?;
+        let entry =
+            lookup_shard_entry(graph_id, args.shard_id).ok_or(RouterError::ShardNotRegistered)?;
+        // A shard must be index-attached (i.e. fully registered) before it can host a derived index.
+        if !entry.index_attached {
+            return Err(RouterError::Conflict(
+                "shard is not index-attached; complete shard registration before vector attach"
+                    .into(),
+            ));
+        }
+        // One vector-index target per graph: any other shard already attached to a *different*
+        // vector canister is a misconfiguration that would split dispatch across targets.
+        if let Some(conflict) = list_shards_for_graph_id(graph_id)?
+            .into_iter()
+            .find(|other| {
+                other.shard_id != args.shard_id
+                    && other.vector_index_canister.is_some()
+                    && other.vector_index_canister != Some(args.vector_index_canister)
+            })
+        {
+            return Err(RouterError::Conflict(format!(
+                "graph already targets vector canister {:?}; one vector-index target per graph",
+                conflict.vector_index_canister,
+            )));
+        }
+        if entry.vector_index_attached
+            && entry.vector_index_canister == Some(args.vector_index_canister)
+        {
+            return Ok(());
+        }
+        self.complete_shard_vector_attach(
+            graph_id,
+            args.shard_id,
+            args.vector_index_canister,
+            entry.graph_canister,
+        )
+        .await
+    }
+
+    /// Predicate gating production vector dispatch/backfill for a graph (ADR 0031 Slice 4). True
+    /// only when the global activation flag is on, the graph has a single resolved vector-index
+    /// target, **and** every live (index-attached) shard of the graph is attached to *that exact
+    /// target* (`vector_index_canister == target && vector_index_attached`). Requiring the target
+    /// match (not merely a non-anonymous canister) closes the silent-misrouting hole where a shard
+    /// attached to one canister could mark a graph ready for a def pointing at another. Fail-closed:
+    /// no def target, an empty shard set, or any mismatched/unattached shard yields `false`.
+    pub fn graph_vector_dispatch_ready(&self, graph_id: GraphId) -> bool {
+        if !super::super::stable::vector_activation::vector_dispatch_globally_enabled() {
+            return false;
+        }
+        let Some(target) =
+            super::super::stable::vector_index_catalog::graph_single_target(graph_id)
+        else {
+            return false;
+        };
+        let Ok(shards) = list_live_shards_for_graph_id(graph_id) else {
+            return false;
+        };
+        !shards.is_empty()
+            && shards.iter().all(|shard| {
+                shard.vector_index_attached && shard.vector_index_canister == Some(target)
+            })
+    }
+
     #[cfg(test)]
     fn verify_registry_invariants_after_commit() -> Result<(), RouterError> {
         check_registry_invariants().map_err(RouterError::Internal)
@@ -814,6 +975,10 @@ impl RouterStore {
             graph_id,
             registered_at_ns,
             index_attached: false,
+            // Vector wiring is a separate, optional handshake (ADR 0031 Slice 4); a freshly
+            // registered shard starts with no vector target and unattached.
+            vector_index_canister: None,
+            vector_index_attached: false,
         };
 
         commit_index_group_canister_assignment(graph_id, allocated_shard_id, args.index_canister)?;

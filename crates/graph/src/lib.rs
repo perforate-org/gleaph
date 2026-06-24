@@ -155,6 +155,13 @@ fn purge_local_unique_constraint(
     canister::handlers::purge_local_unique_constraint(constraint_id, budget)
 }
 
+/// Router → graph (ADR 0031 Slice 4): set this shard's local derived vector-index target as the
+/// first step of the Router-driven vector attach handshake.
+#[update(guard = "guard_router_canister")]
+fn admin_set_vector_index_canister(vector_index_canister: candid::Principal) -> Result<(), String> {
+    canister::handlers::admin_set_vector_index_canister(vector_index_canister)
+}
+
 #[cfg(feature = "pocket-ic-e2e")]
 #[update(guard = "guard_control_plane_admin")]
 async fn e2e_insert_vertex() -> Result<canister::types::E2eInsertVertexResult, String> {
@@ -274,6 +281,13 @@ async fn backfill_edge_property_postings(
     req: gleaph_graph_kernel::federation::EdgePropertyBackfillRequest,
 ) -> Result<gleaph_graph_kernel::federation::EdgePostingBackfillResult, String> {
     canister::handlers::backfill_edge_property_postings(req).await
+}
+
+#[update(guard = "guard_router_canister")]
+async fn backfill_vertex_embeddings(
+    req: gleaph_graph_kernel::federation::VertexEmbeddingBackfillRequest,
+) -> Result<gleaph_graph_kernel::federation::EmbeddingBackfillResult, String> {
+    canister::handlers::backfill_vertex_embeddings(req).await
 }
 
 #[update(guard = "guard_router_canister")]

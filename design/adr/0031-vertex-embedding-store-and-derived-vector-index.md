@@ -2,7 +2,7 @@
 
 Date: 2026-06-23
 Status: accepted (partially implemented)
-Last revised: 2026-06-23
+Last revised: 2026-06-24
 
 > **Status note:** The boundary decision is accepted. Slice 1 (the canonical graph-owned
 > vertex embedding store) and Slice 2 (the derived sync path plus a degenerate `ivf_flat`
@@ -11,42 +11,65 @@ Last revised: 2026-06-23
 > MemoryId 0–10, `IVF_CENTROIDS` reserved-empty), the canister storage (`vector_upsert` /
 > `vector_remove`, durable allocators, subject tombstone clock, attach/detach), and the graph-side
 > delta plumbing (catalog-gated dispatch, `vector_pending`, `RepairPostingOp::VectorEmbedding`,
-> repair drain, `vertex_embedding_backfill`). The intended convergence model is canonical-wins: an
-> upsert delivered to a tombstoned subject resurrects it with a fresh `VectorId` (the canonical
-> `embedding_version` resets on re-insert and cannot be ordered against the clock), and the graph
-> repair-drain reconciles journaled vector ops against the canonical store rather than replaying
-> them.
->
-> **Slice 3 activation gate (canonical-wins drain is a dispatch-inactive scaffold).** Slice 2
-> production never injects an `IndexedEmbeddingCatalog`, so vector dispatch is inert and the
-> canonical-wins drain is exercised only by tests. It is **not** yet a correct production
-> convergence path: because `embedding_version` resets on re-insert it is an insufficient ordering
-> token across a delete boundary, and the canonical-deleted reconcile sends a *blind* remove that
-> cannot avoid **both** a forward-orphan (a stale-version remove no-ops against a newer live slot,
-> leaving a deleted embedding's vector) and a reverse-orphan (a `u64::MAX` remove racing a
-> re-insert's direct-flush upsert tombstones a live vector at the IC await commit point). Dropping
-> the reconcile entry erases the divergence signal, so a later tick cannot re-detect it. **Before a
-> production catalog is injected (i.e. before any definition reaches `DispatchEnabled`), a
-> delete-spanning monotonic incarnation/epoch — carried on the sync op and enforced by the vector
-> canister — MUST be added** so removes and re-inserts order independent of arrival; catalog-backed
-> dispatch stays fail-closed until then.
+> repair drain, `vertex_embedding_backfill`). The convergence model is canonical-wins, now made
+> production-correct by the Slice 4 incarnation fence (below): an upsert delivered to a strictly
+> newer incarnation resurrects the subject with a fresh `VectorId`, and the graph repair-drain
+> reconciles journaled vector ops against the canonical store rather than replaying them.
 >
 > **Slice 3 (implemented): Router catalog, target resolution, and the fail-closed activation gate.**
 > Slice 3 adds the Router-owned vector-index definition catalog (`ROUTER_VECTOR_INDEXES`, MemoryId
 > 42) and the graph-scoped embedding-name catalog (`ROUTER_EMBEDDING_NAME_CATALOG`, MemoryIds 40–41)
 > that the Router solely allocates, plus the admin/query surface (register by embedding **name**, set
 > target, list, activation status/explain-blocked, inspect-only single-target resolution) and the
-> ephemeral `ExecutePlanArgs.indexed_embeddings` injection path. It deliberately does **not** activate
-> production dispatch: `incarnation_fencing_enabled()` is `const false`, so a targeted definition
-> terminates at `DispatchBlockedMissingIncarnationFence`, the Router's `to_indexed_embedding_catalog`
-> builder always returns empty, and the backfill admin surface fails closed with
-> `VectorDispatchActivationBlocked { MissingEmbeddingIncarnationFence }`. The single `target` is
-> inspect-only metadata and is **not** pushed into graph shards (`vector_index_canister` stays
-> `None`). Activating dispatch — landing the incarnation/epoch fence, flipping the gate, and pushing
-> targets — is the next slice. The Candid search API, IVF centroid training, candidate pagination,
-> query ranking/merge, and `VectorSubject::Edge` remain Slice 4+. This ADR fixes ownership,
-> consistency, the standard `ivf_flat` vector-index kind, and the first derived vector-index
-> stable-memory shape before the Candid search API or query operator is committed.
+> ephemeral `ExecutePlanArgs.indexed_embeddings` injection path. Slice 3 deliberately did **not**
+> activate production dispatch; that gate is now opened by Slice 4.
+>
+> **Slice 4 (implemented): incarnation-fenced production activation.** Slice 4 makes derived vector
+> sync production-correct and activatable:
+> - **The incarnation fence.** A graph-owned, delete-spanning, monotonic `embedding_incarnation`
+>   (canonical `VERTEX_EMBEDDING_INCARNATIONS`, graph MemoryId 45) strictly increases across each
+>   delete/reinsert of a `(VertexId, EmbeddingNameId)` identity and is **never deleted** (it persists
+>   across removes as a high-water mark). Sync ops carry `embedding_incarnation`, and the vector
+>   canister orders writes by `(embedding_incarnation, embedding_version)`. This closes **both** the
+>   forward-orphan (a stale-version remove no-ops against a newer live slot) and the reverse-orphan (a
+>   late blind remove racing a reinsert tombstones a live vector): a remove or upsert from an older
+>   incarnation can no longer affect a newer one. The repair drain re-derives the current incarnation
+>   for canonical-present subjects and stamps the persisted incarnation (with
+>   `RECONCILE_TOMBSTONE_VERSION`) for canonical-absent removes.
+> - **The activation gate.** A Router-owned **stable activation flag** (default off,
+>   `ROUTER_VECTOR_DISPATCH_ACTIVATION`, MemoryId 43; admin set/get) replaces the old `const false`
+>   fencing predicate. The flag is necessary but **not sufficient**: per-graph emission is also fenced
+>   by `graph_vector_dispatch_ready(graph_id)`, which requires every live shard of the graph to carry
+>   a non-anonymous `vector_index_canister` equal to the graph's single target with a durable
+>   `vector_index_attached == true` registry bit. `to_indexed_embedding_catalog` emits
+>   `DispatchEnabled` specs only when ready; otherwise it stays empty (fail-closed). `activation_state`
+>   is **derived** at read time, so the flag/attach activates existing targeted defs with no stored
+>   state migration. Blocked status distinguishes `DispatchNotActivated` (flag off) from
+>   `ShardsNotVectorAttached`.
+> - **Router invariants.** Registration enforces **one vector index per embedding name per graph**
+>   (`Conflict` on a second def for the same `embedding_name_id`, checked before interning the name)
+>   and **one vector-index target per graph** (every def and every attached shard must share one
+>   target principal). Both exist because graph dispatch/backfill/repair are single-op, single-route.
+> - **Target wiring.** A router-guarded graph endpoint `admin_set_vector_index_canister` writes the
+>   target into the shard's **local** `FederationRouting` (idempotent, upgrade-durable), and a Router
+>   endpoint `admin_attach_vector_index_shard` drives the attach handshake: it writes graph-local
+>   routing first, attaches the shard to the vector canister, and flips the registry
+>   `vector_index_attached` bit only after both succeed — so the registry bit cannot claim readiness
+>   while the shard is locally `None`. A retrofit path attaches already-registered shards without a
+>   reinstall. `ShardRegistryEntry` gained `vector_index_canister`/`vector_index_attached` via a `V2`
+>   stable envelope (old `V1` bytes still decode). The vector canister fixes ownership on `graph_id`
+>   alone and accepts every shard of that graph (different `graph_id` → `GraphOwnershipMismatch`); it
+>   carries no property-index group descriptor (`index_group_size` / `group_index`), since one target
+>   per graph must own all shards rather than a single contiguous shard group.
+> - **Bounded backfill.** `admin_vector_index_backfill_step` is a real bounded driver
+>   (router orchestration → `graph_client::backfill_vertex_embeddings` → graph endpoint → existing
+>   worker) taking an explicit `(shard_id, start_vertex_id, max_vertices)` resume cursor; it fails
+>   closed while dispatch is not ready.
+>
+> The Candid search API, IVF centroid training, candidate pagination, query ranking/merge,
+> per-index/per-embedding fan-out, and `VectorSubject::Edge` remain Slice 5+. This ADR fixes
+> ownership, consistency, the standard `ivf_flat` vector-index kind, and the first derived
+> vector-index stable-memory shape before the Candid search API or query operator is committed.
 
 ## Context
 

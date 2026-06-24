@@ -142,6 +142,7 @@ mod tests {
                 shard_id: ShardId::new(0),
                 vertex_id,
             },
+            embedding_incarnation: 1,
             embedding_version: version,
             encoding: VectorEncoding::F32,
             dims: 1,

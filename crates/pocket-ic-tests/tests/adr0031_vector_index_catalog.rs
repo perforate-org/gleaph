@@ -2,16 +2,20 @@
 //! the fail-closed activation gate.
 //!
 //! Slice 3 makes vector dispatch addressable from the Router (register by embedding **name**, set a
-//! single target, list, inspect activation status / resolve target) while keeping production
-//! dispatch and backfill **fail-closed**: `incarnation_fencing_enabled()` is `const false`, so a
-//! targeted definition terminates at `DispatchBlockedMissingIncarnationFence` and the backfill admin
-//! surface returns `VectorDispatchActivationBlocked { MissingEmbeddingIncarnationFence }`.
+//! single target, list, inspect activation status / resolve target). Production dispatch/backfill
+//! stay **fail-closed**: with the global activation flag off (the default) a targeted definition
+//! sits at `DispatchBlocked` and the backfill admin surface returns
+//! `VectorDispatchActivationBlocked { DispatchNotActivated }` (ADR 0031 Slice 4).
 
 use candid::{Decode, Encode, Principal};
-use gleaph_graph_kernel::federation::{RouterError, VectorActivationBlockReason};
-use gleaph_pocket_ic_tests::{FederationEnv, GRAPH_NAME, install_federation};
+use gleaph_graph_kernel::entry::GraphId;
+use gleaph_graph_kernel::federation::{RouterError, ShardId, VectorActivationBlockReason};
+use gleaph_pocket_ic_tests::{
+    FederationEnv, GRAPH_NAME, install_federation, install_vector_canister,
+};
 use gleaph_router::types::{
-    AdminVectorIndexBackfillStepArgs, RegisterVectorIndexArgs, SetVectorIndexTargetArgs,
+    AdminAttachVectorIndexShardArgs, AdminVectorIndexBackfillStepArgs,
+    AdminVectorIndexBackfillStepResult, RegisterVectorIndexArgs, SetVectorIndexTargetArgs,
     VectorIndexActivationStateView, VectorIndexActivationStatus, VectorIndexInfo,
 };
 
@@ -74,10 +78,16 @@ fn resolve_target(env: &FederationEnv, index_id: u32) -> Result<Principal, Route
     Decode!(&bytes, Result<Principal, RouterError>).expect("decode resolve")
 }
 
-fn backfill_step(env: &FederationEnv, index_id: u32) -> Result<(), RouterError> {
+fn backfill_step(
+    env: &FederationEnv,
+    index_id: u32,
+) -> Result<AdminVectorIndexBackfillStepResult, RouterError> {
     let args = AdminVectorIndexBackfillStepArgs {
         logical_graph_name: GRAPH_NAME.to_string(),
         index_id,
+        shard_id: ShardId::new(0),
+        start_vertex_id: 0,
+        max_vertices: 256,
     };
     let bytes = env
         .pic
@@ -88,7 +98,8 @@ fn backfill_step(env: &FederationEnv, index_id: u32) -> Result<(), RouterError> 
             Encode!(&args).expect("encode backfill args"),
         )
         .expect("admin_vector_index_backfill_step call");
-    Decode!(&bytes, Result<(), RouterError>).expect("decode backfill result")
+    Decode!(&bytes, Result<AdminVectorIndexBackfillStepResult, RouterError>)
+        .expect("decode backfill result")
 }
 
 fn set_target(env: &FederationEnv, index_id: u32, target: Principal) -> Result<(), RouterError> {
@@ -129,12 +140,12 @@ fn register_resolve_and_backfill_stay_fail_closed() {
     .expect("register vector index");
     assert!(created, "first registration is newly created");
 
-    // A targeted definition is blocked by the missing incarnation fence, with an explained reason.
+    // A targeted definition is blocked while the global activation flag is off, with a reason.
     let status = activation_status(&env, INDEX_ID).expect("activation status");
     assert_eq!(
         status.activation_state,
-        VectorIndexActivationStateView::DispatchBlockedMissingIncarnationFence,
-        "fail-closed: a targeted def can never reach DispatchEnabled in Slice 3"
+        VectorIndexActivationStateView::DispatchBlocked,
+        "fail-closed: a targeted def stays DispatchBlocked until activation + attach"
     );
     assert!(
         status.blocked_reason.is_some(),
@@ -159,15 +170,15 @@ fn register_resolve_and_backfill_stay_fail_closed() {
         "embedding name id 0 is reserved/unset"
     );
 
-    // The backfill admin surface fails closed for production.
+    // The backfill admin surface fails closed for production while activation is off.
     assert!(
         matches!(
             backfill_step(&env, INDEX_ID),
             Err(RouterError::VectorDispatchActivationBlocked(
-                VectorActivationBlockReason::MissingEmbeddingIncarnationFence
+                VectorActivationBlockReason::DispatchNotActivated
             ))
         ),
-        "backfill must fail closed until incarnation fencing lands"
+        "backfill must fail closed while the global activation flag is off"
     );
 }
 
@@ -209,6 +220,13 @@ fn failed_registration_does_not_allocate_an_embedding_name() {
         reg("leak_anon", 11, Some(Principal::anonymous()), false),
         Err(RouterError::InvalidArgument(_))
     ));
+    // 4) one-target-per-graph rejection on a fresh index id + fresh name: the conflict must fail
+    //    closed *before* interning, so it cannot leak an EmbeddingNameId either.
+    let other_target = Principal::from_slice(&[0x11; 29]);
+    assert!(matches!(
+        reg("leak_target", 13, Some(other_target), false),
+        Err(RouterError::Conflict(_))
+    ));
 
     // The next successful registration must receive dense id 2 — proving none of the failed
     // registrations leaked an EmbeddingNameId. (A leak would have advanced the counter to 3+.)
@@ -221,6 +239,201 @@ fn failed_registration_does_not_allocate_an_embedding_name() {
     assert_eq!(
         next.embedding_name_id, 2,
         "failed registrations must not advance the dense embedding-name id"
+    );
+}
+
+fn set_dispatch_activation(env: &FederationEnv, enabled: bool) -> Result<(), RouterError> {
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_set_vector_dispatch_activation",
+            Encode!(&enabled).expect("encode activation flag"),
+        )
+        .expect("admin_set_vector_dispatch_activation call");
+    Decode!(&bytes, Result<(), RouterError>).expect("decode activation result")
+}
+
+fn dispatch_activation_enabled(env: &FederationEnv) -> bool {
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "vector_dispatch_activation_enabled",
+            Encode!().expect("encode activation query"),
+        )
+        .expect("vector_dispatch_activation_enabled call");
+    Decode!(&bytes, bool).expect("decode activation flag")
+}
+
+fn attach_shard(
+    env: &FederationEnv,
+    shard_id: ShardId,
+    vector_index_canister: Principal,
+) -> Result<(), RouterError> {
+    let args = AdminAttachVectorIndexShardArgs {
+        logical_graph_name: GRAPH_NAME.to_string(),
+        shard_id,
+        vector_index_canister,
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_attach_vector_index_shard",
+            Encode!(&args).expect("encode attach args"),
+        )
+        .expect("admin_attach_vector_index_shard call");
+    Decode!(&bytes, Result<(), RouterError>).expect("decode attach result")
+}
+
+fn router_graph_id(env: &FederationEnv) -> GraphId {
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "lookup_graph_id",
+            Encode!(&GRAPH_NAME.to_string()).expect("encode lookup_graph_id"),
+        )
+        .expect("lookup_graph_id call");
+    Decode!(&bytes, Result<GraphId, RouterError>)
+        .expect("decode lookup_graph_id")
+        .expect("graph id")
+}
+
+/// Directly drive the vector canister's `admin_attach_shard_canister` (sender = router) the way the
+/// production router would. Under `pocket-ic-e2e` the router records the registry bit but skips the
+/// real inter-canister attach, so the test exercises it here to prove a single vector target accepts
+/// every shard of the graph (ADR 0031 Slice 4 target model B).
+fn attach_shard_to_vector(
+    env: &FederationEnv,
+    vector: Principal,
+    graph_id: GraphId,
+    shard_id: ShardId,
+    shard_canister: Principal,
+) -> Result<(), String> {
+    let bytes = env
+        .pic
+        .update_call(
+            vector,
+            env.router,
+            "admin_attach_shard_canister",
+            Encode!(&graph_id, &shard_id, &shard_canister).expect("encode vector attach"),
+        )
+        .expect("vector admin_attach_shard_canister call");
+    Decode!(&bytes, Result<(), String>).expect("decode vector attach")
+}
+
+/// Mirror the e2e harness contract for the index attach handshake: under `pocket-ic-e2e` the router
+/// records the registry bit but skips the inter-canister calls, so the test drives the graph-local
+/// routing update itself (sender = router, satisfying `guard_router_canister`).
+fn set_graph_vector_routing(env: &FederationEnv, graph: Principal, vector: Principal) {
+    let bytes = env
+        .pic
+        .update_call(
+            graph,
+            env.router,
+            "admin_set_vector_index_canister",
+            Encode!(&vector).expect("encode set vector routing"),
+        )
+        .expect("admin_set_vector_index_canister call");
+    Decode!(&bytes, Result<(), String>)
+        .expect("decode set vector routing")
+        .expect("graph accepts router-set vector routing");
+}
+
+/// ADR 0031 Slice 4/5: dispatch stays fenced until BOTH the global activation flag is on AND every
+/// live shard has completed the vector-attach handshake. Once both gates pass, the definition flips
+/// to `DispatchEnabled` and the bounded backfill driver runs instead of failing closed.
+#[test]
+fn activation_is_fenced_on_flag_and_shard_attach() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register(
+        &env,
+        &RegisterVectorIndexArgs {
+            logical_graph_name: GRAPH_NAME.to_string(),
+            embedding_name: EMBEDDING_NAME.to_string(),
+            index_id: INDEX_ID,
+            dims: DIMS,
+            target: Some(vector),
+            if_not_exists: false,
+        },
+    )
+    .expect("register vector index");
+
+    // Gate 1 only (flag on, no shards attached) -> still blocked on shard attachment.
+    set_dispatch_activation(&env, true).expect("enable dispatch flag");
+    assert!(dispatch_activation_enabled(&env), "flag is now on");
+    assert!(
+        matches!(
+            backfill_step(&env, INDEX_ID),
+            Err(RouterError::VectorDispatchActivationBlocked(
+                VectorActivationBlockReason::ShardsNotVectorAttached
+            ))
+        ),
+        "flag alone is insufficient: shards are not vector-attached yet"
+    );
+
+    // Complete the attach handshake for every live shard of the graph. Under the e2e harness the
+    // router records readiness but skips the inter-canister wiring, so drive both legs ourselves
+    // (the production router does this in `finish_shard_vector_attach`): the graph-local routing
+    // update AND the real attach to the single vector target. The graph is two shards, so attaching
+    // shard 1 to the SAME vector canister as shard 0 must succeed — the regression guard for the
+    // property-index group ownership model that previously split a multi-shard graph across groups.
+    let graph_id = router_graph_id(&env);
+    set_graph_vector_routing(&env, env.graph_source, vector);
+    set_graph_vector_routing(&env, env.graph_dest, vector);
+    attach_shard_to_vector(&env, vector, graph_id, ShardId::new(0), env.graph_source)
+        .expect("vector accepts shard 0");
+    attach_shard_to_vector(&env, vector, graph_id, ShardId::new(1), env.graph_dest)
+        .expect("single vector target accepts shard 1 of the same graph");
+    attach_shard(&env, ShardId::new(0), vector).expect("attach shard 0");
+    attach_shard(&env, ShardId::new(1), vector).expect("attach shard 1");
+
+    // Both gates pass -> the definition reports DispatchEnabled.
+    let status = activation_status(&env, INDEX_ID).expect("activation status");
+    assert_eq!(
+        status.activation_state,
+        VectorIndexActivationStateView::DispatchEnabled,
+        "flag on + all shards attached -> DispatchEnabled"
+    );
+    assert!(
+        status.blocked_reason.is_none(),
+        "enabled state has no reason"
+    );
+
+    // The bounded backfill driver now runs (no embeddings seeded -> a clean, done step).
+    let step = backfill_step(&env, INDEX_ID).expect("backfill step runs once dispatch is ready");
+    assert_eq!(step.shard_id, ShardId::new(0));
+    assert!(step.done, "empty shard converges in a single step");
+    assert_eq!(step.embeddings_synced, 0);
+
+    // Attach is idempotent: replaying it keeps the graph dispatch-ready.
+    attach_shard(&env, ShardId::new(0), vector).expect("re-attach is idempotent");
+    assert_eq!(
+        activation_status(&env, INDEX_ID)
+            .expect("status")
+            .activation_state,
+        VectorIndexActivationStateView::DispatchEnabled,
+    );
+
+    // Flipping the global flag back off re-fences dispatch even with shards attached.
+    set_dispatch_activation(&env, false).expect("disable dispatch flag");
+    assert!(!dispatch_activation_enabled(&env));
+    assert!(
+        matches!(
+            backfill_step(&env, INDEX_ID),
+            Err(RouterError::VectorDispatchActivationBlocked(
+                VectorActivationBlockReason::DispatchNotActivated
+            ))
+        ),
+        "global flag is the outermost fence"
     );
 }
 

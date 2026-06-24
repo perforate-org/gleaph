@@ -27,84 +27,65 @@ the `IVF_CENTROIDS` region (MemoryId 6) is reserved-but-empty so Slice 4 needs n
 Slice 3 is implemented: the Router-owned vector-index definition catalog (`ROUTER_VECTOR_INDEXES`,
 MemoryId 42) and graph-scoped embedding-name catalog (`ROUTER_EMBEDDING_NAME_CATALOG`, MemoryIds
 40–41), the admin/query surface, single-target (inspect-only) resolution, and the ephemeral
-`ExecutePlanArgs.indexed_embeddings` injection path. **Production dispatch stays fail-closed:** the
-activation gate `incarnation_fencing_enabled()` is `const false`, so the Router's catalog builder is
-always empty and no definition reaches `DispatchEnabled`. See *Router catalog, target resolution, and
-activation gate (Slice 3, implemented)* below.
+`ExecutePlanArgs.indexed_embeddings` injection path.
+
+Slice 4 is implemented: the delete-spanning **incarnation fence** (canonical
+`VERTEX_EMBEDDING_INCARNATIONS`, graph MemoryId 45) makes the canonical-wins drain production-correct
+and **activates production dispatch** behind a Router-owned stable activation flag
+(`ROUTER_VECTOR_DISPATCH_ACTIVATION`, MemoryId 43, default off) plus a per-graph readiness gate. See
+*Router catalog, target resolution, and the activation gate (Slice 4, implemented)* below.
 
 **Without an installed catalog the graph shard skips vector dispatch entirely** (mirroring
 property-index behavior when no catalog is present); the shard never persists an indexed-embedding
-registry, and in Slice 3 production the injected catalog is always empty.
+registry, and the injected catalog is empty whenever dispatch is not ready.
 
 Candid search APIs, IVF centroid training, candidate pagination, query ranking/merge, and
-`VectorSubject::Edge` are not implemented yet (Slice 4+). The standard
+`VectorSubject::Edge` are not implemented yet (Slice 5+). The standard
 vector-index kind is `ivf_flat`; `flat` is collapsed into degenerate `ivf_flat` rather than a
 separate kind, and later `ivf_pq` or experimental `hnsw` implementations must preserve the same
 canonical/derived boundary.
 
 ## Version naming glossary
 
-Three distinct concepts; `version` is never overloaded in APIs or idempotence rules:
+Four distinct concepts; `version` is never overloaded in APIs or idempotence rules:
 
-| Name                | Owner                 | Meaning                                                                                                                  |
-| ------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
-| `index_version`     | vector-index canister | Physical index generation: `active_index_version` in defs, shadow rebuild target, page / partition-head keys           |
-| `embedding_version` | graph canonical store | `StoredEmbedding.version` from the `VertexEmbeddingStore`; carried on sync ops and the repair journal                  |
-| `generation`        | vector-index canister | Slot / entity handle generation for append-and-tombstone; bumps on each new slot for a subject                          |
+| Name                   | Owner                 | Meaning                                                                                                                  |
+| ---------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `embedding_incarnation`| graph canonical store | Delete-spanning, monotonic per `(VertexId, EmbeddingNameId)` ordering token; strictly increases on each reinsert and is **never deleted** (high-water mark). Stamped on every sync op. |
+| `embedding_version`    | graph canonical store | `StoredEmbedding.version` per-incarnation update counter; resets to `1` on reinsert; carried on sync ops and the repair journal |
+| `index_version`        | vector-index canister | Physical index generation: `active_index_version` in defs, shadow rebuild target, page / partition-head keys           |
+| `generation`           | vector-index canister | Slot / entity handle generation for append-and-tombstone; bumps on each new slot for a subject                          |
 
 The subject map row (`VECTOR_SUBJECT_TO_ID[(index_id, subject)]`) is a **clock that survives
-deletion**: a removed subject retains `stored_embedding_version` and `deleted = true`. Idempotence
-is split by subject liveness:
+deletion**: a removed subject retains its `(embedding_incarnation, embedding_version)` and
+`deleted = true`. The canister orders every write by `(embedding_incarnation, embedding_version)`:
 
-- **Live subject:** ordered by `embedding_version` against the clock (stale `<` no-op; `==`
-  identical no-op / different conflict; `>` appends a new slot, reusing the live `VectorId`).
-- **Deleted subject:** any delivered `vector_upsert` **resurrects** with a *fresh* `VectorId`,
-  regardless of version. The canister cannot order a re-insert against the tombstone clock because
-  the canonical `embedding_version` resets to `1` on re-insert, so it trusts the graph to deliver
-  only current upserts.
+- **Older incarnation (`op.inc < clock.inc`):** stale no-op — neither an upsert nor a remove from a
+  prior incarnation can affect a newer one. This closes the reverse-orphan race.
+- **Same incarnation (`op.inc == clock.inc`):** ordered by `embedding_version` against the clock for
+  a live subject (stale `<` no-op; `==` identical no-op / different conflict; `>` appends a new slot,
+  reusing the live `VectorId`); a deleted subject no-ops a same-incarnation upsert.
+- **Newer incarnation (`op.inc > clock.inc`):** an upsert **resurrects** with a *fresh* `VectorId`
+  (resurrection requires a strictly newer incarnation); a remove records the newer deleted clock.
 
-Stale-replay protection lives in the **graph repair-drain**, not the canister clock: vector journal
-entries are not replayed verbatim but **reconciled against the canonical store** (canonical wins).
-If the subject still owns the embedding the drain delivers a current upsert; if it was deleted the
-drain delivers a remove stamped with an **authoritative (maximum) `embedding_version`** so it
-supersedes any live slot regardless of the stale op's version, and a stale upsert can never
-resurrect a tombstoned vector. (The high clock does not block re-inserts, since upserts to a deleted
-subject resurrect regardless of version.) A repair entry with no configured vector client is skipped
-(left durable) and never wedges the property repairs queued after it.
+Stale-replay protection is now enforced by **both** the canister clock (incarnation ordering) and
+the **graph repair-drain**, which reconciles vector journal entries against the canonical store
+rather than replaying them verbatim (canonical wins). If the subject still owns the embedding the
+drain delivers an upsert stamped with the re-derived current `(incarnation, version)`; if it was
+deleted the drain delivers a remove stamped with the **persisted incarnation** and
+`RECONCILE_TOMBSTONE_VERSION` (the within-incarnation max), which supersedes a live slot of the same
+incarnation yet — being incarnation-fenced — cannot tombstone a newer reinsert. A repair entry with
+no configured vector client is skipped (left durable) and never wedges the property repairs queued
+after it.
 
-`VectorId` is never reused: a re-insert after delete allocates a fresh id from the durable
-`next_vector_id` allocator. Remove ops carry an empty `bytes` field and rely only on
-`embedding_version` for idempotence.
+`VectorId` is never reused: a reinsert after delete allocates a fresh id from the durable
+`next_vector_id` allocator. Remove ops carry an empty `bytes` field and rely on
+`(embedding_incarnation, embedding_version)` for idempotence.
 
-### Slice 3 activation gate (canonical-wins drain is not yet production-correct)
+### Router catalog, target resolution, and the activation gate (Slice 4, implemented)
 
-The canonical-wins repair drain described above is a **Slice 2 scaffold that runs only while vector
-dispatch is inert**. Slice 2 production never injects an `IndexedEmbeddingCatalog`, so no vector ops
-are ever queued or journaled, and the drain is exercised only by tests. It is **not** a correct
-production convergence path, and dispatch must not be activated in production until this gate is
-closed:
-
-- `embedding_version` resets to `1` on re-insert, so it is **insufficient as an ordering token**
-  across a delete boundary.
-- The canonical-deleted reconcile sends a *blind* remove (it reads canonical as absent, then awaits
-  the cross-canister remove). A blind remove **cannot avoid both** failure modes: a stale-version
-  remove no-ops against a newer live slot (**forward-orphan**: a deleted embedding's vector
-  survives), while a `u64::MAX` remove that races a concurrent re-insert's direct-flush upsert
-  tombstones a live vector (**reverse-orphan**: a live embedding's vector is deleted). On IC the
-  await commit point makes this race reachable, not merely theoretical.
-- Once the reconcile entry is dropped from the journal there is no source to re-detect the
-  divergence, so "re-reconcile on a later maintenance tick" does not close it.
-
-**Activation requirement:** before any definition reaches `DispatchEnabled` (i.e. before a
-production catalog is injected), a delete-spanning **monotonic incarnation/epoch** carried in the
-sync op and enforced by the vector canister MUST be added so removes and re-inserts order
-independent of arrival order. Until then the canonical-wins drain is treated as an inert scaffold,
-and catalog-backed dispatch stays fail-closed. See ADR 0031.
-
-### Router catalog, target resolution, and activation gate (Slice 3, implemented)
-
-Slice 3 makes vector-index dispatch **addressable** from the Router while keeping production
-dispatch fail-closed:
+Slice 3 made vector-index dispatch **addressable** from the Router; Slice 4 **activates** it behind
+the incarnation fence and a two-condition gate (global flag AND per-graph shard attach):
 
 - **Embedding-name catalog (Router-owned, graph-scoped).** `ROUTER_EMBEDDING_NAME_CATALOG`
   (MemoryIds 40–41) interns embedding **names** to `EmbeddingNameId`s. The Router is the sole
@@ -113,27 +94,43 @@ dispatch fail-closed:
 - **Vector-index definition catalog.** `ROUTER_VECTOR_INDEXES` (MemoryId 42) maps
   `(graph_id, index_id)` to a versioned `VectorIndexDefRecord { embedding_name_id, kind, metric,
   encoding, dims, target: Option<VectorIndexTarget { canister }>, activation_state }`.
-- **Activation state.** `VectorIndexActivationState { Registered, DispatchBlockedMissingIncarnationFence,
-  DispatchEnabled }`. There is no `BackfillReady` state — both dispatch and backfill stay blocked, so
-  a "backfill ready" state would falsely imply partial activation.
-- **The fail-closed gate.** `incarnation_fencing_enabled()` is `const false` in Slice 3. The only
-  place a definition can become `DispatchEnabled` is the activation-state resolver, and only when the
-  gate is on — so a targeted definition terminates at `DispatchBlockedMissingIncarnationFence`. The
-  Router's `to_indexed_embedding_catalog` builder exports only `DispatchEnabled` definitions, hence
-  it is **always empty** in Slice 3; `ExecutePlanArgs.indexed_embeddings` carries that empty catalog,
-  `vector_dispatch::spec_for` returns `None`, and derived vector sync stays inert. There is no silent
-  partial activation.
-- **Target model (single target, inspect-only).** Each definition carries a catalog-local
-  `VectorIndexTarget { canister }` (no `ShardRegistryEntry` / `GraphRuntimeConfig` / `index_cluster`
-  change). In Slice 3 the target is **not** pushed into graph shards (`vector_index_canister` stays
-  `None`) and is **not** consumed by any execution path; its only consumers are the admin/query
-  surface and tests. Property-style fleet sharding is deferred.
+- **Router invariants.** **One vector index per embedding name per graph** (registration rejects a
+  second def for the same `embedding_name_id` with `Conflict`, checked before interning the name) and
+  **one vector-index target per graph** (every def and every attached shard must share one target
+  principal). Both exist because graph dispatch/backfill/repair are single-op, single-route.
+- **Activation flag.** `ROUTER_VECTOR_DISPATCH_ACTIVATION` (MemoryId 43) is a Router-owned stable
+  boolean, default off, toggled by `admin_set_vector_dispatch_activation` and read by
+  `vector_dispatch_activation_enabled` (RBAC `authorize_index_ddl` / admin). It replaces the old
+  `const false` fencing predicate and is reversible without a redeploy.
+- **The two-condition gate.** `graph_vector_dispatch_ready(graph_id)` is true only when the global
+  flag is on **and** every live (index-attached) shard of the graph carries a non-anonymous
+  `vector_index_canister` equal to the graph's single target with `vector_index_attached == true`.
+  `to_indexed_embedding_catalog(graph_id)` exports `DispatchEnabled` specs **only** when ready;
+  otherwise it stays empty (fail-closed), so a global enable can never act on a partially wired graph.
+- **Derived activation state.** `VectorIndexActivationState { Registered, DispatchBlocked,
+  DispatchEnabled }` is recomputed at read time, so the flag/attach activates existing targeted defs
+  with no stored-state migration. The activation-status query distinguishes blocked reasons
+  `DispatchNotActivated` (flag off) and `ShardsNotVectorAttached`.
+- **Target wiring.** A router-guarded graph endpoint `admin_set_vector_index_canister` writes the
+  target into the shard's **local** `FederationRouting` (idempotent, upgrade-durable). The Router
+  endpoint `admin_attach_vector_index_shard` drives the attach handshake — write graph-local routing
+  first, attach the shard to the vector canister, then flip the registry `vector_index_attached` bit
+  only after both succeed — so the registry bit cannot claim readiness while the shard is locally
+  `None`. A retrofit path attaches already-registered shards. `ShardRegistryEntry` carries
+  `vector_index_canister`/`vector_index_attached` via a `V2` stable envelope (old `V1` bytes decode).
+- **Vector-canister ownership is graph-scoped.** Because there is one target per graph, the vector
+  canister fixes ownership on `graph_id` alone and accepts **every** shard of that graph (a different
+  `graph_id` is rejected with `GraphOwnershipMismatch`). Unlike property indexes — where each index
+  canister owns one contiguous shard *group* (`index_group_size` / `group_index`) — the vector attach
+  carries no group descriptor; reusing the property group formula would split a multi-shard graph
+  into per-shard groups that a single target rejects.
 - **Admin/query surface (RBAC via `authorize_index_ddl`).** Register, set target, list, activation
-  status / explain-blocked, and inspect-only single-target resolution (rejecting anonymous targets).
-- **Backfill.** Slice 3 exposes only a Router blocked admin surface that fails closed with
-  `VectorDispatchActivationBlocked { MissingEmbeddingIncarnationFence }`; the bounded backfill worker
-  is exercised test-only with a mock `VectorIndexLookup`. No production graph backfill endpoint is
-  wired until the activation/fencing slice.
+  status / explain-blocked, inspect-only single-target resolution (rejecting anonymous targets), the
+  activation flag set/get, and the vector-shard attach endpoint.
+- **Bounded backfill.** `admin_vector_index_backfill_step` is a real bounded driver (router
+  orchestration → `graph_client::backfill_vertex_embeddings` → graph endpoint → existing worker)
+  taking an explicit `(shard_id, start_vertex_id, max_vertices)` resume cursor; it fails closed
+  (`VectorDispatchActivationBlocked`) while dispatch is not ready.
 
 ## Purpose
 

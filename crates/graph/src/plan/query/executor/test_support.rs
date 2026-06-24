@@ -452,6 +452,8 @@ pub fn configure_test_federation(store: &GraphStore) {
             graph_id,
             registered_at_ns: 0,
             index_attached: true,
+            vector_index_canister: None,
+            vector_index_attached: false,
         },
     );
 }

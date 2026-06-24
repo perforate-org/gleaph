@@ -92,15 +92,27 @@ pub enum RouterError {
     Internal(String),
 }
 
-/// Why production vector-index dispatch/backfill is fail-closed (ADR 0031 Slice 3).
+/// Why production vector-index dispatch/backfill is fail-closed (ADR 0031 Slice 3/4).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize, thiserror::Error,
 )]
 pub enum VectorActivationBlockReason {
     /// No delete-spanning monotonic incarnation/epoch fence exists yet, so the canonical-wins
     /// repair reconcile can still lose to a "reverse-orphan" re-insert race. Dispatch stays off.
+    ///
+    /// Retained for wire stability; superseded in Slice 4, where the fence is implemented
+    /// (graph-owned `embedding_incarnation`) and dispatch is gated by the two reasons below.
     #[error("missing delete-spanning embedding incarnation fence")]
     MissingEmbeddingIncarnationFence,
+    /// The global vector-dispatch activation flag is off (ADR 0031 Slice 4). An operator must flip
+    /// it via the RBAC-gated admin endpoint. Reversible.
+    #[error("vector dispatch is not globally activated")]
+    DispatchNotActivated,
+    /// The global flag is on, but not every live shard of the graph has been vector-attached yet
+    /// (ADR 0031 Slice 4): a shard is missing its local `vector_index_canister` routing or its
+    /// durable `vector_index_attached` bit.
+    #[error("graph shards are not fully vector-attached")]
+    ShardsNotVectorAttached,
 }
 
 /// Wire-error prefix a graph shard's `ShardLocalGlobal` uniqueness violation carries back to the

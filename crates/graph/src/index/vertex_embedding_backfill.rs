@@ -48,6 +48,11 @@ pub async fn backfill_vertex_embeddings(
             let Some(record) = store.vertex_embedding(vertex_id, embedding_name_id) else {
                 continue;
             };
+            // A record written before Slice 4 has no incarnation entry; treat it as the implicit
+            // first incarnation (1).
+            let embedding_incarnation = store
+                .vertex_embedding_incarnation(vertex_id, embedding_name_id)
+                .unwrap_or(1);
             vector
                 .vector_upsert(VectorEmbeddingSyncOp {
                     index_id: spec.index_id,
@@ -56,6 +61,7 @@ pub async fn backfill_vertex_embeddings(
                         shard_id,
                         vertex_id: local_raw,
                     },
+                    embedding_incarnation,
                     embedding_version: record.version,
                     encoding: record.encoding,
                     dims: record.dims,

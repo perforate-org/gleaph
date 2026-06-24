@@ -3,7 +3,10 @@ use super::super::stable::label_stats::{
 };
 use super::*;
 use crate::init::RouterInitArgs;
-use crate::types::{AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ProvisioningState};
+use crate::types::{
+    AdminAttachVectorIndexShardArgs, AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus,
+    ProvisioningState,
+};
 use candid::Principal;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
@@ -2442,6 +2445,157 @@ mod graph_type_catalog_vocabulary {
             store.lookup_vertex_label_id(graph_id, "Person"),
             Err(RouterError::NotFound(_))
         ));
+    }
+
+    // --- ADR 0031 Slice 4: vector dispatch activation + per-graph readiness ---
+
+    fn setup_one_shard_graph(store: &RouterStore, admin: Principal) -> GraphId {
+        crate::facade::auth::grant_admins(&[admin]);
+        register_test_graph(store, admin, "tenant.main");
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id: ShardId::new(0),
+                graph_canister: graph_principal(1),
+                index_canister: graph_principal(2),
+                logical_graph_name: "tenant.main".into(),
+            },
+        ))
+        .expect("register shard 0");
+        tenant_main_graph_id()
+    }
+
+    /// Register a vector-index def for `tenant.main` pointing at `target` so the readiness predicate
+    /// has a resolved graph target to match shard attachments against (ADR 0031 Slice 4).
+    fn register_vector_def(graph_id: GraphId, index_id: u32, target: Principal) {
+        crate::facade::stable::vector_index_catalog::register_vector_index(
+            graph_id,
+            index_id,
+            gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(index_id as u16),
+            gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
+            gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
+            gleaph_graph_kernel::vector_index::VectorEncoding::F32,
+            16,
+            Some(
+                crate::facade::stable::vector_index_catalog::VectorIndexTarget { canister: target },
+            ),
+            false,
+        )
+        .expect("register vector index def");
+    }
+
+    #[test]
+    fn vector_dispatch_not_ready_until_flag_and_attach() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        let graph_id = setup_one_shard_graph(&store, admin);
+        register_vector_def(graph_id, 1, graph_principal(7));
+
+        // Default: global flag off, no vector attach.
+        assert!(!store.graph_vector_dispatch_ready(graph_id));
+
+        // Flag on alone is not enough — the shard is not vector-attached yet.
+        crate::facade::stable::vector_activation::set_vector_dispatch_globally_enabled(true);
+        assert!(
+            !store.graph_vector_dispatch_ready(graph_id),
+            "global flag alone must not enable dispatch while shards are unattached"
+        );
+
+        // Attach the shard's vector target; now both conditions hold.
+        futures::executor::block_on(store.admin_attach_vector_index_shard(
+            admin,
+            AdminAttachVectorIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                vector_index_canister: graph_principal(7),
+            },
+        ))
+        .expect("attach vector index shard");
+        assert!(store.graph_vector_dispatch_ready(graph_id));
+
+        // A shard attached to a canister that is *not* the def target must not be ready (the
+        // misrouting hole): point the def at a different canister and readiness drops.
+        crate::facade::stable::vector_index_catalog::purge_graph_vector_indexes(graph_id);
+        register_vector_def(graph_id, 2, graph_principal(8));
+        assert!(
+            !store.graph_vector_dispatch_ready(graph_id),
+            "shard attached to a non-target canister must not satisfy readiness"
+        );
+        // Realign the def target with the shard's attachment and readiness returns.
+        crate::facade::stable::vector_index_catalog::purge_graph_vector_indexes(graph_id);
+        register_vector_def(graph_id, 3, graph_principal(7));
+        assert!(store.graph_vector_dispatch_ready(graph_id));
+
+        // Flipping the flag back off re-closes the gate (reversible).
+        crate::facade::stable::vector_activation::set_vector_dispatch_globally_enabled(false);
+        assert!(!store.graph_vector_dispatch_ready(graph_id));
+    }
+
+    #[test]
+    fn vector_attach_is_idempotent_and_enforces_one_target_per_graph() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        let _graph_id = setup_one_shard_graph(&store, admin);
+
+        let attach = |target: Principal| {
+            futures::executor::block_on(store.admin_attach_vector_index_shard(
+                admin,
+                AdminAttachVectorIndexShardArgs {
+                    logical_graph_name: "tenant.main".into(),
+                    shard_id: ShardId::new(0),
+                    vector_index_canister: target,
+                },
+            ))
+        };
+
+        attach(graph_principal(7)).expect("first attach");
+        // Idempotent replay to the same target is a no-op.
+        attach(graph_principal(7)).expect("idempotent re-attach");
+
+        // Register a second shard and try to point it at a *different* vector canister.
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id: ShardId::new(1),
+                graph_canister: graph_principal(3),
+                index_canister: graph_principal(2),
+                logical_graph_name: "tenant.main".into(),
+            },
+        ))
+        .expect("register shard 1");
+        let err = futures::executor::block_on(store.admin_attach_vector_index_shard(
+            admin,
+            AdminAttachVectorIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(1),
+                vector_index_canister: graph_principal(9),
+            },
+        ))
+        .expect_err("conflicting target must be rejected");
+        assert!(
+            matches!(err, RouterError::Conflict(_)),
+            "one vector-index target per graph, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn vector_attach_rejects_anonymous_target() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        let _graph_id = setup_one_shard_graph(&store, admin);
+        let err = futures::executor::block_on(store.admin_attach_vector_index_shard(
+            admin,
+            AdminAttachVectorIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                vector_index_canister: Principal::anonymous(),
+            },
+        ))
+        .expect_err("anonymous target rejected");
+        assert!(matches!(err, RouterError::InvalidArgument(_)), "{err:?}");
     }
 }
 

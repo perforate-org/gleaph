@@ -17,20 +17,11 @@ pub(crate) fn init(args: VectorIndexInitArgs) {
 
 pub(crate) fn admin_attach_shard_canister(
     graph_id: GraphId,
-    index_group_size: u32,
-    group_index: u32,
     shard_id: ShardId,
     shard_canister_principal: Principal,
 ) -> Result<(), String> {
     VectorIndexStore::new()
-        .admin_attach_shard_canister(
-            msg_caller(),
-            graph_id,
-            index_group_size,
-            group_index,
-            shard_id,
-            shard_canister_principal,
-        )
+        .admin_attach_shard_canister(msg_caller(), graph_id, shard_id, shard_canister_principal)
         .map_err(|e| e.to_string())
 }
 

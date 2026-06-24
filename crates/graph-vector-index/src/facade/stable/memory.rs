@@ -46,13 +46,14 @@ pub(crate) type StableIdToSlotMap = BTreeMap<VectorIdKey, SlotRef, Memory>;
 pub(crate) type StablePartitionHeadsMap = BTreeMap<PartitionKey, PartitionHead, Memory>;
 pub(crate) type StablePageMap = BTreeMap<PageKey, VectorPage, Memory>;
 
-/// Graph/group ownership config — mirrors `graph-index` `IndexOwnershipConfig`.
+/// Graph ownership config (ADR 0031 Slice 4 target model B). Unlike `graph-index`
+/// `IndexOwnershipConfig`, a derived vector index has **one target per graph** that owns *every*
+/// shard, so ownership is keyed by `graph_id` alone — there is no property-index group sharding
+/// (`index_group_size` / `group_index`) here.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct VectorIndexOwnershipConfig {
     pub initialized: bool,
     pub graph_id: GraphId,
-    pub index_group_size: u32,
-    pub group_index: u32,
 }
 
 impl Default for VectorIndexOwnershipConfig {
@@ -60,8 +61,6 @@ impl Default for VectorIndexOwnershipConfig {
         Self {
             initialized: false,
             graph_id: GraphId::from_raw(0),
-            index_group_size: 1,
-            group_index: 0,
         }
     }
 }
@@ -195,4 +194,41 @@ pub(crate) fn init_partition_heads() -> StablePartitionHeadsMap {
 
 pub(crate) fn init_pages() -> StablePageMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_PAGE)))
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ic_stable_structures::Storable;
+
+    /// The pre-Slice-4 ownership record carried property-index group fields. The vector target is
+    /// now graph-scoped, so the struct dropped them. This guards the stable-layout change: old
+    /// `{ initialized, graph_id, index_group_size, group_index }` bytes must still decode (Candid
+    /// ignores the surplus trailing fields), keeping the only meaningful field, `graph_id`.
+    #[derive(CandidType, Serialize)]
+    struct LegacyVectorIndexOwnershipConfig {
+        initialized: bool,
+        graph_id: GraphId,
+        index_group_size: u32,
+        group_index: u32,
+    }
+
+    #[test]
+    fn decodes_legacy_ownership_bytes_dropping_group_fields() {
+        let legacy = LegacyVectorIndexOwnershipConfig {
+            initialized: true,
+            graph_id: GraphId::from_raw(7),
+            index_group_size: 4,
+            group_index: 3,
+        };
+        let bytes = Encode!(&legacy).expect("encode legacy ownership config");
+        let decoded = VectorIndexOwnershipConfig::from_bytes(Cow::Owned(bytes));
+        assert_eq!(
+            decoded,
+            VectorIndexOwnershipConfig {
+                initialized: true,
+                graph_id: GraphId::from_raw(7),
+            }
+        );
+    }
 }

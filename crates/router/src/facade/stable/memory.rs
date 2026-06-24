@@ -101,6 +101,9 @@ const ROUTER_EMBEDDING_NAME_BY_NAME: MemoryId = MemoryId::new(40);
 const ROUTER_EMBEDDING_NAME_BY_ID: MemoryId = MemoryId::new(41);
 const ROUTER_VECTOR_INDEXES: MemoryId = MemoryId::new(42);
 
+// --- control: global vector dispatch activation flag (ADR 0031 Slice 4) ---
+const ROUTER_VECTOR_DISPATCH_ACTIVATION: MemoryId = MemoryId::new(43);
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
     pub shard_ids: Vec<ShardId>,
@@ -392,6 +395,18 @@ pub(crate) fn init_embedding_name_catalog() -> StableEmbeddingNameCatalog {
 
 pub(crate) fn init_vector_indexes() -> StableVectorIndexMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_INDEXES)))
+}
+
+// --- control ---
+/// Global derived-vector-dispatch activation flag (ADR 0031 Slice 4). `false` (default, off) keeps
+/// production dispatch/backfill fail-closed; an RBAC-gated admin endpoint flips it. Reversible.
+pub(crate) type StableVectorDispatchActivation = Cell<bool, Memory>;
+
+pub(crate) fn init_vector_dispatch_activation() -> StableVectorDispatchActivation {
+    Cell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_DISPATCH_ACTIVATION)),
+        false,
+    )
 }
 
 // --- telemetry ---

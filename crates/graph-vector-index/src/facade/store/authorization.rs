@@ -51,37 +51,25 @@ impl VectorIndexStore {
     pub(super) fn commit_attach_shard_canister(
         &self,
         graph_id: GraphId,
-        index_group_size: u32,
-        group_index: u32,
         shard_id: ShardId,
         shard_canister_principal: Principal,
     ) -> Result<(), VectorIndexError> {
         if shard_canister_principal == Principal::anonymous() {
             return Err(VectorIndexError::InvalidPrincipalInRegistry);
         }
-        if index_group_size == 0 {
-            return Err(VectorIndexError::InvalidIndexGroupConfig);
-        }
-        let group_start = u64::from(group_index) * u64::from(index_group_size);
-        let group_end = group_start + u64::from(index_group_size);
-        let shard_raw = u64::from(shard_id.raw());
-        if shard_raw < group_start || shard_raw >= group_end {
-            return Err(VectorIndexError::ShardOutOfRangeForGroup);
-        }
+        // One vector target per graph (ADR 0031 Slice 4): this canister owns *every* shard of a
+        // single graph, so ownership is fixed by `graph_id` alone. The first attach pins the graph;
+        // any shard of that graph attaches; a different graph is rejected. (Property-index group
+        // sharding does not apply — a single target must accept shards 0..N of the graph.)
         OWNERSHIP_CONFIG.with_borrow_mut(|cell| {
             let mut cfg = cell.get().clone();
             if !cfg.initialized {
                 cfg.initialized = true;
                 cfg.graph_id = graph_id;
-                cfg.index_group_size = index_group_size;
-                cfg.group_index = group_index;
                 cell.set(cfg);
                 return Ok(());
             }
-            if cfg.graph_id != graph_id
-                || cfg.index_group_size != index_group_size
-                || cfg.group_index != group_index
-            {
+            if cfg.graph_id != graph_id {
                 return Err(VectorIndexError::GraphOwnershipMismatch);
             }
             Ok(())
@@ -199,19 +187,11 @@ impl VectorIndexStore {
         &self,
         caller: Principal,
         graph_id: GraphId,
-        index_group_size: u32,
-        group_index: u32,
         shard_id: ShardId,
         shard_canister_principal: Principal,
     ) -> Result<(), VectorIndexError> {
         self.assert_router_caller(caller)?;
-        self.commit_attach_shard_canister(
-            graph_id,
-            index_group_size,
-            group_index,
-            shard_id,
-            shard_canister_principal,
-        )
+        self.commit_attach_shard_canister(graph_id, shard_id, shard_canister_principal)
     }
 
     /// Performs one bounded step of a shard subject purge. The first call (`resume == None`) also
@@ -261,7 +241,7 @@ struct SubjectPurgeStep {
     resume_key: Option<Vec<u8>>,
 }
 
-/// Convenience for test setup: attach a shard with a single-shard group at `group_index = 0`.
+/// Convenience for test setup: attach a shard of graph 1 to this single vector target.
 #[cfg(test)]
 impl VectorIndexStore {
     pub(crate) fn attach_single_shard_for_test(
@@ -270,16 +250,7 @@ impl VectorIndexStore {
         shard_id: ShardId,
         shard_canister: Principal,
     ) {
-        let index_group_size = shard_id.raw() + 1;
-        let group_index = 0;
-        self.admin_attach_shard_canister(
-            router,
-            GraphId::from_raw(1),
-            index_group_size,
-            group_index,
-            shard_id,
-            shard_canister,
-        )
-        .expect("attach shard canister");
+        self.admin_attach_shard_canister(router, GraphId::from_raw(1), shard_id, shard_canister)
+            .expect("attach shard canister");
     }
 }

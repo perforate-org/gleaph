@@ -50,6 +50,8 @@ pub mod state;
 pub mod types;
 mod use_graph;
 mod use_graph_wire;
+#[cfg(not(feature = "pocket-ic-e2e"))]
+mod vector_sync;
 mod vertex_property_backfill;
 
 pub use facade::store::RouterStore;
@@ -469,13 +471,36 @@ fn vector_index_activation_status(
     canister::vector_index_activation_status(logical_graph_name, index_id)
 }
 
-/// Request a derived vector-index backfill step (ADR 0031 Slice 3; `authorize_index_ddl`). Fails
-/// closed with `VectorDispatchActivationBlocked` until incarnation fencing activates dispatch.
+/// Request a derived vector-index backfill step (ADR 0031; `authorize_index_ddl`). Fails closed with
+/// `VectorDispatchActivationBlocked` until the global flag is on and the graph's shards are
+/// vector-attached; the bounded production driver itself lands in Slice 5.
 #[update]
-fn admin_vector_index_backfill_step(
+async fn admin_vector_index_backfill_step(
     args: types::AdminVectorIndexBackfillStepArgs,
+) -> Result<types::AdminVectorIndexBackfillStepResult, RouterError> {
+    canister::admin_vector_index_backfill_step(args).await
+}
+
+/// Flip the global vector-dispatch activation flag (ADR 0031 Slice 4; Admin only). `false` keeps
+/// production dispatch/backfill fail-closed across all graphs. Reversible.
+#[update]
+fn admin_set_vector_dispatch_activation(enabled: bool) -> Result<(), RouterError> {
+    canister::admin_set_vector_dispatch_activation(enabled)
+}
+
+/// Read the global vector-dispatch activation flag (ADR 0031 Slice 4).
+#[query]
+fn vector_dispatch_activation_enabled() -> bool {
+    canister::vector_dispatch_activation_enabled()
+}
+
+/// Wire (or retrofit) a derived vector-index target onto an already-registered shard and drive the
+/// attach handshake (ADR 0031 Slice 4; Admin only). Idempotent; one vector-index target per graph.
+#[update]
+async fn admin_attach_vector_index_shard(
+    args: types::AdminAttachVectorIndexShardArgs,
 ) -> Result<(), RouterError> {
-    canister::admin_vector_index_backfill_step(args)
+    canister::admin_attach_vector_index_shard(args).await
 }
 
 /// Advance label posting backfill for one graph shard (`Role::Admin`; call in a loop).

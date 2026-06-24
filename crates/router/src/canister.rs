@@ -4,17 +4,17 @@ use crate::facade::auth;
 use crate::facade::store::RouterStore;
 use crate::index_ddl::IndexTarget;
 use crate::init::RouterInitArgs;
-use crate::state::{RouterError, VectorActivationBlockReason};
+use crate::state::RouterError;
 use crate::types::{
-    AdminEdgeBackfillStepArgs, AdminEdgeBackfillStepResult, AdminLabelBackfillStepArgs,
-    AdminLabelBackfillStepResult, AdminLabelStatsProjectionStepArgs,
+    AdminAttachVectorIndexShardArgs, AdminEdgeBackfillStepArgs, AdminEdgeBackfillStepResult,
+    AdminLabelBackfillStepArgs, AdminLabelBackfillStepResult, AdminLabelStatsProjectionStepArgs,
     AdminLabelStatsProjectionStepResult, AdminRegisterShardArgs, AdminSweepMutationKeysStepArgs,
     AdminSweepMutationKeysStepResult, AdminVectorIndexBackfillStepArgs,
-    AdminVertexPropertyBackfillStepArgs, AdminVertexPropertyBackfillStepResult,
-    EdgeBackfillShardStatus, EdgeLabelId, GrantRoleArgs, GraphRegistryEntry,
-    LabelBackfillShardStatus, PropertyId, RegisterVectorIndexArgs, SetVectorIndexTargetArgs,
-    ShardId, ShardRegistryEntry, VectorIndexActivationStateView, VectorIndexActivationStatus,
-    VectorIndexInfo, VertexLabelId, VertexPropertyBackfillShardStatus,
+    AdminVectorIndexBackfillStepResult, AdminVertexPropertyBackfillStepArgs,
+    AdminVertexPropertyBackfillStepResult, EdgeBackfillShardStatus, EdgeLabelId, GrantRoleArgs,
+    GraphRegistryEntry, LabelBackfillShardStatus, PropertyId, RegisterVectorIndexArgs,
+    SetVectorIndexTargetArgs, ShardId, ShardRegistryEntry, VectorIndexActivationStateView,
+    VectorIndexActivationStatus, VectorIndexInfo, VertexLabelId, VertexPropertyBackfillShardStatus,
 };
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
@@ -480,22 +480,25 @@ fn activation_state_view(
     use crate::facade::stable::vector_index_catalog::VectorIndexActivationState as S;
     match state {
         S::Registered => VectorIndexActivationStateView::Registered,
-        S::DispatchBlockedMissingIncarnationFence => {
-            VectorIndexActivationStateView::DispatchBlockedMissingIncarnationFence
-        }
+        S::DispatchBlocked => VectorIndexActivationStateView::DispatchBlocked,
         S::DispatchEnabled => VectorIndexActivationStateView::DispatchEnabled,
     }
 }
 
 fn vector_index_info(
     def: &crate::facade::stable::vector_index_catalog::VectorIndexDefRecord,
+    dispatch_ready: bool,
 ) -> VectorIndexInfo {
+    let effective = crate::facade::stable::vector_index_catalog::effective_activation_state(
+        def.activation_state,
+        dispatch_ready,
+    );
     VectorIndexInfo {
         index_id: def.index_id,
         embedding_name_id: def.embedding_name_id.raw(),
         dims: def.dims,
         target: def.target.map(|t| t.canister),
-        activation_state: activation_state_view(def.activation_state),
+        activation_state: activation_state_view(effective),
     }
 }
 
@@ -572,9 +575,10 @@ pub(crate) fn list_vector_indexes(
 
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id(&logical_graph_name)?;
+    let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
     Ok(vector_index_catalog::list_vector_indexes(graph_id)
         .iter()
-        .map(vector_index_info)
+        .map(|def| vector_index_info(def, dispatch_ready))
         .collect())
 }
 
@@ -602,11 +606,21 @@ pub(crate) fn vector_index_activation_status(
     let graph_id = store.resolve_graph_id(&logical_graph_name)?;
     let def = vector_index_catalog::get_vector_index(graph_id, index_id)
         .ok_or_else(|| RouterError::NotFound(format!("vector index {index_id}")))?;
-    let blocked_reason =
-        vector_index_catalog::activation_block_reason(def.activation_state).map(|r| r.to_string());
+    let global_enabled =
+        crate::facade::stable::vector_activation::vector_dispatch_globally_enabled();
+    let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
+    let blocked_reason = vector_index_catalog::activation_block_reason(
+        def.activation_state,
+        global_enabled,
+        dispatch_ready,
+    )
+    .map(|r| r.to_string());
     Ok(VectorIndexActivationStatus {
         index_id,
-        activation_state: activation_state_view(def.activation_state),
+        activation_state: activation_state_view(vector_index_catalog::effective_activation_state(
+            def.activation_state,
+            dispatch_ready,
+        )),
         blocked_reason,
     })
 }
@@ -616,27 +630,87 @@ pub(crate) fn vector_index_activation_status(
 /// The production graph backfill endpoint/`graph_client` caller is deliberately deferred to the
 /// activation/fencing slice (the test-only bounded worker is exercised directly in
 /// `index::vertex_embedding_backfill`).
-pub(crate) fn admin_vector_index_backfill_step(
+pub(crate) async fn admin_vector_index_backfill_step(
     args: AdminVectorIndexBackfillStepArgs,
-) -> Result<(), RouterError> {
+) -> Result<AdminVectorIndexBackfillStepResult, RouterError> {
     use crate::facade::stable::vector_index_catalog;
 
     crate::rbac::authorize_index_ddl(&msg_caller())?;
+    if args.max_vertices == 0 {
+        return Err(RouterError::InvalidArgument(
+            "max_vertices must be > 0".to_owned(),
+        ));
+    }
     let store = RouterStore::new();
     let graph_id = store.resolve_graph_id(&args.logical_graph_name)?;
-    if vector_index_catalog::get_vector_index(graph_id, args.index_id).is_none() {
-        return Err(RouterError::NotFound(format!(
-            "vector index {}",
+    let def = vector_index_catalog::get_vector_index(graph_id, args.index_id)
+        .ok_or_else(|| RouterError::NotFound(format!("vector index {}", args.index_id)))?;
+    // The *requested* definition itself must be dispatch-enabled — not merely some sibling def of a
+    // ready graph. A def with no target can never dispatch, so backfilling it would otherwise
+    // populate other indexes via the graph-wide catalog. Fail closed before touching the shard.
+    if def.target.is_none() {
+        return Err(RouterError::Conflict(format!(
+            "vector index {} has no target set",
             args.index_id
         )));
     }
-    if !vector_index_catalog::incarnation_fencing_enabled() {
-        return Err(RouterError::VectorDispatchActivationBlocked(
-            VectorActivationBlockReason::MissingEmbeddingIncarnationFence,
-        ));
+    // Fail-closed on the dynamic gate (global flag + per-graph shard vector-attach to this target).
+    let global_enabled =
+        crate::facade::stable::vector_activation::vector_dispatch_globally_enabled();
+    let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
+    if let Some(reason) = vector_index_catalog::activation_block_reason(
+        def.activation_state,
+        global_enabled,
+        dispatch_ready,
+    ) {
+        return Err(RouterError::VectorDispatchActivationBlocked(reason));
     }
-    // Unreachable in Slice 3: the production backfill driver is wired in the activation/fencing slice.
-    Err(RouterError::NotImplemented(
-        "vector index backfill execution is wired in the activation/fencing slice".to_owned(),
-    ))
+    // Scope the worker to the requested index's embedding spec only, so a per-index backfill cannot
+    // populate sibling indexes that share this (ready) graph.
+    let catalog =
+        vector_index_catalog::to_indexed_embedding_catalog_for_index(graph_id, args.index_id, true);
+    let shard = store.resolve_shard(graph_id, args.shard_id)?;
+    let result = crate::graph_client::backfill_vertex_embeddings(
+        shard.graph_canister,
+        gleaph_graph_kernel::federation::EmbeddingBackfillArgs {
+            start_vertex_id: args.start_vertex_id,
+            max_vertices: args.max_vertices,
+        },
+        catalog,
+    )
+    .await
+    .map_err(RouterError::Internal)?;
+    Ok(AdminVectorIndexBackfillStepResult {
+        shard_id: args.shard_id,
+        next_vertex_id: result.next_vertex_id,
+        vertices_processed: result.vertices_processed,
+        embeddings_synced: result.embeddings_synced,
+        done: result.done,
+    })
+}
+
+/// Admin (ADR 0031 Slice 4): flip the global vector-dispatch activation flag. `false` keeps
+/// production dispatch/backfill fail-closed across all graphs; reversible.
+pub(crate) fn admin_set_vector_dispatch_activation(enabled: bool) -> Result<(), RouterError> {
+    crate::rbac::authorize_vector_activation(&msg_caller())?;
+    crate::facade::stable::vector_activation::set_vector_dispatch_globally_enabled(enabled);
+    Ok(())
+}
+
+/// Reads the global vector-dispatch activation flag (ADR 0031 Slice 4).
+pub(crate) fn vector_dispatch_activation_enabled() -> bool {
+    crate::facade::stable::vector_activation::vector_dispatch_globally_enabled()
+}
+
+/// Admin (ADR 0031 Slice 4): wire (or retrofit) a derived vector-index target onto an
+/// already-registered shard and drive the attach handshake (graph-local routing → vector attach →
+/// durable readiness bit). Idempotent; enforces one vector-index target per graph.
+pub(crate) async fn admin_attach_vector_index_shard(
+    args: AdminAttachVectorIndexShardArgs,
+) -> Result<(), RouterError> {
+    let caller = msg_caller();
+    crate::rbac::authorize_vector_activation(&caller)?;
+    RouterStore::new()
+        .admin_attach_vector_index_shard(caller, args)
+        .await
 }

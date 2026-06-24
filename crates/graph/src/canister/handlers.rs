@@ -294,6 +294,22 @@ pub fn purge_local_unique_constraint(
         .done
 }
 
+/// Router → graph (ADR 0031 Slice 4): set this shard's local derived vector-index target. The
+/// router-guarded ingress in `lib.rs` calls this as the first step of the vector attach handshake,
+/// so the shard's local `FederationRouting` carries the target before the Router attaches the shard
+/// to the vector canister and flips the durable `vector_index_attached` readiness bit. Rejects an
+/// anonymous target and a graph with no federation routing.
+pub fn admin_set_vector_index_canister(
+    vector_index_canister: candid::Principal,
+) -> Result<(), String> {
+    if vector_index_canister == candid::Principal::anonymous() {
+        return Err("vector_index_canister must not be the anonymous principal".to_string());
+    }
+    GraphStore::new()
+        .set_vector_index_canister(Some(vector_index_canister))
+        .map_err(|e| e.to_string())
+}
+
 /// Router → graph: unpin (ack) unique effects after the Router has durably applied them. Per-effect;
 /// acking one effect never unpins a sibling of the same mutation (ADR 0030).
 pub fn ack_unique_effects(effect_ids: Vec<gleaph_graph_kernel::federation::EffectId>) {
@@ -705,6 +721,30 @@ pub async fn backfill_edge_property_postings(
     };
     let _catalog = crate::index::catalog_context::enter(req.catalog);
     crate::index::edge_property_backfill::backfill_edge_property_postings(&store, &index, req.args)
+        .await
+}
+
+/// Resolve the shard's derived vector-index client from its local routing (ADR 0031 Slice 4). `None`
+/// until the vector attach handshake has set `vector_index_canister`.
+fn wasm_vector_client_holder() -> Option<crate::index::vector_ic::IcVectorIndexClient> {
+    GraphStore::new()
+        .federation_routing()
+        .and_then(|r| r.vector_index_canister)
+        .map(|vector_principal| crate::index::vector_ic::IcVectorIndexClient { vector_principal })
+}
+
+/// Router → graph (ADR 0031 Slice 4/5): run one bounded vertex-embedding backfill step against the
+/// shard's vector index, using the router-supplied indexed-embedding catalog for the batch. Mirrors
+/// [`backfill_vertex_property_postings`]; the router drives resume cursors until `done`.
+pub async fn backfill_vertex_embeddings(
+    req: gleaph_graph_kernel::federation::VertexEmbeddingBackfillRequest,
+) -> Result<gleaph_graph_kernel::federation::EmbeddingBackfillResult, String> {
+    let store = GraphStore::new();
+    let Some(vector) = wasm_vector_client_holder() else {
+        return Err("vector index not configured".into());
+    };
+    let _catalog = crate::index::vector_catalog_context::enter(req.catalog);
+    crate::index::vertex_embedding_backfill::backfill_vertex_embeddings(&store, &vector, req.args)
         .await
 }
 

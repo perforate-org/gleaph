@@ -37,6 +37,17 @@ pub fn authorize_index_ddl(caller: &Principal) -> Result<(), RouterError> {
     }
 }
 
+/// Global vector-dispatch activation control + shard vector-attach (ADR 0031 Slice 4): Admin only.
+/// These are control-plane operations that change cross-graph dispatch behavior, so they require
+/// the strongest role rather than the per-graph index-DDL capability.
+pub fn authorize_vector_activation(caller: &Principal) -> Result<(), RouterError> {
+    if auth::is_admin(caller) {
+        Ok(())
+    } else {
+        Err(RouterError::Forbidden)
+    }
+}
+
 /// `prepared_register` / `prepared_drop`: Admin or Manager with `PREPARE_REGISTER`.
 pub fn authorize_prepared_catalog_change(caller: &Principal) -> Result<(), RouterError> {
     if auth::can_prepare_register(caller) {

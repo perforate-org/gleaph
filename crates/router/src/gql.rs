@@ -1363,12 +1363,16 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     // catalog per operation so the shard never persists derived index state.
     let indexed_properties =
         crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
-    // ADR 0031 Slice 3: the Router (vector-index definitions SSOT) supplies the indexed-embedding
-    // catalog per operation, mirroring `indexed_properties`. The builder is fail-closed: it only
-    // exports `DispatchEnabled` definitions, and the incarnation fence is off in Slice 3, so this is
-    // always empty and derived vector sync stays inert on the shard.
+    // ADR 0031: the Router (vector-index definitions SSOT) supplies the indexed-embedding catalog
+    // per operation, mirroring `indexed_properties`. The builder is fail-closed on the dynamic
+    // per-graph gate: it exports specs only when dispatch is ready (global activation flag ON and
+    // every live shard vector-attached), otherwise it is empty and derived vector sync stays inert.
+    let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
     let indexed_embeddings =
-        crate::facade::stable::vector_index_catalog::to_indexed_embedding_catalog(graph_id);
+        crate::facade::stable::vector_index_catalog::to_indexed_embedding_catalog(
+            graph_id,
+            dispatch_ready,
+        );
 
     // ADR 0030 slice 5a: no-`await` Try. All fallible preflight above (routing resolution, the
     // single-shard gate, envelope record, element-id key) has run, so the only step between this
@@ -2168,6 +2172,8 @@ mod tests {
             graph_id,
             registered_at_ns: 0,
             index_attached: true,
+            vector_index_canister: None,
+            vector_index_attached: false,
         };
         let claim = |shard_id: ShardId, canister: Principal| LocalUniqueClaim {
             dispatch: UniqueClaimDispatch {

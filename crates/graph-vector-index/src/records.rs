@@ -335,10 +335,17 @@ impl Storable for SlotRef {
 
 /// Subject map row — a durable clock that survives deletion (`VECTOR_SUBJECT_TO_ID`).
 ///
-/// A removed subject keeps `stored_embedding_version` so a late upsert replay cannot resurrect it.
+/// A removed subject keeps `(embedding_incarnation, stored_embedding_version)` so a stale replay
+/// cannot resurrect it and a stale remove cannot tombstone a newer reinsert (ADR 0031 Slice 4). The
+/// clock is the ordered pair: incarnation dominates, version breaks ties within an incarnation.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub struct SubjectMapEntry {
-    /// Last applied canonical version (live OR tombstoned).
+    /// Last applied delete-spanning incarnation (ADR 0031 Slice 4). `#[serde(default)]` so any row
+    /// predating the field decodes as `0` (= unset); no such rows exist in production because vector
+    /// dispatch was inert before activation.
+    #[serde(default)]
+    pub embedding_incarnation: u64,
+    /// Last applied canonical version within `embedding_incarnation` (live OR tombstoned).
     pub stored_embedding_version: u64,
     /// True once removed; the row is retained as a tombstone clock.
     pub deleted: bool,
@@ -484,6 +491,7 @@ mod tests {
     #[test]
     fn subject_entry_storable_roundtrip() {
         let entry = SubjectMapEntry {
+            embedding_incarnation: 4,
             stored_embedding_version: 3,
             deleted: false,
             slot: Some(SlotRef {

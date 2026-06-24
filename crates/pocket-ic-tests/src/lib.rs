@@ -189,6 +189,27 @@ fn create_funded_canister(pic: &PocketIc) -> Principal {
     id
 }
 
+#[derive(CandidType)]
+struct VectorIndexInitArgs {
+    router_canister: Principal,
+}
+
+/// Install a derived vector-index canister (`gleaph-graph-vector-index`) authorized for `router`.
+/// Used by ADR 0031 Slice 4/5 activation + attach coverage.
+pub fn install_vector_canister(pic: &PocketIc, router: Principal) -> Principal {
+    let vector = create_funded_canister(pic);
+    pic.install_canister(
+        vector,
+        wasm_bytes("VECTOR_INDEX_WASM"),
+        Encode!(&VectorIndexInitArgs {
+            router_canister: router,
+        })
+        .expect("encode vector init"),
+        None,
+    );
+    vector
+}
+
 /// Router + index only (no graph WASM). Used for placement smoke tests.
 pub fn install_router_and_index() -> FederationEnv {
     let pic = new_pocket_ic();

@@ -17,6 +17,7 @@ pub(crate) mod memory;
 pub(crate) mod prepared_catalog;
 pub(crate) mod reservation_catalog;
 pub(crate) mod unique_effect_pending;
+pub(crate) mod vector_activation;
 pub(crate) mod vector_index_catalog;
 
 thread_local! {
@@ -118,6 +119,10 @@ thread_local! {
     /// `(graph_id, index_id) → vector index definition` (ADR 0031 Slice 3).
     pub(crate) static ROUTER_VECTOR_INDEXES: RefCell<memory::StableVectorIndexMap> =
         RefCell::new(memory::init_vector_indexes());
+
+    pub(crate) static ROUTER_VECTOR_DISPATCH_ACTIVATION:
+        RefCell<memory::StableVectorDispatchActivation> =
+        RefCell::new(memory::init_vector_dispatch_activation());
 
     // --- telemetry ---
     pub(crate) static ROUTER_VERTEX_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =

@@ -204,18 +204,20 @@ impl VectorIndexStore {
         })
     }
 
-    /// Applies an upsert.
+    /// Applies an upsert, ordered by the pair `(embedding_incarnation, embedding_version)` against
+    /// the retained subject clock (ADR 0031 Slice 4):
     ///
-    /// Idempotence is split by subject liveness:
-    ///
-    /// - **Live subject:** ordered by `embedding_version` against the subject clock (stale `<`
-    ///   no-op; `==` identical no-op / different conflict; `>` appends a new slot, reusing the
-    ///   live `VectorId`).
-    /// - **Deleted (tombstoned) subject:** **resurrect** with a *fresh* `VectorId` regardless of
-    ///   version. The canonical Graph store is the source of truth and the graph repair-drain
-    ///   re-derives vector ops from it ([`crate::index::repair_journal`]), so any upsert delivered
-    ///   to a deleted subject reflects a current re-insert, never a stale replay. Version ordering
-    ///   cannot gate this because the canonical `embedding_version` resets to `1` on re-insert.
+    /// - **Older incarnation** (`op.inc < clock.inc`): stale no-op — a stale replay can never
+    ///   resurrect or mutate a subject whose identity has already moved on.
+    /// - **Newer incarnation** (`op.inc > clock.inc`): **resurrect** with a *fresh* `VectorId`. This
+    ///   is the only resurrection path; it requires a strictly greater incarnation, which the graph
+    ///   canonical store allocates on each delete/reinsert. Any live slot of the older incarnation is
+    ///   tombstoned first so it cannot orphan.
+    /// - **Same incarnation** (`op.inc == clock.inc`): version rules within the incarnation. If the
+    ///   subject is already deleted at this incarnation the upsert is a stale replay (no-op, since a
+    ///   genuine reinsert carries a greater incarnation). On a live subject: stale `<` no-op; `==`
+    ///   identical no-op / different `EmbeddingVersionConflict`; `>` appends a new slot reusing the
+    ///   live `VectorId`.
     pub fn vector_upsert(
         &self,
         caller: Principal,
@@ -236,18 +238,36 @@ impl VectorIndexStore {
         let key = SubjectKey::new(op.index_id, op.subject);
         let existing = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key));
 
-        match existing {
-            // New subject, or a tombstoned subject being re-inserted: allocate a fresh VectorId
-            // (ids are never reused) and create a live slot.
-            None => {
+        let Some(entry) = existing else {
+            // New subject: allocate a fresh VectorId and create a live slot.
+            self.insert_new_subject(op, active, def.slots_per_page, key)?;
+            return Ok(());
+        };
+
+        match op.embedding_incarnation.cmp(&entry.embedding_incarnation) {
+            std::cmp::Ordering::Less => Ok(()), // stale older-incarnation replay: no-op
+            std::cmp::Ordering::Greater => {
+                // Fresh incarnation: resurrect with a brand-new VectorId. Tombstone any live slot of
+                // the older incarnation first so it does not orphan.
+                if !entry.deleted {
+                    if let Some(slot) = entry.slot {
+                        self.tombstone_slot(op.index_id, slot);
+                    }
+                    if let Some(vector_id) = entry.vector_id {
+                        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| {
+                            m.remove(&VectorIdKey::new(op.index_id, vector_id))
+                        });
+                    }
+                }
                 self.insert_new_subject(op, active, def.slots_per_page, key)?;
                 Ok(())
             }
-            Some(entry) if entry.deleted => {
-                self.insert_new_subject(op, active, def.slots_per_page, key)?;
-                Ok(())
-            }
-            Some(entry) => {
+            std::cmp::Ordering::Equal => {
+                if entry.deleted {
+                    // Same incarnation already tombstoned: a genuine reinsert would carry a greater
+                    // incarnation, so this is a stale replay.
+                    return Ok(());
+                }
                 let clock = entry.stored_embedding_version;
                 if op.embedding_version < clock {
                     return Ok(()); // stale replay within the live incarnation
@@ -260,7 +280,7 @@ impl VectorIndexStore {
                     }
                     return Err(VectorIndexError::EmbeddingVersionConflict);
                 }
-                // newer than clock on a live subject: append a new slot, reusing the live id.
+                // newer version within the live incarnation: append a new slot, reuse the live id.
                 let old_slot = entry.slot.expect("live entry has a slot");
                 let vector_id = entry.vector_id.expect("live entry has a vector_id");
                 let generation = old_slot.generation + 1;
@@ -280,6 +300,7 @@ impl VectorIndexStore {
                     m.insert(
                         key,
                         SubjectMapEntry {
+                            embedding_incarnation: op.embedding_incarnation,
                             stored_embedding_version: op.embedding_version,
                             deleted: false,
                             slot: Some(new_slot),
@@ -314,6 +335,7 @@ impl VectorIndexStore {
             m.insert(
                 key,
                 SubjectMapEntry {
+                    embedding_incarnation: op.embedding_incarnation,
                     stored_embedding_version: op.embedding_version,
                     deleted: false,
                     slot: Some(slot),
@@ -324,15 +346,23 @@ impl VectorIndexStore {
         Ok(())
     }
 
-    /// Applies a remove.
+    /// Applies a remove, ordered by the pair `(embedding_incarnation, embedding_version)` against the
+    /// retained subject clock (ADR 0031 Slice 4):
     ///
-    /// A `remove` for a never-inserted subject still **writes a tombstone clock** (not a pure
-    /// no-op), recording `embedding_version` + `deleted = true`. Note the clock no longer *blocks*
-    /// resurrection: a delivered upsert to a deleted subject resurrects regardless of version (see
-    /// [`Self::vector_upsert`]). Stale-replay protection now lives in the graph repair-drain, which
-    /// reconciles vector ops against the canonical store rather than replaying them
+    /// - **Older incarnation** (`op.inc < clock.inc`): stale no-op. This closes the reverse-orphan
+    ///   race — a late repair-drain remove for a deleted incarnation can never tombstone a newer
+    ///   reinsert that already advanced the clock.
+    /// - **Newer incarnation** (`op.inc > clock.inc`): authoritative remove for an as-yet-unseen
+    ///   incarnation; tombstone any live slot and record the deleted clock at the op's incarnation.
+    /// - **Same incarnation** (`op.inc == clock.inc`): stale `<` version no-op; on a deleted subject
+    ///   bump the clock if `>`; on a live subject tombstone the active slot.
+    ///
+    /// A `remove` for a never-inserted subject still **writes a tombstone clock** (not a pure no-op).
+    /// The clock no longer *blocks* resurrection by itself: a delivered upsert with a greater
+    /// incarnation resurrects (see [`Self::vector_upsert`]). Stale-replay protection is the
+    /// incarnation fence plus the graph repair-drain's canonical re-derivation
     /// ([`crate::index::repair_journal`]); a canonical-wins removal arrives with an authoritative
-    /// (maximum) `embedding_version` so it supersedes any live slot.
+    /// (maximum) `embedding_version` so it supersedes any live slot of the same incarnation.
     pub fn vector_remove(
         &self,
         caller: Principal,
@@ -345,12 +375,42 @@ impl VectorIndexStore {
         let key = SubjectKey::new(op.index_id, op.subject);
         let existing = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&key));
 
-        match existing {
-            None => {
+        let Some(entry) = existing else {
+            VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
+                m.insert(
+                    key,
+                    SubjectMapEntry {
+                        embedding_incarnation: op.embedding_incarnation,
+                        stored_embedding_version: op.embedding_version,
+                        deleted: true,
+                        slot: None,
+                        vector_id: None,
+                    },
+                )
+            });
+            return Ok(());
+        };
+
+        match op.embedding_incarnation.cmp(&entry.embedding_incarnation) {
+            std::cmp::Ordering::Less => Ok(()), // stale older-incarnation remove: no-op (fenced)
+            std::cmp::Ordering::Greater => {
+                // Authoritative remove for a newer, as-yet-unseen incarnation: tombstone any live
+                // slot and record the deleted clock at the op's incarnation.
+                if !entry.deleted {
+                    if let Some(slot) = entry.slot {
+                        self.tombstone_slot(op.index_id, slot);
+                    }
+                    if let Some(vector_id) = entry.vector_id {
+                        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| {
+                            m.remove(&VectorIdKey::new(op.index_id, vector_id))
+                        });
+                    }
+                }
                 VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                     m.insert(
                         key,
                         SubjectMapEntry {
+                            embedding_incarnation: op.embedding_incarnation,
                             stored_embedding_version: op.embedding_version,
                             deleted: true,
                             slot: None,
@@ -360,7 +420,7 @@ impl VectorIndexStore {
                 });
                 Ok(())
             }
-            Some(entry) => {
+            std::cmp::Ordering::Equal => {
                 let clock = entry.stored_embedding_version;
                 if op.embedding_version < clock {
                     return Ok(()); // stale repair replay after a newer upsert
@@ -385,6 +445,7 @@ impl VectorIndexStore {
                     m.insert(
                         key,
                         SubjectMapEntry {
+                            embedding_incarnation: op.embedding_incarnation,
                             stored_embedding_version: op.embedding_version,
                             deleted: true,
                             slot: None,

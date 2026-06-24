@@ -143,30 +143,65 @@ pub struct ShardRegistryEntry {
     pub registered_at_ns: u64,
     /// `false` while router awaits index `admin_attach_shard_canister`; excluded from dispatch/index fan-out.
     pub index_attached: bool,
+    /// Derived vector-index canister wired to this shard (ADR 0031 Slice 4). `None` until the
+    /// vector attach handshake sets the graph shard's local routing. The Router owns target
+    /// selection (one target per graph). Decodes as `None` for pre-Slice-4 (V1) records.
+    #[serde(default)]
+    pub vector_index_canister: Option<Principal>,
+    /// `true` once the vector attach handshake has set the shard's **local** `FederationRouting`
+    /// target *and* attached the shard to the vector canister (ADR 0031 Slice 4). Mirrors
+    /// `index_attached`; a faithful proxy for graph-local vector readiness. Decodes as `false` for
+    /// pre-Slice-4 (V1) records.
+    #[serde(default)]
+    pub vector_index_attached: bool,
 }
 
-/// Stable-memory wire envelope for [`ShardRegistryEntry`].
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+/// Pre-Slice-4 record shape, retained only to decode old `V1` stable bytes (ADR 0031 Slice 4).
+/// New writes use [`ShardRegistryStableRecord::V2`]; never construct this for writes.
+#[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
+struct ShardRegistryEntryV1 {
+    shard_id: ShardId,
+    graph_canister: Principal,
+    index_canister: Principal,
+    graph_id: GraphId,
+    registered_at_ns: u64,
+    index_attached: bool,
+}
+
+/// Stable-memory wire envelope for [`ShardRegistryEntry`]. `V2` adds the vector-index fields; old
+/// `V1` bytes decode with `vector_index_canister = None` / `vector_index_attached = false`.
+#[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
 enum ShardRegistryStableRecord {
-    V1(ShardRegistryEntry),
+    V1(ShardRegistryEntryV1),
+    V2(ShardRegistryEntry),
 }
 
 impl Storable for ShardRegistryEntry {
     fn to_bytes(&self) -> Cow<'_, [u8]> {
         Cow::Owned(
-            Encode!(&ShardRegistryStableRecord::V1(self.clone()))
+            Encode!(&ShardRegistryStableRecord::V2(self.clone()))
                 .expect("encode ShardRegistryEntry"),
         )
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Encode!(&ShardRegistryStableRecord::V1(self)).expect("encode ShardRegistryEntry")
+        Encode!(&ShardRegistryStableRecord::V2(self)).expect("encode ShardRegistryEntry")
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         match Decode!(bytes.as_ref(), ShardRegistryStableRecord).expect("decode ShardRegistryEntry")
         {
-            ShardRegistryStableRecord::V1(v1) => v1,
+            ShardRegistryStableRecord::V1(v1) => ShardRegistryEntry {
+                shard_id: v1.shard_id,
+                graph_canister: v1.graph_canister,
+                index_canister: v1.index_canister,
+                graph_id: v1.graph_id,
+                registered_at_ns: v1.registered_at_ns,
+                index_attached: v1.index_attached,
+                vector_index_canister: None,
+                vector_index_attached: false,
+            },
+            ShardRegistryStableRecord::V2(v2) => v2,
         }
     }
 
@@ -202,8 +237,31 @@ mod tests {
             graph_id: GraphId::from_raw(1),
             registered_at_ns: 123,
             index_attached: true,
+            vector_index_canister: Some(Principal::management_canister()),
+            vector_index_attached: true,
         };
         let bytes = entry.to_bytes();
         assert_eq!(entry, ShardRegistryEntry::from_bytes(bytes));
+    }
+
+    #[test]
+    fn shard_registry_entry_decodes_old_v1_bytes() {
+        // A pre-Slice-4 record persisted as the V1 envelope must still decode after upgrade, with
+        // the new vector fields defaulting to "no vector index" (ADR 0031 Slice 4).
+        let v1 = ShardRegistryEntryV1 {
+            shard_id: ShardId::new(2),
+            graph_canister: Principal::management_canister(),
+            index_canister: Principal::management_canister(),
+            graph_id: GraphId::from_raw(7),
+            registered_at_ns: 999,
+            index_attached: true,
+        };
+        let old_bytes = Encode!(&ShardRegistryStableRecord::V1(v1)).expect("encode V1");
+        let decoded = ShardRegistryEntry::from_bytes(Cow::Owned(old_bytes));
+        assert_eq!(decoded.shard_id, ShardId::new(2));
+        assert_eq!(decoded.graph_id, GraphId::from_raw(7));
+        assert!(decoded.index_attached);
+        assert_eq!(decoded.vector_index_canister, None);
+        assert!(!decoded.vector_index_attached);
     }
 }

@@ -84,6 +84,9 @@ const GRAPH_LOCAL_UNIQUE_VALUES: MemoryId = MemoryId::new(43);
 // --- Canonical vertex embeddings (ADR 0031) (1 memory) ---
 const VERTEX_EMBEDDINGS: MemoryId = MemoryId::new(44);
 
+// --- Delete-spanning embedding incarnation high-water marks (ADR 0031 Slice 4) (1 memory) ---
+const VERTEX_EMBEDDING_INCARNATIONS: MemoryId = MemoryId::new(45);
+
 pub(crate) const GRAPH_DEFAULT_EDGE_LABEL: LaraLabelId = LaraLabelId::UNLABELED_DIRECTED;
 
 /// Initial slab capacity for both labeled orientations (grows as needed).
@@ -178,7 +181,10 @@ pub(crate) fn init_vertex_property_store() -> StableVertexPropertyStore {
 }
 
 pub(crate) fn init_vertex_embedding_store() -> StableVertexEmbeddingStore {
-    VertexEmbeddingStore::init(MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_EMBEDDINGS)))
+    VertexEmbeddingStore::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_EMBEDDINGS)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(VERTEX_EMBEDDING_INCARNATIONS)),
+    )
 }
 
 pub(crate) fn init_edge_property_store() -> StableEdgePropertyStore {

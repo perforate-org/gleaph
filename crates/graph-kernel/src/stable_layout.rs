@@ -624,6 +624,18 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
              future derived vector-index backfill",
             RebuildPath::None,
         ),
+        // Delete-spanning embedding incarnation high-water marks (ADR 0031 Slice 4)
+        region(
+            "VERTEX_EMBEDDING_INCARNATIONS",
+            45,
+            StableMemoryClass::Canonical,
+            "embedding incarnations",
+            "(VertexId, EmbeddingNameId) → u64: delete-spanning incarnation high-water mark per \
+             embedding identity. Retained across remove so a reinsert allocates a strictly greater \
+             incarnation; the vector canister orders derived sync by (incarnation, version) so a \
+             stale remove can never tombstone a newer live vector",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -984,6 +996,15 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
              target, and fail-closed activation state for a derived vector index",
             RebuildPath::None,
         ),
+        region(
+            "ROUTER_VECTOR_DISPATCH_ACTIVATION",
+            43,
+            StableMemoryClass::Canonical,
+            "global vector-dispatch activation flag",
+            "Cell<bool> (ADR 0031 Slice 4). Operator-owned, reversible global switch gating all \
+             production derived-vector dispatch/backfill; defaults false (fail-closed)",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1125,9 +1146,11 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             7,
             StableMemoryClass::Derived,
             "subject map",
-            "(index_id, subject) → SubjectMapEntry { stored_embedding_version, deleted, slot, \
-             vector_id }: retained as a durable tombstone clock after delete so stale upsert \
-             replays cannot resurrect a removed vector",
+            "(index_id, subject) → SubjectMapEntry { embedding_incarnation, \
+             stored_embedding_version, deleted, slot, vector_id }: retained as a durable clock \
+             after delete; ordered by (embedding_incarnation, stored_embedding_version) so a stale \
+             remove cannot tombstone a newer reinsert and a stale upsert cannot resurrect a removed \
+             vector (ADR 0031 Slice 4)",
             RebuildPath::Named("vertex_embedding_backfill"),
         ),
         region(
@@ -1307,8 +1330,8 @@ mod tests {
     #[test]
     fn graph_layout_registry_matches_baseline() {
         assert_layout(&GRAPH_STABLE_LAYOUT);
-        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 45);
-        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(44));
+        assert_eq!(GRAPH_STABLE_LAYOUT.region_count(), 46);
+        assert_eq!(GRAPH_STABLE_LAYOUT.max_memory_id(), Some(45));
         assert_eq!(GRAPH_STABLE_LAYOUT.regions[0].symbol, "FWD_VERTICES");
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[39].symbol,
@@ -1326,6 +1349,11 @@ mod tests {
             GRAPH_STABLE_LAYOUT.regions[43].symbol,
             "GRAPH_LOCAL_UNIQUE_VALUES"
         );
+        assert_eq!(GRAPH_STABLE_LAYOUT.regions[44].symbol, "VERTEX_EMBEDDINGS");
+        assert_eq!(
+            GRAPH_STABLE_LAYOUT.regions[45].symbol,
+            "VERTEX_EMBEDDING_INCARNATIONS"
+        );
         assert_eq!(
             GRAPH_STABLE_LAYOUT.regions[35].class,
             StableMemoryClass::Derived
@@ -1335,8 +1363,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 43);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(42));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 44);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(43));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].class,
             StableMemoryClass::Telemetry

@@ -17,8 +17,8 @@ fn vertex_id_raw(vertex_id: VertexId) -> u32 {
 }
 
 /// Queues an upsert for a just-written canonical vertex embedding, if its name is indexed. Reads the
-/// canonical record back to source the authoritative `embedding_version`, `encoding`, `dims`, and
-/// bytes for the op.
+/// canonical record back to source the authoritative `embedding_incarnation`, `embedding_version`,
+/// `encoding`, `dims`, and bytes for the op.
 pub(crate) fn dispatch_vertex_upsert(vertex_id: VertexId, embedding_name_id: EmbeddingNameId) {
     let Some(spec) = crate::index::vector_catalog_context::spec_for(embedding_name_id.raw()) else {
         return;
@@ -30,6 +30,11 @@ pub(crate) fn dispatch_vertex_upsert(vertex_id: VertexId, embedding_name_id: Emb
     let Some(record) = store.vertex_embedding(vertex_id, embedding_name_id) else {
         return;
     };
+    // A live record always has an incarnation; a record written before Slice 4 has none, so treat it
+    // as the implicit first incarnation (1).
+    let embedding_incarnation = store
+        .vertex_embedding_incarnation(vertex_id, embedding_name_id)
+        .unwrap_or(1);
     vector_pending::push_vector_op(VectorEmbeddingSyncOp {
         index_id: spec.index_id,
         embedding_name_id: embedding_name_id.raw(),
@@ -37,6 +42,7 @@ pub(crate) fn dispatch_vertex_upsert(vertex_id: VertexId, embedding_name_id: Emb
             shard_id: routing.shard_id,
             vertex_id: vertex_id_raw(vertex_id),
         },
+        embedding_incarnation,
         embedding_version: record.version,
         encoding: record.encoding,
         dims: record.dims,
@@ -46,11 +52,13 @@ pub(crate) fn dispatch_vertex_upsert(vertex_id: VertexId, embedding_name_id: Emb
 }
 
 /// Queues a remove for a just-deleted canonical vertex embedding, if its name is indexed. The op
-/// carries the deleted record's `embedding_version` so the canister's tombstone clock supersedes any
-/// stale upsert replay (`bytes` is empty on remove).
+/// carries the deleted record's `(embedding_incarnation, embedding_version)` so the canister's
+/// incarnation-fenced clock supersedes a stale same-incarnation replay without tombstoning a newer
+/// reinsert (`bytes` is empty on remove).
 pub(crate) fn dispatch_vertex_remove(
     vertex_id: VertexId,
     embedding_name_id: EmbeddingNameId,
+    embedding_incarnation: u64,
     embedding_version: u64,
     encoding: VectorEncoding,
     dims: u16,
@@ -68,6 +76,7 @@ pub(crate) fn dispatch_vertex_remove(
             shard_id: routing.shard_id,
             vertex_id: vertex_id_raw(vertex_id),
         },
+        embedding_incarnation,
         embedding_version,
         encoding,
         dims,
