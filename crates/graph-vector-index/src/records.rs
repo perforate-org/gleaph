@@ -502,13 +502,16 @@ impl Storable for VectorPage {
     }
 }
 
-/// Durable per-index rebuild lifecycle (`VECTOR_REBUILD_STATE`, ADR 0031 Slice 7).
+/// Durable per-index rebuild lifecycle (`VECTOR_REBUILD_STATE`, ADR 0031 Slice 7/8).
 ///
 /// Every long-running phase carries a resume cursor (subject keys / page keys as `Storable` bytes)
-/// so each `*_step` honors the bounded-execution contract. `Sampling.candidates` holds the chosen
-/// centroid bytes until they are written to `IVF_CENTROIDS` on the transition to `Building`; its
-/// size is bounded by `MAX_NLIST * stride_bytes`. `Cleaning`/`Aborting` carry the `nlist` they must
-/// tear down because `publish` overwrites `def.nlist`.
+/// so each `*_step` honors the bounded-execution contract. `Sampling.candidates` accumulates a
+/// bounded distinct candidate pool, then `Training` refines `nlist` centroids from it with
+/// deterministic k-means-lite before they are written to `IVF_CENTROIDS` on the transition to
+/// `Building` (ADR 0031 Slice 8). The combined durable `Training` value (`candidates + centroids`)
+/// is bounded by `MAX_REBUILD_STATE_BYTES`; the candidate pool is sized to reserve room for the
+/// centroids and encoding overhead inside that envelope. `Cleaning`/`Aborting` carry the `nlist`
+/// they must tear down because `publish` overwrites `def.nlist`.
 #[derive(Clone, Debug, Default, PartialEq, Eq, CandidType, Serialize, Deserialize)]
 pub enum VectorRebuildStateRecord {
     #[default]
@@ -520,6 +523,14 @@ pub enum VectorRebuildStateRecord {
         cursor: Option<Vec<u8>>,
         subjects_scanned: u64,
         candidates: Vec<Vec<u8>>,
+    },
+    Training {
+        target_index_version: u64,
+        nlist: u32,
+        sample_limit: u32,
+        iteration: u32,
+        candidates: Vec<Vec<u8>>,
+        centroids: Vec<Vec<u8>>,
     },
     Building {
         target_index_version: u64,
@@ -733,6 +744,14 @@ mod tests {
                 cursor: Some(vec![1, 2, 3]),
                 subjects_scanned: 17,
                 candidates: vec![vec![0u8; 16], vec![1u8; 16]],
+            },
+            VectorRebuildStateRecord::Training {
+                target_index_version: 2,
+                nlist: 2,
+                sample_limit: 1024,
+                iteration: 3,
+                candidates: vec![vec![0u8; 16], vec![1u8; 16], vec![2u8; 16]],
+                centroids: vec![vec![0u8; 16], vec![1u8; 16]],
             },
             VectorRebuildStateRecord::Building {
                 target_index_version: 2,

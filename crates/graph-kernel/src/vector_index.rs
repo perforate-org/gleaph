@@ -212,6 +212,9 @@ pub struct VectorSearchResult {
 pub enum VectorRebuildPhase {
     Idle,
     Sampling,
+    /// Deterministic k-means-lite centroid refinement over the bounded candidate pool (ADR 0031
+    /// Slice 8), between `Sampling` and `Building`.
+    Training,
     Building,
     ReadyToPublish,
     Cleaning,
@@ -233,8 +236,34 @@ pub struct VectorRebuildStatus {
     pub nlist: u32,
     /// Subjects shadowed so far during `Building` (`0` in other phases).
     pub subjects_processed: u64,
-    /// Distinct centroid candidates collected so far during `Sampling` (`0` in other phases).
+    /// Distinct centroid candidates collected so far during `Sampling`/`Training` (`0` in other
+    /// phases).
     pub candidates_collected: u32,
+    /// Completed k-means-lite iterations during `Training` (`0` in other phases, ADR 0031 Slice 8).
+    pub training_iteration: u32,
+}
+
+/// Bounded, head-only partition-health summary for an `ivf_flat` index (ADR 0031 Slice 8).
+///
+/// O(`nlist`) over the active version's `PartitionHead` rows (no page scan, bounded by `MAX_NLIST`).
+/// Reports integer-only raw counts; callers derive `avg_live_rows = live_rows / nlist` and the skew
+/// ratio `max_partition_live_rows / avg_live_rows` themselves. Tombstone accounting
+/// (`tombstoned_rows`/`total_rows`/tombstone ratio) is deferred to a later slice because it would
+/// require a page scan or new persisted counters.
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+)]
+pub struct VectorPartitionHealthSummary {
+    /// Configured partition count of the active index version.
+    pub nlist: u32,
+    /// Partitions with a materialized `PartitionHead` (an empty partition materializes no head).
+    pub partitions_examined: u32,
+    /// Sum of `live_len` across examined partitions.
+    pub live_rows: u64,
+    /// Sum of `page_count` across examined partitions.
+    pub page_count: u64,
+    /// Largest single-partition `live_len` (skew numerator).
+    pub max_partition_live_rows: u64,
 }
 
 /// Vector-index canister mutation/sync/admin/search failure.

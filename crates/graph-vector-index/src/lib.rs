@@ -31,7 +31,8 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
-    VectorEmbeddingSyncOp, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
+    VectorEmbeddingSyncOp, VectorPartitionHealthSummary, VectorRebuildStatus, VectorSearchRequest,
+    VectorSearchResult,
 };
 use ic_cdk_macros::{init, query, update};
 
@@ -116,6 +117,12 @@ fn admin_vector_rebuild_cleanup_step(
     max_work: u32,
 ) -> Result<VectorRebuildStatus, String> {
     canister::admin_vector_rebuild_cleanup_step(index_id, max_work)
+}
+
+/// Head-only O(`nlist`) partition-health summary for the active index version (ADR 0031 Slice 8).
+#[query(guard = "guard_router_canister")]
+fn admin_vector_partition_health(index_id: u32) -> Result<VectorPartitionHealthSummary, String> {
+    canister::admin_vector_partition_health(index_id)
 }
 
 ic_cdk::export_candid!();

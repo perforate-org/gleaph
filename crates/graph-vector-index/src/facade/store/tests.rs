@@ -1321,11 +1321,33 @@ fn drive_steps(
             .admin_vector_rebuild_step(router(), index_id, 1)
             .expect("step");
         match status.phase {
-            VectorRebuildPhase::Sampling | VectorRebuildPhase::Building => continue,
+            VectorRebuildPhase::Sampling
+            | VectorRebuildPhase::Training
+            | VectorRebuildPhase::Building => continue,
             _ => return status,
         }
     }
     panic!("rebuild steps did not terminate");
+}
+
+/// Drives steps through `Sampling` + `Training` until the phase first reaches `Building` (centroids
+/// written, no subjects shadowed yet), returning that status. Panics if it terminates earlier (e.g.
+/// `Failed`).
+fn drive_into_building(
+    store: &VectorIndexStore,
+    index_id: u32,
+) -> gleaph_graph_kernel::vector_index::VectorRebuildStatus {
+    for _ in 0..100_000 {
+        let status = store
+            .admin_vector_rebuild_step(router(), index_id, 100)
+            .expect("step");
+        match status.phase {
+            VectorRebuildPhase::Sampling | VectorRebuildPhase::Training => continue,
+            VectorRebuildPhase::Building => return status,
+            other => panic!("expected Building, reached {other:?}"),
+        }
+    }
+    panic!("rebuild did not reach Building");
 }
 
 /// Drives `admin_vector_rebuild_cleanup_step` (one unit at a time) until `Idle`, returning the step
@@ -1428,10 +1450,11 @@ fn rebuild_start_rejects_invalid_params() {
 }
 
 #[test]
-fn rebuild_start_rejects_oversized_candidate_bytes() {
+fn rebuild_start_rejects_oversized_combined_state() {
     let store = fresh_store();
-    // A large-dim index: `nlist * stride_bytes` for the durable `Sampling.candidates` exceeds the
-    // candidate-byte budget even though `nlist <= MAX_NLIST`, because `stride_bytes` scales with dims.
+    // A large-dim index whose `2 * nlist * stride + overhead` (candidate-pool floor + trained
+    // centroids + encoding overhead) exceeds the combined rebuild-state envelope even though
+    // `nlist <= MAX_NLIST`, because `stride_bytes` scales with dims (ADR 0031 Slice 8, P2/P3).
     let big_dims: u16 = 2100; // stride = 8400 bytes (F32)
     let stride = big_dims as usize * 4;
     let op = VectorEmbeddingSyncOp {
@@ -1449,8 +1472,9 @@ fn rebuild_start_rejects_oversized_candidate_bytes() {
         .vector_upsert(shard_canister(), &op)
         .expect("seed large-dim upsert");
     assert!(
-        super::MAX_NLIST as usize * stride > super::MAX_REBUILD_CANDIDATE_BYTES as usize,
-        "fixture must exceed the candidate-byte cap"
+        2 * super::MAX_NLIST as u64 * stride as u64 + super::MAX_REBUILD_STATE_OVERHEAD_BYTES
+            > super::MAX_REBUILD_STATE_BYTES,
+        "fixture must exceed the combined-state cap"
     );
     assert_eq!(
         store
@@ -1475,7 +1499,7 @@ fn rebuild_step_and_cleanup_accept_oversized_caller_budget() {
         .expect("step accepts u32::MAX");
     while matches!(
         status.phase,
-        VectorRebuildPhase::Sampling | VectorRebuildPhase::Building
+        VectorRebuildPhase::Sampling | VectorRebuildPhase::Training | VectorRebuildPhase::Building
     ) {
         status = store
             .admin_vector_rebuild_step(router(), INDEX_ID, u32::MAX)
@@ -1508,7 +1532,8 @@ fn rebuild_step_is_bounded_by_per_step_vector_bytes() {
         .expect("start");
     let one_vector = STRIDE as u64;
 
-    // First sampling step buffers one vector -> one candidate, not yet enough for nlist=2.
+    // First sampling step buffers exactly one vector -> one distinct candidate (the per-step byte
+    // budget truncates work; the pool keeps filling across steps).
     let status = store
         .rebuild_step_with_budget(INDEX_ID, u32::MAX, one_vector)
         .expect("sampling step");
@@ -1518,35 +1543,30 @@ fn rebuild_step_is_bounded_by_per_step_vector_bytes() {
         "byte budget truncates sampling to one buffered vector per step"
     );
 
-    // Second sampling step buffers the second distinct vector -> nlist centroids -> Building.
-    let status = store
-        .rebuild_step_with_budget(INDEX_ID, u32::MAX, one_vector)
-        .expect("sampling step");
-    assert_eq!(status.phase, VectorRebuildPhase::Building);
-
-    // First building step shadows exactly one subject, then breaks on the byte budget.
-    let status = store
-        .rebuild_step_with_budget(INDEX_ID, u32::MAX, one_vector)
-        .expect("building step");
-    assert_eq!(status.phase, VectorRebuildPhase::Building);
-    assert_eq!(
-        status.subjects_processed, 1,
-        "byte budget truncates building to one buffered vector per step"
-    );
-
-    // Remaining subjects finish across further byte-bounded steps.
+    // Drive the byte-bounded Sampling -> Training -> Building pipeline to completion. Every step is
+    // bounded; the run still reaches ReadyToPublish.
     let mut status = status;
-    for _ in 0..100 {
+    for _ in 0..1000 {
         if status.phase == VectorRebuildPhase::ReadyToPublish {
             break;
         }
+        assert!(
+            matches!(
+                status.phase,
+                VectorRebuildPhase::Sampling
+                    | VectorRebuildPhase::Training
+                    | VectorRebuildPhase::Building
+            ),
+            "unexpected phase {:?}",
+            status.phase
+        );
         status = store
             .rebuild_step_with_budget(INDEX_ID, u32::MAX, one_vector)
-            .expect("building step");
+            .expect("bounded step");
     }
     assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
 
-    // The byte-bounded build is equivalent to an unbounded one: parity with the exact scan holds.
+    // The byte-bounded build is equivalent to an unbounded one: parity after publish holds.
     store
         .admin_publish_vector_rebuild(router(), INDEX_ID)
         .expect("publish");
@@ -1677,12 +1697,7 @@ fn upsert_during_building_survives_publish() {
         .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
         .expect("start");
     // Reach Building (centroids written), then insert a new subject mid-rebuild.
-    store
-        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
-        .expect("sampling step");
-    let status = store
-        .admin_vector_rebuild_status(router(), INDEX_ID)
-        .unwrap();
+    let status = drive_into_building(&store, INDEX_ID);
     assert_eq!(status.phase, VectorRebuildPhase::Building);
     store
         .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
@@ -1714,9 +1729,7 @@ fn remove_during_building_does_not_resurrect_after_publish() {
     store
         .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
         .expect("start");
-    store
-        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
-        .expect("sampling step"); // -> Building
+    drive_into_building(&store, INDEX_ID); // -> Building
     // Remove subject 4 while dual-writing.
     store
         .vector_remove(shard_canister(), &remove_op(4, 2))
@@ -1809,16 +1822,8 @@ fn abort_during_building_is_bounded_and_leaves_active_unchanged() {
     store
         .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
         .expect("start");
-    store
-        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
-        .expect("sampling -> building");
-    assert_eq!(
-        store
-            .admin_vector_rebuild_status(router(), INDEX_ID)
-            .unwrap()
-            .phase,
-        VectorRebuildPhase::Building
-    );
+    let status = drive_into_building(&store, INDEX_ID);
+    assert_eq!(status.phase, VectorRebuildPhase::Building);
     store
         .admin_abort_vector_rebuild(router(), INDEX_ID)
         .expect("abort");
@@ -1954,17 +1959,10 @@ fn publish_succeeds_with_an_empty_partition() {
     store
         .admin_start_vector_rebuild(router(), INDEX_ID, 3, 100)
         .expect("start");
-    // One large sampling step writes the 3 centroids [0, 10, 5] and enters Building.
-    store
-        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
-        .expect("sampling");
-    assert_eq!(
-        store
-            .admin_vector_rebuild_status(router(), INDEX_ID)
-            .unwrap()
-            .phase,
-        VectorRebuildPhase::Building
-    );
+    // Sampling collects the 3 distinct candidates [0, 10, 5]; Training writes the 3 centroids and
+    // enters Building (each distinct candidate seeds and stays its own centroid).
+    let status = drive_into_building(&store, INDEX_ID);
+    assert_eq!(status.phase, VectorRebuildPhase::Building);
     // Remove the val-5 subject so no live vector is nearest to centroid 2.
     store
         .vector_remove(shard_canister(), &remove_op(3, 2))
@@ -1987,4 +1985,222 @@ fn publish_succeeds_with_an_empty_partition() {
         .vector_search_tuned(&search_value(0.0, 10), tuned(3))
         .expect("search");
     assert_eq!(after.hits.len(), 4);
+}
+
+// --- ADR 0031 Slice 8: bounded training quality + partition health ---
+
+#[test]
+fn sampling_collects_more_than_nlist_candidates() {
+    let store = fresh_store();
+    // Eight distinct live vectors but only nlist=2: sampling collects the whole bounded pool, not
+    // just two, before entering Training (ADR 0031 Slice 8, P3).
+    seed_distinct(&store, 8);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    // One large sampling step exhausts the (8-subject) range -> Training with all 8 candidates.
+    let status = store
+        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
+        .expect("sampling step");
+    assert_eq!(status.phase, VectorRebuildPhase::Training);
+    assert_eq!(
+        status.candidates_collected, 8,
+        "sampling collects the whole distinct pool, not just nlist"
+    );
+    assert_eq!(status.training_iteration, 0);
+}
+
+#[test]
+fn training_produces_nlist_valid_centroids() {
+    let store = fresh_store();
+    seed_distinct(&store, 8);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 3, 100)
+        .expect("start");
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    assert_eq!(
+        target_centroid_count(INDEX_ID, TARGET_V, 3),
+        3,
+        "exactly nlist centroids written"
+    );
+    IVF_CENTROIDS.with_borrow(|m| {
+        for p in 0..3 {
+            let bytes = m
+                .get(&PartitionKey::new(INDEX_ID, TARGET_V, p))
+                .expect("centroid present");
+            assert_eq!(bytes.len(), STRIDE, "centroid {p} is dims-valid");
+        }
+    });
+}
+
+#[test]
+fn training_is_deterministic() {
+    fn run() -> Vec<Vec<u8>> {
+        let store = fresh_store();
+        seed_distinct(&store, 8);
+        store
+            .admin_start_vector_rebuild(router(), INDEX_ID, 3, 100)
+            .expect("start");
+        assert_eq!(
+            drive_steps(&store, INDEX_ID).phase,
+            VectorRebuildPhase::ReadyToPublish
+        );
+        IVF_CENTROIDS.with_borrow(|m| {
+            (0..3)
+                .map(|p| {
+                    m.get(&PartitionKey::new(INDEX_ID, TARGET_V, p))
+                        .expect("centroid")
+                })
+                .collect()
+        })
+    }
+    // `fresh_store` clears the shared thread-local state, so two sequential runs over the same seed
+    // must yield byte-identical centroids.
+    let first = run();
+    let second = run();
+    assert_eq!(
+        first, second,
+        "k-means-lite training is deterministic for the same sample order"
+    );
+}
+
+#[test]
+fn training_writes_no_pages_or_centroids() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    // One step completes Sampling and enters Training (iteration 0).
+    let status = store
+        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
+        .expect("step");
+    assert_eq!(status.phase, VectorRebuildPhase::Training);
+    // Centroids live in the durable state record until the transition to Building; nothing is
+    // published to IVF_CENTROIDS or VECTOR_PAGE during Training.
+    assert_eq!(
+        target_centroid_count(INDEX_ID, TARGET_V, 2),
+        0,
+        "no centroids written during Training"
+    );
+    let target_pages = VECTOR_PAGE.with_borrow(|m| {
+        m.range((
+            std::ops::Bound::Included(PageKey::new(INDEX_ID, TARGET_V, 0, 0)),
+            std::ops::Bound::Unbounded,
+        ))
+        .filter(|e| e.key().index_id == INDEX_ID && e.key().index_version == TARGET_V)
+        .count()
+    });
+    assert_eq!(target_pages, 0, "Training writes no shadow pages");
+}
+
+#[test]
+fn abort_from_training_is_immediate_idle() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    let status = store
+        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
+        .expect("step");
+    assert_eq!(status.phase, VectorRebuildPhase::Training);
+    store
+        .admin_abort_vector_rebuild(router(), INDEX_ID)
+        .expect("abort from training");
+    assert_eq!(
+        store
+            .admin_vector_rebuild_status(router(), INDEX_ID)
+            .unwrap()
+            .phase,
+        VectorRebuildPhase::Idle
+    );
+    // O(1) recovery: a fresh rebuild can start again.
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("restart after abort");
+}
+
+#[test]
+fn upsert_during_training_is_active_only_then_shadowed_by_building() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    let status = store
+        .admin_vector_rebuild_step(router(), INDEX_ID, 100)
+        .expect("step");
+    assert_eq!(status.phase, VectorRebuildPhase::Training);
+    // A new subject upserted during Training is active-only (no shadow slot yet).
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
+        .expect("active-only upsert");
+    let entry = store.subject_entry_for_test(INDEX_ID, subject(99)).unwrap();
+    assert!(
+        entry.shadow_slot.is_none(),
+        "mutation during Training is active-only"
+    );
+    // Building walks every live subject and shadows it; publish makes it searchable.
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    let entry = store.subject_entry_for_test(INDEX_ID, subject(99)).unwrap();
+    assert!(
+        entry.shadow_slot.is_some(),
+        "Building shadows the Training-era mutation"
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+    let after = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert!(after.hits.iter().any(|h| h.subject == subject(99)));
+}
+
+#[test]
+fn partition_health_reports_skew_and_empty_partitions() {
+    let store = fresh_store();
+    // Three centroids [0, 10, 20]; populate only the first two (3 rows near 0, 1 row near 10), so
+    // partition 2 stays empty and partition 0 is the skew peak.
+    let centroids = vec![cvec(0.0), cvec(10.0), cvec(20.0)];
+    let vectors = vec![
+        (subject(1), cvec(0.0)),
+        (subject(2), cvec(0.1)),
+        (subject(3), cvec(0.2)),
+        (subject(4), cvec(10.0)),
+    ];
+    store.seed_ivf_for_test(INDEX_ID, VectorEncoding::F32, DIMS, &centroids, &vectors);
+
+    let health = store
+        .admin_vector_partition_health(router(), INDEX_ID)
+        .expect("health");
+    assert_eq!(health.nlist, 3);
+    assert_eq!(
+        health.partitions_examined, 2,
+        "empty partition 2 materializes no head"
+    );
+    assert_eq!(health.live_rows, 4);
+    assert_eq!(
+        health.max_partition_live_rows, 3,
+        "skew peak is the 3-row partition"
+    );
+    assert!(
+        health.page_count >= 2,
+        "at least one page per non-empty partition"
+    );
+}
+
+#[test]
+fn partition_health_unknown_index_errors() {
+    let store = fresh_store();
+    assert_eq!(
+        store
+            .admin_vector_partition_health(router(), 999)
+            .unwrap_err(),
+        VectorIndexError::UnknownIndex
+    );
 }

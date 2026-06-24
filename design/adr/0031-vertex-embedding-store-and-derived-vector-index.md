@@ -84,11 +84,14 @@ Last revised: 2026-06-24
 > exact-scan suite (dims 128/384/768 × top_k 10/100) establishes the Slice 6 baseline.
 >
 > `nprobe` partition pruning landed in Slice 6 (below). Production IVF centroid training + shadow
-> rebuild + dual-write landed in Slice 7 (below). Candidate pagination, query ranking/merge,
-> per-index/per-embedding fan-out, GQL vector-search syntax, k-means/balanced assignment, and
-> `VectorSubject::Edge` remain Slice 8+. This ADR fixes ownership, consistency, the standard
-> `ivf_flat` vector-index kind, and the first derived vector-index stable-memory shape before the GQL
-> query operator is committed.
+> rebuild + dual-write landed in Slice 7 (below). Bounded `ivf_flat` training quality landed in Slice
+> 8 (below): it replaced the Slice 7 "first distinct samples become centroids" MVP with bounded,
+> deterministic k-means-lite over a bounded candidate pool and added a head-only partition-health
+> summary without changing the public search API. Candidate pagination, query ranking/merge,
+> per-index/per-embedding fan-out, GQL vector-search syntax, full/balanced k-means, tombstone-ratio
+> health, PQ/HNSW, and `VectorSubject::Edge` remain Slice 9+.
+> This ADR fixes ownership, consistency, the standard `ivf_flat` vector-index kind, and the first
+> derived vector-index stable-memory shape before the GQL query operator is committed.
 >
 > **Slice 6 (implemented): `ivf_flat` partition-page read path.** Slice 6 lands the first real
 > `ivf_flat` read path beyond the exact scan. It adds **one stable region**, `VECTOR_ID_TO_SUBJECT`
@@ -144,9 +147,29 @@ Last revised: 2026-06-24
 > delta-replay are rejected: quiesce blocks normal graph writes during training, and delta-replay
 > reintroduces a watermark/clock reconciliation surface after Slice 4 already established
 > incarnation-ordered mutation delivery. Slice 7 trains centroids by **sampling distinct live
-> vectors** with nearest-centroid assignment; production-quality k-means/balanced assignment,
-> partition tombstone-cleanup thresholds, a heap centroid cache, GQL vector syntax,
-> `VectorSubject::Edge`, and distributed fan-out remain Slice 8+ follow-ups.
+> vectors** with nearest-centroid assignment. Slice 8 (below) improves centroid quality with bounded
+> k-means-lite over that bounded sample and adds partition health/status signals. Full/balanced
+> k-means, partition tombstone-cleanup automation, a heap centroid cache, GQL vector syntax,
+> `VectorSubject::Edge`, and distributed fan-out remain Slice 9+ follow-ups.
+>
+> **Slice 8 (implemented): bounded training quality + head-only partition health.** Slice 8 inserts a
+> deterministic `Training` phase between `Sampling` and `Building` in the existing rebuild lifecycle
+> (`Idle` → `Sampling` → `Training` → `Building` → `ReadyToPublish` → `Cleaning` → `Idle`) and adds **no
+> new stable region** — the `Training` variant reuses `VECTOR_REBUILD_STATE`. `Sampling` now collects a
+> *bounded distinct candidate pool* (typically more than `nlist`) instead of stopping at the first
+> `nlist` distinct vectors; `Training` runs k-means-lite over that pool, one iteration per
+> `admin_vector_rebuild_step` (assign to nearest centroid, recompute per-cluster means, empty cluster
+> keeps its previous centroid), for at most `MAX_REBUILD_TRAINING_ITERATIONS`, then writes exactly
+> `nlist` centroids and enters `Building`. Both axes stay bounded: per-message work is capped so
+> `candidate_count * nlist * dims <= MAX_REBUILD_TRAINING_DISTANCE_OPS`, and the durable rebuild state
+> (`candidates + centroids`) is capped by `MAX_REBUILD_STATE_BYTES`, the **Candid-encoded** `to_bytes()`
+> length (with `MAX_REBUILD_STATE_OVERHEAD_BYTES` reserved); the `Sampling → Training` transition
+> re-checks the encoded length and fails closed with `InvalidRebuildParams` (never traps).
+> Mutations during `Training` are active-only and shadowed later by `Building`; publish, dual-write,
+> `Cleaning`, `Aborting`, and the search wire are unchanged. A new Router-guarded query
+> `admin_vector_partition_health(index_id)` returns an integer-only, head-only
+> `VectorPartitionHealthSummary { nlist, partitions_examined, live_rows, page_count,
+> max_partition_live_rows }` (O(nlist), no page scan); tombstone-ratio health is deferred to Slice 9+.
 
 ## Context
 
@@ -407,8 +430,9 @@ Required IC implementation gates:
   not the Slice 6 test/bench-only seeded fixture shortcut;
 - balanced partition assignment is required before `ivf_flat` is considered production-optimized, not
   an optional optimization;
-- partition maintenance tracks `live_len`, `page_count`, and tombstone ratio so cleanup/rebuild can
-  be queued before dead slots dominate read cost;
+- partition maintenance starts with head-only skew visibility (`live_len`, `page_count`) before adding
+  page-scanned or persisted tombstone accounting; tombstone ratio is a cleanup/maintenance follow-up,
+  not a Slice 8 training-quality prerequisite;
 - any future page/read/instruction budget that can stop a scan early must surface an explicit
   partial/cursor/error contract; Slice 6 intentionally has no silent mid-scan truncation; and
 - `flat` baseline canbench results must be kept so `ivf_flat` recall, latency, and cycle costs are
@@ -438,15 +462,16 @@ VECTOR_REBUILD_STATE[index_id] ->
 Execution flow:
 
 1. `admin_start_vector_rebuild(index_id, nlist, sample_limit)` is **O(1)**: it validates params
-   (`2 <= nlist <= MAX_NLIST`, `nlist <= sample_limit <= MAX_REBUILD_SAMPLE_LIMIT`,
-   `nlist * stride_bytes <= MAX_REBUILD_CANDIDATE_BYTES` so the durable `Sampling.candidates` cannot
-   grow oversized for large-`dims` indexes, `F32`/`L2Squared`, `Idle`) and records `Sampling` with a
+   (`2 <= nlist <= MAX_NLIST`, `nlist <= sample_limit <= MAX_REBUILD_SAMPLE_LIMIT`, the combined-state
+   and op-budget envelope described in §7.2 so the durable rebuild state cannot grow oversized for
+   large-`dims` indexes, `F32`/`L2Squared`, `Idle`) and records `Sampling` with a
    shadow `target_index_version` greater than `active_index_version`. It does not scan subjects or
    write centroids.
-2. Bounded `admin_vector_rebuild_step(index_id, max_subjects)` drives `Sampling` (collect exactly
-   `nlist` distinct centroid candidates, then write the target centroids) and then `Building` (read
-   each live subject's current bytes, assign to its nearest target centroid, and append rows into the
-   shadow version only), reaching `ReadyToPublish`. Each step is bounded on both axes — the caller's
+2. Bounded `admin_vector_rebuild_step(index_id, max_subjects)` drives `Sampling` (collect a bounded
+   distinct candidate pool), then `Training` (deterministic k-means-lite over that pool; see §7.2),
+   which writes the target centroids and enters `Building` (read each live subject's current bytes,
+   assign to its nearest target centroid, and append rows into the shadow version only), reaching
+   `ReadyToPublish`. Each step is bounded on both axes — the caller's
    `max_subjects` is clamped to `1..=MAX_REBUILD_STEP_WORK` (row count) and the step also breaks once
    the transient vector bytes it buffers on the heap reach `MAX_REBUILD_STEP_VECTOR_BYTES` (since
    `stride_bytes` scales with `dims`), always buffering at least one vector to guarantee progress — so
@@ -465,8 +490,8 @@ Execution flow:
    teardown (collapse `shadow_slot → slot`, repoint the reverse locator, drop the old version's
    pages/heads/centroids) back to `Idle`, and the bounded `Aborting` teardown after an abort.
    `max_work` is clamped to `1..=MAX_REBUILD_STEP_WORK` like the rebuild step.
-6. `admin_abort_vector_rebuild(index_id)` returns straight to `Idle` from `Sampling`/`Failed` (nothing
-   persisted) or enters bounded `Aborting` from `Building`/`ReadyToPublish`, keeping the active version
+6. `admin_abort_vector_rebuild(index_id)` returns straight to `Idle` from `Sampling`/`Training`/`Failed`
+   (nothing persisted) or enters bounded `Aborting` from `Building`/`ReadyToPublish`, keeping the active version
    unchanged and dropping the shadow version's pages so it is unreachable from search.
 
 The required tests are:
@@ -479,6 +504,74 @@ The required tests are:
 - publish switches search to the target version only after completeness checks;
 - `nprobe = nlist` after publish matches the exact subject-map scan; and
 - mutation write cost during rebuild is measured separately from normal mutation cost.
+
+### 7.2 Slice 8 training-quality contract (implemented)
+
+Slice 8 keeps the Slice 7 ownership and consistency model: graph shards remain authoritative for
+embeddings, the vector index canister owns IVF internals, Router drives admin orchestration, and
+publish remains a metadata-only `active_index_version` flip once the shadow version is complete. The
+public search request stays algorithm-neutral; Slice 8 does not add public `nprobe`, silent
+truncation, or partial-result semantics. No new stable region is added (the `Training` variant reuses
+the existing `VECTOR_REBUILD_STATE` region).
+
+The Slice 8 change improves `ivf_flat` centroid quality without introducing an unbounded training
+job. Slice 7's training MVP used the first `nlist` distinct live sample vectors as centroids; Slice 8
+replaces that with bounded, deterministic k-means-lite over a bounded candidate pool:
+
+```text
+VECTOR_REBUILD_STATE[index_id] ->
+  Idle
+  | Sampling { target_index_version, nlist, sample_limit, subject_cursor, candidates }
+  | Training { target_index_version, nlist, sample_limit, iteration, candidates, centroids }
+  | Building { target_index_version, nlist, subject_cursor }
+  | ReadyToPublish { target_index_version, nlist }
+  | Cleaning { old_index_version, old_nlist, subject_cursor, page_cursor }
+  | Aborting { target_index_version, target_nlist, subject_cursor, page_cursor }
+  | Failed { target_index_version, reason }
+```
+
+Invariants:
+
+1. `admin_start_vector_rebuild` remains **O(1)**. It validates the bounded parameter envelope —
+   `2 <= nlist <= MAX_NLIST`, `nlist <= sample_limit <= MAX_REBUILD_SAMPLE_LIMIT`, the combined-state
+   bound `2 * nlist * stride_bytes + MAX_REBUILD_STATE_OVERHEAD_BYTES <= MAX_REBUILD_STATE_BYTES`, and
+   the per-iteration op bound `nlist^2 * dims <= MAX_REBUILD_TRAINING_DISTANCE_OPS` — and enters
+   `Sampling`; it does not scan subjects, train centroids, or write pages.
+2. `Sampling` accumulates a **bounded distinct candidate pool** (typically more than `nlist`), capped
+   by the smaller of the combined-state byte budget (`MAX_REBUILD_STATE_BYTES` reserving the centroids
+   and `MAX_REBUILD_STATE_OVERHEAD_BYTES`) and the distance-op count
+   (`MAX_REBUILD_TRAINING_DISTANCE_OPS / (nlist * dims)`). If the live range or `sample_limit` exhausts
+   with fewer than `nlist` distinct candidates, the rebuild enters `Failed`. `MAX_REBUILD_STATE_BYTES`
+   is the **Candid-encoded** cap on the whole rebuild-state value; before persisting the
+   `Sampling → Training` transition the canister re-checks the encoded length and fails closed with
+   `InvalidRebuildParams` (never `assert!`/trap) if it would exceed the cap.
+3. `Training` runs deterministic k-means-lite only over the bounded candidate pool: exactly one
+   iteration per `admin_vector_rebuild_step` (assign each candidate to its nearest current centroid,
+   recompute centroids as the per-cluster mean), bounded so `candidate_count * nlist * dims <=
+   MAX_REBUILD_TRAINING_DISTANCE_OPS` with transient `O(nlist * dims)` sums/counts. It runs at most
+   `MAX_REBUILD_TRAINING_ITERATIONS` iterations, keeps exactly `nlist` dimension-valid centroids (an
+   empty cluster keeps its previous centroid), and never scans the full subject map.
+4. Once `Training` finishes, it writes exactly `nlist` target centroids and transitions to the
+   existing Slice 7 `Building` phase. `Building`, dual-write, O(1) publish, `Cleaning`, and `Aborting`
+   preserve the Slice 7 semantics. A mutation during `Training` is active-only and is later shadowed
+   when `Building` walks every live subject.
+5. Slice 8 exposes a **head-only** partition-health summary for admin visibility via the
+   Router-guarded query `admin_vector_partition_health(index_id)`, scanning the active version's
+   `PartitionHead` records bounded by `nlist <= MAX_NLIST`: `VectorPartitionHealthSummary { nlist,
+   partitions_examined, live_rows, page_count, max_partition_live_rows }`. The wire is integer-only;
+   callers derive average live rows and skew ratio from raw counts. Slice 8 does **not** report
+   `tombstoned_rows`, `total_rows`, or tombstone ratio, because those require either a bounded page
+   scan or persisted counters. Tombstone accounting is deferred to the cleanup/maintenance slice.
+   These signals are derived index health metadata, not canonical embedding state.
+6. Search remains exact over the selected partitions. Any future page/read/instruction budget that can
+   stop a scan early still requires an explicit partial/cursor/error contract; Slice 8 adds no
+   silent mid-scan truncation.
+
+Slice 8 test coverage proves deterministic training, bounded sampling/training (combined-state and
+op-budget rejection, encoded-state bound, trap-free boundary), parity with the exact subject-map scan
+at `nprobe = nlist`, unchanged dual-write/publish semantics, and observable partition-health output.
+Canbench compares Slice 7 sampled-centroid rebuild/search behavior
+against Slice 8 k-means-lite rebuild/search behavior on clustered datasets.
 
 ### 8. Query syntax stays semantic; algorithm choice belongs to index definition
 
@@ -591,11 +684,19 @@ future ADR proves that physical index selection must be user-visible.
     centroids, nearest-centroid partition assignment, O(1) completeness, and atomic
     `active_index_version` publish via the two-slot `SubjectMapEntry` (`shadow_slot` +
     `current_slot_for`).
-12. **[planned, slice 8+]** Add balanced/k-means assignment, partition tombstone cleanup thresholds,
-    centroid cache warmup, and explicit cache-miss behavior.
-13. **[planned, slice 8+]** Add algorithm-neutral GQL/query planning integration and keep
+12. **[done, slice 8]** Add bounded k-means-lite training over a bounded candidate pool: introduce the
+    `Training` rebuild phase, deterministic centroid refinement, scalar training status, per-message
+    op-budget and Candid-encoded combined-state caps, and canbench comparisons against the Slice 7
+    sampled-centroid baseline.
+13. **[done, slice 8]** Add the head-only, integer-only partition-health query
+    `admin_vector_partition_health` for `ivf_flat` (`nlist`, `partitions_examined`, `live_rows`,
+    `page_count`, `max_partition_live_rows`) without making it canonical embedding state; tombstone
+    accounting is deferred because it needs a page scan or persisted counters.
+14. **[planned, slice 9+]** Add full/balanced k-means or more advanced partition assignment,
+    partition tombstone cleanup automation, centroid cache warmup, and explicit cache-miss behavior.
+15. **[planned, slice 9+]** Add algorithm-neutral GQL/query planning integration and keep
     `algorithm: "ivf_flat"` in index definition/config, not query syntax.
-14. **[ongoing]** Keep canbench baselines for embedding write, flush, backfill, exact scan,
+16. **[ongoing]** Keep canbench baselines for embedding write, flush, backfill, exact scan,
     partitioned `ivf_flat`, rebuild/training, and future centroid warmup.
 
 ## Required design updates

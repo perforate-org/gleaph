@@ -7,7 +7,8 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
-    VectorEmbeddingSyncOp, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
+    VectorEmbeddingSyncOp, VectorPartitionHealthSummary, VectorRebuildStatus, VectorSearchRequest,
+    VectorSearchResult,
 };
 use ic_cdk::api::msg_caller;
 
@@ -93,5 +94,13 @@ pub(crate) fn admin_vector_rebuild_cleanup_step(
 ) -> Result<VectorRebuildStatus, String> {
     VectorIndexStore::new()
         .admin_vector_rebuild_cleanup_step(msg_caller(), index_id, max_work)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_partition_health(
+    index_id: u32,
+) -> Result<VectorPartitionHealthSummary, String> {
+    VectorIndexStore::new()
+        .admin_vector_partition_health(msg_caller(), index_id)
         .map_err(|e| e.to_string())
 }

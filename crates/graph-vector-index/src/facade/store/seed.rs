@@ -13,7 +13,7 @@
 //! assignment is owned by Slice 7 (alongside the dual-write rebuild); tests/bench never mutate a
 //! seeded partitioned index.
 
-use super::search::l2_squared_f32;
+use super::search::{encode_f32, l2_squared_f32};
 use super::{
     DEFAULT_MAX_PAGE_BYTES, FIRST_ALLOCATION, INITIAL_INDEX_VERSION, PAGE_HEADER_BYTES,
     VectorIndexStore,
@@ -29,15 +29,6 @@ use crate::records::{
 use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
 };
-
-/// Encodes `f32` components as contiguous little-endian bytes (mirrors `search::decode_f32`).
-fn encode_f32(vector: &[f32]) -> Vec<u8> {
-    let mut out = Vec::with_capacity(vector.len() * 4);
-    for v in vector {
-        out.extend_from_slice(&v.to_le_bytes());
-    }
-    out
-}
 
 /// Index of the centroid nearest to `vector` (the assigned partition id).
 fn nearest_partition(centroids: &[Vec<f32>], vector: &[f32]) -> u32 {

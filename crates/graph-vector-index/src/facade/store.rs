@@ -61,11 +61,31 @@ pub(crate) const MAX_REBUILD_STEP_WORK: u32 = 20_000;
 /// when a single vector exceeds the budget).
 pub(crate) const MAX_REBUILD_STEP_VECTOR_BYTES: u64 = 8 * 1024 * 1024;
 
-/// Upper bound on the durable `Sampling.candidates` byte size (`nlist * stride_bytes`), enforced at
-/// `admin_start_vector_rebuild` (ADR 0031 Slice 7). `MAX_NLIST` alone does not bound the candidate
-/// bytes because `stride_bytes` scales with `dims`; this caps the worst-case `VectorRebuildStateRecord`
-/// size so a router-guarded (but malformed) start cannot create an oversized stable value.
-pub(crate) const MAX_REBUILD_CANDIDATE_BYTES: u32 = 8 * 1024 * 1024;
+/// Upper bound on the Candid-encoded `VectorRebuildStateRecord` value, i.e. the combined durable
+/// rebuild-state envelope (ADR 0031 Slice 7/8). This is an encoded `to_bytes().len()` cap (it
+/// accounts for enum/vec-length/nested-vec overhead), not a raw-vector-bytes cap. The `Training`
+/// value holds both the candidate pool and the trained centroids, so the candidate pool is sized to
+/// reserve `nlist * stride_bytes` (centroids) plus [`MAX_REBUILD_STATE_OVERHEAD_BYTES`] inside this
+/// envelope; the sampling->`Training` transition additionally re-checks the encoded length and
+/// fails closed (`InvalidRebuildParams`) rather than trapping if it would exceed the cap.
+pub(crate) const MAX_REBUILD_STATE_BYTES: u64 = 8 * 1024 * 1024;
+
+/// Conservative reserve subtracted from [`MAX_REBUILD_STATE_BYTES`] when sizing the candidate pool,
+/// absorbing the Candid enum tag / vec-length / nested-vec encoding overhead so the encoded
+/// `Training` value stays within the envelope at the boundary (ADR 0031 Slice 8).
+pub(crate) const MAX_REBUILD_STATE_OVERHEAD_BYTES: u64 = 64 * 1024;
+
+/// Maximum k-means-lite iterations a `Training` phase performs before writing centroids and
+/// transitioning to `Building` (ADR 0031 Slice 8). Each iteration is one bounded `*_step` message.
+pub(crate) const MAX_REBUILD_TRAINING_ITERATIONS: u32 = 8;
+
+/// Per-iteration distance-op ceiling for `Training`: the candidate pool is sized so one full
+/// k-means-lite iteration's `candidate_count * nlist * dims` distance computations never exceed this
+/// budget (ADR 0031 Slice 8). Chosen large enough that any `nlist`/`dims` admitted by
+/// [`MAX_REBUILD_STATE_BYTES`] can still sample `>= nlist` candidates (so the op check is a
+/// defensive feasibility guard the state cap normally subsumes), yet small enough that one iteration
+/// stays within the per-message instruction budget.
+pub(crate) const MAX_REBUILD_TRAINING_DISTANCE_OPS: u64 = 1_100_000_000;
 
 /// Stateless facade over vector-index stable structures initialized in [`super::stable`].
 #[derive(Clone, Copy, Debug, Default)]

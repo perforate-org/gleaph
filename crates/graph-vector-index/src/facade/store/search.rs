@@ -65,6 +65,16 @@ pub(super) fn decode_f32(bytes: &[u8]) -> Vec<f32> {
         .collect()
 }
 
+/// Encodes `f32` components as contiguous little-endian bytes (inverse of [`decode_f32`]). Used by
+/// the Slice 8 `Training` phase to persist refined centroids and by the test/bench seed helpers.
+pub(super) fn encode_f32(vector: &[f32]) -> Vec<u8> {
+    let mut out = Vec::with_capacity(vector.len() * 4);
+    for v in vector {
+        out.extend_from_slice(&v.to_le_bytes());
+    }
+    out
+}
+
 /// One scored candidate. Ordered by `(distance, subject)` with `f32::total_cmp` so a max-heap evicts
 /// the farthest (then largest-subject) candidate first, keeping the `top_k` nearest with a
 /// deterministic tie-break.

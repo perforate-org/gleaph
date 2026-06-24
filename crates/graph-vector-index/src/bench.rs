@@ -224,11 +224,37 @@ fn start_into_building(store: &VectorIndexStore, n: u32, nlist: u32) {
     loop {
         let status = store
             .admin_vector_rebuild_step(router(), INDEX_ID, n)
-            .expect("sampling step");
+            .expect("sampling/training step");
         if status.phase == VectorRebuildPhase::Building {
             break;
         }
-        assert_eq!(status.phase, VectorRebuildPhase::Sampling);
+        assert!(
+            matches!(
+                status.phase,
+                VectorRebuildPhase::Sampling | VectorRebuildPhase::Training
+            ),
+            "unexpected phase before Building: {:?}",
+            status.phase
+        );
+    }
+}
+
+/// Advances a freshly-started rebuild into `Training` (iteration 0, candidate pool collected, no
+/// centroids written yet), so a follow-up `Training` step measures one k-means-lite iteration over
+/// the full pool in isolation (ADR 0031 Slice 8).
+fn start_into_training(store: &VectorIndexStore, n: u32, nlist: u32) {
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1)
+        .expect("start");
+    loop {
+        let status = store
+            .admin_vector_rebuild_step(router(), INDEX_ID, n)
+            .expect("sampling step");
+        match status.phase {
+            VectorRebuildPhase::Training => break,
+            VectorRebuildPhase::Sampling => {}
+            other => panic!("unexpected phase before Training: {other:?}"),
+        }
     }
 }
 
@@ -265,6 +291,29 @@ macro_rules! rebuild_full_bench {
 rebuild_full_bench!(bench_rebuild_full_d128_nlist16, 128, 16);
 rebuild_full_bench!(bench_rebuild_full_d384_nlist16, 384, 16);
 rebuild_full_bench!(bench_rebuild_full_d768_nlist64, 768, 64);
+
+macro_rules! training_step_bench {
+    ($name:ident, $dims:expr, $nlist:expr) => {
+        /// Cost of one k-means-lite `Training` iteration over the full candidate pool (ADR 0031
+        /// Slice 8). This is the per-message work the candidate-pool cap bounds.
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            let store = setup_search_store($dims, REBUILD_N);
+            start_into_training(&store, REBUILD_N, $nlist);
+            canbench_rs::bench_fn(|| {
+                let _scope = canbench_rs::bench_scope(stringify!($name));
+                let status = store
+                    .admin_vector_rebuild_step(router(), INDEX_ID, REBUILD_N)
+                    .expect("training step");
+                black_box(status);
+            })
+        }
+    };
+}
+
+training_step_bench!(bench_rebuild_training_step_d128_nlist16, 128, 16);
+training_step_bench!(bench_rebuild_training_step_d384_nlist16, 384, 16);
+training_step_bench!(bench_rebuild_training_step_d768_nlist64, 768, 64);
 
 /// Cost of one `Building` step that shadows all `REBUILD_N` subjects into their nearest partition.
 #[bench(raw)]

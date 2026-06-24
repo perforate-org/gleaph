@@ -27,8 +27,10 @@ use gleaph_graph_kernel::vector_index::{
 /// Slice 7). Derived per-op from the durable rebuild state of `op.index_id`.
 #[derive(Clone, Copy, Debug)]
 enum RebuildMutationMode {
-    /// No rebuild, or a phase with no shadow version yet / no longer (`Idle`/`Sampling`/`Failed`/
-    /// `Aborting`): operate only on the active version via `current_slot_for(active)`.
+    /// No rebuild, or a phase with no shadow version yet / no longer (`Idle`/`Sampling`/`Training`/
+    /// `Failed`/`Aborting`): operate only on the active version via `current_slot_for(active)`.
+    /// Mutations during `Training` are active-only and are later shadowed when `Building` walks every
+    /// live subject (ADR 0031 Slice 8).
     ActiveOnly,
     /// `Building`/`ReadyToPublish`: mirror the live effect into both the active and the shadow
     /// (`target`) version so the shadow stays publish-complete.
@@ -57,6 +59,7 @@ fn rebuild_mutation_mode(index_id: u32) -> RebuildMutationMode {
         VectorRebuildStateRecord::Cleaning { .. } => RebuildMutationMode::Cleaning,
         VectorRebuildStateRecord::Idle
         | VectorRebuildStateRecord::Sampling { .. }
+        | VectorRebuildStateRecord::Training { .. }
         | VectorRebuildStateRecord::Aborting { .. }
         | VectorRebuildStateRecord::Failed { .. } => RebuildMutationMode::ActiveOnly,
     }
