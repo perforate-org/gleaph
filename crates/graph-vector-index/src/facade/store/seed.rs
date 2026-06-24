@@ -97,21 +97,39 @@ impl VectorIndexStore {
             )
         });
 
+        // The def is persisted last (so its allocator reflects the seeded ids), but the slab
+        // `append_row` needs `slots_per_page`/`stride_bytes`, so build it up front and reuse it.
+        let def = VectorIndexDef {
+            kind: VectorIndexKind::IvfFlat,
+            encoding,
+            dims,
+            metric: VectorMetric::L2Squared,
+            nlist,
+            active_index_version: active,
+            stride_bytes,
+            max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
+            slots_per_page,
+            next_vector_id: FIRST_ALLOCATION + vectors.len() as u64,
+        };
+
         // Live slots, assigned to the nearest centroid partition.
         for (subject, vector) in vectors {
             assert_eq!(vector.len(), dims as usize, "vector dims mismatch");
             let partition_id = nearest_partition(centroids, vector);
             let vector_id = next_vector_id;
             next_vector_id += 1;
-            let slot = self.append_slot(
-                index_id,
-                active,
-                partition_id,
-                slots_per_page,
-                vector_id,
-                FIRST_ALLOCATION,
-                encode_f32(vector),
-            );
+            let slot = self
+                .append_slot(
+                    index_id,
+                    active,
+                    partition_id,
+                    &def,
+                    vector_id,
+                    FIRST_ALLOCATION,
+                    *subject,
+                    &encode_f32(vector),
+                )
+                .expect("seed append");
             let id_key = VectorIdKey::new(index_id, vector_id);
             VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.insert(id_key, slot));
             VECTOR_ID_TO_SUBJECT
@@ -131,19 +149,8 @@ impl VectorIndexStore {
             });
         }
 
+        debug_assert_eq!(next_vector_id, def.next_vector_id, "seed allocator drift");
         // Persist the def last so its allocator reflects the seeded ids.
-        let def = VectorIndexDef {
-            kind: VectorIndexKind::IvfFlat,
-            encoding,
-            dims,
-            metric: VectorMetric::L2Squared,
-            nlist,
-            active_index_version: active,
-            stride_bytes,
-            max_page_bytes: DEFAULT_MAX_PAGE_BYTES,
-            slots_per_page,
-            next_vector_id,
-        };
         VECTOR_INDEX_DEFS.with_borrow_mut(|defs| defs.insert(index_id, def));
     }
 }

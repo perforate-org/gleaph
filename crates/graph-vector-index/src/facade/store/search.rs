@@ -7,9 +7,10 @@
 //! - **Exact subject-map scan** (Slice 5): walk every live subject of the index and score its
 //!   current slot. Used when the index is degenerate (`nlist <= 1`) or its centroids are not ready.
 //! - **Partition-page scan** (Slice 6): score `query` against the index's centroids, select the
-//!   `nprobe` nearest partitions, and scan only those partitions' page chains. Each candidate row is
-//!   reverse-mapped to its subject (`VECTOR_ID_TO_SUBJECT`) and re-validated against the subject map
-//!   so tombstoned / superseded / inconsistent rows are never scored.
+//!   `nprobe` nearest partitions, and scan only those partitions' page chains via the slab page
+//!   store (ADR 0032). Each candidate row's subject is rebuilt from the row-local `subject_locator`
+//!   (retiring `VECTOR_ID_TO_SUBJECT` from this hot path) and re-validated against the subject map so
+//!   tombstoned / superseded / inconsistent rows are never scored.
 //!
 //! `nprobe` is the only recall knob: the selected partitions are scanned **in full**, so the result
 //! is the exact top-k over those partitions. There is no mid-scan page/candidate budget that could
@@ -18,18 +19,15 @@
 //! [`SubjectMapEntry`]: crate::records::SubjectMapEntry
 
 use super::VectorIndexStore;
+use crate::facade::stable::page_store::{PageScratch, RowHeader};
 use crate::facade::stable::{
-    IVF_CENTROID_META, IVF_CENTROIDS, VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS, VECTOR_PAGE,
-    VECTOR_SUBJECT_TO_ID,
+    IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_INDEX_DEFS, VECTOR_SUBJECT_TO_ID,
 };
-use crate::records::{
-    PageKey, PartitionKey, SlotRef, SubjectKey, VectorIdKey, VectorIndexDef, VectorPage,
-};
+use crate::records::{PartitionKey, SlotRef, SubjectKey, VectorIndexDef};
 use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_TOP_K, VectorEncoding, VectorIndexError, VectorMetric, VectorSearchHit,
     VectorSearchRequest, VectorSearchResult, VectorSubject,
 };
-use rapidhash::RapidHashMap;
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
 use std::ops::Bound;
@@ -129,37 +127,6 @@ fn finalize(heap: BinaryHeap<Candidate>) -> VectorSearchResult {
         })
         .collect();
     VectorSearchResult { hits }
-}
-
-/// Reads the stored bytes of a live slot, decoding each page at most once per query via `cache`.
-///
-/// Normal mutation keeps the subject map pointing at the current live row, so these checks should
-/// never fire; they cheaply enforce the search contract (tombstoned / old-generation rows are never
-/// scored) and turn any drift in stable state into a skipped inconsistent row rather than a silent
-/// bad hit.
-fn slot_bytes_cached(
-    cache: &mut RapidHashMap<PageKey, VectorPage>,
-    index_id: u32,
-    slot: SlotRef,
-    expected_vector_id: Option<u64>,
-) -> Option<Vec<u8>> {
-    let page_key = PageKey::new(
-        index_id,
-        slot.index_version,
-        slot.partition_id,
-        slot.page_id,
-    );
-    let page = cache.entry(page_key).or_insert_with(|| {
-        VECTOR_PAGE.with_borrow(|pages| pages.get(&page_key).unwrap_or_else(VectorPage::empty))
-    });
-    let row = page.rows.get(slot.slot as usize)?;
-    // A live entry always carries a `vector_id`; a `slot: Some / vector_id: None` row is inconsistent
-    // drift and must be skipped, not scored.
-    let expected_vector_id = expected_vector_id?;
-    if row.tombstoned || row.generation != slot.generation || row.vector_id != expected_vector_id {
-        return None;
-    }
-    Some(row.bytes.clone())
 }
 
 /// Reads centroids `0..nlist` for `(index_id, version)`, returning `None` unless exactly `nlist`
@@ -326,40 +293,49 @@ impl VectorIndexStore {
         active_index_version: u64,
         query: &[f32],
     ) -> VectorSearchResult {
-        let mut cache: RapidHashMap<PageKey, VectorPage> = RapidHashMap::default();
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
 
-        VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-            let lower = SubjectKey::index_lower(req.index_id);
-            for entry in subjects.range((Bound::Included(lower), Bound::Unbounded)) {
-                let key = entry.key();
-                if key.index_id != req.index_id {
-                    break; // index-major order: past this index's prefix.
+        PAGE_STORE.with_borrow(|store| {
+            VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
+                let lower = SubjectKey::index_lower(req.index_id);
+                for entry in subjects.range((Bound::Included(lower), Bound::Unbounded)) {
+                    let key = entry.key();
+                    if key.index_id != req.index_id {
+                        break; // index-major order: past this index's prefix.
+                    }
+                    let value = entry.value();
+                    if value.deleted {
+                        continue;
+                    }
+                    let Some(slot) = value.current_slot_for(active_index_version) else {
+                        continue;
+                    };
+                    // A live entry always carries a `vector_id`; a `slot: Some / vector_id: None` row
+                    // is inconsistent drift and must be skipped, not scored.
+                    let Some(expected_vector_id) = value.vector_id else {
+                        continue;
+                    };
+                    // `read_row_bytes` already rejects tombstoned / stale-generation / out-of-range
+                    // slots; the `vector_id` check closes the remaining drift case.
+                    let Some((header, bytes)) = store.read_row_bytes(req.index_id, slot) else {
+                        continue;
+                    };
+                    if header.vector_id != expected_vector_id {
+                        continue;
+                    }
+                    let distance = l2_squared_f32(query, &decode_f32(&bytes));
+                    push_bounded(
+                        &mut heap,
+                        req.top_k,
+                        Candidate {
+                            distance,
+                            subject: key.subject,
+                            embedding_incarnation: value.embedding_incarnation,
+                            embedding_version: value.stored_embedding_version,
+                        },
+                    );
                 }
-                let value = entry.value();
-                if value.deleted {
-                    continue;
-                }
-                let Some(slot) = value.current_slot_for(active_index_version) else {
-                    continue;
-                };
-                let Some(bytes) =
-                    slot_bytes_cached(&mut cache, req.index_id, slot, value.vector_id)
-                else {
-                    continue;
-                };
-                let distance = l2_squared_f32(query, &decode_f32(&bytes));
-                push_bounded(
-                    &mut heap,
-                    req.top_k,
-                    Candidate {
-                        distance,
-                        subject: key.subject,
-                        embedding_incarnation: value.embedding_incarnation,
-                        embedding_version: value.stored_embedding_version,
-                    },
-                );
-            }
+            });
         });
 
         finalize(heap)
@@ -382,76 +358,52 @@ impl VectorIndexStore {
         let active = def.active_index_version;
         let selected = select_partitions(&centroids, query, tuning.nprobe);
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+        let mut scratch = PageScratch::new();
 
-        VECTOR_PAGE.with_borrow(|pages| {
+        PAGE_STORE.with_borrow(|store| {
             for partition_id in selected {
-                let lower = PageKey::new(req.index_id, active, partition_id, 0);
-                for page_entry in pages.range((Bound::Included(lower), Bound::Unbounded)) {
-                    let page_key = page_entry.key();
-                    if page_key.index_id != req.index_id
-                        || page_key.index_version != active
-                        || page_key.partition_id != partition_id
-                    {
-                        break; // partition-major order: past this partition's pages.
-                    }
-                    let page = page_entry.value();
-                    for (slot_idx, row) in page.rows.iter().enumerate() {
-                        if row.tombstoned {
-                            continue;
+                store.visit_partition_pages(
+                    req.index_id,
+                    active,
+                    partition_id,
+                    &mut scratch,
+                    |slot, header, bytes| {
+                        if let Some(candidate) =
+                            self.fresh_row_candidate(req.index_id, slot, header, query, bytes)
+                        {
+                            push_bounded(&mut heap, req.top_k, candidate);
                         }
-                        let Some(candidate) = self.fresh_row_candidate(
-                            req.index_id,
-                            page_key,
-                            slot_idx as u32,
-                            row.vector_id,
-                            row.generation,
-                            query,
-                            &row.bytes,
-                        ) else {
-                            continue;
-                        };
-                        push_bounded(&mut heap, req.top_k, candidate);
-                    }
-                }
+                    },
+                );
             }
         });
 
         finalize(heap)
     }
 
-    /// Re-validates a page row against the subject map and, if it is the subject's current live slot,
-    /// returns a scored candidate. Returns `None` for any reverse-map miss, deleted/mismatched
-    /// subject entry, or slot drift — the freshness contract shared with the exact scan.
-    #[allow(clippy::too_many_arguments)]
+    /// Re-validates a visited page row against the subject map and, if it is the subject's current
+    /// live slot, returns a scored candidate. The subject is rebuilt from the row-local
+    /// `subject_locator` (no `VECTOR_ID_TO_SUBJECT` read); `VECTOR_SUBJECT_TO_ID` remains the
+    /// freshness source of truth. Returns `None` for any missing/deleted/mismatched subject entry or
+    /// slot drift — the freshness contract shared with the exact scan.
     fn fresh_row_candidate(
         &self,
         index_id: u32,
-        page_key: &PageKey,
-        slot_idx: u32,
-        vector_id: u64,
-        generation: u64,
+        slot: SlotRef,
+        header: &RowHeader,
         query: &[f32],
         bytes: &[u8],
     ) -> Option<Candidate> {
-        let subject = VECTOR_ID_TO_SUBJECT
-            .with_borrow(|m| m.get(&VectorIdKey::new(index_id, vector_id)))?
-            .0;
+        let subject = header.subject();
         let entry =
             VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(&SubjectKey::new(index_id, subject)))?;
-        if entry.deleted || entry.vector_id != Some(vector_id) {
+        if entry.deleted || entry.vector_id != Some(header.vector_id) {
             return None;
         }
-        let expected = SlotRef {
-            index_version: page_key.index_version,
-            partition_id: page_key.partition_id,
-            page_id: page_key.page_id,
-            slot: slot_idx,
-            generation,
-        };
         // Pages are scanned at the active version, so the subject's live slot for that version
         // (active `slot`, or `shadow_slot` once an atomic publish flips active onto the rebuilt one)
         // must point at exactly this row (ADR 0031 Slice 7).
-        if entry.current_slot_for(page_key.index_version) != Some(expected) {
+        if entry.current_slot_for(slot.index_version) != Some(slot) {
             return None;
         }
         let distance = l2_squared_f32(query, &decode_f32(bytes));

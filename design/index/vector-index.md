@@ -85,13 +85,22 @@ and `Building` that refines the centroids (Slice 7 used the first `nlist` distin
 plus a head-only **partition-health** summary for skew visibility. No new stable region. See *Slice 8
 training quality + partition health (implemented)* below.
 
-[ADR 0032](../adr/0032-vector-index-slab-page-store.md) is accepted as a **planned physical-layout
-replacement** for vector pages: the current `VECTOR_PAGE` large value store will be replaced by a
-vector-index-owned page-metadata directory plus a raw stable row slab. The development page
-representation has no deployed runtime state to preserve, so ADR 0032 requires no old-page
-migration, compatibility reader, or canonical backfill/rebuild step for this layout change. ADR 0032
-preserves the ADR 0031 freshness contract: `VECTOR_SUBJECT_TO_ID` remains the
-live-clock/source-of-truth row, while row-local subject locators are derived scan acceleration.
+[ADR 0032](../adr/0032-vector-index-slab-page-store.md) replaces the `VECTOR_PAGE` large-value page
+store with a vector-index-owned composite slab page store: a `VECTOR_PAGE_META` directory (MemoryId
+10) of per-page `{ slab_offset, capacity, row_count, live_count, row_stride, tombstone_count }` plus a
+raw `VECTOR_ROW_SLAB` region (MemoryId 13) holding structure-of-arrays row bytes
+(`vector_id`/`generation`/`subject_locator`/`tombstone_bits`/`vector_bytes`) behind a magic/version
+header. The two regions form one composite store (`PAGE_STORE`) that opens together and fails closed
+on a partial layout, with a valid empty-initialized store treated as a normal reopen. The development
+page representation has no deployed runtime state, so this is a fresh layout cutover with no old-page
+migration, compatibility reader, or canonical backfill/rebuild step. Append is fallible (slab `grow`
+can fail) and write-then-commit ordered; row tombstoning owns the page-meta and `PartitionHead`
+`live_len` accounting; page cleanup deletes `VECTOR_PAGE_META` entries only (no slab tail rewind in
+this slice — dropped bytes are leaked dead space). ADR 0032 preserves the ADR 0031 freshness
+contract: `VECTOR_SUBJECT_TO_ID` remains the live-clock/source-of-truth row, while the row-local
+`subject_locator` is derived scan acceleration that retires `VECTOR_ID_TO_SUBJECT` from the
+partition-scan hot path (the region is retained; the search path re-validates each candidate against
+`VECTOR_SUBJECT_TO_ID.current_slot_for(active)`).
 
 Still deferred to Slice 9+: tombstone-ratio / total-row partition health (needs a page scan or new
 persisted counters), full/balanced k-means and k-means++ init, partition tombstone-cleanup
@@ -401,21 +410,22 @@ VECTOR_ID_TO_SLOT[(index_id, vector_id)] -> SlotRef { version, partition_id, pag
 VECTOR_SUBJECT_TO_ID[(index_id, subject)] -> { vector_id, generation }
 ```
 
-Each page is both a storage unit and a scoring unit:
+Each page is both a storage unit and a scoring unit. Per [ADR 0032](../adr/0032-vector-index-slab-page-store.md)
+a page is a `VECTOR_PAGE_META` directory entry over a fixed-stride span of the raw `VECTOR_ROW_SLAB`,
+laid out structure-of-arrays so the vector bytes form one contiguous scan unit, separated from the
+per-row metadata tables:
 
 ```text
-VECTOR_PAGE[(index_id, version, partition_id, page_id)] ->
-  header {
-    encoding,
-    dims,
-    stride_bytes,
-    len,
-    live_len,
-    tombstone_bitmap,
-    next_page,
-  }
-  slot_table [vector_id, generation, flags]
-  vector_bytes [slot0][slot1]...[slotN]
+VECTOR_PAGE_META[(index_id, version, partition_id, page_id)] ->
+  { slab_offset, capacity, row_count, live_count, row_stride, tombstone_count }
+
+VECTOR_ROW_SLAB @ slab_offset ->
+  page header { page_magic, capacity, row_stride }
+  vector_id       [u64; capacity]
+  generation      [u64; capacity]
+  subject_locator [(shard_id, vertex_id); capacity]
+  tombstone_bits  [ceil(capacity / 8)]
+  vector_bytes    [capacity * row_stride]
 ```
 
 The first derived store supports `F32` only. The structure is still encoding-aware: different
@@ -423,8 +433,9 @@ dimensions or encodings use different indexes or physical page families, mirrori
 pattern where owner metadata fixes the byte width before reading. Vector ids are not reused in the
 first implementation; deletes set tombstone bits so stale slot references remain safe until cleanup.
 
-Updates append a new slot and tombstone the old slot. Search reads selected pages into heap buffers
-and performs SIMD exact scoring over page-local contiguous vector bytes.
+Updates append a new slot and tombstone the old slot. Search reads a selected page's slab span into
+a reused heap scratch buffer and performs SIMD exact scoring over the contiguous `vector_bytes`
+table.
 
 ### IVF stable layout
 
@@ -438,7 +449,9 @@ IVF_CENTROIDS[(index_id, version, partition_id)] -> centroid vector
 IVF_CENTROID_META[index_id] -> { active_version, dims, nlist, encoding, metric, centroid_epoch }
 IVF_PARTITION_HEADS[(index_id, version, partition_id)] ->
   { first_page, mutable_page, page_count, live_len }
-VECTOR_PAGE[(index_id, version, partition_id, page_id)] -> fixed-width vector page
+VECTOR_PAGE_META[(index_id, version, partition_id, page_id)] ->
+  { slab_offset, capacity, row_count, live_count, row_stride, tombstone_count }
+VECTOR_ROW_SLAB -> raw structure-of-arrays row bytes addressed by VECTOR_PAGE_META.slab_offset
 ```
 
 The search path scores the query against the heap centroid cache, reads a bounded number of

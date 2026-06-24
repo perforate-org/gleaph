@@ -1,15 +1,17 @@
 # 0032. Vector index slab page store
 
 Date: 2026-06-24
-Status: accepted (planned)
+Status: implemented
 Last revised: 2026-06-24
 
-> **Status note:** This ADR is accepted as the next physical-storage decision under
-> [ADR 0031](0031-vertex-embedding-store-and-derived-vector-index.md). It is not implemented as of
-> `2026-06-24 15:21:44 UTC +0000`. The existing development `VECTOR_PAGE` representation has no
-> deployed runtime state to preserve. The implementation must not include an old-page migration,
-> compatibility reader, or canonical backfill/rebuild step for this layout change; it should define
-> the new `VECTOR_INDEX_STABLE_LAYOUT` directly.
+> **Status note:** Implemented as of `2026-06-24 16:13:21 UTC +0000`. The composite slab page store
+> (`VECTOR_PAGE_META` MemoryId 10 + raw `VECTOR_ROW_SLAB` MemoryId 13, opened together with
+> fail-closed reopen validation) replaces the former `VECTOR_PAGE` large-value store, encapsulated
+> behind `VectorSlabStore` in `crates/graph-vector-index/src/facade/stable/page_store.rs`. No
+> old-page migration, compatibility reader, or canonical backfill/rebuild step was added; the new
+> `VECTOR_INDEX_STABLE_LAYOUT` is defined directly (14 regions, 0–13). Benchmarks (`canbench`) show
+> 30–95% instruction reductions across search / upsert / rebuild paths versus the prior Candid page
+> layout; see `crates/graph-vector-index/canbench_results.yml`.
 
 ## Context
 
@@ -266,20 +268,45 @@ The physical layout is encapsulated by a `VectorSlabStore`-style API inside `gra
 
 ```text
 append_row(index_id, index_version, partition_id, def, vector_id, generation, subject, bytes)
-  -> SlotRef
+  -> Result<SlotRef, VectorIndexError>
 
 tombstone_row(index_id, slot) -> bool
 
 read_row_bytes(index_id, slot, out) -> Option<RowHeader>
 
-visit_partition_rows(index_id, index_version, partition_id, visitor)
+visit_partition_pages(index_id, index_version, partition_id, scratch, visitor)
 
-drop_version_pages(index_id, index_version, nlist, budget) -> DropProgress
+drop_version_pages(index_id, index_version, cursor, budget) -> DropProgress
 ```
 
 Callers must not read or write slab offsets directly. `append_slot`, `tombstone_slot`,
 `read_slot_bytes`, partition-page search, rebuild `Building`, `Cleaning`, and `Aborting` all go
 through this API.
+
+`append_row` is fallible: the slab can fail to `grow`, so it returns `Result` and maps `GrowFailed`
+to a `VectorIndexError`. Its mutation order is write-then-commit — grow + write the row tables and
+vector bytes (and a fresh page header) first, then bump `occupied_tail`, then insert/update
+`VECTOR_PAGE_META`, and update `VECTOR_PARTITION_HEADS` (including `live_len`) last — so a failed
+grow/write can never leave a head or page-meta pointing at unwritten bytes. If a trap occurs between
+the `occupied_tail` bump and the directory writes, the surplus slab bytes are acceptable leaked dead
+space (see *Allocation and cleanup*).
+
+Because `append_row` is fallible, dual-write callers (`vector_upsert` during `Building`) make both
+appends — active then shadow — before any `tombstone_row`, `VECTOR_ID_TO_SLOT`, or
+`VECTOR_SUBJECT_TO_ID` commit. If the shadow append fails, the caller tombstones the already-appended
+active row before returning the error, so the residual is a tombstoned dead row (page-meta and
+`PartitionHead.live_len` accounting restored) rather than a live-counted orphan, and the subject
+clock / id map stay pointing at the prior valid slot.
+
+`tombstone_row` owns all live/tombstone accounting idempotently: on the live→tombstoned transition it
+sets the bit and adjusts `VectorPageMeta.live_count`/`tombstone_count` and the row's
+`VECTOR_PARTITION_HEADS.live_len` exactly once; an already-tombstoned row is a no-op.
+
+`visit_partition_pages` is a page/batch visitor (not a row-by-row `Vec<u8>` yield): it bulk-reads each
+page's fixed-width tables (`vector_id`, `generation`, `subject_locator`, `tombstone_bits`,
+`vector_bytes`) once into reusable `scratch` buffers and invokes the visitor per live slot with a
+zero-copy slice into the contiguous `vector_bytes` table, preserving the structure-of-arrays scan
+benefit.
 
 ### Freshness and consistency
 
@@ -306,9 +333,13 @@ Rationale:
 - Best-fit free-span allocation would add metadata and search cost before there is evidence it is
   needed.
 
-Page cleanup deletes `VECTOR_PAGE_META` entries for an old or aborted version. Slab byte reclamation
-is limited to simple tail rewind when the removed pages form the current tail. General free-span
-reuse is deferred until benchmarks show stable-memory growth or rebuild churn requires it.
+Page cleanup deletes `VECTOR_PAGE_META` entries for an old or aborted version. In this first slice
+there is **no slab tail rewind**: `PageKey` order is not guaranteed to match slab-tail order across
+partitions, so a "removed page is the current tail" check is either unsafe or unbounded. Dropped
+pages leave their slab bytes in place as dead space, and `occupied_tail` is unchanged. Reopen
+validation therefore explicitly allows `occupied_tail` to exceed the highest referenced page-meta
+end. General free-span reuse and slab compaction are deferred until benchmarks show stable-memory
+growth or rebuild churn requires it.
 
 ## Invariants
 
@@ -322,7 +353,14 @@ The implementation must enforce these invariants at the Vector Index storage bou
 5. A non-tombstoned row can be scored only after `VECTOR_SUBJECT_TO_ID` confirms that the subject is
    live, owns the row's `vector_id`, and points at the same `(index_version, partition_id, page_id,
    slot, generation)`.
-6. `VECTOR_PAGE_META` and `VECTOR_ROW_SLAB` never reopen partially.
+6. `VECTOR_PAGE_META` and `VECTOR_ROW_SLAB` never reopen partially. The composite is keyed on raw
+   slab size: `slab.size() == 0 && meta.is_empty()` is fresh; a slab with a valid header reopens
+   (a **valid empty-initialized** store — empty meta with an in-bounds `occupied_tail` — is a valid
+   reopen, not a partial one); any other combination (non-empty slab with absent/invalid magic,
+   empty slab with non-empty meta, out-of-bounds `occupied_tail`, or a meta whose span exceeds
+   `occupied_tail`) fails closed. `VECTOR_PARTITION_HEADS` is outside this composite and is not
+   cross-checked on reopen, so an interrupted `Cleaning`/`Aborting` may transiently leave a head
+   referencing already-deleted page-meta.
 7. Search remains exact over the selected partitions. Any future early-stop budget still requires an
    explicit partial/cursor/error contract; silent truncation remains forbidden.
 
@@ -377,17 +415,18 @@ Required tests:
 
 ## Benchmark Requirements
 
-Benchmark updates are required before this ADR can be marked implemented:
+The full `canbench --persist` suite was run (no pattern filter) and persisted to
+`crates/graph-vector-index/canbench_results.yml`. Instruction counts improved on every affected path
+versus the prior Candid page layout — search, normal and dual-write `vector_upsert`, the rebuild
+`Building` step, and full rebuilds — with the new `bench_remove_normal_d128` `vector_remove`
+baseline added. Coverage:
 
-- normal `vector_upsert`
-- rebuild dual-write `vector_upsert`
-- `vector_remove`
-- rebuild `Building` step
-- exact subject-map scan
-- partition-page scan for representative `dims`, `nlist`, and `nprobe`
-
-For final benchmark artifacts, run affected `canbench --persist` suites without pattern filters and
-verify the persisted YAML remains complete and parseable.
+- normal `vector_upsert` (`bench_upsert_normal_d128`)
+- rebuild dual-write `vector_upsert` (`bench_upsert_dualwrite_d128_nlist16`)
+- `vector_remove` (`bench_remove_normal_d128`, new)
+- rebuild `Building` step (`bench_rebuild_building_step_d128_nlist16`) and full rebuilds
+- exact subject-map scan (`bench_vector_search_*`)
+- partition-page scan for representative `dims`, `nlist`, and `nprobe` (`bench_ivf_*`)
 
 ## Design Documentation Impact
 

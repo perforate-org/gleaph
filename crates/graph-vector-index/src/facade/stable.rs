@@ -4,6 +4,7 @@ use std::cell::RefCell;
 
 pub(crate) mod layout;
 pub(crate) mod memory;
+pub(crate) mod page_store;
 
 thread_local! {
     pub(crate) static VECTOR_INDEX_ROUTER: RefCell<memory::StableRouterCell> =
@@ -34,8 +35,10 @@ thread_local! {
     pub(crate) static VECTOR_PARTITION_HEADS: RefCell<memory::StablePartitionHeadsMap> =
         RefCell::new(memory::init_partition_heads());
 
-    pub(crate) static VECTOR_PAGE: RefCell<memory::StablePageMap> =
-        RefCell::new(memory::init_pages());
+    // ADR 0032 composite slab page store: VECTOR_PAGE_META (id 10) + VECTOR_ROW_SLAB (id 13),
+    // opened together with reopen validation.
+    pub(crate) static PAGE_STORE: RefCell<page_store::VectorSlabStore> =
+        RefCell::new(page_store::VectorSlabStore::init());
 
     pub(crate) static VECTOR_ID_TO_SUBJECT: RefCell<memory::StableIdToSubjectMap> =
         RefCell::new(memory::init_id_to_subject());

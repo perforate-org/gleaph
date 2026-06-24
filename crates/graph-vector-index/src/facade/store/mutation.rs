@@ -10,17 +10,22 @@ use super::{
     DEFAULT_MAX_PAGE_BYTES, DEGENERATE_PARTITION_ID, FIRST_ALLOCATION, INITIAL_INDEX_VERSION,
     PAGE_HEADER_BYTES, VectorIndexStore,
 };
+#[cfg(test)]
+use crate::facade::stable::VECTOR_PARTITION_HEADS;
 use crate::facade::stable::{
-    IVF_CENTROID_META, VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS, VECTOR_PAGE,
-    VECTOR_PARTITION_HEADS, VECTOR_SUBJECT_TO_ID,
+    IVF_CENTROID_META, PAGE_STORE, VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS,
+    VECTOR_SUBJECT_TO_ID,
 };
+#[cfg(test)]
+use crate::records::PartitionKey;
 use crate::records::{
-    IvfCentroidMeta, PageKey, PageRow, PartitionKey, SlotRef, SubjectKey, SubjectMapEntry,
-    VectorIdKey, VectorIndexDef, VectorPage, VectorRebuildStateRecord, VectorSubjectRecord,
+    IvfCentroidMeta, SlotRef, SubjectKey, SubjectMapEntry, VectorIdKey, VectorIndexDef,
+    VectorRebuildStateRecord, VectorSubjectRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorIndexKind, VectorMetric,
+    VectorSubject,
 };
 
 /// How a mutation must mirror its live effect across index versions during a rebuild (ADR 0031
@@ -143,113 +148,50 @@ impl VectorIndexStore {
         })
     }
 
-    /// Appends a vector row into the given partition's page chain, rolling a new page when the
-    /// mutable page reaches `slots_per_page`. Bumps the durable `next_page_id` allocator.
+    /// Appends a vector row into the given partition's page chain via the slab page store
+    /// ([`crate::facade::stable::page_store`], ADR 0032), rolling a new page when the mutable page is
+    /// full. Fallible because the slab can fail to `grow`; the store commits write-then-commit so a
+    /// failed grow leaves no head/meta pointing at unwritten bytes.
     ///
     /// Production callers pass `DEGENERATE_PARTITION_ID` (every production def is `nlist == 1`);
     /// the `partition_id` parameter is what lets the Slice 6 seed helpers populate `nlist > 1`
     /// partition chains and is forward-useful for the Slice 7 rebuild.
+    #[allow(clippy::too_many_arguments)]
     pub(super) fn append_slot(
         &self,
         index_id: u32,
         index_version: u64,
         partition_id: u32,
-        slots_per_page: u32,
+        def: &VectorIndexDef,
         vector_id: u64,
         generation: u64,
-        bytes: Vec<u8>,
-    ) -> SlotRef {
-        let head_key = PartitionKey::new(index_id, index_version, partition_id);
-        VECTOR_PARTITION_HEADS.with_borrow_mut(|heads| {
-            VECTOR_PAGE.with_borrow_mut(|pages| {
-                let mut head = heads.get(&head_key).unwrap_or_default();
-                if head.page_count == 0 {
-                    let page_id = head.next_page_id;
-                    head.next_page_id += 1;
-                    head.first_page = page_id;
-                    head.mutable_page = page_id;
-                    head.page_count = 1;
-                    pages.insert(
-                        PageKey::new(index_id, index_version, partition_id, page_id),
-                        VectorPage::empty(),
-                    );
-                }
-                let mut page_key =
-                    PageKey::new(index_id, index_version, partition_id, head.mutable_page);
-                let mut page = pages.get(&page_key).unwrap_or_else(VectorPage::empty);
-                if page.rows.len() as u32 >= slots_per_page {
-                    let page_id = head.next_page_id;
-                    head.next_page_id += 1;
-                    head.page_count += 1;
-                    head.mutable_page = page_id;
-                    page_key = PageKey::new(index_id, index_version, partition_id, page_id);
-                    page = VectorPage::empty();
-                }
-                let slot = page.rows.len() as u32;
-                page.rows.push(PageRow {
-                    vector_id,
-                    generation,
-                    tombstoned: false,
-                    bytes,
-                });
-                head.live_len += 1;
-                pages.insert(page_key, page);
-                heads.insert(head_key, head);
-                SlotRef {
-                    index_version,
-                    partition_id,
-                    page_id: page_key.page_id,
-                    slot,
-                    generation,
-                }
-            })
+        subject: VectorSubject,
+        bytes: &[u8],
+    ) -> Result<SlotRef, VectorIndexError> {
+        PAGE_STORE.with_borrow_mut(|store| {
+            store.append_row(
+                index_id,
+                index_version,
+                partition_id,
+                def,
+                vector_id,
+                generation,
+                subject,
+                bytes,
+            )
         })
     }
 
-    /// Marks a slot tombstoned and decrements the partition `live_len`. Idempotent.
+    /// Marks a slot tombstoned via the slab page store, which owns the `VectorPageMeta` live/
+    /// tombstone counts and the `VECTOR_PARTITION_HEADS.live_len` decrement. Idempotent.
     pub(super) fn tombstone_slot(&self, index_id: u32, slot: SlotRef) {
-        let head_key = PartitionKey::new(index_id, slot.index_version, slot.partition_id);
-        VECTOR_PARTITION_HEADS.with_borrow_mut(|heads| {
-            VECTOR_PAGE.with_borrow_mut(|pages| {
-                let page_key = PageKey::new(
-                    index_id,
-                    slot.index_version,
-                    slot.partition_id,
-                    slot.page_id,
-                );
-                let Some(mut page) = pages.get(&page_key) else {
-                    return;
-                };
-                let Some(row) = page.rows.get_mut(slot.slot as usize) else {
-                    return;
-                };
-                if row.tombstoned {
-                    return;
-                }
-                row.tombstoned = true;
-                pages.insert(page_key, page);
-                if let Some(mut head) = heads.get(&head_key) {
-                    head.live_len = head.live_len.saturating_sub(1);
-                    heads.insert(head_key, head);
-                }
-            });
+        PAGE_STORE.with_borrow_mut(|store| {
+            store.tombstone_row(index_id, slot);
         });
     }
 
     pub(super) fn read_slot_bytes(&self, index_id: u32, slot: SlotRef) -> Option<Vec<u8>> {
-        let page_key = PageKey::new(
-            index_id,
-            slot.index_version,
-            slot.partition_id,
-            slot.page_id,
-        );
-        VECTOR_PAGE.with_borrow(|pages| {
-            pages.get(&page_key).and_then(|page| {
-                page.rows
-                    .get(slot.slot as usize)
-                    .map(|row| row.bytes.clone())
-            })
-        })
+        PAGE_STORE.with_borrow(|store| store.read_row_bytes(index_id, slot).map(|(_, bytes)| bytes))
     }
 
     /// Partition for an append on the **active** version: degenerate partition `0` when `nlist <= 1`,
@@ -382,25 +324,25 @@ impl VectorIndexStore {
                     op.index_id,
                     active,
                     active_partition,
-                    def.slots_per_page,
+                    &def,
                     vector_id,
                     generation,
-                    op.bytes.clone(),
-                );
-                self.tombstone_slot(op.index_id, old_slot);
-                VECTOR_ID_TO_SLOT.with_borrow_mut(|m| {
-                    m.insert(VectorIdKey::new(op.index_id, vector_id), new_slot)
-                });
-                // Mirror into the shadow version while dual-writing; collapse (shadow = None)
-                // otherwise, so a `Cleaning`-window touch normalizes the subject to the target slot.
+                    op.subject,
+                    &op.bytes,
+                )?;
+                // Append the shadow mirror (while dual-writing) BEFORE any tombstone / id-map /
+                // subject-map commit. `append_slot` is the only fallible step (slab `grow`), so doing
+                // both appends first means a failed shadow grow returns `Err` with the subject clock
+                // and id map still pointing at the old, valid live slot — never at a tombstoned slot
+                // or a missing shadow row. On shadow failure we also tombstone the just-appended
+                // active row, so the residual is a tombstoned dead row rather than a live-counted
+                // orphan that would inflate `VectorPageMeta.live_count` / `PartitionHead.live_len`
+                // (and thus partition-health accounting).
                 let shadow_slot = match mode {
                     RebuildMutationMode::DualWrite {
                         target,
                         target_nlist,
                     } => {
-                        if let Some(old_shadow) = entry.shadow_slot {
-                            self.tombstone_slot(op.index_id, old_shadow);
-                        }
                         let partition = self.shadow_partition(
                             op.index_id,
                             target,
@@ -408,18 +350,37 @@ impl VectorIndexStore {
                             def.dims,
                             &op.bytes,
                         );
-                        Some(self.append_slot(
+                        match self.append_slot(
                             op.index_id,
                             target,
                             partition,
-                            def.slots_per_page,
+                            &def,
                             vector_id,
                             generation,
-                            op.bytes.clone(),
-                        ))
+                            op.subject,
+                            &op.bytes,
+                        ) {
+                            Ok(shadow) => Some(shadow),
+                            Err(err) => {
+                                self.tombstone_slot(op.index_id, new_slot);
+                                return Err(err);
+                            }
+                        }
                     }
                     RebuildMutationMode::ActiveOnly | RebuildMutationMode::Cleaning => None,
                 };
+                // All fallible appends succeeded; the remaining mutations are infallible. Tombstone
+                // the superseded slots (active, and the old shadow while dual-writing — collapse to
+                // shadow = None otherwise so a `Cleaning`-window touch normalizes to the target slot).
+                self.tombstone_slot(op.index_id, old_slot);
+                if let RebuildMutationMode::DualWrite { .. } = mode
+                    && let Some(old_shadow) = entry.shadow_slot
+                {
+                    self.tombstone_slot(op.index_id, old_shadow);
+                }
+                VECTOR_ID_TO_SLOT.with_borrow_mut(|m| {
+                    m.insert(VectorIdKey::new(op.index_id, vector_id), new_slot)
+                });
                 VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                     m.insert(
                         key,
@@ -455,14 +416,17 @@ impl VectorIndexStore {
             op.index_id,
             active,
             active_partition,
-            def.slots_per_page,
+            def,
             vector_id,
             FIRST_ALLOCATION,
-            op.bytes.clone(),
-        );
-        let id_key = VectorIdKey::new(op.index_id, vector_id);
-        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.insert(id_key, slot));
-        VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.insert(id_key, VectorSubjectRecord(op.subject)));
+            op.subject,
+            &op.bytes,
+        )?;
+        // Append the shadow mirror (while dual-writing) BEFORE committing the id/subject maps so a
+        // fallible slab grow cannot orphan those maps against a missing shadow row. On shadow failure
+        // we tombstone the just-appended active row before returning, so the residual is a tombstoned
+        // dead row (live counters restored) rather than a live-counted orphan; the id/subject maps
+        // stay untouched.
         let shadow_slot = match mode {
             RebuildMutationMode::DualWrite {
                 target,
@@ -470,18 +434,28 @@ impl VectorIndexStore {
             } => {
                 let partition =
                     self.shadow_partition(op.index_id, target, target_nlist, def.dims, &op.bytes);
-                Some(self.append_slot(
+                match self.append_slot(
                     op.index_id,
                     target,
                     partition,
-                    def.slots_per_page,
+                    def,
                     vector_id,
                     FIRST_ALLOCATION,
-                    op.bytes.clone(),
-                ))
+                    op.subject,
+                    &op.bytes,
+                ) {
+                    Ok(shadow) => Some(shadow),
+                    Err(err) => {
+                        self.tombstone_slot(op.index_id, slot);
+                        return Err(err);
+                    }
+                }
             }
             RebuildMutationMode::ActiveOnly | RebuildMutationMode::Cleaning => None,
         };
+        let id_key = VectorIdKey::new(op.index_id, vector_id);
+        VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.insert(id_key, slot));
+        VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.insert(id_key, VectorSubjectRecord(op.subject)));
         VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
             m.insert(
                 key,

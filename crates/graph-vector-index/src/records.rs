@@ -1,8 +1,9 @@
 //! Stable keys and records for the degenerate `ivf_flat` derived vector index (ADR 0031 Slice 2).
 //!
 //! Keys are fixed-width big-endian so `BTreeMap` range order is index-major, then version/partition,
-//! then page/slot — the order the canister scans for a single index generation. Records are
-//! Candid-encoded (`Bound::Unbounded`) wire envelopes; the page blob holds the vector rows.
+//! then page/slot — the order the canister scans for a single index generation. Most records are
+//! Candid-encoded (`Bound::Unbounded`) wire envelopes; vector row bytes live in the slab page store
+//! (ADR 0032), keyed by [`PageKey`] in the `VECTOR_PAGE_META` directory.
 //!
 //! # Version naming
 //!
@@ -229,7 +230,7 @@ impl Storable for PartitionKey {
     }
 }
 
-/// `(index_id, index_version, partition_id, page_id)` key for `VECTOR_PAGE`.
+/// `(index_id, index_version, partition_id, page_id)` key for `VECTOR_PAGE_META` (ADR 0032).
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct PageKey {
     pub index_id: u32,
@@ -461,44 +462,6 @@ impl Storable for PartitionHead {
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         Decode!(bytes.as_ref(), PartitionHead).expect("decode PartitionHead")
-    }
-}
-
-/// One vector row within a page.
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct PageRow {
-    pub vector_id: u64,
-    pub generation: u64,
-    pub tombstoned: bool,
-    /// `stride_bytes` of encoded vector components.
-    pub bytes: Vec<u8>,
-}
-
-/// A fixed-capacity page of vector rows (`VECTOR_PAGE`).
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
-pub struct VectorPage {
-    pub rows: Vec<PageRow>,
-}
-
-impl VectorPage {
-    pub fn empty() -> Self {
-        Self { rows: Vec::new() }
-    }
-}
-
-impl Storable for VectorPage {
-    const BOUND: Bound = Bound::Unbounded;
-
-    fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Owned(Encode!(self).expect("encode VectorPage"))
-    }
-
-    fn into_bytes(self) -> Vec<u8> {
-        Encode!(&self).expect("encode VectorPage")
-    }
-
-    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        Decode!(bytes.as_ref(), VectorPage).expect("decode VectorPage")
     }
 }
 

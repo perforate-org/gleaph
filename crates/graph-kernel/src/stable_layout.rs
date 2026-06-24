@@ -1172,12 +1172,14 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             RebuildPath::Named("vertex_embedding_backfill"),
         ),
         region(
-            "VECTOR_PAGE",
+            "VECTOR_PAGE_META",
             10,
             StableMemoryClass::Derived,
-            "vector pages",
-            "(index_id, index_version, partition_id, page_id) → fixed-capacity page blob of vector \
-             rows; fullness bounded by slots_per_page from the index def",
+            "vector page directory",
+            "(index_id, index_version, partition_id, page_id) → VectorPageMeta { slab_offset, \
+             capacity, row_count, live_count, row_stride, tombstone_count }: page directory for the \
+             ADR 0032 composite slab page store (companion to VECTOR_ROW_SLAB id 13). Fresh layout \
+             cutover from the development VECTOR_PAGE store: no migration or compatibility reader",
             RebuildPath::Named("vertex_embedding_backfill"),
         ),
         region(
@@ -1185,8 +1187,9 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             11,
             StableMemoryClass::Derived,
             "vector id reverse map",
-            "(index_id, vector_id) → VectorSubject: reverse locator for partition-page search \
-             (ADR 0031 Slice 6); VECTOR_SUBJECT_TO_ID remains the freshness source of truth",
+            "(index_id, vector_id) → VectorSubject: reverse locator (ADR 0031 Slice 6); retired from \
+             the partition-page search hot path by ADR 0032's row-local subject_locator but retained \
+             for non-hot-path use. VECTOR_SUBJECT_TO_ID remains the freshness source of truth",
             RebuildPath::Named("vertex_embedding_backfill"),
         ),
         region(
@@ -1196,6 +1199,17 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
             "vector rebuild lifecycle",
             "index_id → VectorRebuildStateRecord: bounded shadow-version rebuild state machine \
              (ADR 0031 Slice 7); reconstructible by re-running a rebuild from the active version",
+            RebuildPath::Named("vertex_embedding_backfill"),
+        ),
+        region(
+            "VECTOR_ROW_SLAB",
+            13,
+            StableMemoryClass::Derived,
+            "vector row slab",
+            "Raw stable memory holding structure-of-arrays vector row bytes behind a magic/version \
+             header (ADR 0032); companion to VECTOR_PAGE_META (id 10), opened as one composite \
+             store. Fresh layout cutover from the development VECTOR_PAGE store: no migration or \
+             compatibility reader, distinct from the canonical vertex_embedding_backfill rebuild",
             RebuildPath::Named("vertex_embedding_backfill"),
         ),
     ],
@@ -1498,8 +1512,8 @@ mod tests {
     #[test]
     fn vector_index_layout_registry_matches_baseline() {
         assert_layout(&VECTOR_INDEX_STABLE_LAYOUT);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 13);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(12));
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 14);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(13));
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[4].symbol,
             "VECTOR_INDEX_DEFS"
@@ -1522,7 +1536,15 @@ mod tests {
             VECTOR_INDEX_STABLE_LAYOUT.regions[7].symbol,
             "VECTOR_SUBJECT_TO_ID"
         );
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.regions[10].symbol, "VECTOR_PAGE");
+        // ADR 0032: MemoryId 10 reused as the slab page directory (was VECTOR_PAGE).
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[10].symbol,
+            "VECTOR_PAGE_META"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[10].class,
+            StableMemoryClass::Derived
+        );
         // ADR 0031 Slice 6: reverse locator for partition-page search, derived/rebuildable.
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[11].symbol,
@@ -1539,6 +1561,15 @@ mod tests {
         );
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[12].class,
+            StableMemoryClass::Derived
+        );
+        // ADR 0032: raw row slab, companion to VECTOR_PAGE_META (composite store).
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[13].symbol,
+            "VECTOR_ROW_SLAB"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[13].class,
             StableMemoryClass::Derived
         );
     }

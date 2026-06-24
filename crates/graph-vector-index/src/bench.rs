@@ -5,9 +5,10 @@
 //! partition-page scan over **clustered** seeded datasets: `nprobe = nlist` is the parity point
 //! (scans every partition, same result set as exact), and lower `nprobe` skips populated partitions
 //! so the cost reduction is visible. The partition scan is *not* expected to match exact-scan
-//! instruction cost even at `nprobe = nlist` — it adds centroid scoring plus reverse-map and
-//! subject-map lookups. `l2_squared_f32` is kept isolated in the store so a future SIMD variant can
-//! be benchmarked against these baselines.
+//! instruction cost even at `nprobe = nlist` — it adds centroid scoring plus the per-row subject-map
+//! freshness re-validation (the row subject is rebuilt from the slab row-local locator, ADR 0032).
+//! `l2_squared_f32` is kept isolated in the store so a future SIMD variant can be benchmarked against
+//! these baselines.
 //!
 //! Run from `crates/graph-vector-index`: `canbench` (see `canbench.yml`).
 
@@ -339,6 +340,33 @@ fn bench_upsert_normal_d128() -> canbench_rs::BenchResult {
         store
             .vector_upsert(shard_owner(), black_box(&op))
             .expect("upsert");
+    })
+}
+
+/// Baseline: an authoritative remove of an existing live subject with no rebuild in flight
+/// (tombstones the live slot via the slab page store, ADR 0032).
+#[bench(raw)]
+fn bench_remove_normal_d128() -> canbench_rs::BenchResult {
+    let store = setup_search_store(128, REBUILD_N);
+    let op = VectorEmbeddingSyncOp {
+        index_id: INDEX_ID,
+        embedding_name_id: 0,
+        subject: VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: 0,
+        },
+        embedding_incarnation: 1,
+        embedding_version: 1,
+        encoding: VectorEncoding::F32,
+        dims: 128,
+        bytes: Vec::new(),
+        remove: true,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_remove_normal_d128");
+        store
+            .vector_remove(shard_owner(), black_box(&op))
+            .expect("remove");
     })
 }
 

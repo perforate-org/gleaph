@@ -324,6 +324,8 @@ pub enum VectorIndexError {
     RebuildIncomplete,
     /// Invalid rebuild parameters (`nlist` / `sample_limit` out of range, wrong encoding/metric).
     InvalidRebuildParams,
+    /// Stable memory `grow` failed while reserving a slab page for a row append (ADR 0032).
+    StableGrowFailed,
 }
 
 impl std::fmt::Display for VectorIndexError {
@@ -360,6 +362,7 @@ impl std::fmt::Display for VectorIndexError {
             Self::RebuildNotReadyToPublish => "vector rebuild is not ready to publish",
             Self::RebuildIncomplete => "vector rebuild completeness invariants are not satisfied",
             Self::InvalidRebuildParams => "invalid vector rebuild parameters",
+            Self::StableGrowFailed => "stable memory grow failed while reserving a slab page",
         };
         f.write_str(text)
     }

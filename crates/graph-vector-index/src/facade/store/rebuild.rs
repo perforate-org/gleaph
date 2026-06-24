@@ -26,12 +26,11 @@ use super::{
     MAX_REBUILD_TRAINING_ITERATIONS, VectorIndexStore,
 };
 use crate::facade::stable::{
-    IVF_CENTROID_META, IVF_CENTROIDS, VECTOR_ID_TO_SLOT, VECTOR_INDEX_DEFS, VECTOR_PAGE,
+    IVF_CENTROID_META, IVF_CENTROIDS, PAGE_STORE, VECTOR_ID_TO_SLOT, VECTOR_INDEX_DEFS,
     VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
 };
 use crate::records::{
-    IvfCentroidMeta, PageKey, PartitionKey, SlotRef, SubjectKey, VectorIdKey,
-    VectorRebuildStateRecord,
+    IvfCentroidMeta, PartitionKey, SlotRef, SubjectKey, VectorIdKey, VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -228,46 +227,21 @@ fn is_subjects_done(cursor: &Option<Vec<u8>>) -> bool {
     matches!(cursor, Some(bytes) if bytes.is_empty())
 }
 
-/// Range-deletes up to `max_work` pages of `(index_id, version)`, resuming after `cursor`. Returns
-/// `(next_cursor, exhausted)`; `exhausted` is true once no more pages of `version` remain.
+/// Deletes up to `max_work` page-meta entries of `(index_id, version)` from the slab page store,
+/// resuming after `cursor`. Returns `(next_cursor, exhausted)`; `exhausted` is true once no more
+/// pages of `version` remain. Slab bytes are left as dead space (ADR 0032: no tail rewind this
+/// slice). `VECTOR_PARTITION_HEADS` is dropped separately by [`drop_version_heads_and_centroids`]
+/// once a version's pages are fully drained, so heads may transiently outlive their page meta during
+/// an interrupted teardown without being page-store corruption.
 fn drop_version_pages(
     index_id: u32,
     version: u64,
     cursor: Option<Vec<u8>>,
     max_work: u32,
 ) -> (Option<Vec<u8>>, bool) {
-    let mut to_remove: Vec<PageKey> = Vec::new();
-    let mut last: Option<PageKey> = None;
-    let mut exhausted = true;
-    VECTOR_PAGE.with_borrow(|pages| {
-        let lower = match &cursor {
-            None => Bound::Included(PageKey::new(index_id, version, 0, 0)),
-            Some(bytes) => Bound::Excluded(PageKey::from_bytes(Cow::Borrowed(bytes))),
-        };
-        for entry in pages.range((lower, Bound::Unbounded)) {
-            let key = entry.key();
-            if key.index_id != index_id || key.index_version != version {
-                break;
-            }
-            if to_remove.len() as u32 >= max_work {
-                exhausted = false;
-                break;
-            }
-            to_remove.push(*key);
-            last = Some(*key);
-        }
-    });
-    VECTOR_PAGE.with_borrow_mut(|pages| {
-        for key in &to_remove {
-            pages.remove(key);
-        }
-    });
-    let next = if exhausted {
-        None
-    } else {
-        last.map(Storable::into_bytes)
-    };
-    (next, exhausted)
+    let progress = PAGE_STORE
+        .with_borrow_mut(|store| store.drop_version_pages(index_id, version, cursor, max_work));
+    (progress.cursor, progress.exhausted)
 }
 
 /// Deletes the `0..nlist` partition heads and centroids of `(index_id, version)`. O(`nlist`),
@@ -699,11 +673,12 @@ impl VectorIndexStore {
                 index_id,
                 target_index_version,
                 partition,
-                def.slots_per_page,
+                &def,
                 vector_id,
                 generation,
-                bytes,
-            );
+                key.subject,
+                &bytes,
+            )?;
             VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
                 if let Some(mut entry) = m.get(&key)
                     && !entry.deleted

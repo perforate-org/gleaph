@@ -1,7 +1,7 @@
 # Stable-memory inventory
 
 Last updated: 2026-06-24
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag = 44 regions, 0–43; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state = 13 regions, 0–12)
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag = 44 regions, 0–43; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store = 14 regions, 0–13)
 Anchor timestamp: 2026-06-24 10:36:29 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
@@ -243,7 +243,7 @@ Router **44 regions** total (0–43).
 
 ## Graph-vector-index canister — stable regions
 
-New in ADR 0031 Slice 2; extended in Slice 6 and Slice 7. **13 regions (MemoryId 0–12).** The entire derived
+New in ADR 0031 Slice 2; extended in Slice 6 and Slice 7; physical page store replaced by ADR 0032. **14 regions (MemoryId 0–13).** The entire derived
 state is rebuildable from canonical graph embeddings via `vertex_embedding_backfill`, so every
 derived region shares the `"vertex_embedding_backfill"` rebuild path in `VECTOR_INDEX_STABLE_LAYOUT`
 (`crates/graph-kernel/src/stable_layout.rs`). Code source of truth for runtime `MemoryId` constants:
@@ -273,6 +273,19 @@ version) and shares the `vertex_embedding_backfill` rebuild path. Slice 7 also e
 (serde-default, no repack) so an atomic publish stays metadata-only; search resolves the live slot
 via `current_slot_for(active_index_version)`.
 
+ADR 0032 replaces the MemoryId 10 large-value page store with a composite slab page store: MemoryId
+10 becomes `VECTOR_PAGE_META` (a `(index_id, version, partition_id, page_id) → VectorPageMeta`
+directory of `{ slab_offset, capacity, row_count, live_count, row_stride, tombstone_count }`), and a
+new MemoryId 13 `VECTOR_ROW_SLAB` holds the raw structure-of-arrays row bytes behind a magic/version
+header. The two regions form one composite store (`PAGE_STORE`) that opens together and fails closed
+on a partial layout (see [ADR 0032](../adr/0032-vector-index-slab-page-store.md)). This is a **fresh
+layout cutover** with no deployed `VECTOR_PAGE` state, no migration, and no compatibility reader; the
+`vertex_embedding_backfill` rebuild path is the canonical-embedding reconstruction route, not a
+page-format migration. Each row carries a derived `subject_locator` that retires
+`VECTOR_ID_TO_SUBJECT` from the partition-scan hot path while `VECTOR_SUBJECT_TO_ID` stays the
+freshness source of truth. `VECTOR_PARTITION_HEADS` (MemoryId 9) remains the per-partition
+allocator/counter owner and is deliberately outside the composite store.
+
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|
 | 0 | `VECTOR_INDEX_ROUTER` | `VECTOR_INDEX_ROUTER` | `init_router` | canonical | router authorization | — |
@@ -285,9 +298,10 @@ via `current_slot_for(active_index_version)`.
 | 7 | `VECTOR_SUBJECT_TO_ID` | `VECTOR_SUBJECT_TO_ID` | `init_subject_map` | derived | subject tombstone clock | `vertex_embedding_backfill` |
 | 8 | `VECTOR_ID_TO_SLOT` | `VECTOR_ID_TO_SLOT` | `init_id_to_slot` | derived | vector-id → slot map | `vertex_embedding_backfill` |
 | 9 | `VECTOR_PARTITION_HEADS` | `VECTOR_PARTITION_HEADS` | `init_partition_heads` | derived | partition page chains + `next_page_id` allocator | `vertex_embedding_backfill` |
-| 10 | `VECTOR_PAGE` | `VECTOR_PAGE` | `init_pages` | derived | fixed-capacity vector pages | `vertex_embedding_backfill` |
-| 11 | `VECTOR_ID_TO_SUBJECT` | `VECTOR_ID_TO_SUBJECT` | `init_id_to_subject` | derived | vector-id → subject reverse locator (**Slice 6**) | `vertex_embedding_backfill` |
+| 10 | `VECTOR_PAGE_META` | `PAGE_STORE` | `init_page_store` | derived | page-directory metadata (slab offset + capacity/row/live/tombstone counts) for the slab page store (**ADR 0032**) | `vertex_embedding_backfill` |
+| 11 | `VECTOR_ID_TO_SUBJECT` | `VECTOR_ID_TO_SUBJECT` | `init_id_to_subject` | derived | vector-id → subject reverse locator (**Slice 6**; retired from the search hot path by ADR 0032's row-local `subject_locator`, region retained) | `vertex_embedding_backfill` |
 | 12 | `VECTOR_REBUILD_STATE` | `VECTOR_REBUILD_STATE` | `init_rebuild_state` | derived | bounded shadow-version rebuild lifecycle (**Slice 7**) | `vertex_embedding_backfill` |
+| 13 | `VECTOR_ROW_SLAB` | `PAGE_STORE` | `init_page_store` | derived | raw structure-of-arrays vector row slab with magic/version header (**ADR 0032**); companion to `VECTOR_PAGE_META`, opened as one composite store | `vertex_embedding_backfill` |
 
 ---
 

@@ -1138,8 +1138,11 @@ fn partition_scan_skips_deleted_subject_entry() {
     assert!(result.hits.iter().all(|h| h.subject != subject(1)));
 }
 
+/// ADR 0032: the partition scan resolves the subject from the row-local `subject_locator`, so
+/// dropping `VECTOR_ID_TO_SUBJECT` (retired from this hot path) no longer hides the row. Freshness is
+/// instead re-validated against `VECTOR_SUBJECT_TO_ID`.
 #[test]
-fn partition_scan_skips_missing_reverse_entry() {
+fn partition_scan_ignores_reverse_map_after_locator_retirement() {
     use crate::facade::stable::VECTOR_ID_TO_SUBJECT;
     use crate::records::VectorIdKey;
 
@@ -1151,8 +1154,33 @@ fn partition_scan_skips_missing_reverse_entry() {
         &two_clusters(),
         &clustered_vectors(),
     );
-    // Drop the reverse-map entry for vector_id 1 (subject 1): the page row can no longer be resolved.
+    // Drop the reverse-map entry for vector_id 1 (subject 1): the hot path no longer reads it, so the
+    // row is still resolved via its locator and remains scoreable.
     VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&VectorIdKey::new(INDEX_ID, 1)));
+    let result = store
+        .vector_search_tuned(&search_value(0.0, 10), tuned(2))
+        .expect("partition scan");
+    assert!(result.hits.iter().any(|h| h.subject == subject(1)));
+}
+
+/// ADR 0032 meta/head drift: a row present in `VECTOR_PAGE_META`/slab but with no live
+/// `VECTOR_SUBJECT_TO_ID` entry (e.g. an append that committed slab+meta but not subject state) is
+/// skipped by the partition scan via the `current_slot_for` freshness check, never scored.
+#[test]
+fn partition_scan_skips_missing_subject_entry() {
+    use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
+    use crate::records::SubjectKey;
+
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    // Drop the subject-map entry for subject 1: its slab row now has no freshness backing.
+    VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(&SubjectKey::new(INDEX_ID, subject(1))));
     let result = store
         .vector_search_tuned(&search_value(0.0, 10), tuned(2))
         .expect("partition scan");
@@ -1293,8 +1321,8 @@ fn tuned_nprobe_above_nlist_panics() {
 
 // --- ADR 0031 Slice 7: production shadow-version rebuild + dual-write ---
 
-use crate::facade::stable::{IVF_CENTROIDS, VECTOR_PAGE, VECTOR_PARTITION_HEADS};
-use crate::records::{PageKey, PartitionKey};
+use crate::facade::stable::{IVF_CENTROIDS, PAGE_STORE, VECTOR_PARTITION_HEADS};
+use crate::records::PartitionKey;
 use gleaph_graph_kernel::vector_index::VectorRebuildPhase;
 
 /// Index version of the first production rebuild's shadow (active starts at 1).
@@ -1723,6 +1751,82 @@ fn upsert_during_building_survives_publish() {
 }
 
 #[test]
+fn dual_write_shadow_append_failure_rolls_back_insert() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    drive_into_building(&store, INDEX_ID); // -> Building (dual-write)
+
+    let live_before = store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len;
+
+    // Inject a slab `grow` failure for the shadow append: the active append (1st) succeeds, the
+    // shadow append (2nd) fails. This is the StableGrowFailed branch normal unit tests cannot reach.
+    crate::facade::stable::page_store::arm_append_failure(1);
+    let err = store
+        .vector_upsert(shard_canister(), &upsert_vec(99, 1, 1.0))
+        .expect_err("shadow grow failure propagates");
+    assert_eq!(err, VectorIndexError::StableGrowFailed);
+
+    // Insert path commits the id/subject maps only after both appends succeed, so a new subject must
+    // leave no map entry behind.
+    assert!(
+        store
+            .subject_entry_for_test(INDEX_ID, subject(99))
+            .is_none(),
+        "no subject map entry created on rollback"
+    );
+    // The active row was appended then tombstoned, so live accounting is restored (not a live-counted
+    // orphan polluting partition health).
+    assert_eq!(
+        store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len,
+        live_before,
+        "active live_len restored after rollback"
+    );
+}
+
+#[test]
+fn dual_write_shadow_append_failure_rolls_back_update() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    drive_into_building(&store, INDEX_ID); // -> Building (dual-write)
+
+    let before = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    let old_slot = before.slot.expect("seeded subject is live");
+    let vector_id = before.vector_id.expect("seeded subject has a vector id");
+    let live_before = store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len;
+
+    // Inject a slab `grow` failure for the shadow append (active append succeeds first).
+    crate::facade::stable::page_store::arm_append_failure(1);
+    let err = store
+        .vector_upsert(shard_canister(), &upsert_vec(1, 2, 0.0))
+        .expect_err("shadow grow failure propagates");
+    assert_eq!(err, VectorIndexError::StableGrowFailed);
+
+    // The subject clock and id map still point at the original live slot — no partial commit to a
+    // tombstoned/new slot.
+    let after = store.subject_entry_for_test(INDEX_ID, subject(1)).unwrap();
+    assert_eq!(after.slot, Some(old_slot), "old slot stays live");
+    assert_eq!(after.shadow_slot, None, "no shadow recorded");
+    assert_eq!(after.vector_id, Some(vector_id));
+    assert_eq!(
+        store.id_to_slot_for_test(INDEX_ID, vector_id),
+        Some(old_slot),
+        "id map unchanged"
+    );
+    // The new active row was appended then tombstoned: net live_len unchanged.
+    assert_eq!(
+        store.partition_head_for_test(INDEX_ID, 1).unwrap().live_len,
+        live_before,
+        "active live_len restored after rollback"
+    );
+}
+
+#[test]
 fn remove_during_building_does_not_resurrect_after_publish() {
     let store = fresh_store();
     seed_distinct(&store, 4);
@@ -1801,15 +1905,9 @@ fn cleanup_is_bounded_and_resumable_to_idle() {
         .expect("publish");
     let steps = drive_cleanup(&store, INDEX_ID);
     assert!(steps > 1, "teardown spanned multiple bounded steps");
-    // Old-version pages are gone; the index is fully on the target version.
-    let old_pages = VECTOR_PAGE.with_borrow(|m| {
-        m.range((
-            std::ops::Bound::Included(PageKey::new(INDEX_ID, 1, 0, 0)),
-            std::ops::Bound::Excluded(PageKey::new(INDEX_ID, TARGET_V, 0, 0)),
-        ))
-        .count()
-    });
-    assert_eq!(old_pages, 0, "old-version pages dropped");
+    // Old-version page meta is gone; the index is fully on the target version.
+    let old_pages = PAGE_STORE.with_borrow(|s| s.version_page_count(INDEX_ID, 1));
+    assert_eq!(old_pages, 0, "old-version page meta dropped");
     let after = store.vector_search(&search_value(2.0, 10)).expect("search");
     assert_eq!(after.hits.len(), 6);
 }
@@ -2080,20 +2178,13 @@ fn training_writes_no_pages_or_centroids() {
         .expect("step");
     assert_eq!(status.phase, VectorRebuildPhase::Training);
     // Centroids live in the durable state record until the transition to Building; nothing is
-    // published to IVF_CENTROIDS or VECTOR_PAGE during Training.
+    // published to IVF_CENTROIDS or VECTOR_PAGE_META during Training.
     assert_eq!(
         target_centroid_count(INDEX_ID, TARGET_V, 2),
         0,
         "no centroids written during Training"
     );
-    let target_pages = VECTOR_PAGE.with_borrow(|m| {
-        m.range((
-            std::ops::Bound::Included(PageKey::new(INDEX_ID, TARGET_V, 0, 0)),
-            std::ops::Bound::Unbounded,
-        ))
-        .filter(|e| e.key().index_id == INDEX_ID && e.key().index_version == TARGET_V)
-        .count()
-    });
+    let target_pages = PAGE_STORE.with_borrow(|s| s.version_page_count(INDEX_ID, TARGET_V));
     assert_eq!(target_pages, 0, "Training writes no shadow pages");
 }
 

@@ -3,8 +3,8 @@
 use super::VectorIndexStore;
 use crate::facade::stable::memory::{ShardCanisterCatalogInsertError, VectorIndexOwnershipConfig};
 use crate::facade::stable::{
-    IVF_CENTROID_META, IVF_CENTROIDS, OWNERSHIP_CONFIG, SHARD_CANISTER_CATALOG, VECTOR_ID_TO_SLOT,
-    VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS, VECTOR_INDEX_ROUTER, VECTOR_PAGE,
+    IVF_CENTROID_META, IVF_CENTROIDS, OWNERSHIP_CONFIG, PAGE_STORE, SHARD_CANISTER_CATALOG,
+    VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS, VECTOR_INDEX_ROUTER,
     VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
 };
 use crate::init::VectorIndexInitArgs;
@@ -40,7 +40,7 @@ impl VectorIndexStore {
         VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.clear_new());
         VECTOR_REBUILD_STATE.with_borrow_mut(|m| m.clear_new());
         VECTOR_PARTITION_HEADS.with_borrow_mut(|m| m.clear_new());
-        VECTOR_PAGE.with_borrow_mut(|m| m.clear_new());
+        PAGE_STORE.with_borrow_mut(|store| store.reset());
         VECTOR_INDEX_ROUTER.with_borrow_mut(|router| {
             router.set(args.router_canister);
         });
