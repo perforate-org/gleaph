@@ -6,7 +6,9 @@ use crate::state::VectorIndexError;
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
-use gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp;
+use gleaph_graph_kernel::vector_index::{
+    VectorEmbeddingSyncOp, VectorSearchRequest, VectorSearchResult,
+};
 use ic_cdk::api::msg_caller;
 
 pub(crate) fn init(args: VectorIndexInitArgs) {
@@ -40,4 +42,10 @@ pub(crate) fn vector_upsert(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndex
 
 pub(crate) fn vector_remove(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndexError> {
     VectorIndexStore::new().vector_remove(msg_caller(), &op)
+}
+
+pub(crate) fn vector_search(
+    req: VectorSearchRequest,
+) -> Result<VectorSearchResult, VectorIndexError> {
+    VectorIndexStore::new().vector_search(&req)
 }

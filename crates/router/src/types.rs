@@ -307,6 +307,20 @@ pub struct AdminVectorIndexBackfillStepArgs {
     pub max_vertices: u32,
 }
 
+/// Public exact vector-search request (ADR 0031 Slice 5). The Router resolves the
+/// `logical_graph_name` and `index_id` to the single activated target and forwards an exact
+/// `ivf_flat` scan. The `F32` encoding and `L2Squared` metric are fixed for Slice 5 and supplied
+/// from the stored definition.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RouterVectorSearchRequest {
+    pub logical_graph_name: String,
+    pub index_id: u32,
+    /// `dims * 4` bytes of little-endian `f32` query components.
+    pub query: Vec<u8>,
+    pub dims: u16,
+    pub top_k: u32,
+}
+
 /// Progress from one derived vector-index backfill step (ADR 0031 Slice 5).
 #[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdminVectorIndexBackfillStepResult {

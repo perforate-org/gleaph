@@ -50,7 +50,6 @@ pub mod state;
 pub mod types;
 mod use_graph;
 mod use_graph_wire;
-#[cfg(not(feature = "pocket-ic-e2e"))]
 mod vector_sync;
 mod vertex_property_backfill;
 
@@ -501,6 +500,16 @@ async fn admin_attach_vector_index_shard(
     args: types::AdminAttachVectorIndexShardArgs,
 ) -> Result<(), RouterError> {
     canister::admin_attach_vector_index_shard(args).await
+}
+
+/// Read-only exact `ivf_flat` vector search: composite query that resolves the activated target and
+/// forwards to the router-guarded vector canister (ADR 0031 Slice 5). Fails closed unless the
+/// Slice 4 activation gate is satisfied.
+#[query(composite = true)]
+async fn vector_search(
+    req: types::RouterVectorSearchRequest,
+) -> Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError> {
+    canister::vector_search(req).await
 }
 
 /// Advance label posting backfill for one graph shard (`Role::Admin`; call in a loop).

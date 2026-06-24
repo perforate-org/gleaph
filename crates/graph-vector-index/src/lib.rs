@@ -13,6 +13,9 @@
 mod facade;
 mod records;
 
+#[cfg(feature = "canbench")]
+mod bench;
+
 pub mod init;
 pub mod state;
 
@@ -27,8 +30,10 @@ use crate::guards::guard_router_canister;
 use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
-use gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp;
-use ic_cdk_macros::{init, update};
+use gleaph_graph_kernel::vector_index::{
+    VectorEmbeddingSyncOp, VectorSearchRequest, VectorSearchResult,
+};
+use ic_cdk_macros::{init, query, update};
 
 #[init]
 fn init(args: VectorIndexInitArgs) {
@@ -60,6 +65,14 @@ fn vector_upsert(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndexError> {
 #[update]
 fn vector_remove(op: VectorEmbeddingSyncOp) -> Result<(), VectorIndexError> {
     canister::vector_remove(op)
+}
+
+/// Read-only exact `ivf_flat` top-k search (ADR 0031 Slice 5). Router-guarded like the
+/// property-index reads so derived vectors cannot be queried directly, bypassing the Slice 4
+/// activation/readiness gate; the Router is the activation-gated public surface.
+#[query(guard = "guard_router_canister")]
+fn vector_search(req: VectorSearchRequest) -> Result<VectorSearchResult, VectorIndexError> {
+    canister::vector_search(req)
 }
 
 ic_cdk::export_candid!();

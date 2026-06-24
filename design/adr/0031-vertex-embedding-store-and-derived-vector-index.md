@@ -66,10 +66,27 @@ Last revised: 2026-06-24
 >   worker) taking an explicit `(shard_id, start_vertex_id, max_vertices)` resume cursor; it fails
 >   closed while dispatch is not ready.
 >
-> The Candid search API, IVF centroid training, candidate pagination, query ranking/merge,
-> per-index/per-embedding fan-out, and `VectorSubject::Edge` remain Slice 5+. This ADR fixes
-> ownership, consistency, the standard `ivf_flat` vector-index kind, and the first derived
-> vector-index stable-memory shape before the Candid search API or query operator is committed.
+> **Slice 5 (implemented): exact `ivf_flat` search MVP (read path).** Slice 5 lands the first
+> production vector-search read path over the already-synced derived index, with **no stable-layout
+> change**. The vector canister exposes a router-guarded query `vector_search(VectorSearchRequest) ->
+> VectorSearchResult` that **scans the live subject map** (`VECTOR_SUBJECT_TO_ID`) over the requested
+> `index_id` — the source of truth for which subjects are live and at which slot — reading each live
+> slot's bytes through a per-query page cache, scoring with `L2Squared`, and returning a bounded top-k
+> ordered by `(distance asc, subject asc)`. Because the subject row carries `(embedding_incarnation,
+> embedding_version)` and the live `slot`, tombstones and superseded generations are never scored and
+> freshness is exact; this avoids any `PageRow`/reverse-map change or new stable region (deferred to
+> Slice 6 partition scans). The Router exposes `vector_search` as a `#[query(composite = true)]` that
+> resolves the graph/index to its single activated target and **fails closed** on the same Slice 4
+> gate (`activation_block_reason`) before forwarding; the vector-canister query is router-guarded so
+> the derived vectors cannot be queried directly around the gate. The kernel adds `VectorSearchRequest`
+> / `VectorSearchHit` / `VectorSearchResult` and `MAX_VECTOR_SEARCH_TOP_K` (1024). The search is
+> intentionally degenerate IVF (one partition, exact scoring); a `crates/graph-vector-index` canbench
+> exact-scan suite (dims 128/384/768 × top_k 10/100) establishes the Slice 6 baseline.
+>
+> IVF centroid training, `nprobe` partition pruning, candidate pagination, query ranking/merge,
+> per-index/per-embedding fan-out, GQL vector-search syntax, and `VectorSubject::Edge` remain Slice 6+.
+> This ADR fixes ownership, consistency, the standard `ivf_flat` vector-index kind, and the first
+> derived vector-index stable-memory shape before the GQL query operator is committed.
 
 ## Context
 

@@ -13,8 +13,9 @@ use crate::types::{
     AdminVectorIndexBackfillStepResult, AdminVertexPropertyBackfillStepArgs,
     AdminVertexPropertyBackfillStepResult, EdgeBackfillShardStatus, EdgeLabelId, GrantRoleArgs,
     GraphRegistryEntry, LabelBackfillShardStatus, PropertyId, RegisterVectorIndexArgs,
-    SetVectorIndexTargetArgs, ShardId, ShardRegistryEntry, VectorIndexActivationStateView,
-    VectorIndexActivationStatus, VectorIndexInfo, VertexLabelId, VertexPropertyBackfillShardStatus,
+    RouterVectorSearchRequest, SetVectorIndexTargetArgs, ShardId, ShardRegistryEntry,
+    VectorIndexActivationStateView, VectorIndexActivationStatus, VectorIndexInfo, VertexLabelId,
+    VertexPropertyBackfillShardStatus,
 };
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
@@ -700,6 +701,71 @@ pub(crate) fn admin_set_vector_dispatch_activation(enabled: bool) -> Result<(), 
 /// Reads the global vector-dispatch activation flag (ADR 0031 Slice 4).
 pub(crate) fn vector_dispatch_activation_enabled() -> bool {
     crate::facade::stable::vector_activation::vector_dispatch_globally_enabled()
+}
+
+/// Public read-only exact `ivf_flat` vector search (ADR 0031 Slice 5). Resolves the graph/index to
+/// its single activated target and fails closed unless the Slice 4 activation gate is satisfied,
+/// keeping the public read path aligned with dispatch readiness. The vector canister is
+/// router-guarded, so this Router surface is the only public entry.
+pub(crate) async fn vector_search(
+    req: RouterVectorSearchRequest,
+) -> Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError> {
+    use crate::facade::stable::vector_index_catalog;
+    use gleaph_graph_kernel::vector_index::{MAX_VECTOR_SEARCH_TOP_K, VectorSearchRequest};
+
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id(&req.logical_graph_name)?;
+    let def = vector_index_catalog::get_vector_index(graph_id, req.index_id)
+        .ok_or_else(|| RouterError::NotFound(format!("vector index {}", req.index_id)))?;
+    // Prevalidate the public request against the Router-owned definition so user mistakes surface as
+    // `InvalidArgument`, not as an opaque `Internal` from the downstream vector canister.
+    if req.top_k == 0 || req.top_k > MAX_VECTOR_SEARCH_TOP_K {
+        return Err(RouterError::InvalidArgument(format!(
+            "top_k must be in 1..={MAX_VECTOR_SEARCH_TOP_K}"
+        )));
+    }
+    if req.dims != def.dims {
+        return Err(RouterError::InvalidArgument(format!(
+            "query dims {} disagree with vector index {} dims {}",
+            req.dims, req.index_id, def.dims
+        )));
+    }
+    let expected_bytes = def.encoding.stride_bytes(def.dims) as usize;
+    if req.query.len() != expected_bytes {
+        return Err(RouterError::InvalidArgument(format!(
+            "query byte length {} does not match dims*stride {}",
+            req.query.len(),
+            expected_bytes
+        )));
+    }
+    let target = def
+        .target
+        .ok_or_else(|| {
+            RouterError::Conflict(format!("vector index {} has no target set", req.index_id))
+        })?
+        .canister;
+    // Fail closed on the dynamic gate (global flag + per-graph shard vector-attach to this target).
+    let global_enabled =
+        crate::facade::stable::vector_activation::vector_dispatch_globally_enabled();
+    let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
+    if let Some(reason) = vector_index_catalog::activation_block_reason(
+        def.activation_state,
+        global_enabled,
+        dispatch_ready,
+    ) {
+        return Err(RouterError::VectorDispatchActivationBlocked(reason));
+    }
+    let search = VectorSearchRequest {
+        index_id: req.index_id,
+        query: req.query,
+        encoding: def.encoding,
+        dims: req.dims,
+        metric: def.metric,
+        top_k: req.top_k,
+    };
+    crate::vector_sync::vector_search(target, search)
+        .await
+        .map_err(RouterError::Internal)
 }
 
 /// Admin (ADR 0031 Slice 4): wire (or retrofit) a derived vector-index target onto an

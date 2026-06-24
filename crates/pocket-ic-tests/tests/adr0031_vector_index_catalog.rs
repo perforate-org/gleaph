@@ -10,13 +10,17 @@
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId, VectorActivationBlockReason};
+use gleaph_graph_kernel::vector_index::{
+    VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorSearchResult, VectorSubject,
+};
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, install_federation, install_vector_canister,
 };
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AdminVectorIndexBackfillStepArgs,
-    AdminVectorIndexBackfillStepResult, RegisterVectorIndexArgs, SetVectorIndexTargetArgs,
-    VectorIndexActivationStateView, VectorIndexActivationStatus, VectorIndexInfo,
+    AdminVectorIndexBackfillStepResult, RegisterVectorIndexArgs, RouterVectorSearchRequest,
+    SetVectorIndexTargetArgs, VectorIndexActivationStateView, VectorIndexActivationStatus,
+    VectorIndexInfo,
 };
 
 const EMBEDDING_NAME: &str = "adr0031_title_vec";
@@ -435,6 +439,167 @@ fn activation_is_fenced_on_flag_and_shard_attach() {
         ),
         "global flag is the outermost fence"
     );
+}
+
+/// `DIMS` little-endian `f32` components each equal to `value` (matches the unit-test convention).
+fn vec_bytes(value: f32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(DIMS as usize * 4);
+    for _ in 0..DIMS {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
+/// Seed one derived embedding by calling the vector canister directly as a shard owner (sender =
+/// `shard_canister`), mirroring what the production sync path delivers. Under `pocket-ic-e2e` the
+/// router does not auto-deliver mutations, so the test plants the row itself.
+fn seed_embedding(
+    env: &FederationEnv,
+    vector: Principal,
+    shard_canister: Principal,
+    vertex_id: u32,
+    value: f32,
+) -> Result<(), VectorIndexError> {
+    let op = VectorEmbeddingSyncOp {
+        index_id: INDEX_ID,
+        embedding_name_id: 0,
+        subject: VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id,
+        },
+        embedding_incarnation: 1,
+        embedding_version: 1,
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        bytes: vec_bytes(value),
+        remove: false,
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            vector,
+            shard_canister,
+            "vector_upsert",
+            Encode!(&op).expect("encode upsert op"),
+        )
+        .expect("vector_upsert call");
+    Decode!(&bytes, Result<(), VectorIndexError>).expect("decode upsert result")
+}
+
+fn router_vector_search(
+    env: &FederationEnv,
+    query_value: f32,
+    top_k: u32,
+) -> Result<VectorSearchResult, RouterError> {
+    let req = RouterVectorSearchRequest {
+        logical_graph_name: GRAPH_NAME.to_string(),
+        index_id: INDEX_ID,
+        query: vec_bytes(query_value),
+        dims: DIMS,
+        top_k,
+    };
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "vector_search",
+            Encode!(&req).expect("encode router vector search"),
+        )
+        .expect("router vector_search call");
+    Decode!(&bytes, Result<VectorSearchResult, RouterError>).expect("decode router search result")
+}
+
+/// ADR 0031 Slice 5: once the Slice 4 activation gate is satisfied, the Router composite query routes
+/// an exact search to the vector canister and returns the seeded nearest neighbor.
+#[test]
+fn vector_search_returns_seeded_hit() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register(
+        &env,
+        &RegisterVectorIndexArgs {
+            logical_graph_name: GRAPH_NAME.to_string(),
+            embedding_name: EMBEDDING_NAME.to_string(),
+            index_id: INDEX_ID,
+            dims: DIMS,
+            target: Some(vector),
+            if_not_exists: false,
+        },
+    )
+    .expect("register vector index");
+
+    // Drive the full Slice 4 readiness handshake (flag + both shards attached to the single target).
+    let graph_id = router_graph_id(&env);
+    set_dispatch_activation(&env, true).expect("enable dispatch flag");
+    set_graph_vector_routing(&env, env.graph_source, vector);
+    set_graph_vector_routing(&env, env.graph_dest, vector);
+    attach_shard_to_vector(&env, vector, graph_id, ShardId::new(0), env.graph_source)
+        .expect("vector accepts shard 0");
+    attach_shard_to_vector(&env, vector, graph_id, ShardId::new(1), env.graph_dest)
+        .expect("vector accepts shard 1");
+    attach_shard(&env, ShardId::new(0), vector).expect("attach shard 0");
+    attach_shard(&env, ShardId::new(1), vector).expect("attach shard 1");
+
+    // Seed two vectors on shard 0; the query equals the second exactly (distance 0).
+    seed_embedding(&env, vector, env.graph_source, 1, 1.0).expect("seed v1");
+    seed_embedding(&env, vector, env.graph_source, 2, 5.0).expect("seed v2");
+
+    let result = router_vector_search(&env, 5.0, 10).expect("router search");
+    assert_eq!(result.hits.len(), 2, "both seeded vectors are candidates");
+    let nearest = &result.hits[0];
+    assert_eq!(
+        nearest.subject,
+        VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: 2,
+        }
+    );
+    assert_eq!(nearest.distance, 0.0);
+    assert_eq!(nearest.embedding_incarnation, 1);
+    assert_eq!(nearest.embedding_version, 1);
+    assert!(
+        result.hits[1].distance > 0.0,
+        "the farther vector ranks second"
+    );
+}
+
+/// ADR 0031 Slice 5 (P2): an activated index with no embeddings yet must return an empty result
+/// through the full Router path, not fail at the vector canister (the physical def is created lazily
+/// on first upsert, so an activated-but-empty index has no def).
+#[test]
+fn vector_search_on_activated_empty_index_returns_empty() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register(
+        &env,
+        &RegisterVectorIndexArgs {
+            logical_graph_name: GRAPH_NAME.to_string(),
+            embedding_name: EMBEDDING_NAME.to_string(),
+            index_id: INDEX_ID,
+            dims: DIMS,
+            target: Some(vector),
+            if_not_exists: false,
+        },
+    )
+    .expect("register vector index");
+
+    let graph_id = router_graph_id(&env);
+    set_dispatch_activation(&env, true).expect("enable dispatch flag");
+    set_graph_vector_routing(&env, env.graph_source, vector);
+    set_graph_vector_routing(&env, env.graph_dest, vector);
+    attach_shard_to_vector(&env, vector, graph_id, ShardId::new(0), env.graph_source)
+        .expect("vector accepts shard 0");
+    attach_shard_to_vector(&env, vector, graph_id, ShardId::new(1), env.graph_dest)
+        .expect("vector accepts shard 1");
+    attach_shard(&env, ShardId::new(0), vector).expect("attach shard 0");
+    attach_shard(&env, ShardId::new(1), vector).expect("attach shard 1");
+
+    // No embeddings seeded -> the physical def does not exist yet, but the search must still succeed.
+    let result = router_vector_search(&env, 1.0, 10).expect("router search on empty index");
+    assert!(result.hits.is_empty());
 }
 
 #[test]

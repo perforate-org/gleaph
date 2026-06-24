@@ -6,7 +6,8 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorSubject,
+    MAX_VECTOR_SEARCH_TOP_K, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorMetric,
+    VectorSearchRequest, VectorSubject,
 };
 
 const INDEX_ID: u32 = 1;
@@ -608,4 +609,295 @@ fn durable_allocators_persist_across_store_handles() {
     );
     let head = reopened.partition_head_for_test(INDEX_ID, 1).unwrap();
     assert_eq!(head.live_len, 2);
+}
+
+// --- ADR 0031 Slice 5: exact ivf_flat search (live subject-map scan) ---
+
+/// `DIMS` little-endian `f32` components, each equal to `value`, so L2 distance to a constant query
+/// `q` is `DIMS * (value - q)^2` — exact and easy to order in tests.
+fn vec_bytes(value: f32) -> Vec<u8> {
+    let mut bytes = Vec::with_capacity(STRIDE);
+    for _ in 0..DIMS {
+        bytes.extend_from_slice(&value.to_le_bytes());
+    }
+    bytes
+}
+
+fn upsert_vec_inc(
+    vertex_id: u32,
+    incarnation: u64,
+    version: u64,
+    value: f32,
+) -> VectorEmbeddingSyncOp {
+    VectorEmbeddingSyncOp {
+        index_id: INDEX_ID,
+        embedding_name_id: 0,
+        subject: subject(vertex_id),
+        embedding_incarnation: incarnation,
+        embedding_version: version,
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        bytes: vec_bytes(value),
+        remove: false,
+    }
+}
+
+fn upsert_vec(vertex_id: u32, version: u64, value: f32) -> VectorEmbeddingSyncOp {
+    upsert_vec_inc(vertex_id, 1, version, value)
+}
+
+fn search_value(value: f32, top_k: u32) -> VectorSearchRequest {
+    VectorSearchRequest {
+        index_id: INDEX_ID,
+        query: vec_bytes(value),
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        metric: VectorMetric::L2Squared,
+        top_k,
+    }
+}
+
+#[test]
+fn search_returns_inserted_vector() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert_eq!(result.hits.len(), 1);
+    let hit = &result.hits[0];
+    assert_eq!(hit.subject, subject(7));
+    assert_eq!(hit.distance, 0.0);
+    assert_eq!(hit.embedding_incarnation, 1);
+    assert_eq!(hit.embedding_version, 1);
+}
+
+#[test]
+fn search_top_k_orders_by_distance_and_bounds_results() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(8, 1, 2.0))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(9, 1, 3.0))
+        .unwrap();
+    let result = store.vector_search(&search_value(1.0, 2)).expect("search");
+    let subjects: Vec<_> = result.hits.iter().map(|h| h.subject).collect();
+    assert_eq!(
+        subjects,
+        vec![subject(7), subject(8)],
+        "nearest two, ordered"
+    );
+    assert!(result.hits[0].distance < result.hits[1].distance);
+}
+
+#[test]
+fn search_tie_break_is_subject_ascending() {
+    let store = fresh_store();
+    // Both are equidistant (|1-0| == |1-2|) from the query 1.0; the tie-break must be deterministic
+    // on the subject key ascending.
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 0.0))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(8, 1, 2.0))
+        .unwrap();
+    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert_eq!(result.hits[0].distance, result.hits[1].distance);
+    assert_eq!(
+        result.hits.iter().map(|h| h.subject).collect::<Vec<_>>(),
+        vec![subject(7), subject(8)]
+    );
+}
+
+#[test]
+fn search_skips_deleted_subject() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    store
+        .vector_remove(shard_canister(), &remove_op(7, 2))
+        .unwrap();
+    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert!(result.hits.is_empty(), "deleted subject must not appear");
+}
+
+#[test]
+fn search_returns_newest_slot_only() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 2, 5.0))
+        .unwrap();
+    // Query the newest value: exactly one hit, distance 0, at the newest version.
+    let result = store.vector_search(&search_value(5.0, 10)).expect("search");
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].distance, 0.0);
+    assert_eq!(result.hits[0].embedding_version, 2);
+    // The superseded (tombstoned) generation's value 1.0 is never scored.
+    let stale = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert_eq!(stale.hits.len(), 1);
+    assert!(stale.hits[0].distance > 0.0);
+}
+
+#[test]
+fn search_reinsert_after_delete_returns_newer_incarnation_only() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec_inc(7, 1, 1, 1.0))
+        .unwrap();
+    store
+        .vector_remove(shard_canister(), &remove_op_inc(7, 1, 2))
+        .unwrap();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec_inc(7, 2, 1, 9.0))
+        .unwrap();
+    let result = store.vector_search(&search_value(9.0, 10)).expect("search");
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].distance, 0.0);
+    assert_eq!(result.hits[0].embedding_incarnation, 2);
+    assert_eq!(result.hits[0].embedding_version, 1);
+}
+
+#[test]
+fn search_does_not_read_rows_of_a_different_index() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    // Seed a second index with the same subject/value; a search over INDEX_ID must not read it.
+    let other_index = INDEX_ID + 1;
+    store
+        .vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
+                index_id: other_index,
+                embedding_name_id: 0,
+                subject: subject(8),
+                embedding_incarnation: 1,
+                embedding_version: 1,
+                encoding: VectorEncoding::F32,
+                dims: DIMS,
+                bytes: vec_bytes(1.0),
+                remove: false,
+            },
+        )
+        .unwrap();
+    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert_eq!(result.hits.len(), 1, "only INDEX_ID rows are scanned");
+    assert_eq!(result.hits[0].subject, subject(7));
+}
+
+#[test]
+fn search_skips_live_entry_with_missing_vector_id() {
+    use crate::facade::stable::VECTOR_SUBJECT_TO_ID;
+    use crate::records::{SubjectKey, SubjectMapEntry};
+
+    let store = fresh_store();
+    // Seed a valid live vector so the def, a page row, and a real slot all exist.
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    let entry = store
+        .subject_entry_for_test(INDEX_ID, subject(7))
+        .expect("live entry");
+    assert!(entry.slot.is_some() && entry.vector_id.is_some());
+
+    // Corrupt the entry into inconsistent drift: still live (slot Some, not deleted) but with no
+    // vector_id. The freshness guard must skip it rather than score a row it cannot verify.
+    let drifted = SubjectMapEntry {
+        vector_id: None,
+        ..entry
+    };
+    VECTOR_SUBJECT_TO_ID
+        .with_borrow_mut(|m| m.insert(SubjectKey::new(INDEX_ID, subject(7)), drifted));
+
+    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert!(
+        result.hits.is_empty(),
+        "inconsistent slot Some / vector_id None row must not be scored"
+    );
+}
+
+#[test]
+fn search_rejects_dimension_mismatch() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    let req = VectorSearchRequest {
+        index_id: INDEX_ID,
+        query: vec![0u8; (DIMS as usize + 1) * 4],
+        encoding: VectorEncoding::F32,
+        dims: DIMS + 1,
+        metric: VectorMetric::L2Squared,
+        top_k: 10,
+    };
+    assert_eq!(
+        store.vector_search(&req).unwrap_err(),
+        VectorIndexError::DimensionMismatch
+    );
+}
+
+#[test]
+fn search_rejects_byte_width_mismatch() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    let req = VectorSearchRequest {
+        index_id: INDEX_ID,
+        query: vec![0u8; STRIDE - 4],
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        metric: VectorMetric::L2Squared,
+        top_k: 10,
+    };
+    assert_eq!(
+        store.vector_search(&req).unwrap_err(),
+        VectorIndexError::ByteWidthMismatch
+    );
+}
+
+#[test]
+fn search_rejects_invalid_top_k() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    assert_eq!(
+        store.vector_search(&search_value(1.0, 0)).unwrap_err(),
+        VectorIndexError::InvalidSearchTopK
+    );
+    assert_eq!(
+        store
+            .vector_search(&search_value(1.0, MAX_VECTOR_SEARCH_TOP_K + 1))
+            .unwrap_err(),
+        VectorIndexError::InvalidSearchTopK
+    );
+}
+
+#[test]
+fn search_missing_physical_def_returns_empty() {
+    // The physical def is created lazily on first upsert; a Router-registered, activated index with
+    // no embeddings yet has no def but is a known-empty index, not an unknown one.
+    let store = fresh_store();
+    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert!(result.hits.is_empty());
+}
+
+#[test]
+fn search_empty_index_returns_no_hits() {
+    let store = fresh_store();
+    store
+        .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 64 * 1024)
+        .expect("create index");
+    let result = store.vector_search(&search_value(1.0, 10)).expect("search");
+    assert!(result.hits.is_empty());
 }

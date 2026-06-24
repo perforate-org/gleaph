@@ -7,6 +7,7 @@
 
 mod authorization;
 mod mutation;
+mod search;
 
 #[cfg(test)]
 mod tests;

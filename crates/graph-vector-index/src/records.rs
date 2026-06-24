@@ -11,6 +11,7 @@
 //! clock. `generation` is the slot incarnation for append-and-tombstone. These are never conflated.
 
 use candid::{CandidType, Decode, Encode};
+use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorIndexKind, VectorMetric, VectorSubject,
 };
@@ -32,6 +33,21 @@ pub struct SubjectKey {
 impl SubjectKey {
     pub const fn new(index_id: u32, subject: VectorSubject) -> Self {
         Self { index_id, subject }
+    }
+
+    /// Smallest `SubjectKey` for an `index_id`, used as the inclusive lower bound of a per-index
+    /// range scan (`VECTOR_SUBJECT_TO_ID` is index-major). This must remain the minimum key for the
+    /// `index_id` prefix even as `VectorSubject` grows variants: the encoding writes the subject
+    /// tag at byte 4, and `SUBJECT_TAG_VERTEX == 0` is the lowest tag, so the all-zero subject body
+    /// stays the prefix minimum. A scan starts here and stops when `key.index_id != index_id`.
+    pub const fn index_lower(index_id: u32) -> Self {
+        Self {
+            index_id,
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: 0,
+            },
+        }
     }
 
     fn to_array(self) -> [u8; 13] {
@@ -461,6 +477,44 @@ mod tests {
             },
         );
         assert!(lower.to_array() < key.to_array());
+    }
+
+    #[test]
+    fn index_lower_is_prefix_minimum() {
+        let id = 7;
+        let lower = SubjectKey::index_lower(id);
+        // Equals the smallest concrete subject of this index today.
+        assert_eq!(
+            lower,
+            SubjectKey::new(
+                id,
+                VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id: 0,
+                },
+            )
+        );
+        // <= any subject in the same index (prefix minimum), regardless of subject body.
+        let some = SubjectKey::new(
+            id,
+            VectorSubject::Vertex {
+                shard_id: ShardId::new(u32::MAX),
+                vertex_id: u32::MAX,
+            },
+        );
+        assert!(lower.to_array() <= some.to_array());
+        // Strictly greater than every key of the previous index_id, and strictly less than the next
+        // index's lower bound — so a `range(index_lower(id)..)` that breaks on `index_id != id`
+        // sees exactly this index's rows.
+        let prev_max = SubjectKey::new(
+            id - 1,
+            VectorSubject::Vertex {
+                shard_id: ShardId::new(u32::MAX),
+                vertex_id: u32::MAX,
+            },
+        );
+        assert!(lower.to_array() > prev_max.to_array());
+        assert!(lower.to_array() < SubjectKey::index_lower(id + 1).to_array());
     }
 
     #[test]

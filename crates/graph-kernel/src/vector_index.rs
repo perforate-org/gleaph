@@ -164,7 +164,46 @@ impl IndexedEmbeddingCatalog {
     }
 }
 
-/// Vector-index canister mutation/sync/admin failure.
+/// Upper bound on `top_k` accepted by a single vector search (ADR 0031 Slice 5). Bounds the
+/// in-heap candidate set and result size so one query stays within the canister instruction budget.
+pub const MAX_VECTOR_SEARCH_TOP_K: u32 = 1024;
+
+/// Read-only exact top-k vector search over a derived `ivf_flat` index (ADR 0031 Slice 5).
+///
+/// `query` carries `dims` components encoded as `encoding` (`encoding.stride_bytes(dims)` bytes).
+/// Slice 5 is the degenerate exact baseline: `encoding == F32`, `metric == L2Squared`, single
+/// partition, exact scoring; centroid pruning / `nprobe` arrive in Slice 6+.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct VectorSearchRequest {
+    pub index_id: u32,
+    /// `dims * encoding.component_bytes()` bytes of the query vector.
+    pub query: Vec<u8>,
+    pub encoding: VectorEncoding,
+    pub dims: u16,
+    pub metric: VectorMetric,
+    /// Number of nearest neighbors to return; `0 < top_k <= MAX_VECTOR_SEARCH_TOP_K`.
+    pub top_k: u32,
+}
+
+/// One scored search result. `distance` is metric-specific (smaller is nearer); for `L2Squared` it
+/// is the squared Euclidean distance. `embedding_incarnation` / `embedding_version` are the live
+/// subject clock so a caller can reason about freshness (ADR 0031 Slice 4).
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct VectorSearchHit {
+    pub subject: VectorSubject,
+    pub distance: f32,
+    pub embedding_incarnation: u64,
+    pub embedding_version: u64,
+}
+
+/// Top-k search result, ordered by `(distance ascending, subject ascending)` as a deterministic
+/// tie-breaker.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct VectorSearchResult {
+    pub hits: Vec<VectorSearchHit>,
+}
+
+/// Vector-index canister mutation/sync/admin/search failure.
 ///
 /// Single error type for the canister: mutation endpoints return it over the wire; admin endpoints
 /// map it to a `String` at the canister boundary (mirroring `graph-index`).
@@ -210,6 +249,8 @@ pub enum VectorIndexError {
     InvalidPageCapacity,
     /// Internal allocator exhausted (`u64` overflow); not reachable in practice.
     AllocatorOverflow,
+    /// `top_k` on a vector search is `0` or exceeds [`MAX_VECTOR_SEARCH_TOP_K`].
+    InvalidSearchTopK,
 }
 
 impl std::fmt::Display for VectorIndexError {
@@ -240,6 +281,7 @@ impl std::fmt::Display for VectorIndexError {
             }
             Self::InvalidPageCapacity => "index page capacity yields fewer than one slot per page",
             Self::AllocatorOverflow => "vector index allocator overflow",
+            Self::InvalidSearchTopK => "search top_k must be in 1..=MAX_VECTOR_SEARCH_TOP_K",
         };
         f.write_str(text)
     }
@@ -326,9 +368,41 @@ mod tests {
 
     #[test]
     fn error_candid_roundtrip() {
-        let err = VectorIndexError::EmbeddingVersionConflict;
-        let bytes = Encode!(&err).expect("encode");
-        assert_eq!(Decode!(&bytes, VectorIndexError).expect("decode"), err);
+        for err in [
+            VectorIndexError::EmbeddingVersionConflict,
+            VectorIndexError::InvalidSearchTopK,
+        ] {
+            let bytes = Encode!(&err).expect("encode");
+            assert_eq!(Decode!(&bytes, VectorIndexError).expect("decode"), err);
+        }
+    }
+
+    #[test]
+    fn search_request_and_result_candid_roundtrip() {
+        let req = VectorSearchRequest {
+            index_id: 7,
+            query: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            encoding: VectorEncoding::F32,
+            dims: 4,
+            metric: VectorMetric::L2Squared,
+            top_k: 10,
+        };
+        let bytes = Encode!(&req).expect("encode request");
+        assert_eq!(Decode!(&bytes, VectorSearchRequest).expect("decode"), req);
+
+        let result = VectorSearchResult {
+            hits: vec![VectorSearchHit {
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(2),
+                    vertex_id: 42,
+                },
+                distance: 1.5,
+                embedding_incarnation: 3,
+                embedding_version: 9,
+            }],
+        };
+        let bytes = Encode!(&result).expect("encode result");
+        assert_eq!(Decode!(&bytes, VectorSearchResult).expect("decode"), result);
     }
 
     #[test]

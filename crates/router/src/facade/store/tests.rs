@@ -2532,6 +2532,124 @@ mod graph_type_catalog_vocabulary {
         assert!(!store.graph_vector_dispatch_ready(graph_id));
     }
 
+    fn router_search_req(index_id: u32, top_k: u32) -> crate::types::RouterVectorSearchRequest {
+        crate::types::RouterVectorSearchRequest {
+            logical_graph_name: "tenant.main".into(),
+            index_id,
+            query: vec![0u8; 16 * 4],
+            dims: 16,
+            top_k,
+        }
+    }
+
+    #[test]
+    fn router_vector_search_blocks_until_activation_ready() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        let graph_id = setup_one_shard_graph(&store, admin);
+        register_vector_def(graph_id, 1, graph_principal(7));
+
+        // Activation off: the public read path fails closed even though a target exists.
+        let err =
+            futures::executor::block_on(crate::canister::vector_search(router_search_req(1, 10)))
+                .expect_err("blocked while not activated");
+        assert!(matches!(
+            err,
+            RouterError::VectorDispatchActivationBlocked(_)
+        ));
+
+        // Enable the global flag and vector-attach the shard to the def target -> gate satisfied. The
+        // native `vector_sync` stub returns empty hits; the point is that gating passed and the call
+        // needs no graph shard-local state beyond the readiness gate.
+        crate::facade::stable::vector_activation::set_vector_dispatch_globally_enabled(true);
+        futures::executor::block_on(store.admin_attach_vector_index_shard(
+            admin,
+            AdminAttachVectorIndexShardArgs {
+                logical_graph_name: "tenant.main".into(),
+                shard_id: ShardId::new(0),
+                vector_index_canister: graph_principal(7),
+            },
+        ))
+        .expect("attach vector index shard");
+        let result =
+            futures::executor::block_on(crate::canister::vector_search(router_search_req(1, 10)))
+                .expect("ready search routes to target");
+        assert!(result.hits.is_empty());
+    }
+
+    #[test]
+    fn router_vector_search_rejects_missing_index_and_target() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        let graph_id = setup_one_shard_graph(&store, admin);
+
+        // No definition for the requested index -> NotFound.
+        let err =
+            futures::executor::block_on(crate::canister::vector_search(router_search_req(9, 10)))
+                .expect_err("missing index");
+        assert!(matches!(err, RouterError::NotFound(_)));
+
+        // A registered definition with no target can never dispatch -> Conflict.
+        crate::facade::stable::vector_index_catalog::register_vector_index(
+            graph_id,
+            5,
+            gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(5),
+            gleaph_graph_kernel::vector_index::VectorIndexKind::IvfFlat,
+            gleaph_graph_kernel::vector_index::VectorMetric::L2Squared,
+            gleaph_graph_kernel::vector_index::VectorEncoding::F32,
+            16,
+            None,
+            false,
+        )
+        .expect("register targetless def");
+        let err =
+            futures::executor::block_on(crate::canister::vector_search(router_search_req(5, 10)))
+                .expect_err("no target");
+        assert!(matches!(err, RouterError::Conflict(_)));
+    }
+
+    #[test]
+    fn router_vector_search_prevalidates_request_shape() {
+        let store = RouterStore::new();
+        store.init_from_args(&test_init_args());
+        let admin = Principal::from_slice(&[1; 29]);
+        let graph_id = setup_one_shard_graph(&store, admin);
+        // register_vector_def registers dims = 16, so the F32 stride is 64 bytes.
+        register_vector_def(graph_id, 1, graph_principal(7));
+
+        // top_k = 0 -> InvalidArgument (not a downstream Internal).
+        let err =
+            futures::executor::block_on(crate::canister::vector_search(router_search_req(1, 0)))
+                .expect_err("top_k 0");
+        assert!(matches!(err, RouterError::InvalidArgument(_)));
+
+        // Wrong dims -> InvalidArgument.
+        let bad_dims = crate::types::RouterVectorSearchRequest {
+            logical_graph_name: "tenant.main".into(),
+            index_id: 1,
+            query: vec![0u8; 8 * 4],
+            dims: 8,
+            top_k: 10,
+        };
+        let err = futures::executor::block_on(crate::canister::vector_search(bad_dims))
+            .expect_err("dims mismatch");
+        assert!(matches!(err, RouterError::InvalidArgument(_)));
+
+        // Right dims, wrong byte length -> InvalidArgument.
+        let bad_len = crate::types::RouterVectorSearchRequest {
+            logical_graph_name: "tenant.main".into(),
+            index_id: 1,
+            query: vec![0u8; 16 * 4 - 4],
+            dims: 16,
+            top_k: 10,
+        };
+        let err = futures::executor::block_on(crate::canister::vector_search(bad_len))
+            .expect_err("byte length mismatch");
+        assert!(matches!(err, RouterError::InvalidArgument(_)));
+    }
+
     #[test]
     fn vector_attach_is_idempotent_and_enforces_one_target_per_graph() {
         let store = RouterStore::new();

@@ -1,0 +1,6 @@
+# Dedicated CARGO_TARGET_DIR (../../target/canbench) so the canbench wasm never clobbers the
+# pocket-ic-e2e artifacts under ../../target (see crates/router/canbench.yml).
+build_cmd: "CARGO_TARGET_DIR=../../target/canbench cargo build --release --target wasm32-unknown-unknown --locked --features canbench"
+wasm_path: "../../target/canbench/wasm32-unknown-unknown/release/gleaph_graph_vector_index.wasm"
+init_args:
+  hex: "4449444c016c019dbbfed10c680100011dababababababababababababababababababababababababababababab"

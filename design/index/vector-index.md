@@ -39,10 +39,28 @@ and **activates production dispatch** behind a Router-owned stable activation fl
 property-index behavior when no catalog is present); the shard never persists an indexed-embedding
 registry, and the injected catalog is empty whenever dispatch is not ready.
 
-Candid search APIs, IVF centroid training, candidate pagination, query ranking/merge, and
-`VectorSubject::Edge` are not implemented yet (Slice 5+). The standard
-vector-index kind is `ivf_flat`; `flat` is collapsed into degenerate `ivf_flat` rather than a
-separate kind, and later `ivf_pq` or experimental `hnsw` implementations must preserve the same
+Slice 5 is implemented: the first production **read path** — an exact top-k `ivf_flat` search. The
+vector canister exposes a router-guarded query `vector_search(VectorSearchRequest) ->
+VectorSearchResult` that scans the **live subject map** (`VECTOR_SUBJECT_TO_ID`) over the requested
+`index_id`, reads each live slot's bytes through a per-query page cache, scores with `L2Squared`, and
+returns a bounded, deterministically ordered top-k. An activated index with no embeddings yet has no
+physical def (it is created lazily on first upsert), so search returns an **empty** result rather than
+an error. The Router exposes `vector_search` as a
+`#[query(composite = true)]` that resolves the graph/index to its single activated target and **fails
+closed** on the same Slice 4 activation gate (`activation_block_reason`) before forwarding; it also
+prevalidates `top_k` / `dims` / query byte length against the registered definition so user mistakes
+surface as `InvalidArgument` rather than an opaque internal error. The vector-canister query is
+router-guarded so the derived vectors cannot be queried directly around the gate. This slice
+introduces **no stable-layout change** (no new region, no `PageRow`/reverse-map
+change): correctness and freshness come from the subject map, which is already the source of truth for
+which subjects are live and at which slot. The kernel adds `VectorSearchRequest` / `VectorSearchHit`
+/ `VectorSearchResult` and `MAX_VECTOR_SEARCH_TOP_K` (1024).
+
+The search is intentionally degenerate IVF: one partition, exact scoring, no pruning. IVF centroid
+training, `nprobe` partition pruning, candidate pagination, query ranking/merge, page self-describing
+rows / reverse map (for partition scans), PQ/HNSW, and `VectorSubject::Edge` are deferred to Slice 6+.
+The standard vector-index kind is `ivf_flat`; `flat` is collapsed into degenerate `ivf_flat` rather
+than a separate kind, and later `ivf_pq` or experimental `hnsw` implementations must preserve the same
 canonical/derived boundary.
 
 ## Version naming glossary
@@ -360,8 +378,8 @@ bounded cleanup after publication.
 
 | Phase | Algorithm | Status | Purpose |
 |-------|-----------|--------|---------|
-| 1 | IVF_FLAT (`ivf_flat`) | planned | standard vector index: centroid routing, partition pages, query-aware pruning, exact rerank |
-| 2 | Flat (`flat`) | planned | exact scan over all vector pages for small indexes, debugging, and correctness baselines |
+| 1 | IVF_FLAT (`ivf_flat`) | exact scan implemented (Slice 5); centroid routing / partition pruning / rerank planned (Slice 6+) | standard vector index: centroid routing, partition pages, query-aware pruning, exact rerank |
+| 2 | Flat (`flat`) | subsumed by degenerate `ivf_flat` exact scan (Slice 5) | exact scan over all vector pages for small indexes, debugging, and correctness baselines |
 | 3 | IVF_PQ | planned | compressed approximate scoring plus full-vector rerank |
 | 4 | HNSW | experimental planned | only after update/delete/repair and IC instruction bounds are specified |
 
@@ -376,7 +394,8 @@ bounded cleanup after publication.
 - Define centroid cache miss behavior.
 - Define shadow-version rebuild, balanced assignment, publish, and cleanup.
 - Define partition tombstone cleanup thresholds.
-- Add canbench targets for write, flush, backfill, centroid warmup, `flat`, and `ivf_flat` search.
+- [done, slice 5] Add canbench targets for exact `ivf_flat` search (`crates/graph-vector-index`,
+  dims 128/384/768 × top_k 10/100). Centroid-warmup / pruned-search benches remain for Slice 6+.
 
 ## Related documents
 
