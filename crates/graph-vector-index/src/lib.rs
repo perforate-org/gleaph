@@ -32,7 +32,7 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorPartitionHealthSummary, VectorRebuildStatus, VectorSearchRequest,
-    VectorSearchResult, VectorSlabStats,
+    VectorSearchResult, VectorSlabStats, VectorSlabStatsStep,
 };
 use ic_cdk_macros::{init, query, update};
 
@@ -131,6 +131,19 @@ fn admin_vector_partition_health(index_id: u32) -> Result<VectorPartitionHealthS
 #[query(guard = "guard_router_canister")]
 fn admin_vector_slab_stats(index_id: Option<u32>) -> Result<VectorSlabStats, String> {
     canister::admin_vector_slab_stats(index_id)
+}
+
+/// IC-safe, cursor/budgeted variant of `admin_vector_slab_stats` for large stores: one bounded
+/// page-meta scan step. Repeat with the returned `cursor` until `exhausted`, then merge the additive
+/// partials client-side (see `VectorSlabStatsStep`). `max_pages` is clamped server-side; a malformed
+/// `cursor` returns an error rather than trapping. Diagnostic only, not search truth.
+#[query(guard = "guard_router_canister")]
+fn admin_vector_slab_stats_step(
+    cursor: Option<Vec<u8>>,
+    max_pages: u32,
+    index_id: Option<u32>,
+) -> Result<VectorSlabStatsStep, String> {
+    canister::admin_vector_slab_stats_step(cursor, max_pages, index_id)
 }
 
 ic_cdk::export_candid!();

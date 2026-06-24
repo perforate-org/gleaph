@@ -32,7 +32,7 @@ use crate::records::{PageKey, PartitionKey, SlotRef, VectorIndexDef};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     VectorIndexError, VectorSlabGlobalStats, VectorSlabScopeStats, VectorSlabStats,
-    VectorSlabVersionStats, VectorSubject,
+    VectorSlabStatsStep, VectorSlabVersionStats, VectorSubject,
 };
 use ic_stable_structures::Memory as _;
 use ic_stable_structures::storable::{Bound, Storable};
@@ -53,6 +53,14 @@ const SLAB_HEADER_LEN: u64 = 32;
 const PAGE_MAGIC: &[u8; 4] = b"VPG1";
 /// Fixed per-page header length: magic(4) + capacity(4) + row_stride(4) + reserved(4).
 const PAGE_HEADER_LEN: u64 = 16;
+
+/// Per-step page-meta budget cap for [`VectorSlabStore::stats_step`] (mirrors `MAX_REBUILD_STEP_WORK`).
+const MAX_SLAB_STATS_STEP_PAGES: u32 = 20_000;
+
+/// Encoded length of a [`PageKey`] (its fixed `Storable` bound). A caller-supplied
+/// [`VectorSlabStore::stats_step`] cursor must be exactly this many bytes; `PageKey::from_bytes`
+/// panics otherwise.
+const PAGE_KEY_LEN: usize = 24;
 
 /// `ceil(capacity / 8)` tombstone-bitmap bytes for a page.
 const fn tombstone_bytes(capacity: u32) -> u64 {
@@ -186,6 +194,103 @@ pub(crate) struct DropProgress {
     pub cursor: Option<Vec<u8>>,
     /// True once no more pages of the version remain.
     pub exhausted: bool,
+}
+
+/// Shared per-page accumulator for the slab-stats family ([`VectorSlabStore::stats_for_index`] and
+/// [`VectorSlabStore::stats_step`]), so both derive identical math from one source of truth.
+///
+/// `referenced_global` always sums every observed page span (the slab is one global allocation
+/// domain); the `scope_*` counters and `versions` breakdown only count pages within `index_id`
+/// (`None` = all indexes). Page-meta entries are iterated in `PageKey` order, so each
+/// `(index_id, index_version)` group is contiguous *within a single pass*: `current` accumulates the
+/// open group and flushes on key change. A bounded step may end mid-group; the client merge sums
+/// version entries by `(index_id, index_version)` key, so a split group reconciles after merging.
+struct SlabStatsAcc {
+    index_id: Option<u32>,
+    referenced_global: u64,
+    scope_referenced: u64,
+    scope_pages: u64,
+    scope_rows: u64,
+    scope_live: u64,
+    scope_tombstones: u64,
+    versions: Vec<VectorSlabVersionStats>,
+    current: Option<VectorSlabVersionStats>,
+}
+
+impl SlabStatsAcc {
+    fn new(index_id: Option<u32>) -> Self {
+        Self {
+            index_id,
+            referenced_global: 0,
+            scope_referenced: 0,
+            scope_pages: 0,
+            scope_rows: 0,
+            scope_live: 0,
+            scope_tombstones: 0,
+            versions: Vec::new(),
+            current: None,
+        }
+    }
+
+    fn observe(&mut self, key: &PageKey, m: &VectorPageMeta) {
+        let bytes = checked_page_span(m.capacity, m.row_stride).unwrap_or(0);
+        self.referenced_global = self.referenced_global.saturating_add(bytes);
+
+        if self.index_id.is_some_and(|id| key.index_id != id) {
+            return;
+        }
+        self.scope_referenced = self.scope_referenced.saturating_add(bytes);
+        self.scope_pages = self.scope_pages.saturating_add(1);
+        self.scope_rows = self.scope_rows.saturating_add(m.row_count as u64);
+        self.scope_live = self.scope_live.saturating_add(m.live_count as u64);
+        self.scope_tombstones = self
+            .scope_tombstones
+            .saturating_add(m.tombstone_count as u64);
+
+        match self.current.as_mut() {
+            Some(v) if v.index_id == key.index_id && v.index_version == key.index_version => {
+                v.page_count = v.page_count.saturating_add(1);
+                v.row_count = v.row_count.saturating_add(m.row_count as u64);
+                v.physical_live_row_count = v
+                    .physical_live_row_count
+                    .saturating_add(m.live_count as u64);
+                v.tombstone_row_count = v
+                    .tombstone_row_count
+                    .saturating_add(m.tombstone_count as u64);
+                v.referenced_page_bytes = v.referenced_page_bytes.saturating_add(bytes);
+            }
+            _ => {
+                if let Some(v) = self.current.take() {
+                    self.versions.push(v);
+                }
+                self.current = Some(VectorSlabVersionStats {
+                    index_id: key.index_id,
+                    index_version: key.index_version,
+                    page_count: 1,
+                    row_count: m.row_count as u64,
+                    physical_live_row_count: m.live_count as u64,
+                    tombstone_row_count: m.tombstone_count as u64,
+                    referenced_page_bytes: bytes,
+                });
+            }
+        }
+    }
+
+    /// Flushes the open group and returns `(scope counters, version breakdown, referenced_global)`.
+    fn finish(mut self) -> (VectorSlabScopeStats, Vec<VectorSlabVersionStats>, u64) {
+        if let Some(v) = self.current.take() {
+            self.versions.push(v);
+        }
+        let scope = VectorSlabScopeStats {
+            index_id: self.index_id,
+            referenced_page_bytes: self.scope_referenced,
+            page_count: self.scope_pages,
+            row_count: self.scope_rows,
+            physical_live_row_count: self.scope_live,
+            tombstone_row_count: self.scope_tombstones,
+        };
+        (scope, self.versions, self.referenced_global)
+    }
 }
 
 /// Reusable per-page scratch for [`VectorSlabStore::visit_partition_pages`]. Holds one page's bytes
@@ -820,63 +925,12 @@ impl VectorSlabStore {
     /// mutation. `physical_live_row_count` is `VectorPageMeta.live_count` (physical non-tombstone),
     /// not subject-freshness.
     pub(crate) fn stats_for_index(&self, index_id: Option<u32>) -> VectorSlabStats {
-        let mut referenced_global: u64 = 0;
-        let mut scope_referenced: u64 = 0;
-        let mut scope_pages: u64 = 0;
-        let mut scope_rows: u64 = 0;
-        let mut scope_live: u64 = 0;
-        let mut scope_tombstones: u64 = 0;
-        let mut versions: Vec<VectorSlabVersionStats> = Vec::new();
-
-        // Page-meta entries are sorted by `PageKey`, so `(index_id, index_version)` groups are
-        // contiguous: accumulate into the current group and flush on key change.
-        let mut current: Option<VectorSlabVersionStats> = None;
+        let mut acc = SlabStatsAcc::new(index_id);
         for entry in self.meta.iter() {
-            let key = entry.key();
             let m = entry.value();
-            let bytes = checked_page_span(m.capacity, m.row_stride).unwrap_or(0);
-            referenced_global = referenced_global.saturating_add(bytes);
-
-            if index_id.is_some_and(|id| key.index_id != id) {
-                continue;
-            }
-            scope_referenced = scope_referenced.saturating_add(bytes);
-            scope_pages = scope_pages.saturating_add(1);
-            scope_rows = scope_rows.saturating_add(m.row_count as u64);
-            scope_live = scope_live.saturating_add(m.live_count as u64);
-            scope_tombstones = scope_tombstones.saturating_add(m.tombstone_count as u64);
-
-            match current.as_mut() {
-                Some(v) if v.index_id == key.index_id && v.index_version == key.index_version => {
-                    v.page_count = v.page_count.saturating_add(1);
-                    v.row_count = v.row_count.saturating_add(m.row_count as u64);
-                    v.physical_live_row_count = v
-                        .physical_live_row_count
-                        .saturating_add(m.live_count as u64);
-                    v.tombstone_row_count = v
-                        .tombstone_row_count
-                        .saturating_add(m.tombstone_count as u64);
-                    v.referenced_page_bytes = v.referenced_page_bytes.saturating_add(bytes);
-                }
-                _ => {
-                    if let Some(v) = current.take() {
-                        versions.push(v);
-                    }
-                    current = Some(VectorSlabVersionStats {
-                        index_id: key.index_id,
-                        index_version: key.index_version,
-                        page_count: 1,
-                        row_count: m.row_count as u64,
-                        physical_live_row_count: m.live_count as u64,
-                        tombstone_row_count: m.tombstone_count as u64,
-                        referenced_page_bytes: bytes,
-                    });
-                }
-            }
+            acc.observe(entry.key(), &m);
         }
-        if let Some(v) = current.take() {
-            versions.push(v);
-        }
+        let (scope, versions, referenced_global) = acc.finish();
 
         let slab_size_bytes = self.slab.size().saturating_mul(WASM_PAGE_SIZE);
         let estimated_unreferenced_bytes = self
@@ -891,16 +945,87 @@ impl VectorSlabStore {
                 referenced_page_bytes_global: referenced_global,
                 estimated_unreferenced_bytes,
             },
-            scope: VectorSlabScopeStats {
-                index_id,
-                referenced_page_bytes: scope_referenced,
-                page_count: scope_pages,
-                row_count: scope_rows,
-                physical_live_row_count: scope_live,
-                tombstone_row_count: scope_tombstones,
-            },
+            scope,
             versions,
         }
+    }
+
+    /// Bounded, cursor-resumable variant of [`stats_for_index`](Self::stats_for_index) for the
+    /// IC-safe `admin_vector_slab_stats_step` query. Scans at most `max_pages` `VECTOR_PAGE_META`
+    /// entries (clamped to `1..=MAX_SLAB_STATS_STEP_PAGES`), returning an opaque `PageKey` cursor to
+    /// resume from. Callers repeat until `exhausted` and merge the additive partials client-side.
+    ///
+    /// Like [`stats_for_index`](Self::stats_for_index) this reads only page meta + the slab
+    /// header/size. Each step's `partial.slab.referenced_page_bytes_global` sums every page observed
+    /// in the step (even outside `index_id`), so the merged total covers the whole slab; the per-step
+    /// `partial.slab.estimated_unreferenced_bytes` is always `0` and the caller recomputes it after
+    /// merging. The `cursor` is **external caller input**, so a malformed (wrong-length) cursor is
+    /// rejected with [`VectorIndexError::InvalidStatsCursor`] rather than trapping.
+    ///
+    /// This is a bounded best-effort scan, **not** a point-in-time snapshot: the cursor is only a
+    /// `PageKey`, so `VECTOR_PAGE_META` writes between steps are not isolated (see
+    /// [`VectorSlabStatsStep`] for the exact drift modes). Run the steps during a quiescent window, or
+    /// use the single-call [`stats_for_index`](Self::stats_for_index), for an exact whole-slab figure.
+    pub(crate) fn stats_step(
+        &self,
+        cursor: Option<Vec<u8>>,
+        max_pages: u32,
+        index_id: Option<u32>,
+    ) -> Result<VectorSlabStatsStep, VectorIndexError> {
+        let budget = max_pages.clamp(1, MAX_SLAB_STATS_STEP_PAGES);
+        // Validate the caller-supplied cursor before decoding: `PageKey::from_bytes` panics on any
+        // length other than `PAGE_KEY_LEN`, and this cursor is untrusted Candid input.
+        if let Some(bytes) = &cursor
+            && bytes.len() != PAGE_KEY_LEN
+        {
+            return Err(VectorIndexError::InvalidStatsCursor);
+        }
+
+        let mut acc = SlabStatsAcc::new(index_id);
+        let mut last: Option<PageKey> = None;
+        let mut exhausted = true;
+        let mut processed: u32 = 0;
+        {
+            // Scan the whole map (not one index) so global referenced bytes stay correct under a
+            // `Some(index_id)` filter.
+            let lower = match &cursor {
+                None => RangeBound::Unbounded,
+                Some(bytes) => RangeBound::Excluded(PageKey::from_bytes(Cow::Borrowed(bytes))),
+            };
+            for entry in self.meta.range((lower, RangeBound::Unbounded)) {
+                if processed >= budget {
+                    exhausted = false;
+                    break;
+                }
+                let key = entry.key();
+                let m = entry.value();
+                acc.observe(key, &m);
+                last = Some(*key);
+                processed += 1;
+            }
+        }
+        let (scope, versions, referenced_global) = acc.finish();
+        let cursor_out = if exhausted {
+            None
+        } else {
+            last.map(Storable::into_bytes)
+        };
+
+        let slab_size_bytes = self.slab.size().saturating_mul(WASM_PAGE_SIZE);
+        Ok(VectorSlabStatsStep {
+            partial: VectorSlabStats {
+                slab: VectorSlabGlobalStats {
+                    slab_size_bytes,
+                    occupied_tail_bytes: self.occupied_tail,
+                    referenced_page_bytes_global: referenced_global,
+                    estimated_unreferenced_bytes: 0,
+                },
+                scope,
+                versions,
+            },
+            cursor: cursor_out,
+            exhausted,
+        })
     }
 
     // --- Test-only inspection helpers ---
@@ -1481,5 +1606,264 @@ mod tests {
         assert!(scoped.versions.iter().all(|v| v.index_id == 1));
         // Physical slab facts are whole-slab global regardless of the index filter.
         assert_eq!(scoped.slab, global.slab);
+    }
+
+    /// Drives [`VectorSlabStore::stats_step`] to exhaustion, returning every partial step.
+    fn collect_steps(
+        store: &VectorSlabStore,
+        max_pages: u32,
+        index_id: Option<u32>,
+    ) -> Vec<VectorSlabStatsStep> {
+        let mut steps = Vec::new();
+        let mut cursor: Option<Vec<u8>> = None;
+        loop {
+            let step = store
+                .stats_step(cursor.clone(), max_pages, index_id)
+                .expect("step");
+            let done = step.exhausted;
+            cursor = step.cursor.clone();
+            steps.push(step);
+            if done {
+                break;
+            }
+        }
+        steps
+    }
+
+    /// Client-side merge per [`VectorSlabStatsStep`]'s contract: additive logical counters + global
+    /// referenced bytes, last physical snapshot, dead space recomputed once after merging.
+    fn merge_steps(steps: &[VectorSlabStatsStep]) -> VectorSlabStats {
+        let last = steps.last().expect("at least one step");
+        let slab_size_bytes = last.partial.slab.slab_size_bytes;
+        let occupied_tail_bytes = last.partial.slab.occupied_tail_bytes;
+        let index_id = last.partial.scope.index_id;
+
+        let mut referenced_global = 0u64;
+        let mut scope = VectorSlabScopeStats {
+            index_id,
+            referenced_page_bytes: 0,
+            page_count: 0,
+            row_count: 0,
+            physical_live_row_count: 0,
+            tombstone_row_count: 0,
+        };
+        let mut versions: Vec<VectorSlabVersionStats> = Vec::new();
+        for step in steps {
+            referenced_global =
+                referenced_global.saturating_add(step.partial.slab.referenced_page_bytes_global);
+            let s = &step.partial.scope;
+            scope.referenced_page_bytes = scope
+                .referenced_page_bytes
+                .saturating_add(s.referenced_page_bytes);
+            scope.page_count = scope.page_count.saturating_add(s.page_count);
+            scope.row_count = scope.row_count.saturating_add(s.row_count);
+            scope.physical_live_row_count = scope
+                .physical_live_row_count
+                .saturating_add(s.physical_live_row_count);
+            scope.tombstone_row_count = scope
+                .tombstone_row_count
+                .saturating_add(s.tombstone_row_count);
+            for v in &step.partial.versions {
+                match versions
+                    .iter_mut()
+                    .find(|e| e.index_id == v.index_id && e.index_version == v.index_version)
+                {
+                    Some(e) => {
+                        e.page_count = e.page_count.saturating_add(v.page_count);
+                        e.row_count = e.row_count.saturating_add(v.row_count);
+                        e.physical_live_row_count = e
+                            .physical_live_row_count
+                            .saturating_add(v.physical_live_row_count);
+                        e.tombstone_row_count =
+                            e.tombstone_row_count.saturating_add(v.tombstone_row_count);
+                        e.referenced_page_bytes = e
+                            .referenced_page_bytes
+                            .saturating_add(v.referenced_page_bytes);
+                    }
+                    None => versions.push(*v),
+                }
+            }
+        }
+        let estimated_unreferenced_bytes = occupied_tail_bytes
+            .saturating_sub(SLAB_HEADER_LEN)
+            .saturating_sub(referenced_global);
+        VectorSlabStats {
+            slab: VectorSlabGlobalStats {
+                slab_size_bytes,
+                occupied_tail_bytes,
+                referenced_page_bytes_global: referenced_global,
+                estimated_unreferenced_bytes,
+            },
+            scope,
+            versions,
+        }
+    }
+
+    fn seed_rows(
+        store: &mut VectorSlabStore,
+        d: &VectorIndexDef,
+        index_id: u32,
+        version: u64,
+        n: u32,
+    ) {
+        for v in 0..n {
+            store
+                .append_row(
+                    index_id,
+                    version,
+                    0,
+                    d,
+                    v as u64,
+                    1,
+                    subject(v),
+                    &bytes(v as f32, 0.0),
+                )
+                .unwrap();
+        }
+    }
+
+    #[test]
+    fn stats_step_single_step_matches_unbounded() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(1); // one page per row
+        let mut store = open(&mm);
+        seed_rows(&mut store, &d, 1, 1, 3);
+
+        let steps = collect_steps(&store, 100, None);
+        assert_eq!(steps.len(), 1, "budget covers every page in one step");
+        assert!(steps[0].exhausted);
+        assert!(steps[0].cursor.is_none());
+        assert_eq!(
+            steps[0].partial.slab.estimated_unreferenced_bytes, 0,
+            "per-step dead space is always 0"
+        );
+        assert_eq!(merge_steps(&steps), store.stats_for_index(None));
+    }
+
+    #[test]
+    fn stats_step_multi_step_merge_matches_unbounded() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(1);
+        let mut store = open(&mm);
+        seed_rows(&mut store, &d, 1, 1, 5);
+
+        let steps = collect_steps(&store, 1, None);
+        assert_eq!(
+            steps.len(),
+            5,
+            "one single-page step per page, no phantom trailing step"
+        );
+        assert!(steps.last().expect("last").exhausted);
+        assert!(steps.last().expect("last").cursor.is_none());
+        assert!(
+            steps[..4]
+                .iter()
+                .all(|s| !s.exhausted && s.cursor.is_some()),
+            "non-final steps carry a resume cursor"
+        );
+        // Merged partials reconstruct the unbounded snapshot exactly (dead space via the formula).
+        assert_eq!(merge_steps(&steps), store.stats_for_index(None));
+    }
+
+    #[test]
+    fn stats_step_scoped_counts_global_bytes_but_scopes_logical() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(1);
+        let mut store = open(&mm);
+        // index 1: 2 pages; index 2: 2 pages.
+        seed_rows(&mut store, &d, 1, 1, 2);
+        store
+            .append_row(2, 1, 0, &d, 10, 1, subject(10), &bytes(0.0, 0.0))
+            .unwrap();
+        store
+            .append_row(2, 1, 0, &d, 11, 1, subject(11), &bytes(1.0, 0.0))
+            .unwrap();
+        let span = page_span(1, d.stride_bytes);
+
+        let steps = collect_steps(&store, 1, Some(1));
+        let merged = merge_steps(&steps);
+        assert_eq!(merged, store.stats_for_index(Some(1)));
+        assert_eq!(
+            merged.slab.referenced_page_bytes_global,
+            4 * span,
+            "whole slab, even pages outside the index filter"
+        );
+        assert_eq!(merged.scope.page_count, 2, "only index 1 pages scoped");
+        assert_eq!(merged.scope.referenced_page_bytes, 2 * span);
+        assert!(merged.versions.iter().all(|v| v.index_id == 1));
+    }
+
+    #[test]
+    fn stats_step_cursor_resumes_without_dup_or_skip() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(1);
+        let mut store = open(&mm);
+        seed_rows(&mut store, &d, 1, 1, 3);
+
+        let steps = collect_steps(&store, 1, None);
+        let total_pages: u64 = steps.iter().map(|s| s.partial.scope.page_count).sum();
+        assert_eq!(total_pages, 3, "every page counted exactly once");
+        assert!(
+            steps.iter().all(|s| s.partial.scope.page_count == 1),
+            "each single-page step processes exactly one page (no dup)"
+        );
+        assert_eq!(merge_steps(&steps), store.stats_for_index(None));
+    }
+
+    #[test]
+    fn stats_step_budget_clamps_low_and_high() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(1);
+        let mut store = open(&mm);
+        seed_rows(&mut store, &d, 1, 1, 3);
+
+        // max_pages = 0 clamps up to 1 -> exactly one page, more remain.
+        let low = store.stats_step(None, 0, None).expect("step");
+        assert_eq!(low.partial.scope.page_count, 1);
+        assert!(!low.exhausted);
+        assert!(low.cursor.is_some());
+
+        // A huge budget clamps to MAX_SLAB_STATS_STEP_PAGES; a tiny store still finishes in one step.
+        let high = store.stats_step(None, u32::MAX, None).expect("step");
+        assert!(high.exhausted);
+        assert!(high.cursor.is_none());
+        assert_eq!(high.partial.scope.page_count, 3);
+    }
+
+    #[test]
+    fn stats_step_empty_store_is_exhausted() {
+        let mm = fresh_mm();
+        let step = open(&mm).stats_step(None, 10, None).expect("step");
+        assert!(step.exhausted);
+        assert!(step.cursor.is_none());
+        assert_eq!(step.partial.scope.page_count, 0);
+        assert_eq!(step.partial.slab.referenced_page_bytes_global, 0);
+        assert_eq!(step.partial.slab.estimated_unreferenced_bytes, 0);
+        assert_eq!(step.partial.slab.occupied_tail_bytes, SLAB_HEADER_LEN);
+        assert!(step.partial.versions.is_empty());
+    }
+
+    #[test]
+    fn stats_step_rejects_malformed_cursor() {
+        let mm = fresh_mm();
+        let store = open(&mm);
+        assert_eq!(
+            store.stats_step(Some(vec![0u8; 5]), 10, None).unwrap_err(),
+            VectorIndexError::InvalidStatsCursor
+        );
+        assert_eq!(
+            store.stats_step(Some(Vec::new()), 10, None).unwrap_err(),
+            VectorIndexError::InvalidStatsCursor
+        );
+        // A correctly sized cursor decodes to a `PageKey` and is accepted (matches nothing here).
+        let ok = store
+            .stats_step(Some(vec![0u8; PAGE_KEY_LEN]), 10, None)
+            .expect("well-formed cursor");
+        assert!(ok.exhausted);
     }
 }

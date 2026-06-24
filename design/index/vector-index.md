@@ -113,8 +113,23 @@ an optional `index_id` scopes only the logical counters and the per-version brea
 `physical_live_row_count` is `VectorPageMeta.live_count` (physical non-tombstone rows), which can
 exceed the searchable count because the search freshness check skips stale/meta-drift rows; the
 dead-space estimate is approximate and intentionally conservative (it grows as cleanup deletes page
-meta without rewinding the slab tail). The query is an unbounded full page-meta scan for this slice;
-a bounded `cursor + max_pages` snapshot and any allocator/compaction work remain deferred.
+meta without rewinding the slab tail). `admin_vector_slab_stats` is an unbounded full page-meta scan
+retained as a convenience query; for large stores the IC-safe path is `admin_vector_slab_stats_step`,
+a cursor/budgeted variant that scans at most `max_pages` page-meta entries per call (clamped
+server-side) and returns an opaque `PageKey` cursor to resume from. Its per-step results are partial
+and additive: the caller repeats until `exhausted` and sums them, except the physical snapshots
+(`slab_size_bytes`/`occupied_tail_bytes`) which are repeated (take any step's value). Each step still
+scans the whole map for global referenced bytes even under an `index_id` filter, so each step's
+`estimated_unreferenced_bytes` is reported as `0`; the caller recomputes it once after merging as
+`occupied_tail_bytes - slab_header_len - sum(referenced_page_bytes_global)`. The step cursor is
+external caller input, so a malformed cursor is rejected with an error rather than trapping. The
+stepped path is a bounded best-effort scan, **not** a point-in-time snapshot: the cursor is only a
+`PageKey`, so it has no snapshot isolation against concurrent `VECTOR_PAGE_META` writes between calls
+(a page inserted before the cursor is missed, a counted-then-deleted page lingers in the merge, and
+the last step's `occupied_tail_bytes` may pair with earlier-state referenced bytes). For an exact
+whole-slab figure, run the steps during a quiescent window or use the single-call
+`admin_vector_slab_stats`; the diagnostic-only counters tolerate small cross-call drift otherwise.
+Neither query changes allocation, and any compaction/tail-rewind work remains deferred.
 
 Still deferred to Slice 9+: tombstone-ratio / total-row partition health (needs a page scan or new
 persisted counters), full/balanced k-means and k-means++ init, partition tombstone-cleanup

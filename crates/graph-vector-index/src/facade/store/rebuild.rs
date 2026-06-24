@@ -35,7 +35,7 @@ use crate::records::{
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
     VectorEncoding, VectorIndexError, VectorMetric, VectorPartitionHealthSummary,
-    VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats,
+    VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats, VectorSlabStatsStep,
 };
 use ic_stable_structures::storable::Storable;
 use rapidhash::{HashSetExt, RapidHashSet};
@@ -769,6 +769,21 @@ impl VectorIndexStore {
     ) -> Result<VectorSlabStats, VectorIndexError> {
         self.assert_router_caller(caller)?;
         Ok(PAGE_STORE.with_borrow(|store| store.stats_for_index(index_id)))
+    }
+
+    /// IC-safe, cursor/budgeted variant of [`admin_vector_slab_stats`](Self::admin_vector_slab_stats)
+    /// for large stores: one bounded page-meta scan step (see [`VectorSlabStatsStep`] for the
+    /// client-side merge contract). Router-guarded `#[query]`. The cursor is external caller input,
+    /// so a malformed cursor returns [`VectorIndexError::InvalidStatsCursor`] rather than trapping.
+    pub fn admin_vector_slab_stats_step(
+        &self,
+        caller: Principal,
+        cursor: Option<Vec<u8>>,
+        max_pages: u32,
+        index_id: Option<u32>,
+    ) -> Result<VectorSlabStatsStep, VectorIndexError> {
+        self.assert_router_caller(caller)?;
+        PAGE_STORE.with_borrow(|store| store.stats_step(cursor, max_pages, index_id))
     }
 
     /// Atomically publishes a `ReadyToPublish` rebuild (ADR 0031 Slice 7). **O(1)**: completeness is

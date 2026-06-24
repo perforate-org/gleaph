@@ -291,8 +291,17 @@ over these two regions: whole-slab physical facts (size, `occupied_tail`, global
 conservative dead-space estimate) plus optional per-`index_id`/per-version logical counters. Because
 `VECTOR_ROW_SLAB` is a single global allocation domain, the physical facts are always global while
 `index_id` scopes only the logical counters. It reads only `VECTOR_PAGE_META` + the slab header
-(never row bytes or `VECTOR_SUBJECT_TO_ID`) and is currently an **unbounded** full page-meta scan
-(a bounded cursor snapshot is deferred). It is diagnostic only and never affects search/freshness.
+(never row bytes or `VECTOR_SUBJECT_TO_ID`). `admin_vector_slab_stats` is the **unbounded** full
+page-meta scan kept as a convenience query; `admin_vector_slab_stats_step` is the IC-safe bounded
+companion that scans at most `max_pages` page-meta entries per call and returns an opaque `PageKey`
+cursor. Its steps are additive partials merged client-side: each step still sums global referenced
+bytes across the whole map (even under an `index_id` filter), so the per-step dead-space estimate is
+`0` and is recomputed once after merging. A malformed step cursor returns an error rather than
+trapping. The stepped path is a bounded best-effort scan with **no snapshot isolation** (the cursor
+is only a `PageKey`, so concurrent `VECTOR_PAGE_META` writes between calls can be missed or
+double-counted); run it during a quiescent window or use the single-call query for an exact figure.
+Both queries are diagnostic only and never affect search/freshness; allocator/compaction work remains
+deferred.
 
 | MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
 |--------|--------|--------------|---------|-------|--------------|---------|

@@ -2340,3 +2340,14 @@ fn slab_stats_rejects_non_router_caller() {
         VectorIndexError::Unauthorized
     );
 }
+
+#[test]
+fn slab_stats_step_rejects_non_router_caller() {
+    let store = fresh_store();
+    assert_eq!(
+        store
+            .admin_vector_slab_stats_step(shard_canister(), None, 10, None)
+            .unwrap_err(),
+        VectorIndexError::Unauthorized
+    );
+}

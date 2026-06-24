@@ -303,7 +303,51 @@ pub struct VectorSlabGlobalStats {
     /// Approximate leaked/dead bytes:
     /// `occupied_tail_bytes - slab_header_len - referenced_page_bytes_global`, saturating at zero.
     /// Conservative; grows as cleanup deletes page meta without rewinding the slab tail.
+    ///
+    /// **Meaningful only in a whole-slab result** (the unbounded `admin_vector_slab_stats`, or a
+    /// client-merged set of [`VectorSlabStatsStep`]s). It is always `0` inside a per-step
+    /// [`VectorSlabStatsStep::partial`], because a single bounded step has not yet observed every
+    /// referenced page; the caller recomputes the estimate after merging all steps.
     pub estimated_unreferenced_bytes: u64,
+}
+
+/// One bounded page-meta scan step for the cursor/budgeted `admin_vector_slab_stats_step` query.
+///
+/// IC-safe incremental variant of [`VectorSlabStats`]: each call scans at most a budgeted number of
+/// `VECTOR_PAGE_META` entries, then returns a `cursor` to resume from. Callers repeat until
+/// `exhausted` is `true` and merge the partials client-side.
+///
+/// **Merge contract.** `partial` is *additive* across steps, with these exceptions:
+/// - `partial.slab.slab_size_bytes` and `partial.slab.occupied_tail_bytes` are repeated physical
+///   snapshots, not sums; take any step's value (the last is freshest).
+/// - `partial.slab.estimated_unreferenced_bytes` is always `0` per step. The final dead-space
+///   estimate is computed once after merging:
+///   `occupied_tail_bytes - slab_header_len - sum(partial.slab.referenced_page_bytes_global)`,
+///   saturating at zero.
+/// - `partial.slab.referenced_page_bytes_global`, `partial.scope`, and `partial.versions` are summed
+///   (versions by `(index_id, index_version)` key).
+///
+/// `partial.slab.referenced_page_bytes_global` accumulates the span of *every* page observed in the
+/// step, even pages outside a `Some(index_id)` filter, because `VECTOR_ROW_SLAB` is one global
+/// allocation domain. `partial.scope`/`partial.versions` only count pages within the scope.
+///
+/// `cursor` is opaque `PageKey` bytes; pass it back verbatim. It is `None` exactly when `exhausted`.
+///
+/// **No snapshot isolation.** This is a bounded *best-effort* scan, not a point-in-time snapshot. The
+/// cursor is only a `PageKey`, so concurrent `VECTOR_PAGE_META` writes between steps are not isolated:
+/// a page inserted *before* the cursor is missed, a page already counted then deleted still lingers in
+/// the merged total, and the last step's `occupied_tail_bytes` may pair with referenced bytes
+/// gathered from earlier states. For an exact whole-slab figure, either run the steps during a
+/// quiescent (no-write) window or use the unbounded single-call `admin_vector_slab_stats`. Since these
+/// are diagnostic-only counters, small cross-call drift is acceptable.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct VectorSlabStatsStep {
+    /// This step's additive contribution (see the merge contract above).
+    pub partial: VectorSlabStats,
+    /// Opaque resume cursor (`PageKey` bytes); `None` exactly when `exhausted`.
+    pub cursor: Option<Vec<u8>>,
+    /// `true` once the whole page-meta map has been scanned.
+    pub exhausted: bool,
 }
 
 /// Logical counters aggregated over the queried scope for [`VectorSlabStats`].
@@ -410,6 +454,8 @@ pub enum VectorIndexError {
     InvalidRebuildParams,
     /// Stable memory `grow` failed while reserving a slab page for a row append (ADR 0032).
     StableGrowFailed,
+    /// A caller-supplied `admin_vector_slab_stats_step` cursor is malformed (wrong byte length).
+    InvalidStatsCursor,
 }
 
 impl std::fmt::Display for VectorIndexError {
@@ -447,6 +493,7 @@ impl std::fmt::Display for VectorIndexError {
             Self::RebuildIncomplete => "vector rebuild completeness invariants are not satisfied",
             Self::InvalidRebuildParams => "invalid vector rebuild parameters",
             Self::StableGrowFailed => "stable memory grow failed while reserving a slab page",
+            Self::InvalidStatsCursor => "malformed slab stats cursor",
         };
         f.write_str(text)
     }
@@ -536,6 +583,8 @@ mod tests {
         for err in [
             VectorIndexError::EmbeddingVersionConflict,
             VectorIndexError::InvalidSearchTopK,
+            VectorIndexError::StableGrowFailed,
+            VectorIndexError::InvalidStatsCursor,
         ] {
             let bytes = Encode!(&err).expect("encode");
             assert_eq!(Decode!(&bytes, VectorIndexError).expect("decode"), err);
