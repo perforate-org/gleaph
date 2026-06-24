@@ -66,5 +66,6 @@ Last revised: YYYY-MM-DD
 | [0029](0029-shard-local-atomicity-and-cross-canister-consistency.md) | Shard-local atomicity and asynchronous cross-canister consistency | accepted |
 | [0030](0030-cross-shard-uniqueness-tcc-reservation.md) | Cross-shard uniqueness via Router-coordinated TCC reservation | accepted (partially implemented) |
 | [0031](0031-vertex-embedding-store-and-derived-vector-index.md) | Vertex embedding store and derived vector index canister | accepted (planned) |
+| [0032](0032-vector-index-slab-page-store.md) | Vector index slab page store | accepted (planned) |
 
 When adding an ADR, link it from the relevant design doc and update this table.

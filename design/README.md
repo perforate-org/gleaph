@@ -48,6 +48,7 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | [adr/0001-labeled-segment-slide.md](adr/0001-labeled-segment-slide.md) | accepted | Labeled physical layer → PMA leaf segment slide |
 | [adr/0029-shard-local-atomicity-and-cross-canister-consistency.md](adr/0029-shard-local-atomicity-and-cross-canister-consistency.md) | accepted | Shard-local atomic writes plus durable asynchronous projection and federated saga consistency |
 | [adr/0031-vertex-embedding-store-and-derived-vector-index.md](adr/0031-vertex-embedding-store-and-derived-vector-index.md) | accepted (planned) | Vertex embedding store and derived vector index canister |
+| [adr/0032-vector-index-slab-page-store.md](adr/0032-vector-index-slab-page-store.md) | accepted (planned) | Vector-index physical page store split into metadata directory and raw stable slab |
 
 ## Conventions
 

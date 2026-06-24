@@ -1,7 +1,7 @@
 # Vector index
 
 Last updated: 2026-06-24
-Anchor timestamp: 2026-06-24 10:36:29 UTC +0000
+Anchor timestamp: 2026-06-24 15:21:44 UTC +0000
 
 ## Status
 
@@ -84,6 +84,14 @@ Slice 8 is implemented: a bounded, deterministic **k-means-lite `Training` phase
 and `Building` that refines the centroids (Slice 7 used the first `nlist` distinct samples verbatim),
 plus a head-only **partition-health** summary for skew visibility. No new stable region. See *Slice 8
 training quality + partition health (implemented)* below.
+
+[ADR 0032](../adr/0032-vector-index-slab-page-store.md) is accepted as a **planned physical-layout
+replacement** for vector pages: the current `VECTOR_PAGE` large value store will be replaced by a
+vector-index-owned page-metadata directory plus a raw stable row slab. The development page
+representation has no deployed runtime state to preserve, so ADR 0032 requires no old-page
+migration, compatibility reader, or canonical backfill/rebuild step for this layout change. ADR 0032
+preserves the ADR 0031 freshness contract: `VECTOR_SUBJECT_TO_ID` remains the
+live-clock/source-of-truth row, while row-local subject locators are derived scan acceleration.
 
 Still deferred to Slice 9+: tombstone-ratio / total-row partition health (needs a page scan or new
 persisted counters), full/balanced k-means and k-means++ init, partition tombstone-cleanup
