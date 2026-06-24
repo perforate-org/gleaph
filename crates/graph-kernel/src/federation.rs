@@ -5,6 +5,7 @@ mod bulk_ingest_finalize;
 mod claim;
 mod edge_backfill_shard_state;
 mod edge_posting_backfill;
+mod embedding_backfill;
 mod encoded;
 mod expand;
 mod global_edge_id;
@@ -26,6 +27,9 @@ pub use claim::ClaimId;
 pub use edge_backfill_shard_state::{EDGE_PROPERTY_KEY_BYTES, EdgeBackfillShardState};
 pub use edge_posting_backfill::{
     EdgePostingBackfillArgs, EdgePostingBackfillResult, EdgePropertyBackfillRequest,
+};
+pub use embedding_backfill::{
+    EmbeddingBackfillArgs, EmbeddingBackfillResult, VertexEmbeddingBackfillRequest,
 };
 pub use encoded::{
     ENCODED_EDGE_ID_BYTES, ENCODED_VERTEX_ID_BYTES, ElementIdEncodingKey, EncodedEdgeId,

@@ -349,6 +349,7 @@ mod tests {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
+                vector_index_canister: None,
             }))
             .expect("set routing");
         // Start from an empty journal so the assertions below are exact.
@@ -424,6 +425,7 @@ mod tests {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
+                vector_index_canister: None,
             }))
             .expect("set routing");
         drain_test_journal(&graph);
@@ -459,6 +461,7 @@ mod tests {
                 router_canister: Principal::management_canister(),
                 index_canister: Principal::management_canister(),
                 shard_id: ShardId::new(0),
+                vector_index_canister: None,
             }))
             .expect("set routing");
         drain_test_journal(&graph);

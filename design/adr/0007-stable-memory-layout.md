@@ -22,6 +22,7 @@ Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
 | 2026-06-12 | canbench: `cold_touch_40` 574.83 K / 5,121 pages; graph stable reopen 487.30 K / 5,760 pages (post-0009). |
 | 2026-06-12 | ADR 0009 follow-up: index catalog row layout — `ROUTER_NAMED_INDEXES` (22) + `ROUTER_INDEXED_PROPERTY_SET` (23); router **24** regions (0–23). |
 | 2026-06-23 | ADR 0031 slice 1: added canonical graph `VERTEX_EMBEDDINGS` (44); graph **45** regions (facade 32–44). |
+| 2026-06-23 | ADR 0031 slice 2: new `graph-vector-index` canister; `VECTOR_INDEX_STABLE_LAYOUT` **11** regions (0–10); MemoryId 6 (`IVF_CENTROIDS`) reserved-empty for Slice 4. |
 
 ## Context
 
@@ -104,6 +105,7 @@ Code source of truth:
 | Graph — facade | 8 | 32–39 | Properties, labels, aliases, label stats delta log, mutation journal |
 | Router | 34 | 0–33 | Grouped auth → registry → runtime config → idempotency → catalog → telemetry → maintenance; `ROUTER_GRAPH_RUNTIME_CONFIG` at MemoryId 5 |
 | Graph-index | 7 | 0–6 | Router auth, shard catalog, ownership config, then derived postings |
+| Graph-vector-index | 11 | 0–10 | Router auth, shard catalog, ownership config, index defs + allocators, centroid meta, reserved centroids, subject clock, id→slot, partition heads, pages (ADR 0031 Slice 2) |
 
 Ephemeral heap state (pending posting queues on graph canisters) is **not**
 part of this layout; see inventory § ephemeral. Router prepared plans are **stable**

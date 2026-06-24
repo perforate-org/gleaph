@@ -236,6 +236,7 @@ fn with_routing<R>(body: impl FnOnce(&GraphStore) -> R) -> R {
             router_canister: Principal::management_canister(),
             index_canister: Principal::management_canister(),
             shard_id: ShardId::new(0),
+            vector_index_canister: None,
         }))
         .expect("set routing");
     drain_journal(&graph);
@@ -338,7 +339,7 @@ fn postings_converge_to_store_projection_after_failure_and_compaction() {
             .expect("label batch flushes");
 
         // Repair: replay the journaled vertex batch (the index is healthy now).
-        pollster::block_on(drain_once(&index)).expect("journal drains clean");
+        pollster::block_on(drain_once(&index, None)).expect("journal drains clean");
         assert!(graph.repair_journal_is_empty(), "journal fully drained");
 
         let expected = IndexProjection {
@@ -358,7 +359,7 @@ fn postings_converge_to_store_projection_after_failure_and_compaction() {
         );
 
         // Re-application is idempotent: a second drain is a clean no-op.
-        pollster::block_on(drain_once(&index)).expect("idempotent re-drain");
+        pollster::block_on(drain_once(&index, None)).expect("idempotent re-drain");
         assert_eq!(*index.state.borrow(), expected);
     });
 }

@@ -5,10 +5,36 @@ Status: accepted (partially implemented)
 Last revised: 2026-06-23
 
 > **Status note:** The boundary decision is accepted. Slice 1 (the canonical graph-owned
-> vertex embedding store) is implemented; the derived vector-index canister, repair/backfill,
-> Candid API, and query operators remain planned. This ADR fixes ownership, consistency, the
-> standard `ivf_flat` vector-index kind, and the first derived vector-index stable-memory shape
-> before the Candid API or query operator is committed.
+> vertex embedding store) and Slice 2 (the derived sync path plus a degenerate `ivf_flat`
+> `graph-vector-index` canister foundation — mutation-only) are implemented. Slice 2 covers the
+> `graph-kernel` sync/mutation wire types, the `VECTOR_INDEX_STABLE_LAYOUT` registry (11 regions,
+> MemoryId 0–10, `IVF_CENTROIDS` reserved-empty), the canister storage (`vector_upsert` /
+> `vector_remove`, durable allocators, subject tombstone clock, attach/detach), and the graph-side
+> delta plumbing (catalog-gated dispatch, `vector_pending`, `RepairPostingOp::VectorEmbedding`,
+> repair drain, `vertex_embedding_backfill`). The intended convergence model is canonical-wins: an
+> upsert delivered to a tombstoned subject resurrects it with a fresh `VectorId` (the canonical
+> `embedding_version` resets on re-insert and cannot be ordered against the clock), and the graph
+> repair-drain reconciles journaled vector ops against the canonical store rather than replaying
+> them.
+>
+> **Slice 3 activation gate (canonical-wins drain is a dispatch-inactive scaffold).** Slice 2
+> production never injects an `IndexedEmbeddingCatalog`, so vector dispatch is inert and the
+> canonical-wins drain is exercised only by tests. It is **not** yet a correct production
+> convergence path: because `embedding_version` resets on re-insert it is an insufficient ordering
+> token across a delete boundary, and the canonical-deleted reconcile sends a *blind* remove that
+> cannot avoid **both** a forward-orphan (a stale-version remove no-ops against a newer live slot,
+> leaving a deleted embedding's vector) and a reverse-orphan (a `u64::MAX` remove racing a
+> re-insert's direct-flush upsert tombstones a live vector at the IC await commit point). Dropping
+> the reconcile entry erases the divergence signal, so a later tick cannot re-detect it. **Before
+> Slice 3 injects a production catalog, a delete-spanning monotonic incarnation/epoch — carried on
+> the sync op and enforced by the vector canister — MUST be added** so removes and re-inserts order
+> independent of arrival; catalog-backed dispatch stays fail-closed until then.
+>
+> Slice 2 production does **not** create vector-index
+> entries until the Router supplies an ephemeral `IndexedEmbeddingCatalog` in Slice 3. The Candid
+> search API, Router registry, and query operators remain planned. This ADR fixes ownership,
+> consistency, the standard `ivf_flat` vector-index kind, and the first derived vector-index
+> stable-memory shape before the Candid API or query operator is committed.
 
 ## Context
 
@@ -349,13 +375,13 @@ future ADR proves that physical index selection must be user-visible.
 
 ## Implementation plan
 
-1. Add `design/index/vector-index.md` as the planned design contract.
-2. Add shared vector-index wire types to `graph-kernel`.
-3. Add a graph-owned `VertexEmbeddingStore` with fixed-dimension `F32` records first.
-4. Add vector-index mutation deltas, volatile pending flush, durable repair journal integration, and
+1. **[done, slice 1]** Add `design/index/vector-index.md` as the planned design contract.
+2. **[done, slice 1/2]** Add shared vector-index wire types to `graph-kernel` (canonical + sync/mutation).
+3. **[done, slice 1]** Add a graph-owned `VertexEmbeddingStore` with fixed-dimension `F32` records first.
+4. **[done, slice 2]** Add vector-index mutation deltas, volatile pending flush, durable repair journal integration, and
    bounded backfill from graph shards.
-5. Add `graph-vector-index` canister with index-local `VectorId`s, partition-local fixed-width
-   `F32` vector pages, tombstones, `ivf_flat` search, and paginated candidate APIs.
+5. **[partial, slice 2]** Add `graph-vector-index` canister with index-local `VectorId`s, partition-local fixed-width
+   `F32` vector pages, tombstones, and attach/detach. (`ivf_flat` search and paginated candidate APIs remain Slice 4+.)
 6. Add router target resolution and query seed integration.
 7. Add algorithm-neutral GQL/query planning integration and keep `algorithm: "ivf_flat"` in index
    definition/config, not query syntax.

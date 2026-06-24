@@ -26,9 +26,11 @@ impl GraphStore {
         dims: u16,
         bytes: Vec<u8>,
     ) -> Result<u64, GraphStoreError> {
-        VERTEX_EMBEDDINGS
+        let version = VERTEX_EMBEDDINGS
             .with_borrow_mut(|store| store.set(vertex_id, embedding_name_id, encoding, dims, bytes))
-            .map_err(GraphStoreError::from)
+            .map_err(GraphStoreError::from)?;
+        crate::index::vector_dispatch::dispatch_vertex_upsert(vertex_id, embedding_name_id);
+        Ok(version)
     }
 
     pub fn vertex_embedding(
@@ -39,12 +41,28 @@ impl GraphStore {
         VERTEX_EMBEDDINGS.with_borrow(|store| store.get(vertex_id, embedding_name_id))
     }
 
+    /// The embedding names owned by `vertex_id` (used by the derived vector-index backfill).
+    pub fn vertex_embedding_names(&self, vertex_id: VertexId) -> Vec<EmbeddingNameId> {
+        VERTEX_EMBEDDINGS.with_borrow(|store| store.names_for(vertex_id))
+    }
+
     pub fn remove_vertex_embedding(
         &self,
         vertex_id: VertexId,
         embedding_name_id: EmbeddingNameId,
     ) -> Option<StoredEmbedding> {
-        VERTEX_EMBEDDINGS.with_borrow_mut(|store| store.remove(vertex_id, embedding_name_id))
+        let removed =
+            VERTEX_EMBEDDINGS.with_borrow_mut(|store| store.remove(vertex_id, embedding_name_id));
+        if let Some(record) = &removed {
+            crate::index::vector_dispatch::dispatch_vertex_remove(
+                vertex_id,
+                embedding_name_id,
+                record.version,
+                record.encoding,
+                record.dims,
+            );
+        }
+        removed
     }
 
     /// Removes every embedding owned by `vertex_id` (vertex-delete sidecar clear).
@@ -52,7 +70,17 @@ impl GraphStore {
         let names: Vec<EmbeddingNameId> =
             VERTEX_EMBEDDINGS.with_borrow(|store| store.names_for(vertex_id));
         for embedding_name_id in names {
-            VERTEX_EMBEDDINGS.with_borrow_mut(|store| store.remove(vertex_id, embedding_name_id));
+            let removed = VERTEX_EMBEDDINGS
+                .with_borrow_mut(|store| store.remove(vertex_id, embedding_name_id));
+            if let Some(record) = removed {
+                crate::index::vector_dispatch::dispatch_vertex_remove(
+                    vertex_id,
+                    embedding_name_id,
+                    record.version,
+                    record.encoding,
+                    record.dims,
+                );
+            }
         }
     }
 }

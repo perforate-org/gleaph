@@ -152,6 +152,8 @@ fn build_wasm(manifest_dir: &Path) {
         "gleaph-graph-index",
         "-p",
         "gleaph-graph",
+        "-p",
+        "gleaph-graph-vector-index",
         "--target",
         wasm_target,
         "--features",
@@ -189,6 +191,12 @@ fn build_wasm(manifest_dir: &Path) {
     set_wasm_env(
         "GRAPH_WASM",
         wasm_dir.join("gleaph_graph.wasm").into_std_path_buf(),
+    );
+    set_wasm_env(
+        "VECTOR_INDEX_WASM",
+        wasm_dir
+            .join("gleaph_graph_vector_index.wasm")
+            .into_std_path_buf(),
     );
 }
 

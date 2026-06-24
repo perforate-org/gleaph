@@ -1,20 +1,21 @@
 # Stable-memory inventory
 
 Last updated: 2026-06-23
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–44 = 45 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index = 40 regions, 0–39)
-Anchor timestamp: 2026-06-23 06:39:47 UTC +0000
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–44 = 45 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index = 40 regions, 0–39; graph-vector-index: ADR 0031 Slice 2 = 11 regions, 0–10)
+Anchor timestamp: 2026-06-23 22:55:58 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
 ## Purpose
 
-Single inventory of stable-memory regions and heap-only facade state for the graph, router, and graph-index canisters. Each row names the owning domain, classification, and rebuild path where one exists.
+Single inventory of stable-memory regions and heap-only facade state for the graph, router, graph-index, and graph-vector-index canisters. Each row names the owning domain, classification, and rebuild path where one exists.
 
 Code source of truth for runtime `MemoryId` constants:
 
 - `crates/graph/src/facade/stable/memory.rs`
 - `crates/router/src/facade/stable/memory.rs`
 - `crates/graph-index/src/facade/stable/memory.rs`
+- `crates/graph-vector-index/src/facade/stable/memory.rs`
 
 Typed layout registry (descriptive mirror + validation tests): `gleaph_graph_kernel::stable_layout`
 and per-canister `facade/stable/layout.rs` — [ADR 0007](../adr/0007-stable-memory-layout.md) §7.
@@ -32,6 +33,7 @@ this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same pa
 | Graph | 45 | 0–44 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
 | Router | 40 | 0–39 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
 | Graph-index | 7 | 0–6 | `INDEX_STABLE_LAYOUT` — `index_layout_registry_matches_baseline` |
+| Graph-vector-index | 11 | 0–10 | `VECTOR_INDEX_STABLE_LAYOUT` — `vector_index_layout_registry_matches_baseline` |
 
 The canonical/derived split for the router registry projections is pinned by
 `router_registry_canonical_derived_split_matches_inventory`.
@@ -65,6 +67,7 @@ Authoritative definitions and Gleaph examples: `gleaph_graph_kernel::stable_layo
 | Edge property postings (graph-index) | `EDGE_PROPERTIES` (registered props) | DML + `edge_pending` flush | **Implemented:** `backfill_edge_property_postings` + router `admin_edge_backfill_step` ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md); retired shard-local `EDGE_EQUALITY_POSTINGS` 2026-06-12) |
 | Vertex property postings (graph-index) | Vertex properties (indexable) | DML + `pending.rs` flush | **Implemented:** `backfill_vertex_property_postings` + router `admin_vertex_property_backfill_step` |
 | Label postings (graph-index) | `VertexLabelStore` | DML + `label_pending` flush | **Implemented:** `backfill_label_postings` + router `admin_label_backfill_step` ([label-index.md](../index/label-index.md)) |
+| Vector-index entries (graph-vector-index) | `VERTEX_EMBEDDINGS` (canonical embeddings) | DML + `vector_pending` flush | **Slice 2:** `backfill_vertex_embeddings` (mutation path + repair drain); router admin step deferred to Slice 3 ([vector-index.md](../index/vector-index.md), [ADR 0031](../adr/0031-vertex-embedding-store-and-derived-vector-index.md)) |
 | Router label stats projection | Graph `LabelStatsDelta` | `advance_label_stats_projection` + per-shard cursor | **Implemented:** graph delta log replay via `admin_label_stats_projection_step`; no full historical scan |
 | Router indexed-property catalog | Property catalog + planner stats | Planner registration | **Stable** — row layout MemoryId 18–19 |
 
@@ -231,6 +234,38 @@ Router **40 regions** total (0–39).
 | 4 | `INDEX_VERTEX_POSTINGS` | `INDEX_VERTEX_POSTINGS` | `init_index_vertex_postings` | derived | vertex property postings | **Implemented:** `backfill_vertex_property_postings` + router `admin_vertex_property_backfill_step` |
 | 5 | `INDEX_VERTEX_LABEL_POSTINGS` | `INDEX_VERTEX_LABEL_POSTINGS` | `init_index_vertex_label_postings` | derived | vertex label postings | `backfill_label_postings` |
 | 6 | `INDEX_EDGE_POSTINGS` | `INDEX_EDGE_POSTINGS` | `init_index_edge_postings` | derived | edge property postings | **Implemented:** `backfill_edge_property_postings` (ADR 0009) |
+
+---
+
+## Graph-vector-index canister — stable regions
+
+New in ADR 0031 Slice 2. **11 regions (MemoryId 0–10).** The entire derived state is rebuildable
+from canonical graph embeddings via `vertex_embedding_backfill`, so every derived region shares the
+`"vertex_embedding_backfill"` rebuild path in `VECTOR_INDEX_STABLE_LAYOUT`
+(`crates/graph-kernel/src/stable_layout.rs`). Code source of truth for runtime `MemoryId` constants:
+`crates/graph-vector-index/src/facade/stable/memory.rs`. The degenerate `ivf_flat` foundation runs
+with `nlist = 1` / `partition_id = 0` and no centroids; MemoryId 6 (`IVF_CENTROIDS`) is allocated but
+empty so Slice 4 can populate centroid bytes without a `MemoryId` repack.
+
+Metadata ownership split: `VECTOR_INDEX_DEFS` (MemoryId 4) is authoritative for per-index config
+(`kind`, `encoding`, `dims`, `metric`, `active_index_version`, `stride_bytes`, page-capacity
+contract, and the durable `next_vector_id` allocator); `IVF_CENTROID_META` (MemoryId 5) holds only
+centroid-specific derived state. The durable `next_page_id` allocator lives in each
+`PartitionHead` (MemoryId 9).
+
+| MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
+|--------|--------|--------------|---------|-------|--------------|---------|
+| 0 | `VECTOR_INDEX_ROUTER` | `VECTOR_INDEX_ROUTER` | `init_router` | canonical | router authorization | — |
+| 1 | `VECTOR_INDEX_SHARD_CANISTER_BY_SHARD` | `SHARD_CANISTER_CATALOG` | `init_shard_canister_catalog` | canonical | shard canister catalog | — |
+| 2 | `VECTOR_INDEX_SHARD_BY_CANISTER` | `SHARD_CANISTER_CATALOG` | `init_shard_canister_catalog` | canonical | shard canister catalog | — |
+| 3 | `VECTOR_INDEX_OWNERSHIP_CONFIG` | `OWNERSHIP_CONFIG` | `init_ownership_config` | canonical | graph ownership | Graph owner config (`graph_id`, `index_group_size`, `group_index`) for attach range checks |
+| 4 | `VECTOR_INDEX_DEFS` | `VECTOR_INDEX_DEFS` | `init_defs` | derived | index definitions + allocators (SSOT for config) | `vertex_embedding_backfill` |
+| 5 | `IVF_CENTROID_META` | `IVF_CENTROID_META` | `init_centroid_meta` | derived | centroid-specific state | `vertex_embedding_backfill` |
+| 6 | `IVF_CENTROIDS` | `IVF_CENTROIDS` | `init_centroids` | derived | centroid vectors (**reserved-empty in Slice 2**) | `vertex_embedding_backfill` |
+| 7 | `VECTOR_SUBJECT_TO_ID` | `VECTOR_SUBJECT_TO_ID` | `init_subject_map` | derived | subject tombstone clock | `vertex_embedding_backfill` |
+| 8 | `VECTOR_ID_TO_SLOT` | `VECTOR_ID_TO_SLOT` | `init_id_to_slot` | derived | vector-id → slot map | `vertex_embedding_backfill` |
+| 9 | `VECTOR_PARTITION_HEADS` | `VECTOR_PARTITION_HEADS` | `init_partition_heads` | derived | partition page chains + `next_page_id` allocator | `vertex_embedding_backfill` |
+| 10 | `VECTOR_PAGE` | `VECTOR_PAGE` | `init_pages` | derived | fixed-capacity vector pages | `vertex_embedding_backfill` |
 
 ---
 

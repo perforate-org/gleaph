@@ -1126,6 +1126,19 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-graph-vector-index"
+version = "0.1.0"
+dependencies = [
+ "canbench-rs",
+ "candid",
+ "gleaph-graph-kernel",
+ "ic-cdk",
+ "ic-cdk-macros",
+ "ic-stable-structures",
+ "serde",
+]
+
+[[package]]
 name = "gleaph-pocket-ic-tests"
 version = "0.1.0"
 dependencies = [

@@ -485,6 +485,32 @@ where
     target.push((label, delta));
 }
 
+/// Delivers any queued derived vector-index mutations (ADR 0031), constructing the wasm client from
+/// `vector_index_canister` routing. The vector client is not threaded through the execution path
+/// (Slice 2 has no vector reads); on native builds this is a no-op unless a test queued ops, in
+/// which case [`crate::index::vector_pending::flush_pending`] journals them for repair.
+async fn flush_vector_pending(mutation_id: Option<u64>) -> Result<(), crate::plan::PlanQueryError> {
+    #[cfg(target_family = "wasm")]
+    {
+        let client = crate::facade::GraphStore::new()
+            .federation_routing()
+            .and_then(|r| r.vector_index_canister)
+            .map(
+                |vector_principal| crate::index::vector_ic::IcVectorIndexClient {
+                    vector_principal,
+                },
+            );
+        let vx = client
+            .as_ref()
+            .map(|c| c as &dyn crate::index::vector_lookup::VectorIndexLookup);
+        crate::index::vector_pending::flush_pending(vx, mutation_id).await
+    }
+    #[cfg(not(target_family = "wasm"))]
+    {
+        crate::index::vector_pending::flush_pending(None, mutation_id).await
+    }
+}
+
 /// Walk `block` in program order: run DML + flush pending; for read plans materialize [`Value`]
 /// rows, only count rows, or retain binding rows for the last read statement.
 async fn run_transaction_block(
@@ -521,6 +547,7 @@ async fn run_transaction_block(
             pending::flush_pending(index, None).await?;
             crate::index::edge_pending::flush_pending(index, None).await?;
             label_pending::flush_pending(index, None).await?;
+            flush_vector_pending(None).await?;
         } else {
             match materialize {
                 TransactionReadMaterialize::Full => {
@@ -1017,6 +1044,7 @@ async fn run_wire_plans_inner(
                 pending::flush_pending(index, mutation_id).await,
                 crate::index::edge_pending::flush_pending(index, mutation_id).await,
                 label_pending::flush_pending(index, mutation_id).await,
+                flush_vector_pending(mutation_id).await,
             ] {
                 match flush_result {
                     Ok(()) => {}
@@ -1574,6 +1602,7 @@ mod tests {
                 router_canister: candid::Principal::management_canister(),
                 index_canister: candid::Principal::management_canister(),
                 shard_id: gleaph_graph_kernel::federation::ShardId::new(0),
+                vector_index_canister: None,
             }))
             .expect("set routing");
     }

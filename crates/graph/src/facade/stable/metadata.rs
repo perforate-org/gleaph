@@ -38,6 +38,11 @@ pub struct FederationRouting {
     pub router_canister: Principal,
     pub shard_id: ShardId,
     pub index_canister: Principal,
+    /// Derived vector-index canister (ADR 0031). `None` on shards with no vector index attached;
+    /// the Router owns target selection (no `VectorSyncSpec` is persisted here). When `Some`, it
+    /// must not be the anonymous principal.
+    #[serde(default)]
+    pub vector_index_canister: Option<Principal>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -83,6 +88,11 @@ impl GraphMetadataV1 {
             if routing.index_canister == Principal::anonymous() {
                 return Err(GraphMetadataError::AnonymousFederationPrincipal(
                     "index_canister",
+                ));
+            }
+            if routing.vector_index_canister == Some(Principal::anonymous()) {
+                return Err(GraphMetadataError::AnonymousFederationPrincipal(
+                    "vector_index_canister",
                 ));
             }
         }
@@ -197,6 +207,7 @@ mod tests {
             router_canister: Principal::anonymous(),
             shard_id: ShardId::new(0),
             index_canister: Principal::from_slice(&[3; 29]),
+            vector_index_canister: None,
         }));
         assert_eq!(
             metadata.validate_for_store(),
@@ -213,11 +224,29 @@ mod tests {
             router_canister: Principal::management_canister(),
             shard_id: ShardId::new(0),
             index_canister: Principal::anonymous(),
+            vector_index_canister: None,
         }));
         assert_eq!(
             metadata.validate_for_store(),
             Err(GraphMetadataError::AnonymousFederationPrincipal(
                 "index_canister"
+            ))
+        );
+    }
+
+    #[test]
+    fn validate_rejects_anonymous_vector_index_canister() {
+        let mut metadata = GraphMetadata::default();
+        metadata.set_federation_routing(Some(FederationRouting {
+            router_canister: Principal::management_canister(),
+            shard_id: ShardId::new(0),
+            index_canister: Principal::from_slice(&[3; 29]),
+            vector_index_canister: Some(Principal::anonymous()),
+        }));
+        assert_eq!(
+            metadata.validate_for_store(),
+            Err(GraphMetadataError::AnonymousFederationPrincipal(
+                "vector_index_canister"
             ))
         );
     }
@@ -233,6 +262,7 @@ mod tests {
             router_canister: Principal::anonymous(),
             shard_id: ShardId::new(0),
             index_canister: Principal::from_slice(&[3; 29]),
+            vector_index_canister: None,
         }));
         let err = cell
             .set(metadata)
@@ -255,6 +285,7 @@ mod tests {
             router_canister: Principal::management_canister(),
             shard_id: ShardId::new(0),
             index_canister: Principal::from_slice(&[3; 29]),
+            vector_index_canister: None,
         }));
         metadata.validate_for_store().expect("valid metadata");
 

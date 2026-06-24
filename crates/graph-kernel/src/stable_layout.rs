@@ -1023,6 +1023,116 @@ pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     ],
 };
 
+/// Graph-vector-index canister — degenerate `ivf_flat` derived index (ADR 0031 Slice 2).
+///
+/// Canonical regions (router auth, shard catalog, ownership, index defs) mirror `graph-index`.
+/// All search/page structures are `Derived`: durable derived index state rebuildable from the
+/// graph canonical [`VERTEX_EMBEDDINGS`](GRAPH_STABLE_LAYOUT) store via `vertex_embedding_backfill`,
+/// not a deletable cache. `IVF_CENTROIDS` (MemoryId 6) is reserved empty in Slice 2 to avoid a
+/// future `MemoryId` repack when Slice 4 populates centroid bytes.
+pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
+    canister: "graph-vector-index",
+    regions: &[
+        region(
+            "VECTOR_INDEX_ROUTER",
+            0,
+            StableMemoryClass::Canonical,
+            "router authorization",
+            "Authorized router canister principal cell",
+            RebuildPath::None,
+        ),
+        region(
+            "VECTOR_INDEX_SHARD_CANISTER_BY_SHARD",
+            1,
+            StableMemoryClass::Canonical,
+            "shard canister catalog",
+            "ShardId → graph shard canister principal",
+            RebuildPath::None,
+        ),
+        region(
+            "VECTOR_INDEX_SHARD_BY_CANISTER",
+            2,
+            StableMemoryClass::Canonical,
+            "shard canister catalog",
+            "Graph shard canister principal → ShardId",
+            RebuildPath::None,
+        ),
+        region(
+            "VECTOR_INDEX_OWNERSHIP_CONFIG",
+            3,
+            StableMemoryClass::Canonical,
+            "graph ownership",
+            "Vector-index canister graph ownership and shard-group config (ADR 0019 S4)",
+            RebuildPath::None,
+        ),
+        region(
+            "VECTOR_INDEX_DEFS",
+            4,
+            StableMemoryClass::Canonical,
+            "vector index definitions",
+            "index_id → { kind: ivf_flat, encoding, dims, metric, nlist: 1, active_index_version, \
+             stride_bytes, max_page_bytes, slots_per_page, next_vector_id }: authoritative index \
+             config + durable VectorId allocator",
+            RebuildPath::None,
+        ),
+        region(
+            "IVF_CENTROID_META",
+            5,
+            StableMemoryClass::Derived,
+            "ivf centroid metadata",
+            "Degenerate centroid cache/training state (nlist=1, centroid-not-ready); holds only \
+             centroid-specific derived state, never restates active_index_version/nlist",
+            RebuildPath::Named("vertex_embedding_backfill"),
+        ),
+        region(
+            "IVF_CENTROIDS",
+            6,
+            StableMemoryClass::Derived,
+            "ivf centroids",
+            "Reserved empty in Slice 2; (index_id, index_version, partition_id) → centroid bytes \
+             once Slice 4 trains centroids",
+            RebuildPath::Named("vertex_embedding_backfill"),
+        ),
+        region(
+            "VECTOR_SUBJECT_TO_ID",
+            7,
+            StableMemoryClass::Derived,
+            "subject map",
+            "(index_id, subject) → SubjectMapEntry { stored_embedding_version, deleted, slot, \
+             vector_id }: retained as a durable tombstone clock after delete so stale upsert \
+             replays cannot resurrect a removed vector",
+            RebuildPath::Named("vertex_embedding_backfill"),
+        ),
+        region(
+            "VECTOR_ID_TO_SLOT",
+            8,
+            StableMemoryClass::Derived,
+            "vector id index",
+            "(index_id, vector_id) → SlotRef { index_version, partition_id, page_id, slot, \
+             generation }",
+            RebuildPath::Named("vertex_embedding_backfill"),
+        ),
+        region(
+            "VECTOR_PARTITION_HEADS",
+            9,
+            StableMemoryClass::Derived,
+            "partition heads",
+            "(index_id, index_version, partition_id) → head { first_page, mutable_page, \
+             page_count, live_len, next_page_id }: durable page allocator per partition/version",
+            RebuildPath::Named("vertex_embedding_backfill"),
+        ),
+        region(
+            "VECTOR_PAGE",
+            10,
+            StableMemoryClass::Derived,
+            "vector pages",
+            "(index_id, index_version, partition_id, page_id) → fixed-capacity page blob of vector \
+             rows; fullness bounded by slots_per_page from the index def",
+            RebuildPath::Named("vertex_embedding_backfill"),
+        ),
+    ],
+};
+
 /// Validates consecutive ids starting at zero and unique symbols.
 pub fn validate_layout(layout: &StableCanisterLayout) -> Result<(), LayoutValidationError> {
     if layout.regions.is_empty() {
@@ -1245,6 +1355,7 @@ mod tests {
             &GRAPH_STABLE_LAYOUT,
             &ROUTER_STABLE_LAYOUT,
             &INDEX_STABLE_LAYOUT,
+            &VECTOR_INDEX_STABLE_LAYOUT,
         ] {
             for region in layout.regions {
                 if region.class == StableMemoryClass::Derived {
@@ -1309,6 +1420,36 @@ mod tests {
         assert_layout(&INDEX_STABLE_LAYOUT);
         assert_eq!(INDEX_STABLE_LAYOUT.region_count(), 7);
         assert_eq!(INDEX_STABLE_LAYOUT.max_memory_id(), Some(6));
+    }
+
+    #[test]
+    fn vector_index_layout_registry_matches_baseline() {
+        assert_layout(&VECTOR_INDEX_STABLE_LAYOUT);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 11);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(10));
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[4].symbol,
+            "VECTOR_INDEX_DEFS"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[4].class,
+            StableMemoryClass::Canonical
+        );
+        // IVF_CENTROIDS is reserved empty in Slice 2 but already classified derived.
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[6].symbol,
+            "IVF_CENTROIDS"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[6].class,
+            StableMemoryClass::Derived
+        );
+        // Subject map is durable derived state (tombstone clock), not a deletable cache.
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[7].symbol,
+            "VECTOR_SUBJECT_TO_ID"
+        );
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.regions[10].symbol, "VECTOR_PAGE");
     }
 
     #[test]

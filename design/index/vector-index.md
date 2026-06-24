@@ -1,7 +1,7 @@
 # Vector index
 
 Last updated: 2026-06-23
-Anchor timestamp: 2026-06-23 14:36:46 UTC +0000
+Anchor timestamp: 2026-06-23 22:55:58 UTC +0000
 
 ## Status
 
@@ -13,10 +13,85 @@ Slice 1 is implemented: the graph-owned canonical `VertexEmbeddingStore` (fixed-
 stable region `VERTEX_EMBEDDINGS` / MemoryId 44) plus shared `EmbeddingNameId` / `VectorEncoding`
 types in `graph-kernel`.
 
-The derived vector-index canister, repair/backfill path, Candid search APIs, and query operators are
-not implemented yet. The standard vector-index kind is `ivf_flat`; `flat` remains a
-small-index/debug baseline, and later `ivf_pq` or experimental `hnsw` implementations must preserve
-the same canonical/derived boundary.
+Slice 2 is implemented: the derived sync path plus a degenerate `ivf_flat` `graph-vector-index`
+canister foundation (mutation-only). This covers `graph-kernel` sync/mutation wire types
+(`VectorEmbeddingSyncOp`, `VectorSubject::Vertex`, `IndexedEmbeddingCatalog`), the
+`VECTOR_INDEX_STABLE_LAYOUT` registry (11 regions, MemoryId 0–10), the `graph-vector-index` canister
+storage (`vector_upsert` / `vector_remove`, durable allocators, subject tombstone clock, attach /
+detach), and the graph-side delta plumbing (catalog-gated dispatch, `vector_pending`,
+`RepairPostingOp::VectorEmbedding`, repair drain, and bounded `vertex_embedding_backfill`).
+
+The degenerate `ivf_flat` foundation runs with `nlist = 1`, `partition_id = 0`, and no centroids;
+the `IVF_CENTROIDS` region (MemoryId 6) is reserved-but-empty so Slice 4 needs no stable repack.
+
+**Slice 2 production deployment creates the vector-index canister and the graph
+sync/repair/backfill plumbing, but does not produce vector-index entries until the Router supplies an
+ephemeral `IndexedEmbeddingCatalog` per operation in Slice 3.** Without an installed catalog the
+graph shard skips vector dispatch entirely (mirroring property-index behavior when no catalog is
+present); the shard never persists an indexed-embedding registry.
+
+Candid search APIs, the Router registry, and query operators are not implemented yet. The standard
+vector-index kind is `ivf_flat`; `flat` is collapsed into degenerate `ivf_flat` rather than a
+separate kind, and later `ivf_pq` or experimental `hnsw` implementations must preserve the same
+canonical/derived boundary.
+
+## Version naming glossary
+
+Three distinct concepts; `version` is never overloaded in APIs or idempotence rules:
+
+| Name                | Owner                 | Meaning                                                                                                                  |
+| ------------------- | --------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `index_version`     | vector-index canister | Physical index generation: `active_index_version` in defs, shadow rebuild target, page / partition-head keys           |
+| `embedding_version` | graph canonical store | `StoredEmbedding.version` from the `VertexEmbeddingStore`; carried on sync ops and the repair journal                  |
+| `generation`        | vector-index canister | Slot / entity handle generation for append-and-tombstone; bumps on each new slot for a subject                          |
+
+The subject map row (`VECTOR_SUBJECT_TO_ID[(index_id, subject)]`) is a **clock that survives
+deletion**: a removed subject retains `stored_embedding_version` and `deleted = true`. Idempotence
+is split by subject liveness:
+
+- **Live subject:** ordered by `embedding_version` against the clock (stale `<` no-op; `==`
+  identical no-op / different conflict; `>` appends a new slot, reusing the live `VectorId`).
+- **Deleted subject:** any delivered `vector_upsert` **resurrects** with a *fresh* `VectorId`,
+  regardless of version. The canister cannot order a re-insert against the tombstone clock because
+  the canonical `embedding_version` resets to `1` on re-insert, so it trusts the graph to deliver
+  only current upserts.
+
+Stale-replay protection lives in the **graph repair-drain**, not the canister clock: vector journal
+entries are not replayed verbatim but **reconciled against the canonical store** (canonical wins).
+If the subject still owns the embedding the drain delivers a current upsert; if it was deleted the
+drain delivers a remove stamped with an **authoritative (maximum) `embedding_version`** so it
+supersedes any live slot regardless of the stale op's version, and a stale upsert can never
+resurrect a tombstoned vector. (The high clock does not block re-inserts, since upserts to a deleted
+subject resurrect regardless of version.) A repair entry with no configured vector client is skipped
+(left durable) and never wedges the property repairs queued after it.
+
+`VectorId` is never reused: a re-insert after delete allocates a fresh id from the durable
+`next_vector_id` allocator. Remove ops carry an empty `bytes` field and rely only on
+`embedding_version` for idempotence.
+
+### Slice 3 activation gate (canonical-wins drain is not yet production-correct)
+
+The canonical-wins repair drain described above is a **Slice 2 scaffold that runs only while vector
+dispatch is inert**. Slice 2 production never injects an `IndexedEmbeddingCatalog`, so no vector ops
+are ever queued or journaled, and the drain is exercised only by tests. It is **not** a correct
+production convergence path, and dispatch must not be activated in production until this gate is
+closed:
+
+- `embedding_version` resets to `1` on re-insert, so it is **insufficient as an ordering token**
+  across a delete boundary.
+- The canonical-deleted reconcile sends a *blind* remove (it reads canonical as absent, then awaits
+  the cross-canister remove). A blind remove **cannot avoid both** failure modes: a stale-version
+  remove no-ops against a newer live slot (**forward-orphan**: a deleted embedding's vector
+  survives), while a `u64::MAX` remove that races a concurrent re-insert's direct-flush upsert
+  tombstones a live vector (**reverse-orphan**: a live embedding's vector is deleted). On IC the
+  await commit point makes this race reachable, not merely theoretical.
+- Once the reconcile entry is dropped from the journal there is no source to re-detect the
+  divergence, so "re-reconcile on a later maintenance tick" does not close it.
+
+**Activation requirement:** before Slice 3 injects a production catalog, a delete-spanning
+**monotonic incarnation/epoch** carried in the sync op and enforced by the vector canister MUST be
+added so removes and re-inserts order independent of arrival order. Until then the canonical-wins
+drain is treated as an inert scaffold, and catalog-backed dispatch stays fail-closed. See ADR 0031.
 
 ## Purpose
 

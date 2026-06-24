@@ -174,10 +174,17 @@ async fn flush_and_repair(store: &GraphStore) {
         shard_id: routing.shard_id,
     };
     let ix = &client as &dyn crate::index::lookup::PropertyIndexLookup;
+    let vector_client = routing
+        .vector_index_canister
+        .map(|vector_principal| crate::index::vector_ic::IcVectorIndexClient { vector_principal });
+    let vx = vector_client
+        .as_ref()
+        .map(|c| c as &dyn crate::index::vector_lookup::VectorIndexLookup);
     let _ = crate::index::pending::flush_pending(Some(ix), None).await;
     let _ = crate::index::edge_pending::flush_pending(Some(ix), None).await;
     let _ = crate::index::label_pending::flush_pending(Some(ix), None).await;
-    let _ = crate::index::repair_journal::drain_once(ix).await;
+    let _ = crate::index::vector_pending::flush_pending(vx, None).await;
+    let _ = crate::index::repair_journal::drain_once(ix, vx).await;
 }
 
 #[cfg(test)]

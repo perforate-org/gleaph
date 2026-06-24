@@ -26,6 +26,7 @@ pub async fn init(args: GraphInitArgs) {
             router_canister,
             shard_id,
             index_canister,
+            vector_index_canister: None,
         }),
         #[cfg(target_family = "wasm")]
         (Some(_), Some(_), None) => ic_cdk::trap(
@@ -43,6 +44,7 @@ pub async fn init(args: GraphInitArgs) {
                 router_canister,
                 shard_id,
                 index_canister: entry.index_canister,
+                vector_index_canister: None,
             })
         }
         (None, None, None) => None,
@@ -782,6 +784,7 @@ mod tests {
             router_canister: Principal::management_canister(),
             index_canister: Principal::management_canister(),
             shard_id,
+            vector_index_canister: None,
         }));
         GraphStore::new()
             .set_metadata(metadata)

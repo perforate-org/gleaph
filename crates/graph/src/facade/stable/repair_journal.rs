@@ -11,6 +11,7 @@
 //! drain path.
 
 use candid::{Decode, Encode};
+use gleaph_graph_kernel::vector_index::VectorEmbeddingSyncOp;
 use ic_stable_structures::{Memory, StableBTreeMap, Storable, storable::Bound};
 use std::borrow::Cow;
 
@@ -38,6 +39,10 @@ pub enum RepairPostingOp {
         label_id: u32,
         vertex_id: u32,
     },
+    /// A derived vector-index embedding mutation awaiting re-delivery to `graph-vector-index`
+    /// (ADR 0031). The whole self-describing wire op is journaled; re-application is idempotent
+    /// (version-guarded upsert / tombstone), so no compensation is needed on the drain path.
+    VectorEmbedding { op: VectorEmbeddingSyncOp },
 }
 
 impl Storable for RepairPostingOp {
