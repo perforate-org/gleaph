@@ -49,7 +49,9 @@ pub use peer_sync::{AddGraphPeerArgs, BootstrapGraphPeersArgs, RemoveGraphPeerAr
 pub use posting_backfill::{
     PostingBackfillArgs, PostingBackfillResult, VertexPropertyBackfillRequest,
 };
-pub use router_error::{RouterError, UNIQUENESS_VIOLATION_WIRE_PREFIX};
+pub use router_error::{
+    RouterError, UNIQUENESS_VIOLATION_WIRE_PREFIX, VectorActivationBlockReason,
+};
 pub use shard_detach::{ShardDetachCursor, ShardDetachPhase, ShardDetachStepResult};
 pub use shard_id::ShardId;
 pub use unique_effect::{

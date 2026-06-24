@@ -70,6 +70,12 @@ pub struct ExecutePlanArgs {
     /// (owner-matched), rather than pinning an outbox `Release`. `None`/empty when no constrained
     /// property uses the `ShardLocalGlobal` strategy.
     pub local_constrained_properties: Option<Vec<ConstrainedPropertyDispatch>>,
+    /// Router-sourced indexed-embedding catalog for this operation (ADR 0031 Slice 3). Mirrors
+    /// `indexed_properties`: an ephemeral per-operation slice the shard consults to decide which
+    /// derived vector-embedding mutations to dispatch. In Slice 3 the Router builder is fail-closed
+    /// (always `None`/empty) until delete-spanning incarnation fencing activates dispatch, so
+    /// production shards never receive a non-empty catalog and vector sync stays inert.
+    pub indexed_embeddings: Option<crate::vector_index::IndexedEmbeddingCatalog>,
 }
 
 /// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
@@ -510,6 +516,16 @@ mod tests {
                 property_id: PropertyId::from_raw(1),
                 constraint_id: ConstraintNameId::from_raw(4),
             }]),
+            indexed_embeddings: Some(crate::vector_index::IndexedEmbeddingCatalog {
+                embeddings: vec![crate::vector_index::IndexedEmbeddingSpec {
+                    embedding_name_id: 5,
+                    index_id: 11,
+                    kind: crate::vector_index::VectorIndexKind::IvfFlat,
+                    metric: crate::vector_index::VectorMetric::L2Squared,
+                    encoding: crate::vector_index::VectorEncoding::F32,
+                    dims: 16,
+                }],
+            }),
         };
         let bytes = Encode!(&args).expect("encode");
         let decoded: ExecutePlanArgs = Decode!(&bytes, ExecutePlanArgs).expect("decode");

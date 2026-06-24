@@ -8,11 +8,12 @@ use super::edge_payload_profiles::EdgePayloadProfileStore;
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::bidirectional_catalog::DenseIndexNamePolicy;
 use gleaph_graph_kernel::bidirectional_catalog::{
-    BidirectionalCatalog, DenseConstraintNamePolicy, DenseEdgeLabelPolicy, DenseMaxPlusOnePolicy,
-    SparseFromOnePolicy,
+    BidirectionalCatalog, DenseConstraintNamePolicy, DenseEdgeLabelPolicy,
+    DenseEmbeddingNamePolicy, DenseMaxPlusOnePolicy, SparseFromOnePolicy,
 };
 use gleaph_graph_kernel::entry::{
-    ConstraintNameId, EdgeLabelId, GraphId, GraphTypeId, IndexNameId, PropertyId, VertexLabelId,
+    ConstraintNameId, EdgeLabelId, EmbeddingNameId, GraphId, GraphTypeId, IndexNameId, PropertyId,
+    VertexLabelId,
 };
 use gleaph_graph_kernel::federation::{
     BackfillShardState, EdgeBackfillShardState, ElementIdEncodingKey, GraphShardKey, ShardId,
@@ -27,6 +28,7 @@ use gleaph_graph_catalog::GraphCatalog;
 use super::constraint_catalog::{ConstraintDefRecord, UniqueConstraintKey};
 use super::indexed_catalog::{IndexDefRecord, IndexedPropertyKey, NamedIndexKey};
 use super::reservation_catalog::{ReservationRecord, UniqueReservationKey};
+use super::vector_index_catalog::{VectorIndexDefRecord, VectorIndexKey};
 use candid::CandidType;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
@@ -93,6 +95,11 @@ const ROUTER_UNIQUE_CONSTRAINTS: MemoryId = MemoryId::new(36);
 const ROUTER_UNIQUE_RESERVATIONS: MemoryId = MemoryId::new(37);
 const ROUTER_MUTATION_RESERVATION_INDEX: MemoryId = MemoryId::new(38);
 const ROUTER_UNIQUE_EFFECT_PENDING: MemoryId = MemoryId::new(39);
+
+// --- catalog: derived vector index (ADR 0031) ---
+const ROUTER_EMBEDDING_NAME_BY_NAME: MemoryId = MemoryId::new(40);
+const ROUTER_EMBEDDING_NAME_BY_ID: MemoryId = MemoryId::new(41);
+const ROUTER_VECTOR_INDEXES: MemoryId = MemoryId::new(42);
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
@@ -224,6 +231,9 @@ pub(crate) type StableUniqueEffectPendingMap = BTreeMap<
     super::unique_effect_pending::PendingEffectRecord,
     Memory,
 >;
+pub(crate) type StableEmbeddingNameCatalog =
+    GraphScopedNameCatalog<EmbeddingNameId, Memory, Memory, DenseEmbeddingNamePolicy>;
+pub(crate) type StableVectorIndexMap = BTreeMap<VectorIndexKey, VectorIndexDefRecord, Memory>;
 
 // --- telemetry ---
 pub(crate) type StableLabelStatsMap =
@@ -371,6 +381,17 @@ pub(crate) fn init_mutation_reservation_index() -> StableMutationReservationInde
 
 pub(crate) fn init_unique_effect_pending() -> StableUniqueEffectPendingMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_UNIQUE_EFFECT_PENDING)))
+}
+
+pub(crate) fn init_embedding_name_catalog() -> StableEmbeddingNameCatalog {
+    GraphScopedNameCatalog::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EMBEDDING_NAME_BY_NAME)),
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EMBEDDING_NAME_BY_ID)),
+    )
+}
+
+pub(crate) fn init_vector_indexes() -> StableVectorIndexMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_INDEXES)))
 }
 
 // --- telemetry ---

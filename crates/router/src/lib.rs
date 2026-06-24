@@ -428,6 +428,56 @@ async fn admin_set_indexed_edge_property(
     canister::admin_set_indexed_edge_property(logical_graph_name, edge_label, property).await
 }
 
+/// Register a derived vector index (ADR 0031 Slice 3; `authorize_index_ddl`). Returns whether the
+/// definition was newly created. Production dispatch stays fail-closed until incarnation fencing.
+#[update]
+fn admin_register_vector_index(args: types::RegisterVectorIndexArgs) -> Result<bool, RouterError> {
+    canister::admin_register_vector_index(args)
+}
+
+/// Set (or replace) the single dispatch target of a vector index (ADR 0031 Slice 3;
+/// `authorize_index_ddl`). Slice 3 stores the target as inspect-only metadata.
+#[update]
+fn admin_set_vector_index_target(args: types::SetVectorIndexTargetArgs) -> Result<(), RouterError> {
+    canister::admin_set_vector_index_target(args)
+}
+
+/// List the derived vector-index definitions registered for a logical graph (ADR 0031 Slice 3).
+#[query]
+fn list_vector_indexes(
+    logical_graph_name: String,
+) -> Result<Vec<types::VectorIndexInfo>, RouterError> {
+    canister::list_vector_indexes(logical_graph_name)
+}
+
+/// Resolve a vector index's single dispatch target principal (ADR 0031 Slice 3, inspect-only).
+#[query]
+fn resolve_vector_index_target(
+    logical_graph_name: String,
+    index_id: u32,
+) -> Result<Principal, RouterError> {
+    canister::resolve_vector_index_target(logical_graph_name, index_id)
+}
+
+/// Report a vector index's activation state and, while fail-closed, the blocking reason
+/// (ADR 0031 Slice 3).
+#[query]
+fn vector_index_activation_status(
+    logical_graph_name: String,
+    index_id: u32,
+) -> Result<types::VectorIndexActivationStatus, RouterError> {
+    canister::vector_index_activation_status(logical_graph_name, index_id)
+}
+
+/// Request a derived vector-index backfill step (ADR 0031 Slice 3; `authorize_index_ddl`). Fails
+/// closed with `VectorDispatchActivationBlocked` until incarnation fencing activates dispatch.
+#[update]
+fn admin_vector_index_backfill_step(
+    args: types::AdminVectorIndexBackfillStepArgs,
+) -> Result<(), RouterError> {
+    canister::admin_vector_index_backfill_step(args)
+}
+
 /// Advance label posting backfill for one graph shard (`Role::Admin`; call in a loop).
 #[update]
 async fn admin_label_backfill_step(

@@ -957,6 +957,33 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
              dispatch await and removed only after the shard re-enumerates empty",
             RebuildPath::None,
         ),
+        region(
+            "ROUTER_EMBEDDING_NAME_BY_NAME",
+            40,
+            StableMemoryClass::Catalog,
+            "embedding name resolution",
+            "(graph_id, name) → EmbeddingNameId (ADR 0031). Router is the sole allocator of \
+             embedding name ids the graph stamps on canonical embedding writes",
+            RebuildPath::None,
+        ),
+        region(
+            "ROUTER_EMBEDDING_NAME_BY_ID",
+            41,
+            StableMemoryClass::Catalog,
+            "embedding name resolution",
+            "(graph_id, EmbeddingNameId) → name (ADR 0031); reverse direction of the embedding \
+             name catalog",
+            RebuildPath::None,
+        ),
+        region(
+            "ROUTER_VECTOR_INDEXES",
+            42,
+            StableMemoryClass::Catalog,
+            "derived vector index catalog",
+            "(graph_id, index_id) → VectorIndexDefRecord (ADR 0031 Slice 3). Definition, single \
+             target, and fail-closed activation state for a derived vector index",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1308,8 +1335,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 40);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(39));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 43);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(42));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].class,
             StableMemoryClass::Telemetry

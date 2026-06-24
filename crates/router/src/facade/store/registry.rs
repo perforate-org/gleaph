@@ -199,6 +199,8 @@ impl RouterStore {
         super::super::stable::constraint_catalog::purge_graph_constraints(graph_id);
         super::super::stable::reservation_catalog::purge_graph_reservations(graph_id);
         super::super::stable::unique_effect_pending::purge_graph(graph_id);
+        super::super::stable::vector_index_catalog::purge_graph_vector_indexes(graph_id);
+        super::super::stable::embedding_name_catalog::purge_graph_embedding_names(graph_id);
         super::super::stable::ROUTER_CONSTRAINT_NAME_CATALOG
             .with_borrow_mut(|catalog| catalog.remove_graph(graph_id));
         ROUTER_GQL_GRAPH_CATALOG.with_borrow_mut(|catalog| catalog.remove_graph_binding(graph_id));

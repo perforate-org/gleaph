@@ -21,6 +21,12 @@ use gleaph_graph_kernel::plan_exec::{
 use super::types::GraphInitArgs;
 
 pub async fn init(args: GraphInitArgs) {
+    // ADR 0031 Slice 3 (setter deferral C, A-compatible): the Router resolves vector-index targets
+    // in its catalog but does **not** push them into graph shards or enable production dispatch in
+    // this slice, so `vector_index_canister` is initialized to `None` here. Wiring it is an
+    // activation-phase concern that should follow the existing `index_canister` init/registration
+    // precedent (carried in `GraphInitArgs` / shard attachment) unless a later operational
+    // requirement justifies a router-guarded runtime setter.
     let federation_routing = match (args.router_canister, args.shard_id, args.index_canister) {
         (Some(router_canister), Some(shard_id), Some(index_canister)) => Some(FederationRouting {
             router_canister,
@@ -135,6 +141,13 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
     let _catalog_guard = args
         .indexed_properties
         .map(crate::index::catalog_context::enter);
+    // ADR 0031 Slice 3: the Router supplies the indexed-embedding catalog per operation, mirroring
+    // `indexed_properties`. In production this is fail-closed (empty) until incarnation fencing
+    // activates dispatch, so `vector_dispatch::spec_for` returns `None` and derived vector sync stays
+    // inert. The guard clears it on return; the shard never persists vector index definitions.
+    let _vector_catalog_guard = args
+        .indexed_embeddings
+        .map(crate::index::vector_catalog_context::enter);
     let pmap = decode_gql_param_map(args.params_blob)?;
     let seeds = match args.seed_bindings_blob {
         Some(blob) => {
@@ -859,6 +872,7 @@ mod tests {
             constrained_properties: None,
             local_unique_claims: None,
             local_constrained_properties: None,
+            indexed_embeddings: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -921,6 +935,7 @@ mod tests {
             constrained_properties: None,
             local_unique_claims: None,
             local_constrained_properties: None,
+            indexed_embeddings: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -968,6 +983,7 @@ mod tests {
             constrained_properties: None,
             local_unique_claims: None,
             local_constrained_properties: None,
+            indexed_embeddings: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("missing seeds");
@@ -1002,6 +1018,7 @@ mod tests {
             constrained_properties: None,
             local_unique_claims: None,
             local_constrained_properties: None,
+            indexed_embeddings: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("shard mismatch");

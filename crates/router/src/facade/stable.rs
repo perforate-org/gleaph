@@ -5,6 +5,7 @@ use std::cell::RefCell;
 pub(crate) mod constraint_catalog;
 pub(crate) mod constraint_name_catalog;
 pub(crate) mod edge_payload_profiles;
+pub(crate) mod embedding_name_catalog;
 pub(crate) mod graph_catalog;
 pub(crate) mod graph_type_catalog;
 pub(crate) mod graph_type_name_catalog;
@@ -16,6 +17,7 @@ pub(crate) mod memory;
 pub(crate) mod prepared_catalog;
 pub(crate) mod reservation_catalog;
 pub(crate) mod unique_effect_pending;
+pub(crate) mod vector_index_catalog;
 
 thread_local! {
     // --- auth ---
@@ -106,6 +108,16 @@ thread_local! {
     /// dispatch that may emit a unique Acquire/Release effect (ADR 0030 slice 6).
     pub(crate) static ROUTER_UNIQUE_EFFECT_PENDING: RefCell<memory::StableUniqueEffectPendingMap> =
         RefCell::new(memory::init_unique_effect_pending());
+
+    /// `graph-scoped embedding name → EmbeddingNameId` catalog (ADR 0031). The Router is the sole
+    /// allocator of `EmbeddingNameId`s; the graph consumes them on canonical writes via
+    /// `vector_dispatch`.
+    pub(crate) static ROUTER_EMBEDDING_NAME_CATALOG: RefCell<memory::StableEmbeddingNameCatalog> =
+        RefCell::new(memory::init_embedding_name_catalog());
+
+    /// `(graph_id, index_id) → vector index definition` (ADR 0031 Slice 3).
+    pub(crate) static ROUTER_VECTOR_INDEXES: RefCell<memory::StableVectorIndexMap> =
+        RefCell::new(memory::init_vector_indexes());
 
     // --- telemetry ---
     pub(crate) static ROUTER_VERTEX_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =

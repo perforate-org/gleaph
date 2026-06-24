@@ -274,6 +274,7 @@ mod tests {
                 constrained_properties: None,
                 local_unique_claims: None,
                 local_constrained_properties: None,
+                indexed_embeddings: None,
             },
         );
         let err = futures::executor::block_on(fut).expect_err("native unavailable");

@@ -228,6 +228,67 @@ pub struct AdminLabelStatsProjectionStepResult {
     pub done: bool,
 }
 
+/// Wire view of a derived vector-index activation state (ADR 0031 Slice 3). Mirrors the internal
+/// `VectorIndexActivationState`; `DispatchEnabled` is unreachable in Slice 3 (fail-closed gate).
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub enum VectorIndexActivationStateView {
+    Registered,
+    DispatchBlockedMissingIncarnationFence,
+    DispatchEnabled,
+}
+
+/// Admin: register a derived vector index for a logical graph (ADR 0031 Slice 3). The embedding is
+/// identified **by name** (the Router interns it to a stable `EmbeddingNameId`), never by a raw id.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct RegisterVectorIndexArgs {
+    pub logical_graph_name: String,
+    pub embedding_name: String,
+    pub index_id: u32,
+    pub dims: u16,
+    /// Optional single dispatch target; rejected if anonymous. Slice 3 stores it as inspect-only
+    /// metadata and never pushes it to graph shards or enables dispatch.
+    pub target: Option<Principal>,
+    pub if_not_exists: bool,
+}
+
+/// Admin: set (or replace) the single dispatch target of an existing vector index (ADR 0031 Slice 3).
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SetVectorIndexTargetArgs {
+    pub logical_graph_name: String,
+    pub index_id: u32,
+    pub target: Principal,
+}
+
+/// Wire view of a stored vector-index definition (ADR 0031 Slice 3). Algorithm-neutral: physical
+/// search knobs (centroids, nlist, page geometry) are deliberately not exposed.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct VectorIndexInfo {
+    pub index_id: u32,
+    pub embedding_name_id: u16,
+    pub dims: u16,
+    pub target: Option<Principal>,
+    pub activation_state: VectorIndexActivationStateView,
+}
+
+/// Activation status + fail-closed explanation for one vector-index definition (ADR 0031 Slice 3).
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct VectorIndexActivationStatus {
+    pub index_id: u32,
+    pub activation_state: VectorIndexActivationStateView,
+    /// `Some(reason)` while production dispatch/backfill is fail-closed; `None` otherwise.
+    pub blocked_reason: Option<String>,
+}
+
+/// Admin: request a derived vector-index backfill step (ADR 0031 Slice 3). In Slice 3 this surface
+/// **fails closed** (`VectorDispatchActivationBlocked`) for production execution — no graph backfill
+/// endpoint is wired until incarnation fencing activates dispatch. It exists so operators can probe
+/// the activation gate and so the admin contract is stable across the activation slice.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminVectorIndexBackfillStepArgs {
+    pub logical_graph_name: String,
+    pub index_id: u32,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

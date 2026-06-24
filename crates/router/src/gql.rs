@@ -1363,6 +1363,12 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     // catalog per operation so the shard never persists derived index state.
     let indexed_properties =
         crate::index_catalog::graph_stats_for(graph_id).to_indexed_property_catalog();
+    // ADR 0031 Slice 3: the Router (vector-index definitions SSOT) supplies the indexed-embedding
+    // catalog per operation, mirroring `indexed_properties`. The builder is fail-closed: it only
+    // exports `DispatchEnabled` definitions, and the incarnation fence is off in Slice 3, so this is
+    // always empty and derived vector sync stays inert on the shard.
+    let indexed_embeddings =
+        crate::facade::stable::vector_index_catalog::to_indexed_embedding_catalog(graph_id);
 
     // ADR 0030 slice 5a: no-`await` Try. All fallible preflight above (routing resolution, the
     // single-shard gate, envelope record, element-id key) has run, so the only step between this
@@ -1480,6 +1486,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 constrained_properties: dispatch_constrained_properties.clone(),
                 local_unique_claims: dispatch_local_unique_claims.clone(),
                 local_constrained_properties: dispatch_local_constrained_properties.clone(),
+                indexed_embeddings: Some(indexed_embeddings.clone()),
             },
         )
         .await

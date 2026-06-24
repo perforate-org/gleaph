@@ -24,13 +24,20 @@ detach), and the graph-side delta plumbing (catalog-gated dispatch, `vector_pend
 The degenerate `ivf_flat` foundation runs with `nlist = 1`, `partition_id = 0`, and no centroids;
 the `IVF_CENTROIDS` region (MemoryId 6) is reserved-but-empty so Slice 4 needs no stable repack.
 
-**Slice 2 production deployment creates the vector-index canister and the graph
-sync/repair/backfill plumbing, but does not produce vector-index entries until the Router supplies an
-ephemeral `IndexedEmbeddingCatalog` per operation in Slice 3.** Without an installed catalog the
-graph shard skips vector dispatch entirely (mirroring property-index behavior when no catalog is
-present); the shard never persists an indexed-embedding registry.
+Slice 3 is implemented: the Router-owned vector-index definition catalog (`ROUTER_VECTOR_INDEXES`,
+MemoryId 42) and graph-scoped embedding-name catalog (`ROUTER_EMBEDDING_NAME_CATALOG`, MemoryIds
+40–41), the admin/query surface, single-target (inspect-only) resolution, and the ephemeral
+`ExecutePlanArgs.indexed_embeddings` injection path. **Production dispatch stays fail-closed:** the
+activation gate `incarnation_fencing_enabled()` is `const false`, so the Router's catalog builder is
+always empty and no definition reaches `DispatchEnabled`. See *Router catalog, target resolution, and
+activation gate (Slice 3, implemented)* below.
 
-Candid search APIs, the Router registry, and query operators are not implemented yet. The standard
+**Without an installed catalog the graph shard skips vector dispatch entirely** (mirroring
+property-index behavior when no catalog is present); the shard never persists an indexed-embedding
+registry, and in Slice 3 production the injected catalog is always empty.
+
+Candid search APIs, IVF centroid training, candidate pagination, query ranking/merge, and
+`VectorSubject::Edge` are not implemented yet (Slice 4+). The standard
 vector-index kind is `ivf_flat`; `flat` is collapsed into degenerate `ivf_flat` rather than a
 separate kind, and later `ivf_pq` or experimental `hnsw` implementations must preserve the same
 canonical/derived boundary.
@@ -88,10 +95,45 @@ closed:
 - Once the reconcile entry is dropped from the journal there is no source to re-detect the
   divergence, so "re-reconcile on a later maintenance tick" does not close it.
 
-**Activation requirement:** before Slice 3 injects a production catalog, a delete-spanning
-**monotonic incarnation/epoch** carried in the sync op and enforced by the vector canister MUST be
-added so removes and re-inserts order independent of arrival order. Until then the canonical-wins
-drain is treated as an inert scaffold, and catalog-backed dispatch stays fail-closed. See ADR 0031.
+**Activation requirement:** before any definition reaches `DispatchEnabled` (i.e. before a
+production catalog is injected), a delete-spanning **monotonic incarnation/epoch** carried in the
+sync op and enforced by the vector canister MUST be added so removes and re-inserts order
+independent of arrival order. Until then the canonical-wins drain is treated as an inert scaffold,
+and catalog-backed dispatch stays fail-closed. See ADR 0031.
+
+### Router catalog, target resolution, and activation gate (Slice 3, implemented)
+
+Slice 3 makes vector-index dispatch **addressable** from the Router while keeping production
+dispatch fail-closed:
+
+- **Embedding-name catalog (Router-owned, graph-scoped).** `ROUTER_EMBEDDING_NAME_CATALOG`
+  (MemoryIds 40–41) interns embedding **names** to `EmbeddingNameId`s. The Router is the sole
+  allocator, so the id stored on a definition is exactly the id the graph stamps on canonical
+  embedding writes. Registration resolves **by name**; a caller-supplied raw `u16` is never accepted.
+- **Vector-index definition catalog.** `ROUTER_VECTOR_INDEXES` (MemoryId 42) maps
+  `(graph_id, index_id)` to a versioned `VectorIndexDefRecord { embedding_name_id, kind, metric,
+  encoding, dims, target: Option<VectorIndexTarget { canister }>, activation_state }`.
+- **Activation state.** `VectorIndexActivationState { Registered, DispatchBlockedMissingIncarnationFence,
+  DispatchEnabled }`. There is no `BackfillReady` state — both dispatch and backfill stay blocked, so
+  a "backfill ready" state would falsely imply partial activation.
+- **The fail-closed gate.** `incarnation_fencing_enabled()` is `const false` in Slice 3. The only
+  place a definition can become `DispatchEnabled` is the activation-state resolver, and only when the
+  gate is on — so a targeted definition terminates at `DispatchBlockedMissingIncarnationFence`. The
+  Router's `to_indexed_embedding_catalog` builder exports only `DispatchEnabled` definitions, hence
+  it is **always empty** in Slice 3; `ExecutePlanArgs.indexed_embeddings` carries that empty catalog,
+  `vector_dispatch::spec_for` returns `None`, and derived vector sync stays inert. There is no silent
+  partial activation.
+- **Target model (single target, inspect-only).** Each definition carries a catalog-local
+  `VectorIndexTarget { canister }` (no `ShardRegistryEntry` / `GraphRuntimeConfig` / `index_cluster`
+  change). In Slice 3 the target is **not** pushed into graph shards (`vector_index_canister` stays
+  `None`) and is **not** consumed by any execution path; its only consumers are the admin/query
+  surface and tests. Property-style fleet sharding is deferred.
+- **Admin/query surface (RBAC via `authorize_index_ddl`).** Register, set target, list, activation
+  status / explain-blocked, and inspect-only single-target resolution (rejecting anonymous targets).
+- **Backfill.** Slice 3 exposes only a Router blocked admin surface that fails closed with
+  `VectorDispatchActivationBlocked { MissingEmbeddingIncarnationFence }`; the bounded backfill worker
+  is exercised test-only with a mock `VectorIndexLookup`. No production graph backfill endpoint is
+  wired until the activation/fencing slice.
 
 ## Purpose
 

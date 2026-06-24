@@ -219,6 +219,7 @@ impl_catalog_id!(crate::entry::VertexLabelId, u16);
 impl_catalog_id!(crate::entry::EdgeLabelId, u16);
 impl_catalog_id!(crate::entry::IndexNameId, u16);
 impl_catalog_id!(crate::entry::ConstraintNameId, u16);
+impl_catalog_id!(crate::entry::EmbeddingNameId, u16);
 
 /// Index-name allocation capped at [`crate::entry::INDEX_NAME_CATALOG_MAX`].
 pub struct DenseIndexNamePolicy;
@@ -247,6 +248,23 @@ impl<Id: CatalogId> CatalogAllocationPolicy<Id> for DenseConstraintNamePolicy {
 
     fn max_id() -> Option<Id> {
         Id::from_raw_u32(crate::entry::CONSTRAINT_NAME_CATALOG_MAX as u32)
+    }
+
+    fn next_raw_id(existing: impl Iterator<Item = u32>) -> Result<u32, CatalogError<Id>> {
+        DenseMaxPlusOnePolicy::next_raw_id(existing)
+    }
+}
+
+/// Embedding-name allocation capped at [`crate::entry::EMBEDDING_NAME_CATALOG_MAX`] (ADR 0031).
+pub struct DenseEmbeddingNamePolicy;
+
+impl<Id: CatalogId> CatalogAllocationPolicy<Id> for DenseEmbeddingNamePolicy {
+    fn reserved_id() -> Id {
+        Id::default()
+    }
+
+    fn max_id() -> Option<Id> {
+        Id::from_raw_u32(crate::entry::EMBEDDING_NAME_CATALOG_MAX as u32)
     }
 
     fn next_raw_id(existing: impl Iterator<Item = u32>) -> Result<u32, CatalogError<Id>> {

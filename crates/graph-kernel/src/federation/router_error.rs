@@ -82,8 +82,25 @@ pub enum RouterError {
     /// well-formed, but the capability is not yet published. Not retryable.
     #[error("not implemented: {0}")]
     NotImplemented(String),
+    /// Production vector-index dispatch (and backfill) is blocked because the delete-spanning
+    /// incarnation/epoch fence required by ADR 0031 Slice 3 is not yet in place. The definition is
+    /// stored and inspectable, but the Router never emits a non-empty embedding catalog or executes
+    /// backfill while blocked. **Not retryable** until the fencing slice activates dispatch.
+    #[error("vector dispatch activation blocked: {0}")]
+    VectorDispatchActivationBlocked(VectorActivationBlockReason),
     #[error("internal: {0}")]
     Internal(String),
+}
+
+/// Why production vector-index dispatch/backfill is fail-closed (ADR 0031 Slice 3).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize, thiserror::Error,
+)]
+pub enum VectorActivationBlockReason {
+    /// No delete-spanning monotonic incarnation/epoch fence exists yet, so the canonical-wins
+    /// repair reconcile can still lose to a "reverse-orphan" re-insert race. Dispatch stays off.
+    #[error("missing delete-spanning embedding incarnation fence")]
+    MissingEmbeddingIncarnationFence,
 }
 
 /// Wire-error prefix a graph shard's `ShardLocalGlobal` uniqueness violation carries back to the

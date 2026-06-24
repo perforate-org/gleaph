@@ -14,6 +14,7 @@ Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
 | 2026-06-12 | Layout registry in `graph-kernel::stable_layout` + per-canister `layout.rs`. |
 | 2026-06-12 | Initial canbench suite in `graph-kernel` (cold touch 5/21/43, router catalog intern). |
 | 2026-06-17 | Router compact: retired controllers + placement slots; auth at 0; **34** regions (0–33). |
+| 2026-06-24 | Router catalog growth recorded: ADR 0030 appended constraint catalog + reservation table + reverse index + pending-effect discovery (34→40); ADR 0031 Slice 3 appended the embedding-name catalog (40–41) + derived vector-index definition catalog (42), reaching **43** regions (0–42). |
 | 2026-06-15 | **Phase 8 closed (8d):** 8a complete; 8b final (P2/P4 retain, P1/P3 done); 8c not required; grouped-catalog prototype not pursued. |
 | 2026-06-12 | Extended canbench to graph/router/graph-index; §8b preliminary retain/defer judgments. |
 | 2026-06-12 | P1 executed: retired `EDGE_WEIGHT_PROFILES`; graph facade repacked to 42 regions (ids 37–41). |
@@ -103,7 +104,7 @@ Code source of truth:
 |----------|-------------|----------|-------|
 | Graph — LARA bundle | 32 | 0–31 | Forward canonical + reverse derived + maintenance; wired into one `DeferredBidirectionalLabeledLaraGraph` |
 | Graph — facade | 8 | 32–39 | Properties, labels, aliases, label stats delta log, mutation journal |
-| Router | 34 | 0–33 | Grouped auth → registry → runtime config → idempotency → catalog → telemetry → maintenance; `ROUTER_GRAPH_RUNTIME_CONFIG` at MemoryId 5 |
+| Router | 43 | 0–42 | Grouped auth → registry → runtime config → idempotency → catalog → telemetry → maintenance → constraint catalog/reservations (ADR 0030, 34–39) → embedding-name catalog + vector-index defs (ADR 0031 Slice 3, 40–42); `ROUTER_GRAPH_RUNTIME_CONFIG` at MemoryId 5 |
 | Graph-index | 7 | 0–6 | Router auth, shard catalog, ownership config, then derived postings |
 | Graph-vector-index | 11 | 0–10 | Router auth, shard catalog, ownership config, index defs + allocators, centroid meta, reserved centroids, subject clock, id→slot, partition heads, pages (ADR 0031 Slice 2) |
 

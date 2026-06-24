@@ -25,16 +25,28 @@ Last revised: 2026-06-23
 > cannot avoid **both** a forward-orphan (a stale-version remove no-ops against a newer live slot,
 > leaving a deleted embedding's vector) and a reverse-orphan (a `u64::MAX` remove racing a
 > re-insert's direct-flush upsert tombstones a live vector at the IC await commit point). Dropping
-> the reconcile entry erases the divergence signal, so a later tick cannot re-detect it. **Before
-> Slice 3 injects a production catalog, a delete-spanning monotonic incarnation/epoch — carried on
-> the sync op and enforced by the vector canister — MUST be added** so removes and re-inserts order
-> independent of arrival; catalog-backed dispatch stays fail-closed until then.
+> the reconcile entry erases the divergence signal, so a later tick cannot re-detect it. **Before a
+> production catalog is injected (i.e. before any definition reaches `DispatchEnabled`), a
+> delete-spanning monotonic incarnation/epoch — carried on the sync op and enforced by the vector
+> canister — MUST be added** so removes and re-inserts order independent of arrival; catalog-backed
+> dispatch stays fail-closed until then.
 >
-> Slice 2 production does **not** create vector-index
-> entries until the Router supplies an ephemeral `IndexedEmbeddingCatalog` in Slice 3. The Candid
-> search API, Router registry, and query operators remain planned. This ADR fixes ownership,
+> **Slice 3 (implemented): Router catalog, target resolution, and the fail-closed activation gate.**
+> Slice 3 adds the Router-owned vector-index definition catalog (`ROUTER_VECTOR_INDEXES`, MemoryId
+> 42) and the graph-scoped embedding-name catalog (`ROUTER_EMBEDDING_NAME_CATALOG`, MemoryIds 40–41)
+> that the Router solely allocates, plus the admin/query surface (register by embedding **name**, set
+> target, list, activation status/explain-blocked, inspect-only single-target resolution) and the
+> ephemeral `ExecutePlanArgs.indexed_embeddings` injection path. It deliberately does **not** activate
+> production dispatch: `incarnation_fencing_enabled()` is `const false`, so a targeted definition
+> terminates at `DispatchBlockedMissingIncarnationFence`, the Router's `to_indexed_embedding_catalog`
+> builder always returns empty, and the backfill admin surface fails closed with
+> `VectorDispatchActivationBlocked { MissingEmbeddingIncarnationFence }`. The single `target` is
+> inspect-only metadata and is **not** pushed into graph shards (`vector_index_canister` stays
+> `None`). Activating dispatch — landing the incarnation/epoch fence, flipping the gate, and pushing
+> targets — is the next slice. The Candid search API, IVF centroid training, candidate pagination,
+> query ranking/merge, and `VectorSubject::Edge` remain Slice 4+. This ADR fixes ownership,
 > consistency, the standard `ivf_flat` vector-index kind, and the first derived vector-index
-> stable-memory shape before the Candid API or query operator is committed.
+> stable-memory shape before the Candid search API or query operator is committed.
 
 ## Context
 
