@@ -156,8 +156,8 @@ impl VectorIndexStore {
         let removed = u32::try_from(to_remove.len()).unwrap_or(u32::MAX);
         for key in &to_remove {
             let entry = VECTOR_SUBJECT_TO_ID.with_borrow(|m| m.get(key));
-            if let Some(entry) = entry {
-                if !entry.deleted {
+            if let Some(entry) = entry
+                && !entry.deleted {
                     if let Some(slot) = entry.slot {
                         self.tombstone_slot(key.index_id, slot);
                     }
@@ -167,7 +167,6 @@ impl VectorIndexStore {
                         });
                     }
                 }
-            }
             VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(key));
         }
 
