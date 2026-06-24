@@ -39,8 +39,8 @@ use gleaph_graph_kernel::vector_index::{
     VectorRebuildPhase, VectorRebuildStatus,
 };
 use ic_stable_structures::storable::Storable;
+use rapidhash::{HashSetExt, RapidHashSet};
 use std::borrow::Cow;
-use std::collections::HashSet;
 use std::ops::Bound;
 
 /// Clamps a caller-supplied per-step work budget to `1..=MAX_REBUILD_STEP_WORK`, so a Router that
@@ -479,7 +479,9 @@ impl VectorIndexStore {
         // O(existing candidates * vector_width) for every new candidate. The set is heap-only; the
         // durable state stays `Vec<Vec<u8>>`.
         let mut pool_cap_reached = candidates.len() >= pool_cap;
-        let mut seen: HashSet<Vec<u8>> = candidates.iter().cloned().collect();
+        let mut seen: RapidHashSet<Vec<u8>> =
+            RapidHashSet::with_capacity(candidates.len() + live_bytes.len());
+        seen.extend(candidates.iter().cloned());
         for bytes in live_bytes {
             if candidates.len() >= pool_cap {
                 pool_cap_reached = true;

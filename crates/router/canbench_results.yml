@@ -2,97 +2,97 @@ benches:
   bench_layout_router_stable_reopen_touch:
     total:
       calls: 1
-      instructions: 101840
+      instructions: 101838
       heap_increase: 0
       stable_memory_increase: 1152
     scopes:
       layout_router_reopen:
         calls: 1
-        instructions: 100805
+        instructions: 100803
         heap_increase: 0
         stable_memory_increase: 1152
   bench_unique_cancel_reclaim:
     total:
       calls: 1
-      instructions: 692216
+      instructions: 691007
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       unique_cancel_reclaim:
         calls: 1
-        instructions: 691085
+        instructions: 689876
         heap_increase: 0
         stable_memory_increase: 0
   bench_unique_clear_acquire_ack:
     total:
       calls: 1
-      instructions: 782719
+      instructions: 783228
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       unique_clear_acquire_ack:
         calls: 1
-        instructions: 781710
+        instructions: 782219
         heap_increase: 0
         stable_memory_increase: 0
   bench_unique_confirm_reservation:
     total:
       calls: 1
-      instructions: 1056964
+      instructions: 1054299
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       unique_confirm_reservation:
         calls: 1
-        instructions: 1055769
+        instructions: 1053106
         heap_increase: 0
         stable_memory_increase: 0
   bench_unique_reclaim_scan_256:
     total:
       calls: 1
-      instructions: 67167868
+      instructions: 67126719
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       unique_reclaim_scan_256:
         calls: 1
-        instructions: 67166751
+        instructions: 67125602
         heap_increase: 0
         stable_memory_increase: 0
   bench_unique_try_reserve_1:
     total:
       calls: 1
-      instructions: 305105
+      instructions: 305467
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       unique_try_reserve_1:
         calls: 1
-        instructions: 303988
+        instructions: 304350
         heap_increase: 0
         stable_memory_increase: 128
   bench_unique_try_reserve_16:
     total:
       calls: 1
-      instructions: 4558802
+      instructions: 4567406
       heap_increase: 0
       stable_memory_increase: 128
     scopes:
       unique_try_reserve_16:
         calls: 1
-        instructions: 4557685
+        instructions: 4566289
         heap_increase: 0
         stable_memory_increase: 128
   bench_unique_try_reserve_256:
     total:
       calls: 1
-      instructions: 83600418
+      instructions: 83681434
       heap_increase: 1
       stable_memory_increase: 128
     scopes:
       unique_try_reserve_256:
         calls: 1
-        instructions: 83599301
+        instructions: 83680317
         heap_increase: 1
         stable_memory_increase: 128
 version: 0.4.0

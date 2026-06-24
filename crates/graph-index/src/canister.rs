@@ -242,7 +242,8 @@ pub(crate) fn count_postings_by_value(
     min_count: u64,
     vertex_filter_packed: Option<Vec<u64>>,
 ) -> Vec<ValuePostingCount> {
-    let filter = vertex_filter_packed.map(|packed| packed.into_iter().collect());
+    let filter: Option<nohash_hasher::IntSet<u64>> =
+        vertex_filter_packed.map(|packed| packed.into_iter().collect());
     IndexStore::new().count_postings_by_value(
         property_id,
         min_count,

@@ -21,6 +21,8 @@ gleaph-gql = { workspace = true, optional = true }
 ic-cdk.workspace = true
 ic-cdk-macros.workspace = true
 ic-stable-structures.workspace = true
+nohash-hasher.workspace = true
+rapidhash.workspace = true
 serde.workspace = true
 
 canbench-rs = { workspace = true, optional = true }

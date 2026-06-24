@@ -15,6 +15,7 @@ use gleaph_graph_kernel::index::{
     IndexSubject, LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangePageRequest,
     PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
 };
+use nohash_hasher::IntSet;
 use std::ops::Bound;
 
 impl IndexStore {
@@ -174,7 +175,7 @@ impl IndexStore {
         property_id: u32,
         min_count: u64,
         max_groups: usize,
-        vertex_filter: Option<&std::collections::HashSet<u64>>,
+        vertex_filter: Option<&IntSet<u64>>,
     ) -> Vec<ValuePostingCount> {
         let Some((low, high)) = property_posting_bucket(property_id) else {
             return Vec::new();

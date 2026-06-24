@@ -107,7 +107,7 @@ fn count_postings_by_value_respects_vertex_filter() {
         .posting_insert(shard_a, ShardId::new(0), property_id, uk.clone(), 3)
         .expect("uk");
 
-    let mut filter = std::collections::HashSet::new();
+    let mut filter = nohash_hasher::IntSet::default();
     filter.insert(pack_posting_vertex(ShardId::new(0), 1));
     let counts = store.count_postings_by_value(property_id, 1, 100, Some(&filter));
     assert_eq!(counts.len(), 1);

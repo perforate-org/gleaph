@@ -10,7 +10,8 @@ use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
     IndexSubject, PostingHit,
 };
-use std::collections::HashSet;
+use nohash_hasher::IntSet;
+use rapidhash::RapidHashSet;
 
 impl IndexStore {
     pub fn lookup_intersection(
@@ -61,11 +62,11 @@ fn edge_intersection(specs: &[IndexEqualSpec]) -> Vec<EdgePostingHit> {
         .collect()
 }
 
-fn collect_vertex_arm(spec: &IndexEqualSpec) -> HashSet<u64> {
+fn collect_vertex_arm(spec: &IndexEqualSpec) -> IntSet<u64> {
     debug_assert!(matches!(spec.subject, IndexSubject::VertexProperty));
     let lo = PostingKey::prefix_lower(spec.property_id, &spec.value);
     let hi = PostingKey::prefix_upper(spec.property_id, &spec.value);
-    let mut set = HashSet::new();
+    let mut set = IntSet::default();
     INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
         for key in postings.range(lo..=hi) {
             set.insert(pack_posting_vertex(key.shard_id, key.vertex_id));
@@ -74,16 +75,16 @@ fn collect_vertex_arm(spec: &IndexEqualSpec) -> HashSet<u64> {
     set
 }
 
-fn collect_vertex_projection_arm(spec: &IndexEqualSpec) -> HashSet<u64> {
+fn collect_vertex_projection_arm(spec: &IndexEqualSpec) -> IntSet<u64> {
     match spec.subject {
         IndexSubject::VertexProperty => collect_vertex_arm(spec),
         IndexSubject::EdgeProperty { label_id } => collect_edge_owner_projection(spec, label_id),
     }
 }
 
-fn collect_edge_owner_projection(spec: &IndexEqualSpec, label_id: Option<u16>) -> HashSet<u64> {
+fn collect_edge_owner_projection(spec: &IndexEqualSpec, label_id: Option<u16>) -> IntSet<u64> {
     let (lo, hi) = edge_prefix_bounds(spec.property_id, &spec.value, label_id);
-    let mut set = HashSet::new();
+    let mut set = IntSet::default();
     INDEX_EDGE_POSTINGS.with_borrow(|postings| {
         for key in postings.range(lo..=hi) {
             set.insert(pack_posting_vertex(key.shard_id, key.owner_vertex_id));
@@ -92,12 +93,12 @@ fn collect_edge_owner_projection(spec: &IndexEqualSpec, label_id: Option<u16>) -
     set
 }
 
-fn collect_edge_arm(spec: &IndexEqualSpec) -> HashSet<u128> {
+fn collect_edge_arm(spec: &IndexEqualSpec) -> RapidHashSet<u128> {
     let IndexSubject::EdgeProperty { label_id } = spec.subject else {
-        return HashSet::new();
+        return RapidHashSet::default();
     };
     let (lo, hi) = edge_prefix_bounds(spec.property_id, &spec.value, label_id);
-    let mut set = HashSet::new();
+    let mut set = RapidHashSet::default();
     INDEX_EDGE_POSTINGS.with_borrow(|postings| {
         for key in postings.range(lo..=hi) {
             set.insert(pack_edge_identity(
@@ -128,7 +129,7 @@ fn edge_prefix_bounds(
     }
 }
 
-fn intersect_u64_sets(mut sets: Vec<HashSet<u64>>) -> Vec<PostingHit> {
+fn intersect_u64_sets(mut sets: Vec<IntSet<u64>>) -> Vec<PostingHit> {
     if sets.is_empty() {
         return Vec::new();
     }
@@ -149,16 +150,16 @@ fn intersect_u64_sets(mut sets: Vec<HashSet<u64>>) -> Vec<PostingHit> {
         .collect()
 }
 
-fn intersect_u128_sets(mut sets: Vec<HashSet<u128>>) -> HashSet<u128> {
+fn intersect_u128_sets(mut sets: Vec<RapidHashSet<u128>>) -> RapidHashSet<u128> {
     if sets.is_empty() {
-        return HashSet::new();
+        return RapidHashSet::default();
     }
     sets.sort_by_key(|set| set.len());
     let mut intersection = sets[0].clone();
     for set in sets.iter().skip(1) {
         intersection = intersection.intersection(set).copied().collect();
         if intersection.is_empty() {
-            return HashSet::new();
+            return RapidHashSet::default();
         }
     }
     intersection

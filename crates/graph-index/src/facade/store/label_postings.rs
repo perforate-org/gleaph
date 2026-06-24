@@ -10,6 +10,7 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     LabelLookupPageRequest, LabelLookupPageResult, LabelPostingCursor, PostingHit,
 };
+use nohash_hasher::IntSet;
 
 impl IndexStore {
     pub(super) fn commit_label_posting_insert(
@@ -168,12 +169,11 @@ impl IndexStore {
         if vertex_label_ids.len() < 2 {
             return Vec::new();
         }
-        let mut sets: Vec<std::collections::HashSet<u64>> =
-            Vec::with_capacity(vertex_label_ids.len());
+        let mut sets: Vec<IntSet<u64>> = Vec::with_capacity(vertex_label_ids.len());
         for &label_id in vertex_label_ids {
             let lo = LabelPostingKey::prefix_lower(label_id);
             let hi = LabelPostingKey::prefix_upper(label_id);
-            let mut set = std::collections::HashSet::new();
+            let mut set = IntSet::default();
             INDEX_VERTEX_LABEL_POSTINGS.with_borrow(|postings| {
                 for key in postings.range(lo..=hi) {
                     let packed = pack_posting_vertex(key.shard_id, key.vertex_id);

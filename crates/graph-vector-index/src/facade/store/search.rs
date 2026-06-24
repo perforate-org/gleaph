@@ -29,8 +29,9 @@ use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_TOP_K, VectorEncoding, VectorIndexError, VectorMetric, VectorSearchHit,
     VectorSearchRequest, VectorSearchResult, VectorSubject,
 };
+use rapidhash::RapidHashMap;
 use std::cmp::Ordering;
-use std::collections::{BinaryHeap, HashMap};
+use std::collections::BinaryHeap;
 use std::ops::Bound;
 
 /// Default number of partitions to probe when none is supplied. Clamped to `1..=nlist`.
@@ -137,7 +138,7 @@ fn finalize(heap: BinaryHeap<Candidate>) -> VectorSearchResult {
 /// scored) and turn any drift in stable state into a skipped inconsistent row rather than a silent
 /// bad hit.
 fn slot_bytes_cached(
-    cache: &mut HashMap<PageKey, VectorPage>,
+    cache: &mut RapidHashMap<PageKey, VectorPage>,
     index_id: u32,
     slot: SlotRef,
     expected_vector_id: Option<u64>,
@@ -325,7 +326,7 @@ impl VectorIndexStore {
         active_index_version: u64,
         query: &[f32],
     ) -> VectorSearchResult {
-        let mut cache: HashMap<PageKey, VectorPage> = HashMap::new();
+        let mut cache: RapidHashMap<PageKey, VectorPage> = RapidHashMap::default();
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
 
         VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {

@@ -1,6 +1,6 @@
 //! Router-side GQL parse, plan, index seed routing, and graph dispatch.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::BTreeMap;
 
 use candid::Principal;
 use gleaph_gql::parser;
@@ -20,6 +20,7 @@ use gleaph_graph_kernel::plan_exec::{
     UniqueClaimDispatch,
 };
 use ic_cdk::api::msg_caller;
+use nohash_hasher::IntSet;
 
 use crate::execution_path::check_adhoc_execution_path;
 #[cfg(target_family = "wasm")]
@@ -77,7 +78,7 @@ fn intersect_posting_hits(mut hit_sets: Vec<Vec<PostingHit>>) -> Vec<PostingHit>
     if hit_sets.len() == 1 {
         return hit_sets.pop().unwrap_or_default();
     }
-    let mut sets: Vec<HashSet<u64>> = hit_sets
+    let mut sets: Vec<IntSet<u64>> = hit_sets
         .iter()
         .map(|hits| {
             hits.iter()
@@ -258,7 +259,7 @@ async fn resolve_fast_path_vertex_filter<I: IndexLookup + ?Sized>(
         )));
     }
 
-    let mut sets: Vec<std::collections::HashSet<u64>> = Vec::with_capacity(anchors.len());
+    let mut sets: Vec<IntSet<u64>> = Vec::with_capacity(anchors.len());
     for anchor in anchors {
         let hits = lookup_hits_for_anchor(index, anchor).await?;
         let SeedHits::Vertices(hits) = hits else {
