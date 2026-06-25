@@ -1,0 +1,477 @@
+# Gleaph GQL extension syntax
+
+Last updated: 2026-06-25
+Anchor timestamp: 2026-06-25 12:41:36 UTC +0000
+
+## Status
+
+**Planned dialect contract with partially implemented pieces.** This document is the steady-state
+public syntax contract for Gleaph-specific GQL extensions. It complements:
+
+- [layers.md](layers.md), which defines crate and execution boundaries.
+- [ADR 0034](../adr/0034-gleaph-gql-extension-syntax.md), which accepts a dedicated dialect contract.
+- [vector-index.md](../index/vector-index.md), which defines the vector-index storage and canister
+  architecture.
+
+Implementation status in this document is explicit per feature. Planned syntax is not implemented
+runtime behavior until marked implemented.
+
+## Goals
+
+1. Keep graph queries readable and close to ordinary GQL.
+2. Avoid exposing low-level execution concepts as query-time functions.
+3. Treat vector search as a first-class search operation, not as a public procedure call.
+4. Treat edge-local fast values as ordinary property access with an inline storage modifier.
+5. Keep operational and maintenance procedures under the `GLEAPH.*` namespace.
+6. Keep `gleaph-gql` and `gleaph-gql-planner` general-purpose: Gleaph/IC-specific backend meaning
+   belongs in Router/Graph integration layers.
+
+## Syntax classes
+
+| Class | Public shape | Status | Owner of meaning |
+|-------|--------------|--------|------------------|
+| IC value type | `IC.PRINCIPAL` | Implemented | `gleaph-gql-ic` value extension |
+| IC runtime function | `MSG_CALLER()` | Implemented | Graph execution context |
+| Edge inline value | `e.distance`, `e.stats.score` with `INLINE` schema modifier | Planned target | Router schema/catalog + Graph edge payload execution |
+| Shortest-path cost | `COST BY e.distance` | Planned target | Graph query planner/executor |
+| Current edge weight function | `GLEAPH.WEIGHT(e)` | Implemented compatibility surface | Graph query executor |
+| Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold` | Implemented compatibility surface | Planner fusion + Graph edge payload executor |
+| Vertex vector search | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Planned target | Router vector-index catalog + vector canister |
+| Operational procedures | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()` | Implemented | Graph mutation executor / Router orchestration |
+
+## Namespace policy
+
+Daily query syntax should avoid `GLEAPH.*` when the concept is part of the Gleaph GQL dialect:
+
+- Use `SEARCH` for vector retrieval.
+- Use ordinary property access for inline edge values.
+- Use `COST BY e.distance` for shortest-path cost.
+- Use `MSG_CALLER()` for caller context.
+- Use `IC.PRINCIPAL` for principal values.
+
+Reserve `GLEAPH.*` for operational procedures and compatibility surfaces:
+
+```gql
+CALL GLEAPH.FINALIZE_BULK_INGEST(...)
+CALL GLEAPH.FINALIZE_FORWARD_EDGE_SPAN(...)
+CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()
+```
+
+## IC extensions
+
+### `IC.PRINCIPAL`
+
+**Status:** Implemented.
+
+`IC.PRINCIPAL` is a GQL extension value type for Internet Computer principals. It is encoded and
+decoded by `gleaph-gql-ic`; `gleaph-gql` remains free of IC dependencies.
+
+Use it for parameters and property values that must carry a principal:
+
+```gql
+MATCH (a:Account)
+WHERE a.owner = $caller
+RETURN a
+```
+
+The parameter value may be an `IC.PRINCIPAL` extension value.
+
+### `MSG_CALLER()`
+
+**Status:** Implemented.
+
+`MSG_CALLER()` evaluates to the canister caller principal in graph execution context. It is
+unqualified and takes no arguments:
+
+```gql
+MATCH (a:Account)
+WHERE a.owner = MSG_CALLER()
+RETURN a
+```
+
+This function is an execution-context extension, not portable GQL core. Host tests without caller
+context must provide one or receive a runtime-function error.
+
+## Edge inline properties
+
+### Target syntax
+
+**Status:** Planned target. Existing code still exposes `GLEAPH.WEIGHT(e)` and fixed-width edge
+payload profiles.
+
+`INLINE` is a storage/layout modifier for one edge-label property. It is not a logical type. The
+logical query surface is ordinary property access:
+
+```gql
+CREATE EDGE LABEL ROAD {
+  distance FLOAT32 INLINE
+}
+
+MATCH (a)-[e:ROAD]->(b)
+RETURN b, e.distance
+ORDER BY e.distance ASC
+```
+
+### One inline slot per edge label
+
+Each edge label may define at most one `INLINE` field. The inline slot may be a scalar or a fixed-size
+struct.
+
+Allowed:
+
+```gql
+CREATE EDGE LABEL LIKED {
+  score FLOAT32 INLINE
+}
+```
+
+Allowed:
+
+```gql
+CREATE EDGE LABEL AFFINITY {
+  stats STRUCT {
+    score FLOAT32,
+    confidence FLOAT32,
+    updated_at UINT64
+  } INLINE
+}
+```
+
+Not allowed:
+
+```gql
+CREATE EDGE LABEL LIKED {
+  score FLOAT32 INLINE,
+  confidence FLOAT32 INLINE
+}
+```
+
+Use a fixed-size struct instead:
+
+```gql
+CREATE EDGE LABEL LIKED {
+  stats STRUCT {
+    score FLOAT32,
+    confidence FLOAT32
+  } INLINE
+}
+```
+
+Inline structs are restricted to fixed-size fields. Variable-length strings, blobs, arrays, and
+embeddings are not inline by default.
+
+### Relationship to `GLEAPH.WEIGHT`
+
+`GLEAPH.WEIGHT(e)` is the implemented compatibility surface for fixed-width edge payload weights.
+The target dialect replaces it with ordinary property access:
+
+```gql
+MATCH ANY SHORTEST (a)-[e:ROAD]->{1,5}(b)
+COST BY e.distance
+RETURN b
+```
+
+The equivalent implementation-era shape is:
+
+```gql
+MATCH ANY SHORTEST (a)-[e:ROAD]->{1,5}(b)
+GLEAPH.COST BY GLEAPH.WEIGHT(e)
+RETURN b
+```
+
+## Edge-payload vector predicates
+
+**Status:** Implemented compatibility surface.
+
+`GLEAPH.VECTOR.*` is implemented as SIMD scoring over fixed-width **edge payload** bytes, not vertex
+embedding ANN search:
+
+```gql
+MATCH (a)-[e:SIMILAR_TO]->(b)
+WHERE GLEAPH.VECTOR.L2_SQUARED(e, $q) <= 4.0
+RETURN b
+```
+
+Supported functions:
+
+- `GLEAPH.VECTOR.L2_SQUARED(e, query) <= threshold`
+- `GLEAPH.VECTOR.COSINE_DISTANCE(e, query) <= threshold`
+- `GLEAPH.VECTOR.DOT(e, query) >= threshold`
+
+The planner accepts these only when it can fuse them into a fixed-label edge expansion predicate.
+Unfused use is rejected. Do not reuse this surface for vertex embedding search.
+
+## Embeddings and vector indexes
+
+### Embeddings are not inline properties
+
+**Status:** Planned schema syntax; ADR 0031 storage and vector-index APIs are implemented in slices.
+
+Embeddings belong to the canonical vertex embedding store and derived vector-index model. They are not
+edge inline payloads and are not ordinary variable-size property-store values.
+
+Target schema shape:
+
+```gql
+CREATE VERTEX LABEL Document {
+  title STRING,
+  body STRING,
+  embedding EMBEDDING<FLOAT32, 768>
+}
+```
+
+Alternative spelling such as `VECTOR<FLOAT32, 768> EMBEDDING` may be considered later if it fits the
+parser/type system better, but the semantic owner remains the embedding store, not the property store.
+
+### Vector index DDL
+
+**Status:** Planned GQL syntax; Router admin APIs and vector-index catalog already exist.
+
+Target shape:
+
+```gql
+CREATE VECTOR INDEX document_embedding
+FOR (d:Document)
+ON d.embedding
+OPTIONS {
+  metric: "cosine",
+  algorithm: "ivf_flat"
+}
+```
+
+The public DDL names a vector index and an embedding field. The Router remains the source of truth for
+vector-index definitions, embedding-name interning, activation state, policy, and target resolution.
+
+`algorithm: "ivf_flat"` is the baseline. Other algorithms such as HNSW are future options and must not
+be implied by the initial syntax.
+
+## `SEARCH` subclause
+
+### Target vector-search syntax
+
+**Status:** Planned. Current runtime exposes vector search through Router Candid API
+`vector_search(RouterVectorSearchRequest)`.
+
+Vector search is a first-class `MATCH` / `OPTIONAL MATCH` subclause:
+
+```gql
+MATCH (d:Document)
+  SEARCH d IN (
+    VECTOR INDEX document_embedding
+    FOR $query
+    LIMIT 100
+  ) SCORE AS similarity
+RETURN d, similarity
+ORDER BY similarity DESC
+```
+
+This follows the graph-query shape used by modern Cypher-style vector search: the enclosing `MATCH`
+introduces a node or relationship variable, and `SEARCH` constrains that binding to the vector-index
+neighborhood.
+
+### Binding rule
+
+The `SEARCH` binding variable must be a node or relationship variable introduced by the enclosing
+`MATCH` / `OPTIONAL MATCH` pattern.
+
+Initial implementation should start with the simplest shape:
+
+```gql
+MATCH (d:Document)
+  SEARCH d IN (
+    VECTOR INDEX document_embedding
+    FOR $query
+    LIMIT 100
+  ) SCORE AS similarity
+RETURN d, similarity
+```
+
+More complex patterns can be staged after the planner can reason about the interaction between vector
+candidate generation, post-filtering, and traversal:
+
+```gql
+MATCH (u:User { id: $user_id })-[e:LIKED]->(d:Document)
+  SEARCH d IN (
+    VECTOR INDEX document_embedding
+    FOR $query
+    LIMIT 100
+  ) SCORE AS similarity
+RETURN d, similarity, e.score
+```
+
+### `SCORE AS` and `DISTANCE AS`
+
+Similarity metrics naturally expose `SCORE AS name`, where higher is better:
+
+```gql
+MATCH (d:Document)
+  SEARCH d IN (
+    VECTOR INDEX document_embedding
+    FOR $query
+    LIMIT 100
+  ) SCORE AS similarity
+RETURN d, similarity
+ORDER BY similarity DESC
+```
+
+Distance metrics naturally expose `DISTANCE AS name`, where lower is better:
+
+```gql
+MATCH (d:Document)
+  SEARCH d IN (
+    VECTOR INDEX document_embedding
+    FOR $query
+    LIMIT 100
+  ) DISTANCE AS distance
+RETURN d, distance
+ORDER BY distance ASC
+```
+
+An index definition must expose only the scoring shape it can define honestly. For example, an
+`L2Squared` index can expose `DISTANCE`; a cosine-similarity index can expose `SCORE`. If a future
+index supports both a raw distance and a normalized score, it may expose both through explicit aliases,
+but there must be no implicit `distance` or `score` binding.
+
+### Optional in-index filtering
+
+`SEARCH ... WHERE` is reserved for future in-index filtering:
+
+```gql
+MATCH (d:Document)
+  SEARCH d IN (
+    VECTOR INDEX document_embedding
+    FOR $query
+    WHERE d.published_at >= $cutoff
+    LIMIT 100
+  ) SCORE AS similarity
+RETURN d, similarity
+```
+
+Initial implementation may reject this subclause. When implemented, the predicate subset must be
+explicit and index-owned; unsupported filters must fail closed rather than silently becoming
+post-filters.
+
+### Internal lowering
+
+The public syntax may lower to the existing Router/vector-index API:
+
+```text
+router.vector_search({
+  index: "document_embedding",
+  query: $query,
+  top_k: 100
+})
+```
+
+This is an internal execution detail. Public GQL should not expose `CALL GLEAPH.VECTOR_SEARCH(...)` as
+the primary syntax.
+
+## Full-text, property, and hybrid search
+
+`SEARCH` is a general search shape, but only vector search is in scope for the first implementation.
+Future providers may include:
+
+```gql
+MATCH (d:Document)
+  SEARCH d IN (
+    FULLTEXT INDEX document_text
+    FOR "distributed graph database"
+    LIMIT 20
+  ) SCORE AS text_score
+RETURN d, text_score
+```
+
+```gql
+MATCH (d:Document)
+  SEARCH d IN (
+    HYBRID {
+      VECTOR INDEX document_embedding WEIGHT 0.7,
+      FULLTEXT INDEX document_text WEIGHT 0.3
+    }
+    FOR $query
+    LIMIT 20
+  ) SCORE AS hybrid_score
+RETURN d, hybrid_score
+```
+
+Property equality/range lookup should usually remain ordinary GQL (`MATCH` pattern predicates and
+`WHERE`) rather than being forced into `SEARCH`. A future `PROPERTY INDEX` provider must justify why
+it is a search/ranking operation instead of standard indexed pattern matching.
+
+## GraphRAG example
+
+```gql
+CREATE EDGE LABEL MENTIONS {
+  evidence STRUCT {
+    confidence FLOAT32,
+    source_rank UINT16,
+    observed_at UINT64
+  } INLINE
+}
+
+CREATE VECTOR INDEX chunk_embedding
+FOR (chunk:Chunk)
+ON chunk.embedding
+OPTIONS {
+  metric: "cosine",
+  algorithm: "ivf_flat"
+}
+
+MATCH (chunk:Chunk)
+  SEARCH chunk IN (
+    VECTOR INDEX chunk_embedding
+    FOR $query
+    LIMIT 100
+  ) SCORE AS similarity
+MATCH (chunk)-[e:MENTIONS]->(entity:Entity)
+RETURN
+  chunk,
+  entity,
+  similarity,
+  e.evidence.confidence
+ORDER BY
+  similarity DESC,
+  e.evidence.confidence DESC
+LIMIT 30
+```
+
+This expresses the intended flow:
+
+1. Vector search generates candidate chunks.
+2. Graph traversal expands candidates to entities.
+3. Inline edge evidence contributes fast traversal-time ranking signals.
+4. Final ranking combines semantic similarity and graph-local evidence.
+
+## Implementation staging
+
+| Stage | Scope |
+|-------|-------|
+| 1 | Document the dialect contract and keep existing behavior unchanged |
+| 2 | Add `SEARCH` parser/planner representation without backend-specific storage details |
+| 3 | Add Router lowering from vector `SEARCH` to the existing vector search API |
+| 4 | Add result hydration from vector hits to graph vertex bindings |
+| 5 | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions |
+| 6 | Add inline edge property schema syntax and lower `e.inline_field` to existing edge-payload reads |
+| 7 | Deprecate daily-query use of `GLEAPH.WEIGHT` where ordinary inline property access is available |
+
+Every stage that changes public syntax must update this document and add parser/planner/executor tests.
+
+## Boundary rules
+
+- Do not add IC canister calls, shard ids, stable-memory concepts, or vector-canister routing to
+  `gleaph-gql`.
+- Do not make `gleaph-gql-planner` depend on GraphStore, Router stable state, or vector-index canister
+  clients.
+- Router resolves vector-index names, embedding names, graph context, activation gates, and target
+  canisters.
+- Graph executes shard-local property access, inline payload decode, runtime functions, and
+  shortest-path cost evaluation.
+- Vector Index executes ANN search and owns search/rebuild/maintenance internals.
+
+## Related documents
+
+- [GQL stack layers](layers.md)
+- [Vector index](../index/vector-index.md)
+- [Derived-state query semantics](../index/derived-state-query-semantics.md)
+- [ADR 0031: Vertex embedding store and derived vector index canister](../adr/0031-vertex-embedding-store-and-derived-vector-index.md)
+- [ADR 0034: Gleaph GQL extension syntax surface](../adr/0034-gleaph-gql-extension-syntax.md)

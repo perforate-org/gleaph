@@ -9,7 +9,7 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | Reader | Start here |
 |--------|------------|
 | New contributor | [architecture/overview.md](architecture/overview.md) → [glossary.md](glossary.md) |
-| Query / planner work | [gql/layers.md](gql/layers.md) → [gql/plan-format.md](gql/plan-format.md) → [execution/pipeline.md](execution/pipeline.md) |
+| Query / planner work | [gql/layers.md](gql/layers.md) → [gql/extension-syntax.md](gql/extension-syntax.md) → [gql/plan-format.md](gql/plan-format.md) → [execution/pipeline.md](execution/pipeline.md) |
 | Federation / sharding | [sharding/README.md](sharding/README.md) → [sharding/standalone-mode.md](sharding/standalone-mode.md) → [sharding/federation-target.md](sharding/federation-target.md) |
 | Security / product | [security/rbac-and-prepared.md](security/rbac-and-prepared.md) |
 
@@ -29,6 +29,7 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | [federation/operations.md](federation/operations.md) | draft | Lifecycle: register, place, expand |
 | [federation/query-semantics.md](federation/query-semantics.md) | draft | Executor behavior and limits |
 | [gql/layers.md](gql/layers.md) | draft | Parser → planner → executor split |
+| [gql/extension-syntax.md](gql/extension-syntax.md) | planned / partially implemented | Gleaph GQL dialect surface: IC values, INLINE, SEARCH, vector indexes, and operational procedures |
 | [gql/plan-format.md](gql/plan-format.md) | draft | `PhysicalPlan` contract |
 | [execution/pipeline.md](execution/pipeline.md) | draft | `PlanRow`, arena, materialize |
 | [execution/operators.md](execution/operators.md) | draft | `PlanOp` catalog (planner vs executor) |
@@ -49,6 +50,7 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | [adr/0029-shard-local-atomicity-and-cross-canister-consistency.md](adr/0029-shard-local-atomicity-and-cross-canister-consistency.md) | accepted | Shard-local atomic writes plus durable asynchronous projection and federated saga consistency |
 | [adr/0031-vertex-embedding-store-and-derived-vector-index.md](adr/0031-vertex-embedding-store-and-derived-vector-index.md) | accepted (planned) | Vertex embedding store and derived vector index canister |
 | [adr/0032-vector-index-slab-page-store.md](adr/0032-vector-index-slab-page-store.md) | accepted (planned) | Vector-index physical page store split into metadata directory and raw stable slab |
+| [adr/0034-gleaph-gql-extension-syntax.md](adr/0034-gleaph-gql-extension-syntax.md) | accepted (syntax design) | Dedicated Gleaph GQL extension syntax contract |
 
 ## Conventions
 

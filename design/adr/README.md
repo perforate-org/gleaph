@@ -68,5 +68,6 @@ Last revised: YYYY-MM-DD
 | [0031](0031-vertex-embedding-store-and-derived-vector-index.md) | Vertex embedding store and derived vector index canister | accepted (planned) |
 | [0032](0032-vector-index-slab-page-store.md) | Vector index slab page store | implemented |
 | [0033](0033-vector-rebuild-state-read-memoization.md) | Vector rebuild candidate pool storage and rebuild-state read cost: reject storage-layout change; adopt transient heap memoization | accepted (implementation deferred) |
+| [0034](0034-gleaph-gql-extension-syntax.md) | Gleaph GQL extension syntax surface: SEARCH, INLINE, IC values, and operational procedures | accepted (syntax design; implementation staged by feature) |
 
 When adding an ADR, link it from the relevant design doc and update this table.

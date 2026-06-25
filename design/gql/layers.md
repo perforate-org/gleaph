@@ -51,16 +51,19 @@ Prepared queries skip parse on hot path where a cached plan blob is stored.
 
 ## IC extensions
 
-Documented in root `README.md`:
+The full Gleaph dialect surface is documented in
+[extension-syntax.md](extension-syntax.md). This section only records where IC/runtime extensions sit
+in the stack.
 
 - Type `IC.PRINCIPAL`
-- Function `IC.MSG_CALLER()`
+- Function `MSG_CALLER()`
 
 Implemented in the IC bridge and evaluated in the graph executor (caller identity for filters and ACL patterns). These are **Gleaph extensions**, not portable GQL core.
 
-### Planned: bulk ingest finalize (`CALL`)
+### Operational procedures (`CALL`)
 
-**Status:** Planned — see [storage/bulk-ingest-finalize.md](../storage/bulk-ingest-finalize.md).
+**Status:** Implemented for the listed procedures; see
+[extension-syntax.md](extension-syntax.md#namespace-policy).
 
 Mutation-only procedures (`GLEAPH.FINALIZE_BULK_INGEST`, `GLEAPH.VERTEX_LIST`, etc.) are parsed as standard `CALL` and executed in **gleaph-graph** mutation executor (`plan/mutation/gleaph_finalize.rs`). No new syntax in `gleaph-gql` / `gleaph-gql-planner`.
 
@@ -91,6 +94,7 @@ Router applies graph type catalog statements before dispatch when present; catal
 
 ## Related documents
 
+- [extension-syntax.md](extension-syntax.md)
 - [plan-format.md](plan-format.md)
 - [architecture/overview.md](../architecture/overview.md)
 - [security/rbac-and-prepared.md](../security/rbac-and-prepared.md)
