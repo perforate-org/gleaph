@@ -265,9 +265,11 @@ liveness/freshness (the row is only scored after re-validating the subject entry
 `slot`, and `generation`).
 
 Slice 7 adds `VECTOR_REBUILD_STATE` (MemoryId 12): a `index_id → VectorRebuildStateRecord` holding
-the per-index bounded shadow-version rebuild lifecycle (`Idle`/`Sampling`/`Building`/
+the per-index bounded shadow-version rebuild lifecycle (`Idle`/`Sampling`/`Training`/`Building`/
 `ReadyToPublish`/`Cleaning`/`Aborting`/`Failed`), each long-running phase carrying a resume cursor so
-admin steps stay bounded. The value is persisted as `RawRebuildState` — the verbatim
+admin steps stay bounded. The `Sampling` and `Training` variants additionally carry the bounded
+distinct candidate pool (Slice 8 k-means-lite training); it stays inside this MemoryId 12 record and is
+not split into a separate region (ADR 0033). The value is persisted as `RawRebuildState` — the verbatim
 `VectorRebuildStateRecord` Candid bytes (on-disk format unchanged) — so the per-step fail-closed
 encoded-size guard and the persist share a single Candid encode instead of encoding twice. It is derived (reconstructible by re-running a rebuild from the active
 version) and shares the `vertex_embedding_backfill` rebuild path. Slice 7 also extends the

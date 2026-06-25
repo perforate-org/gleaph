@@ -223,6 +223,11 @@ now `Idle → Sampling → Training → Building → ReadyToPublish → Cleaning
   are transient heap buffers (`O(nlist * dims)`), never persisted. After
   `MAX_REBUILD_TRAINING_ITERATIONS` it writes exactly `nlist` centroids to `IVF_CENTROIDS` and enters
   `Building`. `Training` writes no pages and no shadow slots.
+- **Rebuild-state read cost (ADR 0033).** The candidate pool deliberately remains inside the
+  `VECTOR_REBUILD_STATE` (MemoryId 12) record: measurement showed a contiguous-blob or dedicated-raw-region
+  layout does not reduce the per-step cost, which is the repeated stable-memory read of the record. See
+  [ADR 0033](../adr/0033-vector-rebuild-state-read-memoization.md) for the rejected layout changes and the
+  proposed transient heap memoization of `rebuild_state_of`.
 - **Fail-closed encoded-size guard (single encode).** Before persisting any `Training` value (the
   `Sampling → Training` transition and each post-iteration `Training → Training` re-persist) the
   canister Candid-encodes the value **once**, checks that length against `MAX_REBUILD_STATE_BYTES`,

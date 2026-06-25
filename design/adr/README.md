@@ -67,5 +67,6 @@ Last revised: YYYY-MM-DD
 | [0030](0030-cross-shard-uniqueness-tcc-reservation.md) | Cross-shard uniqueness via Router-coordinated TCC reservation | accepted (partially implemented) |
 | [0031](0031-vertex-embedding-store-and-derived-vector-index.md) | Vertex embedding store and derived vector index canister | accepted (planned) |
 | [0032](0032-vector-index-slab-page-store.md) | Vector index slab page store | implemented |
+| [0033](0033-vector-rebuild-state-read-memoization.md) | Vector rebuild candidate pool storage and rebuild-state read cost: reject storage-layout change; adopt transient heap memoization | accepted (implementation deferred) |
 
 When adding an ADR, link it from the relevant design doc and update this table.
