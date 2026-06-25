@@ -2,7 +2,7 @@
 
 Date: 2026-06-23
 Status: accepted (partially implemented)
-Last revised: 2026-06-24
+Last revised: 2026-06-25
 
 > **Status note:** The boundary decision is accepted. Slice 1 (the canonical graph-owned
 > vertex embedding store) and Slice 2 (the derived sync path plus a degenerate `ivf_flat`
@@ -163,8 +163,11 @@ Last revised: 2026-06-24
 > `nlist` centroids and enters `Building`. Both axes stay bounded: per-message work is capped so
 > `candidate_count * nlist * dims <= MAX_REBUILD_TRAINING_DISTANCE_OPS`, and the durable rebuild state
 > (`candidates + centroids`) is capped by `MAX_REBUILD_STATE_BYTES`, the **Candid-encoded** `to_bytes()`
-> length (with `MAX_REBUILD_STATE_OVERHEAD_BYTES` reserved); the `Sampling → Training` transition
-> re-checks the encoded length and fails closed with `InvalidRebuildParams` (never traps).
+> length (with `MAX_REBUILD_STATE_OVERHEAD_BYTES` reserved); every `Training` persist encodes the value
+> **once**, re-checks the encoded length, and stores those bytes verbatim (`RawRebuildState`), failing
+> closed with `InvalidRebuildParams` (never traps). Storing the pre-encoded bytes (on-disk format
+> unchanged) lets the size guard and the persist share a single encode, which cut the full-rebuild
+> canbench instruction counts by ~17–21% (see `canbench_results.yml`).
 > Mutations during `Training` are active-only and shadowed later by `Building`; publish, dual-write,
 > `Cleaning`, `Aborting`, and the search wire are unchanged. A new Router-guarded query
 > `admin_vector_partition_health(index_id)` returns an integer-only, head-only
@@ -542,9 +545,11 @@ Invariants:
    and `MAX_REBUILD_STATE_OVERHEAD_BYTES`) and the distance-op count
    (`MAX_REBUILD_TRAINING_DISTANCE_OPS / (nlist * dims)`). If the live range or `sample_limit` exhausts
    with fewer than `nlist` distinct candidates, the rebuild enters `Failed`. `MAX_REBUILD_STATE_BYTES`
-   is the **Candid-encoded** cap on the whole rebuild-state value; before persisting the
-   `Sampling → Training` transition the canister re-checks the encoded length and fails closed with
-   `InvalidRebuildParams` (never `assert!`/trap) if it would exceed the cap.
+   is the **Candid-encoded** cap on the whole rebuild-state value; before persisting any `Training`
+   value (the `Sampling → Training` transition and each post-iteration `Training → Training`
+   re-persist) the canister encodes the value once, re-checks the encoded length, and stores those
+   bytes verbatim (`RawRebuildState`), failing closed with `InvalidRebuildParams` (never `assert!`/trap)
+   if it would exceed the cap.
 3. `Training` runs deterministic k-means-lite only over the bounded candidate pool: exactly one
    iteration per `admin_vector_rebuild_step` (assign each candidate to its nearest current centroid,
    recompute centroids as the per-cluster mean), bounded so `candidate_count * nlist * dims <=

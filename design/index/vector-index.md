@@ -223,10 +223,15 @@ now `Idle → Sampling → Training → Building → ReadyToPublish → Cleaning
   are transient heap buffers (`O(nlist * dims)`), never persisted. After
   `MAX_REBUILD_TRAINING_ITERATIONS` it writes exactly `nlist` centroids to `IVF_CENTROIDS` and enters
   `Building`. `Training` writes no pages and no shadow slots.
-- **Fail-closed encoded-size guard.** Before persisting the `Sampling → Training` transition the
-  canister computes the encoded `Training` value length; if it would exceed `MAX_REBUILD_STATE_BYTES`
-  it returns `InvalidRebuildParams` rather than `assert!`/trapping the message. The conservative pool
-  cap normally keeps this from firing; the guard absorbs Candid-overhead drift.
+- **Fail-closed encoded-size guard (single encode).** Before persisting any `Training` value (the
+  `Sampling → Training` transition and each post-iteration `Training → Training` re-persist) the
+  canister Candid-encodes the value **once**, checks that length against `MAX_REBUILD_STATE_BYTES`,
+  and — if within budget — stores those same bytes verbatim via `RawRebuildState` rather than
+  re-encoding on insert. An oversized value returns `InvalidRebuildParams` rather than
+  `assert!`/trapping the message and leaves the prior recoverable state intact. The conservative pool
+  cap normally keeps this from firing; the guard absorbs Candid-overhead drift. The `RawRebuildState`
+  wrapper stores the exact `VectorRebuildStateRecord` Candid bytes (on-disk format unchanged), so the
+  guard and the persist share one encode and `rebuild_state_of` decodes once per step.
 - **Partition health.** `admin_vector_partition_health(index_id)` (Router-guarded `#[query]`) returns
   a head-only, integer-only `VectorPartitionHealthSummary { nlist, partitions_examined, live_rows,
   page_count, max_partition_live_rows }`. It reads the active version's `0..nlist` `PartitionHead`

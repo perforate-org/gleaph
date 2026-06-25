@@ -267,7 +267,9 @@ liveness/freshness (the row is only scored after re-validating the subject entry
 Slice 7 adds `VECTOR_REBUILD_STATE` (MemoryId 12): a `index_id → VectorRebuildStateRecord` holding
 the per-index bounded shadow-version rebuild lifecycle (`Idle`/`Sampling`/`Building`/
 `ReadyToPublish`/`Cleaning`/`Aborting`/`Failed`), each long-running phase carrying a resume cursor so
-admin steps stay bounded. It is derived (reconstructible by re-running a rebuild from the active
+admin steps stay bounded. The value is persisted as `RawRebuildState` — the verbatim
+`VectorRebuildStateRecord` Candid bytes (on-disk format unchanged) — so the per-step fail-closed
+encoded-size guard and the persist share a single Candid encode instead of encoding twice. It is derived (reconstructible by re-running a rebuild from the active
 version) and shares the `vertex_embedding_backfill` rebuild path. Slice 7 also extends the
 `VECTOR_SUBJECT_TO_ID` value (`SubjectMapEntry`) with a second `shadow_slot: Option<SlotRef>`
 (serde-default, no repack) so an atomic publish stays metadata-only; search resolves the live slot

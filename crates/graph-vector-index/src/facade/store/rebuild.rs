@@ -30,7 +30,8 @@ use crate::facade::stable::{
     VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
 };
 use crate::records::{
-    IvfCentroidMeta, PartitionKey, SlotRef, SubjectKey, VectorIdKey, VectorRebuildStateRecord,
+    IvfCentroidMeta, PartitionKey, RawRebuildState, SlotRef, SubjectKey, VectorIdKey,
+    VectorRebuildStateRecord,
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
@@ -41,6 +42,9 @@ use ic_stable_structures::storable::Storable;
 use rapidhash::{HashSetExt, RapidHashSet};
 use std::borrow::Cow;
 use std::ops::Bound;
+
+#[cfg(all(feature = "canbench", target_family = "wasm"))]
+use canbench_rs::bench_scope;
 
 /// Clamps a caller-supplied per-step work budget to `1..=MAX_REBUILD_STEP_WORK`, so a Router that
 /// passes a huge value (e.g. `u32::MAX`) cannot force an O(N) scan/drop in one message and a `0`
@@ -96,6 +100,7 @@ fn candidate_pool_cap(nlist: u32, stride_bytes: u32, dims: u16) -> usize {
 pub(super) fn rebuild_state_of(index_id: u32) -> VectorRebuildStateRecord {
     VECTOR_REBUILD_STATE
         .with_borrow(|m| m.get(&index_id))
+        .map(|raw| VectorRebuildStateRecord::from_bytes(Cow::Owned(raw.0)))
         .unwrap_or_default()
 }
 
@@ -105,7 +110,8 @@ fn put_rebuild_state(index_id: u32, state: VectorRebuildStateRecord) {
     if matches!(state, VectorRebuildStateRecord::Idle) {
         VECTOR_REBUILD_STATE.with_borrow_mut(|m| m.remove(&index_id));
     } else {
-        VECTOR_REBUILD_STATE.with_borrow_mut(|m| m.insert(index_id, state));
+        VECTOR_REBUILD_STATE
+            .with_borrow_mut(|m| m.insert(index_id, RawRebuildState(state.into_bytes())));
     }
 }
 
@@ -336,7 +342,11 @@ impl VectorIndexStore {
         max_subjects: u32,
         max_vector_bytes: u64,
     ) -> Result<VectorRebuildStatus, VectorIndexError> {
-        let state = rebuild_state_of(index_id);
+        let state = {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("rebuild_read_state");
+            rebuild_state_of(index_id)
+        };
         let next = match state {
             VectorRebuildStateRecord::Idle => return Err(VectorIndexError::NoActiveRebuild),
             VectorRebuildStateRecord::Sampling { .. } => {
@@ -349,19 +359,34 @@ impl VectorIndexStore {
             // ReadyToPublish/Cleaning/Aborting/Failed are not advanced by `step`.
             other => other,
         };
-        // Fail-closed encoded-size guard (P2): `Training` is the only durable rebuild value whose
-        // size scales with sampled data (`candidates + centroids`). Re-check the Candid-encoded
-        // length before persisting *any* Training transition (`Sampling -> Training` and the
-        // `Training -> Training` re-persist after each iteration) so Candid-overhead drift returns a
-        // trap-free error and leaves the prior recoverable state, instead of persisting an oversized
-        // value or trapping the message.
-        if matches!(next, VectorRebuildStateRecord::Training { .. })
-            && next.to_bytes().len() as u64 > MAX_REBUILD_STATE_BYTES
+        // Status is read before the move into the persist block (it only needs the phase/cursor
+        // summary, not ownership).
+        let status = status_of(&next);
         {
-            return Err(VectorIndexError::InvalidRebuildParams);
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("rebuild_persist_state");
+            match next {
+                VectorRebuildStateRecord::Idle => {
+                    VECTOR_REBUILD_STATE.with_borrow_mut(|m| m.remove(&index_id));
+                }
+                next => {
+                    // Fail-closed encoded-size guard (P2): `Training` is the only durable rebuild
+                    // value whose size scales with sampled data (`candidates + centroids`). Encode
+                    // exactly once, re-check the Candid-encoded length before persisting any Training
+                    // transition (`Sampling -> Training` and each `Training -> Training` re-persist),
+                    // and store those same bytes verbatim. An oversized value returns a trap-free
+                    // error and leaves the prior recoverable state intact.
+                    let is_training = matches!(next, VectorRebuildStateRecord::Training { .. });
+                    let bytes = next.into_bytes();
+                    if is_training && bytes.len() as u64 > MAX_REBUILD_STATE_BYTES {
+                        return Err(VectorIndexError::InvalidRebuildParams);
+                    }
+                    VECTOR_REBUILD_STATE
+                        .with_borrow_mut(|m| m.insert(index_id, RawRebuildState(bytes)));
+                }
+            }
         }
-        put_rebuild_state(index_id, next.clone());
-        Ok(status_of(&next))
+        Ok(status)
     }
 
     /// Test-only entry point that drives one rebuild step with injectable count/byte budgets, so a
@@ -400,6 +425,8 @@ impl VectorIndexStore {
         else {
             unreachable!("sampling_step called off Sampling");
         };
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("rebuild_sampling");
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
             .ok_or(VectorIndexError::UnknownIndex)?;
@@ -411,60 +438,68 @@ impl VectorIndexStore {
         let mut range_exhausted = true;
         let mut bytes_buffered = 0u64;
         let mut live_bytes: Vec<Vec<u8>> = Vec::new();
-        VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-            for entry in subjects.range((subject_lower(index_id, &cursor), Bound::Unbounded)) {
-                let key = entry.key();
-                if key.index_id != index_id {
-                    break;
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("rebuild_sampling_scan");
+            VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
+                for entry in subjects.range((subject_lower(index_id, &cursor), Bound::Unbounded)) {
+                    let key = entry.key();
+                    if key.index_id != index_id {
+                        break;
+                    }
+                    if examined >= max_subjects {
+                        range_exhausted = false;
+                        break;
+                    }
+                    examined += 1;
+                    last_key = Some(*key);
+                    let value = entry.value();
+                    if value.deleted {
+                        continue;
+                    }
+                    let Some(slot) = value.current_slot_for(active) else {
+                        continue;
+                    };
+                    if subjects_scanned >= sample_limit as u64 {
+                        range_exhausted = false;
+                        break;
+                    }
+                    subjects_scanned += 1;
+                    if let Some(bytes) = self.read_slot_bytes(index_id, slot) {
+                        bytes_buffered += bytes.len() as u64;
+                        live_bytes.push(bytes);
+                    }
+                    // Bound transient heap bytes: break after buffering at least one vector once the
+                    // per-step byte budget is reached (cursor resumes from `last_key`).
+                    if bytes_buffered >= max_vector_bytes {
+                        range_exhausted = false;
+                        break;
+                    }
                 }
-                if examined >= max_subjects {
-                    range_exhausted = false;
-                    break;
-                }
-                examined += 1;
-                last_key = Some(*key);
-                let value = entry.value();
-                if value.deleted {
-                    continue;
-                }
-                let Some(slot) = value.current_slot_for(active) else {
-                    continue;
-                };
-                if subjects_scanned >= sample_limit as u64 {
-                    range_exhausted = false;
-                    break;
-                }
-                subjects_scanned += 1;
-                if let Some(bytes) = self.read_slot_bytes(index_id, slot) {
-                    bytes_buffered += bytes.len() as u64;
-                    live_bytes.push(bytes);
-                }
-                // Bound transient heap bytes: break after buffering at least one vector once the
-                // per-step byte budget is reached (cursor resumes from `last_key`).
-                if bytes_buffered >= max_vector_bytes {
-                    range_exhausted = false;
-                    break;
-                }
-            }
-        });
+            });
+        }
 
         // Distinct membership via a transient set seeded from the existing pool (P1): keeps the
         // per-step dedup cost ~O(total candidate bytes) instead of `candidates.contains` being
         // O(existing candidates * vector_width) for every new candidate. The set is heap-only; the
         // durable state stays `Vec<Vec<u8>>`.
         let mut pool_cap_reached = candidates.len() >= pool_cap;
-        let mut seen: RapidHashSet<Vec<u8>> =
-            RapidHashSet::with_capacity(candidates.len() + live_bytes.len());
-        seen.extend(candidates.iter().cloned());
-        for bytes in live_bytes {
-            if candidates.len() >= pool_cap {
-                pool_cap_reached = true;
-                break;
-            }
-            if seen.insert(bytes.clone()) {
-                candidates.push(bytes);
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("rebuild_sampling_dedup");
+            let mut seen: RapidHashSet<Vec<u8>> =
+                RapidHashSet::with_capacity(candidates.len() + live_bytes.len());
+            seen.extend(candidates.iter().cloned());
+            for bytes in live_bytes {
                 if candidates.len() >= pool_cap {
                     pool_cap_reached = true;
+                    break;
+                }
+                if seen.insert(bytes.clone()) {
+                    candidates.push(bytes);
+                    if candidates.len() >= pool_cap {
+                        pool_cap_reached = true;
+                    }
                 }
             }
         }
@@ -526,6 +561,8 @@ impl VectorIndexStore {
         else {
             unreachable!("training_step called off Training");
         };
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("rebuild_training");
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
             .ok_or(VectorIndexError::UnknownIndex)?;
@@ -537,33 +574,42 @@ impl VectorIndexStore {
             centroids = candidates.iter().take(nlist_usize).cloned().collect();
         }
 
-        let decoded_centroids: Vec<Vec<f32>> = centroids.iter().map(|c| decode_f32(c)).collect();
         let mut sums: Vec<Vec<f32>> = vec![vec![0.0f32; dims]; nlist_usize];
         let mut counts: Vec<u64> = vec![0u64; nlist_usize];
-        for cand in &candidates {
-            let v = decode_f32(cand);
-            let mut best = 0usize;
-            let mut best_d = f32::INFINITY;
-            for (p, centroid) in decoded_centroids.iter().enumerate() {
-                let d = l2_squared_f32(centroid, &v);
-                if d < best_d {
-                    best_d = d;
-                    best = p;
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("rebuild_training_assign");
+            let decoded_centroids: Vec<Vec<f32>> =
+                centroids.iter().map(|c| decode_f32(c)).collect();
+            for cand in &candidates {
+                let v = decode_f32(cand);
+                let mut best = 0usize;
+                let mut best_d = f32::INFINITY;
+                for (p, centroid) in decoded_centroids.iter().enumerate() {
+                    let d = l2_squared_f32(centroid, &v);
+                    if d < best_d {
+                        best_d = d;
+                        best = p;
+                    }
                 }
+                for (acc, x) in sums[best].iter_mut().zip(v.iter()) {
+                    *acc += *x;
+                }
+                counts[best] += 1;
             }
-            for (acc, x) in sums[best].iter_mut().zip(v.iter()) {
-                *acc += *x;
-            }
-            counts[best] += 1;
         }
-        // Recompute each centroid as the mean; an empty cluster keeps its previous centroid.
-        for p in 0..nlist_usize {
-            if counts[p] == 0 {
-                continue;
+        {
+            // Recompute each centroid as the mean; an empty cluster keeps its previous centroid.
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("rebuild_training_recompute");
+            for p in 0..nlist_usize {
+                if counts[p] == 0 {
+                    continue;
+                }
+                let inv = 1.0f32 / counts[p] as f32;
+                let mean: Vec<f32> = sums[p].iter().map(|s| s * inv).collect();
+                centroids[p] = encode_f32(&mean);
             }
-            let inv = 1.0f32 / counts[p] as f32;
-            let mean: Vec<f32> = sums[p].iter().map(|s| s * inv).collect();
-            centroids[p] = encode_f32(&mean);
         }
         let iteration = iteration + 1;
 
@@ -612,6 +658,8 @@ impl VectorIndexStore {
         else {
             unreachable!("building_step called off Building");
         };
+        #[cfg(all(feature = "canbench", target_family = "wasm"))]
+        let _scope = bench_scope("rebuild_building");
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
             .ok_or(VectorIndexError::UnknownIndex)?;
@@ -625,70 +673,78 @@ impl VectorIndexStore {
         let mut bytes_buffered = 0u64;
         // (subject key, vector_id, generation, active bytes) for subjects still needing a shadow.
         let mut pending: Vec<(SubjectKey, u64, u64, Vec<u8>)> = Vec::new();
-        VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
-            for entry in subjects.range((subject_lower(index_id, &cursor), Bound::Unbounded)) {
-                let key = entry.key();
-                if key.index_id != index_id {
-                    break;
-                }
-                if examined >= max_subjects {
-                    range_exhausted = false;
-                    break;
-                }
-                examined += 1;
-                last_key = Some(*key);
-                let value = entry.value();
-                if value.deleted {
-                    continue;
-                }
-                if value
-                    .shadow_slot
-                    .is_some_and(|s| s.index_version == target_index_version)
-                {
-                    continue; // already shadowed (e.g. by dual-write)
-                }
-                let Some(active_slot) = value.current_slot_for(active) else {
-                    continue;
-                };
-                let Some(vector_id) = value.vector_id else {
-                    continue;
-                };
-                let Some(bytes) = self.read_slot_bytes(index_id, active_slot) else {
-                    continue;
-                };
-                bytes_buffered += bytes.len() as u64;
-                pending.push((*key, vector_id, active_slot.generation, bytes));
-                // Bound transient heap bytes: break after buffering at least one vector once the
-                // per-step byte budget is reached (cursor resumes from `last_key`).
-                if bytes_buffered >= max_vector_bytes {
-                    range_exhausted = false;
-                    break;
-                }
-            }
-        });
-
-        for (key, vector_id, generation, bytes) in pending {
-            let partition = assign_partition(&centroids, &bytes);
-            let shadow_slot = self.append_slot(
-                index_id,
-                target_index_version,
-                partition,
-                &def,
-                vector_id,
-                generation,
-                key.subject,
-                &bytes,
-            )?;
-            VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
-                if let Some(mut entry) = m.get(&key)
-                    && !entry.deleted
-                    && entry.vector_id == Some(vector_id)
-                {
-                    entry.shadow_slot = Some(shadow_slot);
-                    m.insert(key, entry);
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("rebuild_building_scan");
+            VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
+                for entry in subjects.range((subject_lower(index_id, &cursor), Bound::Unbounded)) {
+                    let key = entry.key();
+                    if key.index_id != index_id {
+                        break;
+                    }
+                    if examined >= max_subjects {
+                        range_exhausted = false;
+                        break;
+                    }
+                    examined += 1;
+                    last_key = Some(*key);
+                    let value = entry.value();
+                    if value.deleted {
+                        continue;
+                    }
+                    if value
+                        .shadow_slot
+                        .is_some_and(|s| s.index_version == target_index_version)
+                    {
+                        continue; // already shadowed (e.g. by dual-write)
+                    }
+                    let Some(active_slot) = value.current_slot_for(active) else {
+                        continue;
+                    };
+                    let Some(vector_id) = value.vector_id else {
+                        continue;
+                    };
+                    let Some(bytes) = self.read_slot_bytes(index_id, active_slot) else {
+                        continue;
+                    };
+                    bytes_buffered += bytes.len() as u64;
+                    pending.push((*key, vector_id, active_slot.generation, bytes));
+                    // Bound transient heap bytes: break after buffering at least one vector once the
+                    // per-step byte budget is reached (cursor resumes from `last_key`).
+                    if bytes_buffered >= max_vector_bytes {
+                        range_exhausted = false;
+                        break;
+                    }
                 }
             });
-            subjects_processed += 1;
+        }
+
+        {
+            #[cfg(all(feature = "canbench", target_family = "wasm"))]
+            let _scope = bench_scope("rebuild_building_append");
+            for (key, vector_id, generation, bytes) in pending {
+                let partition = assign_partition(&centroids, &bytes);
+                let shadow_slot = self.append_slot(
+                    index_id,
+                    target_index_version,
+                    partition,
+                    &def,
+                    vector_id,
+                    generation,
+                    key.subject,
+                    &bytes,
+                )?;
+                VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| {
+                    if let Some(mut entry) = m.get(&key)
+                        && !entry.deleted
+                        && entry.vector_id == Some(vector_id)
+                    {
+                        entry.shadow_slot = Some(shadow_slot);
+                        m.insert(key, entry);
+                    }
+                });
+                subjects_processed += 1;
+            }
         }
 
         if range_exhausted {

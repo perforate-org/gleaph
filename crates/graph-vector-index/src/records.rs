@@ -540,6 +540,32 @@ impl Storable for VectorRebuildStateRecord {
     }
 }
 
+/// A pre-encoded [`VectorRebuildStateRecord`] stored verbatim in `VECTOR_REBUILD_STATE`.
+///
+/// The bytes are exactly `VectorRebuildStateRecord::into_bytes()` (Candid), so the on-disk format is
+/// identical to storing the record directly. The wrapper lets the rebuild step's fail-closed
+/// encoded-size guard and the persist share a single Candid encode: the step encodes once, checks the
+/// length, and stores these bytes without re-encoding (ADR 0031 Slice 7/8). `rebuild_state_of` decodes
+/// them back into a [`VectorRebuildStateRecord`].
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawRebuildState(pub Vec<u8>);
+
+impl Storable for RawRebuildState {
+    const BOUND: Bound = Bound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(&self.0)
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Self(bytes.into_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

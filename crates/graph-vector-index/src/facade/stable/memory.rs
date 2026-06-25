@@ -14,8 +14,8 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 
 use crate::records::{
-    IvfCentroidMeta, PageKey, PartitionHead, PartitionKey, SlotRef, SubjectKey, SubjectMapEntry,
-    VectorIdKey, VectorIndexDef, VectorRebuildStateRecord, VectorSubjectRecord,
+    IvfCentroidMeta, PageKey, PartitionHead, PartitionKey, RawRebuildState, SlotRef, SubjectKey,
+    SubjectMapEntry, VectorIdKey, VectorIndexDef, VectorSubjectRecord,
 };
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
@@ -51,7 +51,7 @@ pub(crate) type StableIdToSlotMap = BTreeMap<VectorIdKey, SlotRef, Memory>;
 pub(crate) type StablePartitionHeadsMap = BTreeMap<PartitionKey, PartitionHead, Memory>;
 pub(crate) type StablePageMetaMap = BTreeMap<PageKey, super::page_store::VectorPageMeta, Memory>;
 pub(crate) type StableIdToSubjectMap = BTreeMap<VectorIdKey, VectorSubjectRecord, Memory>;
-pub(crate) type StableRebuildStateMap = BTreeMap<u32, VectorRebuildStateRecord, Memory>;
+pub(crate) type StableRebuildStateMap = BTreeMap<u32, RawRebuildState, Memory>;
 
 /// Graph ownership config (ADR 0031 Slice 4 target model B). Unlike `graph-index`
 /// `IndexOwnershipConfig`, a derived vector index has **one target per graph** that owns *every*
