@@ -41,6 +41,7 @@ impl VectorIndexStore {
         VECTOR_REBUILD_STATE.with_borrow_mut(|m| m.clear_new());
         VECTOR_PARTITION_HEADS.with_borrow_mut(|m| m.clear_new());
         PAGE_STORE.with_borrow_mut(|store| store.reset());
+        super::centroid_cache::clear_all();
         VECTOR_INDEX_ROUTER.with_borrow_mut(|router| {
             router.set(args.router_canister);
         });

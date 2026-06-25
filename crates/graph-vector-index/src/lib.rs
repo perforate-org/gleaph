@@ -31,8 +31,10 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
-    VectorEmbeddingSyncOp, VectorPartitionHealthSummary, VectorRebuildStatus, VectorSearchRequest,
-    VectorSearchResult, VectorSlabStats, VectorSlabStatsStep,
+    VectorCentroidCacheStatus, VectorEmbeddingSyncOp, VectorMaintenancePolicy,
+    VectorMaintenanceRecommendation, VectorPartitionHealthStep, VectorPartitionHealthSummary,
+    VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
+    VectorSlabStats, VectorSlabStatsStep,
 };
 use ic_cdk_macros::{init, query, update};
 
@@ -83,6 +85,30 @@ fn admin_start_vector_rebuild(index_id: u32, nlist: u32, sample_limit: u32) -> R
     canister::admin_start_vector_rebuild(index_id, nlist, sample_limit)
 }
 
+/// Starts a rebuild only if partition health crosses the supplied policy (ADR 0031 Slice 9). The
+/// head-only skew summary is recomputed server-side from current partition heads; the operator passes
+/// back only the page-meta tombstone health (run to `exhausted`) with a policy. This re-derives the
+/// recommendation and, when not `Healthy`, begins a rebuild (no autonomous timer). `target_nlist =
+/// None` defaults to `def.nlist` only when it is `>= 2`. Returns the decided recommendation;
+/// page health attested against a stale generation is rejected. Page-meta completeness is trusted
+/// admin input, not proven server-side. Router-guarded.
+#[update(guard = "guard_router_canister")]
+fn admin_start_vector_rebuild_if_recommended(
+    index_id: u32,
+    attested_page_health: VectorPartitionPageHealth,
+    policy: VectorMaintenancePolicy,
+    target_nlist: Option<u32>,
+    sample_limit: u32,
+) -> Result<VectorMaintenanceRecommendation, String> {
+    canister::admin_start_vector_rebuild_if_recommended(
+        index_id,
+        attested_page_health,
+        policy,
+        target_nlist,
+        sample_limit,
+    )
+}
+
 /// Drives one bounded `Sampling`/`Building` step of an in-flight rebuild.
 #[update(guard = "guard_router_canister")]
 fn admin_vector_rebuild_step(
@@ -123,6 +149,41 @@ fn admin_vector_rebuild_cleanup_step(
 #[query(guard = "guard_router_canister")]
 fn admin_vector_partition_health(index_id: u32) -> Result<VectorPartitionHealthSummary, String> {
     canister::admin_vector_partition_health(index_id)
+}
+
+/// Bounded page-meta tombstone-health step for the active index version (ADR 0031 Slice 9). Repeat
+/// with the returned `cursor` until `exhausted`, then sum the additive partials client-side (see
+/// `VectorPartitionHealthStep`). Complements the head-only `admin_vector_partition_health` skew
+/// summary. `max_pages` is clamped server-side; a malformed/wrong-scope `cursor` returns an error
+/// rather than trapping. Diagnostic only, not search truth.
+#[query(guard = "guard_router_canister")]
+fn admin_vector_partition_health_step(
+    index_id: u32,
+    cursor: Option<Vec<u8>>,
+    max_pages: u32,
+) -> Result<VectorPartitionHealthStep, String> {
+    canister::admin_vector_partition_health_step(index_id, cursor, max_pages)
+}
+
+/// Warms the heap centroid cache for an index from its active centroid set (ADR 0031 Slice 9). An
+/// `#[update]` because a `#[query]` cannot persist heap writes on IC. Only ready `nlist > 1` indexes
+/// are cached; degenerate/untrained indexes instead drop any stale entry. Returns cache status.
+#[update(guard = "guard_router_canister")]
+fn admin_vector_centroid_cache_warmup(index_id: u32) -> Result<VectorCentroidCacheStatus, String> {
+    canister::admin_vector_centroid_cache_warmup(index_id)
+}
+
+/// Clears the entire heap centroid cache (ADR 0031 Slice 9). Router-guarded `#[update]`.
+#[update(guard = "guard_router_canister")]
+fn admin_vector_centroid_cache_clear() -> Result<VectorCentroidCacheStatus, String> {
+    canister::admin_vector_centroid_cache_clear()
+}
+
+/// Reports heap centroid cache status (entries/bytes/cap) (ADR 0031 Slice 9). Per-query hit/miss is
+/// not tracked (queries cannot commit counters on IC). Router-guarded `#[query]`.
+#[query(guard = "guard_router_canister")]
+fn admin_vector_centroid_cache_status() -> Result<VectorCentroidCacheStatus, String> {
+    canister::admin_vector_centroid_cache_status()
 }
 
 /// Derived slab-space observability for the ADR 0032 page store. Maintenance/diagnostic data only,

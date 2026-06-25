@@ -87,9 +87,11 @@ Last revised: 2026-06-25
 > rebuild + dual-write landed in Slice 7 (below). Bounded `ivf_flat` training quality landed in Slice
 > 8 (below): it replaced the Slice 7 "first distinct samples become centroids" MVP with bounded,
 > deterministic k-means-lite over a bounded candidate pool and added a head-only partition-health
-> summary without changing the public search API. Candidate pagination, query ranking/merge,
-> per-index/per-embedding fan-out, GQL vector-search syntax, full/balanced k-means, tombstone-ratio
-> health, PQ/HNSW, and `VectorSubject::Edge` remain Slice 9+.
+> summary without changing the public search API. Slice 9 (below) then added bounded page-meta
+> tombstone-ratio health, a policy-driven rebuild recommendation/trigger, and a heap centroid cache,
+> again without changing the public search API. Candidate pagination, query ranking/merge,
+> per-index/per-embedding fan-out, GQL vector-search syntax, full/balanced k-means, autonomous
+> tombstone cleanup, Router-forwarded maintenance, PQ/HNSW, and `VectorSubject::Edge` remain Slice 10+.
 > This ADR fixes ownership, consistency, the standard `ivf_flat` vector-index kind, and the first
 > derived vector-index stable-memory shape before the GQL query operator is committed.
 >
@@ -148,9 +150,10 @@ Last revised: 2026-06-25
 > reintroduces a watermark/clock reconciliation surface after Slice 4 already established
 > incarnation-ordered mutation delivery. Slice 7 trains centroids by **sampling distinct live
 > vectors** with nearest-centroid assignment. Slice 8 (below) improves centroid quality with bounded
-> k-means-lite over that bounded sample and adds partition health/status signals. Full/balanced
-> k-means, partition tombstone-cleanup automation, a heap centroid cache, GQL vector syntax,
-> `VectorSubject::Edge`, and distributed fan-out remain Slice 9+ follow-ups.
+> k-means-lite over that bounded sample and adds partition health/status signals. Slice 9 (below) then
+> added page-meta tombstone health, a rebuild recommendation/trigger, and a heap centroid cache.
+> Full/balanced k-means, autonomous partition tombstone-cleanup, GQL vector syntax,
+> `VectorSubject::Edge`, and distributed fan-out remain Slice 10+ follow-ups.
 >
 > **Slice 8 (implemented): bounded training quality + head-only partition health.** Slice 8 inserts a
 > deterministic `Training` phase between `Sampling` and `Building` in the existing rebuild lifecycle
@@ -173,6 +176,34 @@ Last revised: 2026-06-25
 > `admin_vector_partition_health(index_id)` returns an integer-only, head-only
 > `VectorPartitionHealthSummary { nlist, partitions_examined, live_rows, page_count,
 > max_partition_live_rows }` (O(nlist), no page scan); tombstone-ratio health is deferred to Slice 9+.
+>
+> **Slice 9 (implemented): maintenance visibility, rebuild recommendation, and a heap centroid
+> cache.** Slice 9 adds maintenance/cache surface only — no change to canonical ownership, search
+> semantics, or stable layout (no new stable region). Three additions: (1) a bounded, cursor-resumable
+> page-meta tombstone-health scan, `admin_vector_partition_health_step(index_id, cursor, max_pages)`,
+> returning an additive `VectorPartitionHealthStep { partial: VectorPartitionPageHealth { index_id,
+> index_version, page_count, total_rows, physical_live_rows, tombstoned_rows }, cursor, exhausted }`
+> scoped to the active version (mirrors the `VectorSlabStatsStep` merge / no-snapshot-isolation
+> contract). It complements the head-only skew summary with the tombstone signal the head cannot see.
+> (2) A pure `recommend_partition_maintenance(summary, page_health, policy)` and a Router-guarded
+> `admin_start_vector_rebuild_if_recommended(index_id, attested_page_health, policy, target_nlist,
+> sample_limit)` that, when health crosses a `VectorMaintenancePolicy` (split `recommended`/`required`
+> basis-point thresholds for tombstone ratio and partition skew, judged with `u128` cross-multiplication,
+> independently min-row gated), begins an existing rebuild and returns the three-state
+> `VectorMaintenanceRecommendation { Healthy, RebuildRecommended, RebuildRequired }` (no autonomous timer
+> in this slice). The head-only skew summary is **recomputed server-side** from the authoritative
+> partition heads (O(`nlist`)), so it has no caller-trust surface; only the page-meta tombstone health is
+> trusted admin input (proving its completeness would need an unbounded scan). A generation guard rejects
+> page health attested against a different generation (`StaleMaintenanceHealth`), and `target_nlist =
+> None` defaults to `def.nlist` only when `>= 2`. (3) A
+> transient **heap** centroid cache (`admin_vector_centroid_cache_warmup` / `_clear` / `_status`,
+> reporting `VectorCentroidCacheStatus { entries, bytes, max_bytes }`): the partition-page `#[query]`
+> search reads decoded centroids from the heap when warmed (skipping the `IVF_CENTROIDS` stable read +
+> `f32` decode) and otherwise reads stable for that call only. Because IC `#[query]` execution is
+> non-committing, the cache is **read-only** on the query path; population/eviction happen only on
+> `#[update]` warmup/clear and a publish-time invalidation (the active generation changing). All new
+> admin endpoints stay on the vector canister behind `guard_router_canister`; Router forwarding is a
+> deferred follow-up.
 
 ## Context
 
@@ -578,6 +609,61 @@ at `nprobe = nlist`, unchanged dual-write/publish semantics, and observable part
 Canbench compares Slice 7 sampled-centroid rebuild/search behavior
 against Slice 8 k-means-lite rebuild/search behavior on clustered datasets.
 
+### 7.3 Slice 9 maintenance-visibility + centroid-cache contract (implemented)
+
+Slice 9 keeps the Slice 7/8 ownership, consistency, and search model unchanged and adds **no stable
+region** (heap-only cache; reuses existing `VECTOR_PAGE_META`, `VECTOR_PARTITION_HEADS`, and
+`IVF_CENTROIDS`). It closes the operational gap left by the head-only Slice 8 summary:
+
+1. **Bounded page-meta tombstone health.** `admin_vector_partition_health_step(index_id, cursor,
+   max_pages)` (Router-guarded `#[query]`) scans at most `max_pages` `VECTOR_PAGE_META` entries of the
+   active `(index_id, active_index_version)` — reading only page meta, never row bytes or
+   `VECTOR_SUBJECT_TO_ID` — and returns an additive `VectorPartitionHealthStep { partial:
+   VectorPartitionPageHealth { index_id, index_version, page_count, total_rows, physical_live_rows,
+   tombstoned_rows }, cursor, exhausted }`. Callers repeat until `exhausted` and sum the partials. It
+   mirrors the `VectorSlabStatsStep` merge / no-snapshot-isolation contract; `max_pages` is clamped
+   server-side and a malformed or wrong-scope cursor returns `InvalidStatsCursor` rather than trapping.
+   `physical_live_rows` is `VectorPageMeta.live_count` (not subject-freshness). This complements the
+   head-only skew summary with the tombstone signal the head cannot see.
+2. **Recommendation + trigger.** The pure `recommend_partition_maintenance(summary, page_health,
+   policy)` returns `VectorMaintenanceRecommendation { Healthy, RebuildRecommended, RebuildRequired }`
+   as the max severity across two independently min-row-gated signals — tombstone ratio
+   (`tombstoned_rows / total_rows`) and partition skew (`max_partition_live_rows * nlist / live_rows`)
+   — compared against the split `recommended_*_bps`/`required_*_bps` thresholds of a
+   `VectorMaintenancePolicy` using `u128` cross-multiplication (no floats, no overflow; an inverted
+   policy returns `InvalidMaintenancePolicy`). `admin_start_vector_rebuild_if_recommended(index_id,
+   attested_page_health, policy, target_nlist, sample_limit)` (Router-guarded `#[update]`) recomputes
+   the head-only skew `summary` server-side from the authoritative partition heads (O(`nlist`)),
+   re-derives the recommendation, and, when not `Healthy`, begins an existing rebuild, returning the
+   recommendation (a `Healthy` result is an explicit no-op, not an error). There is **no autonomous
+   timer** in this slice. The skew summary therefore has no caller-trust surface; only the page-meta
+   tombstone health is *trusted admin input* (proving its completeness would require an unbounded scan).
+   A generation guard rejects page health attested against a different generation
+   (`attested_page_health.index_id`/`index_version` must equal the active version, else
+   `StaleMaintenanceHealth`). `target_nlist = None` defaults to `def.nlist` only when `>= 2`
+   (degenerate `nlist = 1` requires an explicit `target_nlist`, since rebuild requires `nlist >= 2`).
+3. **Heap centroid cache.** A transient `thread_local` cache keyed by `(index_id ->
+   {version, nlist, dims})` memoizes the decoded centroid set so the partition-page `#[query]` search
+   skips the `IVF_CENTROIDS` stable read + `f32` decode. Because IC `#[query]` execution is
+   non-committing, the query path is **read-only**: a warmed entry is used, and a miss reads stable for
+   that call only without populating the cache. Population/eviction are `#[update]`-only —
+   `admin_vector_centroid_cache_warmup(index_id)` (caches a ready `nlist > 1` set; drops any stale
+   entry for degenerate/untrained indexes), `admin_vector_centroid_cache_clear()`, and a publish-time
+   `invalidate(index_id)` when the active generation changes; the cache is byte-bounded and dropped on
+   init/upgrade. `admin_vector_centroid_cache_status()` reports `VectorCentroidCacheStatus { entries,
+   bytes, max_bytes }` — per-query hit/miss is intentionally **not** tracked (a query cannot commit
+   counters on IC).
+4. All new admin endpoints stay on the vector canister behind `guard_router_canister`, driven directly
+   by the router principal (the Slice 7/8 precedent); Router forwarding is a deferred follow-up. Search
+   semantics, the public request, dual-write, publish, `Cleaning`, and `Aborting` are unchanged.
+
+Slice 9 test coverage proves the bounded page-meta scan's additive merge / version scoping / cursor
+scope-check, the recommendation thresholds (split bands, inclusive crossing, independent gating,
+`u128` non-overflow), the trigger's generation guard and `nlist` resolution, and the centroid cache's
+cold-vs-warm search parity, publish invalidation, and router-guard — at the store layer (unit) and end
+to end via PocketIC (`sender = router`). Canbench adds the page-meta health scan (clean and
+tombstone-heavy), cold-vs-warm partition-page search, and centroid-cache warmup cost.
+
 ### 8. Query syntax stays semantic; algorithm choice belongs to index definition
 
 GQL query syntax should not expose physical index kinds such as `ivf_flat`, `ivf_pq`, or `hnsw`.
@@ -697,12 +783,18 @@ future ADR proves that physical index selection must be user-visible.
     `admin_vector_partition_health` for `ivf_flat` (`nlist`, `partitions_examined`, `live_rows`,
     `page_count`, `max_partition_live_rows`) without making it canonical embedding state; tombstone
     accounting is deferred because it needs a page scan or persisted counters.
-14. **[planned, slice 9+]** Add full/balanced k-means or more advanced partition assignment,
-    partition tombstone cleanup automation, centroid cache warmup, and explicit cache-miss behavior.
-15. **[planned, slice 9+]** Add algorithm-neutral GQL/query planning integration and keep
+14. **[done, slice 9]** Add bounded page-meta tombstone health
+    (`admin_vector_partition_health_step`), a pure recommendation + Router-guarded rebuild trigger
+    (`recommend_partition_maintenance` / `admin_start_vector_rebuild_if_recommended`, no autonomous
+    timer), and a heap centroid cache with explicit query read-only cache-miss behavior
+    (`admin_vector_centroid_cache_warmup` / `_clear` / `_status`). No new stable region.
+15. **[planned, slice 10+]** Add full/balanced k-means or more advanced partition assignment,
+    autonomous partition tombstone cleanup/rebuild scheduling, and Router-forwarded maintenance
+    ergonomics over the Slice 9 vector-canister admin surface.
+16. **[planned, slice 10+]** Add algorithm-neutral GQL/query planning integration and keep
     `algorithm: "ivf_flat"` in index definition/config, not query syntax.
-16. **[ongoing]** Keep canbench baselines for embedding write, flush, backfill, exact scan,
-    partitioned `ivf_flat`, rebuild/training, and future centroid warmup.
+17. **[ongoing]** Keep canbench baselines for embedding write, flush, backfill, exact scan,
+    partitioned `ivf_flat`, rebuild/training, page-meta health scan, and centroid cache warm/cold.
 
 ## Required design updates
 

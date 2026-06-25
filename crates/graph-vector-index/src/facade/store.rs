@@ -6,9 +6,13 @@
 //!   idempotence over a degenerate `ivf_flat` page store
 
 mod authorization;
+mod centroid_cache;
+mod maintenance;
 mod mutation;
 mod rebuild;
 mod search;
+
+pub(crate) use maintenance::recommend_partition_maintenance;
 
 #[cfg(feature = "canbench")]
 pub(crate) use search::SearchTuning;

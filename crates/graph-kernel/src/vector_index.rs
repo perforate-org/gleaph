@@ -247,9 +247,10 @@ pub struct VectorRebuildStatus {
 ///
 /// O(`nlist`) over the active version's `PartitionHead` rows (no page scan, bounded by `MAX_NLIST`).
 /// Reports integer-only raw counts; callers derive `avg_live_rows = live_rows / nlist` and the skew
-/// ratio `max_partition_live_rows / avg_live_rows` themselves. Tombstone accounting
-/// (`tombstoned_rows`/`total_rows`/tombstone ratio) is deferred to a later slice because it would
-/// require a page scan or new persisted counters.
+/// ratio `max_partition_live_rows / avg_live_rows` themselves. This summary stays intentionally
+/// head-only: tombstone accounting (`tombstoned_rows`/`total_rows`/tombstone ratio) requires a page
+/// scan and is provided separately by the Slice 9 page-meta health type
+/// ([`VectorPartitionPageHealth`], accumulated via [`VectorPartitionHealthStep`]).
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
 )]
@@ -264,6 +265,149 @@ pub struct VectorPartitionHealthSummary {
     pub page_count: u64,
     /// Largest single-partition `live_len` (skew numerator).
     pub max_partition_live_rows: u64,
+}
+
+/// Bounded page-meta tombstone accounting for one `(index_id, active index version)` (ADR 0031
+/// Slice 9).
+///
+/// Derived from the `VECTOR_PAGE_META` directory only (no row-byte read, no `VECTOR_SUBJECT_TO_ID`
+/// read), it complements the head-only [`VectorPartitionHealthSummary`] (which owns the skew
+/// signal) with the tombstone signal the head cannot see. Integer-only; callers derive the tombstone
+/// ratio as `tombstoned_rows / total_rows`.
+///
+/// `physical_live_rows` is `VectorPageMeta.live_count` (physical non-tombstone rows); it is **not**
+/// subject-freshness and can exceed the searchable count because the search freshness check skips
+/// stale/meta-drift rows (mirrors [`VectorSlabScopeStats::physical_live_row_count`]).
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    CandidType,
+    Serialize,
+    Deserialize,
+)]
+pub struct VectorPartitionPageHealth {
+    /// Owning index.
+    pub index_id: u32,
+    /// The active index version the scan was scoped to.
+    pub index_version: u64,
+    /// Page-meta entries observed for `(index_id, index_version)`.
+    pub page_count: u64,
+    /// Physical rows (live + tombstoned) summed over those pages.
+    pub total_rows: u64,
+    /// Physical non-tombstone rows (`VectorPageMeta.live_count`); not subject-freshness.
+    pub physical_live_rows: u64,
+    /// Tombstoned rows summed over those pages.
+    pub tombstoned_rows: u64,
+}
+
+/// One bounded page-meta health scan step for `admin_vector_partition_health_step` (ADR 0031
+/// Slice 9). IC-safe incremental scan scoped to one `(index_id, active index version)`, mirroring
+/// [`VectorSlabStatsStep`].
+///
+/// **Merge contract.** `partial`'s counters (`page_count`/`total_rows`/`physical_live_rows`/
+/// `tombstoned_rows`) are *additive* across steps; `index_id`/`index_version` are repeated (take any
+/// step's value). Callers repeat until `exhausted` and sum the counters.
+///
+/// `cursor` is opaque `PageKey` bytes scoped to this `(index_id, index_version)`; pass it back
+/// verbatim. It is `None` exactly when `exhausted`.
+///
+/// **No snapshot isolation.** This is a bounded best-effort scan, not a point-in-time snapshot:
+/// concurrent `VECTOR_PAGE_META` writes between steps are not isolated (a page inserted before the
+/// cursor is missed, a counted-then-deleted page lingers in the merge). Run during a quiescent window
+/// for an exact figure; the diagnostic counters tolerate small cross-call drift otherwise.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct VectorPartitionHealthStep {
+    /// This step's additive contribution (see the merge contract above).
+    pub partial: VectorPartitionPageHealth,
+    /// Opaque resume cursor (`PageKey` bytes); `None` exactly when `exhausted`.
+    pub cursor: Option<Vec<u8>>,
+    /// `true` once every page of the scoped `(index_id, index_version)` has been scanned.
+    pub exhausted: bool,
+}
+
+/// Caller-supplied thresholds for [`recommend_partition_maintenance`]-style maintenance decisions
+/// (ADR 0031 Slice 9). Not persisted in Slice 9.
+///
+/// Two thresholds per signal so the three-state [`VectorMaintenanceRecommendation`] is well defined:
+/// crossing `required_*` is `RebuildRequired`, crossing only `recommended_*` is `RebuildRecommended`.
+/// Both ratios are basis points (1 bp = 1/10000). The recommendation function rejects a policy where
+/// `recommended_*_bps > required_*_bps`.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    CandidType,
+    Serialize,
+    Deserialize,
+)]
+pub struct VectorMaintenancePolicy {
+    /// Tombstone ratio (`tombstoned_rows / total_rows`, bps) at/above which a rebuild is recommended.
+    pub recommended_tombstone_ratio_bps: u32,
+    /// Tombstone ratio (bps) at/above which a rebuild is required.
+    pub required_tombstone_ratio_bps: u32,
+    /// Skew ratio (`max_partition_live_rows / avg_live_rows`, bps) at/above which a rebuild is
+    /// recommended.
+    pub recommended_skew_ratio_bps: u32,
+    /// Skew ratio (bps) at/above which a rebuild is required.
+    pub required_skew_ratio_bps: u32,
+    /// Minimum `total_rows` before either signal is judged (too small to judge below this).
+    pub min_total_rows: u64,
+    /// Minimum `tombstoned_rows` before the tombstone signal is judged (skew is not gated by this).
+    pub min_tombstoned_rows: u64,
+}
+
+/// Deterministic maintenance recommendation from merged partition health (ADR 0031 Slice 9).
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
+)]
+pub enum VectorMaintenanceRecommendation {
+    /// No maintenance needed (or too little data to judge).
+    Healthy,
+    /// At least one signal crossed its `recommended` threshold (but none its `required`).
+    RebuildRecommended,
+    /// At least one signal crossed its `required` threshold.
+    RebuildRequired,
+}
+
+/// Bounded status of the heap centroid cache (ADR 0031 Slice 9).
+///
+/// Per-query hit/miss counts are intentionally **not** reported: `vector_search` is a `#[query]` and
+/// IC query execution is non-committing, so a query cannot truthfully maintain cache counters. Only
+/// the durable heap facts maintained by the update warmup/clear paths are reported.
+#[derive(
+    Clone,
+    Copy,
+    Debug,
+    Default,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Hash,
+    CandidType,
+    Serialize,
+    Deserialize,
+)]
+pub struct VectorCentroidCacheStatus {
+    /// Number of cached centroid sets (one per warmed `(index_id, version, nlist, epoch)`).
+    pub entries: u64,
+    /// Total heap bytes the cached centroid sets occupy.
+    pub bytes: u64,
+    /// Configured byte cap of the cache.
+    pub max_bytes: u64,
 }
 
 /// Derived, admin-only slab-space observability for the ADR 0032 vector slab page store.
@@ -456,6 +600,11 @@ pub enum VectorIndexError {
     StableGrowFailed,
     /// A caller-supplied `admin_vector_slab_stats_step` cursor is malformed (wrong byte length).
     InvalidStatsCursor,
+    /// A maintenance policy is invalid (e.g. a `recommended_*_bps` exceeds its `required_*_bps`).
+    InvalidMaintenancePolicy,
+    /// Caller-attested maintenance health is stale: its `index_id`/`index_version`/`nlist` do not
+    /// match the index's current active generation (ADR 0031 Slice 9 rebuild trigger).
+    StaleMaintenanceHealth,
 }
 
 impl std::fmt::Display for VectorIndexError {
@@ -494,6 +643,10 @@ impl std::fmt::Display for VectorIndexError {
             Self::InvalidRebuildParams => "invalid vector rebuild parameters",
             Self::StableGrowFailed => "stable memory grow failed while reserving a slab page",
             Self::InvalidStatsCursor => "malformed slab stats cursor",
+            Self::InvalidMaintenancePolicy => "invalid vector maintenance policy",
+            Self::StaleMaintenanceHealth => {
+                "attested maintenance health does not match the active index generation"
+            }
         };
         f.write_str(text)
     }
@@ -585,6 +738,8 @@ mod tests {
             VectorIndexError::InvalidSearchTopK,
             VectorIndexError::StableGrowFailed,
             VectorIndexError::InvalidStatsCursor,
+            VectorIndexError::InvalidMaintenancePolicy,
+            VectorIndexError::StaleMaintenanceHealth,
         ] {
             let bytes = Encode!(&err).expect("encode");
             assert_eq!(Decode!(&bytes, VectorIndexError).expect("decode"), err);
@@ -659,6 +814,70 @@ mod tests {
         };
         let bytes = Encode!(&stats).expect("encode");
         assert_eq!(Decode!(&bytes, VectorSlabStats).expect("decode"), stats);
+    }
+
+    #[test]
+    fn partition_health_step_candid_roundtrip() {
+        let step = VectorPartitionHealthStep {
+            partial: VectorPartitionPageHealth {
+                index_id: 7,
+                index_version: 3,
+                page_count: 12,
+                total_rows: 400,
+                physical_live_rows: 320,
+                tombstoned_rows: 80,
+            },
+            cursor: Some(vec![0u8; 24]),
+            exhausted: false,
+        };
+        let bytes = Encode!(&step).expect("encode");
+        assert_eq!(
+            Decode!(&bytes, VectorPartitionHealthStep).expect("decode"),
+            step
+        );
+    }
+
+    #[test]
+    fn maintenance_policy_and_recommendation_candid_roundtrip() {
+        let policy = VectorMaintenancePolicy {
+            recommended_tombstone_ratio_bps: 2_000,
+            required_tombstone_ratio_bps: 5_000,
+            recommended_skew_ratio_bps: 20_000,
+            required_skew_ratio_bps: 40_000,
+            min_total_rows: 1_000,
+            min_tombstoned_rows: 100,
+        };
+        let bytes = Encode!(&policy).expect("encode");
+        assert_eq!(
+            Decode!(&bytes, VectorMaintenancePolicy).expect("decode"),
+            policy
+        );
+
+        for rec in [
+            VectorMaintenanceRecommendation::Healthy,
+            VectorMaintenanceRecommendation::RebuildRecommended,
+            VectorMaintenanceRecommendation::RebuildRequired,
+        ] {
+            let bytes = Encode!(&rec).expect("encode");
+            assert_eq!(
+                Decode!(&bytes, VectorMaintenanceRecommendation).expect("decode"),
+                rec
+            );
+        }
+    }
+
+    #[test]
+    fn centroid_cache_status_candid_roundtrip() {
+        let status = VectorCentroidCacheStatus {
+            entries: 3,
+            bytes: 49_152,
+            max_bytes: 1_048_576,
+        };
+        let bytes = Encode!(&status).expect("encode");
+        assert_eq!(
+            Decode!(&bytes, VectorCentroidCacheStatus).expect("decode"),
+            status
+        );
     }
 
     #[test]

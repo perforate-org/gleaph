@@ -131,10 +131,16 @@ whole-slab figure, run the steps during a quiescent window or use the single-cal
 `admin_vector_slab_stats`; the diagnostic-only counters tolerate small cross-call drift otherwise.
 Neither query changes allocation, and any compaction/tail-rewind work remains deferred.
 
-Still deferred to Slice 9+: tombstone-ratio / total-row partition health (needs a page scan or new
-persisted counters), full/balanced k-means and k-means++ init, partition tombstone-cleanup
-thresholds, candidate pagination, query ranking/merge, a heap centroid cache, PQ/HNSW, and
-`VectorSubject::Edge`. The standard vector-index
+Slice 9 is implemented: bounded page-meta **tombstone-ratio / total-row partition health**
+(`admin_vector_partition_health_step`), a policy-driven **rebuild recommendation + trigger**
+(`recommend_partition_maintenance` / `admin_start_vector_rebuild_if_recommended`, no autonomous
+timer), and a transient **heap centroid cache** (`admin_vector_centroid_cache_warmup` / `_clear` /
+`_status`, read-only on the `#[query]` search path). No new stable region. See *Slice 9 maintenance
+visibility + centroid cache (implemented)* below.
+
+Still deferred to Slice 10+: full/balanced k-means and k-means++ init, autonomous partition
+tombstone-cleanup scheduling, candidate pagination, query ranking/merge, Router-forwarded maintenance
+ergonomics, PQ/HNSW, and `VectorSubject::Edge`. The standard vector-index
 kind is `ivf_flat`; `flat` is collapsed into degenerate `ivf_flat` rather than a separate kind, and
 later `ivf_pq` or experimental `hnsw` implementations must preserve the same canonical/derived
 boundary.
@@ -244,6 +250,50 @@ now `Idle → Sampling → Training → Building → ReadyToPublish → Cleaning
   `avg = live_rows / nlist` and the skew ratio `max_partition_live_rows / avg`. Tombstone accounting
   is deferred to Slice 9+ (it would need a page scan or new persisted counters). Search is unchanged
   (no `nprobe` on the wire, no mid-scan truncation).
+
+### Slice 9 maintenance visibility + centroid cache (implemented)
+
+Maintenance/cache surface only — no change to canonical ownership, search semantics, or stable layout
+(heap-only cache; reuses `VECTOR_PAGE_META`, `VECTOR_PARTITION_HEADS`, `IVF_CENTROIDS`). All new admin
+endpoints stay on the vector canister behind `guard_router_canister` (driven by the router principal);
+Router forwarding is a Slice 10+ follow-up.
+
+- **Bounded page-meta tombstone health.** `admin_vector_partition_health_step(index_id, cursor,
+  max_pages)` (Router-guarded `#[query]`) scans at most `max_pages` `VECTOR_PAGE_META` entries of the
+  active `(index_id, active_index_version)` — page meta only, never row bytes or `VECTOR_SUBJECT_TO_ID`
+  — returning an additive `VectorPartitionHealthStep { partial: VectorPartitionPageHealth { index_id,
+  index_version, page_count, total_rows, physical_live_rows, tombstoned_rows }, cursor, exhausted }`.
+  Callers repeat until `exhausted` and sum the partials (the `VectorSlabStatsStep` merge /
+  no-snapshot-isolation contract); `max_pages` is clamped server-side and a malformed or wrong-scope
+  cursor returns `InvalidStatsCursor` rather than trapping. This complements the head-only Slice 8 skew
+  summary with the tombstone signal the head cannot see.
+- **Recommendation + trigger (no autonomous timer).** `recommend_partition_maintenance(summary,
+  page_health, policy)` is a pure function returning `VectorMaintenanceRecommendation { Healthy,
+  RebuildRecommended, RebuildRequired }` as the max severity across two independently min-row-gated
+  signals — tombstone ratio (`tombstoned_rows / total_rows`) and partition skew
+  (`max_partition_live_rows * nlist / live_rows`) — compared against a `VectorMaintenancePolicy`'s split
+  `recommended_*_bps`/`required_*_bps` thresholds with `u128` cross-multiplication (no floats, no
+  overflow; an inverted policy returns `InvalidMaintenancePolicy`).
+  `admin_start_vector_rebuild_if_recommended(index_id, attested_page_health, policy, target_nlist,
+  sample_limit)` (Router-guarded `#[update]`) recomputes the head-only skew `summary` server-side from
+  the authoritative partition heads (O(`nlist`)), re-derives the recommendation, and, when not
+  `Healthy`, begins an existing rebuild, returning the recommendation. The skew summary thus has no
+  caller-trust surface; only the page-meta tombstone health is *trusted admin input*. A generation
+  guard rejects page health attested against a different generation (`attested_page_health.index_id`/
+  `index_version` must equal the active version, else `StaleMaintenanceHealth`). `target_nlist = None`
+  defaults to `def.nlist` only when `>= 2` (degenerate `nlist = 1` requires an explicit target).
+- **Heap centroid cache.** A transient `thread_local` cache keyed by `(index_id ->
+  {version, nlist, dims})` memoizes the decoded centroid set so the partition-page `#[query]` search
+  skips the `IVF_CENTROIDS` stable read + `f32` decode. IC `#[query]` execution is non-committing, so
+  the query path is **read-only**: a warmed entry is used; a miss reads stable for that call only and
+  does **not** populate the cache. Population/eviction are `#[update]`-only —
+  `admin_vector_centroid_cache_warmup(index_id)` (caches a ready `nlist > 1` set; drops stale entries
+  for degenerate/untrained indexes), `admin_vector_centroid_cache_clear()`, and a publish-time
+  invalidation when the active generation flips; the cache is byte-bounded and dropped on init/upgrade.
+  `admin_vector_centroid_cache_status()` reports `VectorCentroidCacheStatus { entries, bytes,
+  max_bytes }` — per-query hit/miss is intentionally not tracked (a query cannot commit counters on IC).
+  Canbench shows the warm partition-page search is measurably cheaper than cold (e.g. d768/nlist64:
+  ~98.1M cold vs ~92.0M instructions warm).
 
 ## Version naming glossary
 
@@ -564,7 +614,7 @@ bounded cleanup after publication.
 
 | Phase | Algorithm | Status | Purpose |
 |-------|-----------|--------|---------|
-| 1 | IVF_FLAT (`ivf_flat`) | exact scan implemented (Slice 5); centroid routing + `nprobe` partition-page scan implemented (Slice 6); production bounded shadow-version rebuild + dual-write + atomic publish implemented (Slice 7); bounded k-means-lite training + head-only partition health implemented (Slice 8); full/balanced k-means + tombstone-ratio health planned (Slice 9+) | standard vector index: centroid routing, partition pages, query-aware pruning, exact rerank |
+| 1 | IVF_FLAT (`ivf_flat`) | exact scan implemented (Slice 5); centroid routing + `nprobe` partition-page scan implemented (Slice 6); production bounded shadow-version rebuild + dual-write + atomic publish implemented (Slice 7); bounded k-means-lite training + head-only partition health implemented (Slice 8); bounded page-meta tombstone health + rebuild recommendation/trigger + heap centroid cache implemented (Slice 9); full/balanced k-means + autonomous tombstone cleanup planned (Slice 10+) | standard vector index: centroid routing, partition pages, query-aware pruning, exact rerank |
 | 2 | Flat (`flat`) | subsumed by degenerate `ivf_flat` exact scan (Slice 5) | exact scan over all vector pages for small indexes, debugging, and correctness baselines |
 | 3 | IVF_PQ | planned | compressed approximate scoring plus full-vector rerank |
 | 4 | HNSW | experimental planned | only after update/delete/repair and IC instruction bounds are specified |
@@ -577,9 +627,14 @@ bounded cleanup after publication.
 - Define `ivf_flat` index-definition metadata and keep algorithm choice out of query syntax.
 - Define mutation delta and repair journal representation.
 - Define backfill cursor and delete/tombstone behavior.
-- Define centroid cache miss behavior.
+- [done, slice 9] Define centroid cache miss behavior: the heap cache is read-only on the `#[query]`
+  search path (a miss reads stable for that call only, no population); warmup/clear/invalidation are
+  `#[update]`-only.
 - Define shadow-version rebuild, balanced assignment, publish, and cleanup.
-- Define partition tombstone cleanup thresholds.
+- Define partition tombstone cleanup thresholds. [partial, slice 9] Caller-supplied
+  `VectorMaintenancePolicy` thresholds (tombstone ratio + skew, split recommended/required bps) drive
+  the `recommend_partition_maintenance` / `admin_start_vector_rebuild_if_recommended` trigger;
+  autonomous (timer-driven) cleanup scheduling and persisted default thresholds remain Slice 10+.
 - [done, slice 5] Add canbench targets for exact `ivf_flat` search (`crates/graph-vector-index`,
   dims 128/384/768 × top_k 10/100).
 - [done, slice 6] Add canbench targets for the partition-page scan over clustered seeded datasets
@@ -592,6 +647,9 @@ bounded cleanup after publication.
 - [done, slice 8] Add canbench targets for an isolated k-means-lite `Training` iteration over the full
   candidate pool (dims 128/384/768 × `nlist` 16/64); the full-rebuild targets now also cover the
   training cost end to end.
+- [done, slice 9] Add canbench targets for the bounded page-meta health scan (clean and
+  tombstone-heavy), cold-vs-warm partition-page search with the heap centroid cache (dims 128/768 ×
+  `nlist` 64 × `nprobe` 8), and the centroid-cache warmup cost.
 
 ## Related documents
 

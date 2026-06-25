@@ -383,3 +383,112 @@ fn bench_upsert_dualwrite_d128_nlist16() -> canbench_rs::BenchResult {
             .expect("upsert");
     })
 }
+
+// --- ADR 0031 Slice 9: bounded page-meta health scan + heap centroid cache ---
+
+/// Re-upserts vectors `0..tombstoned` of a degenerate store at a newer `embedding_version`, which
+/// tombstones each subject's prior row (a new live row is appended). Produces a page store with a
+/// known live/tombstone mix for the health-scan benchmark.
+fn tombstone_first(store: &VectorIndexStore, dims: u16, tombstoned: u32) {
+    for vid in 0..tombstoned {
+        let op = VectorEmbeddingSyncOp {
+            index_id: INDEX_ID,
+            embedding_name_id: 0,
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: vid,
+            },
+            embedding_incarnation: 1,
+            embedding_version: 2,
+            encoding: VectorEncoding::F32,
+            dims,
+            bytes: vec_bytes(dims, vid as f32 + 0.5),
+            remove: false,
+        };
+        store.vector_upsert(shard_owner(), &op).expect("re-upsert");
+    }
+}
+
+/// Drives the bounded page-meta health scan over the active version to exhaustion, summing the
+/// additive partials (the operator-side merge contract).
+fn drive_health_scan(store: &VectorIndexStore, max_pages: u32) -> u64 {
+    let mut cursor: Option<Vec<u8>> = None;
+    let mut total = 0u64;
+    loop {
+        let step = store
+            .admin_vector_partition_health_step(router(), INDEX_ID, cursor, max_pages)
+            .expect("health step");
+        total += step.partial.total_rows;
+        if step.exhausted {
+            return total;
+        }
+        cursor = step.cursor;
+    }
+}
+
+/// Full bounded page-meta health scan over a clean degenerate store (`REBUILD_N` live rows). Measures
+/// the per-page-meta scan cost the tombstone-accounting endpoint adds.
+#[bench(raw)]
+fn bench_partition_health_scan_d128() -> canbench_rs::BenchResult {
+    let store = setup_search_store(128, REBUILD_N);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_partition_health_scan_d128");
+        black_box(drive_health_scan(&store, REBUILD_N));
+    })
+}
+
+/// Full health scan over a tombstone-heavy store (half the subjects re-upserted, so ~1.5x the pages
+/// of the clean case carry tombstones). Regression guard for the scan cost when tombstones dominate.
+#[bench(raw)]
+fn bench_partition_health_scan_tombstoned_d128() -> canbench_rs::BenchResult {
+    let store = setup_search_store(128, REBUILD_N);
+    tombstone_first(&store, 128, REBUILD_N / 2);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_partition_health_scan_tombstoned_d128");
+        black_box(drive_health_scan(&store, REBUILD_N));
+    })
+}
+
+macro_rules! cache_search_bench {
+    ($name:ident, $dims:expr, $nlist:expr, $nprobe:expr, $warm:expr) => {
+        /// Partition-page search with the heap centroid cache cold vs warm (ADR 0031 Slice 9). The
+        /// warm variant first runs `admin_vector_centroid_cache_warmup` (an update path) so the
+        /// `#[query]` search reads decoded centroids from the heap instead of `IVF_CENTROIDS`.
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            let store = setup_partitioned_store($dims, SCAN_N, $nlist);
+            if $warm {
+                store
+                    .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
+                    .expect("warmup");
+            }
+            let req = search_req($dims, 10);
+            canbench_rs::bench_fn(|| {
+                let _scope = canbench_rs::bench_scope(stringify!($name));
+                let result = store
+                    .vector_search_tuned(black_box(&req), SearchTuning { nprobe: $nprobe })
+                    .expect("vector_search_tuned");
+                black_box(result);
+            })
+        }
+    };
+}
+
+cache_search_bench!(bench_ivf_cache_cold_d128_nlist64_nprobe8, 128, 64, 8, false);
+cache_search_bench!(bench_ivf_cache_warm_d128_nlist64_nprobe8, 128, 64, 8, true);
+cache_search_bench!(bench_ivf_cache_cold_d768_nlist64_nprobe8, 768, 64, 8, false);
+cache_search_bench!(bench_ivf_cache_warm_d768_nlist64_nprobe8, 768, 64, 8, true);
+
+/// Cost of a single centroid-cache warmup (`IVF_CENTROIDS` read + decode + heap insert) for an
+/// `nlist`-partition index — the bounded update-path work an operator pays once per generation.
+#[bench(raw)]
+fn bench_centroid_cache_warmup_d768_nlist64() -> canbench_rs::BenchResult {
+    let store = setup_partitioned_store(768, SCAN_N, 64);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_centroid_cache_warmup_d768_nlist64");
+        let status = store
+            .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
+            .expect("warmup");
+        black_box(status);
+    })
+}

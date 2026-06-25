@@ -7,8 +7,10 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
-    VectorEmbeddingSyncOp, VectorPartitionHealthSummary, VectorRebuildStatus, VectorSearchRequest,
-    VectorSearchResult, VectorSlabStats, VectorSlabStatsStep,
+    VectorCentroidCacheStatus, VectorEmbeddingSyncOp, VectorMaintenancePolicy,
+    VectorMaintenanceRecommendation, VectorPartitionHealthStep, VectorPartitionHealthSummary,
+    VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
+    VectorSlabStats, VectorSlabStatsStep,
 };
 use ic_cdk::api::msg_caller;
 
@@ -61,6 +63,25 @@ pub(crate) fn admin_start_vector_rebuild(
         .map_err(|e| e.to_string())
 }
 
+pub(crate) fn admin_start_vector_rebuild_if_recommended(
+    index_id: u32,
+    attested_page_health: VectorPartitionPageHealth,
+    policy: VectorMaintenancePolicy,
+    target_nlist: Option<u32>,
+    sample_limit: u32,
+) -> Result<VectorMaintenanceRecommendation, String> {
+    VectorIndexStore::new()
+        .admin_start_vector_rebuild_if_recommended(
+            msg_caller(),
+            index_id,
+            attested_page_health,
+            policy,
+            target_nlist,
+            sample_limit,
+        )
+        .map_err(|e| e.to_string())
+}
+
 pub(crate) fn admin_vector_rebuild_step(
     index_id: u32,
     max_subjects: u32,
@@ -102,6 +123,36 @@ pub(crate) fn admin_vector_partition_health(
 ) -> Result<VectorPartitionHealthSummary, String> {
     VectorIndexStore::new()
         .admin_vector_partition_health(msg_caller(), index_id)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_partition_health_step(
+    index_id: u32,
+    cursor: Option<Vec<u8>>,
+    max_pages: u32,
+) -> Result<VectorPartitionHealthStep, String> {
+    VectorIndexStore::new()
+        .admin_vector_partition_health_step(msg_caller(), index_id, cursor, max_pages)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_centroid_cache_warmup(
+    index_id: u32,
+) -> Result<VectorCentroidCacheStatus, String> {
+    VectorIndexStore::new()
+        .admin_vector_centroid_cache_warmup(msg_caller(), index_id)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_centroid_cache_clear() -> Result<VectorCentroidCacheStatus, String> {
+    VectorIndexStore::new()
+        .admin_vector_centroid_cache_clear(msg_caller())
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_centroid_cache_status() -> Result<VectorCentroidCacheStatus, String> {
+    VectorIndexStore::new()
+        .admin_vector_centroid_cache_status(msg_caller())
         .map_err(|e| e.to_string())
 }
 

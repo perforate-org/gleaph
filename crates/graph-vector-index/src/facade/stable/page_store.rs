@@ -31,8 +31,9 @@ use crate::facade::stable::VECTOR_PARTITION_HEADS;
 use crate::records::{PageKey, PartitionKey, SlotRef, VectorIndexDef};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    VectorIndexError, VectorSlabGlobalStats, VectorSlabScopeStats, VectorSlabStats,
-    VectorSlabStatsStep, VectorSlabVersionStats, VectorSubject,
+    VectorIndexError, VectorPartitionHealthStep, VectorPartitionPageHealth, VectorSlabGlobalStats,
+    VectorSlabScopeStats, VectorSlabStats, VectorSlabStatsStep, VectorSlabVersionStats,
+    VectorSubject,
 };
 use ic_stable_structures::Memory as _;
 use ic_stable_structures::storable::{Bound, Storable};
@@ -1028,6 +1029,90 @@ impl VectorSlabStore {
         })
     }
 
+    /// Bounded, cursor-resumable page-meta tombstone-health scan scoped to one
+    /// `(index_id, active_version)` (ADR 0031 Slice 9). Scans at most `max_pages` `VECTOR_PAGE_META`
+    /// entries (clamped to `1..=MAX_SLAB_STATS_STEP_PAGES`), aggregating `row_count`/`live_count`/
+    /// `tombstone_count` into `total_rows`/`physical_live_rows`/`tombstoned_rows`, and returns an
+    /// opaque `PageKey` cursor to resume from. Reads only page meta — never row bytes or
+    /// `VECTOR_SUBJECT_TO_ID`.
+    ///
+    /// Because the scan is scoped to one generation (unlike the global [`Self::stats_step`]), the
+    /// caller-supplied `cursor` is **scope-checked**: a wrong-length cursor, or one whose
+    /// `(index_id, index_version)` does not match `(index_id, active_version)`, returns
+    /// [`VectorIndexError::InvalidStatsCursor`] rather than silently yielding an empty exhausted
+    /// result. `PageKey` is `index -> version -> partition -> page` ordered, so the scan starts at the
+    /// scope's lower bound (or the validated cursor) and breaks once the key leaves the scope.
+    ///
+    /// Bounded best-effort, **not** a snapshot: concurrent `VECTOR_PAGE_META` writes between steps are
+    /// not isolated (see [`VectorPartitionHealthStep`]).
+    pub(crate) fn partition_page_health_step(
+        &self,
+        index_id: u32,
+        active_version: u64,
+        cursor: Option<Vec<u8>>,
+        max_pages: u32,
+    ) -> Result<VectorPartitionHealthStep, VectorIndexError> {
+        let budget = max_pages.clamp(1, MAX_SLAB_STATS_STEP_PAGES);
+        // Validate + scope-check the caller-supplied cursor before decoding for the range bound.
+        if let Some(bytes) = &cursor {
+            if bytes.len() != PAGE_KEY_LEN {
+                return Err(VectorIndexError::InvalidStatsCursor);
+            }
+            let key = PageKey::from_bytes(Cow::Borrowed(bytes));
+            if key.index_id != index_id || key.index_version != active_version {
+                return Err(VectorIndexError::InvalidStatsCursor);
+            }
+        }
+
+        let mut page_count = 0u64;
+        let mut total_rows = 0u64;
+        let mut physical_live_rows = 0u64;
+        let mut tombstoned_rows = 0u64;
+        let mut last: Option<PageKey> = None;
+        let mut exhausted = true;
+        let mut processed: u32 = 0;
+        {
+            let lower = match &cursor {
+                None => RangeBound::Included(PageKey::new(index_id, active_version, 0, 0)),
+                Some(bytes) => RangeBound::Excluded(PageKey::from_bytes(Cow::Borrowed(bytes))),
+            };
+            for entry in self.meta.range((lower, RangeBound::Unbounded)) {
+                let key = entry.key();
+                if key.index_id != index_id || key.index_version != active_version {
+                    break; // index/version-major order: past this generation's pages.
+                }
+                if processed >= budget {
+                    exhausted = false;
+                    break;
+                }
+                let m = entry.value();
+                page_count += 1;
+                total_rows = total_rows.saturating_add(m.row_count as u64);
+                physical_live_rows = physical_live_rows.saturating_add(m.live_count as u64);
+                tombstoned_rows = tombstoned_rows.saturating_add(m.tombstone_count as u64);
+                last = Some(*key);
+                processed += 1;
+            }
+        }
+        let cursor_out = if exhausted {
+            None
+        } else {
+            last.map(Storable::into_bytes)
+        };
+        Ok(VectorPartitionHealthStep {
+            partial: VectorPartitionPageHealth {
+                index_id,
+                index_version: active_version,
+                page_count,
+                total_rows,
+                physical_live_rows,
+                tombstoned_rows,
+            },
+            cursor: cursor_out,
+            exhausted,
+        })
+    }
+
     // --- Test-only inspection helpers ---
 
     #[cfg(test)]
@@ -1865,5 +1950,208 @@ mod tests {
             .stats_step(Some(vec![0u8; PAGE_KEY_LEN]), 10, None)
             .expect("well-formed cursor");
         assert!(ok.exhausted);
+    }
+
+    // --- ADR 0031 Slice 9: bounded partition page-meta health step ---
+
+    /// Drives [`VectorSlabStore::partition_page_health_step`] to exhaustion, returning every step.
+    fn collect_health_steps(
+        store: &VectorSlabStore,
+        index_id: u32,
+        active_version: u64,
+        max_pages: u32,
+    ) -> Vec<VectorPartitionHealthStep> {
+        let mut steps = Vec::new();
+        let mut cursor: Option<Vec<u8>> = None;
+        loop {
+            let step = store
+                .partition_page_health_step(index_id, active_version, cursor.clone(), max_pages)
+                .expect("health step");
+            let done = step.exhausted;
+            cursor = step.cursor.clone();
+            steps.push(step);
+            if done {
+                break;
+            }
+        }
+        steps
+    }
+
+    /// Sums the additive partials per the [`VectorPartitionHealthStep`] merge contract.
+    fn merge_health(steps: &[VectorPartitionHealthStep]) -> VectorPartitionPageHealth {
+        let first = &steps[0].partial;
+        let mut merged = VectorPartitionPageHealth {
+            index_id: first.index_id,
+            index_version: first.index_version,
+            page_count: 0,
+            total_rows: 0,
+            physical_live_rows: 0,
+            tombstoned_rows: 0,
+        };
+        for step in steps {
+            merged.page_count += step.partial.page_count;
+            merged.total_rows += step.partial.total_rows;
+            merged.physical_live_rows += step.partial.physical_live_rows;
+            merged.tombstoned_rows += step.partial.tombstoned_rows;
+        }
+        merged
+    }
+
+    #[test]
+    fn health_step_counts_rows_live_and_tombstones() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(2); // 2 slots per page
+        let mut store = open(&mm);
+        // 3 rows over 2 pages, then tombstone one.
+        let s0 = store
+            .append_row(1, 1, 0, &d, 1, 1, subject(1), &bytes(0.0, 0.0))
+            .unwrap();
+        store
+            .append_row(1, 1, 0, &d, 2, 1, subject(2), &bytes(1.0, 1.0))
+            .unwrap();
+        store
+            .append_row(1, 1, 0, &d, 3, 1, subject(3), &bytes(2.0, 2.0))
+            .unwrap();
+        store.tombstone_row(1, s0);
+
+        let steps = collect_health_steps(&store, 1, 1, 100);
+        assert_eq!(steps.len(), 1);
+        let h = merge_health(&steps);
+        assert_eq!(h.index_id, 1);
+        assert_eq!(h.index_version, 1);
+        assert_eq!(h.page_count, 2);
+        assert_eq!(h.total_rows, 3);
+        assert_eq!(h.physical_live_rows, 2);
+        assert_eq!(h.tombstoned_rows, 1);
+    }
+
+    #[test]
+    fn health_step_multi_step_merge_matches_single() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(1); // one page per row
+        let mut store = open(&mm);
+        seed_rows(&mut store, &d, 1, 1, 5);
+
+        let single = collect_health_steps(&store, 1, 1, 100);
+        assert_eq!(single.len(), 1);
+        let stepped = collect_health_steps(&store, 1, 1, 1);
+        assert_eq!(
+            stepped.len(),
+            5,
+            "one single-page step per page, no phantom step"
+        );
+        assert!(stepped.last().expect("last").exhausted);
+        assert!(stepped.last().expect("last").cursor.is_none());
+        assert!(
+            stepped[..4]
+                .iter()
+                .all(|s| !s.exhausted && s.cursor.is_some()),
+            "non-final steps carry a resume cursor"
+        );
+        assert_eq!(merge_health(&stepped), merge_health(&single));
+    }
+
+    #[test]
+    fn health_step_scopes_to_active_version_only() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(1);
+        let mut store = open(&mm);
+        // version 1: 2 rows; version 2: 3 rows (e.g. a shadow/old generation).
+        seed_rows(&mut store, &d, 1, 1, 2);
+        seed_rows(&mut store, &d, 1, 2, 3);
+
+        let v1 = merge_health(&collect_health_steps(&store, 1, 1, 100));
+        assert_eq!(v1.index_version, 1);
+        assert_eq!(v1.page_count, 2);
+        assert_eq!(v1.total_rows, 2);
+
+        let v2 = merge_health(&collect_health_steps(&store, 1, 2, 100));
+        assert_eq!(v2.index_version, 2);
+        assert_eq!(v2.page_count, 3);
+        assert_eq!(v2.total_rows, 3);
+    }
+
+    #[test]
+    fn health_step_empty_partition_is_valid() {
+        clear_heads();
+        let mm = fresh_mm();
+        let store = open(&mm);
+        let steps = collect_health_steps(&store, 1, 1, 10);
+        assert_eq!(steps.len(), 1);
+        assert!(steps[0].exhausted);
+        assert!(steps[0].cursor.is_none());
+        let h = &steps[0].partial;
+        assert_eq!(
+            (
+                h.page_count,
+                h.total_rows,
+                h.physical_live_rows,
+                h.tombstoned_rows
+            ),
+            (0, 0, 0, 0)
+        );
+    }
+
+    #[test]
+    fn health_step_budget_clamps_low_and_high() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(1);
+        let mut store = open(&mm);
+        seed_rows(&mut store, &d, 1, 1, 3);
+
+        // max_pages = 0 clamps to 1 -> one page, more remain.
+        let low = store
+            .partition_page_health_step(1, 1, None, 0)
+            .expect("step");
+        assert_eq!(low.partial.page_count, 1);
+        assert!(!low.exhausted);
+        assert!(low.cursor.is_some());
+
+        // Huge budget clamps to the cap; a tiny store finishes in one step.
+        let high = store
+            .partition_page_health_step(1, 1, None, u32::MAX)
+            .expect("step");
+        assert!(high.exhausted);
+        assert_eq!(high.partial.page_count, 3);
+    }
+
+    #[test]
+    fn health_step_rejects_malformed_and_wrong_scope_cursor() {
+        clear_heads();
+        let mm = fresh_mm();
+        let d = def(1);
+        let mut store = open(&mm);
+        seed_rows(&mut store, &d, 1, 1, 2);
+
+        // Wrong length.
+        assert_eq!(
+            store
+                .partition_page_health_step(1, 1, Some(vec![0u8; 5]), 10)
+                .unwrap_err(),
+            VectorIndexError::InvalidStatsCursor
+        );
+        // Well-formed cursor but for a different index -> rejected (scope check).
+        let wrong_index = PageKey::new(2, 1, 0, 0).into_bytes();
+        assert_eq!(
+            store
+                .partition_page_health_step(1, 1, Some(wrong_index), 10)
+                .unwrap_err(),
+            VectorIndexError::InvalidStatsCursor
+        );
+        // Well-formed cursor but for a different version -> rejected.
+        let wrong_version = PageKey::new(1, 2, 0, 0).into_bytes();
+        assert_eq!(
+            store
+                .partition_page_health_step(1, 1, Some(wrong_version), 10)
+                .unwrap_err(),
+            VectorIndexError::InvalidStatsCursor
+        );
+        // In-scope well-formed cursor is accepted.
+        let ok = PageKey::new(1, 1, 0, 0).into_bytes();
+        assert!(store.partition_page_health_step(1, 1, Some(ok), 10).is_ok());
     }
 }

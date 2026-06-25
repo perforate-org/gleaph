@@ -35,9 +35,13 @@ use crate::records::{
 };
 use candid::Principal;
 use gleaph_graph_kernel::vector_index::{
-    VectorEncoding, VectorIndexError, VectorMetric, VectorPartitionHealthSummary,
-    VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats, VectorSlabStatsStep,
+    VectorEncoding, VectorIndexError, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
+    VectorMetric, VectorPartitionHealthStep, VectorPartitionHealthSummary,
+    VectorPartitionPageHealth, VectorRebuildPhase, VectorRebuildStatus, VectorSlabStats,
+    VectorSlabStatsStep,
 };
+
+use super::recommend_partition_maintenance;
 use ic_stable_structures::storable::Storable;
 use rapidhash::{HashSetExt, RapidHashSet};
 use std::borrow::Cow;
@@ -51,6 +55,38 @@ use canbench_rs::bench_scope;
 /// value still makes forward progress (ADR 0031 Slice 7).
 fn clamp_step_work(requested: u32) -> u32 {
     requested.clamp(1, MAX_REBUILD_STEP_WORK)
+}
+
+/// Recomputes the head-only partition-health skew summary for `(index_id, active)` directly from the
+/// authoritative `PartitionHead` rows. **O(`nlist`)** (bounded by [`MAX_NLIST`]), never scans pages.
+/// Used both by [`VectorIndexStore::admin_vector_partition_health`] and the rebuild trigger so the
+/// skew signal is always derived from current state rather than caller-attested input.
+fn partition_health_summary(
+    index_id: u32,
+    nlist: u32,
+    active: u64,
+) -> VectorPartitionHealthSummary {
+    let mut partitions_examined = 0u32;
+    let mut live_rows = 0u64;
+    let mut page_count = 0u64;
+    let mut max_partition_live_rows = 0u64;
+    VECTOR_PARTITION_HEADS.with_borrow(|heads| {
+        for p in 0..nlist {
+            if let Some(head) = heads.get(&PartitionKey::new(index_id, active, p)) {
+                partitions_examined += 1;
+                live_rows = live_rows.saturating_add(head.live_len);
+                page_count = page_count.saturating_add(head.page_count);
+                max_partition_live_rows = max_partition_live_rows.max(head.live_len);
+            }
+        }
+    });
+    VectorPartitionHealthSummary {
+        nlist,
+        partitions_examined,
+        live_rows,
+        page_count,
+        max_partition_live_rows,
+    }
 }
 
 /// Whether a rebuild's `Training` phase is feasible within the bounded-state and bounded-per-message
@@ -315,6 +351,63 @@ impl VectorIndexStore {
             },
         );
         Ok(())
+    }
+
+    /// Starts a rebuild only if caller-attested partition health crosses the supplied policy (ADR
+    /// 0031 Slice 9). The operator gathers the head-only skew summary
+    /// ([`admin_vector_partition_health`](Self::admin_vector_partition_health)) and the merged
+    /// page-meta tombstone health ([`admin_vector_partition_health_step`](Self::admin_vector_partition_health_step),
+    /// run to `exhausted`), then passes them back with a policy; this re-derives the recommendation
+    /// and, if not `Healthy`, begins the rebuild via [`admin_start_vector_rebuild`](Self::admin_start_vector_rebuild)
+    /// (no autonomous timer in this slice). The decided recommendation is always returned, so a
+    /// `Healthy` result is an explicit no-op rather than an error.
+    ///
+    /// **Trust model.** The head-only skew summary is *recomputed here* from the authoritative
+    /// `PartitionHead` rows (O(`nlist`)), so a stale or foreign skew summary can never trip the
+    /// trigger. Only the page-meta tombstone health is *trusted admin input*, since proving its
+    /// completeness would require an unbounded scan (mirroring the no-snapshot-isolation contract of
+    /// [`VectorPartitionHealthStep`]). The freshness guard rejects page health attested against a
+    /// different generation: `attested_page_health.index_id`/`index_version` must equal the index's
+    /// current `active_index_version`, else [`VectorIndexError::StaleMaintenanceHealth`].
+    ///
+    /// **nlist resolution.** `target_nlist = Some(n)` rebuilds at `n`; `None` defaults to the current
+    /// `def.nlist` only when it is `>= 2`. A degenerate `def.nlist == 1` with no `target_nlist`
+    /// returns [`VectorIndexError::InvalidRebuildParams`] (the underlying rebuild requires
+    /// `nlist >= 2`). All other parameter/feasibility validation and the active-rebuild guard are
+    /// delegated to [`admin_start_vector_rebuild`](Self::admin_start_vector_rebuild).
+    pub fn admin_start_vector_rebuild_if_recommended(
+        &self,
+        caller: Principal,
+        index_id: u32,
+        attested_page_health: VectorPartitionPageHealth,
+        policy: VectorMaintenancePolicy,
+        target_nlist: Option<u32>,
+        sample_limit: u32,
+    ) -> Result<VectorMaintenanceRecommendation, VectorIndexError> {
+        self.assert_router_caller(caller)?;
+        let def = VECTOR_INDEX_DEFS
+            .with_borrow(|defs| defs.get(&index_id))
+            .ok_or(VectorIndexError::UnknownIndex)?;
+        // Freshness guard: reject page health attested against a different generation. The skew
+        // summary needs no such guard because it is recomputed below from current heads.
+        if attested_page_health.index_id != index_id
+            || attested_page_health.index_version != def.active_index_version
+        {
+            return Err(VectorIndexError::StaleMaintenanceHealth);
+        }
+        let summary = partition_health_summary(index_id, def.nlist, def.active_index_version);
+        let recommendation =
+            recommend_partition_maintenance(&summary, &attested_page_health, &policy)?;
+        if matches!(recommendation, VectorMaintenanceRecommendation::Healthy) {
+            return Ok(recommendation);
+        }
+        let effective_nlist = match target_nlist {
+            Some(n) => n,
+            None if def.nlist >= 2 => def.nlist,
+            None => return Err(VectorIndexError::InvalidRebuildParams),
+        };
+        self.admin_start_vector_rebuild(caller, index_id, effective_nlist, sample_limit)?;
+        Ok(recommendation)
     }
 
     /// Drives one bounded `Sampling`/`Building` step. Router resumes by calling this repeatedly until
@@ -785,29 +878,11 @@ impl VectorIndexStore {
         let def = VECTOR_INDEX_DEFS
             .with_borrow(|defs| defs.get(&index_id))
             .ok_or(VectorIndexError::UnknownIndex)?;
-        let nlist = def.nlist;
-        let active = def.active_index_version;
-        let mut partitions_examined = 0u32;
-        let mut live_rows = 0u64;
-        let mut page_count = 0u64;
-        let mut max_partition_live_rows = 0u64;
-        VECTOR_PARTITION_HEADS.with_borrow(|heads| {
-            for p in 0..nlist {
-                if let Some(head) = heads.get(&PartitionKey::new(index_id, active, p)) {
-                    partitions_examined += 1;
-                    live_rows = live_rows.saturating_add(head.live_len);
-                    page_count = page_count.saturating_add(head.page_count);
-                    max_partition_live_rows = max_partition_live_rows.max(head.live_len);
-                }
-            }
-        });
-        Ok(VectorPartitionHealthSummary {
-            nlist,
-            partitions_examined,
-            live_rows,
-            page_count,
-            max_partition_live_rows,
-        })
+        Ok(partition_health_summary(
+            index_id,
+            def.nlist,
+            def.active_index_version,
+        ))
     }
 
     /// Derived slab-space observability for the ADR 0032 page store (maintenance, not search truth).
@@ -842,6 +917,31 @@ impl VectorIndexStore {
         PAGE_STORE.with_borrow(|store| store.stats_step(cursor, max_pages, index_id))
     }
 
+    /// Bounded page-meta tombstone-health step for the active index version (ADR 0031 Slice 9).
+    /// Router-guarded `#[query]`. Complements the head-only [`admin_vector_partition_health`] skew
+    /// summary with the tombstone signal (`total_rows`/`physical_live_rows`/`tombstoned_rows`) that
+    /// requires a page-meta scan. Resolves the active version from `VECTOR_INDEX_DEFS` and forwards to
+    /// the slab store; the cursor is scope-checked against `(index_id, active_version)` and a
+    /// malformed/wrong-scope cursor returns [`VectorIndexError::InvalidStatsCursor`] rather than
+    /// trapping. See [`VectorPartitionHealthStep`] for the additive client-side merge contract.
+    ///
+    /// [`admin_vector_partition_health`]: Self::admin_vector_partition_health
+    pub fn admin_vector_partition_health_step(
+        &self,
+        caller: Principal,
+        index_id: u32,
+        cursor: Option<Vec<u8>>,
+        max_pages: u32,
+    ) -> Result<VectorPartitionHealthStep, VectorIndexError> {
+        self.assert_router_caller(caller)?;
+        let def = VECTOR_INDEX_DEFS
+            .with_borrow(|defs| defs.get(&index_id))
+            .ok_or(VectorIndexError::UnknownIndex)?;
+        PAGE_STORE.with_borrow(|store| {
+            store.partition_page_health_step(index_id, def.active_index_version, cursor, max_pages)
+        })
+    }
+
     /// Atomically publishes a `ReadyToPublish` rebuild (ADR 0031 Slice 7). **O(1)**: completeness is
     /// an invariant held by `Building` + dual-write, so no live-subject scan is performed. Flips
     /// `def.active_index_version` + `nlist` and the centroid metadata in one step, then enters the
@@ -873,6 +973,9 @@ impl VectorIndexStore {
         def.active_index_version = target_index_version;
         def.nlist = nlist;
         VECTOR_INDEX_DEFS.with_borrow_mut(|defs| defs.insert(index_id, def));
+        // The active centroid set just changed generation; drop any warmed heap entry so search does
+        // not serve stale centroids and the heap is freed (ADR 0031 Slice 9).
+        super::centroid_cache::invalidate(index_id);
         IVF_CENTROID_META.with_borrow_mut(|meta| {
             let epoch = meta.get(&index_id).map(|m| m.centroid_epoch).unwrap_or(0);
             meta.insert(

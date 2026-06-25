@@ -6,8 +6,9 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    MAX_VECTOR_SEARCH_TOP_K, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorMetric,
-    VectorSearchRequest, VectorSubject,
+    MAX_VECTOR_SEARCH_TOP_K, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError,
+    VectorMaintenancePolicy, VectorMaintenanceRecommendation, VectorMetric,
+    VectorPartitionPageHealth, VectorSearchRequest, VectorSubject,
 };
 
 const INDEX_ID: u32 = 1;
@@ -2349,5 +2350,436 @@ fn slab_stats_step_rejects_non_router_caller() {
             .admin_vector_slab_stats_step(shard_canister(), None, 10, None)
             .unwrap_err(),
         VectorIndexError::Unauthorized
+    );
+}
+
+// --- ADR 0031 Slice 9: facade page-meta health step + rebuild-if-recommended trigger ---
+
+/// Tombstone-dominant policy (skew disabled by an unreachable threshold) for trigger tests.
+fn trigger_policy() -> VectorMaintenancePolicy {
+    VectorMaintenancePolicy {
+        recommended_tombstone_ratio_bps: 2_000, // 20%
+        required_tombstone_ratio_bps: 5_000,    // 50%
+        recommended_skew_ratio_bps: u32::MAX,
+        required_skew_ratio_bps: u32::MAX,
+        min_total_rows: 100,
+        min_tombstoned_rows: 10,
+    }
+}
+
+/// Page-meta health scoped to the active version with the given tombstone load.
+fn attested_page(
+    store: &VectorIndexStore,
+    total_rows: u64,
+    tombstoned_rows: u64,
+) -> VectorPartitionPageHealth {
+    let def = store.def_for_test(INDEX_ID).expect("def");
+    VectorPartitionPageHealth {
+        index_id: INDEX_ID,
+        index_version: def.active_index_version,
+        page_count: 1,
+        total_rows,
+        physical_live_rows: total_rows - tombstoned_rows,
+        tombstoned_rows,
+    }
+}
+
+#[test]
+fn partition_health_step_facade_resolves_active_version_and_merges() {
+    let store = fresh_store();
+    seed_distinct(&store, 4); // 4 live rows, version 1, degenerate partition 0
+    // Re-upsert subject 1 at a newer embedding_version: tombstones the old row, appends a new one.
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(1, 2, 5.0))
+        .expect("re-upsert");
+
+    let mut merged = VectorPartitionPageHealth::default();
+    let mut cursor: Option<Vec<u8>> = None;
+    loop {
+        let step = store
+            .admin_vector_partition_health_step(router(), INDEX_ID, cursor.clone(), 1)
+            .expect("health step");
+        merged.index_id = step.partial.index_id;
+        merged.index_version = step.partial.index_version;
+        merged.page_count += step.partial.page_count;
+        merged.total_rows += step.partial.total_rows;
+        merged.physical_live_rows += step.partial.physical_live_rows;
+        merged.tombstoned_rows += step.partial.tombstoned_rows;
+        let done = step.exhausted;
+        cursor = step.cursor.clone();
+        if done {
+            break;
+        }
+    }
+    assert_eq!(merged.index_id, INDEX_ID);
+    assert_eq!(merged.index_version, 1);
+    assert_eq!(merged.total_rows, 5, "4 original + 1 appended");
+    assert_eq!(merged.physical_live_rows, 4, "4 live after re-upsert");
+    assert_eq!(
+        merged.tombstoned_rows, 1,
+        "the superseded row is tombstoned"
+    );
+}
+
+#[test]
+fn partition_health_step_facade_rejects_non_router_and_unknown_index() {
+    let store = fresh_store();
+    seed_distinct(&store, 2);
+    assert_eq!(
+        store
+            .admin_vector_partition_health_step(shard_canister(), INDEX_ID, None, 10)
+            .unwrap_err(),
+        VectorIndexError::Unauthorized
+    );
+    assert_eq!(
+        store
+            .admin_vector_partition_health_step(router(), 999, None, 10)
+            .unwrap_err(),
+        VectorIndexError::UnknownIndex
+    );
+}
+
+#[test]
+fn trigger_healthy_does_not_start_rebuild() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    let rec = store
+        .admin_start_vector_rebuild_if_recommended(
+            router(),
+            INDEX_ID,
+            attested_page(&store, 1_000, 100), // 10% < recommended
+            trigger_policy(),
+            Some(2),
+            100,
+        )
+        .expect("trigger");
+    assert_eq!(rec, VectorMaintenanceRecommendation::Healthy);
+    assert_eq!(
+        store
+            .admin_vector_rebuild_status(router(), INDEX_ID)
+            .expect("status")
+            .phase,
+        VectorRebuildPhase::Idle,
+        "a healthy report must not start a rebuild"
+    );
+}
+
+#[test]
+fn trigger_required_starts_rebuild_at_target_nlist() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    let rec = store
+        .admin_start_vector_rebuild_if_recommended(
+            router(),
+            INDEX_ID,
+            attested_page(&store, 1_000, 600), // 60% >= required
+            trigger_policy(),
+            Some(2),
+            100,
+        )
+        .expect("trigger");
+    assert_eq!(rec, VectorMaintenanceRecommendation::RebuildRequired);
+    let status = store
+        .admin_vector_rebuild_status(router(), INDEX_ID)
+        .expect("status");
+    assert_eq!(status.phase, VectorRebuildPhase::Sampling);
+    assert_eq!(status.target_index_version, TARGET_V);
+}
+
+#[test]
+fn trigger_recommended_starts_rebuild() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    let rec = store
+        .admin_start_vector_rebuild_if_recommended(
+            router(),
+            INDEX_ID,
+            attested_page(&store, 1_000, 300), // 30%: recommended band
+            trigger_policy(),
+            Some(2),
+            100,
+        )
+        .expect("trigger");
+    assert_eq!(rec, VectorMaintenanceRecommendation::RebuildRecommended);
+    assert_eq!(
+        store
+            .admin_vector_rebuild_status(router(), INDEX_ID)
+            .expect("status")
+            .phase,
+        VectorRebuildPhase::Sampling
+    );
+}
+
+#[test]
+fn trigger_degenerate_nlist_without_target_is_rejected() {
+    let store = fresh_store();
+    seed_distinct(&store, 4); // def.nlist == 1
+    assert_eq!(
+        store
+            .admin_start_vector_rebuild_if_recommended(
+                router(),
+                INDEX_ID,
+                attested_page(&store, 1_000, 600),
+                trigger_policy(),
+                None, // no target, and def.nlist == 1 -> cannot default
+                100,
+            )
+            .unwrap_err(),
+        VectorIndexError::InvalidRebuildParams
+    );
+}
+
+#[test]
+fn trigger_rejects_stale_page_health() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    // Wrong active version on the page health is rejected (the skew summary is recomputed
+    // server-side, so it has no stale surface of its own).
+    let mut stale_page = attested_page(&store, 1_000, 600);
+    stale_page.index_version = 999;
+    assert_eq!(
+        store
+            .admin_start_vector_rebuild_if_recommended(
+                router(),
+                INDEX_ID,
+                stale_page,
+                trigger_policy(),
+                Some(2),
+                100,
+            )
+            .unwrap_err(),
+        VectorIndexError::StaleMaintenanceHealth
+    );
+    // Wrong index_id on the page health is likewise rejected.
+    let mut foreign_page = attested_page(&store, 1_000, 600);
+    foreign_page.index_id = INDEX_ID + 1;
+    assert_eq!(
+        store
+            .admin_start_vector_rebuild_if_recommended(
+                router(),
+                INDEX_ID,
+                foreign_page,
+                trigger_policy(),
+                Some(2),
+                100,
+            )
+            .unwrap_err(),
+        VectorIndexError::StaleMaintenanceHealth
+    );
+}
+
+#[test]
+fn trigger_rejects_invalid_policy() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    let mut bad = trigger_policy();
+    bad.recommended_tombstone_ratio_bps = 6_000;
+    bad.required_tombstone_ratio_bps = 5_000;
+    assert_eq!(
+        store
+            .admin_start_vector_rebuild_if_recommended(
+                router(),
+                INDEX_ID,
+                attested_page(&store, 1_000, 600),
+                bad,
+                Some(2),
+                100,
+            )
+            .unwrap_err(),
+        VectorIndexError::InvalidMaintenancePolicy
+    );
+}
+
+#[test]
+fn trigger_rejects_non_router_and_unknown_index() {
+    let store = fresh_store();
+    seed_distinct(&store, 4);
+    assert_eq!(
+        store
+            .admin_start_vector_rebuild_if_recommended(
+                shard_canister(),
+                INDEX_ID,
+                attested_page(&store, 1_000, 600),
+                trigger_policy(),
+                Some(2),
+                100,
+            )
+            .unwrap_err(),
+        VectorIndexError::Unauthorized
+    );
+    let empty = fresh_store();
+    assert_eq!(
+        empty
+            .admin_start_vector_rebuild_if_recommended(
+                router(),
+                INDEX_ID,
+                VectorPartitionPageHealth::default(),
+                trigger_policy(),
+                Some(2),
+                100,
+            )
+            .unwrap_err(),
+        VectorIndexError::UnknownIndex
+    );
+}
+
+// --- ADR 0031 Slice 9: heap centroid cache ---
+
+#[test]
+fn centroid_cache_warmup_then_status_reports_one_entry() {
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    let before = store
+        .admin_vector_centroid_cache_status(router())
+        .expect("status");
+    assert_eq!(before.entries, 0);
+    assert_eq!(before.bytes, 0);
+    assert_eq!(before.max_bytes, 8 * 1024 * 1024);
+
+    let after = store
+        .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
+        .expect("warmup");
+    assert_eq!(after.entries, 1);
+    assert!(after.bytes > 0, "a warmed nlist=2 set occupies heap bytes");
+}
+
+#[test]
+fn centroid_cache_search_parity_cold_vs_warm() {
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    let cold = store
+        .vector_search_tuned(&search_value(0.5, 10), tuned(2))
+        .expect("cold scan");
+    store
+        .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
+        .expect("warmup");
+    let warm = store
+        .vector_search_tuned(&search_value(0.5, 10), tuned(2))
+        .expect("warm scan");
+    let cold_hits: Vec<_> = cold.hits.iter().map(|h| (h.subject, h.distance)).collect();
+    let warm_hits: Vec<_> = warm.hits.iter().map(|h| (h.subject, h.distance)).collect();
+    assert_eq!(cold_hits, warm_hits, "warm cache yields identical results");
+}
+
+#[test]
+fn centroid_cache_clear_empties() {
+    let store = fresh_store();
+    store.seed_ivf_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        &two_clusters(),
+        &clustered_vectors(),
+    );
+    store
+        .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
+        .expect("warmup");
+    let cleared = store
+        .admin_vector_centroid_cache_clear(router())
+        .expect("clear");
+    assert_eq!(cleared.entries, 0);
+    assert_eq!(cleared.bytes, 0);
+}
+
+#[test]
+fn centroid_cache_warmup_skips_degenerate_index() {
+    let store = fresh_store();
+    seed_distinct(&store, 4); // degenerate nlist = 1
+    let status = store
+        .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
+        .expect("warmup");
+    assert_eq!(
+        status.entries, 0,
+        "a degenerate index has no centroid set to cache"
+    );
+}
+
+#[test]
+fn centroid_cache_warmup_unknown_index_errors() {
+    let store = fresh_store();
+    assert_eq!(
+        store
+            .admin_vector_centroid_cache_warmup(router(), 999)
+            .unwrap_err(),
+        VectorIndexError::UnknownIndex
+    );
+}
+
+#[test]
+fn centroid_cache_endpoints_reject_non_router() {
+    let store = fresh_store();
+    assert_eq!(
+        store
+            .admin_vector_centroid_cache_warmup(shard_canister(), INDEX_ID)
+            .unwrap_err(),
+        VectorIndexError::Unauthorized
+    );
+    assert_eq!(
+        store
+            .admin_vector_centroid_cache_clear(shard_canister())
+            .unwrap_err(),
+        VectorIndexError::Unauthorized
+    );
+    assert_eq!(
+        store
+            .admin_vector_centroid_cache_status(shard_canister())
+            .unwrap_err(),
+        VectorIndexError::Unauthorized
+    );
+}
+
+#[test]
+fn centroid_cache_publish_invalidates_warmed_entry() {
+    let store = fresh_store();
+    seed_distinct(&store, 6); // degenerate nlist = 1, version 1
+    // First rebuild to nlist = 2 and publish so the active set is partitioned + ready.
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start");
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+    drive_cleanup(&store, INDEX_ID);
+    assert_eq!(
+        store
+            .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
+            .expect("warmup")
+            .entries,
+        1
+    );
+    // A second rebuild + publish flips the active generation and must drop the warmed entry.
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect("start 2");
+    assert_eq!(
+        drive_steps(&store, INDEX_ID).phase,
+        VectorRebuildPhase::ReadyToPublish
+    );
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish 2");
+    assert_eq!(
+        store
+            .admin_vector_centroid_cache_status(router())
+            .expect("status")
+            .entries,
+        0,
+        "publishing a new generation invalidates the warmed centroid entry"
     );
 }

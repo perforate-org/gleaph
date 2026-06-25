@@ -155,7 +155,17 @@ pub(super) fn read_centroids_at(
 
 /// Reads centroids `0..nlist` for `(index_id, active_version)`, returning `None` unless exactly
 /// `nlist` centroids of `dims` components are present (a partial/stale centroid set is not ready).
+///
+/// Consults the heap centroid cache first (ADR 0031 Slice 9): a warmed entry returns immediately,
+/// skipping the `IVF_CENTROIDS` stable read + `f32` decode. A miss falls back to the stable read for
+/// this call only and does **not** populate the cache (a `#[query]`'s heap writes do not commit on
+/// IC; warmup is an explicit `#[update]`).
 fn read_centroids(def: &VectorIndexDef, index_id: u32) -> Option<Vec<Vec<f32>>> {
+    if let Some(centroids) =
+        super::centroid_cache::lookup(index_id, def.active_index_version, def.nlist, def.dims)
+    {
+        return Some(centroids);
+    }
     read_centroids_at(index_id, def.active_index_version, def.nlist, def.dims)
 }
 
