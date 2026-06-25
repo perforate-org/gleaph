@@ -8,6 +8,7 @@
 mod authorization;
 mod centroid_cache;
 mod maintenance;
+mod maintenance_step;
 mod mutation;
 mod rebuild;
 mod search;

@@ -29,6 +29,7 @@ use super::constraint_catalog::{ConstraintDefRecord, UniqueConstraintKey};
 use super::indexed_catalog::{IndexDefRecord, IndexedPropertyKey, NamedIndexKey};
 use super::reservation_catalog::{ReservationRecord, UniqueReservationKey};
 use super::vector_index_catalog::{VectorIndexDefRecord, VectorIndexKey};
+use super::vector_maintenance_policy::VectorMaintenancePolicyRecord;
 use candid::CandidType;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
@@ -103,6 +104,9 @@ const ROUTER_VECTOR_INDEXES: MemoryId = MemoryId::new(42);
 
 // --- control: global vector dispatch activation flag (ADR 0031 Slice 4) ---
 const ROUTER_VECTOR_DISPATCH_ACTIVATION: MemoryId = MemoryId::new(43);
+
+// --- policy: per-(graph, index) vector maintenance policy (ADR 0031 Slice 10) ---
+const ROUTER_VECTOR_MAINTENANCE_POLICIES: MemoryId = MemoryId::new(44);
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
@@ -237,6 +241,8 @@ pub(crate) type StableUniqueEffectPendingMap = BTreeMap<
 pub(crate) type StableEmbeddingNameCatalog =
     GraphScopedNameCatalog<EmbeddingNameId, Memory, Memory, DenseEmbeddingNamePolicy>;
 pub(crate) type StableVectorIndexMap = BTreeMap<VectorIndexKey, VectorIndexDefRecord, Memory>;
+pub(crate) type StableVectorMaintenancePolicyMap =
+    BTreeMap<VectorIndexKey, VectorMaintenancePolicyRecord, Memory>;
 
 // --- telemetry ---
 pub(crate) type StableLabelStatsMap =
@@ -395,6 +401,10 @@ pub(crate) fn init_embedding_name_catalog() -> StableEmbeddingNameCatalog {
 
 pub(crate) fn init_vector_indexes() -> StableVectorIndexMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_INDEXES)))
+}
+
+pub(crate) fn init_vector_maintenance_policies() -> StableVectorMaintenancePolicyMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_MAINTENANCE_POLICIES)))
 }
 
 // --- control ---

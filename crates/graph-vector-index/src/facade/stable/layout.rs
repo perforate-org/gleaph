@@ -16,6 +16,6 @@ mod tests {
     fn vector_index_canister_layout_registry() {
         validate_layout(&VECTOR_INDEX_STABLE_LAYOUT).expect("vector-index layout invariants");
         validate_class_invariants(&VECTOR_INDEX_STABLE_LAYOUT).expect("class invariants");
-        assert_eq!(STABLE_REGION_COUNT, 14);
+        assert_eq!(STABLE_REGION_COUNT, 15);
     }
 }

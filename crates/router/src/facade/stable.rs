@@ -19,6 +19,7 @@ pub(crate) mod reservation_catalog;
 pub(crate) mod unique_effect_pending;
 pub(crate) mod vector_activation;
 pub(crate) mod vector_index_catalog;
+pub(crate) mod vector_maintenance_policy;
 
 thread_local! {
     // --- auth ---
@@ -123,6 +124,12 @@ thread_local! {
     pub(crate) static ROUTER_VECTOR_DISPATCH_ACTIVATION:
         RefCell<memory::StableVectorDispatchActivation> =
         RefCell::new(memory::init_vector_dispatch_activation());
+
+    /// `(graph_id, index_id) → vector maintenance policy` (ADR 0031 Slice 10). Router-owned SSOT for
+    /// maintenance thresholds + per-step budgets; default absent/disabled.
+    pub(crate) static ROUTER_VECTOR_MAINTENANCE_POLICIES:
+        RefCell<memory::StableVectorMaintenancePolicyMap> =
+        RefCell::new(memory::init_vector_maintenance_policies());
 
     // --- telemetry ---
     pub(crate) static ROUTER_VERTEX_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =

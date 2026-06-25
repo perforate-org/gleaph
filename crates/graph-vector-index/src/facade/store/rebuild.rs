@@ -61,7 +61,7 @@ fn clamp_step_work(requested: u32) -> u32 {
 /// authoritative `PartitionHead` rows. **O(`nlist`)** (bounded by [`MAX_NLIST`]), never scans pages.
 /// Used both by [`VectorIndexStore::admin_vector_partition_health`] and the rebuild trigger so the
 /// skew signal is always derived from current state rather than caller-attested input.
-fn partition_health_summary(
+pub(super) fn partition_health_summary(
     index_id: u32,
     nlist: u32,
     active: u64,

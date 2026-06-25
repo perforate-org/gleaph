@@ -8,7 +8,8 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
     VectorCentroidCacheStatus, VectorEmbeddingSyncOp, VectorMaintenancePolicy,
-    VectorMaintenanceRecommendation, VectorPartitionHealthStep, VectorPartitionHealthSummary,
+    VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
+    VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
     VectorSlabStats, VectorSlabStatsStep,
 };
@@ -169,5 +170,28 @@ pub(crate) fn admin_vector_slab_stats_step(
 ) -> Result<VectorSlabStatsStep, String> {
     VectorIndexStore::new()
         .admin_vector_slab_stats_step(msg_caller(), cursor, max_pages, index_id)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_maintenance_step(
+    index_id: u32,
+    req: VectorMaintenanceStepRequest,
+) -> Result<VectorMaintenanceStepResult, String> {
+    VectorIndexStore::new()
+        .admin_vector_maintenance_step(msg_caller(), index_id, req)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_maintenance_status(
+    index_id: u32,
+) -> Result<VectorMaintenanceState, String> {
+    VectorIndexStore::new()
+        .admin_vector_maintenance_status(msg_caller(), index_id)
+        .map_err(|e| e.to_string())
+}
+
+pub(crate) fn admin_vector_maintenance_reset(index_id: u32) -> Result<(), String> {
+    VectorIndexStore::new()
+        .admin_vector_maintenance_reset(msg_caller(), index_id)
         .map_err(|e| e.to_string())
 }

@@ -2783,3 +2783,368 @@ fn centroid_cache_publish_invalidates_warmed_entry() {
         "publishing a new generation invalidates the warmed centroid entry"
     );
 }
+
+// --- ADR 0031 Slice 10: maintenance execution state machine ---
+
+use crate::facade::stable::VECTOR_INDEX_DEFS;
+use gleaph_graph_kernel::vector_index::{
+    VectorMaintenanceState, VectorMaintenanceStepRequest, VectorMaintenanceStepResult,
+};
+
+/// Tombstone-dominant maintenance policy with low row gates so small fixtures can cross thresholds.
+fn maint_policy() -> VectorMaintenancePolicy {
+    VectorMaintenancePolicy {
+        recommended_tombstone_ratio_bps: 2_000, // 20%
+        required_tombstone_ratio_bps: 5_000,    // 50%
+        recommended_skew_ratio_bps: u32::MAX,   // skew disabled for these tests
+        required_skew_ratio_bps: u32::MAX,
+        min_total_rows: 1,
+        min_tombstoned_rows: 1,
+    }
+}
+
+/// A maintenance step request with `nlist = 2` target and generous bounded budgets.
+fn maint_req() -> VectorMaintenanceStepRequest {
+    VectorMaintenanceStepRequest {
+        policy: maint_policy(),
+        target_nlist: Some(2),
+        sample_limit: 100,
+        scan_max_pages: 100,
+        rebuild_max_subjects: 100,
+        cleanup_max_work: 100,
+    }
+}
+
+/// Seeds `live` distinct live rows then creates `tombstones` extra tombstoned rows by re-upserting
+/// subject 1 at increasing embedding_versions (each re-upsert tombstones the prior row).
+fn seed_live_and_tombstones(store: &VectorIndexStore, live: u32, tombstones: u32) {
+    seed_distinct(store, live);
+    for k in 0..tombstones {
+        store
+            .vector_upsert(
+                shard_canister(),
+                &upsert_vec(1, 2 + k as u64, 100.0 + k as f32),
+            )
+            .expect("tombstone re-upsert");
+    }
+}
+
+fn set_active_version(index_id: u32, version: u64) {
+    VECTOR_INDEX_DEFS.with_borrow_mut(|defs| {
+        let mut def = defs.get(&index_id).expect("def");
+        def.active_index_version = version;
+        defs.insert(index_id, def);
+    });
+}
+
+#[test]
+fn maintenance_step_scans_then_reports_healthy_and_resets() {
+    let store = fresh_store();
+    seed_distinct(&store, 4); // 4 live rows, no tombstones -> healthy
+
+    // First step (from Idle) runs one scan step; the single degenerate page exhausts immediately.
+    assert_eq!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
+            .expect("scan step"),
+        VectorMaintenanceStepResult::Scanning { exhausted: true }
+    );
+    // Second step recommends from the exhausted scan: healthy -> reset to Idle.
+    assert_eq!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
+            .expect("recommend step"),
+        VectorMaintenanceStepResult::Healthy
+    );
+    assert_eq!(
+        store
+            .admin_vector_maintenance_status(router(), INDEX_ID)
+            .expect("status"),
+        VectorMaintenanceState::Idle
+    );
+}
+
+#[test]
+fn maintenance_step_drives_required_rebuild_to_awaiting_publish_then_publishes() {
+    let store = fresh_store();
+    seed_live_and_tombstones(&store, 4, 4); // 50% tombstones -> RebuildRequired
+
+    // Scan exhausts, then the recommendation starts a rebuild at the target nlist.
+    assert_eq!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
+            .expect("scan"),
+        VectorMaintenanceStepResult::Scanning { exhausted: true }
+    );
+    assert_eq!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
+            .expect("recommend"),
+        VectorMaintenanceStepResult::RebuildStarted(
+            VectorMaintenanceRecommendation::RebuildRequired
+        )
+    );
+    // Starting the rebuild clears the scan state (the rebuild state machine now drives).
+    assert_eq!(
+        store
+            .admin_vector_maintenance_status(router(), INDEX_ID)
+            .expect("status"),
+        VectorMaintenanceState::Idle
+    );
+
+    // Each step drives one bounded rebuild unit until it stops at ReadyToPublish (publish is explicit).
+    let mut awaiting = false;
+    for _ in 0..100_000 {
+        match store
+            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
+            .expect("rebuild step")
+        {
+            VectorMaintenanceStepResult::RebuildAdvanced(_) => continue,
+            VectorMaintenanceStepResult::AwaitingPublish(status) => {
+                assert_eq!(status.phase, VectorRebuildPhase::ReadyToPublish);
+                awaiting = true;
+                break;
+            }
+            other => panic!("unexpected step result: {other:?}"),
+        }
+    }
+    assert!(awaiting, "rebuild reached ReadyToPublish");
+
+    // The step must never auto-publish: another step still reports AwaitingPublish.
+    assert!(matches!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
+            .expect("still awaiting"),
+        VectorMaintenanceStepResult::AwaitingPublish(_)
+    ));
+    assert_eq!(
+        store
+            .admin_vector_rebuild_status(router(), INDEX_ID)
+            .expect("status")
+            .phase,
+        VectorRebuildPhase::ReadyToPublish,
+        "no auto-publish"
+    );
+
+    // Explicit publish flips the active generation; subsequent steps drive cleanup to Idle.
+    store
+        .admin_publish_vector_rebuild(router(), INDEX_ID)
+        .expect("publish");
+    let def = store.def_for_test(INDEX_ID).expect("def");
+    assert_eq!(def.active_index_version, TARGET_V);
+    assert_eq!(def.nlist, 2);
+
+    let mut cleaned = false;
+    for _ in 0..100_000 {
+        let result = store
+            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
+            .expect("cleanup step");
+        if store
+            .admin_vector_rebuild_status(router(), INDEX_ID)
+            .expect("status")
+            .phase
+            == VectorRebuildPhase::Idle
+        {
+            // Once the rebuild is fully torn down, the step either finished cleanup or began a new scan.
+            assert!(matches!(
+                result,
+                VectorMaintenanceStepResult::CleanupAdvanced(_)
+                    | VectorMaintenanceStepResult::Scanning { .. }
+            ));
+            cleaned = true;
+            break;
+        }
+        assert!(matches!(
+            result,
+            VectorMaintenanceStepResult::CleanupAdvanced(_)
+        ));
+    }
+    assert!(cleaned, "cleanup drained to Idle");
+}
+
+#[test]
+fn maintenance_step_fails_closed_then_recovers_via_reset() {
+    let store = fresh_store();
+    seed_live_and_tombstones(&store, 4, 4); // 50% tombstones, degenerate nlist = 1
+
+    // No explicit target on a degenerate (nlist=1) index: the rebuild start rejects nlist < 2.
+    let req = VectorMaintenanceStepRequest {
+        target_nlist: None,
+        ..maint_req()
+    };
+    assert_eq!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, req)
+            .expect("scan"),
+        VectorMaintenanceStepResult::Scanning { exhausted: true }
+    );
+    match store
+        .admin_vector_maintenance_step(router(), INDEX_ID, req)
+        .expect("failing recommend")
+    {
+        VectorMaintenanceStepResult::Failed(failure) => {
+            assert_eq!(failure.code, VectorIndexError::InvalidRebuildParams);
+            assert!(!failure.message.is_empty());
+        }
+        other => panic!("expected Failed, got {other:?}"),
+    }
+    assert!(matches!(
+        store
+            .admin_vector_maintenance_status(router(), INDEX_ID)
+            .expect("status"),
+        VectorMaintenanceState::Failed(_)
+    ));
+
+    // A failed state is a no-op until an explicit reset.
+    assert!(matches!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, req)
+            .expect("no-op"),
+        VectorMaintenanceStepResult::Failed(_)
+    ));
+
+    store
+        .admin_vector_maintenance_reset(router(), INDEX_ID)
+        .expect("reset");
+    assert_eq!(
+        store
+            .admin_vector_maintenance_status(router(), INDEX_ID)
+            .expect("status"),
+        VectorMaintenanceState::Idle
+    );
+    // Maintenance resumes after reset (with a valid target this time).
+    assert!(matches!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
+            .expect("resume"),
+        VectorMaintenanceStepResult::Scanning { .. }
+    ));
+}
+
+#[test]
+fn maintenance_scan_restarts_on_stale_cursor_after_version_flip() {
+    let store = fresh_store();
+    // 1 slot/page so 4 rows span 4 pages, forcing a multi-step (non-exhausting) scan.
+    store
+        .create_index_for_test(INDEX_ID, VectorEncoding::F32, DIMS, 80)
+        .expect("create");
+    seed_distinct(&store, 4);
+
+    // One bounded page (scan_max_pages = 1): the scan does not exhaust and persists a Some cursor.
+    let req = VectorMaintenanceStepRequest {
+        scan_max_pages: 1,
+        ..maint_req()
+    };
+    assert_eq!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, req)
+            .expect("scan 1"),
+        VectorMaintenanceStepResult::Scanning { exhausted: false }
+    );
+
+    // The active version flips: the persisted cursor is now scoped to a stale generation.
+    set_active_version(INDEX_ID, 2);
+
+    // The next scan step sees InvalidStatsCursor and restarts cleanly from the lower bound.
+    assert_eq!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, req)
+            .expect("restart"),
+        VectorMaintenanceStepResult::Scanning { exhausted: false }
+    );
+    match store
+        .admin_vector_maintenance_status(router(), INDEX_ID)
+        .expect("status")
+    {
+        VectorMaintenanceState::Scanning {
+            cursor,
+            exhausted,
+            merged,
+        } => {
+            assert!(cursor.is_none(), "restarted scan has no cursor");
+            assert!(!exhausted);
+            assert_eq!(merged.index_version, 0, "merged counters reset on restart");
+        }
+        other => panic!("expected Scanning, got {other:?}"),
+    }
+}
+
+#[test]
+fn maintenance_exhausted_scan_restarts_on_version_flip_before_recommending() {
+    let store = fresh_store();
+    seed_distinct(&store, 4); // single degenerate page -> scan exhausts in one step
+
+    // Drive the scan to exhausted (recommendation would happen on the next step).
+    assert_eq!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
+            .expect("scan"),
+        VectorMaintenanceStepResult::Scanning { exhausted: true }
+    );
+
+    // The active version flips after exhaustion (no cursor remains to scope-check).
+    set_active_version(INDEX_ID, 2);
+
+    // The generation guard at the exhausted->recommend boundary catches the flip and restarts the
+    // scan instead of recommending against the stale merged page health.
+    assert_eq!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
+            .expect("restart"),
+        VectorMaintenanceStepResult::Scanning { exhausted: false }
+    );
+    match store
+        .admin_vector_maintenance_status(router(), INDEX_ID)
+        .expect("status")
+    {
+        VectorMaintenanceState::Scanning {
+            cursor,
+            exhausted,
+            merged,
+        } => {
+            assert!(cursor.is_none());
+            assert!(!exhausted, "exhausted flag is distinct from cursor == None");
+            assert_eq!(merged.index_version, 0);
+        }
+        other => panic!("expected Scanning, got {other:?}"),
+    }
+
+    // A freshly restarted scan (cursor=None, exhausted=false) performs a scan step, not a
+    // recommendation, even though it could otherwise immediately judge an (empty) new version.
+    assert!(matches!(
+        store
+            .admin_vector_maintenance_step(router(), INDEX_ID, maint_req())
+            .expect("scan again"),
+        VectorMaintenanceStepResult::Scanning { .. }
+    ));
+}
+
+#[test]
+fn maintenance_endpoints_reject_non_router_and_unknown_index() {
+    let store = fresh_store();
+    seed_distinct(&store, 2);
+    assert_eq!(
+        store
+            .admin_vector_maintenance_step(shard_canister(), INDEX_ID, maint_req())
+            .unwrap_err(),
+        VectorIndexError::Unauthorized
+    );
+    assert_eq!(
+        store
+            .admin_vector_maintenance_step(router(), 999, maint_req())
+            .unwrap_err(),
+        VectorIndexError::UnknownIndex
+    );
+    assert_eq!(
+        store
+            .admin_vector_maintenance_status(shard_canister(), INDEX_ID)
+            .unwrap_err(),
+        VectorIndexError::Unauthorized
+    );
+    assert_eq!(
+        store
+            .admin_vector_maintenance_reset(shard_canister(), INDEX_ID)
+            .unwrap_err(),
+        VectorIndexError::Unauthorized
+    );
+}

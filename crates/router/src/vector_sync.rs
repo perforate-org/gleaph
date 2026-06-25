@@ -12,7 +12,13 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 #[cfg(not(feature = "pocket-ic-e2e"))]
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::vector_index::{VectorSearchRequest, VectorSearchResult};
+use gleaph_graph_kernel::vector_index::{
+    VectorCentroidCacheStatus, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
+    VectorMaintenanceState, VectorMaintenanceStepRequest, VectorMaintenanceStepResult,
+    VectorPartitionHealthStep, VectorPartitionHealthSummary, VectorPartitionPageHealth,
+    VectorRebuildStatus, VectorSearchRequest, VectorSearchResult, VectorSlabStats,
+    VectorSlabStatsStep,
+};
 
 // The attach-handshake helpers below are only driven by `finish_shard_vector_attach`, which is itself
 // `#[cfg(not(pocket-ic-e2e))]` (the e2e harness drives the handshake legs from the test instead). The
@@ -97,3 +103,183 @@ pub async fn vector_search(
 ) -> Result<VectorSearchResult, String> {
     Ok(VectorSearchResult { hits: Vec::new() })
 }
+
+// --- ADR 0031 Slice 10: Router-forwarded vector maintenance surface ---
+//
+// Each helper forwards to a router-guarded vector-canister admin endpoint (which returns
+// `Result<T, String>`). Reads use `bounded_wait` (query), mutators/drivers use `unbounded_wait`
+// (update). Under native builds the helpers fail closed: actual forwarding is verified by PocketIC
+// e2e, while native unit tests only cover Router policy validation / CRUD / RBAC / readiness gating.
+
+/// Generates one Router→vector forward helper. Defined twice (wasm real call / native stub) via a
+/// cfg gate on the macro itself, so the call body never needs a cfg attribute on an inner block.
+#[cfg(target_family = "wasm")]
+macro_rules! forward_vector {
+    ($fn:ident, $method:literal, $waiter:ident, (), $ret:ty) => {
+        pub async fn $fn(canister: Principal) -> Result<$ret, String> {
+            use ic_cdk::call::Call;
+            Call::$waiter(canister, $method)
+                .await
+                .map_err(|e| format!(concat!("vector ", $method, " call failed: {}"), e))?
+                .candid::<Result<$ret, String>>()
+                .map_err(|e| format!(concat!("vector ", $method, " decode failed: {}"), e))?
+        }
+    };
+    ($fn:ident, $method:literal, $waiter:ident, ($($arg:ident: $aty:ty),+ $(,)?), $ret:ty) => {
+        pub async fn $fn(canister: Principal, $($arg: $aty),+) -> Result<$ret, String> {
+            use ic_cdk::call::Call;
+            Call::$waiter(canister, $method)
+                .with_args(&($($arg,)+))
+                .await
+                .map_err(|e| format!(concat!("vector ", $method, " call failed: {}"), e))?
+                .candid::<Result<$ret, String>>()
+                .map_err(|e| format!(concat!("vector ", $method, " decode failed: {}"), e))?
+        }
+    };
+}
+
+#[cfg(not(target_family = "wasm"))]
+macro_rules! forward_vector {
+    ($fn:ident, $method:literal, $waiter:ident, (), $ret:ty) => {
+        pub async fn $fn(canister: Principal) -> Result<$ret, String> {
+            let _ = &canister;
+            Err(concat!("vector ", $method, " is unavailable in native builds").to_string())
+        }
+    };
+    ($fn:ident, $method:literal, $waiter:ident, ($($arg:ident: $aty:ty),+ $(,)?), $ret:ty) => {
+        pub async fn $fn(canister: Principal, $($arg: $aty),+) -> Result<$ret, String> {
+            let _ = &canister;
+            $(let _ = &$arg;)+
+            Err(concat!("vector ", $method, " is unavailable in native builds").to_string())
+        }
+    };
+}
+
+// Reads (composite-query forwards): bounded_wait query calls.
+forward_vector!(
+    forward_admin_vector_partition_health,
+    "admin_vector_partition_health",
+    bounded_wait,
+    (index_id: u32),
+    VectorPartitionHealthSummary
+);
+forward_vector!(
+    forward_admin_vector_partition_health_step,
+    "admin_vector_partition_health_step",
+    bounded_wait,
+    (index_id: u32, cursor: Option<Vec<u8>>, max_pages: u32),
+    VectorPartitionHealthStep
+);
+forward_vector!(
+    forward_admin_vector_rebuild_status,
+    "admin_vector_rebuild_status",
+    bounded_wait,
+    (index_id: u32),
+    VectorRebuildStatus
+);
+forward_vector!(
+    forward_admin_vector_slab_stats,
+    "admin_vector_slab_stats",
+    bounded_wait,
+    (index_id: Option<u32>),
+    VectorSlabStats
+);
+forward_vector!(
+    forward_admin_vector_slab_stats_step,
+    "admin_vector_slab_stats_step",
+    bounded_wait,
+    (cursor: Option<Vec<u8>>, max_pages: u32, index_id: Option<u32>),
+    VectorSlabStatsStep
+);
+forward_vector!(
+    forward_admin_vector_centroid_cache_status,
+    "admin_vector_centroid_cache_status",
+    bounded_wait,
+    (),
+    VectorCentroidCacheStatus
+);
+forward_vector!(
+    forward_admin_vector_maintenance_status,
+    "admin_vector_maintenance_status",
+    bounded_wait,
+    (index_id: u32),
+    VectorMaintenanceState
+);
+
+// Mutators / drivers: unbounded_wait update calls.
+forward_vector!(
+    forward_admin_start_vector_rebuild,
+    "admin_start_vector_rebuild",
+    unbounded_wait,
+    (index_id: u32, nlist: u32, sample_limit: u32),
+    ()
+);
+forward_vector!(
+    forward_admin_start_vector_rebuild_if_recommended,
+    "admin_start_vector_rebuild_if_recommended",
+    unbounded_wait,
+    (
+        index_id: u32,
+        attested_page_health: VectorPartitionPageHealth,
+        policy: VectorMaintenancePolicy,
+        target_nlist: Option<u32>,
+        sample_limit: u32,
+    ),
+    VectorMaintenanceRecommendation
+);
+forward_vector!(
+    forward_admin_vector_rebuild_step,
+    "admin_vector_rebuild_step",
+    unbounded_wait,
+    (index_id: u32, max_subjects: u32),
+    VectorRebuildStatus
+);
+forward_vector!(
+    forward_admin_publish_vector_rebuild,
+    "admin_publish_vector_rebuild",
+    unbounded_wait,
+    (index_id: u32),
+    ()
+);
+forward_vector!(
+    forward_admin_abort_vector_rebuild,
+    "admin_abort_vector_rebuild",
+    unbounded_wait,
+    (index_id: u32),
+    ()
+);
+forward_vector!(
+    forward_admin_vector_rebuild_cleanup_step,
+    "admin_vector_rebuild_cleanup_step",
+    unbounded_wait,
+    (index_id: u32, max_work: u32),
+    VectorRebuildStatus
+);
+forward_vector!(
+    forward_admin_vector_centroid_cache_warmup,
+    "admin_vector_centroid_cache_warmup",
+    unbounded_wait,
+    (index_id: u32),
+    VectorCentroidCacheStatus
+);
+forward_vector!(
+    forward_admin_vector_centroid_cache_clear,
+    "admin_vector_centroid_cache_clear",
+    unbounded_wait,
+    (),
+    VectorCentroidCacheStatus
+);
+forward_vector!(
+    forward_admin_vector_maintenance_step,
+    "admin_vector_maintenance_step",
+    unbounded_wait,
+    (index_id: u32, req: VectorMaintenanceStepRequest),
+    VectorMaintenanceStepResult
+);
+forward_vector!(
+    forward_admin_vector_maintenance_reset,
+    "admin_vector_maintenance_reset",
+    unbounded_wait,
+    (index_id: u32),
+    ()
+);

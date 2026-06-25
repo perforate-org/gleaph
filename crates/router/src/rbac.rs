@@ -48,6 +48,17 @@ pub fn authorize_vector_activation(caller: &Principal) -> Result<(), RouterError
     }
 }
 
+/// Vector-index maintenance forwarding + policy control (ADR 0031 Slice 10): Admin only. Like
+/// [`authorize_vector_activation`], these are derived-index control-plane operations (rebuild,
+/// cleanup, cache, bounded maintenance scheduling), so they require the strongest role.
+pub fn authorize_vector_maintenance(caller: &Principal) -> Result<(), RouterError> {
+    if auth::is_admin(caller) {
+        Ok(())
+    } else {
+        Err(RouterError::Forbidden)
+    }
+}
+
 /// `prepared_register` / `prepared_drop`: Admin or Manager with `PREPARE_REGISTER`.
 pub fn authorize_prepared_catalog_change(caller: &Principal) -> Result<(), RouterError> {
     if auth::can_prepare_register(caller) {

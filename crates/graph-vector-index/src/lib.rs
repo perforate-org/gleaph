@@ -32,7 +32,8 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ShardDetachCursor, ShardDetachStepResult, ShardId};
 use gleaph_graph_kernel::vector_index::{
     VectorCentroidCacheStatus, VectorEmbeddingSyncOp, VectorMaintenancePolicy,
-    VectorMaintenanceRecommendation, VectorPartitionHealthStep, VectorPartitionHealthSummary,
+    VectorMaintenanceRecommendation, VectorMaintenanceState, VectorMaintenanceStepRequest,
+    VectorMaintenanceStepResult, VectorPartitionHealthStep, VectorPartitionHealthSummary,
     VectorPartitionPageHealth, VectorRebuildStatus, VectorSearchRequest, VectorSearchResult,
     VectorSlabStats, VectorSlabStatsStep,
 };
@@ -205,6 +206,32 @@ fn admin_vector_slab_stats_step(
     index_id: Option<u32>,
 ) -> Result<VectorSlabStatsStep, String> {
     canister::admin_vector_slab_stats_step(cursor, max_pages, index_id)
+}
+
+/// Advances one bounded unit of Router-forwarded vector maintenance (ADR 0031 Slice 10). The Router
+/// snapshots its policy + per-step budgets into `req`; this performs at most one scan/rebuild/cleanup
+/// step and stops at `ReadyToPublish` (publish stays explicit). Router-guarded `#[update]`.
+#[update(guard = "guard_router_canister")]
+fn admin_vector_maintenance_step(
+    index_id: u32,
+    req: VectorMaintenanceStepRequest,
+) -> Result<VectorMaintenanceStepResult, String> {
+    canister::admin_vector_maintenance_step(index_id, req)
+}
+
+/// Reports the vector-canister-owned maintenance execution state (ADR 0031 Slice 10). Router-guarded
+/// `#[query]`; an index with no recorded state reports `Idle`.
+#[query(guard = "guard_router_canister")]
+fn admin_vector_maintenance_status(index_id: u32) -> Result<VectorMaintenanceState, String> {
+    canister::admin_vector_maintenance_status(index_id)
+}
+
+/// Resets the maintenance execution state to `Idle` from any state, including `Failed` (ADR 0031
+/// Slice 10). The only recovery path for a `Failed` maintenance state; does not touch the rebuild
+/// state (abort an in-flight rebuild with `admin_abort_vector_rebuild`). Router-guarded `#[update]`.
+#[update(guard = "guard_router_canister")]
+fn admin_vector_maintenance_reset(index_id: u32) -> Result<(), String> {
+    canister::admin_vector_maintenance_reset(index_id)
 }
 
 ic_cdk::export_candid!();

@@ -2,7 +2,8 @@
 //! and `facade/stable/layout.rs` (ADR 0007 registry, ADR 0031 Slice 2).
 //!
 //! MemoryIds: router auth → shard catalog → ownership config → index defs → centroid meta →
-//! reserved centroids → subject clock → id→slot → partition heads → pages.
+//! reserved centroids → subject clock → id→slot → partition heads → pages → rebuild state →
+//! row slab → maintenance state.
 
 use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
@@ -14,8 +15,8 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 
 use crate::records::{
-    IvfCentroidMeta, PageKey, PartitionHead, PartitionKey, RawRebuildState, SlotRef, SubjectKey,
-    SubjectMapEntry, VectorIdKey, VectorIndexDef, VectorSubjectRecord,
+    IvfCentroidMeta, PageKey, PartitionHead, PartitionKey, RawMaintenanceState, RawRebuildState,
+    SlotRef, SubjectKey, SubjectMapEntry, VectorIdKey, VectorIndexDef, VectorSubjectRecord,
 };
 
 pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
@@ -38,6 +39,10 @@ pub(crate) const VECTOR_PAGE_META: MemoryId = MemoryId::new(10);
 const VECTOR_ID_TO_SUBJECT: MemoryId = MemoryId::new(11);
 const VECTOR_REBUILD_STATE: MemoryId = MemoryId::new(12);
 pub(crate) const VECTOR_ROW_SLAB: MemoryId = MemoryId::new(13);
+// ADR 0031 Slice 10: Router-forwarded maintenance orchestration. Holds the vector-canister-owned
+// page-health scan execution state (cursor + merged counters). Stable execution state — it must
+// survive upgrade and is cleared only on canister init/reset.
+const VECTOR_MAINTENANCE_STATE: MemoryId = MemoryId::new(14);
 
 pub(crate) type StableRouterCell = Cell<Principal, Memory>;
 pub(crate) type StableOwnershipConfigCell = Cell<VectorIndexOwnershipConfig, Memory>;
@@ -52,6 +57,7 @@ pub(crate) type StablePartitionHeadsMap = BTreeMap<PartitionKey, PartitionHead, 
 pub(crate) type StablePageMetaMap = BTreeMap<PageKey, super::page_store::VectorPageMeta, Memory>;
 pub(crate) type StableIdToSubjectMap = BTreeMap<VectorIdKey, VectorSubjectRecord, Memory>;
 pub(crate) type StableRebuildStateMap = BTreeMap<u32, RawRebuildState, Memory>;
+pub(crate) type StableMaintenanceStateMap = BTreeMap<u32, RawMaintenanceState, Memory>;
 
 /// Graph ownership config (ADR 0031 Slice 4 target model B). Unlike `graph-index`
 /// `IndexOwnershipConfig`, a derived vector index has **one target per graph** that owns *every*
@@ -213,6 +219,10 @@ pub(crate) fn init_id_to_subject() -> StableIdToSubjectMap {
 
 pub(crate) fn init_rebuild_state() -> StableRebuildStateMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_REBUILD_STATE)))
+}
+
+pub(crate) fn init_maintenance_state() -> StableMaintenanceStateMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(VECTOR_MAINTENANCE_STATE)))
 }
 
 #[cfg(test)]

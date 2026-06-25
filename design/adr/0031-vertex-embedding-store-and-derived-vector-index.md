@@ -89,9 +89,11 @@ Last revised: 2026-06-25
 > deterministic k-means-lite over a bounded candidate pool and added a head-only partition-health
 > summary without changing the public search API. Slice 9 (below) then added bounded page-meta
 > tombstone-ratio health, a policy-driven rebuild recommendation/trigger, and a heap centroid cache,
-> again without changing the public search API. Candidate pagination, query ranking/merge,
-> per-index/per-embedding fan-out, GQL vector-search syntax, full/balanced k-means, autonomous
-> tombstone cleanup, Router-forwarded maintenance, PQ/HNSW, and `VectorSubject::Edge` remain Slice 10+.
+> again without changing the public search API. Slice 10 (below) then added Router-forwarded
+> maintenance and a Router-owned, vector-executed maintenance policy/step boundary, again without
+> changing the public search API. Candidate pagination, query ranking/merge, per-index/per-embedding
+> fan-out, GQL vector-search syntax, full/balanced k-means, autonomous tombstone cleanup, PQ/HNSW, and
+> `VectorSubject::Edge` remain Slice 11+.
 > This ADR fixes ownership, consistency, the standard `ivf_flat` vector-index kind, and the first
 > derived vector-index stable-memory shape before the GQL query operator is committed.
 >
@@ -152,8 +154,9 @@ Last revised: 2026-06-25
 > vectors** with nearest-centroid assignment. Slice 8 (below) improves centroid quality with bounded
 > k-means-lite over that bounded sample and adds partition health/status signals. Slice 9 (below) then
 > added page-meta tombstone health, a rebuild recommendation/trigger, and a heap centroid cache.
-> Full/balanced k-means, autonomous partition tombstone-cleanup, GQL vector syntax,
-> `VectorSubject::Edge`, and distributed fan-out remain Slice 10+ follow-ups.
+> Slice 10 (below) then added Router-forwarded maintenance plus a Router-owned policy / vector-executed
+> bounded-step boundary. Full/balanced k-means, autonomous partition tombstone-cleanup, GQL vector
+> syntax, `VectorSubject::Edge`, and distributed fan-out remain Slice 11+ follow-ups.
 >
 > **Slice 8 (implemented): bounded training quality + head-only partition health.** Slice 8 inserts a
 > deterministic `Training` phase between `Sampling` and `Building` in the existing rebuild lifecycle
@@ -202,8 +205,23 @@ Last revised: 2026-06-25
 > `f32` decode) and otherwise reads stable for that call only. Because IC `#[query]` execution is
 > non-committing, the cache is **read-only** on the query path; population/eviction happen only on
 > `#[update]` warmup/clear and a publish-time invalidation (the active generation changing). All new
-> admin endpoints stay on the vector canister behind `guard_router_canister`; Router forwarding is a
-> deferred follow-up.
+> admin endpoints stay on the vector canister behind `guard_router_canister`; Router forwarding landed
+> in Slice 10 (below).
+>
+> **Slice 10 (implemented): Router policy with vector-owned maintenance execution.** Slice 10 adds
+> Router-forwarded maintenance ergonomics and a Router-owned maintenance policy catalog, and it does
+> **not** move maintenance progress state into the Router. The Router remains the source of truth for
+> vector-index definitions, targets, readiness, RBAC, and maintenance policy. The vector-index canister
+> remains the owner of derived maintenance execution state: page-health scan cursors, merged page-health
+> counters, rebuild phase, cleanup/abort cursors, and centroid-cache invalidation. Manual maintenance is
+> Router-push: the Router validates policy/readiness and forwards a policy snapshot to a router-guarded
+> vector endpoint. Future automatic maintenance is vector-index-pull: a vector timer may ask the Router
+> for the current policy/readiness snapshot before advancing one bounded step. The vector canister must
+> treat the snapshot as step input, not as a durable copy of Router-owned policy. If the Router is
+> unreachable, policy is disabled, target/readiness no longer match, or the snapshot epoch is stale,
+> automatic maintenance is a no-op/fail-closed. Autonomous stepping should stop at `ReadyToPublish` by
+> default; publishing the active index version remains an explicit Router-forwarded operation unless a
+> later ADR adds an explicit `allow_auto_publish` policy.
 
 ## Context
 
@@ -664,6 +682,75 @@ cold-vs-warm search parity, publish invalidation, and router-guard — at the st
 to end via PocketIC (`sender = router`). Canbench adds the page-meta health scan (clean and
 tombstone-heavy), cold-vs-warm partition-page search, and centroid-cache warmup cost.
 
+### 7.4 Slice 10 maintenance-orchestration boundary (implemented)
+
+Slice 10 is a boundary refinement over the Slice 9 maintenance surface, not a new vector-index
+algorithm. It preserves this ownership split:
+
+- **Router-owned source of truth.** The Router owns vector-index definitions, target resolution,
+  activation/readiness, RBAC, and graph/index-scoped maintenance policy. A policy record may include
+  `enabled`, `VectorMaintenancePolicy`, `target_nlist`, `sample_limit`, per-step budgets, and future
+  automation flags, but the Router does not own vector page cursors, rebuild cursors, or centroid-cache
+  state.
+- **Vector-owned execution state.** The vector-index canister owns the derived maintenance state that
+  is coupled to its stable layout: page-health scan cursors and merged counters, rebuild state,
+  cleanup/abort cursors, active/shadow index versions, and heap centroid-cache invalidation. Keeping
+  these in the vector canister avoids a split-brain scheduler where Router state claims one phase while
+  the vector canister's durable rebuild state is elsewhere.
+- **Manual mode is Router-push.** For operator-driven maintenance, the Router resolves the graph/index,
+  checks readiness and RBAC, reads its policy, and forwards a policy snapshot/budget to a router-guarded
+  vector endpoint. The vector canister advances at most one bounded maintenance unit and returns status.
+- **Future automatic mode is vector-index-pull.** For timer-driven maintenance, the vector canister may
+  ask the Router for the current policy/readiness snapshot before each bounded step. The fetched
+  snapshot is step input only; the vector canister must not persist Router policy as an independent
+  source of truth. The snapshot should carry a policy/catalog epoch (or equivalent version) so stale
+  automatic work can fail closed.
+- **Fail-closed automation.** If Router policy lookup fails, policy is disabled, the graph/index target
+  no longer matches this vector canister, dispatch/readiness is false, or the snapshot epoch is stale,
+  automatic maintenance performs no work. A failed automatic step must not publish, abort, or rewrite
+  Router-owned policy.
+- **Publish remains explicit.** The bounded maintenance step may scan, recommend, start, and drive
+  rebuild work, but it should stop at `ReadyToPublish` by default. Publishing flips
+  `active_index_version`, so it remains a separate Router-forwarded operation unless a later ADR adds an
+  explicit `allow_auto_publish` policy and its recovery semantics.
+
+This keeps the operational direction symmetric with Gleaph's other canister boundaries: Router owns
+global policy and routing authority; the canister that owns derived stable state owns the maintenance
+state that mutates that derived representation.
+
+**As implemented (Slice 10):**
+
+- **Vector execution state.** A new stable region `VECTOR_MAINTENANCE_STATE` (MemoryId 14) holds a
+  per-index `VectorMaintenanceState` (`Idle`; `Scanning { cursor, exhausted, merged }` carrying the
+  scoped `VectorPartitionPageHealth`; `Failed(VectorMaintenanceFailure { code, message })`). It
+  persists across upgrade (it holds mid-orchestration scan progress) and is cleared only on canister
+  init/reset, the opposite of the heap-only centroid cache. The `Failed` message is truncated to a
+  bounded length so persisted state size never depends on a downstream error string. The router-guarded
+  `admin_vector_maintenance_step(index_id, VectorMaintenanceStepRequest)` advances exactly one bounded
+  unit: it drives an in-flight rebuild/cleanup first, otherwise runs one `partition_page_health_step`,
+  and on scan exhaustion validates `merged.index_version == active_index_version` before recomputing the
+  head summary and running `recommend_partition_maintenance`. Two generation guards keep it correct
+  across an active-version flip: a stale cursor mid-scan (`InvalidStatsCursor`) restarts from the lower
+  bound, and the exhausted→recommend boundary re-checks the merged generation. `admin_vector_maintenance_status`
+  (query) and `admin_vector_maintenance_reset(index_id)` (update, `Idle` from any state including
+  `Failed`, without touching the rebuild state) complete the surface.
+- **Router policy SSOT.** A new Router stable region `ROUTER_VECTOR_MAINTENANCE_POLICIES` (MemoryId 44)
+  stores a per-`(graph_id, index_id)` `VectorMaintenancePolicyRecord { enabled, policy, target_nlist,
+  sample_limit, scan_max_pages, rebuild_max_subjects, cleanup_max_work }`, default absent/disabled.
+  Policy authorship (`admin_set_/disable_/delete_vector_maintenance_policy`, validated for
+  `recommended_*_bps <= required_*_bps`, nonzero budgets, and an existing definition) is `authorize_index_ddl`;
+  stepping/reads/reset are a new Admin-only `authorize_vector_maintenance`.
+- **Router forwarding.** The Router exposes the full Slice 7-9 maintenance surface as forwards to the
+  resolved single vector target (reads as `#[query(composite = true)]`, mutators/drivers as `#[update]`),
+  each gated on resolve + non-anonymous target + dispatch readiness. The push step
+  `admin_vector_maintenance_step(graph, index_id)` returns `Disabled` when no enabled policy exists,
+  otherwise snapshots the policy into a `VectorMaintenanceStepRequest` and forwards one bounded unit.
+  `vector_maintenance_status(graph, index_id)` reports Router policy/readiness plus the forwarded
+  execution and rebuild state (cursors present/absent, not decoded).
+- **Publish stays explicit.** The bounded step stops at `ReadyToPublish` (returns `AwaitingPublish`);
+  flipping `active_index_version` is the separate forwarded `admin_publish_vector_rebuild`. Future
+  automatic mode (vector-index-pull) is documented above but not implemented.
+
 ### 8. Query syntax stays semantic; algorithm choice belongs to index definition
 
 GQL query syntax should not expose physical index kinds such as `ivf_flat`, `ivf_pq`, or `hnsw`.
@@ -788,12 +875,17 @@ future ADR proves that physical index selection must be user-visible.
     (`recommend_partition_maintenance` / `admin_start_vector_rebuild_if_recommended`, no autonomous
     timer), and a heap centroid cache with explicit query read-only cache-miss behavior
     (`admin_vector_centroid_cache_warmup` / `_clear` / `_status`). No new stable region.
-15. **[planned, slice 10+]** Add full/balanced k-means or more advanced partition assignment,
-    autonomous partition tombstone cleanup/rebuild scheduling, and Router-forwarded maintenance
-    ergonomics over the Slice 9 vector-canister admin surface.
-16. **[planned, slice 10+]** Add algorithm-neutral GQL/query planning integration and keep
+15. **[done, slice 10]** Add Router-forwarded maintenance ergonomics and a Router-owned
+    graph/index-scoped maintenance policy catalog (`ROUTER_VECTOR_MAINTENANCE_POLICIES`, MemoryId 44),
+    while keeping maintenance execution state in the vector-index canister (`VECTOR_MAINTENANCE_STATE`,
+    MemoryId 14). Manual maintenance is Router-push (`admin_vector_maintenance_step` snapshots policy
+    and forwards one bounded vector unit); future automatic maintenance (vector-index-pull) is
+    documented but not implemented. Default stepping stops at `ReadyToPublish`; publish remains explicit.
+16. **[planned, slice 11+]** Add full/balanced k-means or more advanced partition assignment and
+    autonomous partition tombstone cleanup/rebuild scheduling beyond the Slice 10 bounded-step policy.
+17. **[planned, slice 11+]** Add algorithm-neutral GQL/query planning integration and keep
     `algorithm: "ivf_flat"` in index definition/config, not query syntax.
-17. **[ongoing]** Keep canbench baselines for embedding write, flush, backfill, exact scan,
+18. **[ongoing]** Keep canbench baselines for embedding write, flush, backfill, exact scan,
     partitioned `ivf_flat`, rebuild/training, page-meta health scan, and centroid cache warm/cold.
 
 ## Required design updates

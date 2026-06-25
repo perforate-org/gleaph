@@ -45,4 +45,8 @@ thread_local! {
 
     pub(crate) static VECTOR_REBUILD_STATE: RefCell<memory::StableRebuildStateMap> =
         RefCell::new(memory::init_rebuild_state());
+
+    // ADR 0031 Slice 10: vector-canister-owned maintenance scan execution state.
+    pub(crate) static VECTOR_MAINTENANCE_STATE: RefCell<memory::StableMaintenanceStateMap> =
+        RefCell::new(memory::init_maintenance_state());
 }

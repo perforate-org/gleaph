@@ -138,9 +138,16 @@ timer), and a transient **heap centroid cache** (`admin_vector_centroid_cache_wa
 `_status`, read-only on the `#[query]` search path). No new stable region. See *Slice 9 maintenance
 visibility + centroid cache (implemented)* below.
 
-Still deferred to Slice 10+: full/balanced k-means and k-means++ init, autonomous partition
-tombstone-cleanup scheduling, candidate pagination, query ranking/merge, Router-forwarded maintenance
-ergonomics, PQ/HNSW, and `VectorSubject::Edge`. The standard vector-index
+Slice 10 is implemented: **Router-forwarded maintenance** for the full Slice 7-9 surface, a
+Router-owned **maintenance policy catalog** (`ROUTER_VECTOR_MAINTENANCE_POLICIES`, MemoryId 44,
+disabled by default), and a **vector-owned maintenance execution state** (`VECTOR_MAINTENANCE_STATE`,
+MemoryId 14) driven one bounded unit per Router push (`admin_vector_maintenance_step`). Publish stays
+explicit (the step stops at `ReadyToPublish`). See *Slice 10 maintenance orchestration (implemented)*
+below.
+
+Still deferred to Slice 11+: full/balanced k-means and k-means++ init, autonomous (timer-driven)
+partition tombstone-cleanup scheduling, candidate pagination, query ranking/merge, PQ/HNSW, and
+`VectorSubject::Edge`. The standard vector-index
 kind is `ivf_flat`; `flat` is collapsed into degenerate `ivf_flat` rather than a separate kind, and
 later `ivf_pq` or experimental `hnsw` implementations must preserve the same canonical/derived
 boundary.
@@ -256,7 +263,7 @@ now `Idle → Sampling → Training → Building → ReadyToPublish → Cleaning
 Maintenance/cache surface only — no change to canonical ownership, search semantics, or stable layout
 (heap-only cache; reuses `VECTOR_PAGE_META`, `VECTOR_PARTITION_HEADS`, `IVF_CENTROIDS`). All new admin
 endpoints stay on the vector canister behind `guard_router_canister` (driven by the router principal);
-Router forwarding is a Slice 10+ follow-up.
+Router forwarding landed in Slice 10 (below).
 
 - **Bounded page-meta tombstone health.** `admin_vector_partition_health_step(index_id, cursor,
   max_pages)` (Router-guarded `#[query]`) scans at most `max_pages` `VECTOR_PAGE_META` entries of the
@@ -294,6 +301,46 @@ Router forwarding is a Slice 10+ follow-up.
   max_bytes }` — per-query hit/miss is intentionally not tracked (a query cannot commit counters on IC).
   Canbench shows the warm partition-page search is measurably cheaper than cold (e.g. d768/nlist64:
   ~98.1M cold vs ~92.0M instructions warm).
+
+### Slice 10 maintenance orchestration (implemented)
+
+Slice 10 makes the Slice 7-9 maintenance surface operable from the Router without moving execution
+state out of the vector canister. The boundary is: **Router owns policy + authority; the vector
+canister owns derived maintenance execution.** It adds one stable region per canister and changes no
+search/dual-write/publish semantics.
+
+- **Vector-owned execution state (`VECTOR_MAINTENANCE_STATE`, MemoryId 14).** A per-index
+  `VectorMaintenanceState` — `Idle`; `Scanning { cursor: Option<Vec<u8>>, exhausted: bool, merged:
+  VectorPartitionPageHealth }` (`exhausted` is an explicit phase flag, never encoded via
+  `cursor == None`); `Failed(VectorMaintenanceFailure { code, message })` (message truncated to a
+  bounded length so persisted size is error-string-independent). Unlike the heap-only centroid cache,
+  this is durable execution state: it **persists across upgrade** and is cleared only on canister
+  init/reset.
+- **Bounded vector step.** `admin_vector_maintenance_step(index_id, VectorMaintenanceStepRequest {
+  policy, target_nlist, sample_limit, scan_max_pages, rebuild_max_subjects, cleanup_max_work })`
+  (Router-guarded `#[update]`) advances exactly one bounded unit: it drives an in-flight
+  rebuild/cleanup first; otherwise from `Idle` it starts a scan and does one
+  `partition_page_health_step`; when the scan exhausts it validates the merged generation against the
+  active version, recomputes the head summary, and runs `recommend_partition_maintenance`, starting a
+  rebuild on `Recommended`/`Required`. Two generation guards keep it correct across an active-version
+  flip: a stale cursor mid-scan (`InvalidStatsCursor`) restarts from the lower bound, and the
+  exhausted→recommend boundary re-checks `merged.index_version == active_index_version`. It **stops at
+  `ReadyToPublish`** (returns `AwaitingPublish`) — publish stays explicit.
+  `admin_vector_maintenance_status` (query) and `admin_vector_maintenance_reset(index_id)` (update;
+  `Idle` from any state including `Failed`, without touching the rebuild state) round out the surface.
+- **Router policy SSOT (`ROUTER_VECTOR_MAINTENANCE_POLICIES`, MemoryId 44).** A per-`(graph_id,
+  index_id)` `VectorMaintenancePolicyRecord { enabled, policy, target_nlist, sample_limit,
+  scan_max_pages, rebuild_max_subjects, cleanup_max_work }`, **absent/disabled by default**. Authorship
+  (`admin_set_/disable_/delete_vector_maintenance_policy`, validated for `recommended_*_bps <=
+  required_*_bps`, nonzero budgets, and an existing definition) is `authorize_index_ddl`; stepping,
+  reads, and reset use a new Admin-only `authorize_vector_maintenance`.
+- **Router forwarding.** The Router exposes the whole Slice 7-9 maintenance surface as forwards to the
+  resolved single target (reads as composite queries, mutators/drivers as updates), each gated on
+  resolve + non-anonymous target + dispatch readiness. The push step `admin_vector_maintenance_step(
+  graph, index_id)` returns `Disabled` when no enabled policy exists, otherwise snapshots the policy
+  and forwards one bounded unit; `vector_maintenance_status(graph, index_id)` reports Router
+  policy/readiness plus the forwarded execution + rebuild state (cursors present/absent, not decoded).
+  Future automatic mode (vector-index-pull from Router policy) is documented but not implemented.
 
 ## Version naming glossary
 
@@ -614,7 +661,7 @@ bounded cleanup after publication.
 
 | Phase | Algorithm | Status | Purpose |
 |-------|-----------|--------|---------|
-| 1 | IVF_FLAT (`ivf_flat`) | exact scan implemented (Slice 5); centroid routing + `nprobe` partition-page scan implemented (Slice 6); production bounded shadow-version rebuild + dual-write + atomic publish implemented (Slice 7); bounded k-means-lite training + head-only partition health implemented (Slice 8); bounded page-meta tombstone health + rebuild recommendation/trigger + heap centroid cache implemented (Slice 9); full/balanced k-means + autonomous tombstone cleanup planned (Slice 10+) | standard vector index: centroid routing, partition pages, query-aware pruning, exact rerank |
+| 1 | IVF_FLAT (`ivf_flat`) | exact scan implemented (Slice 5); centroid routing + `nprobe` partition-page scan implemented (Slice 6); production bounded shadow-version rebuild + dual-write + atomic publish implemented (Slice 7); bounded k-means-lite training + head-only partition health implemented (Slice 8); bounded page-meta tombstone health + rebuild recommendation/trigger + heap centroid cache implemented (Slice 9); Router-forwarded maintenance + Router policy catalog + vector-owned bounded maintenance step implemented (Slice 10); full/balanced k-means + autonomous tombstone cleanup planned (Slice 11+) | standard vector index: centroid routing, partition pages, query-aware pruning, exact rerank |
 | 2 | Flat (`flat`) | subsumed by degenerate `ivf_flat` exact scan (Slice 5) | exact scan over all vector pages for small indexes, debugging, and correctness baselines |
 | 3 | IVF_PQ | planned | compressed approximate scoring plus full-vector rerank |
 | 4 | HNSW | experimental planned | only after update/delete/repair and IC instruction bounds are specified |
@@ -631,10 +678,11 @@ bounded cleanup after publication.
   search path (a miss reads stable for that call only, no population); warmup/clear/invalidation are
   `#[update]`-only.
 - Define shadow-version rebuild, balanced assignment, publish, and cleanup.
-- Define partition tombstone cleanup thresholds. [partial, slice 9] Caller-supplied
+- Define partition tombstone cleanup thresholds. [partial, slice 9/10] Caller-supplied
   `VectorMaintenancePolicy` thresholds (tombstone ratio + skew, split recommended/required bps) drive
-  the `recommend_partition_maintenance` / `admin_start_vector_rebuild_if_recommended` trigger;
-  autonomous (timer-driven) cleanup scheduling and persisted default thresholds remain Slice 10+.
+  the `recommend_partition_maintenance` / `admin_start_vector_rebuild_if_recommended` trigger (Slice 9),
+  and Slice 10 makes them a **durable Router-owned policy catalog** (disabled by default) forwarded one
+  bounded step at a time; autonomous (timer-driven) cleanup scheduling remains Slice 11+.
 - [done, slice 5] Add canbench targets for exact `ivf_flat` search (`crates/graph-vector-index`,
   dims 128/384/768 × top_k 10/100).
 - [done, slice 6] Add canbench targets for the partition-page scan over clustered seeded datasets

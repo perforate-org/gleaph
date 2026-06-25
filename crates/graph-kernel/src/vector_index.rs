@@ -382,6 +382,91 @@ pub enum VectorMaintenanceRecommendation {
     RebuildRequired,
 }
 
+/// Bounded failure detail persisted in [`VectorMaintenanceState::Failed`] (ADR 0031 Slice 10).
+///
+/// `message` is truncated by the canister so the persisted maintenance-state size never depends on a
+/// downstream error string (mirrors the Slice 7/8 rebuild-state byte-cap discipline).
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct VectorMaintenanceFailure {
+    /// The canister error that aborted the maintenance step.
+    pub code: VectorIndexError,
+    /// Human-readable detail, truncated to a bounded length.
+    pub message: String,
+}
+
+/// Vector-canister-owned maintenance execution state for one index (ADR 0031 Slice 10).
+///
+/// Only the **scan** phase is tracked here; once a rebuild starts, `VECTOR_REBUILD_STATE` is the
+/// source of truth for the rebuild/cleanup phases and this returns to `Idle`. Persisted in
+/// `VECTOR_MAINTENANCE_STATE` and **survives upgrade** (it holds mid-orchestration scan progress); it
+/// is cleared only on canister init/reset, never on upgrade (unlike the heap centroid cache).
+///
+/// `exhausted` is an explicit phase flag, **not** encoded via `cursor == None`: `cursor = None,
+/// exhausted = false` means "(re)start the scan from the lower bound", while `exhausted = true` means
+/// "scan complete; recommend only after generation validation". `merged` carries the scoped
+/// `index_id`/`index_version` the scan accumulated against, so an active-version flip after exhaustion
+/// is detectable before recommending.
+#[derive(Clone, Debug, PartialEq, Eq, Default, CandidType, Serialize, Deserialize)]
+pub enum VectorMaintenanceState {
+    /// No maintenance in progress.
+    #[default]
+    Idle,
+    /// A bounded page-health scan is accumulating tombstone counters for the active version.
+    Scanning {
+        /// Opaque resume cursor (`PageKey` bytes); `None` restarts the scan from the lower bound.
+        cursor: Option<Vec<u8>>,
+        /// `true` once the scan has covered every page of the scoped version.
+        exhausted: bool,
+        /// Additive page-health accumulated so far, scoped by its `index_id`/`index_version`.
+        merged: VectorPartitionPageHealth,
+    },
+    /// A prior step failed; the step is a no-op until an explicit `admin_vector_maintenance_reset`.
+    Failed(VectorMaintenanceFailure),
+}
+
+/// Router-snapshotted policy + per-step budgets forwarded to `admin_vector_maintenance_step` (ADR
+/// 0031 Slice 10).
+///
+/// The vector canister treats this as **step input**, never a durable copied SSOT — the Router owns
+/// the maintenance policy.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct VectorMaintenanceStepRequest {
+    /// Thresholds evaluated when a scan exhausts (see [`VectorMaintenancePolicy`]).
+    pub policy: VectorMaintenancePolicy,
+    /// Rebuild `nlist`; `None` defaults to the current `def.nlist` only when it is `>= 2`.
+    pub target_nlist: Option<u32>,
+    /// Rebuild sampling limit forwarded to the rebuild start.
+    pub sample_limit: u32,
+    /// Max page-meta entries scanned in one bounded scan step.
+    pub scan_max_pages: u32,
+    /// Max subjects processed in one bounded rebuild step.
+    pub rebuild_max_subjects: u32,
+    /// Max work units processed in one bounded cleanup/abort step.
+    pub cleanup_max_work: u32,
+}
+
+/// Outcome of one bounded `admin_vector_maintenance_step` unit (ADR 0031 Slice 10).
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum VectorMaintenanceStepResult {
+    /// Advanced (or restarted) the page-health scan; `exhausted` once the scan is complete.
+    Scanning {
+        /// Whether the scan has now covered every page of the scoped version.
+        exhausted: bool,
+    },
+    /// The exhausted scan judged the index healthy; maintenance state reset to `Idle`.
+    Healthy,
+    /// A rebuild was started from the crossed recommendation.
+    RebuildStarted(VectorMaintenanceRecommendation),
+    /// Drove one bounded rebuild step (`Sampling`/`Training`/`Building`, or a `Failed` rebuild phase).
+    RebuildAdvanced(VectorRebuildStatus),
+    /// The rebuild reached `ReadyToPublish`; publish is an explicit, separately-forwarded operation.
+    AwaitingPublish(VectorRebuildStatus),
+    /// Drove one bounded post-publish `Cleaning` (or `Aborting`) teardown step.
+    CleanupAdvanced(VectorRebuildStatus),
+    /// A step failed; recover with `admin_vector_maintenance_reset` (and abort the rebuild if needed).
+    Failed(VectorMaintenanceFailure),
+}
+
 /// Bounded status of the heap centroid cache (ADR 0031 Slice 9).
 ///
 /// Per-query hit/miss counts are intentionally **not** reported: `vector_search` is a `#[query]` and
@@ -862,6 +947,93 @@ mod tests {
             assert_eq!(
                 Decode!(&bytes, VectorMaintenanceRecommendation).expect("decode"),
                 rec
+            );
+        }
+    }
+
+    #[test]
+    fn maintenance_step_wire_candid_roundtrip() {
+        let req = VectorMaintenanceStepRequest {
+            policy: VectorMaintenancePolicy {
+                recommended_tombstone_ratio_bps: 2_000,
+                required_tombstone_ratio_bps: 5_000,
+                recommended_skew_ratio_bps: 20_000,
+                required_skew_ratio_bps: 40_000,
+                min_total_rows: 1_000,
+                min_tombstoned_rows: 100,
+            },
+            target_nlist: Some(8),
+            sample_limit: 10_000,
+            scan_max_pages: 64,
+            rebuild_max_subjects: 5_000,
+            cleanup_max_work: 5_000,
+        };
+        let bytes = Encode!(&req).expect("encode");
+        assert_eq!(
+            Decode!(&bytes, VectorMaintenanceStepRequest).expect("decode"),
+            req
+        );
+
+        let page = VectorPartitionPageHealth {
+            index_id: 1,
+            index_version: 3,
+            page_count: 4,
+            total_rows: 1_000,
+            physical_live_rows: 700,
+            tombstoned_rows: 300,
+        };
+        let states = [
+            VectorMaintenanceState::Idle,
+            VectorMaintenanceState::Scanning {
+                cursor: Some(vec![1, 2, 3]),
+                exhausted: false,
+                merged: page,
+            },
+            VectorMaintenanceState::Scanning {
+                cursor: None,
+                exhausted: true,
+                merged: page,
+            },
+            VectorMaintenanceState::Failed(VectorMaintenanceFailure {
+                code: VectorIndexError::RebuildAlreadyActive,
+                message: "boom".to_string(),
+            }),
+        ];
+        for state in states {
+            let bytes = Encode!(&state).expect("encode");
+            assert_eq!(
+                Decode!(&bytes, VectorMaintenanceState).expect("decode"),
+                state
+            );
+        }
+
+        let status = VectorRebuildStatus {
+            phase: VectorRebuildPhase::Building,
+            target_index_version: 4,
+            nlist: 8,
+            subjects_processed: 12,
+            candidates_collected: 0,
+            training_iteration: 0,
+        };
+        let results = [
+            VectorMaintenanceStepResult::Scanning { exhausted: true },
+            VectorMaintenanceStepResult::Healthy,
+            VectorMaintenanceStepResult::RebuildStarted(
+                VectorMaintenanceRecommendation::RebuildRequired,
+            ),
+            VectorMaintenanceStepResult::RebuildAdvanced(status.clone()),
+            VectorMaintenanceStepResult::AwaitingPublish(status.clone()),
+            VectorMaintenanceStepResult::CleanupAdvanced(status),
+            VectorMaintenanceStepResult::Failed(VectorMaintenanceFailure {
+                code: VectorIndexError::InvalidRebuildParams,
+                message: "nope".to_string(),
+            }),
+        ];
+        for result in results {
+            let bytes = Encode!(&result).expect("encode");
+            assert_eq!(
+                Decode!(&bytes, VectorMaintenanceStepResult).expect("decode"),
+                result
             );
         }
     }

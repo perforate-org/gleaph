@@ -13,12 +13,18 @@ use crate::types::{
     AdminVectorIndexBackfillStepResult, AdminVertexPropertyBackfillStepArgs,
     AdminVertexPropertyBackfillStepResult, EdgeBackfillShardStatus, EdgeLabelId, GrantRoleArgs,
     GraphRegistryEntry, LabelBackfillShardStatus, PropertyId, RegisterVectorIndexArgs,
-    RouterVectorSearchRequest, SetVectorIndexTargetArgs, ShardId, ShardRegistryEntry,
-    VectorIndexActivationStateView, VectorIndexActivationStatus, VectorIndexInfo, VertexLabelId,
-    VertexPropertyBackfillShardStatus,
+    RouterVectorSearchRequest, SetVectorIndexTargetArgs, SetVectorMaintenancePolicyArgs, ShardId,
+    ShardRegistryEntry, VectorIndexActivationStateView, VectorIndexActivationStatus,
+    VectorIndexInfo, VectorMaintenancePolicyView, VectorMaintenanceStatusView,
+    VectorMaintenanceStepOutcome, VertexLabelId, VertexPropertyBackfillShardStatus,
 };
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
+use gleaph_graph_kernel::vector_index::{
+    VectorCentroidCacheStatus, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
+    VectorMaintenanceState, VectorPartitionHealthStep, VectorPartitionHealthSummary,
+    VectorPartitionPageHealth, VectorRebuildStatus, VectorSlabStats, VectorSlabStatsStep,
+};
 use ic_cdk::api::msg_caller;
 
 pub(crate) fn init(args: RouterInitArgs) {
@@ -766,6 +772,430 @@ pub(crate) async fn vector_search(
     crate::vector_sync::vector_search(target, search)
         .await
         .map_err(RouterError::Internal)
+}
+
+// --- ADR 0031 Slice 10: Router-forwarded vector maintenance surface ---
+//
+// All forwards are Admin-only (`authorize_vector_maintenance`) and fail closed unless the target is
+// resolved, non-anonymous, and the per-graph dispatch gate is satisfied. Reads are exposed as
+// composite queries, mutators/drivers as updates. The vector canister stays router-guarded, so these
+// Router surfaces are the only operator entry points.
+
+/// Resolves the vector target for one `(graph, index_id)` with the full fail-closed gate: graph
+/// exists, the definition exists and is targeted to a non-anonymous canister, and the per-graph
+/// dispatch activation gate is satisfied.
+fn resolve_vector_maintenance_target(
+    graph_name: &str,
+    index_id: u32,
+) -> Result<Principal, RouterError> {
+    use crate::facade::stable::{vector_activation, vector_index_catalog};
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id(graph_name)?;
+    let def = vector_index_catalog::get_vector_index(graph_id, index_id)
+        .ok_or_else(|| RouterError::NotFound(format!("vector index {index_id}")))?;
+    let target = def
+        .target
+        .ok_or_else(|| RouterError::Conflict(format!("vector index {index_id} has no target set")))?
+        .canister;
+    if target == Principal::anonymous() {
+        return Err(RouterError::Conflict(format!(
+            "vector index {index_id} target is the anonymous principal"
+        )));
+    }
+    let global_enabled = vector_activation::vector_dispatch_globally_enabled();
+    let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
+    if let Some(reason) = vector_index_catalog::activation_block_reason(
+        def.activation_state,
+        global_enabled,
+        dispatch_ready,
+    ) {
+        return Err(RouterError::VectorDispatchActivationBlocked(reason));
+    }
+    Ok(target)
+}
+
+/// Resolves the graph's single vector target for graph-scoped maintenance ops (slab stats, whole-cache
+/// status/clear) with the same fail-closed dispatch gate. Uses the one-target-per-graph invariant.
+fn resolve_vector_graph_target(graph_name: &str) -> Result<Principal, RouterError> {
+    use crate::facade::stable::vector_index_catalog::VectorIndexActivationState;
+    use crate::facade::stable::{vector_activation, vector_index_catalog};
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id(graph_name)?;
+    let target = vector_index_catalog::graph_single_target(graph_id).ok_or_else(|| {
+        RouterError::Conflict(format!("graph {graph_name} has no vector index target set"))
+    })?;
+    if target == Principal::anonymous() {
+        return Err(RouterError::Conflict(format!(
+            "graph {graph_name} vector target is the anonymous principal"
+        )));
+    }
+    let global_enabled = vector_activation::vector_dispatch_globally_enabled();
+    let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
+    // The graph has a target (checked above), so the static state is DispatchBlocked; the gate then
+    // requires the global flag + all shards vector-attached.
+    if let Some(reason) = vector_index_catalog::activation_block_reason(
+        VectorIndexActivationState::DispatchBlocked,
+        global_enabled,
+        dispatch_ready,
+    ) {
+        return Err(RouterError::VectorDispatchActivationBlocked(reason));
+    }
+    Ok(target)
+}
+
+pub(crate) async fn admin_vector_partition_health(
+    graph_name: String,
+    index_id: u32,
+) -> Result<VectorPartitionHealthSummary, RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    crate::vector_sync::forward_admin_vector_partition_health(target, index_id)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_vector_partition_health_step(
+    graph_name: String,
+    index_id: u32,
+    cursor: Option<Vec<u8>>,
+    max_pages: u32,
+) -> Result<VectorPartitionHealthStep, RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    crate::vector_sync::forward_admin_vector_partition_health_step(
+        target, index_id, cursor, max_pages,
+    )
+    .await
+    .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_vector_rebuild_status(
+    graph_name: String,
+    index_id: u32,
+) -> Result<VectorRebuildStatus, RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    crate::vector_sync::forward_admin_vector_rebuild_status(target, index_id)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_vector_slab_stats(
+    graph_name: String,
+    index_id: Option<u32>,
+) -> Result<VectorSlabStats, RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_graph_target(&graph_name)?;
+    crate::vector_sync::forward_admin_vector_slab_stats(target, index_id)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_vector_slab_stats_step(
+    graph_name: String,
+    cursor: Option<Vec<u8>>,
+    max_pages: u32,
+    index_id: Option<u32>,
+) -> Result<VectorSlabStatsStep, RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_graph_target(&graph_name)?;
+    crate::vector_sync::forward_admin_vector_slab_stats_step(target, cursor, max_pages, index_id)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_vector_centroid_cache_status(
+    graph_name: String,
+) -> Result<VectorCentroidCacheStatus, RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_graph_target(&graph_name)?;
+    crate::vector_sync::forward_admin_vector_centroid_cache_status(target)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_vector_maintenance_status(
+    graph_name: String,
+    index_id: u32,
+) -> Result<VectorMaintenanceState, RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    crate::vector_sync::forward_admin_vector_maintenance_status(target, index_id)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_start_vector_rebuild(
+    graph_name: String,
+    index_id: u32,
+    nlist: u32,
+    sample_limit: u32,
+) -> Result<(), RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    crate::vector_sync::forward_admin_start_vector_rebuild(target, index_id, nlist, sample_limit)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_start_vector_rebuild_if_recommended(
+    graph_name: String,
+    index_id: u32,
+    attested_page_health: VectorPartitionPageHealth,
+    policy: VectorMaintenancePolicy,
+    target_nlist: Option<u32>,
+    sample_limit: u32,
+) -> Result<VectorMaintenanceRecommendation, RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    crate::vector_sync::forward_admin_start_vector_rebuild_if_recommended(
+        target,
+        index_id,
+        attested_page_health,
+        policy,
+        target_nlist,
+        sample_limit,
+    )
+    .await
+    .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_vector_rebuild_step(
+    graph_name: String,
+    index_id: u32,
+    max_subjects: u32,
+) -> Result<VectorRebuildStatus, RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    crate::vector_sync::forward_admin_vector_rebuild_step(target, index_id, max_subjects)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_publish_vector_rebuild(
+    graph_name: String,
+    index_id: u32,
+) -> Result<(), RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    crate::vector_sync::forward_admin_publish_vector_rebuild(target, index_id)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_abort_vector_rebuild(
+    graph_name: String,
+    index_id: u32,
+) -> Result<(), RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    crate::vector_sync::forward_admin_abort_vector_rebuild(target, index_id)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_vector_rebuild_cleanup_step(
+    graph_name: String,
+    index_id: u32,
+    max_work: u32,
+) -> Result<VectorRebuildStatus, RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    crate::vector_sync::forward_admin_vector_rebuild_cleanup_step(target, index_id, max_work)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_vector_centroid_cache_warmup(
+    graph_name: String,
+    index_id: u32,
+) -> Result<VectorCentroidCacheStatus, RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    crate::vector_sync::forward_admin_vector_centroid_cache_warmup(target, index_id)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_vector_centroid_cache_clear(
+    graph_name: String,
+) -> Result<VectorCentroidCacheStatus, RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_graph_target(&graph_name)?;
+    crate::vector_sync::forward_admin_vector_centroid_cache_clear(target)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+pub(crate) async fn admin_vector_maintenance_reset(
+    graph_name: String,
+    index_id: u32,
+) -> Result<(), RouterError> {
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    crate::vector_sync::forward_admin_vector_maintenance_reset(target, index_id)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+// --- ADR 0031 Slice 10: Router-owned maintenance policy catalog + push step (commit 3) ---
+//
+// Policy CRUD is Router-local SSOT (no forwarding); the push step snapshots the policy and forwards
+// one bounded unit to the vector canister. Policy authorship is `authorize_index_ddl` (the DDL admin
+// family that owns index definitions); stepping/reset/reads are `authorize_vector_maintenance`.
+
+/// Admin: create or replace the maintenance policy for one vector index. Validated against the
+/// Router-owned definition (`recommended_*_bps <= required_*_bps`, nonzero budgets, def exists).
+pub(crate) fn admin_set_vector_maintenance_policy(
+    args: SetVectorMaintenancePolicyArgs,
+) -> Result<(), RouterError> {
+    use crate::facade::stable::vector_maintenance_policy::{
+        VectorMaintenancePolicyRecord, set_policy,
+    };
+    crate::rbac::authorize_index_ddl(&msg_caller())?;
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id(&args.logical_graph_name)?;
+    set_policy(VectorMaintenancePolicyRecord {
+        graph_id,
+        index_id: args.index_id,
+        enabled: args.enabled,
+        policy: args.policy,
+        target_nlist: args.target_nlist,
+        sample_limit: args.sample_limit,
+        scan_max_pages: args.scan_max_pages,
+        rebuild_max_subjects: args.rebuild_max_subjects,
+        cleanup_max_work: args.cleanup_max_work,
+    })
+}
+
+/// Admin: disable (but keep) the maintenance policy for one vector index. The push step becomes a
+/// no-op until it is re-enabled. Distinct from `admin_vector_maintenance_reset`, which clears the
+/// vector-canister execution state.
+pub(crate) fn admin_disable_vector_maintenance_policy(
+    graph_name: String,
+    index_id: u32,
+) -> Result<(), RouterError> {
+    crate::rbac::authorize_index_ddl(&msg_caller())?;
+    let graph_id = RouterStore::new().resolve_graph_id(&graph_name)?;
+    crate::facade::stable::vector_maintenance_policy::disable_policy(graph_id, index_id)
+}
+
+/// Admin: delete the maintenance policy for one vector index.
+pub(crate) fn admin_delete_vector_maintenance_policy(
+    graph_name: String,
+    index_id: u32,
+) -> Result<bool, RouterError> {
+    crate::rbac::authorize_index_ddl(&msg_caller())?;
+    let graph_id = RouterStore::new().resolve_graph_id(&graph_name)?;
+    Ok(crate::facade::stable::vector_maintenance_policy::delete_policy(graph_id, index_id))
+}
+
+/// Query: the maintenance policy for one vector index, if any.
+pub(crate) fn vector_maintenance_policy(
+    graph_name: String,
+    index_id: u32,
+) -> Result<Option<VectorMaintenancePolicyView>, RouterError> {
+    let graph_id = RouterStore::new().resolve_graph_id(&graph_name)?;
+    Ok(
+        crate::facade::stable::vector_maintenance_policy::get_policy(graph_id, index_id)
+            .map(VectorMaintenancePolicyView::from),
+    )
+}
+
+/// Query: all maintenance policies in a graph.
+pub(crate) fn list_vector_maintenance_policies(
+    graph_name: String,
+) -> Result<Vec<VectorMaintenancePolicyView>, RouterError> {
+    let graph_id = RouterStore::new().resolve_graph_id(&graph_name)?;
+    Ok(
+        crate::facade::stable::vector_maintenance_policy::list_policies(graph_id)
+            .into_iter()
+            .map(VectorMaintenancePolicyView::from)
+            .collect(),
+    )
+}
+
+/// Admin push step (ADR 0031 Slice 10): resolve + RBAC + readiness, load the policy, and forward one
+/// bounded maintenance unit to the vector canister. Returns `Disabled` (a no-op) when no policy
+/// exists or it is disabled. One call = one bounded vector unit; publish stays explicit.
+pub(crate) async fn admin_vector_maintenance_step(
+    graph_name: String,
+    index_id: u32,
+) -> Result<VectorMaintenanceStepOutcome, RouterError> {
+    use gleaph_graph_kernel::vector_index::VectorMaintenanceStepRequest;
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let graph_id = RouterStore::new().resolve_graph_id(&graph_name)?;
+    let policy = crate::facade::stable::vector_maintenance_policy::get_policy(graph_id, index_id);
+    let Some(policy) = policy.filter(|p| p.enabled) else {
+        return Ok(VectorMaintenanceStepOutcome::Disabled);
+    };
+    // Readiness/target gate only after we know a policy is enabled, so a disabled index is a clean
+    // no-op rather than a fail-closed error.
+    let target = resolve_vector_maintenance_target(&graph_name, index_id)?;
+    let req = VectorMaintenanceStepRequest {
+        policy: policy.policy,
+        target_nlist: policy.target_nlist,
+        sample_limit: policy.sample_limit,
+        scan_max_pages: policy.scan_max_pages,
+        rebuild_max_subjects: policy.rebuild_max_subjects,
+        cleanup_max_work: policy.cleanup_max_work,
+    };
+    crate::vector_sync::forward_admin_vector_maintenance_step(target, index_id, req)
+        .await
+        .map(VectorMaintenanceStepOutcome::Stepped)
+        .map_err(RouterError::Internal)
+}
+
+/// Query (ADR 0031 Slice 10): Router-owned policy/readiness plus the forwarded vector-canister
+/// maintenance + rebuild state when the target is reachable. Cursors are reported present/absent.
+pub(crate) async fn vector_maintenance_status(
+    graph_name: String,
+    index_id: u32,
+) -> Result<VectorMaintenanceStatusView, RouterError> {
+    use crate::facade::stable::{vector_activation, vector_index_catalog};
+    crate::rbac::authorize_vector_maintenance(&msg_caller())?;
+    let store = RouterStore::new();
+    let graph_id = store.resolve_graph_id(&graph_name)?;
+    let def = vector_index_catalog::get_vector_index(graph_id, index_id)
+        .ok_or_else(|| RouterError::NotFound(format!("vector index {index_id}")))?;
+    let policy_enabled =
+        crate::facade::stable::vector_maintenance_policy::get_policy(graph_id, index_id)
+            .is_some_and(|p| p.enabled);
+    let target = def.target.map(|t| t.canister);
+    let global_enabled = vector_activation::vector_dispatch_globally_enabled();
+    let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
+    let block_reason = vector_index_catalog::activation_block_reason(
+        def.activation_state,
+        global_enabled,
+        dispatch_ready,
+    );
+    let blocked_reason = block_reason.as_ref().map(|r| r.to_string());
+    // Forward only when the gate is open and a non-anonymous target exists; otherwise report
+    // Router-owned facts with `None` execution state.
+    let (maintenance_state, rebuild_status) = match target {
+        Some(canister) if block_reason.is_none() && canister != Principal::anonymous() => {
+            let maintenance_state =
+                crate::vector_sync::forward_admin_vector_maintenance_status(canister, index_id)
+                    .await
+                    .ok()
+                    .map(crate::types::VectorMaintenanceStateView::from);
+            let rebuild_status =
+                crate::vector_sync::forward_admin_vector_rebuild_status(canister, index_id)
+                    .await
+                    .ok();
+            (maintenance_state, rebuild_status)
+        }
+        _ => (None, None),
+    };
+    Ok(VectorMaintenanceStatusView {
+        index_id,
+        policy_enabled,
+        target,
+        dispatch_ready,
+        blocked_reason,
+        maintenance_state,
+        rebuild_status,
+    })
 }
 
 /// Admin (ADR 0031 Slice 4): wire (or retrofit) a derived vector-index target onto an

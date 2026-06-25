@@ -1005,6 +1005,16 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
              production derived-vector dispatch/backfill; defaults false (fail-closed)",
             RebuildPath::None,
         ),
+        region(
+            "ROUTER_VECTOR_MAINTENANCE_POLICIES",
+            44,
+            StableMemoryClass::Catalog,
+            "vector maintenance policy catalog",
+            "(graph_id, index_id) → VectorMaintenancePolicyRecord (ADR 0031 Slice 10). Router-owned \
+             SSOT for maintenance thresholds + per-step budgets driving forwarded bounded \
+             maintenance steps; default absent/disabled (fail-closed)",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1212,6 +1222,18 @@ pub static VECTOR_INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayo
              compatibility reader, distinct from the canonical vertex_embedding_backfill rebuild",
             RebuildPath::Named("vertex_embedding_backfill"),
         ),
+        region(
+            "VECTOR_MAINTENANCE_STATE",
+            14,
+            StableMemoryClass::Maintenance,
+            "vector maintenance scan state",
+            "index_id → VectorMaintenanceState: vector-canister-owned page-health scan progress \
+             cursor + merged counters for Router-forwarded maintenance orchestration (ADR 0031 \
+             Slice 10). Operational bookkeeping, not a query-facing index or canonical fact: it is \
+             discarded and restarted (not reconstructed from canonical state), so it carries no \
+             rebuild path",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1395,8 +1417,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 44);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(43));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 45);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(44));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].class,
             StableMemoryClass::Telemetry
@@ -1512,8 +1534,8 @@ mod tests {
     #[test]
     fn vector_index_layout_registry_matches_baseline() {
         assert_layout(&VECTOR_INDEX_STABLE_LAYOUT);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 14);
-        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(13));
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.region_count(), 15);
+        assert_eq!(VECTOR_INDEX_STABLE_LAYOUT.max_memory_id(), Some(14));
         assert_eq!(
             VECTOR_INDEX_STABLE_LAYOUT.regions[4].symbol,
             "VECTOR_INDEX_DEFS"
@@ -1572,6 +1594,20 @@ mod tests {
             VECTOR_INDEX_STABLE_LAYOUT.regions[13].class,
             StableMemoryClass::Derived
         );
+        // ADR 0031 Slice 10: vector-canister-owned maintenance scan progress cursor; operational
+        // bookkeeping that is discarded/restarted (not reconstructed), so Maintenance + no rebuild.
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[14].symbol,
+            "VECTOR_MAINTENANCE_STATE"
+        );
+        assert_eq!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[14].class,
+            StableMemoryClass::Maintenance
+        );
+        assert!(matches!(
+            VECTOR_INDEX_STABLE_LAYOUT.regions[14].rebuild,
+            RebuildPath::None
+        ));
     }
 
     #[test]

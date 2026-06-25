@@ -5,7 +5,7 @@ use crate::facade::stable::memory::{ShardCanisterCatalogInsertError, VectorIndex
 use crate::facade::stable::{
     IVF_CENTROID_META, IVF_CENTROIDS, OWNERSHIP_CONFIG, PAGE_STORE, SHARD_CANISTER_CATALOG,
     VECTOR_ID_TO_SLOT, VECTOR_ID_TO_SUBJECT, VECTOR_INDEX_DEFS, VECTOR_INDEX_ROUTER,
-    VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
+    VECTOR_MAINTENANCE_STATE, VECTOR_PARTITION_HEADS, VECTOR_REBUILD_STATE, VECTOR_SUBJECT_TO_ID,
 };
 use crate::init::VectorIndexInitArgs;
 use crate::records::SubjectKey;
@@ -39,6 +39,8 @@ impl VectorIndexStore {
         VECTOR_ID_TO_SLOT.with_borrow_mut(|m| m.clear_new());
         VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.clear_new());
         VECTOR_REBUILD_STATE.with_borrow_mut(|m| m.clear_new());
+        // Stable execution state: persists across upgrade, cleared only on this init/reset path.
+        VECTOR_MAINTENANCE_STATE.with_borrow_mut(|m| m.clear_new());
         VECTOR_PARTITION_HEADS.with_borrow_mut(|m| m.clear_new());
         PAGE_STORE.with_borrow_mut(|store| store.reset());
         super::centroid_cache::clear_all();

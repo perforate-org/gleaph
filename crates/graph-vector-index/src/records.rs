@@ -566,6 +566,32 @@ impl Storable for RawRebuildState {
     }
 }
 
+/// A pre-encoded [`VectorMaintenanceState`](gleaph_graph_kernel::vector_index::VectorMaintenanceState)
+/// stored verbatim in `VECTOR_MAINTENANCE_STATE` (ADR 0031 Slice 10).
+///
+/// Mirrors [`RawRebuildState`]: the bytes are exactly the Candid encoding of the kernel
+/// `VectorMaintenanceState`, so the on-disk format is identical to storing the type directly while
+/// keeping the `Storable` impl local (the kernel type is foreign to this crate). The maintenance
+/// step encodes once and persists these bytes; `maintenance_state_of` decodes them back.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct RawMaintenanceState(pub Vec<u8>);
+
+impl Storable for RawMaintenanceState {
+    const BOUND: Bound = Bound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(&self.0)
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        self.0
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Self(bytes.into_owned())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;

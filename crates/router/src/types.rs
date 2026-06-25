@@ -9,8 +9,13 @@ pub use gleaph_graph_kernel::federation::{
     GlobalVertexId, GraphShardKey, LocalVertexId, ShardId, ShardRegistryEntry,
 };
 use gleaph_graph_kernel::plan_exec::{MutationId, MutationLifecyclePhase};
+use gleaph_graph_kernel::vector_index::{
+    VectorMaintenanceFailure, VectorMaintenancePolicy, VectorMaintenanceState,
+    VectorMaintenanceStepResult, VectorPartitionPageHealth, VectorRebuildStatus,
+};
 
 pub use crate::facade::stable::label_stats::{ClientMutationKey, RouterMutationRecord};
+use crate::facade::stable::vector_maintenance_policy::VectorMaintenancePolicyRecord;
 
 /// Operator/SDK-facing status of a federated mutation (ADR 0029 Phase 4).
 ///
@@ -329,6 +334,123 @@ pub struct AdminVectorIndexBackfillStepResult {
     pub vertices_processed: u32,
     pub embeddings_synced: u32,
     pub done: bool,
+}
+
+/// Admin: create or replace a vector maintenance policy (ADR 0031 Slice 10). Router-owned SSOT for
+/// maintenance thresholds + per-step budgets; validated and stored only when the vector-index
+/// definition exists. Default state is absent (the push scheduler is a no-op until set + enabled).
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct SetVectorMaintenancePolicyArgs {
+    pub logical_graph_name: String,
+    pub index_id: u32,
+    pub enabled: bool,
+    pub policy: VectorMaintenancePolicy,
+    pub target_nlist: Option<u32>,
+    pub sample_limit: u32,
+    pub scan_max_pages: u32,
+    pub rebuild_max_subjects: u32,
+    pub cleanup_max_work: u32,
+}
+
+/// Operator-facing view of a stored vector maintenance policy (ADR 0031 Slice 10).
+#[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
+pub struct VectorMaintenancePolicyView {
+    pub graph_id: u32,
+    pub index_id: u32,
+    pub enabled: bool,
+    pub policy: VectorMaintenancePolicy,
+    pub target_nlist: Option<u32>,
+    pub sample_limit: u32,
+    pub scan_max_pages: u32,
+    pub rebuild_max_subjects: u32,
+    pub cleanup_max_work: u32,
+}
+
+impl From<VectorMaintenancePolicyRecord> for VectorMaintenancePolicyView {
+    fn from(record: VectorMaintenancePolicyRecord) -> Self {
+        Self {
+            graph_id: record.graph_id.raw(),
+            index_id: record.index_id,
+            enabled: record.enabled,
+            policy: record.policy,
+            target_nlist: record.target_nlist,
+            sample_limit: record.sample_limit,
+            scan_max_pages: record.scan_max_pages,
+            rebuild_max_subjects: record.rebuild_max_subjects,
+            cleanup_max_work: record.cleanup_max_work,
+        }
+    }
+}
+
+/// Outcome of one Router-push maintenance step (ADR 0031 Slice 10). `Disabled` is a Router-level
+/// no-op (absent or disabled policy); otherwise the vector canister's bounded step result is relayed.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum VectorMaintenanceStepOutcome {
+    /// No policy exists or it is disabled; no work was forwarded.
+    Disabled,
+    /// The vector canister advanced one bounded maintenance unit.
+    Stepped(VectorMaintenanceStepResult),
+}
+
+/// Cursor-redacted projection of the vector canister's [`VectorMaintenanceState`] for the Router
+/// aggregate status (ADR 0031 Slice 10). The opaque resume cursor bytes are collapsed to a
+/// `cursor_present` flag so the Router status surface honours the "present/absent, not decoded"
+/// contract and never leaks internal stable `PageKey` bytes.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum VectorMaintenanceStateView {
+    /// No maintenance in progress.
+    Idle,
+    /// A bounded page-health scan is accumulating counters; the resume cursor is reported as
+    /// present/absent only.
+    Scanning {
+        /// Whether a resume cursor is set (`true`) or the scan would (re)start from the lower bound.
+        cursor_present: bool,
+        /// `true` once the scan has covered every page of the scoped version.
+        exhausted: bool,
+        /// Additive page-health accumulated so far, scoped by its `index_id`/`index_version`.
+        merged: VectorPartitionPageHealth,
+    },
+    /// A prior step failed; recovery requires an explicit `admin_vector_maintenance_reset`.
+    Failed(VectorMaintenanceFailure),
+}
+
+impl From<VectorMaintenanceState> for VectorMaintenanceStateView {
+    fn from(state: VectorMaintenanceState) -> Self {
+        match state {
+            VectorMaintenanceState::Idle => Self::Idle,
+            VectorMaintenanceState::Scanning {
+                cursor,
+                exhausted,
+                merged,
+            } => Self::Scanning {
+                cursor_present: cursor.is_some(),
+                exhausted,
+                merged,
+            },
+            VectorMaintenanceState::Failed(failure) => Self::Failed(failure),
+        }
+    }
+}
+
+/// Aggregated maintenance status for one vector index (ADR 0031 Slice 10): Router-owned policy +
+/// readiness, plus the forwarded vector-canister execution and rebuild state when reachable. Cursors
+/// inside `maintenance_state` are reported present/absent, not decoded.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct VectorMaintenanceStatusView {
+    pub index_id: u32,
+    /// Whether a Router policy exists and is enabled.
+    pub policy_enabled: bool,
+    /// Resolved single vector target, if set.
+    pub target: Option<Principal>,
+    /// Per-graph dispatch readiness (global flag on AND shards vector-attached).
+    pub dispatch_ready: bool,
+    /// `Some(reason)` while forwarding is fail-closed; `None` once ready.
+    pub blocked_reason: Option<String>,
+    /// Forwarded vector-canister maintenance execution state with the resume cursor redacted to a
+    /// present/absent flag; `None` if unreachable.
+    pub maintenance_state: Option<VectorMaintenanceStateView>,
+    /// Forwarded vector-canister rebuild status; `None` if unreachable.
+    pub rebuild_status: Option<VectorRebuildStatus>,
 }
 
 #[cfg(test)]

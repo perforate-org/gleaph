@@ -512,6 +512,237 @@ async fn vector_search(
     canister::vector_search(req).await
 }
 
+// --- ADR 0031 Slice 10: Router-forwarded vector maintenance surface (Admin only) ---
+//
+// Reads are composite queries; mutators/drivers are updates. Each resolves the graph/index to its
+// activated vector target and fails closed on missing target/readiness. The vector canister stays
+// router-guarded, so these are the only operator entry points.
+
+/// Head-only O(`nlist`) partition-health summary, forwarded to the activated vector target.
+#[query(composite = true)]
+async fn admin_vector_partition_health(
+    graph_name: String,
+    index_id: u32,
+) -> Result<gleaph_graph_kernel::vector_index::VectorPartitionHealthSummary, RouterError> {
+    canister::admin_vector_partition_health(graph_name, index_id).await
+}
+
+/// Bounded page-meta tombstone-health scan step, forwarded to the activated vector target.
+#[query(composite = true)]
+async fn admin_vector_partition_health_step(
+    graph_name: String,
+    index_id: u32,
+    cursor: Option<Vec<u8>>,
+    max_pages: u32,
+) -> Result<gleaph_graph_kernel::vector_index::VectorPartitionHealthStep, RouterError> {
+    canister::admin_vector_partition_health_step(graph_name, index_id, cursor, max_pages).await
+}
+
+/// O(1) rebuild status, forwarded to the activated vector target.
+#[query(composite = true)]
+async fn admin_vector_rebuild_status(
+    graph_name: String,
+    index_id: u32,
+) -> Result<gleaph_graph_kernel::vector_index::VectorRebuildStatus, RouterError> {
+    canister::admin_vector_rebuild_status(graph_name, index_id).await
+}
+
+/// Derived slab-space observability, forwarded to the graph's vector target (`index_id` scopes the
+/// logical counters; the slab physical facts are whole-slab global).
+#[query(composite = true)]
+async fn admin_vector_slab_stats(
+    graph_name: String,
+    index_id: Option<u32>,
+) -> Result<gleaph_graph_kernel::vector_index::VectorSlabStats, RouterError> {
+    canister::admin_vector_slab_stats(graph_name, index_id).await
+}
+
+/// Cursor/budgeted slab-stats scan step, forwarded to the graph's vector target.
+#[query(composite = true)]
+async fn admin_vector_slab_stats_step(
+    graph_name: String,
+    cursor: Option<Vec<u8>>,
+    max_pages: u32,
+    index_id: Option<u32>,
+) -> Result<gleaph_graph_kernel::vector_index::VectorSlabStatsStep, RouterError> {
+    canister::admin_vector_slab_stats_step(graph_name, cursor, max_pages, index_id).await
+}
+
+/// Heap centroid cache status, forwarded to the graph's vector target.
+#[query(composite = true)]
+async fn admin_vector_centroid_cache_status(
+    graph_name: String,
+) -> Result<gleaph_graph_kernel::vector_index::VectorCentroidCacheStatus, RouterError> {
+    canister::admin_vector_centroid_cache_status(graph_name).await
+}
+
+/// Vector-canister-owned maintenance execution state, forwarded to the activated vector target.
+#[query(composite = true)]
+async fn admin_vector_maintenance_status(
+    graph_name: String,
+    index_id: u32,
+) -> Result<gleaph_graph_kernel::vector_index::VectorMaintenanceState, RouterError> {
+    canister::admin_vector_maintenance_status(graph_name, index_id).await
+}
+
+/// Begin a shadow-version rebuild on the activated vector target.
+#[update]
+async fn admin_start_vector_rebuild(
+    graph_name: String,
+    index_id: u32,
+    nlist: u32,
+    sample_limit: u32,
+) -> Result<(), RouterError> {
+    canister::admin_start_vector_rebuild(graph_name, index_id, nlist, sample_limit).await
+}
+
+/// Begin a rebuild only if attested partition health crosses the supplied policy, on the activated
+/// vector target.
+#[update]
+async fn admin_start_vector_rebuild_if_recommended(
+    graph_name: String,
+    index_id: u32,
+    attested_page_health: gleaph_graph_kernel::vector_index::VectorPartitionPageHealth,
+    policy: gleaph_graph_kernel::vector_index::VectorMaintenancePolicy,
+    target_nlist: Option<u32>,
+    sample_limit: u32,
+) -> Result<gleaph_graph_kernel::vector_index::VectorMaintenanceRecommendation, RouterError> {
+    canister::admin_start_vector_rebuild_if_recommended(
+        graph_name,
+        index_id,
+        attested_page_health,
+        policy,
+        target_nlist,
+        sample_limit,
+    )
+    .await
+}
+
+/// Drive one bounded rebuild step on the activated vector target.
+#[update]
+async fn admin_vector_rebuild_step(
+    graph_name: String,
+    index_id: u32,
+    max_subjects: u32,
+) -> Result<gleaph_graph_kernel::vector_index::VectorRebuildStatus, RouterError> {
+    canister::admin_vector_rebuild_step(graph_name, index_id, max_subjects).await
+}
+
+/// Publish a `ReadyToPublish` rebuild on the activated vector target.
+#[update]
+async fn admin_publish_vector_rebuild(
+    graph_name: String,
+    index_id: u32,
+) -> Result<(), RouterError> {
+    canister::admin_publish_vector_rebuild(graph_name, index_id).await
+}
+
+/// Abort an in-flight rebuild on the activated vector target.
+#[update]
+async fn admin_abort_vector_rebuild(graph_name: String, index_id: u32) -> Result<(), RouterError> {
+    canister::admin_abort_vector_rebuild(graph_name, index_id).await
+}
+
+/// Drive one bounded cleanup/abort teardown step on the activated vector target.
+#[update]
+async fn admin_vector_rebuild_cleanup_step(
+    graph_name: String,
+    index_id: u32,
+    max_work: u32,
+) -> Result<gleaph_graph_kernel::vector_index::VectorRebuildStatus, RouterError> {
+    canister::admin_vector_rebuild_cleanup_step(graph_name, index_id, max_work).await
+}
+
+/// Warm the heap centroid cache on the activated vector target.
+#[update]
+async fn admin_vector_centroid_cache_warmup(
+    graph_name: String,
+    index_id: u32,
+) -> Result<gleaph_graph_kernel::vector_index::VectorCentroidCacheStatus, RouterError> {
+    canister::admin_vector_centroid_cache_warmup(graph_name, index_id).await
+}
+
+/// Clear the entire heap centroid cache on the graph's vector target.
+#[update]
+async fn admin_vector_centroid_cache_clear(
+    graph_name: String,
+) -> Result<gleaph_graph_kernel::vector_index::VectorCentroidCacheStatus, RouterError> {
+    canister::admin_vector_centroid_cache_clear(graph_name).await
+}
+
+/// Reset the maintenance execution state to `Idle` (incl. `Failed`) on the activated vector target.
+/// Does not abort an in-flight rebuild (use `admin_abort_vector_rebuild`) or change Router policy.
+#[update]
+async fn admin_vector_maintenance_reset(
+    graph_name: String,
+    index_id: u32,
+) -> Result<(), RouterError> {
+    canister::admin_vector_maintenance_reset(graph_name, index_id).await
+}
+
+// --- ADR 0031 Slice 10: Router-owned maintenance policy catalog + push step ---
+
+/// Create or replace the Router-owned maintenance policy for one vector index (DDL admin).
+#[update]
+fn admin_set_vector_maintenance_policy(
+    args: types::SetVectorMaintenancePolicyArgs,
+) -> Result<(), RouterError> {
+    canister::admin_set_vector_maintenance_policy(args)
+}
+
+/// Disable (but keep) the maintenance policy for one vector index (DDL admin).
+#[update]
+fn admin_disable_vector_maintenance_policy(
+    graph_name: String,
+    index_id: u32,
+) -> Result<(), RouterError> {
+    canister::admin_disable_vector_maintenance_policy(graph_name, index_id)
+}
+
+/// Delete the maintenance policy for one vector index (DDL admin). Returns whether one existed.
+#[update]
+fn admin_delete_vector_maintenance_policy(
+    graph_name: String,
+    index_id: u32,
+) -> Result<bool, RouterError> {
+    canister::admin_delete_vector_maintenance_policy(graph_name, index_id)
+}
+
+/// The maintenance policy for one vector index, if any.
+#[query]
+fn vector_maintenance_policy(
+    graph_name: String,
+    index_id: u32,
+) -> Result<Option<types::VectorMaintenancePolicyView>, RouterError> {
+    canister::vector_maintenance_policy(graph_name, index_id)
+}
+
+/// All maintenance policies in a graph.
+#[query]
+fn list_vector_maintenance_policies(
+    graph_name: String,
+) -> Result<Vec<types::VectorMaintenancePolicyView>, RouterError> {
+    canister::list_vector_maintenance_policies(graph_name)
+}
+
+/// Advance one bounded maintenance unit for an enabled policy; `Disabled` no-op otherwise.
+#[update]
+async fn admin_vector_maintenance_step(
+    graph_name: String,
+    index_id: u32,
+) -> Result<types::VectorMaintenanceStepOutcome, RouterError> {
+    canister::admin_vector_maintenance_step(graph_name, index_id).await
+}
+
+/// Router policy/readiness plus forwarded vector-canister maintenance + rebuild state.
+#[query(composite = true)]
+async fn vector_maintenance_status(
+    graph_name: String,
+    index_id: u32,
+) -> Result<types::VectorMaintenanceStatusView, RouterError> {
+    canister::vector_maintenance_status(graph_name, index_id).await
+}
+
 /// Advance label posting backfill for one graph shard (`Role::Admin`; call in a loop).
 #[update]
 async fn admin_label_backfill_step(

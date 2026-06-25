@@ -19,8 +19,8 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    VectorEmbeddingSyncOp, VectorEncoding, VectorMetric, VectorRebuildPhase, VectorSearchRequest,
-    VectorSubject,
+    VectorEmbeddingSyncOp, VectorEncoding, VectorMaintenancePolicy, VectorMaintenanceStepRequest,
+    VectorMetric, VectorRebuildPhase, VectorSearchRequest, VectorSubject,
 };
 use std::hint::black_box;
 
@@ -490,5 +490,92 @@ fn bench_centroid_cache_warmup_d768_nlist64() -> canbench_rs::BenchResult {
             .admin_vector_centroid_cache_warmup(router(), INDEX_ID)
             .expect("warmup");
         black_box(status);
+    })
+}
+
+// --- ADR 0031 Slice 10: Router-forwarded maintenance step (one bounded vector unit) ---
+
+/// A tombstone-required policy + per-step budgets (skew disabled) sized to complete each bounded unit
+/// in a single step for the degenerate fixture — the snapshot the Router forwards per push.
+fn maint_req(target_nlist: u32) -> VectorMaintenanceStepRequest {
+    VectorMaintenanceStepRequest {
+        policy: VectorMaintenancePolicy {
+            recommended_tombstone_ratio_bps: 1_000,
+            required_tombstone_ratio_bps: 2_000,
+            recommended_skew_ratio_bps: u32::MAX,
+            required_skew_ratio_bps: u32::MAX,
+            min_total_rows: 1,
+            min_tombstoned_rows: 1,
+        },
+        target_nlist: Some(target_nlist),
+        sample_limit: REBUILD_N + 1,
+        scan_max_pages: REBUILD_N,
+        rebuild_max_subjects: REBUILD_N,
+        cleanup_max_work: REBUILD_N,
+    }
+}
+
+/// Drives a freshly-started rebuild to `ReadyToPublish` without publishing, so a follow-up
+/// maintenance step measures the bounded `AwaitingPublish` no-op (publish stays explicit).
+fn start_into_ready_to_publish(store: &VectorIndexStore, n: u32, nlist: u32) {
+    store
+        .admin_start_vector_rebuild(router(), INDEX_ID, nlist, n + 1)
+        .expect("start");
+    loop {
+        let status = store
+            .admin_vector_rebuild_step(router(), INDEX_ID, n)
+            .expect("step");
+        match status.phase {
+            VectorRebuildPhase::ReadyToPublish => break,
+            VectorRebuildPhase::Failed => panic!("rebuild failed"),
+            _ => {}
+        }
+    }
+}
+
+/// One Router-push maintenance unit that drives the bounded page-health scan (Idle -> Scanning + one
+/// bounded `partition_page_health_step`). The scan/dispatch end of the maintenance step.
+#[bench(raw)]
+fn bench_maintenance_step_scan_d128() -> canbench_rs::BenchResult {
+    let store = setup_search_store(128, REBUILD_N);
+    let req = maint_req(16);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_maintenance_step_scan_d128");
+        let result = store
+            .admin_vector_maintenance_step(router(), INDEX_ID, black_box(req))
+            .expect("maintenance step");
+        black_box(result);
+    })
+}
+
+/// One maintenance unit while a rebuild is `Building`: the step drives one bounded rebuild step.
+#[bench(raw)]
+fn bench_maintenance_step_rebuild_d128_nlist16() -> canbench_rs::BenchResult {
+    let store = setup_search_store(128, REBUILD_N);
+    start_into_building(&store, REBUILD_N, 16);
+    let req = maint_req(16);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("bench_maintenance_step_rebuild_d128_nlist16");
+        let result = store
+            .admin_vector_maintenance_step(router(), INDEX_ID, black_box(req))
+            .expect("maintenance step");
+        black_box(result);
+    })
+}
+
+/// One maintenance unit at `ReadyToPublish`: the bounded no-op that returns `AwaitingPublish`. The
+/// step-dispatch floor with no scan or rebuild work performed.
+#[bench(raw)]
+fn bench_maintenance_step_awaiting_publish_d128_nlist16() -> canbench_rs::BenchResult {
+    let store = setup_search_store(128, REBUILD_N);
+    start_into_ready_to_publish(&store, REBUILD_N, 16);
+    let req = maint_req(16);
+    canbench_rs::bench_fn(|| {
+        let _scope =
+            canbench_rs::bench_scope("bench_maintenance_step_awaiting_publish_d128_nlist16");
+        let result = store
+            .admin_vector_maintenance_step(router(), INDEX_ID, black_box(req))
+            .expect("maintenance step");
+        black_box(result);
     })
 }
