@@ -648,12 +648,13 @@ fn binding_table_nested_query_definition_prefix() {
 }
 
 #[test]
-fn focused_search_after_use_graph() {
-    // Regression: focused SEARCH output alias must be visible to the outer query
-    // via the scope collector, matching non-focused SEARCH behavior.
+fn focused_search_body_exports_alias() {
+    // Regression: the parser must place SEARCH inside the Focused body, so
+    // `Focused { body: Search }` handling in the scope collectors is exercised.
+    // Outer MATCH binds `d`, then `USE myGraph SEARCH d ...` is the focused body.
     parse_ok(
-        "USE myGraph \
-         MATCH (d:Document) \
+        "MATCH (d:Document) \
+         USE myGraph \
          SEARCH d IN ( \
            VECTOR INDEX document_embedding \
            FOR $query \
@@ -664,17 +665,18 @@ fn focused_search_after_use_graph() {
 }
 
 #[test]
-fn focused_search_after_use_graph_unbound_alias_fails() {
-    // The focused linear query returns `d`; `similarity` must not be visible
-    // to the outer RETURN because it was not projected by the inner result.
-    // This only works because the focused body does not allow RETURN directly;
-    // the inner result is parsed as a separate linear query part, so the alias
-    // stays inside the Focused body.
-    parse_ok(
-        "USE myGraph \
-         MATCH (d:Document) \
-         SEARCH d IN (VECTOR INDEX document_embedding FOR $query LIMIT 100) SCORE AS similarity \
-         RETURN d",
+fn focused_search_body_unbound_alias_fails() {
+    // Same shape as above but the focused body only binds `d` and does not
+    // return `similarity`; the alias must not leak into the outer query.
+    // We test this with an inline call whose body exposes only `d`; the outer
+    // RETURN of `similarity` must fail validation.
+    parse_validate_err(
+        "MATCH (d:Document) \
+         CALL (d) { \
+           USE myGraph \
+           SEARCH d IN (VECTOR INDEX document_embedding FOR $query LIMIT 100) SCORE AS similarity \
+           RETURN d \
+         } RETURN similarity",
     );
 }
 
@@ -692,29 +694,13 @@ fn focused_search_with_use_block_exports_alias() {
 }
 
 #[test]
-fn focused_search_after_use_graph_only_does_not_leak_alias() {
-    // The focused linear query returns `d`; `similarity` must not be visible
-    // to the outer RETURN because it was not projected by the inner result.
-    // This only works because the focused body does not allow RETURN directly;
-    // the inner result is parsed as a separate linear query part, so the alias
-    // stays inside the Focused body.
-    parse_ok(
-        "USE myGraph \
-         MATCH (d:Document) \
-         SEARCH d IN (VECTOR INDEX document_embedding FOR $query LIMIT 100) SCORE AS similarity \
-         RETURN d",
-    );
-}
-
-#[test]
-fn inline_call_with_focused_search_exports_alias() {
-    // Ordered collector path: inline procedure result layout must see the focused
-    // SEARCH alias as an exported binding.
+fn inline_call_with_focused_search_body_exports_alias() {
+    // Ordered collector path through an inline call where the focused body is
+    // exactly a SEARCH statement (not a preceding MATCH inside the focus).
     parse_ok(
         "MATCH (d:Document) \
          CALL (d) { \
            USE myGraph \
-           MATCH (d) \
            SEARCH d IN (VECTOR INDEX document_embedding FOR $query LIMIT 100) SCORE AS similarity \
            RETURN similarity \
          } RETURN similarity",
