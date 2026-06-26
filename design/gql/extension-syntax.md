@@ -1,7 +1,7 @@
 # Gleaph GQL extension syntax
 
-Last updated: 2026-06-25
-Anchor timestamp: 2026-06-25 12:41:36 UTC +0000
+Last updated: 2026-06-26
+Anchor timestamp: 2026-06-26 00:22:53 UTC +0000
 
 ## Status
 
@@ -35,6 +35,7 @@ runtime behavior until marked implemented.
 | Edge inline value | `e.distance`, `e.stats.score` with `INLINE` schema modifier | Planned target | Router schema/catalog + Graph edge payload execution |
 | Shortest-path cost | `COST BY e.distance` | Planned target | Graph query planner/executor |
 | Current edge weight function | `GLEAPH.WEIGHT(e)` | Implemented compatibility surface | Graph query executor |
+| Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)` | Implemented compatibility surface | Graph edge storage/execution |
 | Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold` | Implemented compatibility surface | Planner fusion + Graph edge payload executor |
 | Vertex vector search | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Planned target | Router vector-index catalog + vector canister |
 | Operational procedures | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()` | Implemented | Graph mutation executor / Router orchestration |
@@ -56,6 +57,11 @@ CALL GLEAPH.FINALIZE_BULK_INGEST(...)
 CALL GLEAPH.FINALIZE_FORWARD_EDGE_SPAN(...)
 CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()
 ```
+
+Compatibility surfaces also include existing query-time helpers whose current semantics are
+intentionally Gleaph-specific. Some may later be replaced by more ordinary GQL syntax, but their
+current names remain part of the implemented dialect contract: `GLEAPH.WEIGHT(e)`,
+`GLEAPH.SEQUENCE(e)`, `GLEAPH.COST`, and `GLEAPH.VECTOR.*`.
 
 ## IC extensions
 
@@ -178,6 +184,37 @@ MATCH ANY SHORTEST (a)-[e:ROAD]->{1,5}(b)
 GLEAPH.COST BY GLEAPH.WEIGHT(e)
 RETURN b
 ```
+
+## Edge insertion-order sequence
+
+### `GLEAPH.SEQUENCE(e)`
+
+**Status:** Implemented compatibility surface.
+
+`GLEAPH.SEQUENCE(e)` exposes Gleaph's edge insertion-order compensation for a bound edge variable.
+The ordering value is owned by Graph edge storage and execution. It is keyed by the edge identity and
+edge-label-local insertion sequence; it is not decoded from edge payload bytes and is not a property
+store lookup.
+
+Use it when a query needs deterministic ascending or descending edge order:
+
+```gql
+MATCH (a)-[e:FOLLOWS]->(b)
+RETURN b
+ORDER BY GLEAPH.SEQUENCE(e) ASC
+```
+
+Descending order is explicit:
+
+```gql
+MATCH (a)-[e:FOLLOWS]->(b)
+RETURN b
+ORDER BY GLEAPH.SEQUENCE(e) DESC
+```
+
+This function must be classified separately from `GLEAPH.WEIGHT(e)` and `GLEAPH.VECTOR.*` in the Rust
+manifest. Those helpers read or score fixed-width edge payload bytes; `GLEAPH.SEQUENCE(e)` reads
+Graph-owned edge ordering metadata.
 
 ## Edge-payload vector predicates
 
@@ -447,12 +484,13 @@ This expresses the intended flow:
 | Stage | Scope |
 |-------|-------|
 | 1 | Document the dialect contract and keep existing behavior unchanged |
-| 2 | Add `SEARCH` parser/planner representation without backend-specific storage details |
-| 3 | Add Router lowering from vector `SEARCH` to the existing vector search API |
-| 4 | Add result hydration from vector hits to graph vertex bindings |
-| 5 | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions |
-| 6 | Add inline edge property schema syntax and lower `e.inline_field` to existing edge-payload reads |
-| 7 | Deprecate daily-query use of `GLEAPH.WEIGHT` where ordinary inline property access is available |
+| 2 | Add the Rust extension manifest for canonical extension names, classes, status, owner, and doc anchors |
+| 3 | Add `SEARCH` parser/planner representation without backend-specific storage details |
+| 4 | Add Router lowering from vector `SEARCH` to the existing vector search API |
+| 5 | Add result hydration from vector hits to graph vertex bindings |
+| 6 | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions |
+| 7 | Add inline edge property schema syntax and lower `e.inline_field` to existing edge-payload reads |
+| 8 | Deprecate daily-query use of `GLEAPH.WEIGHT` where ordinary inline property access is available |
 
 Every stage that changes public syntax must update this document and add parser/planner/executor tests.
 

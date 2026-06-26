@@ -2,8 +2,8 @@
 
 Date: 2026-06-25
 Status: accepted (syntax design; implementation staged by feature)
-Last revised: 2026-06-25
-Anchor timestamp: 2026-06-25 13:13:23 UTC +0000
+Last revised: 2026-06-26
+Anchor timestamp: 2026-06-26 00:22:53 UTC +0000
 
 > **Summary.** Gleaph needs a coherent public GQL dialect surface for IC values, graph-local inline
 > edge data, vector search, shortest-path costs, and operational procedures. This ADR accepts a
@@ -20,6 +20,7 @@ Gleaph already has several GQL-adjacent extensions:
 - `IC.PRINCIPAL` values in `gleaph-gql-ic`.
 - `MSG_CALLER()` as an IC runtime function in graph execution.
 - `GLEAPH.WEIGHT(e)` and `GLEAPH.COST BY ...` for edge payload weights and shortest-path costs.
+- `GLEAPH.SEQUENCE(e)` for Graph-owned edge insertion-order compensation in `ORDER BY`.
 - `GLEAPH.VECTOR.*` fused edge-payload vector predicates.
 - `CALL GLEAPH.FINALIZE_*` / `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()` for operational mutation
   procedures.
@@ -141,8 +142,9 @@ This ADR records why that contract exists and the top-level policy:
 
 - The implementation may still lower this to the existing Router/vector-canister `vector_search`
   API. That lowering is internal, not the public GQL contract.
-- Existing `GLEAPH.WEIGHT`, `GLEAPH.COST`, and `GLEAPH.VECTOR.*` remain valid implementation-era
-  surfaces until migration syntax lands; the new document marks their target status explicitly.
+- Existing `GLEAPH.WEIGHT`, `GLEAPH.SEQUENCE`, `GLEAPH.COST`, and `GLEAPH.VECTOR.*` remain valid
+  implementation-era surfaces until migration syntax lands; the new document marks their target
+  status explicitly.
 - Existing and planned extension names should be centralized in a pure Rust manifest before adding
   more syntax. The manifest should be dependency-light and contain descriptors/recognizers such as
   value types, runtime functions, path extensions, edge-payload vector predicates, search clauses,
@@ -168,7 +170,7 @@ Planned migration path:
 1. Document existing extensions and target syntax in `design/gql/extension-syntax.md`.
 2. Add the Rust extension manifest without changing behavior:
    - represent canonical names such as `IC.PRINCIPAL`, `MSG_CALLER`, `GLEAPH.COST`,
-     `GLEAPH.WEIGHT`, `GLEAPH.VECTOR.*`, and `GLEAPH.FINALIZE_*`;
+     `GLEAPH.WEIGHT`, `GLEAPH.SEQUENCE`, `GLEAPH.VECTOR.*`, and `GLEAPH.FINALIZE_*`;
    - classify planned syntax such as `SEARCH`, `INLINE`, and `CREATE VECTOR INDEX`;
    - expose case-insensitive recognizers for owners that already parse extension names;
    - add tests that implemented Gleaph extension entry points are registered in the manifest.
