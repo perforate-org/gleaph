@@ -1178,6 +1178,7 @@ dependencies = [
  "ic-cdk-timers",
  "ic-stable-structures",
  "nohash-hasher",
+ "pollster",
  "rapidhash",
  "serde",
  "sha2 0.11.0",

@@ -17,7 +17,7 @@ use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_gql_planner::{PlanBuildOptions, build_statement_plan_with_options};
-use gleaph_graph_kernel::entry::ConstraintNameId;
+use gleaph_graph_kernel::entry::{ConstraintNameId, VertexLabelId};
 use gleaph_graph_kernel::federation::{
     ClaimId, EffectId, ElementIdEncodingKey, UniqueEffectOp, UniqueEffectReceipt,
 };
@@ -787,6 +787,38 @@ fn seed_initial_rows(
             );
             all_rows.push(row);
         }
+    }
+    'rows: for row in &seeds.rows {
+        let mut plan_row = PlanQueryRow::new();
+        for vertex in &row.vertex_bindings {
+            let vertex_id = VertexId::from(vertex.local_vertex_id);
+            let Some(v) = store.vertex(vertex_id) else {
+                continue 'rows;
+            };
+            if v.is_tombstone() {
+                continue 'rows;
+            }
+            if !vertex.required_vertex_label_ids.is_empty() {
+                let labels = store.vertex_labels(vertex_id, v);
+                let required: Vec<_> = vertex
+                    .required_vertex_label_ids
+                    .iter()
+                    .copied()
+                    .map(VertexLabelId::from_raw)
+                    .collect();
+                if !required.iter().all(|required| labels.contains(required)) {
+                    continue 'rows;
+                }
+            }
+            plan_row.insert(vertex.variable.clone(), PlanBinding::Vertex(vertex_id));
+        }
+        for float64 in &row.float64_bindings {
+            plan_row.insert(
+                float64.variable.clone(),
+                PlanBinding::Value(Value::Float64(float64.value)),
+            );
+        }
+        all_rows.push(plan_row);
     }
     Ok((all_rows, true))
 }
@@ -2118,6 +2150,7 @@ mod tests {
                 local_vertex_ids: vec![local_vid],
                 local_edge_postings: Vec::new(),
             }],
+            rows: Vec::new(),
         };
         let params = BTreeMap::new();
 
@@ -2183,6 +2216,7 @@ mod tests {
                 local_vertex_ids: vec![local_vid],
                 local_edge_postings: Vec::new(),
             }],
+            rows: Vec::new(),
         };
         let params = BTreeMap::new();
 
@@ -2199,6 +2233,369 @@ mod tests {
         .expect("multi-plan wire bundle");
 
         assert_eq!(run.row_count, 1);
+    }
+
+    #[test]
+    fn wire_plan_row_shaped_seeds_hydrate_vertex_and_distance_alias() {
+        use gleaph_gql::ast::{Expr, ExprKind};
+        use gleaph_gql_planner::plan::{
+            ProjectColumn, SearchOutputKind, SearchOutputPlan, SearchProviderPlan,
+        };
+        use gleaph_graph_kernel::plan_exec::{SeedFloat64Binding, SeedRowWire, SeedVertexBinding};
+
+        let store = GraphStore::new();
+        let vid = store
+            .insert_vertex_named(["RowSeedDocument"], Vec::<(&str, Value)>::new())
+            .expect("vertex");
+        let local_vid = u32::try_from(u64::from(vid)).expect("local vertex id");
+
+        let full_plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "d".into(),
+                label: Some("RowSeedDocument".into()),
+                property_projection: None,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: Expr::var("query"),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Distance,
+                    alias: "distance".into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![
+                    ProjectColumn {
+                        expr: Expr::new(ExprKind::Variable("d".into())),
+                        alias: Some("d".into()),
+                    },
+                    ProjectColumn {
+                        expr: Expr::new(ExprKind::Variable("distance".into())),
+                        alias: Some("distance".into()),
+                    },
+                ],
+                distinct: false,
+            },
+        ]);
+        let stripped_plan = PhysicalPlan {
+            ops: full_plan.ops[2..].to_vec(),
+            diagnostics: full_plan.diagnostics,
+            annotations: full_plan.annotations,
+            output: full_plan.output,
+            binding_layout: full_plan.binding_layout,
+        };
+        let blob = encode_block_plans(&[stripped_plan], false).expect("encode stripped plan");
+        let seeds = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: vec![SeedRowWire {
+                vertex_bindings: vec![SeedVertexBinding {
+                    variable: "d".into(),
+                    local_vertex_id: local_vid,
+                    required_vertex_label_ids: Vec::new(),
+                }],
+                float64_bindings: vec![SeedFloat64Binding {
+                    variable: "distance".into(),
+                    value: 1.25,
+                }],
+            }],
+        };
+        let params = BTreeMap::new();
+
+        let run = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::CompositeQuery,
+            None,
+            GqlExecutionContext::default(),
+            Some(seeds),
+            None,
+        ))
+        .expect("wire row seed hydration");
+
+        assert_eq!(run.row_count, 1);
+        let rows_blob = run.rows_blob.expect("composite query rows");
+        let wire = gleaph_gql_ic::IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode");
+        let materialized =
+            crate::plan::plan_query_result_from_ic_wire(wire).expect("materialize rows");
+        assert_eq!(materialized.rows.len(), 1);
+        let row = &materialized.rows[0];
+        assert!(row.contains_key("d"));
+        assert_eq!(
+            row.get("distance"),
+            Some(&Value::Float64(1.25)),
+            "distance alias must be hydrated from row-shaped seed"
+        );
+    }
+
+    #[test]
+    fn wire_plan_row_shaped_seed_skips_vertex_with_missing_required_label() {
+        use gleaph_gql::ast::{Expr, ExprKind};
+        use gleaph_gql_planner::plan::{
+            ProjectColumn, SearchOutputKind, SearchOutputPlan, SearchProviderPlan,
+        };
+        use gleaph_graph_kernel::plan_exec::{SeedFloat64Binding, SeedRowWire, SeedVertexBinding};
+
+        let store = GraphStore::new();
+        let matching_vid = store
+            .insert_vertex_named(["RowSeedDoc"], Vec::<(&str, Value)>::new())
+            .expect("vertex");
+        let other_vid = store
+            .insert_vertex_named(["RowSeedOther"], Vec::<(&str, Value)>::new())
+            .expect("other vertex");
+        let matching_local = u32::try_from(u64::from(matching_vid)).expect("local vertex id");
+        let other_local = u32::try_from(u64::from(other_vid)).expect("local vertex id");
+        let required_label_id = crate::test_labels::vertex_label_id_for_name("RowSeedDoc");
+
+        let full_plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "d".into(),
+                label: Some("RowSeedDoc".into()),
+                property_projection: None,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: Expr::var("query"),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Distance,
+                    alias: "distance".into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::new(ExprKind::Variable("d".into())),
+                    alias: Some("d".into()),
+                }],
+                distinct: false,
+            },
+        ]);
+        let stripped_plan = PhysicalPlan {
+            ops: full_plan.ops[2..].to_vec(),
+            diagnostics: full_plan.diagnostics,
+            annotations: full_plan.annotations,
+            output: full_plan.output,
+            binding_layout: full_plan.binding_layout,
+        };
+        let blob = encode_block_plans(&[stripped_plan], false).expect("encode stripped plan");
+        let seeds = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: vec![
+                SeedRowWire {
+                    vertex_bindings: vec![SeedVertexBinding {
+                        variable: "d".into(),
+                        local_vertex_id: matching_local,
+                        required_vertex_label_ids: vec![required_label_id.raw()],
+                    }],
+                    float64_bindings: vec![SeedFloat64Binding {
+                        variable: "distance".into(),
+                        value: 0.0,
+                    }],
+                },
+                SeedRowWire {
+                    vertex_bindings: vec![SeedVertexBinding {
+                        variable: "d".into(),
+                        local_vertex_id: other_local,
+                        required_vertex_label_ids: vec![required_label_id.raw()],
+                    }],
+                    float64_bindings: vec![SeedFloat64Binding {
+                        variable: "distance".into(),
+                        value: 1.0,
+                    }],
+                },
+            ],
+        };
+        let params = BTreeMap::new();
+
+        let run = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::CompositeQuery,
+            None,
+            GqlExecutionContext::default(),
+            Some(seeds),
+            None,
+        ))
+        .expect("wire row seed label enforcement");
+
+        assert_eq!(run.row_count, 1);
+    }
+
+    #[test]
+    fn wire_plan_row_shaped_seed_skips_missing_and_tombstoned_vertices() {
+        use gleaph_gql::ast::{Expr, ExprKind};
+        use gleaph_gql_planner::plan::{
+            ProjectColumn, SearchOutputKind, SearchOutputPlan, SearchProviderPlan,
+        };
+        use gleaph_graph_kernel::plan_exec::{SeedFloat64Binding, SeedRowWire, SeedVertexBinding};
+
+        let store = GraphStore::new();
+        let present_vid = store
+            .insert_vertex_named(["RowSeedPresent"], Vec::<(&str, Value)>::new())
+            .expect("present vertex");
+        let tombstoned_vid = store
+            .insert_vertex_named(["RowSeedTombstoned"], Vec::<(&str, Value)>::new())
+            .expect("tombstoned vertex");
+        store
+            .delete_vertex(tombstoned_vid)
+            .expect("tombstone vertex");
+
+        let present_local = u32::try_from(u64::from(present_vid)).expect("local vertex id");
+        let tombstoned_local = u32::try_from(u64::from(tombstoned_vid)).expect("local vertex id");
+
+        let full_plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "d".into(),
+                label: Some("RowSeedPresent".into()),
+                property_projection: None,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: Expr::var("query"),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Distance,
+                    alias: "distance".into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::new(ExprKind::Variable("d".into())),
+                    alias: Some("d".into()),
+                }],
+                distinct: false,
+            },
+        ]);
+        let stripped_plan = PhysicalPlan {
+            ops: full_plan.ops[2..].to_vec(),
+            diagnostics: full_plan.diagnostics,
+            annotations: full_plan.annotations,
+            output: full_plan.output,
+            binding_layout: full_plan.binding_layout,
+        };
+        let blob = encode_block_plans(&[stripped_plan], false).expect("encode stripped plan");
+        let seeds = SeedBindingsWire {
+            entries: Vec::new(),
+            rows: vec![
+                SeedRowWire {
+                    vertex_bindings: vec![SeedVertexBinding {
+                        variable: "d".into(),
+                        local_vertex_id: 9999,
+                        required_vertex_label_ids: Vec::new(),
+                    }],
+                    float64_bindings: vec![SeedFloat64Binding {
+                        variable: "distance".into(),
+                        value: 0.0,
+                    }],
+                },
+                SeedRowWire {
+                    vertex_bindings: vec![SeedVertexBinding {
+                        variable: "d".into(),
+                        local_vertex_id: tombstoned_local,
+                        required_vertex_label_ids: Vec::new(),
+                    }],
+                    float64_bindings: vec![SeedFloat64Binding {
+                        variable: "distance".into(),
+                        value: 1.0,
+                    }],
+                },
+                SeedRowWire {
+                    vertex_bindings: vec![SeedVertexBinding {
+                        variable: "d".into(),
+                        local_vertex_id: present_local,
+                        required_vertex_label_ids: Vec::new(),
+                    }],
+                    float64_bindings: vec![SeedFloat64Binding {
+                        variable: "distance".into(),
+                        value: 2.0,
+                    }],
+                },
+            ],
+        };
+        let params = BTreeMap::new();
+
+        let run = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::CompositeQuery,
+            None,
+            GqlExecutionContext::default(),
+            Some(seeds),
+            None,
+        ))
+        .expect("wire row seed missing/tombstone skip");
+
+        assert_eq!(run.row_count, 1);
+    }
+
+    #[test]
+    fn wire_plan_unstripped_search_rejected_by_executor_contract() {
+        use gleaph_gql::ast::{Expr, ExprKind};
+        use gleaph_gql_planner::plan::{
+            ProjectColumn, SearchOutputKind, SearchOutputPlan, SearchProviderPlan,
+        };
+
+        let store = GraphStore::new();
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "d".into(),
+                label: Some("Doc".into()),
+                property_projection: None,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: Expr::var("query"),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Distance,
+                    alias: "distance".into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: Expr::new(ExprKind::Variable("d".into())),
+                    alias: Some("d".into()),
+                }],
+                distinct: false,
+            },
+        ]);
+        let blob = encode_block_plans(&[plan], false).expect("encode plan");
+        let err = pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &BTreeMap::new(),
+            GqlCanisterExecutionMode::CompositeQuery,
+            None,
+            GqlExecutionContext::default(),
+            None,
+            None,
+        ))
+        .unwrap_err();
+        assert!(
+            err.to_string().contains(
+                "SEARCH is parsed and planned but Router lowering is not implemented yet"
+            ),
+            "raw Search op must be rejected by executor contract: {err}"
+        );
     }
 
     #[test]

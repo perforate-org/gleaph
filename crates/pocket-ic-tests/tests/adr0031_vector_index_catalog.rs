@@ -8,13 +8,16 @@
 //! `VectorDispatchActivationBlocked { DispatchNotActivated }` (ADR 0031 Slice 4).
 
 use candid::{Decode, Encode, Principal};
+use gleaph_gql::Value;
+use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId, VectorActivationBlockReason};
 use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorSearchResult, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
-    FederationEnv, GRAPH_NAME, install_federation, install_vector_canister,
+    FederationEnv, GRAPH_NAME, e2e_insert_vertex, gql_query_with_params_as_admin,
+    install_federation, install_vector_canister,
 };
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AdminVectorIndexBackfillStepArgs,
@@ -22,6 +25,7 @@ use gleaph_router::types::{
     SetVectorIndexTargetArgs, VectorIndexActivationStateView, VectorIndexActivationStatus,
     VectorIndexInfo,
 };
+use std::collections::BTreeMap;
 
 const EMBEDDING_NAME: &str = "adr0031_title_vec";
 const INDEX_ID: u32 = 1;
@@ -600,6 +604,69 @@ fn vector_search_on_activated_empty_index_returns_empty() {
     // No embeddings seeded -> the physical def does not exist yet, but the search must still succeed.
     let result = router_vector_search(&env, 1.0, 10).expect("router search on empty index");
     assert!(result.hits.is_empty());
+}
+
+#[test]
+fn gql_search_distance_as_executes_through_router_vector_index() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register(
+        &env,
+        &RegisterVectorIndexArgs {
+            logical_graph_name: GRAPH_NAME.to_string(),
+            embedding_name: EMBEDDING_NAME.to_string(),
+            index_id: INDEX_ID,
+            dims: DIMS,
+            target: Some(vector),
+            if_not_exists: false,
+        },
+    )
+    .expect("register vector index");
+
+    let graph_id = router_graph_id(&env);
+    set_dispatch_activation(&env, true).expect("enable dispatch flag");
+    set_graph_vector_routing(&env, env.graph_source, vector);
+    set_graph_vector_routing(&env, env.graph_dest, vector);
+    attach_shard_to_vector(&env, vector, graph_id, ShardId::new(0), env.graph_source)
+        .expect("vector accepts shard 0");
+    attach_shard_to_vector(&env, vector, graph_id, ShardId::new(1), env.graph_dest)
+        .expect("vector accepts shard 1");
+    attach_shard(&env, ShardId::new(0), vector).expect("attach shard 0");
+    attach_shard(&env, ShardId::new(1), vector).expect("attach shard 1");
+
+    // Insert a vertex on shard 0 and seed an embedding for it with value 5.0.
+    let inserted = e2e_insert_vertex(&env, env.graph_source);
+    seed_embedding(
+        &env,
+        vector,
+        env.graph_source,
+        inserted.local_vertex_id,
+        5.0,
+    )
+    .expect("seed embedding for inserted vertex");
+
+    let query = format!(
+        "MATCH (d) SEARCH d IN (VECTOR INDEX {EMBEDDING_NAME} FOR $query LIMIT 10) DISTANCE AS distance RETURN d, distance"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(5.0)),
+    )])
+    .expect("encode query params");
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_eq!(
+        result.row_count, 1,
+        "exact query should return the seeded vertex"
+    );
+    let rows_blob = result.rows_blob.expect("rows blob");
+    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    assert_eq!(wire.rows.len(), 1);
+    let row = wire.rows.into_iter().next().expect("one row");
+    let columns: BTreeMap<String, gleaph_gql_ic::IcWireValue> = row.columns.into_iter().collect();
+    assert!(columns.contains_key("d"));
+    assert!(columns.contains_key("distance"));
 }
 
 #[test]

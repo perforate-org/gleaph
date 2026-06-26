@@ -355,9 +355,43 @@ pub struct SeedBindingEntry {
     pub local_edge_postings: Vec<LocalEdgePosting>,
 }
 
+/// One vertex binding inside a row-shaped seed, with optional label constraints enforced during
+/// hydration. Carrying the label ids on the seed row lets the Router express a leading
+/// `NodeScan(variable, label = Some(...))` without leaking label-name resolution into the graph
+/// canister. Label ids are stored as raw `u16` because Candid does not subtype through the
+/// `VertexLabelId` newtype inside a vector.
 #[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct SeedVertexBinding {
+    pub variable: String,
+    pub local_vertex_id: u32,
+    pub required_vertex_label_ids: Vec<u16>,
+}
+
+/// One scalar binding inside a row-shaped seed. Used to carry a `SEARCH ... SCORE/DISTANCE AS alias`
+/// value alongside its matched vertex binding without requiring a second grouped seed entry.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct SeedFloat64Binding {
+    pub variable: String,
+    pub value: f64,
+}
+
+/// One complete seed row produced by Router-side vector-search lowering. Each hit becomes one row
+/// carrying the matched vertex and the score/distance alias. Row-shaped seeds are processed
+/// independently; a row is skipped if any of its required vertex bindings is missing, tombstoned, or
+/// fails the required label check.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct SeedRowWire {
+    pub vertex_bindings: Vec<SeedVertexBinding>,
+    pub float64_bindings: Vec<SeedFloat64Binding>,
+}
+
+/// Router → graph seed bindings. `entries` is the legacy grouped-anchor path; `rows` is the
+/// row-shaped path introduced for GQL `SEARCH` lowering. Both may be present; a plan that uses row
+/// seeds has already had its leading anchor stripped, so the graph executor consumes only `rows`.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct SeedBindingsWire {
     pub entries: Vec<SeedBindingEntry>,
+    pub rows: Vec<SeedRowWire>,
 }
 
 #[cfg(test)]
@@ -468,6 +502,17 @@ mod tests {
                 local_vertex_ids: vec![1, 2],
                 local_edge_postings: Vec::new(),
             }],
+            rows: vec![SeedRowWire {
+                vertex_bindings: vec![SeedVertexBinding {
+                    variable: "d".into(),
+                    local_vertex_id: 7,
+                    required_vertex_label_ids: vec![3],
+                }],
+                float64_bindings: vec![SeedFloat64Binding {
+                    variable: "distance".into(),
+                    value: 1.5,
+                }],
+            }],
         };
         let seed_blob = Encode!(&seed).expect("seed encode");
         let args = ExecutePlanArgs {
@@ -547,10 +592,22 @@ mod tests {
                     local_edge_postings: Vec::new(),
                 },
             ],
+            rows: vec![SeedRowWire {
+                vertex_bindings: vec![SeedVertexBinding {
+                    variable: "d".into(),
+                    local_vertex_id: 5,
+                    required_vertex_label_ids: vec![2],
+                }],
+                float64_bindings: vec![SeedFloat64Binding {
+                    variable: "score".into(),
+                    value: 0.25,
+                }],
+            }],
         };
         let bytes = Encode!(&wire).expect("encode");
         let decoded: SeedBindingsWire = Decode!(&bytes, SeedBindingsWire).expect("decode");
-        assert_eq!(wire, decoded);
+        assert_eq!(decoded.entries, wire.entries);
+        assert_eq!(decoded.rows, wire.rows);
     }
 
     #[test]
@@ -572,9 +629,33 @@ mod tests {
                     },
                 ],
             }],
+            rows: Vec::new(),
         };
         let bytes = Encode!(&wire).expect("encode");
         let decoded: SeedBindingsWire = Decode!(&bytes, SeedBindingsWire).expect("decode");
-        assert_eq!(wire, decoded);
+        assert_eq!(decoded.entries, wire.entries);
+        assert_eq!(decoded.rows, wire.rows);
+    }
+
+    #[test]
+    #[should_panic(expected = "field rows is not optional field")]
+    fn seed_bindings_wire_entries_only_blob_rejects_decode() {
+        // Pre-Slice 3 blobs carried only `entries`. With `rows` as a required field the decoder now
+        // rejects them. This is acceptable for Slice 3 because the only stored `seed_bindings_blob`
+        // values belong to DML mutation envelopes, and `SEARCH` lowering applies only to read
+        // queries.
+        #[derive(CandidType, Serialize)]
+        struct LegacySeedBindingsWire {
+            entries: Vec<SeedBindingEntry>,
+        }
+        let legacy = LegacySeedBindingsWire {
+            entries: vec![SeedBindingEntry {
+                variable: "u".into(),
+                local_vertex_ids: vec![1, 2],
+                local_edge_postings: Vec::new(),
+            }],
+        };
+        let legacy_bytes = Encode!(&legacy).expect("encode legacy wire");
+        let _: SeedBindingsWire = Decode!(&legacy_bytes, SeedBindingsWire).expect("decode legacy");
     }
 }

@@ -784,6 +784,7 @@ pub fn seeds_for_local_shard(
             local_vertex_ids: local_ids,
             local_edge_postings: Vec::new(),
         }],
+        rows: Vec::new(),
     };
     Some(Encode!(&wire).expect("SeedBindingsWire encode"))
 }
@@ -812,6 +813,7 @@ pub fn seeds_for_local_shard_edges(
             local_vertex_ids: Vec::new(),
             local_edge_postings: local_postings,
         }],
+        rows: Vec::new(),
     };
     Some(Encode!(&wire).expect("SeedBindingsWire encode"))
 }
@@ -1113,7 +1115,8 @@ mod tests {
 
         let roundtrip: SeedBindingsWire =
             Decode!(&Encode!(&wire).expect("re-encode"), SeedBindingsWire).expect("roundtrip");
-        assert_eq!(wire, roundtrip);
+        assert_eq!(wire.entries, roundtrip.entries);
+        assert_eq!(wire.rows, roundtrip.rows);
         assert!(seeds_for_local_shard("u", &hits, ShardId::new(99)).is_none());
     }
 

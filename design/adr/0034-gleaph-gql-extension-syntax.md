@@ -1,9 +1,9 @@
 # 0034. Gleaph GQL extension syntax surface
 
 Date: 2026-06-25
-Status: accepted (syntax design; Rust manifest implemented; SEARCH parser/planner implemented; remaining syntax staged by feature)
+Status: accepted (syntax design; Rust manifest implemented; SEARCH parser/planner and Router lowering for the accepted shape implemented; remaining syntax staged by feature)
 Last revised: 2026-06-26
-Anchor timestamp: 2026-06-26 03:25:00 UTC +0000
+Anchor timestamp: 2026-06-26 06:32:22 UTC +0000
 
 > **Summary.** Gleaph needs a coherent public GQL dialect surface for IC values, graph-local inline
 > edge data, vector search, shortest-path costs, and operational procedures. This ADR accepts a
@@ -178,7 +178,7 @@ Planned migration path:
    change behavior (done).
 4. Keep existing `GLEAPH.WEIGHT` / `GLEAPH.VECTOR.*` behavior while adding ordinary-property inline
    syntax in schema/planner/executor slices.
-5. Add `SEARCH` parser/planner support as a Gleaph dialect feature (done). Router lowering to the existing vector search API remains planned.
+5. Add `SEARCH` parser/planner support as a Gleaph dialect feature (done). Router lowering to the existing vector search API is implemented for the narrow leading `NodeScan + Search` prefix, vertex-only, no `WHERE`, `DISTANCE AS` shape. `SCORE AS` rejection for metrics without a natural score (e.g. `L2Squared`) is implemented; broader metric-specific score support remains planned. Non-leading `SEARCH`, edge subjects, and in-index `WHERE` remain planned.
 6. Mark procedure-shaped vector search as internal/escape-hatch only if it is ever added.
 
 ## Design Documentation Impact

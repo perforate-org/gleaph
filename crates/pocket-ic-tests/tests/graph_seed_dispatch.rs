@@ -35,6 +35,7 @@ fn index_scan_project_plan() -> PhysicalPlan {
 }
 
 #[test]
+#[ignore = "blocked by pocket-ic server canister-sandbox busy-loop on macOS 26.4 (upstream); run manually once the upstream pocket-ic/macOS compatibility issue is resolved"]
 fn graph_execute_plan_query_skips_index_scan_with_seed_bindings() {
     let env = install_federation();
     let inserted = e2e_insert_vertex(&env, env.graph_source);
@@ -48,6 +49,7 @@ fn graph_execute_plan_query_skips_index_scan_with_seed_bindings() {
             local_vertex_ids: vec![inserted.local_vertex_id],
             local_edge_postings: Vec::new(),
         }],
+        rows: Vec::new(),
     };
     let seed_blob = Encode!(&seeds).expect("encode seeds");
 
@@ -106,6 +108,7 @@ fn execute_plan_args_without_seeds_preserves_plan_blob_roundtrip() {
 }
 
 #[test]
+#[ignore = "blocked by pocket-ic server canister-sandbox busy-loop on macOS 26.4 (upstream); run manually once the upstream pocket-ic/macOS compatibility issue is resolved"]
 fn graph_execute_plan_query_rejects_index_scan_without_seeds() {
     let env = install_federation();
     let _ = e2e_insert_vertex(&env, env.graph_source);

@@ -1317,6 +1317,41 @@ pub fn gql_query_as_admin(
     gql_query_on_router(&env.pic, env.admin, env.router, query)
 }
 
+/// Router composite `gql_query` as admin with explicit parameter blob.
+pub fn gql_query_with_params_as_admin(
+    env: &FederationEnv,
+    query: &str,
+    params_blob: Vec<u8>,
+) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
+    gql_query_with_params_on_router(&env.pic, env.admin, env.router, query, params_blob)
+}
+
+/// Router composite `gql_query` with explicit caller, router, and parameter blob.
+pub fn gql_query_with_params_on_router(
+    pic: &PocketIc,
+    caller: Principal,
+    router: Principal,
+    query: &str,
+    params_blob: Vec<u8>,
+) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
+    let bytes = pic
+        .query_call(
+            router,
+            caller,
+            "gql_query",
+            Encode!(&query.to_string(), &params_blob).expect("encode gql_query"),
+        )
+        .unwrap_or_else(|e| panic!("gql_query on router: {e:?}"));
+    match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
+        Ok(Ok(result)) => result,
+        Ok(Err(err)) => panic!("gql_query rejected: {err:?}"),
+        Err(err) => panic!("decode gql_query: {err}"),
+    }
+}
+
 /// Router composite `gql_query` with explicit caller and router principals.
 pub fn gql_query_on_router(
     pic: &PocketIc,

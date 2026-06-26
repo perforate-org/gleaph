@@ -658,11 +658,6 @@ async fn run_gql(
     )?;
     let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), schema)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    if gleaph_gql_planner::plan_contains_search(&plan) {
-        return Err(RouterError::InvalidArgument(
-            "GQL SEARCH is parsed and planned but Router lowering is not implemented yet".into(),
-        ));
-    }
     let requires_write_path = plan.has_dml();
     if requires_write_path != flags.requires_write_path() {
         return Err(RouterError::InvalidArgument(
@@ -695,6 +690,46 @@ async fn run_gql(
         session_current,
         resolved.graph_id,
     )?;
+
+    match &v2 {
+        crate::use_graph::UseGraphV2Dispatch::EffectiveGraph { plan } => {
+            if let Some(result) = crate::gql_search::try_execute_gql_search(
+                plan,
+                dispatch.dispatch_graph_id,
+                params,
+                mode,
+                &stats,
+                &store,
+            )
+            .await?
+            {
+                return Ok(result);
+            }
+        }
+        crate::use_graph::UseGraphV2Dispatch::Single { graph_id, plan } => {
+            let focused_stats = graph_stats_for(*graph_id);
+            if let Some(result) = crate::gql_search::try_execute_gql_search(
+                plan,
+                *graph_id,
+                params,
+                mode,
+                &focused_stats,
+                &store,
+            )
+            .await?
+            {
+                return Ok(result);
+            }
+        }
+        crate::use_graph::UseGraphV2Dispatch::Multi { plan, .. }
+        | crate::use_graph::UseGraphV2Dispatch::Join { plan, .. } => {
+            if gleaph_gql_planner::plan_contains_search(plan) {
+                return Err(RouterError::InvalidArgument(
+                    "GQL SEARCH is only supported for single-graph queries in this slice".into(),
+                ));
+            }
+        }
+    }
 
     let pmap =
         decode_gql_params_blob(params).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
