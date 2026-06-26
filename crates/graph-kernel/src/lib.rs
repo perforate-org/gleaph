@@ -5,6 +5,7 @@ pub mod bidirectional_catalog;
 pub mod edge_payload_profile_store;
 pub mod entry;
 pub mod federation;
+pub mod gql_dialect;
 pub mod index;
 pub mod path;
 pub mod plan_exec;

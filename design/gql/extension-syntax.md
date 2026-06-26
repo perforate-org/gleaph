@@ -1,12 +1,12 @@
 # Gleaph GQL extension syntax
 
 Last updated: 2026-06-26
-Anchor timestamp: 2026-06-26 00:22:53 UTC +0000
+Anchor timestamp: 2026-06-26 02:20:32 UTC +0000
 
 ## Status
 
-**Planned dialect contract with partially implemented pieces.** This document is the steady-state
-public syntax contract for Gleaph-specific GQL extensions. It complements:
+**Dialect contract with a canonical Rust manifest and partially implemented pieces.** This document
+is the steady-state public syntax contract for Gleaph-specific GQL extensions. It complements:
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
 - [ADR 0034](../adr/0034-gleaph-gql-extension-syntax.md), which accepts a dedicated dialect contract.
@@ -26,19 +26,27 @@ runtime behavior until marked implemented.
 6. Keep `gleaph-gql` and `gleaph-gql-planner` general-purpose: Gleaph/IC-specific backend meaning
    belongs in Router/Graph integration layers.
 
+## Rust manifest
+
+The canonical Rust registry for Gleaph GQL extension names lives in `gleaph-graph-kernel::gql_dialect`.
+It records canonical names, syntax classes, implementation status, owners, and documentation anchors.
+It is a registry and recognizer layer, not an execution dispatcher. Router, Graph, planner
+integration, `gleaph-gql-ic`, and `gleaph-graph-vector-index` continue to own their respective
+semantics.
+
 ## Syntax classes
 
-| Class | Public shape | Status | Owner of meaning |
-|-------|--------------|--------|------------------|
-| IC value type | `IC.PRINCIPAL` | Implemented | `gleaph-gql-ic` value extension |
-| IC runtime function | `MSG_CALLER()` | Implemented | Graph execution context |
-| Edge inline value | `e.distance`, `e.stats.score` with `INLINE` schema modifier | Planned target | Router schema/catalog + Graph edge payload execution |
-| Shortest-path cost | `COST BY e.distance` | Planned target | Graph query planner/executor |
-| Current edge weight function | `GLEAPH.WEIGHT(e)` | Implemented compatibility surface | Graph query executor |
-| Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)` | Implemented compatibility surface | Graph edge storage/execution |
-| Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold` | Implemented compatibility surface | Planner fusion + Graph edge payload executor |
-| Vertex vector search | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Planned target | Router vector-index catalog + vector canister |
-| Operational procedures | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()` | Implemented | Graph mutation executor / Router orchestration |
+| Class                         | Public shape                                                              | Status                            | Owner of meaning                                     |
+| ----------------------------- | ------------------------------------------------------------------------- | --------------------------------- | ---------------------------------------------------- |
+| IC value type                 | `IC.PRINCIPAL`                                                            | Implemented                       | `gleaph-gql-ic` value extension                      |
+| IC runtime function           | `MSG_CALLER()`                                                            | Implemented                       | Graph execution context                              |
+| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | Planned target                    | Router schema/catalog + Graph edge payload execution |
+| Shortest-path cost            | `COST BY e.distance`                                                      | Planned target                    | Graph query planner/executor                         |
+| Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface | Graph query executor                                 |
+| Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface | Graph edge storage/execution                         |
+| Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface | Planner fusion + Graph edge payload executor         |
+| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Planned target                    | Router vector-index catalog + vector canister        |
+| Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                       | Graph mutation executor / Router orchestration       |
 
 ## Namespace policy
 
@@ -481,16 +489,16 @@ This expresses the intended flow:
 
 ## Implementation staging
 
-| Stage | Scope |
-|-------|-------|
-| 1 | Document the dialect contract and keep existing behavior unchanged |
-| 2 | Add the Rust extension manifest for canonical extension names, classes, status, owner, and doc anchors |
-| 3 | Add `SEARCH` parser/planner representation without backend-specific storage details |
-| 4 | Add Router lowering from vector `SEARCH` to the existing vector search API |
-| 5 | Add result hydration from vector hits to graph vertex bindings |
-| 6 | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions |
-| 7 | Add inline edge property schema syntax and lower `e.inline_field` to existing edge-payload reads |
-| 8 | Deprecate daily-query use of `GLEAPH.WEIGHT` where ordinary inline property access is available |
+| Stage | Scope                                                                                                  | Status      |
+| ----- | ------------------------------------------------------------------------------------------------------ | ----------- |
+| 1     | Document the dialect contract and keep existing behavior unchanged                                     | Implemented |
+| 2     | Add the Rust extension manifest for canonical extension names, classes, status, owner, and doc anchors | Implemented |
+| 3     | Add `SEARCH` parser/planner representation without backend-specific storage details                    | Planned     |
+| 4     | Add Router lowering from vector `SEARCH` to the existing vector search API                             | Planned     |
+| 5     | Add result hydration from vector hits to graph vertex bindings                                         | Planned     |
+| 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Planned     |
+| 7     | Add inline edge property schema syntax and lower `e.inline_field` to existing edge-payload reads       | Planned     |
+| 8     | Deprecate daily-query use of `GLEAPH.WEIGHT` where ordinary inline property access is available        | Planned     |
 
 Every stage that changes public syntax must update this document and add parser/planner/executor tests.
 

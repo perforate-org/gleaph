@@ -7,6 +7,7 @@ use gleaph_gql_planner::for_each_immediate_child_expr;
 use gleaph_gql_planner::{
     PathPatternExtensionContext, PathPatternExtensionHandler, PlannerError, ShortestPathCost,
 };
+use gleaph_graph_kernel::gql_dialect::GLEAPH_COST;
 
 use super::gleaph_weight::{
     gleaph_weight_arg_edge_var, gleaph_weight_single_arg, is_gleaph_weight_call,
@@ -69,9 +70,7 @@ impl PathPatternExtensionHandler for GleaphPathExtensionHandler {
 }
 
 fn is_gleaph_cost_extension_name(parts: &[String]) -> bool {
-    parts.len() == 2
-        && parts[0].eq_ignore_ascii_case("gleaph")
-        && parts[1].eq_ignore_ascii_case("cost")
+    GLEAPH_COST.matches_ascii_case_insensitive(parts)
 }
 
 fn validate_cost_expr_references_edge(expr: &Expr, edge_var: &str) -> Result<(), PlannerError> {

@@ -4,6 +4,9 @@ use super::super::result::flatten_conjunction;
 use crate::anchor::{self, extract_simple_label};
 use crate::plan::*;
 use crate::stats::GraphStats;
+use gleaph_graph_kernel::gql_dialect::{
+    GLEAPH_VECTOR_COSINE_DISTANCE, GLEAPH_VECTOR_DOT, GLEAPH_VECTOR_L2_SQUARED,
+};
 
 /// Collect all inline predicates from a node pattern (properties + WHERE clause)
 /// without emitting them as PlanOps. Used by FilterIntoPattern to fuse into ExpandFilter.
@@ -307,19 +310,14 @@ fn gleaph_vector_call(expr: &Expr) -> Option<(String, EdgeVectorMetric, ScanValu
     else {
         return None;
     };
-    if *distinct
-        || name.parts.len() != 3
-        || !name.parts[0].eq_ignore_ascii_case("gleaph")
-        || !name.parts[1].eq_ignore_ascii_case("vector")
-        || args.len() != 2
-    {
+    if *distinct || args.len() != 2 {
         return None;
     }
-    let metric = if name.parts[2].eq_ignore_ascii_case("l2_squared") {
+    let metric = if GLEAPH_VECTOR_L2_SQUARED.matches_ascii_case_insensitive(&name.parts) {
         EdgeVectorMetric::L2Squared
-    } else if name.parts[2].eq_ignore_ascii_case("cosine_distance") {
+    } else if GLEAPH_VECTOR_COSINE_DISTANCE.matches_ascii_case_insensitive(&name.parts) {
         EdgeVectorMetric::CosineDistance
-    } else if name.parts[2].eq_ignore_ascii_case("dot") {
+    } else if GLEAPH_VECTOR_DOT.matches_ascii_case_insensitive(&name.parts) {
         EdgeVectorMetric::Dot
     } else {
         return None;

@@ -8,6 +8,7 @@ use gleaph_gql::ast::ObjectName;
 use gleaph_gql_ic::principal_to_value;
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
+use gleaph_graph_kernel::gql_dialect::MSG_CALLER;
 use gleaph_graph_kernel::plan_exec::{
     ConstrainedPropertyDispatch, ResolvedLabelTable, ResolvedPropertyTable, UniqueClaimDispatch,
 };
@@ -201,10 +202,11 @@ pub fn try_eval_runtime_function_call(
     args: &[gleaph_gql::ast::Expr],
     distinct: bool,
 ) -> Result<Option<Value>, RuntimeFunctionError> {
-    let Some(last) = name.parts.last().map(|s| s.as_str()) else {
-        return Ok(None);
-    };
-    if !last.eq_ignore_ascii_case("msg_caller") {
+    let is_msg_caller = name
+        .parts
+        .last()
+        .is_some_and(|p| MSG_CALLER.matches_ascii_case_insensitive(&[p.as_str()]));
+    if !is_msg_caller {
         return Ok(None);
     }
     if name.parts.len() != 1 {

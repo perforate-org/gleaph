@@ -4,17 +4,16 @@ use super::error::PlanMutationError;
 use super::executor::PlanMutationBindings;
 use crate::facade::{BulkIngestFinalizeReport, BulkIngestFinalizeSpec, GraphStore};
 use gleaph_gql::Value;
-use gleaph_gql::ast::{Expr, ExprKind, ObjectName};
+use gleaph_gql::ast::{Expr, ExprKind};
 use gleaph_gql_planner::plan::{PlanOp, Str, YieldColumn};
+use gleaph_graph_kernel::gql_dialect::{
+    GLEAPH_DRAIN_DEFERRED_MAINTENANCE, GLEAPH_FINALIZE_BULK_INGEST,
+    GLEAPH_FINALIZE_FORWARD_EDGE_SPAN, GLEAPH_VERTEX_LIST,
+};
 use ic_stable_lara::VertexId;
 use std::collections::BTreeMap;
 
 const MAX_FINALIZE_VERTICES: usize = 256;
-
-const FINALIZE_BULK_INGEST: &[&str] = &["GLEAPH", "FINALIZE_BULK_INGEST"];
-const FINALIZE_FORWARD_EDGE_SPAN: &[&str] = &["GLEAPH", "FINALIZE_FORWARD_EDGE_SPAN"];
-const DRAIN_DEFERRED_MAINTENANCE: &[&str] = &["GLEAPH", "DRAIN_DEFERRED_MAINTENANCE"];
-const VERTEX_LIST: &[&str] = &["GLEAPH", "VERTEX_LIST"];
 
 /// True when `ops` contains a Gleaph finalize `CALL` that must run on the mutation executor.
 pub fn plan_contains_gleaph_finalize_call(ops: &[PlanOp]) -> bool {
@@ -24,9 +23,9 @@ pub fn plan_contains_gleaph_finalize_call(ops: &[PlanOp]) -> bool {
 }
 
 pub fn is_gleaph_finalize_procedure(name: &[Str]) -> bool {
-    procedure_name_matches(name, FINALIZE_BULK_INGEST)
-        || procedure_name_matches(name, FINALIZE_FORWARD_EDGE_SPAN)
-        || procedure_name_matches(name, DRAIN_DEFERRED_MAINTENANCE)
+    GLEAPH_FINALIZE_BULK_INGEST.matches_exact(name)
+        || GLEAPH_FINALIZE_FORWARD_EDGE_SPAN.matches_exact(name)
+        || GLEAPH_DRAIN_DEFERRED_MAINTENANCE.matches_exact(name)
 }
 
 pub fn execute_call_procedure(
@@ -46,7 +45,7 @@ pub fn execute_call_procedure(
         });
     }
 
-    let report = if procedure_name_matches(name, FINALIZE_BULK_INGEST) {
+    let report = if GLEAPH_FINALIZE_BULK_INGEST.matches_exact(name) {
         if args.len() != 2 {
             return Err(invalid_args(
                 "GLEAPH.FINALIZE_BULK_INGEST",
@@ -60,7 +59,7 @@ pub fn execute_call_procedure(
             forward_vertices: forward,
             reverse_vertices: reverse,
         })?
-    } else if procedure_name_matches(name, FINALIZE_FORWARD_EDGE_SPAN) {
+    } else if GLEAPH_FINALIZE_FORWARD_EDGE_SPAN.matches_exact(name) {
         if args.len() != 1 {
             return Err(invalid_args(
                 "GLEAPH.FINALIZE_FORWARD_EDGE_SPAN",
@@ -78,7 +77,7 @@ pub fn execute_call_procedure(
             forward_vertices: forward,
             reverse_vertices: vec![],
         })?
-    } else if procedure_name_matches(name, DRAIN_DEFERRED_MAINTENANCE) {
+    } else if GLEAPH_DRAIN_DEFERRED_MAINTENANCE.matches_exact(name) {
         if !args.is_empty() {
             return Err(invalid_args(
                 "GLEAPH.DRAIN_DEFERRED_MAINTENANCE",
@@ -101,23 +100,6 @@ pub fn execute_call_procedure(
         populate_finalize_yields(columns, &report, bindings);
     }
     Ok(())
-}
-
-fn procedure_name_matches(name: &[Str], expected: &[&str]) -> bool {
-    name.len() == expected.len()
-        && name
-            .iter()
-            .zip(expected)
-            .all(|(part, exp)| part.as_ref() == *exp)
-}
-
-fn object_name_matches(name: &ObjectName, expected: &[&str]) -> bool {
-    name.parts.len() == expected.len()
-        && name
-            .parts
-            .iter()
-            .zip(expected)
-            .all(|(part, exp)| part == *exp)
 }
 
 fn format_procedure_name(name: &[Str]) -> String {
@@ -157,7 +139,9 @@ fn resolve_vertex_list_expr(
             })?;
             Ok(vec![vertex_id])
         }
-        ExprKind::FunctionCall { name, args, .. } if object_name_matches(name, VERTEX_LIST) => {
+        ExprKind::FunctionCall { name, args, .. }
+            if GLEAPH_VERTEX_LIST.matches_exact(&name.parts) =>
+        {
             let mut vertices = Vec::with_capacity(args.len());
             for arg in args {
                 let ExprKind::Variable(var) = &arg.kind else {

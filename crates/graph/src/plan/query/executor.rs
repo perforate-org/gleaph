@@ -36,6 +36,7 @@ use gleaph_gql_planner::collect_expr_variables;
 use gleaph_gql_planner::plan::{PhysicalPlan, PlanOp, Str};
 use gleaph_graph_kernel::entry::PreparedWeightDecoder;
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId};
+use gleaph_graph_kernel::gql_dialect::GLEAPH_SEQUENCE;
 use ic_stable_lara::VertexId;
 use ic_stable_lara::labeled::OutEdgeOrder;
 use std::collections::BTreeMap;
@@ -496,10 +497,7 @@ pub(crate) fn gleaph_sequence_sort(
 }
 
 fn is_gleaph_sequence_call(name: &ObjectName, distinct: bool) -> bool {
-    !distinct
-        && name.parts.len() == 2
-        && name.parts[0].eq_ignore_ascii_case("gleaph")
-        && name.parts[1].eq_ignore_ascii_case("sequence")
+    !distinct && GLEAPH_SEQUENCE.matches_ascii_case_insensitive(&name.parts)
 }
 
 fn vertex_binding(row: &PlanRow, variable: &str) -> Result<VertexId, PlanQueryError> {

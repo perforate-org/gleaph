@@ -1,9 +1,9 @@
 # 0034. Gleaph GQL extension syntax surface
 
 Date: 2026-06-25
-Status: accepted (syntax design; implementation staged by feature)
+Status: accepted (syntax design; Rust manifest implemented; remaining syntax staged by feature)
 Last revised: 2026-06-26
-Anchor timestamp: 2026-06-26 00:22:53 UTC +0000
+Anchor timestamp: 2026-06-26 02:20:32 UTC +0000
 
 > **Summary.** Gleaph needs a coherent public GQL dialect surface for IC values, graph-local inline
 > edge data, vector search, shortest-path costs, and operational procedures. This ADR accepts a
@@ -41,13 +41,13 @@ confirms that first-class search syntax is a better public shape than `CALL GLEA
 Feature-specific ADRs answer the storage and canister questions, but they do not define the user-facing
 Gleaph GQL dialect as a whole. The missing contract creates several risks:
 
-| Risk | Impact |
-|------|--------|
-| Procedure-shaped vector search becomes the public API | Harder to compose with `MATCH`, traversal, `WHERE`, and ranking |
-| `GLEAPH.WEIGHT` / `GLEAPH.PAYLOAD` stay as daily query syntax | Edge payload storage details remain visible to users |
-| `GLEAPH.VECTOR.*` is reused ambiguously | Edge-payload vector predicates and vertex embedding search become conflated |
-| IC/runtime extensions are documented separately from search/traversal extensions | No single place explains what is part of the Gleaph dialect |
-| Gleaph-specific syntax lands in `gleaph-gql` without a boundary rule | Portable GQL crates become coupled to Gleaph storage/canister concepts |
+| Risk                                                                             | Impact                                                                      |
+| -------------------------------------------------------------------------------- | --------------------------------------------------------------------------- |
+| Procedure-shaped vector search becomes the public API                            | Harder to compose with `MATCH`, traversal, `WHERE`, and ranking             |
+| `GLEAPH.WEIGHT` / `GLEAPH.PAYLOAD` stay as daily query syntax                    | Edge payload storage details remain visible to users                        |
+| `GLEAPH.VECTOR.*` is reused ambiguously                                          | Edge-payload vector predicates and vertex embedding search become conflated |
+| IC/runtime extensions are documented separately from search/traversal extensions | No single place explains what is part of the Gleaph dialect                 |
+| Gleaph-specific syntax lands in `gleaph-gql` without a boundary rule             | Portable GQL crates become coupled to Gleaph storage/canister concepts      |
 
 ## Existing Architecture Assessment
 
@@ -167,15 +167,15 @@ No immediate code or stable-memory migration.
 
 Planned migration path:
 
-1. Document existing extensions and target syntax in `design/gql/extension-syntax.md`.
-2. Add the Rust extension manifest without changing behavior:
+1. Document existing extensions and target syntax in `design/gql/extension-syntax.md` (done).
+2. Add the Rust extension manifest in `gleaph-graph-kernel::gql_dialect` without changing behavior (done):
    - represent canonical names such as `IC.PRINCIPAL`, `MSG_CALLER`, `GLEAPH.COST`,
      `GLEAPH.WEIGHT`, `GLEAPH.SEQUENCE`, `GLEAPH.VECTOR.*`, and `GLEAPH.FINALIZE_*`;
    - classify planned syntax such as `SEARCH`, `INLINE`, and `CREATE VECTOR INDEX`;
-   - expose case-insensitive recognizers for owners that already parse extension names;
+   - expose exact and case-insensitive recognizers for owners that already parse extension names;
    - add tests that implemented Gleaph extension entry points are registered in the manifest.
 3. Replace scattered hard-coded Gleaph extension names with manifest helpers where this does not
-   change behavior.
+   change behavior (done).
 4. Keep existing `GLEAPH.WEIGHT` / `GLEAPH.VECTOR.*` behavior while adding ordinary-property inline
    syntax in schema/planner/executor slices.
 5. Add `SEARCH` parser/planner support as a Gleaph dialect feature, with Router lowering to the
@@ -187,8 +187,9 @@ Planned migration path:
 - Add `design/gql/extension-syntax.md` (done).
 - Link the new document from `design/gql/layers.md` (done).
 - Link ADR 0034 from `design/adr/README.md` (done).
-- Add a Rust extension manifest in a future implementation slice; update this ADR and
-  `design/gql/extension-syntax.md` if its crate/module location changes the boundary model.
+- Add the Rust extension manifest in `gleaph-graph-kernel::gql_dialect` (done). Update this ADR and
+  `design/gql/extension-syntax.md` if the module is extracted into a dedicated crate or if its
+  location otherwise changes the boundary model.
 - Future implementation slices must update `design/gql/extension-syntax.md` when a planned syntax
   becomes implemented.
 

@@ -14,6 +14,7 @@ use gleaph_graph_kernel::entry::{
     DecodedEdgePayload, EdgeLabelId, EdgePayloadProfileError, PreparedEdgePayloadDecoder,
     PreparedWeightDecoder, WeightDecodeError, WeightProfilePrepareError, decode_edge_payload,
 };
+use gleaph_graph_kernel::gql_dialect::GLEAPH_WEIGHT;
 
 use crate::facade::{EdgeHandle, catalog_edge_label_from_wire};
 use crate::gql_execution_context::GqlExecutionContext;
@@ -119,12 +120,7 @@ pub(crate) fn prepare_gleaph_weight_decoders(
 }
 
 pub(crate) fn is_gleaph_weight_call(name: &ObjectName, distinct: bool) -> bool {
-    if distinct {
-        return false;
-    }
-    name.parts.len() == 2
-        && name.parts[0].eq_ignore_ascii_case("gleaph")
-        && name.parts[1].eq_ignore_ascii_case("weight")
+    !distinct && GLEAPH_WEIGHT.matches_ascii_case_insensitive(&name.parts)
 }
 
 pub(crate) fn gleaph_weight_single_arg(args: &[Expr]) -> Option<&Expr> {
