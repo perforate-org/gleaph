@@ -469,11 +469,28 @@ fn check_simple_query(env: &mut TypeEnv<'_>, sq: &SimpleQueryStatement) {
                 }
             }
             check_expr_constraints(env, s.provider.query());
+            let limit_ty = infer_expr(env, s.provider.limit());
+            if !types::is_unknown(&limit_ty)
+                && !types::is_null(&limit_ty)
+                && !types::is_never(&limit_ty)
+                && !types::is_numeric(types::unwrap_nonnull(&limit_ty))
+            {
+                env.warn_at(
+                    WarningKind::NonNumericLimitOffset,
+                    format!("SEARCH LIMIT expects a numeric expression, got {limit_ty:?}"),
+                    s.provider.limit().span,
+                );
+            }
             check_expr_constraints(env, s.provider.limit());
             if let Some(filter) = s.provider.filter() {
                 check_boolean_context(env, filter);
             }
-            env.bind(s.output.alias.clone(), Type::Unknown);
+            env.bind(
+                s.output.alias.clone(),
+                Type::Scalar(ValueType::Float64 {
+                    keyword: Keyword::new("FLOAT64"),
+                }),
+            );
         }
         SimpleQueryStatement::CallProcedure(cp) => {
             check_call_procedure(env, cp);

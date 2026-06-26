@@ -159,6 +159,20 @@ fn validate_linear_query(
                                 }
                             }
                         }
+                        SimpleQueryStatement::Search(s) => {
+                            if !scope.contains(&s.binding) {
+                                return Err(verr(&format!(
+                                    "SEARCH binding variable '{}' is not in scope",
+                                    s.binding
+                                )));
+                            }
+                            validate_expr(s.provider.query(), &scope, &graph_scope)?;
+                            validate_expr(s.provider.limit(), &scope, &graph_scope)?;
+                            if let Some(filter) = s.provider.filter() {
+                                validate_expr(filter, &scope, &graph_scope)?;
+                            }
+                            scope.insert(s.output.alias.clone());
+                        }
                         SimpleQueryStatement::Insert(ins) => validate_insert(ins)?,
                         SimpleQueryStatement::Set(set) => {
                             validate_set_vars(&set.items, &scope, &graph_scope)?;

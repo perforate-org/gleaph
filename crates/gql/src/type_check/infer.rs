@@ -757,8 +757,14 @@ fn infer_value_subquery_type(env: &TypeEnv<'_>, cq: &CompositeQueryExpr) -> Type
                 forked.bind(f.variable.clone(), elem_ty);
             }
             SimpleQueryStatement::Search(s) => {
-                // The output alias is a scalar (score or distance).
-                forked.bind(s.output.alias.clone(), Type::Unknown);
+                // The output alias is a scalar score/distance, represented as FLOAT64
+                // in the plan until metric-specific typing lands.
+                forked.bind(
+                    s.output.alias.clone(),
+                    Type::Scalar(ValueType::Float64 {
+                        keyword: Keyword::new("FLOAT64"),
+                    }),
+                );
             }
             _ => {}
         }

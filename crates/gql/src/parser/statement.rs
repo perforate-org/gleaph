@@ -1400,8 +1400,6 @@ mod search_parser_tests {
                LIMIT 100 \
              ) SCORE AS similarity \
              RETURN d, similarity";
-        eprintln!("INPUT: {:?}", input);
-        eprintln!("INPUT len: {}", input.len());
         let part = first_simple_query_part(input);
         let SimpleQueryStatement::Search(stmt) = part else {
             panic!("expected Search, got {part:?}");
