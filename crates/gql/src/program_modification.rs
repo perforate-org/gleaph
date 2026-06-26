@@ -129,6 +129,7 @@ fn walk_simple_part(part: &SimpleQueryStatement, flags: &mut ProgramModification
         | SimpleQueryStatement::Filter(_)
         | SimpleQueryStatement::Let(_)
         | SimpleQueryStatement::For(_)
+        | SimpleQueryStatement::Search(_)
         | SimpleQueryStatement::OrderBy(_)
         | SimpleQueryStatement::Limit(_)
         | SimpleQueryStatement::Offset(_) => {}

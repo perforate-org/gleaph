@@ -61,6 +61,8 @@ pub enum WarningKind {
     DmlTargetMismatch,
     /// DML form is recognized but not supported by the current executor/planner stack.
     UnsupportedDml,
+    /// SEARCH binding variable is not a node or edge, or is not in scope.
+    SearchBindingMismatch,
     /// UNION/EXCEPT/INTERSECT columns have incompatible types.
     SetOpColumnMismatch,
     /// Edge pattern direction disagrees with graph schema (`DIRECTED` vs `UNDIRECTED` edge type).

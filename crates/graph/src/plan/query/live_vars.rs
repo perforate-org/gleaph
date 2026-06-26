@@ -102,6 +102,16 @@ fn variables_read_by_op(op: &PlanOp, out: &mut BTreeSet<String>) {
         PlanOp::OptionalMatch { sub_plan } => out.extend(variables_read_by_ops(sub_plan)),
         PlanOp::SetOperation { right, .. } => out.extend(variables_read_by_ops(&right.ops)),
         PlanOp::For { list, .. } => collect_expr_vars(list, out),
+        PlanOp::Search {
+            binding, provider, ..
+        } => {
+            out.insert(binding.to_string());
+            collect_expr_vars(provider.query(), out);
+            collect_expr_vars(provider.limit(), out);
+            if let Some(filter) = provider.filter() {
+                collect_expr_vars(filter, out);
+            }
+        }
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
             out.extend(variables_read_by_ops(&sub_plan.ops));
         }

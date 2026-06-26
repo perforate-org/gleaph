@@ -255,6 +255,33 @@ impl Encoder {
             PlanOp::Filter { condition } => PlanOpWire::Filter {
                 condition: self.intern_expr(condition)?,
             },
+            PlanOp::Search {
+                binding,
+                provider,
+                output,
+            } => PlanOpWire::Search {
+                binding: binding.to_string(),
+                provider: match provider {
+                    crate::plan::SearchProviderPlan::VectorIndex {
+                        index_name,
+                        query,
+                        limit,
+                        filter,
+                    } => SearchProviderWire::VectorIndex {
+                        index_name: index_name.iter().map(|s| s.to_string()).collect(),
+                        query: self.intern_expr(query)?,
+                        limit: self.intern_expr(limit)?,
+                        filter: filter.as_ref().map(|e| self.intern_expr(e)).transpose()?,
+                    },
+                },
+                output: SearchOutputWire {
+                    kind: match output.kind {
+                        crate::plan::SearchOutputKind::Score => SearchOutputKindWire::Score,
+                        crate::plan::SearchOutputKind::Distance => SearchOutputKindWire::Distance,
+                    },
+                    alias: output.alias.to_string(),
+                },
+            },
             PlanOp::CallProcedure {
                 name,
                 args,

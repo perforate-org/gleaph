@@ -55,6 +55,15 @@ fn first_unfused_gleaph_vector_expr_in_op(op: &PlanOp) -> Option<String> {
             .find_map(|binding| first_unfused_gleaph_vector_expr_in_expr(&binding.value)),
         PlanOp::For { list, .. } => first_unfused_gleaph_vector_expr_in_expr(list),
         PlanOp::Filter { condition } => first_unfused_gleaph_vector_expr_in_expr(condition),
+        PlanOp::Search { provider, .. } => {
+            first_unfused_gleaph_vector_expr_in_expr(provider.query())
+                .or_else(|| first_unfused_gleaph_vector_expr_in_expr(provider.limit()))
+                .or_else(|| {
+                    provider
+                        .filter()
+                        .and_then(first_unfused_gleaph_vector_expr_in_expr)
+                })
+        }
         PlanOp::CallProcedure { args, .. } => first_unfused_gleaph_vector_expr_in_exprs(args),
         PlanOp::InlineProcedureCall { sub_plan, .. } => {
             first_unfused_gleaph_vector_expr_in_ops(&sub_plan.ops)

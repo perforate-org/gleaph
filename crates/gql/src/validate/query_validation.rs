@@ -80,6 +80,20 @@ fn validate_linear_query(
             }
             SimpleQueryStatement::Limit(lim) => validate_expr(&lim.count, &scope, &graph_scope)?,
             SimpleQueryStatement::Offset(off) => validate_expr(&off.count, &scope, &graph_scope)?,
+            SimpleQueryStatement::Search(s) => {
+                if !scope.contains(&s.binding) {
+                    return Err(verr(&format!(
+                        "SEARCH binding variable '{}' is not in scope",
+                        s.binding
+                    )));
+                }
+                validate_expr(s.provider.query(), &scope, &graph_scope)?;
+                validate_expr(s.provider.limit(), &scope, &graph_scope)?;
+                if let Some(filter) = s.provider.filter() {
+                    validate_expr(filter, &scope, &graph_scope)?;
+                }
+                scope.insert(s.output.alias.clone());
+            }
             SimpleQueryStatement::CallProcedure(cp) => {
                 validate_call_procedure(cp)?;
                 for arg in &cp.args {
@@ -636,6 +650,9 @@ fn collect_linear_query_scopes(
                     scope.insert(ord.variable.clone());
                 }
             }
+            SimpleQueryStatement::Search(s) => {
+                scope.insert(s.output.alias.clone());
+            }
             SimpleQueryStatement::CallProcedure(cp) => {
                 if let Some(yields) = &cp.yield_items {
                     for item in yields {
@@ -734,6 +751,9 @@ fn collect_linear_query_scopes_with_order(
                 if let Some(ord) = &f.ordinality {
                     replace_visible_binding(scope, order, &ord.variable);
                 }
+            }
+            SimpleQueryStatement::Search(s) => {
+                replace_visible_binding(scope, order, &s.output.alias);
             }
             SimpleQueryStatement::CallProcedure(cp) => {
                 if let Some(yields) = &cp.yield_items {

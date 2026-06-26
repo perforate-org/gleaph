@@ -1,7 +1,7 @@
 # Gleaph GQL extension syntax
 
 Last updated: 2026-06-26
-Anchor timestamp: 2026-06-26 02:20:32 UTC +0000
+Anchor timestamp: 2026-06-26 03:25:00 UTC +0000
 
 ## Status
 
@@ -36,17 +36,17 @@ semantics.
 
 ## Syntax classes
 
-| Class                         | Public shape                                                              | Status                            | Owner of meaning                                     |
-| ----------------------------- | ------------------------------------------------------------------------- | --------------------------------- | ---------------------------------------------------- |
-| IC value type                 | `IC.PRINCIPAL`                                                            | Implemented                       | `gleaph-gql-ic` value extension                      |
-| IC runtime function           | `MSG_CALLER()`                                                            | Implemented                       | Graph execution context                              |
-| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | Planned target                    | Router schema/catalog + Graph edge payload execution |
-| Shortest-path cost            | `COST BY e.distance`                                                      | Planned target                    | Graph query planner/executor                         |
-| Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface | Graph query executor                                 |
-| Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface | Graph edge storage/execution                         |
-| Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface | Planner fusion + Graph edge payload executor         |
-| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Planned target                    | Router vector-index catalog + vector canister        |
-| Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                       | Graph mutation executor / Router orchestration       |
+| Class                         | Public shape                                                              | Status                                                 | Owner of meaning                                     |
+| ----------------------------- | ------------------------------------------------------------------------- | ------------------------------------------------------ | ---------------------------------------------------- |
+| IC value type                 | `IC.PRINCIPAL`                                                            | Implemented                                            | `gleaph-gql-ic` value extension                      |
+| IC runtime function           | `MSG_CALLER()`                                                            | Implemented                                            | Graph execution context                              |
+| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | Planned target                                         | Router schema/catalog + Graph edge payload execution |
+| Shortest-path cost            | `COST BY e.distance`                                                      | Planned target                                         | Graph query planner/executor                         |
+| Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface                      | Graph query executor                                 |
+| Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                      | Graph edge storage/execution                         |
+| Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                      | Planner fusion + Graph edge payload executor         |
+| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Parser/planner implemented; execution lowering planned | Router vector-index catalog + vector canister        |
+| Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                            | Graph mutation executor / Router orchestration       |
 
 ## Namespace policy
 
@@ -294,8 +294,9 @@ be implied by the initial syntax.
 
 ### Target vector-search syntax
 
-**Status:** Planned. Current runtime exposes vector search through Router Candid API
-`vector_search(RouterVectorSearchRequest)`.
+**Status:** Parser and planner representation implemented; Router lowering to the existing vector search API is planned. As of this slice, `SEARCH` is parsed and planned but fails closed at execution with an explicit "Router lowering is not implemented yet" error.
+
+Current runtime exposes vector search through Router Candid API `vector_search(RouterVectorSearchRequest)`.
 
 Vector search is a first-class `MATCH` / `OPTIONAL MATCH` subclause:
 
@@ -379,7 +380,7 @@ but there must be no implicit `distance` or `score` binding.
 
 ### Optional in-index filtering
 
-`SEARCH ... WHERE` is reserved for future in-index filtering:
+`SEARCH ... WHERE` is parsed but rejected at planning time in this slice. It is reserved for future in-index filtering:
 
 ```gql
 MATCH (d:Document)
@@ -392,6 +393,7 @@ MATCH (d:Document)
 RETURN d, similarity
 ```
 
+When implemented, the predicate subset must be explicit and index-owned; unsupported filters must fail closed rather than silently becoming post-filters.
 Initial implementation may reject this subclause. When implemented, the predicate subset must be
 explicit and index-owned; unsupported filters must fail closed rather than silently becoming
 post-filters.
@@ -493,7 +495,7 @@ This expresses the intended flow:
 | ----- | ------------------------------------------------------------------------------------------------------ | ----------- |
 | 1     | Document the dialect contract and keep existing behavior unchanged                                     | Implemented |
 | 2     | Add the Rust extension manifest for canonical extension names, classes, status, owner, and doc anchors | Implemented |
-| 3     | Add `SEARCH` parser/planner representation without backend-specific storage details                    | Planned     |
+| 3     | Add `SEARCH` parser/planner representation without backend-specific storage details                    | Implemented |
 | 4     | Add Router lowering from vector `SEARCH` to the existing vector search API                             | Planned     |
 | 5     | Add result hydration from vector hits to graph vertex bindings                                         | Planned     |
 | 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Planned     |

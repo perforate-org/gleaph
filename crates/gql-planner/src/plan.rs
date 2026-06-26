@@ -341,6 +341,30 @@ impl PlanSummary {
     }
 }
 
+/// Returns `true` if the plan (including nested sub-plans) contains any `PlanOp::Search`.
+pub fn plan_contains_search(plan: &PhysicalPlan) -> bool {
+    ops_contain_search(&plan.ops)
+}
+
+fn ops_contain_search(ops: &[PlanOp]) -> bool {
+    ops.iter().any(|op| match op {
+        PlanOp::Search { .. } => true,
+        PlanOp::HashJoin { left, right, .. } => {
+            ops_contain_search(left) || ops_contain_search(right)
+        }
+        PlanOp::CartesianProduct { left, right } => {
+            ops_contain_search(left) || ops_contain_search(right)
+        }
+        PlanOp::SetOperation { right, .. } => ops_contain_search(&right.ops),
+        PlanOp::OptionalMatch { sub_plan } => ops_contain_search(sub_plan),
+        PlanOp::InlineProcedureCall { sub_plan, .. } => ops_contain_search(&sub_plan.ops),
+        PlanOp::UseGraph {
+            sub_plan: Some(sp), ..
+        } => ops_contain_search(sp),
+        _ => false,
+    })
+}
+
 // ════════════════════════════════════════════════════════════════════════════════
 // PlanOp
 // ════════════════════════════════════════════════════════════════════════════════
@@ -519,6 +543,14 @@ pub enum PlanOp {
 
     /// Standalone FILTER statement (GQL §14.2).
     Filter { condition: Expr },
+
+    /// Search a bound graph variable against a provider. Provider-neutral at this layer;
+    /// Router/vector-index lowering is a later slice.
+    Search {
+        binding: Str,
+        provider: SearchProviderPlan,
+        output: SearchOutputPlan,
+    },
 
     // ──── Procedure calls ────
     /// External procedure call: CALL proc_name(args) [YIELD columns].
@@ -832,6 +864,7 @@ fn collect_label_uses_in_ops(ops: &[PlanOp], uses: &mut PlanLabelUses) {
             | PlanOp::Let { .. }
             | PlanOp::For { .. }
             | PlanOp::Filter { .. }
+            | PlanOp::Search { .. }
             | PlanOp::CallProcedure { .. }
             | PlanOp::UseGraph { sub_plan: None, .. }
             | PlanOp::Aggregate { .. }
@@ -1008,6 +1041,13 @@ fn collect_property_uses_in_ops(ops: &[PlanOp], uses: &mut PlanPropertyUses) {
             PlanOp::Filter { condition, .. } => {
                 collect_read_properties_from_expr(condition, uses);
             }
+            PlanOp::Search { provider, .. } => {
+                collect_read_properties_from_expr(provider.query(), uses);
+                collect_read_properties_from_expr(provider.limit(), uses);
+                if let Some(filter) = provider.filter() {
+                    collect_read_properties_from_expr(filter, uses);
+                }
+            }
             _ => {}
         }
     }
@@ -1081,6 +1121,52 @@ pub struct EdgeVectorPredicate {
     pub query: ScanValue,
     pub op: CmpOp,
     pub threshold: ScanValue,
+}
+
+/// Search provider in a physical plan. Provider-neutral: no Router / vector-canister
+/// semantics are resolved here.
+#[derive(Clone, Debug, PartialEq)]
+pub enum SearchProviderPlan {
+    VectorIndex {
+        index_name: Vec<Str>,
+        query: Expr,
+        limit: Expr,
+        filter: Option<Expr>,
+    },
+}
+
+impl SearchProviderPlan {
+    pub fn query(&self) -> &Expr {
+        match self {
+            Self::VectorIndex { query, .. } => query,
+        }
+    }
+
+    pub fn limit(&self) -> &Expr {
+        match self {
+            Self::VectorIndex { limit, .. } => limit,
+        }
+    }
+
+    pub fn filter(&self) -> Option<&Expr> {
+        match self {
+            Self::VectorIndex { filter, .. } => filter.as_ref(),
+        }
+    }
+}
+
+/// Output alias for a `PlanOp::Search`.
+#[derive(Clone, Debug, PartialEq)]
+pub struct SearchOutputPlan {
+    pub kind: SearchOutputKind,
+    pub alias: Str,
+}
+
+/// Whether a search output alias represents a score or a distance.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SearchOutputKind {
+    Score,
+    Distance,
 }
 
 /// Variable-length expansion bounds.

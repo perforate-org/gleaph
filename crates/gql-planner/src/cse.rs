@@ -69,6 +69,13 @@ fn collect_all_expressions(ops: &[PlanOp]) -> Vec<&Expr> {
                     collect_subexprs(g, &mut exprs);
                 }
             }
+            PlanOp::Search { provider, .. } => {
+                collect_subexprs(provider.query(), &mut exprs);
+                collect_subexprs(provider.limit(), &mut exprs);
+                if let Some(filter) = provider.filter() {
+                    collect_subexprs(filter, &mut exprs);
+                }
+            }
             _ => {}
         }
     }

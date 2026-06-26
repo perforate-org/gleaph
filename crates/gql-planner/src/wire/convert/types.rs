@@ -121,6 +121,11 @@ pub enum PlanOpWire {
     Filter {
         condition: u32,
     },
+    Search {
+        binding: String,
+        provider: SearchProviderWire,
+        output: SearchOutputWire,
+    },
     CallProcedure {
         name: Vec<String>,
         args: Vec<u32>,
@@ -221,6 +226,28 @@ pub enum PlanOpWire {
     DeleteEdge {
         variable: String,
     },
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub enum SearchProviderWire {
+    VectorIndex {
+        index_name: Vec<String>,
+        query: u32,
+        limit: u32,
+        filter: Option<u32>,
+    },
+}
+
+#[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub struct SearchOutputWire {
+    pub kind: SearchOutputKindWire,
+    pub alias: String,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq, rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]
+pub enum SearchOutputKindWire {
+    Score,
+    Distance,
 }
 
 #[derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)]

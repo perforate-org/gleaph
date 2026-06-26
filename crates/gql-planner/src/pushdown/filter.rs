@@ -142,6 +142,9 @@ fn produced_vars_by_position(ops: &[PlanOp]) -> ProducedVars {
                     current.insert(ord.to_string());
                 }
             }
+            PlanOp::Search { output, .. } => {
+                current.insert(output.alias.to_string());
+            }
             PlanOp::InsertVertex {
                 variable: Some(v), ..
             }

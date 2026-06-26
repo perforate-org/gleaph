@@ -228,6 +228,16 @@ fn estimate_op_cost(op: &PlanOp, input_rows: f64, stats: Option<&dyn GraphStats>
             (cost, k_val.min(input_rows))
         }
 
+        PlanOp::Search { .. } => {
+            // Provider-neutral estimate: a vector search is treated as a selective scan
+            // until lowering supplies real cardinality.
+            let output_rows = input_rows.clamp(1.0, 10.0);
+            (
+                output_rows * stats::COST_INDEX_SEEK_FRACTION * stats::COST_SCAN_PER_ROW,
+                output_rows,
+            )
+        }
+
         PlanOp::Materialize { distinct, .. } => {
             let output = if *distinct {
                 input_rows * 0.5

@@ -3,7 +3,7 @@ use gleaph_gql::types::LabelExpr;
 
 use crate::plan::{
     AggregateSpec, InlineProcedureScope, PlanOp, ProjectColumn, PropertyAssignment, SetPlanItem,
-    WcojEdge,
+    Str, WcojEdge,
 };
 use gleaph_gql::ast::LetBinding;
 use gleaph_gql::token::Span;
@@ -275,6 +275,33 @@ impl<'a> Decoder<'a> {
             },
             PlanOpWire::Filter { condition } => PlanOp::Filter {
                 condition: self.expr(*condition)?,
+            },
+            PlanOpWire::Search {
+                binding,
+                provider,
+                output,
+            } => PlanOp::Search {
+                binding: rc_str(binding),
+                provider: match provider {
+                    SearchProviderWire::VectorIndex {
+                        index_name,
+                        query,
+                        limit,
+                        filter,
+                    } => crate::plan::SearchProviderPlan::VectorIndex {
+                        index_name: index_name.iter().map(|s| Str::from(s.as_str())).collect(),
+                        query: self.expr(*query)?,
+                        limit: self.expr(*limit)?,
+                        filter: self.opt_expr(*filter)?,
+                    },
+                },
+                output: crate::plan::SearchOutputPlan {
+                    kind: match output.kind {
+                        SearchOutputKindWire::Score => crate::plan::SearchOutputKind::Score,
+                        SearchOutputKindWire::Distance => crate::plan::SearchOutputKind::Distance,
+                    },
+                    alias: rc_str(&output.alias),
+                },
             },
             PlanOpWire::CallProcedure {
                 name,

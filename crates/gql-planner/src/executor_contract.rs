@@ -54,6 +54,7 @@ fn check_op(op: &PlanOp) -> Option<&'static str> {
             }
         }
         PlanOp::SetOperation { right, .. } => first_executor_unsupported_op(right),
+        PlanOp::Search { .. } => Some("Search"),
         PlanOp::SetProperties { .. } => None,
         PlanOp::EdgeBindEndpoints { direction, .. } => match direction {
             EdgeDirection::PointingRight

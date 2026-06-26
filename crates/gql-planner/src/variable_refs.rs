@@ -66,6 +66,13 @@ fn simple_statement_vars(stmt: &SimpleQueryStatement, out: &mut BTreeSet<String>
         SimpleQueryStatement::For(f) => {
             add_expr_vars(&f.list, out);
         }
+        SimpleQueryStatement::Search(s) => {
+            add_expr_vars(s.provider.query(), out);
+            add_expr_vars(s.provider.limit(), out);
+            if let Some(filter) = s.provider.filter() {
+                add_expr_vars(filter, out);
+            }
+        }
         SimpleQueryStatement::OrderBy(ob) => {
             for it in &ob.items {
                 add_expr_vars(&it.expr, out);

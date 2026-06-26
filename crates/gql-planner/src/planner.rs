@@ -662,6 +662,7 @@ fn remote_use_graph_op_name(op: &PlanOp) -> &'static str {
         PlanOp::Let { .. } => "LET",
         PlanOp::For { .. } => "FOR",
         PlanOp::Filter { .. } => "FILTER",
+        PlanOp::Search { .. } => "SEARCH",
         PlanOp::CallProcedure { .. } => "CALL",
         PlanOp::InlineProcedureCall { .. } => "INLINE CALL",
         PlanOp::UseGraph { .. } => "USE GRAPH",

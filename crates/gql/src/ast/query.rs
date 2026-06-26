@@ -340,6 +340,7 @@ pub enum SimpleQueryStatement {
     Filter(FilterStatement),
     Let(LetStatement),
     For(ForStatement),
+    Search(SearchStatement),
     OrderBy(OrderByClause),
     Limit(LimitClause),
     Offset(OffsetClause),
@@ -393,6 +394,159 @@ pub struct MatchStatement {
     pub graph_name: Option<ObjectName>,
     pub pattern: GraphPattern,
     pub yield_items: Option<Vec<YieldItem>>,
+}
+
+/// A `SEARCH` clause binding a graph variable to a search provider result.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub struct SearchStatement {
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(with = rkyv::with::Skip))]
+    pub span: Span,
+    pub binding: String,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub provider: SearchProvider,
+    pub output: SearchOutputBinding,
+}
+
+/// Search provider in a `SEARCH` clause.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub enum SearchProvider {
+    VectorIndex(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] VectorSearchSpec),
+}
+
+impl SearchProvider {
+    pub fn query(&self) -> &Expr {
+        match self {
+            Self::VectorIndex(spec) => &spec.query,
+        }
+    }
+
+    pub fn limit(&self) -> &Expr {
+        match self {
+            Self::VectorIndex(spec) => &spec.limit,
+        }
+    }
+
+    pub fn filter(&self) -> Option<&Expr> {
+        match self {
+            Self::VectorIndex(spec) => spec.filter.as_ref(),
+        }
+    }
+}
+
+/// `VECTOR INDEX` search specification inside a `SEARCH` clause.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub struct VectorSearchSpec {
+    pub index_name: ObjectName,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub query: Expr,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub limit: Expr,
+    #[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))]
+    pub filter: Option<Expr>,
+}
+
+/// Output alias for a `SEARCH` clause: `SCORE AS alias` or `DISTANCE AS alias`.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub struct SearchOutputBinding {
+    pub kind: SearchOutputKind,
+    pub alias: String,
+}
+
+/// Whether a `SEARCH` output alias represents a score or a distance.
+#[derive(Clone, Debug, PartialEq)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    derive(rkyv::Archive, rkyv::Serialize, rkyv::Deserialize)
+)]
+#[cfg_attr(
+    feature = "ast-rkyv-no-span",
+    rkyv(
+        serialize_bounds(
+            __S: rkyv::ser::Writer + rkyv::ser::Allocator,
+            __S::Error: rkyv::rancor::Source,
+        ),
+        deserialize_bounds(__D::Error: rkyv::rancor::Source),
+        bytecheck(bounds(
+            __C: rkyv::validation::ArchiveContext,
+            __C::Error: rkyv::rancor::Source,
+        )),
+    )
+)]
+pub enum SearchOutputKind {
+    Score,
+    Distance,
 }
 
 // ──── FILTER (§14.2) ────

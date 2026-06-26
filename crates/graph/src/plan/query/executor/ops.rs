@@ -133,6 +133,9 @@ fn extend_subplan_written_vars_from_op(op: &PlanOp, out: &mut BTreeSet<String>) 
                 out.insert(o.to_string());
             }
         }
+        PlanOp::Search { output, .. } => {
+            out.insert(output.alias.to_string());
+        }
         PlanOp::WorstCaseOptimalJoin { variables, edges } => {
             for v in variables {
                 out.insert(v.to_string());
@@ -877,6 +880,11 @@ pub(crate) fn execute_ops_from<'a>(
                 PlanOp::OptionalMatch { sub_plan } => {
                     let written = subplan_written_vars(sub_plan);
                     execute_optional_match(ctx, rows, sub_plan, &written).await?
+                }
+                PlanOp::Search { .. } => {
+                    return Err(PlanQueryError::UnsupportedOp(
+                        "SEARCH is parsed and planned but Router lowering is not implemented yet",
+                    ));
                 }
                 PlanOp::InlineProcedureCall {
                     sub_plan,
@@ -1820,15 +1828,33 @@ mod tests {
     #[test]
     fn unsupported_operator_returns_stable_error() {
         let store = GraphStore::new();
-        let cases = vec![(
-            PlanOp::CallProcedure {
-                name: vec!["db".into(), "labels".into()],
-                args: Vec::new(),
-                yield_columns: None,
-                optional: false,
-            },
-            "CallProcedure",
-        )];
+        let cases = vec![
+            (
+                PlanOp::CallProcedure {
+                    name: vec!["db".into(), "labels".into()],
+                    args: Vec::new(),
+                    yield_columns: None,
+                    optional: false,
+                },
+                "CallProcedure",
+            ),
+            (
+                PlanOp::Search {
+                    binding: "d".into(),
+                    provider: gleaph_gql_planner::plan::SearchProviderPlan::VectorIndex {
+                        index_name: vec!["document_embedding".into()],
+                        query: gleaph_gql::ast::Expr::var("query"),
+                        limit: gleaph_gql::ast::Expr::int(100),
+                        filter: None,
+                    },
+                    output: gleaph_gql_planner::plan::SearchOutputPlan {
+                        kind: gleaph_gql_planner::plan::SearchOutputKind::Score,
+                        alias: "similarity".into(),
+                    },
+                },
+                "SEARCH is parsed and planned but Router lowering is not implemented yet",
+            ),
+        ];
 
         for (op, expected_name) in cases {
             let plan = plan(vec![op]);

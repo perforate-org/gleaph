@@ -139,6 +139,18 @@ impl ConstraintSet {
             SimpleQueryStatement::For(f) => {
                 self.collect_from_expr_constraints(env, &f.list);
             }
+            SimpleQueryStatement::Search(s) => {
+                self.collect_from_expr_constraints(env, s.provider.query());
+                self.collect_from_expr_constraints(env, s.provider.limit());
+                if let Some(filter) = s.provider.filter() {
+                    self.collect_from_expr_constraints(env, filter);
+                    let id = self.alloc(infer_expr(env, filter));
+                    self.add(TypedConstraint::MustBeBoolean {
+                        expr: id,
+                        span: filter.span,
+                    });
+                }
+            }
             SimpleQueryStatement::InlineProcedureCall(ipc) => {
                 self.collect_from_composite_query(env, &ipc.body);
             }

@@ -127,6 +127,53 @@ pub(super) fn plan_simple_statement(
             }
             Ok(())
         }
+        SimpleQueryStatement::Search(s) => {
+            let binding_kind = binding_kinds.get(&s.binding).copied();
+            let is_node_or_edge = matches!(
+                binding_kind,
+                Some(gleaph_gql::type_check::BindingKind::Node)
+                    | Some(gleaph_gql::type_check::BindingKind::Edge)
+            );
+            if !is_node_or_edge {
+                return Err(PlannerError::UnsupportedPattern(format!(
+                    "SEARCH binding variable `{}` must refer to a node or edge variable",
+                    s.binding
+                )));
+            }
+            if let Some(ref filter) = s.provider.filter() {
+                return Err(PlannerError::UnsupportedPattern(format!(
+                    "SEARCH ... WHERE filter is not supported yet: {filter:?}"
+                )));
+            }
+            let provider = match &s.provider {
+                SearchProvider::VectorIndex(spec) => SearchProviderPlan::VectorIndex {
+                    index_name: spec
+                        .index_name
+                        .parts
+                        .iter()
+                        .map(|s| Str::from(s.as_str()))
+                        .collect(),
+                    query: spec.query.clone(),
+                    limit: spec.limit.clone(),
+                    filter: spec.filter.clone(),
+                },
+            };
+            let output_kind = match s.output.kind {
+                gleaph_gql::ast::SearchOutputKind::Score => crate::plan::SearchOutputKind::Score,
+                gleaph_gql::ast::SearchOutputKind::Distance => {
+                    crate::plan::SearchOutputKind::Distance
+                }
+            };
+            ops.push(PlanOp::Search {
+                binding: Str::from(s.binding.as_str()),
+                provider,
+                output: SearchOutputPlan {
+                    kind: output_kind,
+                    alias: Str::from(s.output.alias.as_str()),
+                },
+            });
+            Ok(())
+        }
         SimpleQueryStatement::Insert(insert_stmt) => {
             super::dml::plan_insert(insert_stmt, ops, annotations);
             Ok(())

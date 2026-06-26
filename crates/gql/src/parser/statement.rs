@@ -7,9 +7,10 @@ use crate::ast::{
     InlineProcedureCall, InlineProcedureScope, InsertStatement, IsOrColon, LetBinding,
     LetStatement, LinearQueryStatement, MatchStatement, NextStatement, ObjectName,
     ProcedureBindingDefinition, ProcedureBindingInitializer, ProcedureBindingKind, RemoveItem,
-    RemoveStatement, ResultStatement, SchemaReference, SetItem, SetOp, SetQuantifier, SetStatement,
+    RemoveStatement, ResultStatement, SchemaReference, SearchOutputBinding, SearchOutputKind,
+    SearchProvider, SearchStatement, SetItem, SetOp, SetQuantifier, SetStatement,
     SimpleQueryStatement, Statement, StatementBlock, TransactionActivity, TransactionEnd,
-    TypedPrefix,
+    TypedPrefix, VectorSearchSpec,
 };
 use crate::error::GqlError;
 use crate::parser::helpers::Parser;
@@ -798,6 +799,13 @@ impl Parser<'_> {
             )));
         }
 
+        // SEARCH.
+        if self.at_keyword("SEARCH") {
+            return Ok(Some(SimpleQueryStatement::Search(
+                self.parse_search_statement()?,
+            )));
+        }
+
         // Inline data modification inside a linear query.
         if self.at_keyword("INSERT") {
             return Ok(Some(SimpleQueryStatement::Insert(
@@ -856,6 +864,72 @@ impl Parser<'_> {
             pattern,
             yield_items,
         })
+    }
+
+    // ════════════════════════════════════════════════════════════════════════
+    // SEARCH statement (Gleaph extension)
+    // ════════════════════════════════════════════════════════════════════════
+
+    /// Parses a `SEARCH` clause.
+    ///
+    /// Grammar:
+    /// ```text
+    /// SEARCH bindingVariable IN (
+    ///   VECTOR INDEX objectName
+    ///   FOR expr
+    ///   [WHERE expr]
+    ///   LIMIT expr
+    /// ) (SCORE | DISTANCE) AS bindingVariable
+    /// ```
+    pub fn parse_search_statement(&mut self) -> Result<SearchStatement, GqlError> {
+        let start = self.save();
+        self.expect_keyword("SEARCH")?;
+        let binding = self.expect_ident()?.to_owned();
+        self.expect_keyword("IN")?;
+        self.expect_token(&Token::LParen)?;
+        let provider = self.parse_search_provider()?;
+        self.expect_token(&Token::RParen)?;
+        let output = self.parse_search_output_binding()?;
+        Ok(SearchStatement {
+            span: self.span_since(start),
+            binding,
+            provider,
+            output,
+        })
+    }
+
+    fn parse_search_provider(&mut self) -> Result<SearchProvider, GqlError> {
+        self.expect_keyword("VECTOR")?;
+        self.expect_keyword("INDEX")?;
+        let index_name = self.parse_object_name()?;
+        self.expect_keyword("FOR")?;
+        let query = self.parse_expr()?;
+        let filter = if self.eat_keyword("WHERE") {
+            Some(self.parse_expr()?)
+        } else {
+            None
+        };
+        self.expect_keyword("LIMIT")?;
+        let limit = self.parse_expr()?;
+        Ok(SearchProvider::VectorIndex(VectorSearchSpec {
+            index_name,
+            query,
+            limit,
+            filter,
+        }))
+    }
+
+    fn parse_search_output_binding(&mut self) -> Result<SearchOutputBinding, GqlError> {
+        let kind = if self.eat_keyword("SCORE") {
+            SearchOutputKind::Score
+        } else if self.eat_keyword("DISTANCE") {
+            SearchOutputKind::Distance
+        } else {
+            return Err(self.expected("SCORE AS or DISTANCE AS"));
+        };
+        self.expect_keyword("AS")?;
+        let alias = self.expect_ident()?.to_owned();
+        Ok(SearchOutputBinding { kind, alias })
     }
 
     // ════════════════════════════════════════════════════════════════════════
@@ -1260,5 +1334,195 @@ impl Parser<'_> {
             return Err(self.expected("'/' before schema name (GQL requires absolute path)"));
         }
         self.parse_object_name()
+    }
+}
+
+#[cfg(test)]
+mod search_parser_tests {
+    use super::*;
+    use crate::ast::{
+        ExprKind, SearchOutputKind, SearchProvider, SearchStatement, SimpleQueryStatement,
+        VectorSearchSpec,
+    };
+    use crate::parser;
+    use crate::token::Span;
+
+    fn first_simple_query_part(input: &str) -> SimpleQueryStatement {
+        let program = parser::parse(input).unwrap_or_else(|e| panic!("parse error: {e}"));
+        let tx = program.transaction_activity.expect("expected tx");
+        let block = tx.body.expect("expected body");
+        let cq = match block.first {
+            Statement::Query(cq) => cq,
+            other => panic!("expected query, got {other:?}"),
+        };
+        cq.left
+            .parts
+            .into_iter()
+            .nth(1)
+            .expect("expected a second part")
+    }
+
+    fn assert_search_vector(
+        stmt: &SearchStatement,
+        binding: &str,
+        expected_index_name: &str,
+        expected_limit: i64,
+        output_kind: SearchOutputKind,
+        alias: &str,
+    ) {
+        assert_eq!(stmt.binding, binding);
+        let SearchProvider::VectorIndex(VectorSearchSpec {
+            index_name,
+            query,
+            limit,
+            filter,
+        }) = &stmt.provider;
+        assert_eq!(index_name.parts, vec![expected_index_name.to_string()]);
+        assert!(matches!(
+            &query.kind,
+            ExprKind::Parameter(v) if v == "$query"
+        ));
+        assert!(matches!(
+            &limit.kind,
+            ExprKind::Literal(crate::Value::Int64(v)) if *v == expected_limit
+        ));
+        assert!(filter.is_none());
+        assert_eq!(stmt.output.kind, output_kind);
+        assert_eq!(stmt.output.alias, alias);
+    }
+
+    #[test]
+    fn parse_search_score_as() {
+        let input = "MATCH (d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX document_embedding \
+               FOR $query \
+               LIMIT 100 \
+             ) SCORE AS similarity \
+             RETURN d, similarity";
+        eprintln!("INPUT: {:?}", input);
+        eprintln!("INPUT len: {}", input.len());
+        let part = first_simple_query_part(input);
+        let SimpleQueryStatement::Search(stmt) = part else {
+            panic!("expected Search, got {part:?}");
+        };
+        assert_search_vector(
+            &stmt,
+            "d",
+            "document_embedding",
+            100,
+            SearchOutputKind::Score,
+            "similarity",
+        );
+    }
+
+    #[test]
+    fn parse_search_distance_as() {
+        let part = first_simple_query_part(
+            "MATCH (d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX document_embedding \
+               FOR $query \
+               LIMIT 10 \
+             ) DISTANCE AS distance \
+             RETURN d, distance",
+        );
+        let SimpleQueryStatement::Search(stmt) = part else {
+            panic!("expected Search, got {part:?}");
+        };
+        assert_search_vector(
+            &stmt,
+            "d",
+            "document_embedding",
+            10,
+            SearchOutputKind::Distance,
+            "distance",
+        );
+    }
+
+    #[test]
+    fn parse_search_with_where_is_rejected_by_planner_not_parser() {
+        let input = "MATCH (d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX document_embedding \
+               FOR $query \
+               WHERE d.published_at \u{003e}= $cutoff \
+               LIMIT 100 \
+             ) SCORE AS similarity \
+             RETURN d, similarity";
+        // Parser accepts the reserved WHERE shape.
+        let program = parser::parse(input).expect("parser should accept SEARCH ... WHERE");
+        let tx = program.transaction_activity.expect("expected tx");
+        let block = tx.body.expect("expected body");
+        let cq = match block.first {
+            Statement::Query(cq) => cq,
+            other => panic!("expected query, got {other:?}"),
+        };
+        let part = cq
+            .left
+            .parts
+            .into_iter()
+            .nth(1)
+            .expect("expected a second part");
+        let SimpleQueryStatement::Search(stmt) = part else {
+            panic!("expected Search");
+        };
+        assert!(stmt.provider.filter().is_some());
+    }
+
+    #[test]
+    fn parse_search_missing_in_fails() {
+        let err = parser::parse(
+            "MATCH (d:Document) SEARCH d VECTOR INDEX document_embedding FOR $query LIMIT 100 SCORE AS similarity RETURN d",
+        )
+        .expect_err("expected parse error");
+        assert!(err.to_string().contains("IN"));
+    }
+
+    #[test]
+    fn parse_search_missing_vector_index_fails() {
+        let err = parser::parse(
+            "MATCH (d:Document) SEARCH d IN (INDEX document_embedding FOR $query LIMIT 100) SCORE AS similarity RETURN d",
+        )
+        .expect_err("expected parse error");
+        assert!(err.to_string().contains("VECTOR"));
+    }
+
+    #[test]
+    fn parse_search_missing_for_fails() {
+        let err = parser::parse(
+            "MATCH (d:Document) SEARCH d IN (VECTOR INDEX document_embedding $query LIMIT 100) SCORE AS similarity RETURN d",
+        )
+        .expect_err("expected parse error");
+        assert!(err.to_string().contains("FOR"));
+    }
+
+    #[test]
+    fn parse_search_missing_limit_fails() {
+        let err = parser::parse(
+            "MATCH (d:Document) SEARCH d IN (VECTOR INDEX document_embedding FOR $query) SCORE AS similarity RETURN d",
+        )
+        .expect_err("expected parse error");
+        assert!(err.to_string().contains("LIMIT"));
+    }
+
+    #[test]
+    fn parse_search_missing_score_distance_as_fails() {
+        let err = parser::parse(
+            "MATCH (d:Document) SEARCH d IN (VECTOR INDEX document_embedding FOR $query LIMIT 100) RETURN d",
+        )
+        .expect_err("expected parse error");
+        assert!(err.to_string().contains("SCORE") || err.to_string().contains("DISTANCE"));
+    }
+
+    #[test]
+    fn parse_search_preserves_span() {
+        let part = first_simple_query_part(
+            "MATCH (d:Document) SEARCH d IN (VECTOR INDEX document_embedding FOR $query LIMIT 100) SCORE AS similarity RETURN d",
+        );
+        let SimpleQueryStatement::Search(stmt) = part else {
+            panic!("expected Search");
+        };
+        assert_ne!(stmt.span, Span::DUMMY);
     }
 }

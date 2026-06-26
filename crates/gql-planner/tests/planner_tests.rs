@@ -6,14 +6,16 @@ use gleaph_gql::type_check::{
     dml_target_unknown_message, dml_target_value_message,
 };
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
+use gleaph_gql_planner::plan::SearchOutputKind as PlanSearchOutputKind;
 use gleaph_gql_planner::plan::*;
 use gleaph_gql_planner::semantic;
 use gleaph_gql_planner::stats::TableStats;
-use gleaph_gql_planner::{
+pub use gleaph_gql_planner::{
     PathPatternExtensionContext, PathPatternExtensionHandler, PlanBuildOptions, PlannerError,
     ShortestPathCost, analyze_remote_use_graph_pushdown, build_block_plan, build_block_plan_output,
     build_composite_plan, build_plan, build_plan_output, build_plan_output_for_execute,
     build_plan_with_schema, build_statement_plan, build_statement_plan_with_schema, explain_plan,
+    first_executor_unsupported_op, plan_contains_search,
 };
 
 /// Helper: parse a GQL query string and extract the first linear query.
@@ -151,6 +153,201 @@ fn test_return_with_order_by() {
     let plan = plan_query("MATCH (n:User) RETURN n.name ORDER BY n.name");
 
     assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::Sort { .. })));
+}
+
+// ════════════════════════════════════════════════════════════════════════════════
+// SEARCH clause planning
+// ════════════════════════════════════════════════════════════════════════════════
+
+#[test]
+fn test_search_vector_score_as_emits_plan_op() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+
+    let search_op = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::Search { .. }))
+        .expect("expected PlanOp::Search");
+    let PlanOp::Search {
+        binding,
+        provider,
+        output,
+    } = search_op
+    else {
+        unreachable!();
+    };
+    assert_eq!(binding.as_ref(), "d");
+    assert_eq!(output.alias.as_ref(), "similarity");
+    assert_eq!(output.kind, PlanSearchOutputKind::Score);
+    match provider {
+        SearchProviderPlan::VectorIndex {
+            index_name,
+            query,
+            limit,
+            filter,
+        } => {
+            assert_eq!(
+                index_name.iter().map(|s| s.as_ref()).collect::<Vec<_>>(),
+                vec!["document_embedding"]
+            );
+            assert!(matches!(
+                &query.kind,
+                ExprKind::Parameter(v) if v == "$query"
+            ));
+            assert!(matches!(limit.kind, ExprKind::Literal(Value::Int64(100))));
+            assert!(filter.is_none());
+        }
+    }
+    // The output alias must be visible to RETURN/ORDER BY.
+    assert!(plan.binding_layout.index_of("similarity").is_some());
+    assert!(
+        plan.ops
+            .iter()
+            .any(|op| matches!(op, PlanOp::Project { .. }))
+    );
+}
+
+#[test]
+fn test_search_vector_distance_as_emits_plan_op() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           LIMIT 10 \
+         ) DISTANCE AS distance \
+         RETURN d, distance",
+    );
+
+    let search_op = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, PlanOp::Search { .. }))
+        .expect("expected PlanOp::Search");
+    let PlanOp::Search { output, .. } = search_op else {
+        unreachable!();
+    };
+    assert_eq!(output.alias.as_ref(), "distance");
+    assert_eq!(output.kind, PlanSearchOutputKind::Distance);
+}
+
+#[test]
+fn test_search_alias_available_to_order_by() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity ORDER BY similarity",
+    );
+
+    assert!(plan.ops.iter().any(|op| matches!(op, PlanOp::Sort { .. })));
+}
+
+#[test]
+fn test_search_binding_must_be_node_or_edge() {
+    let err = plan_query_err(
+        "LET x = 1 \
+         SEARCH x IN (VECTOR INDEX document_embedding FOR $query LIMIT 100) SCORE AS s \
+         RETURN x, s",
+    );
+    assert!(
+        err.to_string().contains("SEARCH binding variable"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_search_where_filter_is_rejected_by_planner() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.published_at \u{003e}= $cutoff \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string()
+            .contains("SEARCH ... WHERE filter is not supported yet"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_search_plan_is_not_dml() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(!plan.has_dml());
+}
+
+#[test]
+fn test_search_explain_includes_search_op() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    let explained = explain_plan(&plan);
+    assert!(
+        explained.contains("Search"),
+        "explain should mention Search: {explained}"
+    );
+}
+
+#[test]
+fn test_search_plan_contains_search() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(plan_contains_search(&plan));
+}
+
+#[test]
+fn test_search_executor_contract_rejects_it() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert_eq!(
+        first_executor_unsupported_op(&plan),
+        Some("Search"),
+        "graph executor contract should report Search as unsupported"
+    );
 }
 
 // ════════════════════════════════════════════════════════════════════════════════

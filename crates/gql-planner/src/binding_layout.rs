@@ -246,6 +246,9 @@ fn register_op_bindings(op: &PlanOp, layout: &mut BindingLayout) {
         | PlanOp::DeleteEdge { variable } => {
             layout.insert_name(variable.clone());
         }
+        PlanOp::Search { output, .. } => {
+            layout.insert_name(output.alias.clone());
+        }
         PlanOp::Filter { .. }
         | PlanOp::PropertyFilter { .. }
         | PlanOp::Sort { .. }

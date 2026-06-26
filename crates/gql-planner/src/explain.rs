@@ -547,6 +547,36 @@ fn format_op(op: &PlanOp) -> String {
             format!("Filter({})", format_expr(condition))
         }
 
+        PlanOp::Search {
+            binding,
+            provider,
+            output,
+        } => {
+            let (provider_name, index_name, query, limit, filter) = match provider {
+                crate::plan::SearchProviderPlan::VectorIndex {
+                    index_name,
+                    query,
+                    limit,
+                    filter,
+                } => (
+                    "VectorIndex",
+                    index_name.join("."),
+                    format_expr(query),
+                    format_expr(limit),
+                    filter.as_ref().map(format_expr),
+                ),
+            };
+            let kind = match output.kind {
+                crate::plan::SearchOutputKind::Score => "SCORE",
+                crate::plan::SearchOutputKind::Distance => "DISTANCE",
+            };
+            let filter_str = filter.map(|f| format!(", WHERE {f}")).unwrap_or_default();
+            format!(
+                "Search({}, {} index={}, FOR={}, LIMIT={}{}) {} AS {}",
+                binding, provider_name, index_name, query, limit, filter_str, kind, output.alias
+            )
+        }
+
         PlanOp::Aggregate {
             group_by,
             aggregates,

@@ -658,6 +658,11 @@ async fn run_gql(
     )?;
     let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), schema)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    if gleaph_gql_planner::plan_contains_search(&plan) {
+        return Err(RouterError::InvalidArgument(
+            "GQL SEARCH is parsed and planned but Router lowering is not implemented yet".into(),
+        ));
+    }
     let requires_write_path = plan.has_dml();
     if requires_write_path != flags.requires_write_path() {
         return Err(RouterError::InvalidArgument(

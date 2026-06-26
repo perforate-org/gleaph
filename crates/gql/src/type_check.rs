@@ -453,6 +453,28 @@ fn check_simple_query(env: &mut TypeEnv<'_>, sq: &SimpleQueryStatement) {
                 );
             }
         }
+        SimpleQueryStatement::Search(s) => {
+            let binding_ty = env.get(&s.binding);
+            match binding_kind_from_type(&binding_ty) {
+                BindingKind::Node | BindingKind::Edge => {}
+                _ => {
+                    env.warn_at(
+                        WarningKind::SearchBindingMismatch,
+                        format!(
+                            "SEARCH binding variable `{}` must refer to a node or edge variable",
+                            s.binding
+                        ),
+                        s.span,
+                    );
+                }
+            }
+            check_expr_constraints(env, s.provider.query());
+            check_expr_constraints(env, s.provider.limit());
+            if let Some(filter) = s.provider.filter() {
+                check_boolean_context(env, filter);
+            }
+            env.bind(s.output.alias.clone(), Type::Unknown);
+        }
         SimpleQueryStatement::CallProcedure(cp) => {
             check_call_procedure(env, cp);
         }

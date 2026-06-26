@@ -497,6 +497,13 @@ fn collect_exprs_from_op_deep<'a>(op: &'a PlanOp, out: &mut Vec<&'a Expr>) {
         PlanOp::Filter { condition } => {
             out.push(condition);
         }
+        PlanOp::Search { provider, .. } => {
+            out.push(provider.query());
+            out.push(provider.limit());
+            if let Some(filter) = provider.filter() {
+                out.push(filter);
+            }
+        }
         PlanOp::CallProcedure { args, .. } => {
             for a in args {
                 out.push(a);

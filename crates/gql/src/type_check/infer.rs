@@ -756,6 +756,10 @@ fn infer_value_subquery_type(env: &TypeEnv<'_>, cq: &CompositeQueryExpr) -> Type
                 };
                 forked.bind(f.variable.clone(), elem_ty);
             }
+            SimpleQueryStatement::Search(s) => {
+                // The output alias is a scalar (score or distance).
+                forked.bind(s.output.alias.clone(), Type::Unknown);
+            }
             _ => {}
         }
     }

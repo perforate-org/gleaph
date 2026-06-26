@@ -222,6 +222,9 @@ fn register_binding_kinds(op: &PlanOp, kinds: &mut HashMap<String, OutputBinding
                 kinds.insert(binding.variable.clone(), OutputBindingKind::Scalar);
             }
         }
+        PlanOp::Search { output, .. } => {
+            kinds.insert(output.alias.to_string(), OutputBindingKind::Scalar);
+        }
         PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right, .. } => {
             kinds.extend(infer_binding_kinds(left));
             kinds.extend(infer_binding_kinds(right));

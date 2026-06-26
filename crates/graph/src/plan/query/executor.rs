@@ -597,6 +597,7 @@ pub(crate) fn plan_op_name(op: &PlanOp) -> &'static str {
         PlanOp::Let { .. } => "Let",
         PlanOp::For { .. } => "For",
         PlanOp::Filter { .. } => "Filter",
+        PlanOp::Search { .. } => "Search",
         PlanOp::CallProcedure { .. } => "CallProcedure",
         PlanOp::InlineProcedureCall { .. } => "InlineProcedureCall",
         PlanOp::UseGraph { .. } => "UseGraph",
