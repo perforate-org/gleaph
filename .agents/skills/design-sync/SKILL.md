@@ -1,3 +1,8 @@
+---
+name: design-sync
+description: Keep design documents synchronized with implementation and explicit about boundaries, invariants, consistency mechanisms, and abstraction fit.
+---
+
 # Design Sync
 
 ## Purpose

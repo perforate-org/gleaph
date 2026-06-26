@@ -1,3 +1,8 @@
+---
+name: adr-review
+description: Evaluate major architectural changes against encapsulation, separation of concerns, invariants, consistency, and fitness for purpose.
+---
+
 # ADR Review
 
 ## Purpose

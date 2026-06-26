@@ -1,3 +1,8 @@
+---
+name: benchmark
+description: Review benchmark impact, performance regressions, invariant-preserving measurement, and benchmark fitness for purpose.
+---
+
 # Benchmark Discipline
 
 ## Purpose

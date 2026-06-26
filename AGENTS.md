@@ -10,12 +10,12 @@ When you encounter the same error twice, research the web and identify 3-5 plaus
 
 Additional project-specific guidance is stored under:
 
-`.skills/`
+`.agents/skills/`
 
 When working on architecture, design documents, tests, benchmarks,
 or major refactors, inspect relevant skills before proceeding.
 
-Consult `.skills/INDEX.md` before major changes.
+Consult `.agents/skills/INDEX.md` before major changes.
 
 ## Repository Integrity
 

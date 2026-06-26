@@ -1,3 +1,8 @@
+---
+name: gleaph-architecture
+description: Review Gleaph-specific boundaries with emphasis on encapsulation, invariant ownership, derived-state consistency, and crate fitness for purpose.
+---
+
 # Gleaph Architecture
 
 ## Purpose

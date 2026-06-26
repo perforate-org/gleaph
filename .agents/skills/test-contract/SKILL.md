@@ -1,3 +1,8 @@
+---
+name: test-contract
+description: Review behavioral contracts, invariants, consistency mechanisms, boundaries, and test coverage.
+---
+
 # Test Contract
 
 ## Purpose

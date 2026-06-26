@@ -1,3 +1,8 @@
+---
+name: architecture-integrity
+description: Review encapsulation, separation of concerns, invariants, consistency, fitness for purpose, SSOT, DRY, and module boundaries.
+---
+
 # Architecture Integrity Review
 
 ## Purpose

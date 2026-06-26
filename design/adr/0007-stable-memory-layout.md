@@ -29,7 +29,7 @@ Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
 | 2026-06-24 | ADR 0031 slice 7: added `graph-vector-index` `VECTOR_REBUILD_STATE` (12), a derived per-index bounded shadow-version rebuild lifecycle; `SubjectMapEntry` gained `shadow_slot` (serde-default, no repack) for atomic publish; `VECTOR_INDEX_STABLE_LAYOUT` **13** regions (0–12).                                                                                                                                         |
 | 2026-06-25 | ADR 0031 slice 10: added `graph-vector-index` `VECTOR_MAINTENANCE_STATE` (14), a maintenance/operational execution state for per-index page-health scans (persists across upgrade, cleared only on init/reset); `VECTOR_INDEX_STABLE_LAYOUT` **15** regions (0–14). Added Router `ROUTER_VECTOR_MAINTENANCE_POLICIES` (44), the Router-owned maintenance policy catalog (default disabled); router **45** regions (0–44). |
 | 2026-06-25 | Corrected `VECTOR_MAINTENANCE_STATE` classification in the revision history: it is `StableMemoryClass::Maintenance` with `RebuildPath::None`, not derived.                                                                                                                                                                                                                                                                |
-| 2026-06-25 | Marked the Context region-count paragraph as historical background and directed readers to the typed registry and §2 summary table for current counts. |
+| 2026-06-25 | Marked the Context region-count paragraph as historical background and directed readers to the typed registry and §2 summary table for current counts.                                                                                                                                                                                                                                                                    |
 
 ## Context
 
@@ -243,7 +243,7 @@ Any patch that changes `MemoryId` assignment or merges regions must:
 2. Update [stable-memory-inventory.md](../storage/stable-memory-inventory.md).
 3. Add or extend reopen tests.
 4. Attach benchmark delta or explicit “no measurable change” note.
-5. Run focused crate tests and relevant canbench per [rust-workflow](../../.skills/rust-workflow/SKILL.md).
+5. Run focused crate tests and relevant canbench per [rust-workflow](../../.agents/skills/rust-workflow/SKILL.md).
 
 ---
 

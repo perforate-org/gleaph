@@ -1,3 +1,8 @@
+---
+name: rust-workflow
+description: Format, type-check, clippy, test, benchmark, and completion reporting for Rust changes.
+---
+
 # Rust Workflow
 
 Use this skill whenever modifying Rust code in this repository.
