@@ -707,6 +707,9 @@ fn collect_linear_query_scopes(
                                 }
                             }
                         }
+                        SimpleQueryStatement::Search(s) => {
+                            scope.insert(s.output.alias.clone());
+                        }
                         _ => {}
                     }
                 }
@@ -828,6 +831,9 @@ fn collect_linear_query_scopes_with_order(
                                     );
                                 }
                             }
+                        }
+                        SimpleQueryStatement::Search(s) => {
+                            replace_visible_binding(scope, order, &s.output.alias);
                         }
                         _ => {}
                     }
