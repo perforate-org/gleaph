@@ -13,7 +13,11 @@ fn main() {
 
     let pocket_ic_version = pocket_ic_version_from_manifest(&manifest_dir);
     let pocket_ic_bin = ensure_pocket_ic_binary(&manifest_dir, &pocket_ic_version);
-    println!("cargo:rustc-env=POCKET_IC_BIN={}", pocket_ic_bin.display());
+    let pocket_ic_launcher = ensure_pocket_ic_launcher(&manifest_dir, &pocket_ic_bin);
+    println!(
+        "cargo:rustc-env=POCKET_IC_BIN={}",
+        pocket_ic_launcher.display()
+    );
     println!("cargo:rustc-env=POCKET_IC_VERSION={pocket_ic_version}");
 
     build_wasm(&manifest_dir);
@@ -68,6 +72,49 @@ fn ensure_pocket_ic_binary(manifest_dir: &Path, version: &str) -> PathBuf {
 
     println!("cargo:rerun-if-changed={}", bin_path.display());
     bin_path
+}
+
+fn ensure_pocket_ic_launcher(manifest_dir: &Path, bin_path: &Path) -> PathBuf {
+    let launcher_path = manifest_dir.join(".pocket-ic").join("pocket-ic-launcher");
+    let script = format!(
+        r#"#!/bin/sh
+# Zed's integrated terminal can leak unrelated app file descriptors into child
+# processes. PocketIC's sandbox launcher inherits those descriptors further, so
+# close everything except stdio before execing the real server binary.
+i=3
+max=$(ulimit -n 2>/dev/null || echo 256)
+case "$max" in
+  ''|*[!0-9]*) max=256 ;;
+esac
+if [ "$max" -gt 1024 ]; then
+  max=1024
+fi
+while [ "$i" -lt "$max" ]; do
+  eval "exec $i>&-"
+  i=$((i + 1))
+done
+exec "{}" "$@"
+"#,
+        bin_path.display()
+    );
+
+    let needs_write = fs::read_to_string(&launcher_path)
+        .map(|existing| existing != script)
+        .unwrap_or(true);
+    if needs_write {
+        fs::write(&launcher_path, script)
+            .unwrap_or_else(|e| panic!("write pocket-ic launcher: {e}"));
+    }
+
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&launcher_path, fs::Permissions::from_mode(0o755))
+            .unwrap_or_else(|e| panic!("chmod pocket-ic launcher: {e}"));
+    }
+
+    println!("cargo:rerun-if-changed={}", launcher_path.display());
+    launcher_path
 }
 
 fn pocket_ic_version_from_manifest(manifest_dir: &Path) -> String {

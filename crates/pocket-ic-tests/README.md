@@ -2,18 +2,46 @@
 
 ## Prerequisites
 
-- PocketIC server: `.pocket-ic/pocket-ic` (fetched at build time if missing or version mismatch). `POCKET_IC_BIN` may override it only when the binary reports the same `pocket-ic-server` version as the `pocket-ic` crate dependency; a mismatched override is ignored (stale shell exports otherwise cause composite-query timeouts).
+- PocketIC server: `.pocket-ic/pocket-ic` (fetched at build time if missing or version mismatch). The tests execute it through `.pocket-ic/pocket-ic-launcher`, which closes unrelated inherited file descriptors before starting PocketIC. `POCKET_IC_BIN` may override it only when the binary reports the same `pocket-ic-server` version as the `pocket-ic` crate dependency; a mismatched override is ignored (stale shell exports otherwise cause composite-query timeouts). Prefer leaving `POCKET_IC_BIN` unset for local runs so the launcher stays in effect.
 - `wasm32-unknown-unknown` target: `rustup target add wasm32-unknown-unknown`
 
 ## Run
 
 ```bash
-# Router + index placement smoke (default build)
-cargo test -p gleaph-pocket-ic-tests router_registers_shards -- --nocapture
+# Fast local smoke: one PocketIC server, one two-shard federation, one indexed GQL query
+cargo test -p gleaph-pocket-ic-tests --test smoke -- --nocapture
 
-# All tests
-cargo test -p gleaph-pocket-ic-tests -- --nocapture
+# Full PocketIC gate
+cargo test -p gleaph-pocket-ic-tests -- --test-threads=1 --nocapture
 ```
+
+PocketIC tests start local PocketIC server / replica processes. The Rust test
+harness defaults to running tests in parallel inside each integration-test
+binary, which can start many PocketIC instances at once and make the suite look
+stuck on slower or resource-constrained machines. Use `--test-threads=1` for the
+supported full-suite command; use the `smoke` target or a focused test filter for
+faster iteration.
+
+The full suite is intentionally broad: most tests create a fresh PocketIC
+instance and reinstall the Router, Index, and Graph canisters to preserve test
+isolation across upgrade, timer, recovery, and fault-injection contracts. That
+is the main runtime cost. Keep the `smoke` target small and do not add
+failure-mode or upgrade coverage there unless it is required for the daily
+developer loop.
+
+PocketIC 14.0.0 starts the server in a background process with `--hard-ttl 600`.
+The server is shared only within a single Rust test binary process and may remain
+for up to 10 minutes after the test exits or is interrupted. If local runs become
+unexpectedly slow after `^C`, check for orphaned servers from this checkout with
+`pgrep -af 'crates/pocket-ic-tests/.pocket-ic/pocket-ic'` and stop those stale
+processes before rerunning.
+
+Some integrated terminals can leave editor-owned file descriptors open in child
+processes. If those descriptors reach PocketIC's sandbox launcher, canister
+installation may appear to hang after the server prints `listening on port ...`.
+The generated `.pocket-ic/pocket-ic-launcher` closes non-stdio descriptors before
+execing the real PocketIC server to keep terminal/editor state out of sandbox
+children.
 
 ## Status
 
