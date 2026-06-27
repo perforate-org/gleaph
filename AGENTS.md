@@ -81,6 +81,24 @@ Benchmark regressions should be investigated and fixed unless they are justified
 
 Use the `benchmark` skill when modifying traversal, storage layout, indexing, parsing, planning, serialization, or canister-facing execution paths.
 
+## PocketIC E2E Tests on macOS
+
+Running the `gleaph-pocket-ic-tests` crate inside an editor-hosted integrated terminal on macOS can hang during `install_canister` because PocketIC's canister-sandbox process chain (server → sandbox launcher → canister sandbox) may fail to communicate when spawned under certain terminal/pty contexts.
+
+To avoid this, **always use `just` recipes that delegate to an external terminal** when asked to run PocketIC E2E tests from inside an editor or IDE:
+
+- `just ic-e2e` — run the full PocketIC E2E suite in Terminal.app (window stays open)
+- `just ic-e2e --close` — run the full suite and close the window when done
+- `just ic-e2e --all` — alias for the full suite (same as no target)
+- `just ic-e2e smoke` — run only the smoke test
+- `just ic-e2e smoke --close` — run only the smoke test and close the window when done
+- `just ic-e2e <test-name>` — run a specific PocketIC test file in Terminal.app, e.g. `just ic-e2e router_graph_resolution`
+- `just ic-e2e <test-name> --close` — run a specific test file and close the window when done
+
+Do not run `cargo test -p gleaph-pocket-ic-tests ...` directly in an editor-hosted integrated terminal on macOS.
+
+For dedicated terminal emulators (e.g. Terminal.app or iTerm2 already in focus), run the smoke test directly with `just ic-e2e --inline`.
+
 ## Format, Test, and Benchmark
 
 After completing a meaningful code change, explicitly run formatting, tests, and relevant benchmarks.
