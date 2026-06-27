@@ -99,7 +99,7 @@ mod tests {
     use async_trait::async_trait;
     use candid::Principal;
     use gleaph_graph_kernel::federation::ShardId;
-    use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorSubject};
+    use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorMetric, VectorSubject};
     use std::sync::atomic::{AtomicUsize, Ordering};
 
     struct FlakyVectorIndex {
@@ -146,6 +146,7 @@ mod tests {
             embedding_version: version,
             encoding: VectorEncoding::F32,
             dims: 1,
+            metric: VectorMetric::L2Squared,
             bytes: vec![0, 0, 0, 0],
             remove: false,
         }

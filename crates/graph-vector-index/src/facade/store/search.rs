@@ -56,6 +56,39 @@ pub(super) fn l2_squared_f32(query: &[f32], vector: &[f32]) -> f32 {
         .sum()
 }
 
+/// Returns `(dot, query_norm_sq, vector_norm_sq)` for cosine scoring. Used by `cosine_distance_f32`
+/// so the caller can validate non-zero norms.
+pub(super) fn cosine_dot_and_norms_f32(query: &[f32], vector: &[f32]) -> (f32, f32, f32) {
+    let mut dot = 0.0f32;
+    let mut q_norm_sq = 0.0f32;
+    let mut v_norm_sq = 0.0f32;
+    for (q, v) in query.iter().zip(vector.iter()) {
+        dot += q * v;
+        q_norm_sq += q * q;
+        v_norm_sq += v * v;
+    }
+    (dot, q_norm_sq, v_norm_sq)
+}
+
+/// Cosine "distance" used internally by the top-k heap: `1 - cosine_similarity`.
+///
+/// Both vectors must be finite and have non-zero norm. The public entry points (`search_impl` and
+/// `raw_distance_f32`) enforce this before calling this helper, but the assertions below keep the
+/// invariant explicit and prevent silent NaN from propagating if a future caller bypasses them.
+pub(super) fn cosine_distance_f32(query: &[f32], vector: &[f32]) -> f32 {
+    assert!(
+        vector_is_finite(query) && vector_has_nonzero_norm(query),
+        "cosine_distance_f32 called with non-finite or zero-norm query"
+    );
+    assert!(
+        vector_is_finite(vector) && vector_has_nonzero_norm(vector),
+        "cosine_distance_f32 called with non-finite or zero-norm indexed vector"
+    );
+    let (dot, q_norm_sq, v_norm_sq) = cosine_dot_and_norms_f32(query, vector);
+    let similarity = dot / (q_norm_sq.sqrt() * v_norm_sq.sqrt());
+    1.0 - similarity
+}
+
 /// Decodes contiguous little-endian `f32` components (`VectorEncoding::F32`).
 pub(super) fn decode_f32(bytes: &[u8]) -> Vec<f32> {
     bytes
@@ -66,6 +99,40 @@ pub(super) fn decode_f32(bytes: &[u8]) -> Vec<f32> {
 
 /// Encodes `f32` components as contiguous little-endian bytes (inverse of [`decode_f32`]). Used by
 /// the Slice 8 `Training` phase to persist refined centroids and by the test/bench seed helpers.
+/// Validates that `v` contains only finite components.
+fn vector_is_finite(v: &[f32]) -> bool {
+    v.iter().all(|x| x.is_finite())
+}
+
+/// Validates that `v` has a strictly positive squared norm (used by cosine).
+fn vector_has_nonzero_norm(v: &[f32]) -> bool {
+    let mut norm_sq = 0.0f32;
+    for x in v {
+        norm_sq += x * x;
+    }
+    norm_sq > 0.0
+}
+
+/// Computes the internal raw distance for a metric. Returns `None` for indexed vectors that should
+/// be skipped (non-finite components or zero norm where required); never returns `NaN`/`Inf`.
+fn raw_distance_f32(metric: VectorMetric, query: &[f32], vector: &[f32]) -> Option<f32> {
+    // Both metrics require finite components to keep the top-k heap ordered and the Router seed
+    // conversion contract honest. Zero norm only matters for cosine, but skipping NaN/Inf is
+    // unconditional for all metrics in this slice.
+    if !vector_is_finite(vector) {
+        return None;
+    }
+    match metric {
+        VectorMetric::L2Squared => Some(l2_squared_f32(query, vector)),
+        VectorMetric::Cosine => {
+            if !vector_has_nonzero_norm(vector) {
+                return None;
+            }
+            Some(cosine_distance_f32(query, vector))
+        }
+    }
+}
+
 pub(super) fn encode_f32(vector: &[f32]) -> Vec<u8> {
     let mut out = Vec::with_capacity(vector.len() * 4);
     for v in vector {
@@ -252,11 +319,10 @@ impl VectorIndexStore {
         let Some(def) = VECTOR_INDEX_DEFS.with_borrow(|defs| defs.get(&req.index_id)) else {
             return Ok(VectorSearchResult { hits: Vec::new() });
         };
-        // Slice 5/6 support only the degenerate F32 / L2Squared baseline; the request must also agree
-        // with the stored definition.
+        // The request must agree with the stored definition; F32 encoding is the only supported
+        // encoding in this slice.
         if req.encoding != VectorEncoding::F32
             || req.encoding != def.encoding
-            || req.metric != VectorMetric::L2Squared
             || req.metric != def.metric
             || req.dims != def.dims
         {
@@ -267,6 +333,11 @@ impl VectorIndexStore {
         }
 
         let query = decode_f32(&req.query);
+        if !vector_is_finite(&query)
+            || (req.metric == VectorMetric::Cosine && !vector_has_nonzero_norm(&query))
+        {
+            return Err(VectorIndexError::InvalidQueryVector);
+        }
 
         // Resolve tuning. The default path clamps defensively to `1..=nlist`; the tuned path rejects
         // out-of-range values (see `vector_search_tuned`).
@@ -287,8 +358,11 @@ impl VectorIndexStore {
 
         // Mode selection: exact subject scan for degenerate or untrained indexes; otherwise the
         // partition-page scan. A stale/incomplete centroid set falls back to exact (no error).
+        // Cosine only supports the exact-scan path in this slice.
         if def.nlist <= 1 || !centroids_ready(&def, req.index_id) {
-            Ok(self.exact_subject_scan(req, def.active_index_version, &query))
+            Ok(self.exact_subject_scan(req, def.active_index_version, &query, def.metric))
+        } else if def.metric == VectorMetric::Cosine {
+            Err(VectorIndexError::MetricNotSupportedForPartitionScan)
         } else {
             Ok(self.partition_page_scan(req, &def, &query, tuning))
         }
@@ -302,6 +376,7 @@ impl VectorIndexStore {
         req: &VectorSearchRequest,
         active_index_version: u64,
         query: &[f32],
+        metric: VectorMetric,
     ) -> VectorSearchResult {
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
 
@@ -333,7 +408,13 @@ impl VectorIndexStore {
                     if header.vector_id != expected_vector_id {
                         continue;
                     }
-                    let distance = l2_squared_f32(query, &decode_f32(&bytes));
+                    // Skip indexed vectors that are non-finite or zero-norm for cosine; for L2Squared
+                    // the raw value is always finite unless the bytes are non-finite, which is also
+                    // skipped by this helper for consistency.
+                    let Some(distance) = raw_distance_f32(metric, query, &decode_f32(&bytes))
+                    else {
+                        continue;
+                    };
                     push_bounded(
                         &mut heap,
                         req.top_k,
@@ -363,7 +444,7 @@ impl VectorIndexStore {
         // `centroids_ready` already verified the set is complete; default to exact-equivalent empty
         // if it somehow vanished between the gate and here.
         let Some(centroids) = read_centroids(def, req.index_id) else {
-            return self.exact_subject_scan(req, def.active_index_version, query);
+            return self.exact_subject_scan(req, def.active_index_version, query, def.metric);
         };
         let active = def.active_index_version;
         let selected = select_partitions(&centroids, query, tuning.nprobe);
@@ -378,9 +459,14 @@ impl VectorIndexStore {
                     partition_id,
                     &mut scratch,
                     |slot, header, bytes| {
-                        if let Some(candidate) =
-                            self.fresh_row_candidate(req.index_id, slot, header, query, bytes)
-                        {
+                        if let Some(candidate) = self.fresh_row_candidate(
+                            req.index_id,
+                            slot,
+                            header,
+                            query,
+                            bytes,
+                            def.metric,
+                        ) {
                             push_bounded(&mut heap, req.top_k, candidate);
                         }
                     },
@@ -403,6 +489,7 @@ impl VectorIndexStore {
         header: &RowHeader,
         query: &[f32],
         bytes: &[u8],
+        metric: VectorMetric,
     ) -> Option<Candidate> {
         let subject = header.subject();
         let entry =
@@ -416,7 +503,7 @@ impl VectorIndexStore {
         if entry.current_slot_for(slot.index_version) != Some(slot) {
             return None;
         }
-        let distance = l2_squared_f32(query, &decode_f32(bytes));
+        let distance = raw_distance_f32(metric, query, &decode_f32(bytes))?;
         Some(Candidate {
             distance,
             subject,

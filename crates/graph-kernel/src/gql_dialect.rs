@@ -83,6 +83,8 @@ pub enum GqlDialectExtensionStatus {
     Implemented,
     /// Implemented compatibility surface that may later be replaced by more ordinary GQL syntax.
     Compatibility,
+    /// A production subset is implemented; additional shapes/providers remain planned.
+    PartiallyImplemented,
     /// Planned but not yet implemented.
     Planned,
 }
@@ -261,7 +263,7 @@ pub const GLEAPH_DIALECT_EXTENSIONS: &[GqlDialectExtensionSpec] = &[
     GqlDialectExtensionSpec {
         canonical_name: SEARCH,
         kind: GqlDialectExtensionKind::SearchClause,
-        status: GqlDialectExtensionStatus::Planned,
+        status: GqlDialectExtensionStatus::PartiallyImplemented,
         owner: GqlDialectExtensionOwner::Router,
         doc_anchor: "design/gql/extension-syntax.md#search-subclause",
     },
@@ -415,10 +417,6 @@ mod tests {
     fn planned_extensions_are_present_and_marked_planned() {
         let planned: Vec<_> = planned_extensions().collect();
         assert!(
-            planned.iter().any(|spec| spec.canonical_name == SEARCH),
-            "SEARCH must be planned"
-        );
-        assert!(
             planned.iter().any(|spec| spec.canonical_name == INLINE),
             "INLINE must be planned"
         );
@@ -428,9 +426,23 @@ mod tests {
                 .any(|spec| spec.canonical_name == CREATE_VECTOR_INDEX),
             "CREATE VECTOR INDEX must be planned"
         );
+        assert_eq!(
+            planned.len(),
+            2,
+            "only INLINE and CREATE VECTOR INDEX are planned"
+        );
         for spec in &planned {
             assert_eq!(spec.status, GqlDialectExtensionStatus::Planned);
         }
+    }
+
+    #[test]
+    fn search_is_partially_implemented() {
+        let spec = GLEAPH_DIALECT_EXTENSIONS
+            .iter()
+            .find(|spec| spec.canonical_name == SEARCH)
+            .expect("SEARCH in manifest");
+        assert_eq!(spec.status, GqlDialectExtensionStatus::PartiallyImplemented);
     }
 
     #[test]
@@ -453,6 +465,6 @@ mod tests {
         assert_eq!(operational_procedures().count(), 3);
         assert_eq!(edge_payload_functions().count(), 4);
         assert_eq!(edge_ordering_functions().count(), 1);
-        assert_eq!(planned_extensions().count(), 3);
+        assert_eq!(planned_extensions().count(), 2);
     }
 }

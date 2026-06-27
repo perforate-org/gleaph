@@ -504,6 +504,7 @@ fn vector_index_info(
         index_id: def.index_id,
         embedding_name_id: def.embedding_name_id.raw(),
         dims: def.dims,
+        metric: def.metric,
         target: def.target.map(|t| t.canister),
         activation_state: activation_state_view(effective),
     }
@@ -550,7 +551,7 @@ pub(crate) fn admin_register_vector_index(
         args.index_id,
         embedding_name_id,
         VectorIndexKind::IvfFlat,
-        VectorMetric::L2Squared,
+        args.metric.unwrap_or(VectorMetric::L2Squared),
         VectorEncoding::F32,
         args.dims,
         target,

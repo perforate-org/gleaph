@@ -76,6 +76,7 @@ fn setup_search_store(dims: u16, n: u32) -> VectorIndexStore {
             embedding_version: 1,
             encoding: VectorEncoding::F32,
             dims,
+            metric: VectorMetric::L2Squared,
             bytes: vec_bytes(dims, vid as f32),
             remove: false,
         };
@@ -271,6 +272,7 @@ fn new_subject_upsert(dims: u16, vid: u32, value: f32) -> VectorEmbeddingSyncOp 
         embedding_version: 1,
         encoding: VectorEncoding::F32,
         dims,
+        metric: VectorMetric::L2Squared,
         bytes: vec_bytes(dims, value),
         remove: false,
     }
@@ -359,6 +361,7 @@ fn bench_remove_normal_d128() -> canbench_rs::BenchResult {
         embedding_version: 1,
         encoding: VectorEncoding::F32,
         dims: 128,
+        metric: VectorMetric::L2Squared,
         bytes: Vec::new(),
         remove: true,
     };
@@ -402,6 +405,7 @@ fn tombstone_first(store: &VectorIndexStore, dims: u16, tombstoned: u32) {
             embedding_version: 2,
             encoding: VectorEncoding::F32,
             dims,
+            metric: VectorMetric::L2Squared,
             bytes: vec_bytes(dims, vid as f32 + 0.5),
             remove: false,
         };

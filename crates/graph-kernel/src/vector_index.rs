@@ -65,13 +65,60 @@ pub enum VectorIndexKind {
     IvfFlat,
 }
 
-/// Distance metric for vector scoring.
+/// Distance/similarity metric for vector scoring.
 #[derive(
     Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, CandidType, Serialize, Deserialize,
 )]
 pub enum VectorMetric {
     /// Squared Euclidean distance (no square root); smaller is nearer.
     L2Squared,
+    /// Cosine similarity expressed internally as `1 - similarity`; smaller is nearer.
+    /// User-facing score is `1 - raw`; this metric has no natural distance.
+    Cosine,
+}
+
+/// Whether a metric exposes a distance or a score to the user-facing GQL surface.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
+pub enum VectorOutputShape {
+    /// Smaller values are nearer; e.g. `L2Squared`.
+    Distance,
+    /// Larger values are better; e.g. `Cosine`.
+    Score,
+}
+
+impl VectorMetric {
+    /// Classification of this metric on the GQL `SEARCH` output surface.
+    pub const fn output_shape(self) -> VectorOutputShape {
+        match self {
+            Self::L2Squared => VectorOutputShape::Distance,
+            Self::Cosine => VectorOutputShape::Score,
+        }
+    }
+
+    /// Convert an internal raw value (smaller is nearer) to a user-facing distance, if this metric
+    /// has one. Returns `None` for non-finite `raw` or for metrics that do not expose distance.
+    pub fn to_user_distance(self, raw: f32) -> Option<f32> {
+        if !raw.is_finite() {
+            return None;
+        }
+        match self {
+            Self::L2Squared => Some(raw),
+            Self::Cosine => None,
+        }
+    }
+
+    /// Convert an internal raw value (smaller is nearer) to a user-facing score, if this metric
+    /// has one. Returns `None` for non-finite `raw` or for metrics that do not expose score.
+    pub fn to_user_score(self, raw: f32) -> Option<f32> {
+        if !raw.is_finite() {
+            return None;
+        }
+        match self {
+            Self::L2Squared => None,
+            // internal raw = 1 - similarity; user score = similarity.
+            Self::Cosine => Some(1.0 - raw),
+        }
+    }
 }
 
 /// What a stored vector refers to.
@@ -122,6 +169,8 @@ pub struct VectorEmbeddingSyncOp {
     pub embedding_version: u64,
     pub encoding: VectorEncoding,
     pub dims: u16,
+    /// Metric of the target index definition.
+    pub metric: VectorMetric,
     /// REQUIRED for upsert; EMPTY for remove — never read for idempotence.
     pub bytes: Vec<u8>,
     pub remove: bool,
@@ -185,9 +234,12 @@ pub struct VectorSearchRequest {
     pub top_k: u32,
 }
 
-/// One scored search result. `distance` is metric-specific (smaller is nearer); for `L2Squared` it
-/// is the squared Euclidean distance. `embedding_incarnation` / `embedding_version` are the live
-/// subject clock so a caller can reason about freshness (ADR 0031 Slice 4).
+/// One scored search result. `distance` is the metric-specific internal raw value (smaller is
+/// nearer), not necessarily a public distance. For `L2Squared` it is the squared Euclidean distance;
+/// for `Cosine` it is `1 - cosine_similarity`. The Router converts this raw value to the
+/// user-facing scalar requested by `SCORE AS` or `DISTANCE AS`. `embedding_incarnation` /
+/// `embedding_version` are the live subject clock so a caller can reason about freshness
+/// (ADR 0031 Slice 4).
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct VectorSearchHit {
     pub subject: VectorSubject,
@@ -671,6 +723,14 @@ pub enum VectorIndexError {
     AllocatorOverflow,
     /// `top_k` on a vector search is `0` or exceeds [`MAX_VECTOR_SEARCH_TOP_K`].
     InvalidSearchTopK,
+    /// The metric is not supported for the selected physical read path in this slice
+    /// (e.g. `Cosine` with `nlist > 1` partition-page scan).
+    MetricNotSupportedForPartitionScan,
+    /// A sync op's metric disagrees with the stored lazy `VectorIndexDef.metric`.
+    MetricMismatch,
+    /// The query vector is non-finite or has zero norm where the metric requires a finite,
+    /// non-zero vector.
+    InvalidQueryVector,
     /// A rebuild is already in flight for the index (ADR 0031 Slice 7); abort it first.
     RebuildAlreadyActive,
     /// No rebuild is in flight for the index (step/status/publish/abort with nothing to do).
@@ -721,6 +781,11 @@ impl std::fmt::Display for VectorIndexError {
             Self::InvalidPageCapacity => "index page capacity yields fewer than one slot per page",
             Self::AllocatorOverflow => "vector index allocator overflow",
             Self::InvalidSearchTopK => "search top_k must be in 1..=MAX_VECTOR_SEARCH_TOP_K",
+            Self::MetricNotSupportedForPartitionScan => {
+                "metric is not supported for the partition-page scan path"
+            }
+            Self::MetricMismatch => "sync op metric disagrees with the index definition",
+            Self::InvalidQueryVector => "query vector is non-finite or has zero norm",
             Self::RebuildAlreadyActive => "a vector rebuild is already active for this index",
             Self::NoActiveRebuild => "no vector rebuild is active for this index",
             Self::RebuildNotReadyToPublish => "vector rebuild is not ready to publish",
@@ -763,6 +828,7 @@ mod tests {
             embedding_version: 9,
             encoding: VectorEncoding::F32,
             dims: 4,
+            metric: VectorMetric::L2Squared,
             bytes: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
             remove: false,
         };
@@ -783,6 +849,7 @@ mod tests {
             embedding_version: 2,
             encoding: VectorEncoding::F32,
             dims: 4,
+            metric: VectorMetric::Cosine,
             bytes: Vec::new(),
             remove: true,
         };
@@ -857,6 +924,84 @@ mod tests {
         };
         let bytes = Encode!(&result).expect("encode result");
         assert_eq!(Decode!(&bytes, VectorSearchResult).expect("decode"), result);
+    }
+
+    #[test]
+    fn cosine_search_request_and_result_candid_roundtrip() {
+        let req = VectorSearchRequest {
+            index_id: 7,
+            query: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            encoding: VectorEncoding::F32,
+            dims: 4,
+            metric: VectorMetric::Cosine,
+            top_k: 10,
+        };
+        let bytes = Encode!(&req).expect("encode request");
+        assert_eq!(Decode!(&bytes, VectorSearchRequest).expect("decode"), req);
+
+        let result = VectorSearchResult {
+            hits: vec![VectorSearchHit {
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(2),
+                    vertex_id: 42,
+                },
+                distance: 0.25,
+                embedding_incarnation: 3,
+                embedding_version: 9,
+            }],
+        };
+        let bytes = Encode!(&result).expect("encode result");
+        assert_eq!(Decode!(&bytes, VectorSearchResult).expect("decode"), result);
+    }
+
+    #[test]
+    fn vector_metric_output_shape() {
+        assert_eq!(
+            VectorMetric::L2Squared.output_shape(),
+            VectorOutputShape::Distance
+        );
+        assert_eq!(
+            VectorMetric::Cosine.output_shape(),
+            VectorOutputShape::Score
+        );
+    }
+
+    #[test]
+    fn l2_squared_user_scalar_conversion() {
+        assert_eq!(VectorMetric::L2Squared.to_user_distance(2.5), Some(2.5));
+        assert!(VectorMetric::L2Squared.to_user_score(2.5).is_none());
+        assert!(VectorMetric::L2Squared.to_user_distance(f32::NAN).is_none());
+        assert!(
+            VectorMetric::L2Squared
+                .to_user_distance(f32::INFINITY)
+                .is_none()
+        );
+        assert!(
+            VectorMetric::L2Squared
+                .to_user_distance(f32::NEG_INFINITY)
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn cosine_user_scalar_conversion() {
+        // raw = 1 - similarity; score = 1 - raw = similarity.
+        assert_eq!(VectorMetric::Cosine.to_user_score(0.25), Some(0.75));
+        assert!(VectorMetric::Cosine.to_user_distance(0.25).is_none());
+        assert!(VectorMetric::Cosine.to_user_score(f32::NAN).is_none());
+        assert!(VectorMetric::Cosine.to_user_score(f32::INFINITY).is_none());
+    }
+
+    #[test]
+    fn new_vector_index_errors_candid_roundtrip() {
+        for err in [
+            VectorIndexError::MetricNotSupportedForPartitionScan,
+            VectorIndexError::MetricMismatch,
+            VectorIndexError::InvalidQueryVector,
+        ] {
+            let bytes = Encode!(&err).expect("encode");
+            assert_eq!(Decode!(&bytes, VectorIndexError).expect("decode"), err);
+        }
     }
 
     #[test]

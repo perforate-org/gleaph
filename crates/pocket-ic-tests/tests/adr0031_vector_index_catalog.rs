@@ -12,8 +12,10 @@ use gleaph_gql::Value;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId, VectorActivationBlockReason};
+use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_graph_kernel::vector_index::{
-    VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorSearchResult, VectorSubject,
+    VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorMetric, VectorSearchResult,
+    VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, e2e_insert_vertex, gql_query_with_params_as_admin,
@@ -141,6 +143,7 @@ fn register_resolve_and_backfill_stay_fail_closed() {
             embedding_name: EMBEDDING_NAME.to_string(),
             index_id: INDEX_ID,
             dims: DIMS,
+            metric: Some(VectorMetric::L2Squared),
             target: Some(target),
             if_not_exists: false,
         },
@@ -203,6 +206,7 @@ fn failed_registration_does_not_allocate_an_embedding_name() {
                 embedding_name: embedding_name.to_string(),
                 index_id,
                 dims: DIMS,
+                metric: Some(VectorMetric::L2Squared),
                 target: tgt,
                 if_not_exists,
             },
@@ -369,6 +373,7 @@ fn activation_is_fenced_on_flag_and_shard_attach() {
             embedding_name: EMBEDDING_NAME.to_string(),
             index_id: INDEX_ID,
             dims: DIMS,
+            metric: Some(VectorMetric::L2Squared),
             target: Some(vector),
             if_not_exists: false,
         },
@@ -475,6 +480,43 @@ fn seed_embedding(
         embedding_version: 1,
         encoding: VectorEncoding::F32,
         dims: DIMS,
+        metric: VectorMetric::L2Squared,
+        bytes: vec_bytes(value),
+        remove: false,
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            vector,
+            shard_canister,
+            "vector_upsert",
+            Encode!(&op).expect("encode upsert op"),
+        )
+        .expect("vector_upsert call");
+    Decode!(&bytes, Result<(), VectorIndexError>).expect("decode upsert result")
+}
+
+/// Seed a vector with an explicit metric (used for cosine end-to-end coverage).
+fn seed_embedding_with_metric(
+    env: &FederationEnv,
+    vector: Principal,
+    shard_canister: Principal,
+    vertex_id: u32,
+    value: f32,
+    metric: VectorMetric,
+) -> Result<(), VectorIndexError> {
+    let op = VectorEmbeddingSyncOp {
+        index_id: INDEX_ID,
+        embedding_name_id: 0,
+        subject: VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id,
+        },
+        embedding_incarnation: 1,
+        embedding_version: 1,
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        metric,
         bytes: vec_bytes(value),
         remove: false,
     };
@@ -528,6 +570,7 @@ fn vector_search_returns_seeded_hit() {
             embedding_name: EMBEDDING_NAME.to_string(),
             index_id: INDEX_ID,
             dims: DIMS,
+            metric: Some(VectorMetric::L2Squared),
             target: Some(vector),
             if_not_exists: false,
         },
@@ -584,6 +627,7 @@ fn vector_search_on_activated_empty_index_returns_empty() {
             embedding_name: EMBEDDING_NAME.to_string(),
             index_id: INDEX_ID,
             dims: DIMS,
+            metric: Some(VectorMetric::L2Squared),
             target: Some(vector),
             if_not_exists: false,
         },
@@ -618,6 +662,7 @@ fn gql_search_distance_as_executes_through_router_vector_index() {
             embedding_name: EMBEDDING_NAME.to_string(),
             index_id: INDEX_ID,
             dims: DIMS,
+            metric: Some(VectorMetric::L2Squared),
             target: Some(vector),
             if_not_exists: false,
         },
@@ -669,6 +714,129 @@ fn gql_search_distance_as_executes_through_router_vector_index() {
     assert!(columns.contains_key("distance"));
 }
 
+/// ADR 0034 Slice 4: `SCORE AS` executes end-to-end for a cosine-similarity index and
+/// returns `similarity = 1 - raw` as a `FLOAT64` seed alias.
+#[test]
+fn gql_search_score_as_executes_through_router_vector_index_for_cosine() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register(
+        &env,
+        &RegisterVectorIndexArgs {
+            logical_graph_name: GRAPH_NAME.to_string(),
+            embedding_name: EMBEDDING_NAME.to_string(),
+            index_id: INDEX_ID,
+            dims: DIMS,
+            metric: Some(VectorMetric::Cosine),
+            target: Some(vector),
+            if_not_exists: false,
+        },
+    )
+    .expect("register cosine vector index");
+
+    let graph_id = router_graph_id(&env);
+    set_dispatch_activation(&env, true).expect("enable dispatch flag");
+    set_graph_vector_routing(&env, env.graph_source, vector);
+    set_graph_vector_routing(&env, env.graph_dest, vector);
+    attach_shard_to_vector(&env, vector, graph_id, ShardId::new(0), env.graph_source)
+        .expect("vector accepts shard 0");
+    attach_shard_to_vector(&env, vector, graph_id, ShardId::new(1), env.graph_dest)
+        .expect("vector accepts shard 1");
+    attach_shard(&env, ShardId::new(0), vector).expect("attach shard 0");
+    attach_shard(&env, ShardId::new(1), vector).expect("attach shard 1");
+
+    let inserted = e2e_insert_vertex(&env, env.graph_source);
+    // Constant vectors share the same direction; query identical to the seed -> similarity 1.0.
+    seed_embedding_with_metric(
+        &env,
+        vector,
+        env.graph_source,
+        inserted.local_vertex_id,
+        5.0,
+        VectorMetric::Cosine,
+    )
+    .expect("seed cosine embedding");
+
+    let query = format!(
+        "MATCH (d) SEARCH d IN (VECTOR INDEX {EMBEDDING_NAME} FOR $query LIMIT 10) SCORE AS score RETURN d, score"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(5.0)),
+    )])
+    .expect("encode query params");
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_eq!(
+        result.row_count, 1,
+        "exact cosine query should return the seeded vertex"
+    );
+    let rows_blob = result.rows_blob.expect("rows blob");
+    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    assert_eq!(wire.rows.len(), 1);
+    let row = wire.rows.into_iter().next().expect("one row");
+    let columns: BTreeMap<String, gleaph_gql_ic::IcWireValue> = row.columns.into_iter().collect();
+    assert!(columns.contains_key("d"));
+    match columns.get("score").expect("score column") {
+        gleaph_gql_ic::IcWireValue::Float64(score) => {
+            assert!(
+                (score - 1.0f64).abs() < 1e-6,
+                "identical directions score ~1.0"
+            )
+        }
+        other => panic!("score must be Float64, got {other:?}"),
+    }
+}
+
+/// ADR 0034 Slice 4: `DISTANCE AS` is rejected for a cosine index because cosine has no
+/// user-facing distance; only `SCORE AS` is valid.
+#[test]
+fn gql_search_distance_as_rejected_for_cosine_index() {
+    let env = install_federation();
+    let target = env.index;
+
+    register(
+        &env,
+        &RegisterVectorIndexArgs {
+            logical_graph_name: GRAPH_NAME.to_string(),
+            embedding_name: EMBEDDING_NAME.to_string(),
+            index_id: INDEX_ID,
+            dims: DIMS,
+            metric: Some(VectorMetric::Cosine),
+            target: Some(target),
+            if_not_exists: false,
+        },
+    )
+    .expect("register cosine vector index");
+
+    let query = format!(
+        "MATCH (d) SEARCH d IN (VECTOR INDEX {EMBEDDING_NAME} FOR $query LIMIT 10) DISTANCE AS distance RETURN d, distance"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(1.0)),
+    )])
+    .expect("encode query params");
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            env.admin,
+            "gql_query",
+            Encode!(&query.to_string(), &params).expect("encode gql_query"),
+        )
+        .expect("gql_query call");
+    let result: Result<GqlQueryResult, RouterError> =
+        Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_query result");
+    let err = result.expect_err("DISTANCE AS on cosine must fail");
+    assert!(
+        err.to_string().contains("not supported for metric"),
+        "unexpected error: {err}"
+    );
+}
+
 #[test]
 fn anonymous_target_is_rejected() {
     let env = install_federation();
@@ -680,6 +848,7 @@ fn anonymous_target_is_rejected() {
             embedding_name: EMBEDDING_NAME.to_string(),
             index_id: INDEX_ID,
             dims: DIMS,
+            metric: Some(VectorMetric::L2Squared),
             target: None,
             if_not_exists: false,
         },

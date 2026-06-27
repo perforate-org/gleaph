@@ -9,8 +9,9 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorMaintenancePolicy,
-    VectorMaintenanceRecommendation, VectorPartitionHealthStep, VectorPartitionHealthSummary,
-    VectorPartitionPageHealth, VectorRebuildPhase, VectorRebuildStatus, VectorSubject,
+    VectorMaintenanceRecommendation, VectorMetric, VectorPartitionHealthStep,
+    VectorPartitionHealthSummary, VectorPartitionPageHealth, VectorRebuildPhase,
+    VectorRebuildStatus, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, install_federation, install_vector_canister,
@@ -86,6 +87,7 @@ fn seed_embedding(
         embedding_version: version,
         encoding: VectorEncoding::F32,
         dims: DIMS,
+        metric: VectorMetric::L2Squared,
         bytes: vec_bytes(value),
         remove: false,
     };

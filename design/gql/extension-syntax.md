@@ -45,7 +45,7 @@ semantics.
 | Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface                                                                                                                               | Graph query executor                                                 |
 | Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                               | Graph edge storage/execution                                         |
 | Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                               | Planner fusion + Graph edge payload executor                         |
-| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for leading `DISTANCE AS` vertex-only shape; `SCORE AS` (when metric has no score), non-leading `SEARCH`, edge subjects, and `WHERE` remain planned | Router vector-index catalog + vector canister + Graph seed hydration |
+| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for leading `DISTANCE AS` and `SCORE AS` on exact-scan cosine indexes; `SCORE AS` rejected for distance-only metrics; non-leading `SEARCH`, edge subjects, and `WHERE` remain planned | Router vector-index catalog + vector canister + Graph seed hydration |
 | Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                                                                                                                                     | Graph mutation executor / Router orchestration                       |
 
 ## Namespace policy
@@ -294,7 +294,7 @@ be implied by the initial syntax.
 
 ### Target vector-search syntax
 
-**Status:** Parser and planner representation implemented. Router lowering to the existing vector search API is implemented for the narrow accepted shape: a leading `NodeScan(variable = d, label: optional)` immediately followed by `PlanOp::Search { binding = d, provider: VectorIndex, output: DISTANCE AS alias }`, vertex-only, no `WHERE`. Unsupported shapes (non-leading `SEARCH`, edge subjects, `SCORE AS` for metrics that have no natural score, `WHERE` filtering, multi-graph `SEARCH`, or any mutation tail) fail closed with an explicit `InvalidArgument` error.
+**Status:** Parser and planner representation implemented. Router lowering to the existing vector search API is implemented for the narrow accepted shape: a leading `NodeScan(variable = d, label: optional)` immediately followed by `PlanOp::Search { binding = d, provider: VectorIndex, output: DISTANCE AS alias or SCORE AS alias }`, vertex-only, no `WHERE`. `SCORE AS` is accepted only for indexes whose metric exposes a score (currently exact-scan `Cosine`, `nlist == 1`); it is rejected for distance-only metrics such as `L2Squared`. Unsupported shapes (non-leading `SEARCH`, edge subjects, `WHERE` filtering, multi-graph `SEARCH`, or any mutation tail) fail closed with an explicit `InvalidArgument` error.
 
 Current runtime exposes vector search through Router Candid API `vector_search(RouterVectorSearchRequest)`.
 
@@ -510,9 +510,9 @@ This expresses the intended flow:
 | 1     | Document the dialect contract and keep existing behavior unchanged                                     | Implemented                                                                                                   |
 | 2     | Add the Rust extension manifest for canonical extension names, classes, status, owner, and doc anchors | Implemented                                                                                                   |
 | 3     | Add `SEARCH` parser/planner representation without backend-specific storage details                    | Implemented                                                                                                   |
-| 4     | Add Router lowering from vector `SEARCH` to the existing vector search API                             | Implemented for leading `NodeScan + Search` prefix, vertex-only, no `WHERE`, `DISTANCE AS` only               |
+| 4     | Add Router lowering from vector `SEARCH` to the existing vector search API                             | Implemented for leading `NodeScan + Search` prefix, vertex-only, no `WHERE`, `DISTANCE AS` and `SCORE AS` for cosine |
 | 5     | Add result hydration from vector hits to graph vertex bindings                                         | Implemented via row-shaped `SeedBindingsWire`                                                                 |
-| 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Partial: `DISTANCE AS` accepted; `SCORE AS` rejected for metrics that do not yield a score (e.g. `L2Squared`) |
+| 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Implemented: shape validated against metric; `SCORE AS` works for exact-scan `Cosine`, rejected for `L2Squared` |
 | 7     | Add inline edge property schema syntax and lower `e.inline_field` to existing edge-payload reads       | Planned                                                                                                       |
 | 8     | Deprecate daily-query use of `GLEAPH.WEIGHT` where ordinary inline property access is available        | Planned                                                                                                       |
 

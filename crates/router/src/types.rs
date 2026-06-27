@@ -11,7 +11,7 @@ pub use gleaph_graph_kernel::federation::{
 use gleaph_graph_kernel::plan_exec::{MutationId, MutationLifecyclePhase};
 use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceFailure, VectorMaintenancePolicy, VectorMaintenanceState,
-    VectorMaintenanceStepResult, VectorPartitionPageHealth, VectorRebuildStatus,
+    VectorMaintenanceStepResult, VectorMetric, VectorPartitionPageHealth, VectorRebuildStatus,
 };
 
 pub use crate::facade::stable::label_stats::{ClientMutationKey, RouterMutationRecord};
@@ -263,6 +263,8 @@ pub struct RegisterVectorIndexArgs {
     pub embedding_name: String,
     pub index_id: u32,
     pub dims: u16,
+    /// Optional metric; defaults to `L2Squared` if omitted for wire stability.
+    pub metric: Option<VectorMetric>,
     /// Optional single dispatch target; rejected if anonymous. Slice 3 stores it as inspect-only
     /// metadata and never pushes it to graph shards or enables dispatch.
     pub target: Option<Principal>,
@@ -284,6 +286,7 @@ pub struct VectorIndexInfo {
     pub index_id: u32,
     pub embedding_name_id: u16,
     pub dims: u16,
+    pub metric: VectorMetric,
     pub target: Option<Principal>,
     pub activation_state: VectorIndexActivationStateView,
 }
@@ -314,8 +317,7 @@ pub struct AdminVectorIndexBackfillStepArgs {
 
 /// Public exact vector-search request (ADR 0031 Slice 5). The Router resolves the
 /// `logical_graph_name` and `index_id` to the single activated target and forwards an exact
-/// `ivf_flat` scan. The `F32` encoding and `L2Squared` metric are fixed for Slice 5 and supplied
-/// from the stored definition.
+/// `ivf_flat` scan. The `F32` encoding and metric are supplied from the stored definition.
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct RouterVectorSearchRequest {
     pub logical_graph_name: String,

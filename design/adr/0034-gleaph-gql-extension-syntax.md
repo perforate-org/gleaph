@@ -178,7 +178,7 @@ Planned migration path:
    change behavior (done).
 4. Keep existing `GLEAPH.WEIGHT` / `GLEAPH.VECTOR.*` behavior while adding ordinary-property inline
    syntax in schema/planner/executor slices.
-5. Add `SEARCH` parser/planner support as a Gleaph dialect feature (done). Router lowering to the existing vector search API is implemented for the narrow leading `NodeScan + Search` prefix, vertex-only, no `WHERE`, `DISTANCE AS` shape. `SCORE AS` rejection for metrics without a natural score (e.g. `L2Squared`) is implemented; broader metric-specific score support remains planned. Non-leading `SEARCH`, edge subjects, and in-index `WHERE` remain planned.
+5. Add `SEARCH` parser/planner support as a Gleaph dialect feature (done). Router lowering to the existing vector search API is implemented for the narrow leading `NodeScan + Search` prefix, vertex-only, no `WHERE`. `DISTANCE AS` is accepted for distance-only metrics and `SCORE AS` is accepted for exact-scan cosine indexes (`nlist == 1`); `SCORE AS` is rejected for metrics that have no natural score (e.g. `L2Squared`). Cosine partition-page scan (`nlist > 1`) is fail-closed in the vector canister in this slice. Non-leading `SEARCH`, edge subjects, and in-index `WHERE` remain planned.
 6. Mark procedure-shaped vector search as internal/escape-hatch only if it is ever added.
 
 ## Design Documentation Impact

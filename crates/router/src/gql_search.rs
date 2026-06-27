@@ -22,7 +22,7 @@ use gleaph_graph_kernel::plan_exec::{
     SeedRowWire, SeedVertexBinding,
 };
 use gleaph_graph_kernel::vector_index::{
-    MAX_VECTOR_SEARCH_TOP_K, VectorMetric, VectorSearchHit, VectorSubject,
+    MAX_VECTOR_SEARCH_TOP_K, VectorMetric, VectorOutputShape, VectorSearchHit, VectorSubject,
 };
 
 use crate::RouterStore;
@@ -88,10 +88,17 @@ pub(crate) async fn try_execute_gql_search(
         )));
     }
 
-    if shape.output_kind == SearchOutputKind::Score && def.metric == VectorMetric::L2Squared {
-        return Err(RouterError::InvalidArgument(
-            "SEARCH SCORE AS is not supported for L2Squared in this slice".into(),
-        ));
+    // Validate that the requested output shape is honest for the index metric.
+    let output_kind = shape.output_kind;
+    match (output_kind, def.metric.output_shape()) {
+        (SearchOutputKind::Score, VectorOutputShape::Score)
+        | (SearchOutputKind::Distance, VectorOutputShape::Distance) => {}
+        _ => {
+            return Err(RouterError::InvalidArgument(format!(
+                "SEARCH output shape {:?} is not supported for metric {:?}",
+                output_kind, def.metric
+            )));
+        }
     }
 
     let logical_graph_name = graph_catalog::graph_name(graph_id)
@@ -114,7 +121,8 @@ pub(crate) async fn try_execute_gql_search(
         &shape.output_alias,
         &shape.required_label_ids,
         &result.hits,
-    );
+        def.metric,
+    )?;
 
     let stripped_plan_blob =
         gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(&stripped_plan), false)
@@ -336,13 +344,28 @@ fn build_search_seeds(
     alias: &str,
     required_label_ids: &[VertexLabelId],
     hits: &[VectorSearchHit],
-) -> BTreeMap<ShardId, SeedBindingsWire> {
+    metric: VectorMetric,
+) -> Result<BTreeMap<ShardId, SeedBindingsWire>, RouterError> {
     let mut by_shard: BTreeMap<ShardId, Vec<SeedRowWire>> = BTreeMap::new();
     for hit in hits {
         let VectorSubject::Vertex {
             shard_id,
             vertex_id,
         } = hit.subject;
+        let value = match metric.output_shape() {
+            VectorOutputShape::Distance => {
+                metric.to_user_distance(hit.distance).ok_or_else(|| {
+                    RouterError::InvalidArgument(
+                        "SEARCH distance conversion produced a non-finite value".into(),
+                    )
+                })?
+            }
+            VectorOutputShape::Score => metric.to_user_score(hit.distance).ok_or_else(|| {
+                RouterError::InvalidArgument(
+                    "SEARCH score conversion produced a non-finite value".into(),
+                )
+            })?,
+        };
         let row = SeedRowWire {
             vertex_bindings: vec![SeedVertexBinding {
                 variable: binding.to_string(),
@@ -351,12 +374,12 @@ fn build_search_seeds(
             }],
             float64_bindings: vec![SeedFloat64Binding {
                 variable: alias.to_string(),
-                value: f64::from(hit.distance),
+                value: f64::from(value),
             }],
         };
         by_shard.entry(shard_id).or_default().push(row);
     }
-    by_shard
+    Ok(by_shard
         .into_iter()
         .map(|(shard_id, rows)| {
             let wire = SeedBindingsWire {
@@ -365,7 +388,7 @@ fn build_search_seeds(
             };
             (shard_id, wire)
         })
-        .collect()
+        .collect())
 }
 
 fn strip_search_prefix(
@@ -462,11 +485,16 @@ async fn dispatch_search_read_plan(
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::facade::stable::{embedding_name_catalog, vector_index_catalog};
+    use crate::facade::store::catalog_test_support;
     use gleaph_gql::Value;
     use gleaph_gql::ast::{Expr, ExprKind};
     use gleaph_gql_planner::plan::{SearchOutputKind, SearchOutputPlan, SearchProviderPlan};
+    use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
     use gleaph_graph_kernel::federation::ShardId;
-    use gleaph_graph_kernel::vector_index::{VectorSearchHit, VectorSubject};
+    use gleaph_graph_kernel::vector_index::{
+        VectorEncoding, VectorIndexKind, VectorMetric, VectorSearchHit, VectorSubject,
+    };
     use std::collections::BTreeMap;
 
     fn bytes_expr(b: Vec<u8>) -> Expr {
@@ -680,7 +708,8 @@ mod tests {
                 embedding_version: 0,
             },
         ];
-        let by_shard = build_search_seeds("d", "distance", &[], &hits);
+        let by_shard = build_search_seeds("d", "distance", &[], &hits, VectorMetric::L2Squared)
+            .expect("build seeds");
         assert_eq!(by_shard.len(), 2);
 
         let shard0 = by_shard.get(&ShardId::new(0)).unwrap();
@@ -704,7 +733,14 @@ mod tests {
             embedding_incarnation: 0,
             embedding_version: 0,
         }];
-        let by_shard = build_search_seeds("d", "distance", &[VertexLabelId::from_raw(3)], &hits);
+        let by_shard = build_search_seeds(
+            "d",
+            "distance",
+            &[VertexLabelId::from_raw(3)],
+            &hits,
+            VectorMetric::L2Squared,
+        )
+        .expect("build seeds");
         assert_eq!(
             by_shard[&ShardId::new(0)].rows[0].vertex_bindings[0].required_vertex_label_ids,
             vec![3]
@@ -790,5 +826,166 @@ mod tests {
             label: None,
             property_projection: None,
         }));
+    }
+
+    // --- ADR 0034 Slice 4: metric-aware SEARCH shape and seed conversion tests ---
+
+    fn search_plan_with_output(kind: SearchOutputKind, alias: &str) -> PhysicalPlan {
+        PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "d".into(),
+                label: None,
+                property_projection: None,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: bytes_expr(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind,
+                    alias: alias.into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ])
+    }
+
+    fn register_vector_index_for_test(
+        _store: &RouterStore,
+        graph_id: GraphId,
+        metric: VectorMetric,
+    ) {
+        let name_id = embedding_name_catalog::intern_embedding_name(graph_id, "doc_vec").unwrap();
+        vector_index_catalog::register_vector_index(
+            graph_id,
+            1,
+            name_id,
+            VectorIndexKind::IvfFlat,
+            metric,
+            VectorEncoding::F32,
+            3,
+            None,
+            false,
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn try_execute_gql_search_rejects_score_on_l2_index() {
+        let (store, _admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        let plan = search_plan_with_output(SearchOutputKind::Score, "score");
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+        ));
+        let err = result.expect_err("SCORE AS on L2Squared must fail");
+        assert!(
+            err.to_string().contains("not supported for metric"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_rejects_distance_on_cosine_index() {
+        let (store, _admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test(&store, graph_id, VectorMetric::Cosine);
+        let plan = search_plan_with_output(SearchOutputKind::Distance, "distance");
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+        ));
+        let err = result.expect_err("DISTANCE AS on Cosine must fail");
+        assert!(
+            err.to_string().contains("not supported for metric"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_search_seeds_converts_cosine_raw_to_score() {
+        let hits = vec![VectorSearchHit {
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: 7,
+            },
+            distance: 0.25f32,
+            embedding_incarnation: 0,
+            embedding_version: 0,
+        }];
+        let by_shard = build_search_seeds("d", "similarity", &[], &hits, VectorMetric::Cosine)
+            .expect("build seeds");
+        let row = &by_shard[&ShardId::new(0)].rows[0];
+        assert_eq!(row.float64_bindings[0].value, 0.75f64, "score = 1 - raw");
+        assert_eq!(row.float64_bindings[0].variable, "similarity");
+    }
+
+    #[test]
+    fn build_search_seeds_rejects_non_finite_distance_for_l2() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let hits = vec![VectorSearchHit {
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id: 7,
+                },
+                distance: bad,
+                embedding_incarnation: 0,
+                embedding_version: 0,
+            }];
+            let err = build_search_seeds("d", "distance", &[], &hits, VectorMetric::L2Squared)
+                .expect_err("non-finite distance must fail");
+            assert!(
+                err.to_string()
+                    .contains("distance conversion produced a non-finite value"),
+                "unexpected error for {bad}: {err}"
+            );
+        }
+    }
+
+    #[test]
+    fn build_search_seeds_rejects_non_finite_score_for_cosine() {
+        for bad in [f32::NAN, f32::INFINITY, f32::NEG_INFINITY] {
+            let hits = vec![VectorSearchHit {
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id: 7,
+                },
+                distance: bad,
+                embedding_incarnation: 0,
+                embedding_version: 0,
+            }];
+            let err = build_search_seeds("d", "similarity", &[], &hits, VectorMetric::Cosine)
+                .expect_err("non-finite score must fail");
+            assert!(
+                err.to_string()
+                    .contains("score conversion produced a non-finite value"),
+                "unexpected error for {bad}: {err}"
+            );
+        }
     }
 }

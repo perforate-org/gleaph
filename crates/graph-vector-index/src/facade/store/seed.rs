@@ -63,6 +63,26 @@ impl VectorIndexStore {
         centroids: &[Vec<f32>],
         vectors: &[(VectorSubject, Vec<f32>)],
     ) {
+        self.seed_ivf_with_metric_for_test(
+            index_id,
+            encoding,
+            dims,
+            VectorMetric::L2Squared,
+            centroids,
+            vectors,
+        );
+    }
+
+    /// Seeded variant that pins a specific metric on the def (e.g. `Cosine` tests).
+    pub fn seed_ivf_with_metric_for_test(
+        &self,
+        index_id: u32,
+        encoding: VectorEncoding,
+        dims: u16,
+        metric: VectorMetric,
+        centroids: &[Vec<f32>],
+        vectors: &[(VectorSubject, Vec<f32>)],
+    ) {
         assert!(!centroids.is_empty(), "seed requires at least one centroid");
         let nlist = centroids.len() as u32;
         let stride_bytes = encoding.stride_bytes(dims);
@@ -103,7 +123,7 @@ impl VectorIndexStore {
             kind: VectorIndexKind::IvfFlat,
             encoding,
             dims,
-            metric: VectorMetric::L2Squared,
+            metric,
             nlist,
             active_index_version: active,
             stride_bytes,

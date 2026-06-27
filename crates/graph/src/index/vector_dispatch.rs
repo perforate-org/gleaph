@@ -46,6 +46,7 @@ pub(crate) fn dispatch_vertex_upsert(vertex_id: VertexId, embedding_name_id: Emb
         embedding_version: record.version,
         encoding: record.encoding,
         dims: record.dims,
+        metric: spec.metric,
         bytes: record.bytes,
         remove: false,
     });
@@ -80,6 +81,7 @@ pub(crate) fn dispatch_vertex_remove(
         embedding_version,
         encoding,
         dims,
+        metric: spec.metric,
         bytes: Vec::new(),
         remove: true,
     });
@@ -99,11 +101,15 @@ mod tests {
     }
 
     fn spec(name: u16) -> IndexedEmbeddingSpec {
+        spec_with_metric(name, VectorMetric::L2Squared)
+    }
+
+    fn spec_with_metric(name: u16, metric: VectorMetric) -> IndexedEmbeddingSpec {
         IndexedEmbeddingSpec {
             embedding_name_id: name,
             index_id: 7,
             kind: VectorIndexKind::IvfFlat,
-            metric: VectorMetric::L2Squared,
+            metric,
             encoding: VectorEncoding::F32,
             dims: 2,
         }
@@ -142,6 +148,22 @@ mod tests {
             assert_eq!(ops[0].embedding_version, 1);
             assert!(!ops[0].remove);
             assert_eq!(ops[0].bytes, vec_bytes(&[1.0, 2.0]));
+        });
+    }
+
+    #[test]
+    fn indexed_embedding_write_carries_cosine_metric() {
+        with_routing(|store| {
+            let vid = store.insert_vertex().expect("vertex");
+            let name = EmbeddingNameId::from_raw(1);
+            let _guard =
+                vector_catalog_context::enter_indexed(&[spec_with_metric(1, VectorMetric::Cosine)]);
+            store
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+                .expect("set embedding");
+            let ops = vector_pending::pending_snapshot();
+            assert_eq!(ops.len(), 1);
+            assert_eq!(ops[0].metric, VectorMetric::Cosine);
         });
     }
 

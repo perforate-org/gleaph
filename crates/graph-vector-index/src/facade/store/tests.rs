@@ -57,6 +57,7 @@ fn upsert_op_inc(
         embedding_version,
         encoding: VectorEncoding::F32,
         dims: DIMS,
+        metric: VectorMetric::L2Squared,
         bytes: vec![fill; STRIDE],
         remove: false,
     }
@@ -76,6 +77,7 @@ fn remove_op_inc(
         embedding_version,
         encoding: VectorEncoding::F32,
         dims: DIMS,
+        metric: VectorMetric::L2Squared,
         bytes: Vec::new(),
         remove: true,
     }
@@ -638,6 +640,7 @@ fn upsert_vec_inc(
         embedding_version: version,
         encoding: VectorEncoding::F32,
         dims: DIMS,
+        metric: VectorMetric::L2Squared,
         bytes: vec_bytes(value),
         remove: false,
     }
@@ -654,6 +657,65 @@ fn search_value(value: f32, top_k: u32) -> VectorSearchRequest {
         encoding: VectorEncoding::F32,
         dims: DIMS,
         metric: VectorMetric::L2Squared,
+        top_k,
+    }
+}
+
+/// A query vector that is guaranteed finite and non-zero for both L2 and cosine metrics.
+fn search_nonzero(value: f32, top_k: u32) -> VectorSearchRequest {
+    VectorSearchRequest {
+        index_id: INDEX_ID,
+        query: vec_bytes(value + 0.5),
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        metric: VectorMetric::L2Squared,
+        top_k,
+    }
+}
+
+/// Encode a custom `f32` vector of `DIMS` components (little-endian).
+fn vec_bytes_from(values: &[f32]) -> Vec<u8> {
+    assert_eq!(values.len(), DIMS as usize, "component count mismatch");
+    values.iter().flat_map(|v| v.to_le_bytes()).collect()
+}
+
+fn upsert_vec_from_inc(
+    vertex_id: u32,
+    incarnation: u64,
+    version: u64,
+    values: &[f32],
+    metric: VectorMetric,
+) -> VectorEmbeddingSyncOp {
+    VectorEmbeddingSyncOp {
+        index_id: INDEX_ID,
+        embedding_name_id: 0,
+        subject: subject(vertex_id),
+        embedding_incarnation: incarnation,
+        embedding_version: version,
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        metric,
+        bytes: vec_bytes_from(values),
+        remove: false,
+    }
+}
+
+fn upsert_vec_from(
+    vertex_id: u32,
+    version: u64,
+    values: &[f32],
+    metric: VectorMetric,
+) -> VectorEmbeddingSyncOp {
+    upsert_vec_from_inc(vertex_id, 1, version, values, metric)
+}
+
+fn search_metric_from(values: &[f32], top_k: u32, metric: VectorMetric) -> VectorSearchRequest {
+    VectorSearchRequest {
+        index_id: INDEX_ID,
+        query: vec_bytes_from(values),
+        encoding: VectorEncoding::F32,
+        dims: DIMS,
+        metric,
         top_k,
     }
 }
@@ -785,6 +847,7 @@ fn search_does_not_read_rows_of_a_different_index() {
                 embedding_version: 1,
                 encoding: VectorEncoding::F32,
                 dims: DIMS,
+                metric: VectorMetric::L2Squared,
                 bytes: vec_bytes(1.0),
                 remove: false,
             },
@@ -978,6 +1041,256 @@ fn reverse_map_unchanged_on_stale_replay() {
     assert_eq!(store.id_to_subject_for_test(INDEX_ID, 1), Some(subject(7)));
 }
 
+// --- ADR 0034 Slice 4: cosine metric-specific scoring and fail-closed paths ---
+
+#[test]
+fn cosine_exact_scan_orders_by_one_minus_similarity() {
+    let store = fresh_store();
+    // Three distinct unit-direction vectors; query aligns with the first.
+    let v7 = vec![1.0f32, 0.0, 0.0, 0.0];
+    let v8 = vec![0.0f32, 1.0, 0.0, 0.0];
+    let v9 = vec![1.0f32, 1.0, 0.0, 0.0];
+    store
+        .vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(7, 1, &v7, VectorMetric::Cosine),
+        )
+        .unwrap();
+    store
+        .vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(8, 1, &v8, VectorMetric::Cosine),
+        )
+        .unwrap();
+    store
+        .vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(9, 1, &v9, VectorMetric::Cosine),
+        )
+        .unwrap();
+
+    let result = store
+        .vector_search(&search_metric_from(
+            &[1.0f32, 0.0, 0.0, 0.0],
+            10,
+            VectorMetric::Cosine,
+        ))
+        .expect("cosine search");
+    assert_eq!(result.hits.len(), 3);
+    assert_eq!(
+        result.hits[0].subject,
+        subject(7),
+        "identical direction is nearest"
+    );
+    assert!((result.hits[0].distance).abs() < 1e-6);
+    assert_eq!(result.hits[1].subject, subject(9));
+    let expected_v9 = 1.0 - 1.0f32 / 2.0f32.sqrt(); // 1 - cos(45 deg)
+    assert!((result.hits[1].distance - expected_v9).abs() < 1e-5);
+    assert_eq!(result.hits[2].subject, subject(8));
+    assert!(
+        (result.hits[2].distance - 1.0).abs() < 1e-6,
+        "orthogonal vector raw is 1"
+    );
+}
+
+#[test]
+fn cosine_zero_norm_query_fails_closed() {
+    let store = fresh_store();
+    // Create the physical def as a cosine index first.
+    store
+        .vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(7, 1, &[1.0f32; DIMS as usize], VectorMetric::Cosine),
+        )
+        .unwrap();
+    let err = store
+        .vector_search(&search_metric_from(
+            &[0.0f32; DIMS as usize],
+            10,
+            VectorMetric::Cosine,
+        ))
+        .expect_err("zero-norm cosine query must fail");
+    assert!(matches!(err, VectorIndexError::InvalidQueryVector));
+}
+
+#[test]
+fn cosine_nonfinite_query_fails_closed() {
+    let store = fresh_store();
+    store
+        .vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(7, 1, &[1.0f32; DIMS as usize], VectorMetric::Cosine),
+        )
+        .unwrap();
+    let err = store
+        .vector_search(&search_metric_from(
+            &[f32::NAN; DIMS as usize],
+            10,
+            VectorMetric::Cosine,
+        ))
+        .expect_err("non-finite cosine query must fail");
+    assert!(matches!(err, VectorIndexError::InvalidQueryVector));
+}
+
+#[test]
+fn cosine_zero_norm_indexed_vector_is_skipped() {
+    let store = fresh_store();
+    store
+        .vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(7, 1, &[0.0f32; DIMS as usize], VectorMetric::Cosine),
+        )
+        .unwrap();
+    let result = store
+        .vector_search(&search_metric_from(
+            &[1.0f32; DIMS as usize],
+            10,
+            VectorMetric::Cosine,
+        ))
+        .expect("search");
+    assert!(
+        result.hits.is_empty(),
+        "zero-norm indexed vector has no cosine similarity"
+    );
+}
+
+#[test]
+fn cosine_nonfinite_indexed_vector_is_skipped() {
+    let store = fresh_store();
+    let mut bad = vec![1.0f32; DIMS as usize];
+    bad[0] = f32::NAN;
+    store
+        .vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(7, 1, &bad, VectorMetric::Cosine),
+        )
+        .unwrap();
+    let result = store
+        .vector_search(&search_metric_from(
+            &[1.0f32; DIMS as usize],
+            10,
+            VectorMetric::Cosine,
+        ))
+        .expect("search");
+    assert!(
+        result.hits.is_empty(),
+        "non-finite indexed vector must not produce NaN distance"
+    );
+}
+
+#[test]
+fn l2_nonfinite_indexed_vector_is_skipped_for_consistency() {
+    let store = fresh_store();
+    let mut bad = vec![1.0f32; DIMS as usize];
+    bad[0] = f32::NAN;
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    store
+        .vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
+                metric: VectorMetric::L2Squared,
+                bytes: vec_bytes_from(&bad),
+                ..upsert_vec(8, 1, 2.0)
+            },
+        )
+        .unwrap();
+    let result = store
+        .vector_search(&search_value(1.0, 10))
+        .expect("l2 search");
+    assert_eq!(
+        result.hits.len(),
+        1,
+        "non-finite indexed vector must be skipped, not returned"
+    );
+    assert_eq!(result.hits[0].subject, subject(7));
+}
+
+#[test]
+fn cosine_metric_mismatch_on_later_upsert_fails_closed() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    let err = store
+        .vector_upsert(
+            shard_canister(),
+            &VectorEmbeddingSyncOp {
+                metric: VectorMetric::Cosine,
+                ..upsert_vec(8, 1, 2.0)
+            },
+        )
+        .expect_err("metric mismatch must fail");
+    assert!(matches!(err, VectorIndexError::MetricMismatch));
+}
+
+#[test]
+fn l2_metric_mismatch_on_later_upsert_fails_closed() {
+    let store = fresh_store();
+    store
+        .vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(7, 1, &[1.0f32; DIMS as usize], VectorMetric::Cosine),
+        )
+        .unwrap();
+    let err = store
+        .vector_upsert(shard_canister(), &upsert_vec(8, 1, 2.0))
+        .expect_err("metric mismatch must fail");
+    assert!(matches!(err, VectorIndexError::MetricMismatch));
+}
+
+#[test]
+fn cosine_partition_page_scan_is_not_supported() {
+    let store = fresh_store();
+    // Seed an `nlist = 2` index with no rows; centroids are ready so the partition-page path is
+    // selected, then fail-closed because cosine is exact-scan only in this slice.
+    store.seed_ivf_with_metric_for_test(
+        INDEX_ID,
+        VectorEncoding::F32,
+        DIMS,
+        VectorMetric::Cosine,
+        &two_clusters(),
+        &[],
+    );
+    let err = store
+        .vector_search(&search_metric_from(
+            &[1.0f32; DIMS as usize],
+            10,
+            VectorMetric::Cosine,
+        ))
+        .expect_err("partition-page cosine must fail closed");
+    assert!(matches!(
+        err,
+        VectorIndexError::MetricNotSupportedForPartitionScan
+    ));
+}
+
+#[test]
+fn cosine_rebuild_is_rejected() {
+    let store = fresh_store();
+    store
+        .vector_upsert(
+            shard_canister(),
+            &upsert_vec_from(7, 1, &[1.0f32; DIMS as usize], VectorMetric::Cosine),
+        )
+        .unwrap();
+    let err = store
+        .admin_start_vector_rebuild(router(), INDEX_ID, 2, 100)
+        .expect_err("cosine rebuild must fail closed");
+    assert!(matches!(err, VectorIndexError::InvalidRebuildParams));
+}
+
+#[test]
+fn lazy_def_inherits_metric_from_first_op() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .unwrap();
+    let def = store.def_for_test(INDEX_ID).expect("def");
+    assert_eq!(def.metric, VectorMetric::L2Squared);
+}
+
 // --- ADR 0031 Slice 6: partition-page search over seeded ivf_flat fixtures ---
 
 use super::search::SearchTuning;
@@ -1057,7 +1370,7 @@ fn partition_scan_nprobe_one_selects_single_partition() {
     );
     // Query near centroid 0: nprobe = 1 selects partition 0 only.
     let result = store
-        .vector_search_tuned(&search_value(0.0, 10), tuned(1))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(1))
         .expect("partition scan");
     let subjects: Vec<_> = result.hits.iter().map(|h| h.subject).collect();
     assert_eq!(
@@ -1134,7 +1447,7 @@ fn partition_scan_skips_deleted_subject_entry() {
         )
     });
     let result = store
-        .vector_search_tuned(&search_value(0.0, 10), tuned(2))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(2))
         .expect("partition scan");
     assert!(result.hits.iter().all(|h| h.subject != subject(1)));
 }
@@ -1159,7 +1472,7 @@ fn partition_scan_ignores_reverse_map_after_locator_retirement() {
     // row is still resolved via its locator and remains scoreable.
     VECTOR_ID_TO_SUBJECT.with_borrow_mut(|m| m.remove(&VectorIdKey::new(INDEX_ID, 1)));
     let result = store
-        .vector_search_tuned(&search_value(0.0, 10), tuned(2))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(2))
         .expect("partition scan");
     assert!(result.hits.iter().any(|h| h.subject == subject(1)));
 }
@@ -1183,7 +1496,7 @@ fn partition_scan_skips_missing_subject_entry() {
     // Drop the subject-map entry for subject 1: its slab row now has no freshness backing.
     VECTOR_SUBJECT_TO_ID.with_borrow_mut(|m| m.remove(&SubjectKey::new(INDEX_ID, subject(1))));
     let result = store
-        .vector_search_tuned(&search_value(0.0, 10), tuned(2))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(2))
         .expect("partition scan");
     assert!(result.hits.iter().all(|h| h.subject != subject(1)));
 }
@@ -1215,7 +1528,7 @@ fn partition_scan_skips_vector_id_mismatch() {
         )
     });
     let result = store
-        .vector_search_tuned(&search_value(0.0, 10), tuned(2))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(2))
         .expect("partition scan");
     assert!(result.hits.iter().all(|h| h.subject != subject(1)));
 }
@@ -1250,7 +1563,7 @@ fn partition_scan_skips_slot_drift() {
         )
     });
     let result = store
-        .vector_search_tuned(&search_value(0.0, 10), tuned(2))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(2))
         .expect("partition scan");
     assert!(result.hits.iter().all(|h| h.subject != subject(1)));
 }
@@ -1283,7 +1596,7 @@ fn stale_centroids_fall_back_to_exact_scan() {
     // nprobe = 1 would restrict to one partition if the partition scan ran; the exact fallback
     // returns all four regardless.
     let result = store
-        .vector_search_tuned(&search_value(0.0, 10), tuned(1))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(1))
         .expect("exact fallback");
     assert_eq!(
         result.hits.len(),
@@ -1303,7 +1616,7 @@ fn tuned_nprobe_zero_panics() {
         &two_clusters(),
         &clustered_vectors(),
     );
-    let _ = store.vector_search_tuned(&search_value(0.0, 10), tuned(0));
+    let _ = store.vector_search_tuned(&search_nonzero(0.0, 10), tuned(0));
 }
 
 #[test]
@@ -1317,7 +1630,7 @@ fn tuned_nprobe_above_nlist_panics() {
         &two_clusters(),
         &clustered_vectors(),
     );
-    let _ = store.vector_search_tuned(&search_value(0.0, 10), tuned(3));
+    let _ = store.vector_search_tuned(&search_nonzero(0.0, 10), tuned(3));
 }
 
 // --- ADR 0031 Slice 7: production shadow-version rebuild + dual-write ---
@@ -1494,6 +1807,7 @@ fn rebuild_start_rejects_oversized_combined_state() {
         embedding_version: 1,
         encoding: VectorEncoding::F32,
         dims: big_dims,
+        metric: VectorMetric::L2Squared,
         bytes: vec![0u8; stride],
         remove: false,
     };
@@ -1987,7 +2301,9 @@ fn post_publish_nlist_gt_1_upsert_assigns_nearest_partition() {
         slot.partition_id, 0,
         "value 0 lands in centroid-0 partition"
     );
-    let after = store.vector_search(&search_value(0.0, 10)).expect("search");
+    let after = store
+        .vector_search(&search_nonzero(0.0, 10))
+        .expect("search");
     assert!(after.hits.iter().any(|h| h.subject == subject(50)));
 }
 
@@ -2081,7 +2397,7 @@ fn publish_succeeds_with_an_empty_partition() {
         .expect("publish tolerates empty partition");
     // Full-scan search returns the four remaining live subjects.
     let after = store
-        .vector_search_tuned(&search_value(0.0, 10), tuned(3))
+        .vector_search_tuned(&search_nonzero(0.0, 10), tuned(3))
         .expect("search");
     assert_eq!(after.hits.len(), 4);
 }

@@ -111,8 +111,12 @@ impl VectorIndexStore {
         index_id: u32,
         encoding: VectorEncoding,
         dims: u16,
+        metric: VectorMetric,
     ) -> Result<VectorIndexDef, VectorIndexError> {
         if let Some(def) = VECTOR_INDEX_DEFS.with_borrow(|defs| defs.get(&index_id)) {
+            if def.metric != metric {
+                return Err(VectorIndexError::MetricMismatch);
+            }
             return Ok(def);
         }
         let stride_bytes = encoding.stride_bytes(dims);
@@ -121,7 +125,7 @@ impl VectorIndexStore {
             kind: VectorIndexKind::IvfFlat,
             encoding,
             dims,
-            metric: VectorMetric::L2Squared,
+            metric,
             nlist: 1,
             active_index_version: INITIAL_INDEX_VERSION,
             stride_bytes,
@@ -247,7 +251,7 @@ impl VectorIndexStore {
             return Err(VectorIndexError::MutationKindMismatch);
         }
         self.assert_caller_owns_subject(caller, op.subject.shard_id())?;
-        let def = self.ensure_def_for_upsert(op.index_id, op.encoding, op.dims)?;
+        let def = self.ensure_def_for_upsert(op.index_id, op.encoding, op.dims, op.metric)?;
         if op.encoding != def.encoding || op.dims != def.dims {
             return Err(VectorIndexError::DimensionMismatch);
         }

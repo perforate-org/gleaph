@@ -194,6 +194,7 @@ async fn reconcile_vector_op(
                 embedding_version: record.version,
                 encoding: record.encoding,
                 dims: record.dims,
+                metric: op.metric,
                 bytes: record.bytes,
                 remove: false,
             })
@@ -214,6 +215,7 @@ async fn reconcile_vector_op(
                 embedding_version: RECONCILE_TOMBSTONE_VERSION,
                 encoding: op.encoding,
                 dims: op.dims,
+                metric: op.metric,
                 bytes: Vec::new(),
                 remove: true,
             })
@@ -230,6 +232,7 @@ mod tests {
     use candid::Principal;
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::index::{IndexIntersectionRequest, PostingHit, PostingRangeRequest};
+    use gleaph_graph_kernel::vector_index::VectorMetric;
     use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 
     /// Index mock that fails the Nth `posting_insert_at` (1-based) and counts
@@ -391,6 +394,7 @@ mod tests {
         last_remove_version: AtomicU64,
         last_remove_incarnation: AtomicU64,
         last_upsert_incarnation: AtomicU64,
+        last_upsert_metric: std::sync::Mutex<VectorMetric>,
     }
 
     impl RecordingVectorIndex {
@@ -401,6 +405,7 @@ mod tests {
                 last_remove_version: AtomicU64::new(0),
                 last_remove_incarnation: AtomicU64::new(0),
                 last_upsert_incarnation: AtomicU64::new(0),
+                last_upsert_metric: std::sync::Mutex::new(VectorMetric::L2Squared),
             }
         }
     }
@@ -414,6 +419,7 @@ mod tests {
             self.upserts.fetch_add(1, Ordering::SeqCst);
             self.last_upsert_incarnation
                 .store(op.embedding_incarnation, Ordering::SeqCst);
+            *self.last_upsert_metric.lock().unwrap() = op.metric;
             Ok(())
         }
 
@@ -446,6 +452,30 @@ mod tests {
                 embedding_version: 1,
                 encoding: VectorEncoding::F32,
                 dims: 1,
+                metric: VectorMetric::L2Squared,
+                bytes: vec![0, 0, 0, 0],
+                remove: false,
+            },
+        }
+    }
+
+    fn vector_cosine_upsert_op(vertex_id: u32) -> RepairPostingOp {
+        use gleaph_graph_kernel::vector_index::{
+            VectorEmbeddingSyncOp, VectorEncoding, VectorSubject,
+        };
+        RepairPostingOp::VectorEmbedding {
+            op: VectorEmbeddingSyncOp {
+                index_id: 1,
+                embedding_name_id: 1,
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id,
+                },
+                embedding_incarnation: 1,
+                embedding_version: 1,
+                encoding: VectorEncoding::F32,
+                dims: 1,
+                metric: VectorMetric::Cosine,
                 bytes: vec![0, 0, 0, 0],
                 remove: false,
             },
@@ -589,6 +619,30 @@ mod tests {
             // A second drain with a healthy index converges to empty.
             let healthy = CountingIndex::new(0);
             pollster::block_on(drain_once(&healthy, None)).expect("second drain succeeds");
+            assert!(graph.repair_journal_is_empty());
+        });
+    }
+
+    #[test]
+    fn drain_repair_preserves_journaled_cosine_metric() {
+        use gleaph_graph_kernel::vector_index::VectorEncoding;
+        with_routing(|graph| {
+            let vid = VertexId::from(1u32);
+            let name = EmbeddingNameId::from_raw(1);
+            graph
+                .set_vertex_embedding(vid, name, VectorEncoding::F32, 1, vec![0, 0, 0, 0])
+                .expect("seed canonical embedding");
+            graph.repair_journal_append(0, [vector_cosine_upsert_op(1)]);
+
+            let index = CountingIndex::new(0);
+            let vector = RecordingVectorIndex::new();
+            pollster::block_on(drain_once(&index, Some(&vector))).expect("drain succeeds");
+            assert_eq!(vector.upserts.load(Ordering::SeqCst), 1);
+            assert_eq!(
+                *vector.last_upsert_metric.lock().unwrap(),
+                VectorMetric::Cosine,
+                "repair replay must preserve the journaled op's metric"
+            );
             assert!(graph.repair_journal_is_empty());
         });
     }

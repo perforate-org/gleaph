@@ -65,6 +65,7 @@ pub async fn backfill_vertex_embeddings(
                     embedding_version: record.version,
                     encoding: record.encoding,
                     dims: record.dims,
+                    metric: spec.metric,
                     bytes: record.bytes,
                     remove: false,
                 })
@@ -130,11 +131,15 @@ mod tests {
     }
 
     fn spec(name: u16) -> IndexedEmbeddingSpec {
+        spec_with_metric(name, VectorMetric::L2Squared)
+    }
+
+    fn spec_with_metric(name: u16, metric: VectorMetric) -> IndexedEmbeddingSpec {
         IndexedEmbeddingSpec {
             embedding_name_id: name,
             index_id: 3,
             kind: VectorIndexKind::IvfFlat,
-            metric: VectorMetric::L2Squared,
+            metric,
             encoding: VectorEncoding::F32,
             dims: 2,
         }
@@ -193,6 +198,37 @@ mod tests {
                 vertex_id: u32::from(vid),
             }
         );
+        assert_eq!(upserts[0].metric, VectorMetric::L2Squared);
+
+        store.set_federation_routing(None).expect("clear routing");
+    }
+
+    #[test]
+    fn backfill_carries_cosine_metric_from_catalog() {
+        let store = federated_store();
+        let vector = RecordingVectorIndex::new();
+        let vid = store.insert_vertex().expect("vertex");
+        let indexed = gleaph_graph_kernel::entry::EmbeddingNameId::from_raw(1);
+        store
+            .set_vertex_embedding(vid, indexed, VectorEncoding::F32, 2, vec_bytes(&[1.0, 2.0]))
+            .expect("indexed embedding");
+
+        let _catalog =
+            vector_catalog_context::enter_indexed(&[spec_with_metric(1, VectorMetric::Cosine)]);
+        let result = pollster::block_on(backfill_vertex_embeddings(
+            &store,
+            &vector,
+            EmbeddingBackfillArgs {
+                start_vertex_id: 0,
+                max_vertices: 10,
+            },
+        ))
+        .expect("backfill");
+
+        assert!(result.done);
+        let upserts = vector.upserts.lock().unwrap();
+        assert_eq!(upserts.len(), 1);
+        assert_eq!(upserts[0].metric, VectorMetric::Cosine);
 
         store.set_federation_routing(None).expect("clear routing");
     }

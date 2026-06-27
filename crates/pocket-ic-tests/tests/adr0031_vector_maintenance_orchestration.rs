@@ -11,7 +11,7 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{RouterError, ShardId};
 use gleaph_graph_kernel::vector_index::{
     VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError, VectorMaintenancePolicy,
-    VectorMaintenanceRecommendation, VectorMaintenanceStepResult, VectorRebuildPhase,
+    VectorMaintenanceRecommendation, VectorMaintenanceStepResult, VectorMetric, VectorRebuildPhase,
     VectorSearchResult, VectorSubject,
 };
 use gleaph_pocket_ic_tests::{
@@ -56,6 +56,7 @@ fn register(env: &FederationEnv, target: Principal) {
         embedding_name: EMBEDDING_NAME.to_string(),
         index_id: INDEX_ID,
         dims: DIMS,
+        metric: Some(VectorMetric::L2Squared),
         target: Some(target),
         if_not_exists: false,
     };
@@ -163,6 +164,7 @@ fn seed_embedding(
         embedding_version: version,
         encoding: VectorEncoding::F32,
         dims: DIMS,
+        metric: VectorMetric::L2Squared,
         bytes: vec_bytes(value),
         remove: false,
     };
