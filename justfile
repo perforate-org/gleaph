@@ -5,7 +5,8 @@
 default:
     @just -l
 
-# Run PocketIC E2E tests in Terminal.app.
+# Fallback: run PocketIC E2E tests in Terminal.app when direct `cargo test` cannot run
+# PocketIC's canister-sandbox process chain in the current terminal environment.
 # An editor-hosted integrated terminal can interfere with PocketIC's canister-sandbox
 # process chain on macOS, so this delegates to an external terminal.
 #
@@ -23,7 +24,8 @@ default:
 ic-e2e *ARGS:
     @sh {{justfile_directory()}}/scripts/ic-e2e.sh {{justfile_directory()}} {{ARGS}}
 
-# Run canbench in Terminal.app.
+# Fallback: run canbench in Terminal.app when direct `canbench` cannot run PocketIC's
+# canister-sandbox process chain in the current terminal environment.
 # canbench exercises compiled canister Wasm and, like the PocketIC E2E tests, may spawn
 # a canister-sandbox process chain that can hang in an editor-hosted integrated terminal on
 # macOS. This delegates to an external terminal.

@@ -81,11 +81,18 @@ Benchmark regressions should be investigated and fixed unless they are justified
 
 Use the `benchmark` skill when modifying traversal, storage layout, indexing, parsing, planning, serialization, or canister-facing execution paths.
 
-## PocketIC E2E Tests on macOS
+## PocketIC E2E and Canbench Execution
 
-Running the `gleaph-pocket-ic-tests` crate inside an editor-hosted integrated terminal on macOS can hang during `install_canister` because PocketIC's canister-sandbox process chain (server → sandbox launcher → canister sandbox) may fail to communicate when spawned under certain terminal/pty contexts.
+Use the underlying commands directly by default:
 
-To avoid this, **always use `just` recipes that delegate to an external terminal** when asked to run PocketIC E2E tests from inside an editor or IDE:
+- `cargo test -p gleaph-pocket-ic-tests` — run the full PocketIC E2E suite.
+- `cargo test -p gleaph-pocket-ic-tests --test <test-name>` — run one PocketIC test target.
+- Run `canbench [PATTERN]` from the affected crate for focused benchmark work.
+- Run unfiltered `canbench --persist` from every affected crate when updating final benchmark artifacts.
+
+Do not route ordinary PocketIC or canbench runs through `just` when the direct commands work.
+
+Some macOS editor-hosted terminals cannot run PocketIC's canister-sandbox process chain (server → sandbox launcher → canister sandbox): `install_canister` may hang or the processes may fail to communicate under that terminal/pty context. Use the `just` recipes that delegate to Terminal.app **only as a fallback in an environment where direct PocketIC/canbench execution is known not to work or has failed for that environment-specific reason**:
 
 - `just ic-e2e` — run the full PocketIC E2E suite in Terminal.app (window stays open)
 - `just ic-e2e --close` — run the full suite and close the window when done
@@ -94,10 +101,10 @@ To avoid this, **always use `just` recipes that delegate to an external terminal
 - `just ic-e2e smoke --close` — run only the smoke test and close the window when done
 - `just ic-e2e <test-name>` — run a specific PocketIC test file in Terminal.app, e.g. `just ic-e2e router_graph_resolution`
 - `just ic-e2e <test-name> --close` — run a specific test file and close the window when done
+- `just canbench <crate>` — run an affected crate's full canbench suite in Terminal.app
+- `just canbench <crate> <pattern>` — run matching benchmarks in Terminal.app
 
-Do not run `cargo test -p gleaph-pocket-ic-tests ...` directly in an editor-hosted integrated terminal on macOS.
-
-For dedicated terminal emulators (e.g. Terminal.app or iTerm2 already in focus), run the smoke test directly with `just ic-e2e --inline`.
+When the direct command fails for an unrelated code, build, or test reason, diagnose that failure normally; do not use `just` merely to bypass it.
 
 ## Format, Test, and Benchmark
 
