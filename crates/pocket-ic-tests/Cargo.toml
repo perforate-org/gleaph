@@ -43,6 +43,16 @@ name = "router_element_id_encoding"
 path = "tests/router_element_id_encoding.rs"
 harness = true
 
+[[test]]
+name = "adr0031_vector_index_catalog"
+path = "tests/adr0031_vector_index_catalog.rs"
+harness = true
+
+[[test]]
+name = "adr0034_non_leading_search_join"
+path = "tests/adr0034_non_leading_search_join.rs"
+harness = true
+
 [dependencies]
 candid.workspace = true
 gleaph-gql = { workspace = true }

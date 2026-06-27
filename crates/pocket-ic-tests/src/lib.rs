@@ -126,6 +126,18 @@ pub struct E2eInsertDirectedEdgeArgs {
 }
 
 #[derive(CandidType, Clone, Debug)]
+pub struct E2eInsertVertexWithLabelArgs {
+    pub label_id: u16,
+}
+
+#[derive(CandidType, Clone, Debug)]
+pub struct E2eInsertDirectedEdgeWithLabelArgs {
+    pub source_local_vertex_id: u32,
+    pub target_local_vertex_id: u32,
+    pub edge_label_id: u16,
+}
+
+#[derive(CandidType, Clone, Debug)]
 pub struct E2eInsertVertexWithPropertyArgs {
     pub property_id: u32,
     pub value: i64,
@@ -842,6 +854,19 @@ pub fn e2e_insert_vertex(env: &FederationEnv, graph: Principal) -> E2eInsertVert
     update_as_router(env, graph, "e2e_insert_vertex", ())
 }
 
+pub fn e2e_insert_vertex_with_label(
+    env: &FederationEnv,
+    graph: Principal,
+    label_id: u16,
+) -> E2eInsertVertexResult {
+    update_as_router(
+        env,
+        graph,
+        "e2e_insert_vertex_with_label",
+        E2eInsertVertexWithLabelArgs { label_id },
+    )
+}
+
 pub fn e2e_insert_vertex_with_property(
     env: &FederationEnv,
     graph: Principal,
@@ -1147,6 +1172,25 @@ pub fn e2e_insert_edge(
         E2eInsertDirectedEdgeArgs {
             source_local_vertex_id: source_local,
             target_local_vertex_id: target_local,
+        },
+    );
+}
+
+pub fn e2e_insert_edge_with_label(
+    env: &FederationEnv,
+    graph: Principal,
+    source_local: u32,
+    target_local: u32,
+    edge_label_id: u16,
+) {
+    let _: () = update_as_router(
+        env,
+        graph,
+        "e2e_insert_directed_edge_with_label",
+        E2eInsertDirectedEdgeWithLabelArgs {
+            source_local_vertex_id: source_local,
+            target_local_vertex_id: target_local,
+            edge_label_id,
         },
     );
 }

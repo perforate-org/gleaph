@@ -49,6 +49,9 @@ pub struct ShardDispatch {
     pub shard_id: ShardId,
     pub graph_canister: Principal,
     pub seed_bindings_blob: Option<Vec<u8>>,
+    /// Router-resolved non-leading `SEARCH` relation for this shard (ADR 0034 Slice 5).
+    /// `None` when the dispatched plan has no `SEARCH` or uses the leading seed path.
+    pub resolved_search_blob: Option<Vec<u8>>,
 }
 
 /// How a logical graph is routed to one or more shards.
@@ -126,6 +129,7 @@ pub fn routings_to_dispatches(routings: Vec<SeedRouting>) -> Vec<ShardDispatch> 
                         seeds_for_local_shard_edges(anchor.variable(), hits, routing.shard_id)
                     }
                 }),
+            resolved_search_blob: None,
         })
         .collect()
 }

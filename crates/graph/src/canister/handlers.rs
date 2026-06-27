@@ -15,7 +15,7 @@ use gleaph_gql::Value;
 use gleaph_gql_ic::decode_gql_params_blob;
 use gleaph_gql_planner::wire::decode_plan_bundle;
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, ExecutePlanResult, GqlExecutionMode, SeedBindingsWire,
+    ExecutePlanArgs, ExecutePlanResult, GqlExecutionMode, ResolvedSearchWire, SeedBindingsWire,
 };
 
 use super::types::GraphInitArgs;
@@ -157,6 +157,14 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
         }
         None => None,
     };
+    let resolved_search = match args.resolved_search_blob {
+        Some(blob) => {
+            let wire: ResolvedSearchWire = Decode!(&blob, ResolvedSearchWire)
+                .map_err(|e| format!("resolved_search decode: {e}"))?;
+            Some(wire)
+        }
+        None => None,
+    };
     crate::facade::init_ic_gql_extensions();
     let (bundle_requires_write, plans) =
         decode_plan_bundle(&args.plan_blob).map_err(|e| e.to_string())?;
@@ -195,6 +203,7 @@ async fn execute_plan_impl(args: ExecutePlanArgs) -> Result<ExecutePlanResult, S
             constrained_properties: args.constrained_properties.unwrap_or_default(),
             local_unique_claims: args.local_unique_claims.unwrap_or_default(),
             local_constrained_properties: args.local_constrained_properties.unwrap_or_default(),
+            resolved_search,
         },
         seeds,
         args.mutation_id,
@@ -432,6 +441,65 @@ pub async fn e2e_insert_vertex_with_two_properties(
         local_vertex_id: crate::index::federation_routing::local_vertex_id_raw(vertex_id),
         global_vertex_id,
     })
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_insert_vertex_with_label(
+    args: super::types::E2eInsertVertexWithLabelArgs,
+) -> Result<super::types::E2eInsertVertexResult, String> {
+    use crate::index::label_pending;
+    use crate::index::pending;
+    use gleaph_graph_kernel::entry::VertexLabelId;
+
+    let store = GraphStore::new();
+    let vertex_id = store
+        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
+        .await
+        .map_err(|e| e.to_string())?;
+    let vertex = store
+        .vertex(vertex_id)
+        .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
+    let label = VertexLabelId::from_raw(args.label_id);
+    store
+        .set_vertex_labels(vertex_id, vertex, std::iter::once(label))
+        .map_err(|e| e.to_string())?;
+    let index = wasm_index_client_holder().ok_or("federation not configured")?;
+    let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
+    pending::flush_pending(Some(ix), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    label_pending::flush_pending(Some(ix), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    let global_vertex_id = store
+        .global_vertex_id(vertex_id)
+        .ok_or_else(|| "global id missing after insert".to_string())?;
+    Ok(super::types::E2eInsertVertexResult {
+        local_vertex_id: crate::index::federation_routing::local_vertex_id_raw(vertex_id),
+        global_vertex_id,
+    })
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_insert_directed_edge_with_label(
+    args: super::types::E2eInsertDirectedEdgeWithLabelArgs,
+) -> Result<(), String> {
+    use crate::index::edge_pending;
+    use gleaph_graph_kernel::entry::EdgeLabelId;
+
+    let store = GraphStore::new();
+    let source = ic_stable_lara::VertexId::from(args.source_local_vertex_id);
+    let target = ic_stable_lara::VertexId::from(args.target_local_vertex_id);
+    let label = EdgeLabelId::from_raw(args.edge_label_id);
+    store
+        .insert_directed_edge(source, target, Some(label))
+        .map_err(|e| e.to_string())?;
+    let index = wasm_index_client_holder().ok_or("federation not configured")?;
+    let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
+    edge_pending::flush_pending(Some(ix), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
@@ -914,6 +982,7 @@ mod tests {
             local_unique_claims: None,
             local_constrained_properties: None,
             indexed_embeddings: None,
+            resolved_search_blob: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -978,6 +1047,7 @@ mod tests {
             local_unique_claims: None,
             local_constrained_properties: None,
             indexed_embeddings: None,
+            resolved_search_blob: None,
         };
 
         let result = pollster::block_on(execute_plan_query(args)).expect("execute_plan_query");
@@ -1026,6 +1096,7 @@ mod tests {
             local_unique_claims: None,
             local_constrained_properties: None,
             indexed_embeddings: None,
+            resolved_search_blob: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("missing seeds");
@@ -1061,6 +1132,7 @@ mod tests {
             local_unique_claims: None,
             local_constrained_properties: None,
             indexed_embeddings: None,
+            resolved_search_blob: None,
         };
 
         let err = pollster::block_on(execute_plan_query(args)).expect_err("shard mismatch");

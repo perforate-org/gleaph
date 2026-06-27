@@ -21,6 +21,7 @@ fn explicit_empty_resolved_table_fails_labeled_node_scan() {
                 constrained_properties: Vec::new(),
                 local_unique_claims: Vec::new(),
                 local_constrained_properties: Vec::new(),
+                resolved_search: None,
             },
         )
         .expect_err("missing resolved node label must fail");
@@ -53,6 +54,7 @@ fn explicit_empty_resolved_table_fails_labeled_expand() {
             constrained_properties: Vec::new(),
             local_unique_claims: Vec::new(),
             local_constrained_properties: Vec::new(),
+            resolved_search: None,
         },
         None,
     );

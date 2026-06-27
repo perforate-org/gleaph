@@ -104,6 +104,7 @@ fn bench_dispatch() -> Vec<ShardDispatch> {
         shard_id: ShardId::new(0),
         graph_canister: candid::Principal::anonymous(),
         seed_bindings_blob: None,
+        resolved_search_blob: None,
     }]
 }
 

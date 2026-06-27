@@ -714,6 +714,66 @@ fn gql_search_distance_as_executes_through_router_vector_index() {
     assert!(columns.contains_key("distance"));
 }
 
+/// ADR 0034 Slice 4: a leading `SEARCH` with no vector hits still dispatches the stripped tail
+/// plan to the live graph shard so a global aggregate produces one row with count zero.
+#[test]
+fn gql_search_empty_hits_runs_aggregate_and_returns_one_zero_row() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register(
+        &env,
+        &RegisterVectorIndexArgs {
+            logical_graph_name: GRAPH_NAME.to_string(),
+            embedding_name: EMBEDDING_NAME.to_string(),
+            index_id: INDEX_ID,
+            dims: DIMS,
+            metric: Some(VectorMetric::L2Squared),
+            target: Some(vector),
+            if_not_exists: false,
+        },
+    )
+    .expect("register vector index");
+
+    let graph_id = router_graph_id(&env);
+    set_dispatch_activation(&env, true).expect("enable dispatch flag");
+    set_graph_vector_routing(&env, env.graph_source, vector);
+    set_graph_vector_routing(&env, env.graph_dest, vector);
+    attach_shard_to_vector(&env, vector, graph_id, ShardId::new(0), env.graph_source)
+        .expect("vector accepts shard 0");
+    attach_shard_to_vector(&env, vector, graph_id, ShardId::new(1), env.graph_dest)
+        .expect("vector accepts shard 1");
+    attach_shard(&env, ShardId::new(0), vector).expect("attach shard 0");
+    attach_shard(&env, ShardId::new(1), vector).expect("attach shard 1");
+
+    // No embeddings are seeded, so vector search returns an empty hit set.
+    let query = format!(
+        "MATCH (d) SEARCH d IN (VECTOR INDEX {EMBEDDING_NAME} FOR $query LIMIT 10) DISTANCE AS distance RETURN count(*) AS c"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(5.0)),
+    )])
+    .expect("encode query params");
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_eq!(
+        result.row_count, 1,
+        "global aggregate over empty leading search must return one row"
+    );
+    let rows_blob = result.rows_blob.expect("rows blob");
+    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    assert_eq!(wire.rows.len(), 1);
+    let columns: BTreeMap<String, gleaph_gql_ic::IcWireValue> =
+        wire.rows[0].columns.clone().into_iter().collect();
+    match columns.get("c").expect("count column") {
+        gleaph_gql_ic::IcWireValue::Int64(cnt) => {
+            assert_eq!(*cnt, 0, "count over empty search hits must be 0");
+        }
+        other => panic!("count must be Int64, got {other:?}"),
+    }
+}
+
 /// ADR 0034 Slice 4: `SCORE AS` executes end-to-end for a cosine-similarity index and
 /// returns `similarity = 1 - raw` as a `FLOAT64` seed alias.
 #[test]

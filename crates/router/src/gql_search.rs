@@ -13,20 +13,19 @@ use crate::planner_stats::RouterGraphStats;
 use gleaph_gql::Value;
 use gleaph_gql::ast::ExprKind;
 use gleaph_gql_planner::plan::{
-    NodeLabelRef, PhysicalPlan, PlanOp, SearchOutputKind, SearchProviderPlan, Str,
+    NodeLabelRef, PhysicalPlan, PlanOp, SearchOutputKind, SearchOutputPlan, SearchProviderPlan, Str,
 };
 use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
-    ExecutePlanArgs, GqlExecutionMode, GqlQueryResult, SeedBindingsWire, SeedFloat64Binding,
-    SeedRowWire, SeedVertexBinding,
+    ExecutePlanArgs, GqlExecutionMode, GqlQueryResult, ResolvedSearchVertexHitWire,
+    ResolvedSearchWire, SeedBindingsWire, SeedFloat64Binding, SeedRowWire, SeedVertexBinding,
 };
 use gleaph_graph_kernel::vector_index::{
     MAX_VECTOR_SEARCH_TOP_K, VectorMetric, VectorOutputShape, VectorSearchHit, VectorSubject,
 };
 
 use crate::RouterStore;
-use crate::canister::vector_search;
 use crate::facade::stable::{embedding_name_catalog, graph_catalog, vector_index_catalog};
 use crate::federation::{
     empty_execute_plan_result, federated_merge_mode_from_plans, merge_execute_plan_result,
@@ -40,14 +39,22 @@ use crate::types::RouterVectorSearchRequest;
 /// Returns `Ok(None)` if the plan does not contain `PlanOp::Search` at all, allowing the caller
 /// to fall through to the normal dispatch path. Returns `Err` for any `SEARCH` shape that is not
 /// accepted by Slice 3.
-pub(crate) async fn try_execute_gql_search(
+pub(crate) async fn try_execute_gql_search<V, Vf>(
     plan: &PhysicalPlan,
     graph_id: GraphId,
     params_blob: &[u8],
     mode: GqlExecutionMode,
-    _stats: &RouterGraphStats,
+    stats: &RouterGraphStats,
     store: &RouterStore,
-) -> Result<Option<GqlQueryResult>, RouterError> {
+    caller: candid::Principal,
+    vector_search: V,
+) -> Result<Option<GqlQueryResult>, RouterError>
+where
+    V: FnOnce(RouterVectorSearchRequest) -> Vf,
+    Vf: std::future::Future<
+            Output = Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError>,
+        >,
+{
     if !gleaph_gql_planner::plan_contains_search(plan) {
         return Ok(None);
     }
@@ -58,17 +65,26 @@ pub(crate) async fn try_execute_gql_search(
         ));
     }
 
-    let shape = analyze_search_shape(plan, graph_id, store)?;
+    let position = analyze_search_shape(plan, graph_id, store)?;
     let params = gleaph_gql_ic::wire::decode_gql_params_blob(params_blob).map_err(|e| {
         RouterError::InvalidArgument(format!("failed to decode GQL parameters: {e}"))
     })?;
 
-    let stripped_plan = strip_search_prefix(plan, &shape)?;
-    if stripped_plan.has_dml() {
+    // DML must not appear in the executable part of the plan. For the leading prefix the search
+    // operators are stripped before dispatch; for non-leading the full plan is dispatched.
+    let executable_plan = match &position {
+        SearchPosition::Leading(_) => {
+            strip_search_prefix(plan, search_shape_from_position(&position))?
+        }
+        SearchPosition::NonLeading(_) => plan.clone(),
+    };
+    if executable_plan.has_dml() {
         return Err(RouterError::InvalidArgument(
             "GQL SEARCH cannot be followed by mutation operators in this slice".into(),
         ));
     }
+
+    let shape = search_shape_from_position(&position);
 
     let (index_id, def) = resolve_vector_index(graph_id, &shape.index_name)?;
     let query = resolve_query_bytes(&shape.query_expr, &params)?;
@@ -112,37 +128,76 @@ pub(crate) async fn try_execute_gql_search(
     };
     let result = vector_search(req).await?;
 
-    if result.hits.is_empty() {
-        return Ok(Some(GqlQueryResult::row_count_only(0)));
-    }
+    match position {
+        SearchPosition::Leading(shape) => {
+            let seeds_by_shard = build_search_seeds(
+                &shape.binding,
+                &shape.output_alias,
+                &shape.required_label_ids,
+                &result.hits,
+                def.metric,
+            )?;
 
-    let seeds_by_shard = build_search_seeds(
-        &shape.binding,
-        &shape.output_alias,
-        &shape.required_label_ids,
-        &result.hits,
-        def.metric,
-    )?;
-
-    let stripped_plan_blob =
-        gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(&stripped_plan), false)
+            let stripped_plan = strip_search_prefix(plan, &shape)?;
+            let stripped_plan_blob = gleaph_gql_planner::wire::encode_block_plans(
+                std::slice::from_ref(&stripped_plan),
+                false,
+            )
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
 
-    dispatch_search_read_plan(
-        graph_id,
-        plan,
-        &stripped_plan_blob,
-        &stripped_plan,
-        seeds_by_shard,
-        params_blob,
-        mode,
-        _stats,
-        store,
-    )
-    .await
-    .map(Some)
+            dispatch_search_read_plan(
+                graph_id,
+                plan,
+                &stripped_plan_blob,
+                &stripped_plan,
+                seeds_by_shard,
+                params_blob,
+                mode,
+                stats,
+                store,
+            )
+            .await
+            .map(Some)
+        }
+        SearchPosition::NonLeading(shape) => {
+            let resolved_search_by_shard = build_resolved_search_wires(
+                &shape.binding,
+                &shape.output_alias,
+                &result.hits,
+                def.metric,
+                graph_id,
+                store,
+            )?;
+
+            let plan_blob =
+                gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(plan), false)
+                    .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+
+            crate::gql::dispatch_plan_blob_with_search(
+                graph_id,
+                &plan_blob,
+                std::slice::from_ref(plan),
+                &params,
+                params_blob,
+                mode,
+                None,
+                stats,
+                Some(resolved_search_by_shard),
+                caller,
+            )
+            .await
+            .map(Some)
+        }
+    }
 }
 
+fn search_shape_from_position(position: &SearchPosition) -> &SearchShape {
+    match position {
+        SearchPosition::Leading(shape) | SearchPosition::NonLeading(shape) => shape,
+    }
+}
+
+#[derive(Debug)]
 struct SearchShape {
     binding: String,
     index_name: Vec<Str>,
@@ -153,52 +208,106 @@ struct SearchShape {
     required_label_ids: Vec<VertexLabelId>,
 }
 
+#[derive(Debug)]
+enum SearchPosition {
+    Leading(SearchShape),
+    NonLeading(SearchShape),
+}
+
 fn analyze_search_shape(
     plan: &PhysicalPlan,
     graph_id: GraphId,
     store: &RouterStore,
-) -> Result<SearchShape, RouterError> {
-    let (node_scan, search, tail) = match plan.ops.as_slice() {
-        [first, second, rest @ ..] => (first, second, rest),
-        _ => {
+) -> Result<SearchPosition, RouterError> {
+    // Classify the single supported SEARCH shape. Leading (Slice 3) is a NodeScan + Search
+    // prefix; non-leading (Slice 5) is a single top-level Search with both preceding and
+    // following operators. Every other shape is rejected fail-closed.
+    if let [first, second, tail @ ..] = plan.ops.as_slice()
+        && let (
+            PlanOp::NodeScan {
+                variable,
+                label,
+                property_projection: _,
+            },
+            PlanOp::Search {
+                binding,
+                provider,
+                output,
+            },
+        ) = (first, second)
+        && variable == binding
+    {
+        if tail.iter().any(op_contains_search) {
             return Err(RouterError::InvalidArgument(
-                "GQL SEARCH must be a leading NodeScan followed by Search".into(),
+                "GQL SEARCH must appear exactly once as the leading prefix in this slice".into(),
             ));
         }
-    };
+        if tail.is_empty() {
+            return Err(RouterError::InvalidArgument(
+                "GQL SEARCH plan has no tail after the vector-search prefix".into(),
+            ));
+        }
+        let shape = extract_shape_from_search_op(
+            graph_id,
+            store,
+            binding.as_ref(),
+            provider,
+            output,
+            label.as_ref(),
+        )?;
+        return Ok(SearchPosition::Leading(shape));
+    }
 
-    let PlanOp::NodeScan {
-        variable, label, ..
-    } = node_scan
-    else {
+    let top_level_search_count = plan
+        .ops
+        .iter()
+        .filter(|op| matches!(op, PlanOp::Search { .. }))
+        .count();
+    let has_nested_search = plan
+        .ops
+        .iter()
+        .filter(|op| !matches!(op, PlanOp::Search { .. }))
+        .any(op_contains_search);
+    if top_level_search_count != 1 || has_nested_search {
         return Err(RouterError::InvalidArgument(
-            "GQL SEARCH requires a leading NodeScan".into(),
+            "GQL SEARCH must appear exactly once at the top level and not be nested or repeated in this slice"
+                .into(),
         ));
-    };
+    }
+
+    let search_idx = plan
+        .ops
+        .iter()
+        .position(|op| matches!(op, PlanOp::Search { .. }))
+        .expect("exactly one top-level Search");
+    if search_idx == 0 || search_idx == plan.ops.len() - 1 {
+        return Err(RouterError::InvalidArgument(
+            "GQL non-leading SEARCH must have both preceding and following operators".into(),
+        ));
+    }
 
     let PlanOp::Search {
         binding,
         provider,
         output,
-    } = search
+    } = &plan.ops[search_idx]
     else {
-        return Err(RouterError::InvalidArgument(
-            "GQL SEARCH second operator must be Search".into(),
-        ));
+        unreachable!("position returned a Search op");
     };
 
-    if variable != binding {
-        return Err(RouterError::InvalidArgument(
-            "GQL SEARCH binding must match the leading NodeScan variable".into(),
-        ));
-    }
+    let shape =
+        extract_shape_from_search_op(graph_id, store, binding.as_ref(), provider, output, None)?;
+    Ok(SearchPosition::NonLeading(shape))
+}
 
-    if tail.iter().any(op_contains_search) {
-        return Err(RouterError::InvalidArgument(
-            "GQL SEARCH must appear exactly once as the leading prefix in this slice".into(),
-        ));
-    }
-
+fn extract_shape_from_search_op(
+    graph_id: GraphId,
+    store: &RouterStore,
+    binding: &str,
+    provider: &SearchProviderPlan,
+    output: &SearchOutputPlan,
+    node_scan_label: Option<&NodeLabelRef>,
+) -> Result<SearchShape, RouterError> {
     let SearchProviderPlan::VectorIndex {
         index_name,
         query,
@@ -212,11 +321,11 @@ fn analyze_search_shape(
         ));
     }
 
-    let required_label_ids = if let Some(label) = label {
-        vec![resolve_vertex_label_id(graph_id, store, label)?]
-    } else {
-        Vec::new()
-    };
+    let required_label_ids = node_scan_label
+        .map(|label| resolve_vertex_label_id(graph_id, store, label))
+        .transpose()?
+        .into_iter()
+        .collect();
 
     Ok(SearchShape {
         binding: binding.to_string(),
@@ -347,11 +456,20 @@ fn build_search_seeds(
     metric: VectorMetric,
 ) -> Result<BTreeMap<ShardId, SeedBindingsWire>, RouterError> {
     let mut by_shard: BTreeMap<ShardId, Vec<SeedRowWire>> = BTreeMap::new();
+    let mut seen: std::collections::HashSet<(ShardId, u32)> = std::collections::HashSet::new();
     for hit in hits {
         let VectorSubject::Vertex {
             shard_id,
             vertex_id,
         } = hit.subject;
+        // ADR 0034: a single vector search must not return the same subject twice.
+        // Fail closed so both the leading seed path and the non-leading resolved path share
+        // the same defense contract.
+        if !seen.insert((shard_id, vertex_id)) {
+            return Err(RouterError::InvalidArgument(format!(
+                "duplicate vector search hit for shard {shard_id} vertex {vertex_id}"
+            )));
+        }
         let value = match metric.output_shape() {
             VectorOutputShape::Distance => {
                 metric.to_user_distance(hit.distance).ok_or_else(|| {
@@ -389,6 +507,79 @@ fn build_search_seeds(
             (shard_id, wire)
         })
         .collect())
+}
+
+fn build_resolved_search_wires(
+    binding: &str,
+    alias: &str,
+    hits: &[VectorSearchHit],
+    metric: VectorMetric,
+    graph_id: GraphId,
+    store: &RouterStore,
+) -> Result<BTreeMap<ShardId, ResolvedSearchWire>, RouterError> {
+    let live_shards: std::collections::HashSet<ShardId> = store
+        .list_live_shards_for_graph_id(graph_id)?
+        .into_iter()
+        .map(|entry| entry.shard_id)
+        .collect();
+
+    let mut by_shard: BTreeMap<ShardId, Vec<ResolvedSearchVertexHitWire>> = BTreeMap::new();
+    let mut seen: std::collections::HashSet<(ShardId, u32)> = std::collections::HashSet::new();
+    for hit in hits {
+        let VectorSubject::Vertex {
+            shard_id,
+            vertex_id,
+        } = hit.subject;
+        // ADR 0034 Slice 5: derived-index staleness contract matches the leading path — hits that
+        // reference a shard no longer in the live topology are ignored rather than failing the
+        // query. The remaining live-shard hits still form the global top-k relation.
+        if !live_shards.contains(&shard_id) {
+            continue;
+        }
+        if !seen.insert((shard_id, vertex_id)) {
+            return Err(RouterError::InvalidArgument(format!(
+                "duplicate vector search hit for shard {shard_id} vertex {vertex_id}"
+            )));
+        }
+        let value = match metric.output_shape() {
+            VectorOutputShape::Distance => {
+                metric.to_user_distance(hit.distance).ok_or_else(|| {
+                    RouterError::InvalidArgument(
+                        "SEARCH distance conversion produced a non-finite value".into(),
+                    )
+                })?
+            }
+            VectorOutputShape::Score => metric.to_user_score(hit.distance).ok_or_else(|| {
+                RouterError::InvalidArgument(
+                    "SEARCH score conversion produced a non-finite value".into(),
+                )
+            })?,
+        };
+        by_shard
+            .entry(shard_id)
+            .or_default()
+            .push(ResolvedSearchVertexHitWire {
+                local_vertex_id: vertex_id,
+                value: f64::from(value),
+            });
+    }
+
+    // Include every live shard, even those with no hits, so each dispatched shard receives an
+    // explicit relation (possibly empty) rather than an absent field that would look like a
+    // protocol violation to the graph executor.
+    let mut out = BTreeMap::new();
+    for shard_id in live_shards {
+        let vertex_hits = by_shard.remove(&shard_id).unwrap_or_default();
+        out.insert(
+            shard_id,
+            ResolvedSearchWire {
+                binding: binding.to_string(),
+                output_alias: alias.to_string(),
+                vertex_hits,
+            },
+        );
+    }
+    Ok(out)
 }
 
 fn strip_search_prefix(
@@ -440,10 +631,23 @@ async fn dispatch_search_read_plan(
     let merge_mode = federated_merge_mode_from_plans(std::slice::from_ref(stripped_plan));
 
     let mut merged = empty_execute_plan_result();
+    // ADR 0034: an empty live relation (no hits, or only hits for non-live shards) must still
+    // dispatch the stripped tail plan so global aggregates produce one zero row. When live hits
+    // exist, keep the historical behavior of dispatching only to shards that own a hit; this avoids
+    // shard-count-proportional inter-canister overhead for the common case.
+    let has_live_seed = shards
+        .iter()
+        .any(|shard| seeds_by_shard.contains_key(&shard.shard_id));
+    let empty_seed_wire = SeedBindingsWire {
+        entries: Vec::new(),
+        rows: Vec::new(),
+    };
     let mut dispatched_any = false;
     for shard in shards {
-        let Some(seed_wire) = seeds_by_shard.get(&shard.shard_id) else {
-            continue;
+        let seed_wire = match seeds_by_shard.get(&shard.shard_id) {
+            Some(wire) => wire,
+            None if !has_live_seed => &empty_seed_wire,
+            None => continue,
         };
         dispatched_any = true;
         let seed_blob = Encode!(seed_wire).expect("encode search seed bindings");
@@ -465,6 +669,7 @@ async fn dispatch_search_read_plan(
                 local_unique_claims: None,
                 local_constrained_properties: None,
                 indexed_embeddings: Some(indexed_embeddings.clone()),
+                resolved_search_blob: None,
             },
         )
         .await
@@ -473,11 +678,10 @@ async fn dispatch_search_read_plan(
             .map_err(RouterError::InvalidArgument)?;
     }
 
-    if !dispatched_any {
-        // All vector hits landed on shards that are no longer live. Return empty rather than
-        // fail-closed; the hits are not graph-visible from the current shard topology.
-        return Ok(GqlQueryResult::row_count_only(0));
-    }
+    debug_assert!(
+        dispatched_any,
+        "shards non-empty guarantees at least one dispatch"
+    );
 
     Ok(GqlQueryResult::from_merged(&merged))
 }
@@ -493,9 +697,93 @@ mod tests {
     use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::vector_index::{
-        VectorEncoding, VectorIndexKind, VectorMetric, VectorSearchHit, VectorSubject,
+        VectorEncoding, VectorIndexKind, VectorMetric, VectorSearchHit, VectorSearchResult,
+        VectorSubject,
     };
     use std::collections::BTreeMap;
+
+    fn vector_search_unreachable() -> impl FnOnce(
+        RouterVectorSearchRequest,
+    ) -> std::future::Ready<
+        Result<VectorSearchResult, RouterError>,
+    > {
+        |_req| {
+            std::future::ready(Err(RouterError::Internal(
+                "vector_search should not be called in this test".into(),
+            )))
+        }
+    }
+
+    fn vector_search_counter(
+        hits: Vec<VectorSearchHit>,
+    ) -> (
+        std::sync::Arc<std::sync::atomic::AtomicUsize>,
+        impl FnOnce(
+            RouterVectorSearchRequest,
+        ) -> std::future::Ready<Result<VectorSearchResult, RouterError>>,
+    ) {
+        let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let count_clone = count.clone();
+        let mock = move |_req: RouterVectorSearchRequest| {
+            count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            std::future::ready(Ok(VectorSearchResult { hits }))
+        };
+        (count, mock)
+    }
+
+    fn non_leading_search_plan_with_distance() -> PhysicalPlan {
+        PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("Author".into()),
+                property_projection: None,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: bytes_expr(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Distance,
+                    alias: "distance".into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ])
+    }
+
+    fn non_leading_search_plan_with_score() -> PhysicalPlan {
+        PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("Author".into()),
+                property_projection: None,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: bytes_expr(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Score,
+                    alias: "similarity".into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ])
+    }
 
     fn bytes_expr(b: Vec<u8>) -> Expr {
         Expr::new(ExprKind::Literal(Value::Bytes(b)))
@@ -590,6 +878,8 @@ mod tests {
                 std::collections::BTreeSet::new(),
             ),
             &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
         ));
         let err = result.unwrap_err();
         assert!(
@@ -642,6 +932,8 @@ mod tests {
                 std::collections::BTreeSet::new(),
             ),
             &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
         ));
         let err = result.unwrap_err();
         assert!(
@@ -744,6 +1036,36 @@ mod tests {
         assert_eq!(
             by_shard[&ShardId::new(0)].rows[0].vertex_bindings[0].required_vertex_label_ids,
             vec![3]
+        );
+    }
+
+    #[test]
+    fn build_search_seeds_rejects_duplicate_subject() {
+        let hits = vec![
+            VectorSearchHit {
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id: 7,
+                },
+                distance: 1.0f32,
+                embedding_incarnation: 0,
+                embedding_version: 0,
+            },
+            VectorSearchHit {
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id: 7,
+                },
+                distance: 2.0f32,
+                embedding_incarnation: 0,
+                embedding_version: 0,
+            },
+        ];
+        let err = build_search_seeds("d", "distance", &[], &hits, VectorMetric::L2Squared)
+            .expect_err("duplicate hit");
+        assert!(
+            err.to_string().contains("duplicate vector search hit"),
+            "unexpected error: {err}"
         );
     }
 
@@ -894,6 +1216,8 @@ mod tests {
                 std::collections::BTreeSet::new(),
             ),
             &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
         ));
         let err = result.expect_err("SCORE AS on L2Squared must fail");
         assert!(
@@ -919,11 +1243,93 @@ mod tests {
                 std::collections::BTreeSet::new(),
             ),
             &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
         ));
         let err = result.expect_err("DISTANCE AS on Cosine must fail");
         assert!(
             err.to_string().contains("not supported for metric"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_leading_empty_hits_reaches_graph_dispatch() {
+        let (store, _admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        let (count, mock) = vector_search_counter(vec![]);
+        let plan = search_plan_with_output(SearchOutputKind::Distance, "distance");
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            mock,
+        ));
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "vector_search must be invoked exactly once"
+        );
+        // With an empty hit set the Router must still dispatch the stripped tail to the live
+        // shard (so a global aggregate can produce one zero row). The test catalog has no real
+        // graph canister, so dispatch fails; the important contract is that it is attempted rather
+        // than short-circuited to row_count_only(0).
+        assert!(
+            result.is_err(),
+            "leading SEARCH with empty hits must reach graph dispatch: {result:?}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_leading_stale_only_hits_reaches_graph_dispatch() {
+        let (store, _admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        let stale_hit = VectorSearchHit {
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(42),
+                vertex_id: 7,
+            },
+            distance: 1.0,
+            embedding_incarnation: 0,
+            embedding_version: 0,
+        };
+        let (count, mock) = vector_search_counter(vec![stale_hit]);
+        let plan = search_plan_with_output(SearchOutputKind::Distance, "distance");
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            mock,
+        ));
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "vector_search must be invoked exactly once"
+        );
+        // A hit for a shard outside the live topology is an empty live relation. The Router must
+        // still dispatch an empty seed to shard 0 so an aggregate tail can run. This fixture has no
+        // real graph canister, so reaching dispatch is observed as an error rather than a result.
+        assert!(
+            result.is_err(),
+            "leading SEARCH with only stale hits must reach graph dispatch: {result:?}"
         );
     }
 
@@ -987,5 +1393,395 @@ mod tests {
                 "unexpected error for {bad}: {err}"
             );
         }
+    }
+
+    // --- ADR 0034 Slice 5: non-leading SEARCH classification and resolved relation tests ---
+
+    #[test]
+    fn analyze_search_shape_classifies_leading_prefix() {
+        let store = crate::facade::store::RouterStore::new();
+        store.init_from_args(&crate::init::RouterInitArgs {
+            issuing_principal: candid::Principal::anonymous(),
+            initial_admins: vec![],
+        });
+        let plan = search_plan_with_distance();
+        let position =
+            analyze_search_shape(&plan, GraphId::from_raw(0), &store).expect("leading shape");
+        assert!(matches!(position, SearchPosition::Leading(_)));
+    }
+
+    #[test]
+    fn analyze_search_shape_classifies_non_leading_position() {
+        let store = crate::facade::store::RouterStore::new();
+        store.init_from_args(&crate::init::RouterInitArgs {
+            issuing_principal: candid::Principal::anonymous(),
+            initial_admins: vec![],
+        });
+        let plan = non_leading_search_plan_with_distance();
+        let position =
+            analyze_search_shape(&plan, GraphId::from_raw(0), &store).expect("non-leading shape");
+        assert!(matches!(position, SearchPosition::NonLeading(_)));
+    }
+
+    #[test]
+    fn analyze_search_shape_rejects_search_without_preceding_or_following_ops() {
+        let store = crate::facade::store::RouterStore::new();
+        store.init_from_args(&crate::init::RouterInitArgs {
+            issuing_principal: candid::Principal::anonymous(),
+            initial_admins: vec![],
+        });
+        // Search is the only op.
+        let plan = PhysicalPlan::from_ops(vec![PlanOp::Search {
+            binding: "d".into(),
+            provider: SearchProviderPlan::VectorIndex {
+                index_name: vec!["doc_vec".into()],
+                query: bytes_expr(vec![1, 2, 3]),
+                limit: Expr::int(10),
+                filter: None,
+            },
+            output: SearchOutputPlan {
+                kind: SearchOutputKind::Distance,
+                alias: "distance".into(),
+            },
+        }]);
+        let err =
+            analyze_search_shape(&plan, GraphId::from_raw(0), &store).expect_err("lone Search");
+        assert!(
+            err.to_string()
+                .contains("both preceding and following operators"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn analyze_search_shape_rejects_multiple_top_level_searches() {
+        let store = crate::facade::store::RouterStore::new();
+        store.init_from_args(&crate::init::RouterInitArgs {
+            issuing_principal: candid::Principal::anonymous(),
+            initial_admins: vec![],
+        });
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: bytes_expr(vec![1, 2, 3]),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Distance,
+                    alias: "distance".into(),
+                },
+            },
+            PlanOp::Search {
+                binding: "d2".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: bytes_expr(vec![1, 2, 3]),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Distance,
+                    alias: "distance2".into(),
+                },
+            },
+        ]);
+        let err = analyze_search_shape(&plan, GraphId::from_raw(0), &store)
+            .expect_err("multiple searches");
+        assert!(
+            err.to_string().contains("not be nested or repeated"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn analyze_search_shape_rejects_nested_search() {
+        let store = crate::facade::store::RouterStore::new();
+        store.init_from_args(&crate::init::RouterInitArgs {
+            issuing_principal: candid::Principal::anonymous(),
+            initial_admins: vec![],
+        });
+        let inner = PhysicalPlan::from_ops(vec![PlanOp::Search {
+            binding: "d".into(),
+            provider: SearchProviderPlan::VectorIndex {
+                index_name: vec!["doc_vec".into()],
+                query: bytes_expr(vec![1, 2, 3]),
+                limit: Expr::int(10),
+                filter: None,
+            },
+            output: SearchOutputPlan {
+                kind: SearchOutputKind::Distance,
+                alias: "distance".into(),
+            },
+        }]);
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("Author".into()),
+                property_projection: None,
+            },
+            PlanOp::OptionalMatch {
+                sub_plan: inner.ops,
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ]);
+        let err =
+            analyze_search_shape(&plan, GraphId::from_raw(0), &store).expect_err("nested search");
+        assert!(
+            err.to_string().contains("not be nested or repeated"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_resolved_search_wires_skips_non_live_shard_hits() {
+        let hits = vec![
+            VectorSearchHit {
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id: 7,
+                },
+                distance: 1.25f32,
+                embedding_incarnation: 0,
+                embedding_version: 0,
+            },
+            VectorSearchHit {
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(42),
+                    vertex_id: 8,
+                },
+                distance: 2.25f32,
+                embedding_incarnation: 0,
+                embedding_version: 0,
+            },
+        ];
+        let (store, _admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        let by_shard = build_resolved_search_wires(
+            "d",
+            "distance",
+            &hits,
+            VectorMetric::L2Squared,
+            graph_id,
+            &store,
+        )
+        .expect("build resolved wires");
+        assert_eq!(
+            by_shard.len(),
+            1,
+            "only live shards are included; non-live hits are ignored"
+        );
+        let wire = by_shard.get(&ShardId::new(0)).expect("shard 0 wire");
+        assert_eq!(wire.vertex_hits.len(), 1);
+        assert_eq!(wire.vertex_hits[0].local_vertex_id, 7);
+    }
+
+    #[test]
+    fn build_resolved_search_wires_groups_hits_by_shard() {
+        let hits = vec![VectorSearchHit {
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: 7,
+            },
+            distance: 1.25f32,
+            embedding_incarnation: 0,
+            embedding_version: 0,
+        }];
+        let (store, _admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        let by_shard = build_resolved_search_wires(
+            "d",
+            "distance",
+            &hits,
+            VectorMetric::L2Squared,
+            graph_id,
+            &store,
+        )
+        .expect("build resolved wires");
+        assert_eq!(
+            by_shard.len(),
+            1,
+            "only the registered live shard is included"
+        );
+        let wire = by_shard.get(&ShardId::new(0)).expect("shard 0 wire");
+        assert_eq!(wire.binding, "d");
+        assert_eq!(wire.output_alias, "distance");
+        assert_eq!(wire.vertex_hits.len(), 1);
+        assert_eq!(wire.vertex_hits[0].local_vertex_id, 7);
+        assert_eq!(wire.vertex_hits[0].value, 1.25f64);
+    }
+
+    #[test]
+    fn build_resolved_search_wires_rejects_duplicate_subject() {
+        let hits = vec![
+            VectorSearchHit {
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id: 7,
+                },
+                distance: 1.0f32,
+                embedding_incarnation: 0,
+                embedding_version: 0,
+            },
+            VectorSearchHit {
+                subject: VectorSubject::Vertex {
+                    shard_id: ShardId::new(0),
+                    vertex_id: 7,
+                },
+                distance: 2.0f32,
+                embedding_incarnation: 0,
+                embedding_version: 0,
+            },
+        ];
+        let (store, _admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        let err = build_resolved_search_wires(
+            "d",
+            "distance",
+            &hits,
+            VectorMetric::L2Squared,
+            graph_id,
+            &store,
+        )
+        .expect_err("duplicate hit");
+        assert!(
+            err.to_string().contains("duplicate vector search hit"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn build_resolved_search_wires_rejects_non_finite_value() {
+        let hits = vec![VectorSearchHit {
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: 7,
+            },
+            distance: f32::NAN,
+            embedding_incarnation: 0,
+            embedding_version: 0,
+        }];
+        let (store, _admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        let err = build_resolved_search_wires(
+            "d",
+            "distance",
+            &hits,
+            VectorMetric::L2Squared,
+            graph_id,
+            &store,
+        )
+        .expect_err("non-finite value");
+        assert!(
+            err.to_string().contains("non-finite value"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_invokes_vector_search_once_for_non_leading() {
+        let (store, _admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        let plan = non_leading_search_plan_with_distance();
+        let hits = vec![VectorSearchHit {
+            subject: VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: 7,
+            },
+            distance: 1.25f32,
+            embedding_incarnation: 0,
+            embedding_version: 0,
+        }];
+        let (count, mock) = vector_search_counter(hits);
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            mock,
+        ));
+        assert_eq!(
+            count.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "vector_search must be invoked exactly once"
+        );
+        // Dispatch fails because the test catalog has no registered graph canister, but the
+        // one-call invariant is the contract under test here.
+        assert!(
+            result.is_err(),
+            "non-leading SEARCH must reach dispatch: {result:?}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_non_leading_rejects_dml_tail() {
+        let store = crate::facade::store::RouterStore::new();
+        store.init_from_args(&crate::init::RouterInitArgs {
+            issuing_principal: candid::Principal::anonymous(),
+            initial_admins: vec![],
+        });
+        let mut plan = non_leading_search_plan_with_distance();
+        plan.ops.push(PlanOp::InsertVertex {
+            variable: Some("n".into()),
+            labels: vec!["Doc".into()],
+            properties: vec![],
+        });
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            GraphId::from_raw(0),
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                GraphId::from_raw(0),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("DML tail must fail");
+        assert!(
+            err.to_string()
+                .contains("cannot be followed by mutation operators"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_non_leading_rejects_score_on_l2() {
+        let (store, _admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        let plan = non_leading_search_plan_with_score();
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("SCORE AS on L2Squared must fail");
+        assert!(
+            err.to_string().contains("not supported for metric"),
+            "unexpected error: {err}"
+        );
     }
 }

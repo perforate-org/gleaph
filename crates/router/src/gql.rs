@@ -2,7 +2,7 @@
 
 use std::collections::BTreeMap;
 
-use candid::Principal;
+use candid::{Encode, Principal};
 use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
@@ -16,8 +16,8 @@ use gleaph_graph_kernel::index::{
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanResult, GqlExecutionMode, GqlQueryResult, GraphMutationJournalEntryWire, MutationId,
-    MutationJournalState, MutationToken, MutationTokenShard, ReadMode, ShardEventSeq,
-    UniqueClaimDispatch,
+    MutationJournalState, MutationToken, MutationTokenShard, ReadMode, ResolvedSearchWire,
+    ShardEventSeq, UniqueClaimDispatch,
 };
 use ic_cdk::api::msg_caller;
 use nohash_hasher::IntSet;
@@ -700,6 +700,8 @@ async fn run_gql(
                 mode,
                 &stats,
                 &store,
+                msg_caller(),
+                crate::canister::vector_search,
             )
             .await?
             {
@@ -715,6 +717,8 @@ async fn run_gql(
                 mode,
                 &focused_stats,
                 &store,
+                msg_caller(),
+                crate::canister::vector_search,
             )
             .await?
             {
@@ -965,6 +969,36 @@ pub async fn dispatch_plan_blob(
     client_mutation_key: Option<&str>,
     stats: &RouterGraphStats,
 ) -> Result<GqlQueryResult, RouterError> {
+    dispatch_plan_blob_with_search(
+        graph_id,
+        plan_blob,
+        plans,
+        pmap,
+        params,
+        mode,
+        client_mutation_key,
+        stats,
+        None,
+        msg_caller(),
+    )
+    .await
+}
+
+/// Like [`dispatch_plan_blob`] but carries a Router-resolved non-leading `SEARCH` relation per
+/// dispatched shard (ADR 0034 Slice 5).
+#[allow(clippy::too_many_arguments)]
+pub async fn dispatch_plan_blob_with_search(
+    graph_id: GraphId,
+    plan_blob: &[u8],
+    plans: &[PhysicalPlan],
+    pmap: &BTreeMap<String, gleaph_gql::Value>,
+    params: &[u8],
+    mode: GqlExecutionMode,
+    client_mutation_key: Option<&str>,
+    stats: &RouterGraphStats,
+    resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
+    caller: Principal,
+) -> Result<GqlQueryResult, RouterError> {
     let store = RouterStore::new();
     let shards = store.list_live_shards_for_graph_id(graph_id)?;
     if shards.is_empty() {
@@ -983,8 +1017,9 @@ pub async fn dispatch_plan_blob(
         &store,
         shards,
         &index,
-        msg_caller(),
+        caller,
         stats,
+        resolved_search,
     )
     .await
 }
@@ -1042,6 +1077,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
     index: &I,
     caller: Principal,
     stats: &RouterGraphStats,
+    resolved_search: Option<BTreeMap<ShardId, gleaph_graph_kernel::plan_exec::ResolvedSearchWire>>,
 ) -> Result<GqlQueryResult, RouterError> {
     let has_dml = plans.iter().any(PhysicalPlan::has_dml);
     // ADR 0029 §6 (Phase 5 contract 1): a completely-new INSERT-only write has no index anchor and
@@ -1211,6 +1247,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 shard_id: shard.shard_id,
                 graph_canister: shard.graph_canister,
                 seed_bindings_blob: shard.seed_bindings_blob.clone(),
+                resolved_search_blob: None,
             })
             .collect()
     } else {
@@ -1395,10 +1432,35 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                     shard_id: shard.shard_id,
                     graph_canister: shard.graph_canister,
                     seed_bindings_blob: shard.seed_bindings_blob,
+                    resolved_search_blob: None,
                 })
                 .collect();
         }
     }
+
+    // ADR 0034 Slice 5: attach a Router-resolved non-leading SEARCH relation to each dispatched
+    // shard. Shards that execute the prefix but have no local hit receive an explicit empty
+    // relation, not an absent one, so the graph executor can distinguish protocol compliance from
+    // a missing context.
+    if let Some(search_by_shard) = resolved_search {
+        let representative = search_by_shard
+            .values()
+            .next()
+            .expect("resolved search map is non-empty");
+        for dispatch in &mut dispatches {
+            let wire = search_by_shard
+                .get(&dispatch.shard_id)
+                .cloned()
+                .unwrap_or_else(|| ResolvedSearchWire {
+                    binding: representative.binding.clone(),
+                    output_alias: representative.output_alias.clone(),
+                    vertex_hits: Vec::new(),
+                });
+            dispatch.resolved_search_blob =
+                Some(Encode!(&wire).expect("encode resolved search relation"));
+        }
+    }
+
     let element_id_encoding_key = store.graph_element_id_encoding_key(graph_id)?.0;
     // ADR 0023 D1: the router (index definitions SSOT) supplies the indexed-property
     // catalog per operation so the shard never persists derived index state.
@@ -1532,6 +1594,7 @@ async fn dispatch_plan_blob_with_index<I: IndexLookup + ?Sized>(
                 local_unique_claims: dispatch_local_unique_claims.clone(),
                 local_constrained_properties: dispatch_local_constrained_properties.clone(),
                 indexed_embeddings: Some(indexed_embeddings.clone()),
+                resolved_search_blob: dispatch.resolved_search_blob.clone(),
             },
         )
         .await
@@ -2869,6 +2932,7 @@ mod tests {
             fake_index,
             Principal::anonymous(),
             &tenant_main_stats(),
+            None,
         )
         .await
     }
@@ -3217,6 +3281,7 @@ mod tests {
             &fake,
             Principal::anonymous(),
             &stats,
+            None,
         ))
         .expect_err("native graph dispatch should fail after compound seeding");
 
@@ -3315,6 +3380,7 @@ mod tests {
             &fake,
             Principal::anonymous(),
             &tenant_main_stats(),
+            None,
         ))
         .expect_err("native graph dispatch should fail after index seeding");
 

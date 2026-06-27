@@ -127,9 +127,12 @@ pub(crate) mod catalog_test_support {
     use super::RouterStore;
     use crate::facade::auth;
     use crate::init::RouterInitArgs;
-    use crate::types::{GraphRegistryEntry, GraphStatus, ProvisioningState};
+    use crate::types::{
+        AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ProvisioningState,
+    };
     use candid::Principal;
     use gleaph_graph_kernel::entry::GraphId;
+    use gleaph_graph_kernel::federation::ShardId;
     use std::collections::BTreeSet;
 
     pub const GRAPH: &str = "tenant.main";
@@ -154,6 +157,19 @@ pub(crate) mod catalog_test_support {
             .expect("register graph");
     }
 
+    pub fn register_shard(store: &RouterStore, admin: Principal, shard_id: ShardId) {
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            AdminRegisterShardArgs {
+                shard_id,
+                graph_canister: Principal::from_slice(&[1]),
+                index_canister: Principal::from_slice(&[2]),
+                logical_graph_name: GRAPH.into(),
+            },
+        ))
+        .expect("register shard");
+    }
+
     pub fn setup() -> (RouterStore, Principal, GraphId) {
         let store = RouterStore::new();
         store.init_from_args(&RouterInitArgs {
@@ -164,6 +180,12 @@ pub(crate) mod catalog_test_support {
         auth::grant_admins(&[admin]);
         register_graph(&store, admin, GRAPH);
         let graph_id = store.resolve_graph_id(GRAPH).expect("graph id");
+        (store, admin, graph_id)
+    }
+
+    pub fn setup_with_shard(shard_id: ShardId) -> (RouterStore, Principal, GraphId) {
+        let (store, admin, graph_id) = setup();
+        register_shard(&store, admin, shard_id);
         (store, admin, graph_id)
     }
 }

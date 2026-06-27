@@ -1,7 +1,7 @@
 # Gleaph GQL extension syntax
 
-Last updated: 2026-06-26
-Anchor timestamp: 2026-06-26 06:32:22 UTC +0000
+Last updated: 2026-06-27
+Anchor timestamp: 2026-06-27 10:59:48 UTC +0000
 
 ## Status
 
@@ -36,17 +36,17 @@ semantics.
 
 ## Syntax classes
 
-| Class                         | Public shape                                                              | Status                                                                                                                                                          | Owner of meaning                                                     |
-| ----------------------------- | ------------------------------------------------------------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------- |
-| IC value type                 | `IC.PRINCIPAL`                                                            | Implemented                                                                                                                                                     | `gleaph-gql-ic` value extension                                      |
-| IC runtime function           | `MSG_CALLER()`                                                            | Implemented                                                                                                                                                     | Graph execution context                                              |
-| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | Planned target                                                                                                                                                  | Router schema/catalog + Graph edge payload execution                 |
-| Shortest-path cost            | `COST BY e.distance`                                                      | Planned target                                                                                                                                                  | Graph query planner/executor                                         |
-| Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface                                                                                                                               | Graph query executor                                                 |
-| Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                               | Graph edge storage/execution                                         |
-| Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                               | Planner fusion + Graph edge payload executor                         |
-| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for leading `DISTANCE AS` and `SCORE AS` on exact-scan cosine indexes; `SCORE AS` rejected for distance-only metrics; non-leading `SEARCH`, edge subjects, and `WHERE` remain planned | Router vector-index catalog + vector canister + Graph seed hydration |
-| Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                                                                                                                                     | Graph mutation executor / Router orchestration                       |
+| Class                         | Public shape                                                              | Status                                                                                                                                                                                                                                                                                               | Owner of meaning                                                                            |
+| ----------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
+| IC value type                 | `IC.PRINCIPAL`                                                            | Implemented                                                                                                                                                                                                                                                                                          | `gleaph-gql-ic` value extension                                                             |
+| IC runtime function           | `MSG_CALLER()`                                                            | Implemented                                                                                                                                                                                                                                                                                          | Graph execution context                                                                     |
+| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | Planned target                                                                                                                                                                                                                                                                                       | Router schema/catalog + Graph edge payload execution                                        |
+| Shortest-path cost            | `COST BY e.distance`                                                      | Planned target                                                                                                                                                                                                                                                                                       | Graph query planner/executor                                                                |
+| Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph query executor                                                                        |
+| Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph edge storage/execution                                                                |
+| Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Planner fusion + Graph edge payload executor                                                |
+| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, and non-leading `SEARCH` inner-joined on a bound vertex; `SCORE AS` rejected for distance-only metrics; `WHERE`, edge subjects, nested/multiple search, and correlated `FOR`/`LIMIT` remain planned | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
+| Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                                                                                                                                                                                                                                                                          | Graph mutation executor / Router orchestration                                              |
 
 ## Namespace policy
 
@@ -294,7 +294,7 @@ be implied by the initial syntax.
 
 ### Target vector-search syntax
 
-**Status:** Parser and planner representation implemented. Router lowering to the existing vector search API is implemented for the narrow accepted shape: a leading `NodeScan(variable = d, label: optional)` immediately followed by `PlanOp::Search { binding = d, provider: VectorIndex, output: DISTANCE AS alias or SCORE AS alias }`, vertex-only, no `WHERE`. `SCORE AS` is accepted only for indexes whose metric exposes a score (currently exact-scan `Cosine`, `nlist == 1`); it is rejected for distance-only metrics such as `L2Squared`. Unsupported shapes (non-leading `SEARCH`, edge subjects, `WHERE` filtering, multi-graph `SEARCH`, or any mutation tail) fail closed with an explicit `InvalidArgument` error.
+**Status:** Parser and planner representation implemented. Router lowering to the existing vector search API is implemented for the narrow accepted shape: a leading `NodeScan(variable = d, label: optional)` immediately followed by `PlanOp::Search { binding = d, provider: VectorIndex, output: DISTANCE AS alias or SCORE AS alias }`, and one top-level non-leading `PlanOp::Search` after preceding graph operators have bound the vertex variable. Both shapes are vertex-only and reject `WHERE`. `SCORE AS` is accepted only for indexes whose metric exposes a score (currently exact-scan `Cosine`, `nlist == 1`); it is rejected for distance-only metrics such as `L2Squared`. Unsupported shapes (multiple `SEARCH`, nested `SEARCH`, edge subjects, `WHERE` filtering, correlated `FOR`/`LIMIT`, or any mutation tail) fail closed with an explicit `InvalidArgument` error.
 
 Current runtime exposes vector search through Router Candid API `vector_search(RouterVectorSearchRequest)`.
 
@@ -320,7 +320,9 @@ neighborhood.
 The `SEARCH` binding variable must be a node or relationship variable introduced by the enclosing
 `MATCH` / `OPTIONAL MATCH` pattern.
 
-Initial implementation should start with the simplest shape:
+Initial implementation covers two shapes.
+
+The simplest leading shape:
 
 ```gql
 MATCH (d:Document)
@@ -332,8 +334,22 @@ MATCH (d:Document)
 RETURN d, similarity
 ```
 
-More complex patterns can be staged after the planner can reason about the interaction between vector
-candidate generation, post-filtering, and traversal:
+And one non-leading shape where the search variable is bound by preceding graph operators:
+
+```gql
+MATCH (a:Author)-[:WROTE]->(d:Document)
+SEARCH d IN (
+  VECTOR INDEX document_embedding
+  FOR $query
+  LIMIT 10
+) SCORE AS similarity
+RETURN a, d, similarity
+ORDER BY similarity DESC
+```
+
+More complex patterns — multiple `SEARCH` operators, nested `SEARCH`, correlated `FOR`/`LIMIT`,
+`SEARCH ... WHERE`, and edge subjects — can be staged after the planner can reason about the
+interaction between vector candidate generation, post-filtering, and traversal:
 
 ```gql
 MATCH (u:User { id: $user_id })-[e:LIKED]->(d:Document)
@@ -402,27 +418,42 @@ post-filters.
 
 Slice 3 lowers a leading `NodeScan(variable = d, label: optional)` followed by `PlanOp::Search`
 to the existing Router/vector-index API and then dispatches the remaining graph-tail plan from
-row-shaped vector-search seeds. The Router:
+row-shaped vector-search seeds. Slice 5 lowers one top-level non-leading `PlanOp::Search` to a
+Router-resolved global top-k relation that is partitioned by live shard and inner-joined against the
+already-bound vertex rows in Graph execution. The Router:
 
 1. Resolves the embedding name from `VECTOR INDEX <name>` against the Router catalog.
-2. Evaluates `FOR $query` and `LIMIT n` from literals or parameters.
-3. Calls the existing `router.vector_search(...)` to obtain hits.
-4. Builds per-shard row-shaped seeds carrying the matched vertex binding and the
-   `DISTANCE AS` scalar alias.
-5. Strips the `NodeScan + Search` prefix and dispatches the tail plan to graph shards with the
-   row-shaped seeds.
+2. Evaluates `FOR $query` and `LIMIT n` from literals or parameters; both must be row-invariant.
+3. Calls the existing `router.vector_search(...)` exactly once per query to obtain hits.
+4. Leading and non-leading search share the same derived-index staleness contract: a hit whose
+   owning shard is no longer live is ignored rather than failing the query. The remaining hits form
+   the global top-k relation according to the configured metric.
+5. For a leading search, builds per-shard row-shaped seeds carrying the matched vertex binding and the
+   `DISTANCE AS` / `SCORE AS` scalar alias; strips the `NodeScan + Search` prefix and dispatches the
+   tail plan to graph shards with the row-shaped seeds.
+6. For a non-leading search, converts raw hits to finite user-visible scalar values, partitions them
+   by owning shard, and attaches an explicit per-shard resolved relation to the normal read dispatch;
+   shards with no local hit receive an explicit empty relation, so empty hits still run any remaining
+   plan (e.g., a global aggregate returns one zero row). Graph executes the operator as an inner
+   join/filter (`input_rows[d] = H.subject`) that preserves row multiplicity and binds the scalar
+   alias.
 
 For this slice the accepted shape is intentionally narrow:
 
 - vertex-only (`d` must be a vertex binding);
-- leading `NodeScan + Search` only;
+- one `SEARCH` per plan, at the top level (no nested or repeated search);
+- leading `NodeScan + Search` or one non-leading `SEARCH` after a bound vertex;
+- non-leading `SEARCH` requires row-invariant `FOR` and `LIMIT` (literals or parameters);
 - `DISTANCE AS` accepted for all metrics;
 - `SCORE AS` rejected when the metric has no natural score (e.g. `L2Squared`);
 - no `WHERE` in-index filtering;
 - no edge subjects;
-- no multi-graph `SEARCH`.
+- no correlated/per-row top-k or `FOR`/`LIMIT`;
+- no mutation tail;
+- hits for non-live shards are ignored consistently for both leading and non-leading search.
 
-A raw `PlanOp::Search` that reaches the graph executor fails closed with an explicit error.
+A raw `PlanOp::Search` that reaches the graph executor without matching Router-resolved context fails
+closed with an explicit error.
 
 This is an internal execution detail. Public GQL should not expose `CALL GLEAPH.VECTOR_SEARCH(...)` as
 the primary syntax.
@@ -505,16 +536,16 @@ This expresses the intended flow:
 
 ## Implementation staging
 
-| Stage | Scope                                                                                                  | Status                                                                                                        |
-| ----- | ------------------------------------------------------------------------------------------------------ | ------------------------------------------------------------------------------------------------------------- |
-| 1     | Document the dialect contract and keep existing behavior unchanged                                     | Implemented                                                                                                   |
-| 2     | Add the Rust extension manifest for canonical extension names, classes, status, owner, and doc anchors | Implemented                                                                                                   |
-| 3     | Add `SEARCH` parser/planner representation without backend-specific storage details                    | Implemented                                                                                                   |
+| Stage | Scope                                                                                                  | Status                                                                                                               |
+| ----- | ------------------------------------------------------------------------------------------------------ | -------------------------------------------------------------------------------------------------------------------- |
+| 1     | Document the dialect contract and keep existing behavior unchanged                                     | Implemented                                                                                                          |
+| 2     | Add the Rust extension manifest for canonical extension names, classes, status, owner, and doc anchors | Implemented                                                                                                          |
+| 3     | Add `SEARCH` parser/planner representation without backend-specific storage details                    | Implemented                                                                                                          |
 | 4     | Add Router lowering from vector `SEARCH` to the existing vector search API                             | Implemented for leading `NodeScan + Search` prefix, vertex-only, no `WHERE`, `DISTANCE AS` and `SCORE AS` for cosine |
-| 5     | Add result hydration from vector hits to graph vertex bindings                                         | Implemented via row-shaped `SeedBindingsWire`                                                                 |
-| 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Implemented: shape validated against metric; `SCORE AS` works for exact-scan `Cosine`, rejected for `L2Squared` |
-| 7     | Add inline edge property schema syntax and lower `e.inline_field` to existing edge-payload reads       | Planned                                                                                                       |
-| 8     | Deprecate daily-query use of `GLEAPH.WEIGHT` where ordinary inline property access is available        | Planned                                                                                                       |
+| 5     | Add result hydration from vector hits to graph vertex bindings                                         | Implemented via row-shaped `SeedBindingsWire`                                                                        |
+| 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Implemented: shape validated against metric; `SCORE AS` works for exact-scan `Cosine`, rejected for `L2Squared`      |
+| 7     | Add inline edge property schema syntax and lower `e.inline_field` to existing edge-payload reads       | Planned                                                                                                              |
+| 8     | Deprecate daily-query use of `GLEAPH.WEIGHT` where ordinary inline property access is available        | Planned                                                                                                              |
 
 Every stage that changes public syntax must update this document and add parser/planner/executor tests.
 

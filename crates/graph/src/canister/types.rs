@@ -20,6 +20,22 @@ pub struct E2eInsertDirectedEdgeArgs {
     pub target_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
 }
 
+/// Arguments for [`super::handlers::e2e_insert_vertex_with_label`] (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eInsertVertexWithLabelArgs {
+    pub label_id: u16,
+}
+
+/// Arguments for [`super::handlers::e2e_insert_directed_edge_with_label`] (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eInsertDirectedEdgeWithLabelArgs {
+    pub source_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    pub target_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    pub edge_label_id: u16,
+}
+
 /// Arguments for [`super::handlers::e2e_insert_vertex_with_property`] (PocketIC E2E only).
 #[cfg(feature = "pocket-ic-e2e")]
 #[derive(CandidType, Deserialize, Clone, Debug)]

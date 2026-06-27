@@ -76,6 +76,10 @@ pub struct ExecutePlanArgs {
     /// (always `None`/empty) until delete-spanning incarnation fencing activates dispatch, so
     /// production shards never receive a non-empty catalog and vector sync stays inert.
     pub indexed_embeddings: Option<crate::vector_index::IndexedEmbeddingCatalog>,
+    /// Router-resolved non-leading vector search hits for `PlanOp::Search` (ADR 0034 Slice 5).
+    /// Per-shard shard-local relation containing the bound vertex id and the user-visible scalar.
+    /// `None` for plans without a supported non-leading `SEARCH`.
+    pub resolved_search_blob: Option<Vec<u8>>,
 }
 
 /// One cross-shard uniqueness claim dispatched to the shard for `Acquire` (ADR 0030 slice 5).
@@ -394,6 +398,27 @@ pub struct SeedBindingsWire {
     pub rows: Vec<SeedRowWire>,
 }
 
+/// One vertex hit inside a Router-resolved non-leading `SEARCH` relation (ADR 0034 Slice 5).
+/// Carries only the provider-neutral shard-local vertex id and the user-visible scalar value.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ResolvedSearchVertexHitWire {
+    pub local_vertex_id: u32,
+    pub value: f64,
+}
+
+/// Router-resolved relation for one non-leading `PlanOp::Search` (ADR 0034 Slice 5).
+///
+/// `binding` names the vertex variable that must already be bound when the operator executes.
+/// `output_alias` names the scalar binding to add to each surviving row. The Graph executor joins
+/// `input_rows[d]` against `vertex_hits.local_vertex_id` and binds `output_alias` to the matching
+/// `value`.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ResolvedSearchWire {
+    pub binding: String,
+    pub output_alias: String,
+    pub vertex_hits: Vec<ResolvedSearchVertexHitWire>,
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -571,10 +596,126 @@ mod tests {
                     dims: 16,
                 }],
             }),
+            resolved_search_blob: None,
         };
         let bytes = Encode!(&args).expect("encode");
         let decoded: ExecutePlanArgs = Decode!(&bytes, ExecutePlanArgs).expect("decode");
         assert_eq!(args, decoded);
+    }
+
+    #[test]
+    fn resolved_search_wire_roundtrip() {
+        let wire = ResolvedSearchWire {
+            binding: "d".into(),
+            output_alias: "similarity".into(),
+            vertex_hits: vec![
+                ResolvedSearchVertexHitWire {
+                    local_vertex_id: 7,
+                    value: 0.75,
+                },
+                ResolvedSearchVertexHitWire {
+                    local_vertex_id: 42,
+                    value: f64::NEG_INFINITY,
+                },
+            ],
+        };
+        let bytes = Encode!(&wire).expect("encode");
+        let decoded: ResolvedSearchWire = Decode!(&bytes, ResolvedSearchWire).expect("decode");
+        assert_eq!(decoded, wire);
+    }
+
+    #[test]
+    fn resolved_search_wire_empty_hits_roundtrip() {
+        let wire = ResolvedSearchWire {
+            binding: "d".into(),
+            output_alias: "distance".into(),
+            vertex_hits: Vec::new(),
+        };
+        let bytes = Encode!(&wire).expect("encode");
+        let decoded: ResolvedSearchWire = Decode!(&bytes, ResolvedSearchWire).expect("decode");
+        assert_eq!(decoded, wire);
+    }
+
+    #[test]
+    fn execute_plan_args_legacy_blob_without_resolved_search_decodes_as_none() {
+        #[derive(CandidType, Serialize)]
+        struct LegacyExecutePlanArgs {
+            target_shard_id: ShardId,
+            element_id_encoding_key: [u8; 16],
+            mutation_id: Option<MutationId>,
+            plan_blob: Vec<u8>,
+            params_blob: Vec<u8>,
+            mode: GqlExecutionMode,
+            seed_bindings_blob: Option<Vec<u8>>,
+            resolved_labels: Option<ResolvedLabelTable>,
+            resolved_properties: Option<ResolvedPropertyTable>,
+            indexed_properties: Option<crate::index::IndexedPropertyCatalog>,
+            unique_claims: Option<Vec<UniqueClaimDispatch>>,
+            constrained_properties: Option<Vec<ConstrainedPropertyDispatch>>,
+            local_unique_claims: Option<Vec<UniqueClaimDispatch>>,
+            local_constrained_properties: Option<Vec<ConstrainedPropertyDispatch>>,
+            indexed_embeddings: Option<crate::vector_index::IndexedEmbeddingCatalog>,
+        }
+        let legacy = LegacyExecutePlanArgs {
+            target_shard_id: ShardId::new(0),
+            element_id_encoding_key: ElementIdEncodingKey::host_test_fixture().0,
+            mutation_id: None,
+            plan_blob: vec![1, 2],
+            params_blob: vec![3],
+            mode: GqlExecutionMode::Query,
+            seed_bindings_blob: None,
+            resolved_labels: None,
+            resolved_properties: None,
+            indexed_properties: None,
+            unique_claims: None,
+            constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
+            indexed_embeddings: None,
+        };
+        let bytes = Encode!(&legacy).expect("encode legacy");
+        let decoded: ExecutePlanArgs = Decode!(&bytes, ExecutePlanArgs).expect("decode legacy");
+        assert_eq!(decoded.resolved_search_blob, None);
+    }
+
+    #[test]
+    fn execute_plan_args_with_resolved_search_blob_roundtrip() {
+        let search_wire = ResolvedSearchWire {
+            binding: "d".into(),
+            output_alias: "similarity".into(),
+            vertex_hits: vec![ResolvedSearchVertexHitWire {
+                local_vertex_id: 7,
+                value: 0.75,
+            }],
+        };
+        let search_blob = Encode!(&search_wire).expect("search encode");
+        let args = ExecutePlanArgs {
+            target_shard_id: ShardId::new(0),
+            element_id_encoding_key: ElementIdEncodingKey::host_test_fixture().0,
+            mutation_id: None,
+            plan_blob: vec![1, 2],
+            params_blob: vec![3],
+            mode: GqlExecutionMode::Query,
+            seed_bindings_blob: None,
+            resolved_labels: None,
+            resolved_properties: None,
+            indexed_properties: None,
+            unique_claims: None,
+            constrained_properties: None,
+            local_unique_claims: None,
+            local_constrained_properties: None,
+            indexed_embeddings: None,
+            resolved_search_blob: Some(search_blob),
+        };
+        let bytes = Encode!(&args).expect("encode");
+        let decoded: ExecutePlanArgs = Decode!(&bytes, ExecutePlanArgs).expect("decode");
+        assert_eq!(decoded.resolved_search_blob, args.resolved_search_blob);
+        let decoded_search: ResolvedSearchWire = Decode!(
+            decoded.resolved_search_blob.as_ref().unwrap(),
+            ResolvedSearchWire
+        )
+        .expect("decode inner search wire");
+        assert_eq!(decoded_search, search_wire);
     }
 
     #[test]

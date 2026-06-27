@@ -16,7 +16,8 @@ use gleaph_gql::ast::{CmpOp, Expr, ExprKind, ObjectName};
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::plan::{
     EdgePayloadPredicate, EdgeVectorMetric, EdgeVectorPredicate, PhysicalPlan, PlanOp,
-    ProjectColumn, PropertyAssignment, ScanValue, ShortestMode, ShortestPathCost, VarLenSpec,
+    ProjectColumn, PropertyAssignment, ScanValue, SearchOutputKind, SearchOutputPlan,
+    SearchProviderPlan, ShortestMode, ShortestPathCost, VarLenSpec,
 };
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::{
@@ -24,6 +25,7 @@ use gleaph_graph_kernel::entry::{
     Vertex, WeightEncoding,
 };
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, UniqueEffectOp, UniqueEffectReceipt};
+use gleaph_graph_kernel::plan_exec::{ResolvedSearchVertexHitWire, ResolvedSearchWire};
 use ic_stable_lara::VertexId;
 use std::collections::BTreeMap;
 use std::hint::black_box;
@@ -1858,6 +1860,131 @@ fn bench_graph_gql_ic_params_blob_decode() -> canbench_rs::BenchResult {
             .expect("decode");
         black_box(pmap.len())
     })
+}
+
+// --- ADR 0034 Slice 5: non-leading SEARCH join benches ---
+
+const SEARCH_JOIN_INPUT_M: usize = 1_000;
+const SEARCH_JOIN_INPUT_L: usize = 10_000;
+const SEARCH_JOIN_HITS_S: usize = 10;
+const SEARCH_JOIN_HITS_M: usize = 100;
+
+fn setup_search_join_graph(store: &GraphStore, vertex_count: usize) -> Vec<VertexId> {
+    (0..vertex_count)
+        .map(|_| store.insert_vertex().expect("insert search join vertex"))
+        .collect()
+}
+
+fn search_join_plan() -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "d".into(),
+            label: None,
+            property_projection: None,
+        },
+        PlanOp::Search {
+            binding: "d".into(),
+            provider: SearchProviderPlan::VectorIndex {
+                index_name: vec!["bench_vec".into()],
+                query: Expr::new(ExprKind::Literal(Value::Bytes(vec![0; 12]))),
+                limit: Expr::int(SEARCH_JOIN_HITS_M as i64),
+                filter: None,
+            },
+            output: SearchOutputPlan {
+                kind: SearchOutputKind::Distance,
+                alias: "distance".into(),
+            },
+        },
+        PlanOp::Project {
+            columns: vec![],
+            distinct: false,
+        },
+    ])
+}
+
+fn build_resolved_search_for_hits(hits: &[VertexId], start_value: f64) -> ResolvedSearchWire {
+    ResolvedSearchWire {
+        binding: "d".into(),
+        output_alias: "distance".into(),
+        vertex_hits: hits
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| ResolvedSearchVertexHitWire {
+                local_vertex_id: u32::from(v),
+                value: start_value + i as f64 * 0.01,
+            })
+            .collect(),
+    }
+}
+
+fn bench_search_join(
+    input_count: usize,
+    hit_count: usize,
+    scope: &'static str,
+) -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let vertices = setup_search_join_graph(&store, input_count);
+    let hits: Vec<_> = vertices.iter().take(hit_count).copied().collect();
+    let resolved_search = build_resolved_search_for_hits(&hits, 1.0);
+    let plan = search_join_plan();
+    let execution = GqlExecutionContext {
+        resolved_search: Some(resolved_search),
+        ..Default::default()
+    };
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(scope);
+        let result = pollster::block_on(execute_plan_query(
+            black_box(&store),
+            black_box(&plan),
+            &params(),
+            None,
+            execution.clone(),
+        ))
+        .expect("search join plan");
+        assert_eq!(result.rows.len(), hit_count);
+        black_box(result.rows.len())
+    })
+}
+
+/// 1_000 input rows, 10 resolved search hits.
+#[bench(raw)]
+fn bench_graph_search_join_1k_input_10_hits() -> canbench_rs::BenchResult {
+    bench_search_join(
+        SEARCH_JOIN_INPUT_M,
+        SEARCH_JOIN_HITS_S,
+        "search_join_1k_input_10_hits",
+    )
+}
+
+/// 1_000 input rows, 100 resolved search hits.
+#[bench(raw)]
+fn bench_graph_search_join_1k_input_100_hits() -> canbench_rs::BenchResult {
+    bench_search_join(
+        SEARCH_JOIN_INPUT_M,
+        SEARCH_JOIN_HITS_M,
+        "search_join_1k_input_100_hits",
+    )
+}
+
+/// 10_000 input rows, 10 resolved search hits.
+#[bench(raw)]
+fn bench_graph_search_join_10k_input_10_hits() -> canbench_rs::BenchResult {
+    bench_search_join(
+        SEARCH_JOIN_INPUT_L,
+        SEARCH_JOIN_HITS_S,
+        "search_join_10k_input_10_hits",
+    )
+}
+
+/// 10_000 input rows, 100 resolved search hits.
+#[bench(raw)]
+fn bench_graph_search_join_10k_input_100_hits() -> canbench_rs::BenchResult {
+    bench_search_join(
+        SEARCH_JOIN_INPUT_L,
+        SEARCH_JOIN_HITS_M,
+        "search_join_10k_input_100_hits",
+    )
 }
 
 // --- Delete benches (ADR 0021 resumable tombstone-first DETACH DELETE) ---

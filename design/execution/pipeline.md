@@ -22,12 +22,14 @@ Flow:
 flowchart LR
     A[ExecutePlanArgs] --> B[Decode plan + params]
     B --> C[Seed rows<br/>optional]
+    B --> G[Resolved search relation<br/>optional]
     C --> D[execute_ops]
+    G --> D
     D --> E[Plan rows]
     E --> F[Materialize]
 ```
 
-`QueryArena::reset()` at query start; thread-local pool reused across operators within one query.
+`ExecutePlanArgs.resolved_search_blob` carries the Router-resolved non-leading `SEARCH` relation for the target shard. `QueryArena::reset()` at query start; thread-local pool reused across operators within one query.
 
 ## PlanRow
 
@@ -57,6 +59,16 @@ Optimizations layered in executor (not only planner):
 - Streaming expand when later ops preserve cardinality
 - Indexed hash join merge when layouts match
 - Path-only shortest-path rows with shared `PathBinding` arc
+
+### `PlanOp::Search`
+
+The Graph executor supports one top-level non-leading `PlanOp::Search` per plan when the Router provides a `resolved_search_blob`:
+
+- Decode the blob into `ResolvedSearchWire` at plan-entry time and build an invocation-local lookup from local vertex id to the user-visible scalar value.
+- Validate that the wire binding and alias match the plan, that all values are finite, that there are no duplicate vertex ids, and that the hit count does not exceed `MAX_VECTOR_SEARCH_TOP_K`.
+- Execute as an inner join/filter against the current row set: rows whose bound vertex variable is present in the lookup survive, the scalar alias is bound to the lookup value, and row multiplicity is preserved.
+- If the bound vertex is absent from a row the row is dropped (inner-join semantics).
+- A `PlanOp::Search` without a decoded `resolved_search_blob` fails closed because the Router has not lowered it.
 
 ## Materialization
 

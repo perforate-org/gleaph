@@ -2,8 +2,8 @@
 
 Date: 2026-06-25
 Status: accepted (syntax design; Rust manifest implemented; SEARCH parser/planner and Router lowering for the accepted shape implemented; remaining syntax staged by feature)
-Last revised: 2026-06-26
-Anchor timestamp: 2026-06-26 06:32:22 UTC +0000
+Last revised: 2026-06-27
+Anchor timestamp: 2026-06-27 10:59:48 UTC +0000
 
 > **Summary.** Gleaph needs a coherent public GQL dialect surface for IC values, graph-local inline
 > edge data, vector search, shortest-path costs, and operational procedures. This ADR accepts a
@@ -178,7 +178,7 @@ Planned migration path:
    change behavior (done).
 4. Keep existing `GLEAPH.WEIGHT` / `GLEAPH.VECTOR.*` behavior while adding ordinary-property inline
    syntax in schema/planner/executor slices.
-5. Add `SEARCH` parser/planner support as a Gleaph dialect feature (done). Router lowering to the existing vector search API is implemented for the narrow leading `NodeScan + Search` prefix, vertex-only, no `WHERE`. `DISTANCE AS` is accepted for distance-only metrics and `SCORE AS` is accepted for exact-scan cosine indexes (`nlist == 1`); `SCORE AS` is rejected for metrics that have no natural score (e.g. `L2Squared`). Cosine partition-page scan (`nlist > 1`) is fail-closed in the vector canister in this slice. Non-leading `SEARCH`, edge subjects, and in-index `WHERE` remain planned.
+5. Add `SEARCH` parser/planner support as a Gleaph dialect feature (done). Router lowering to the existing vector search API is implemented for the narrow leading `NodeScan + Search` prefix and for one top-level non-leading `SEARCH` after a bound vertex, vertex-only, no `WHERE`. `DISTANCE AS` is accepted for distance-only metrics and `SCORE AS` is accepted for exact-scan cosine indexes (`nlist == 1`); `SCORE AS` is rejected for metrics that have no natural score (e.g. `L2Squared`). Cosine partition-page scan (`nlist > 1`) is fail-closed in the vector canister in this slice. Non-leading `SEARCH` semantics are exactly `input rows INNER JOIN global vector top-k` on the bound vertex; vector search runs once per query, global top-k is computed before the join, and row multiplicity is preserved. Correlated/per-row `FOR`/`LIMIT`, candidate-restricted top-k, nested/multiple search, `SEARCH ... WHERE`, and edge subjects remain planned.
 6. Mark procedure-shaped vector search as internal/escape-hatch only if it is ever added.
 
 ## Design Documentation Impact

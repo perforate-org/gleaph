@@ -41,6 +41,7 @@ See [execution/operators.md](../execution/operators.md) for the full list. Group
 | Traverse | `Expand`, `ExpandFilter`, `ShortestPath` | `execute_expand`, path search |
 | Join | `HashJoin`, `CartesianProduct`, `WorstCaseOptimalJoin` | join helpers |
 | GQL control | `Let`, `For`, `OptionalMatch`, `UseGraph` | control flow |
+| Vector search | `Search` | `execute_ops` resolved-search join |
 | Output | `Project`, `Sort`, `Limit`, `TopK`, `Aggregate`, `Materialize` | projection / agg |
 | DML | `InsertVertex`, `SetProperties`, `DeleteVertex`, … | mutation executor |
 
@@ -52,6 +53,18 @@ When router supplies `seed_bindings_blob`:
 - Binds listed **local** `VertexId`s on the target shard only.
 
 Plan must be written so remaining ops are valid given seeded rows (planner + router `SeedProbe` agree on property/value).
+
+## Router resolved-search contract
+
+For a non-leading `PlanOp::Search` the Router supplies `ExecutePlanArgs.resolved_search_blob`:
+
+- The blob is a per-shard `ResolvedSearchWire` produced by the Router from a single global vector top-k call.
+- The wire carries the bound vertex variable name, the scalar output alias, and the finite, de-duplicated shard-local vertex hits with their user-visible scalar values.
+- Shards with no local hit receive an explicit empty wire, not an absent field.
+- The Graph executor decodes the wire, validates it against the `PlanOp::Search` binding/alias, and executes the operator as an inner join: input rows whose bound vertex matches a hit survive and get the scalar alias bound.
+- A `PlanOp::Search` that reaches the Graph executor without a matching resolved relation fails closed with `PlanQueryError::UnsupportedOp`.
+
+For a leading `NodeScan + Search` prefix the Router strips the prefix and dispatches the tail plan with row-shaped `seed_bindings_blob`; the Graph executor never sees a raw `PlanOp::Search`.
 
 ## Federation interaction
 

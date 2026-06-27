@@ -10,7 +10,8 @@ use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, Ve
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::gql_dialect::MSG_CALLER;
 use gleaph_graph_kernel::plan_exec::{
-    ConstrainedPropertyDispatch, ResolvedLabelTable, ResolvedPropertyTable, UniqueClaimDispatch,
+    ConstrainedPropertyDispatch, ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire,
+    UniqueClaimDispatch,
 };
 
 /// Carries data that is fixed for one GQL execution (adhoc, prepared, or plan replay).
@@ -39,6 +40,10 @@ pub struct GqlExecutionContext {
     /// 10): a delete/remove of such an element frees its value directly in the local unique table
     /// (owner-matched) instead of pinning an outbox `Release`. Empty otherwise.
     pub local_constrained_properties: Vec<ConstrainedPropertyDispatch>,
+    /// Router-resolved non-leading `SEARCH` relation (ADR 0034 Slice 5). When present, the single
+    /// top-level `PlanOp::Search` joins input rows against this lookup. Kept as the raw wire so the
+    /// executor builds the per-invocation hash lookup at query time.
+    pub resolved_search: Option<ResolvedSearchWire>,
 }
 
 impl GqlExecutionContext {

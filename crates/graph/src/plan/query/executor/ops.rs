@@ -1,11 +1,13 @@
 //! Plan operator dispatch (`execute_ops_from`).
 
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::pin::Pin;
 
 use gleaph_gql::Value;
 use gleaph_gql_planner::plan::{InlineProcedureScope, PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
+use gleaph_graph_kernel::plan_exec::ResolvedSearchWire;
+use gleaph_graph_kernel::vector_index::MAX_VECTOR_SEARCH_TOP_K;
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -31,6 +33,68 @@ use super::{
     gleaph_sequence_order_after_expand, gleaph_sequence_sort, limit_value, plan_op_name,
     previous_op_binds_edge, project_row, row_matches_all, sort_rows,
 };
+
+/// Validate and build the invocation-local lookup for a Router-resolved non-leading `SEARCH`.
+///
+/// The wire is bounded by `MAX_VECTOR_SEARCH_TOP_K` at the Router, so this is O(hits) and the
+/// resulting map size is capped. This function re-checks the bound at the Graph ingress as a
+/// fail-closed guard against oversized or malicious payloads.
+fn build_search_lookup(
+    search_binding: &str,
+    search_alias: &str,
+    wire: &ResolvedSearchWire,
+) -> Result<BTreeMap<u32, f64>, PlanQueryError> {
+    if wire.vertex_hits.len() > MAX_VECTOR_SEARCH_TOP_K as usize {
+        return Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!(
+                "resolved SEARCH has {} hits, exceeding the maximum allowed {}",
+                wire.vertex_hits.len(),
+                MAX_VECTOR_SEARCH_TOP_K
+            ),
+        });
+    }
+    if wire.binding != search_binding {
+        return Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!(
+                "resolved SEARCH binding '{}' does not match plan binding '{}'",
+                wire.binding, search_binding
+            ),
+        });
+    }
+    if wire.output_alias != search_alias {
+        return Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!(
+                "resolved SEARCH alias '{}' does not match plan alias '{}'",
+                wire.output_alias, search_alias
+            ),
+        });
+    }
+    if wire.binding.is_empty() || wire.output_alias.is_empty() {
+        return Err(PlanQueryError::InvalidExpressionValue {
+            expression: "resolved SEARCH binding and alias must be non-empty".into(),
+        });
+    }
+    let mut lookup = BTreeMap::new();
+    for hit in &wire.vertex_hits {
+        if !hit.value.is_finite() {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: format!(
+                    "resolved SEARCH value for vertex {} is non-finite",
+                    hit.local_vertex_id
+                ),
+            });
+        }
+        if lookup.insert(hit.local_vertex_id, hit.value).is_some() {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: format!(
+                    "resolved SEARCH contains duplicate vertex id {}",
+                    hit.local_vertex_id
+                ),
+            });
+        }
+    }
+    Ok(lookup)
+}
 
 pub(crate) async fn execute_ops(
     ctx: &ExecuteCtx<'_>,
@@ -881,10 +945,45 @@ pub(crate) fn execute_ops_from<'a>(
                     let written = subplan_written_vars(sub_plan);
                     execute_optional_match(ctx, rows, sub_plan, &written).await?
                 }
-                PlanOp::Search { .. } => {
-                    return Err(PlanQueryError::UnsupportedOp(
-                        "SEARCH is parsed and planned but Router lowering is not implemented yet",
-                    ));
+                PlanOp::Search {
+                    binding,
+                    provider: _,
+                    output,
+                } => {
+                    let Some(wire) = ctx.execution.resolved_search.as_ref() else {
+                        return Err(PlanQueryError::UnsupportedOp(
+                            "SEARCH is parsed and planned but Router lowering is not implemented yet",
+                        ));
+                    };
+                    let lookup =
+                        build_search_lookup(binding.as_ref(), output.alias.as_ref(), wire)?;
+                    rows.into_iter()
+                        .filter_map(|row| match row.get(binding.as_ref()) {
+                            None => None,
+                            Some(PlanBinding::Vertex(vertex_id)) => {
+                                let local_id = u32::from(*vertex_id);
+                                lookup.get(&local_id).map(|&value| {
+                                    if row.contains_key(output.alias.as_ref()) {
+                                        return Err(PlanQueryError::InvalidExpressionValue {
+                                            expression: format!(
+                                                "SEARCH output alias '{}' is already bound",
+                                                output.alias
+                                            ),
+                                        });
+                                    }
+                                    let mut out = row.clone();
+                                    out.insert(
+                                        output.alias.to_string(),
+                                        PlanBinding::Value(Value::Float64(value)),
+                                    );
+                                    Ok(out)
+                                })
+                            }
+                            Some(_) => Some(Err(PlanQueryError::InvalidExpressionValue {
+                                expression: format!("SEARCH binding '{}' is not a vertex", binding),
+                            })),
+                        })
+                        .collect::<Result<Vec<_>, _>>()?
                 }
                 PlanOp::InlineProcedureCall {
                     sub_plan,
@@ -912,6 +1011,7 @@ pub(crate) fn execute_ops_from<'a>(
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
+    use gleaph_graph_kernel::vector_index::MAX_VECTOR_SEARCH_TOP_K;
 
     #[test]
     fn executes_planner_use_graph_as_single_store_pass_through() {
@@ -1822,6 +1922,497 @@ mod tests {
             !result.rows[0].contains_key("m"),
             "internal MATCH variable must not leak from OPTIONAL CALL miss: {:?}",
             result.rows[0]
+        );
+    }
+
+    #[test]
+    fn search_join_empty_resolved_relation_runs_remaining_plan() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["EmptySearchDoc"], [("title", Value::Text("any".into()))])
+            .expect("insert any");
+
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "d".into(),
+                label: Some("EmptySearchDoc".into()),
+                property_projection: None,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: Expr::var("query"),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Score,
+                    alias: "similarity".into(),
+                },
+            },
+            PlanOp::Aggregate {
+                group_by: Vec::new(),
+                aggregates: vec![agg_spec(AggregateFunc::CountStar, None, false, Some("c"))],
+            },
+            PlanOp::Project {
+                columns: vec![project(
+                    Expr::new(ExprKind::Aggregate {
+                        func: AggregateFunc::CountStar,
+                        expr: None,
+                        expr2: None,
+                        distinct: false,
+                        order_by: None,
+                        filter: None,
+                    }),
+                    "c",
+                )],
+                distinct: false,
+            },
+        ]);
+
+        let ctx = GqlExecutionContext {
+            resolved_search: Some(ResolvedSearchWire {
+                binding: "d".into(),
+                output_alias: "similarity".into(),
+                vertex_hits: Vec::new(),
+            }),
+            ..GqlExecutionContext::default()
+        };
+
+        let result = store
+            .execute_plan_query(&plan, &params(), ctx)
+            .expect("empty search relation must still execute remaining plan");
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "global aggregate over empty join input must produce one row"
+        );
+        assert_eq!(
+            result.rows[0].get("c"),
+            Some(&Value::Int64(0)),
+            "count over empty search join must be 0"
+        );
+    }
+
+    #[test]
+    fn search_join_filters_non_hits_and_binds_score() {
+        let store = GraphStore::new();
+        let hit = store
+            .insert_vertex_named(["SearchJoinDoc"], [("title", Value::Text("hit".into()))])
+            .expect("insert hit");
+        store
+            .insert_vertex_named(["SearchJoinDoc"], [("title", Value::Text("miss".into()))])
+            .expect("insert miss");
+
+        let plan = plan(vec![
+            PlanOp::NodeScan {
+                variable: "d".into(),
+                label: Some("SearchJoinDoc".into()),
+                property_projection: None,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: Expr::var("query"),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Score,
+                    alias: "similarity".into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![
+                    project(prop("d", "title"), "title"),
+                    project(var("similarity"), "similarity"),
+                ],
+                distinct: false,
+            },
+        ]);
+
+        let ctx = GqlExecutionContext {
+            resolved_search: Some(ResolvedSearchWire {
+                binding: "d".into(),
+                output_alias: "similarity".into(),
+                vertex_hits: vec![ResolvedSearchVertexHitWire {
+                    local_vertex_id: u32::from(hit),
+                    value: 0.75,
+                }],
+            }),
+            ..GqlExecutionContext::default()
+        };
+
+        let result = store
+            .execute_plan_query(&plan, &params(), ctx)
+            .expect("search join");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("title"),
+            Some(&Value::Text("hit".into()))
+        );
+        assert_eq!(
+            result.rows[0].get("similarity"),
+            Some(&Value::Float64(0.75))
+        );
+    }
+
+    #[test]
+    fn search_join_preserves_row_multiplicity_for_same_hit() {
+        let store = GraphStore::new();
+        let d = store
+            .insert_vertex_named(
+                ["SearchMultiDoc"],
+                [("title", Value::Text("shared".into()))],
+            )
+            .expect("insert d");
+        let a1 = store
+            .insert_vertex_named(
+                ["SearchMultiAuthor"],
+                [("name", Value::Text("alice".into()))],
+            )
+            .expect("insert a1");
+        let a2 = store
+            .insert_vertex_named(["SearchMultiAuthor"], [("name", Value::Text("bob".into()))])
+            .expect("insert a2");
+        store
+            .insert_directed_edge_named(
+                a1,
+                d,
+                Some("SearchMultiWrote"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("edge a1->d");
+        store
+            .insert_directed_edge_named(
+                a2,
+                d,
+                Some("SearchMultiWrote"),
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("edge a2->d");
+
+        let plan = plan_gql(
+            "MATCH (a:SearchMultiAuthor)-[:SearchMultiWrote]->(d:SearchMultiDoc) \
+             SEARCH d IN (VECTOR INDEX doc_vec FOR $query LIMIT 10) SCORE AS similarity \
+             RETURN a.name AS author, similarity",
+        );
+
+        let ctx = GqlExecutionContext {
+            resolved_search: Some(ResolvedSearchWire {
+                binding: "d".into(),
+                output_alias: "similarity".into(),
+                vertex_hits: vec![ResolvedSearchVertexHitWire {
+                    local_vertex_id: u32::from(d),
+                    value: 0.9,
+                }],
+            }),
+            ..GqlExecutionContext::default()
+        };
+
+        let result = store
+            .execute_plan_query(&plan, &params(), ctx)
+            .expect("search join multiplicity");
+        assert_eq!(result.rows.len(), 2);
+        let authors: Vec<_> = result
+            .rows
+            .iter()
+            .map(|r| r.get("author").cloned().expect("author"))
+            .collect();
+        let mut expected = vec![Value::Text("alice".into()), Value::Text("bob".into())];
+        expected.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+        let mut got = authors.clone();
+        got.sort_by(|a, b| format!("{a:?}").cmp(&format!("{b:?}")));
+        assert_eq!(got, expected);
+        for row in &result.rows {
+            assert_eq!(row.get("similarity"), Some(&Value::Float64(0.9)));
+        }
+    }
+
+    #[test]
+    fn search_join_missing_binding_is_inner_join_miss() {
+        let store = GraphStore::new();
+        let plan = plan(vec![
+            PlanOp::Let {
+                bindings: vec![LetBinding {
+                    span: Span::DUMMY,
+                    variable: "other".into(),
+                    value: Expr::int(1),
+                }],
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: Expr::var("query"),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Score,
+                    alias: "similarity".into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![
+                    project(var("other"), "other"),
+                    project(var("similarity"), "similarity"),
+                ],
+                distinct: false,
+            },
+        ]);
+
+        let ctx = GqlExecutionContext {
+            resolved_search: Some(ResolvedSearchWire {
+                binding: "d".into(),
+                output_alias: "similarity".into(),
+                vertex_hits: vec![ResolvedSearchVertexHitWire {
+                    local_vertex_id: 999,
+                    value: 0.5,
+                }],
+            }),
+            ..GqlExecutionContext::default()
+        };
+
+        let result = store
+            .execute_plan_query(&plan, &params(), ctx)
+            .expect("search join miss");
+        assert!(result.rows.is_empty());
+    }
+
+    #[test]
+    fn search_join_non_vertex_binding_is_error() {
+        let store = GraphStore::new();
+        let plan = plan(vec![
+            PlanOp::Let {
+                bindings: vec![LetBinding {
+                    span: Span::DUMMY,
+                    variable: "d".into(),
+                    value: Expr::int(1),
+                }],
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: Expr::var("query"),
+                    limit: Expr::int(10),
+                    filter: None,
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Score,
+                    alias: "similarity".into(),
+                },
+            },
+        ]);
+
+        let ctx = GqlExecutionContext {
+            resolved_search: Some(ResolvedSearchWire {
+                binding: "d".into(),
+                output_alias: "similarity".into(),
+                vertex_hits: vec![ResolvedSearchVertexHitWire {
+                    local_vertex_id: 1,
+                    value: 0.5,
+                }],
+            }),
+            ..GqlExecutionContext::default()
+        };
+
+        let err = store
+            .execute_plan_query(&plan, &params(), ctx)
+            .expect_err("search non-vertex binding");
+        assert!(
+            err.to_string().contains("is not a vertex"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn search_join_rejects_mismatched_context() {
+        let store = GraphStore::new();
+        let plan = plan(vec![PlanOp::Search {
+            binding: "d".into(),
+            provider: SearchProviderPlan::VectorIndex {
+                index_name: vec!["doc_vec".into()],
+                query: Expr::var("query"),
+                limit: Expr::int(10),
+                filter: None,
+            },
+            output: SearchOutputPlan {
+                kind: SearchOutputKind::Score,
+                alias: "similarity".into(),
+            },
+        }]);
+
+        let ctx = GqlExecutionContext {
+            resolved_search: Some(ResolvedSearchWire {
+                binding: "wrong".into(),
+                output_alias: "similarity".into(),
+                vertex_hits: Vec::new(),
+            }),
+            ..GqlExecutionContext::default()
+        };
+
+        let err = store
+            .execute_plan_query(&plan, &params(), ctx)
+            .expect_err("search mismatch");
+        assert!(
+            err.to_string().contains("does not match plan binding"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn search_join_rejects_duplicate_vertex_hits() {
+        let store = GraphStore::new();
+        let plan = plan(vec![PlanOp::Search {
+            binding: "d".into(),
+            provider: SearchProviderPlan::VectorIndex {
+                index_name: vec!["doc_vec".into()],
+                query: Expr::var("query"),
+                limit: Expr::int(10),
+                filter: None,
+            },
+            output: SearchOutputPlan {
+                kind: SearchOutputKind::Score,
+                alias: "similarity".into(),
+            },
+        }]);
+
+        let ctx = GqlExecutionContext {
+            resolved_search: Some(ResolvedSearchWire {
+                binding: "d".into(),
+                output_alias: "similarity".into(),
+                vertex_hits: vec![
+                    ResolvedSearchVertexHitWire {
+                        local_vertex_id: 7,
+                        value: 0.1,
+                    },
+                    ResolvedSearchVertexHitWire {
+                        local_vertex_id: 7,
+                        value: 0.2,
+                    },
+                ],
+            }),
+            ..GqlExecutionContext::default()
+        };
+
+        let err = store
+            .execute_plan_query(&plan, &params(), ctx)
+            .expect_err("duplicate hits");
+        assert!(
+            err.to_string().contains("duplicate vertex id"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn search_join_rejects_non_finite_value() {
+        let store = GraphStore::new();
+        let plan = plan(vec![PlanOp::Search {
+            binding: "d".into(),
+            provider: SearchProviderPlan::VectorIndex {
+                index_name: vec!["doc_vec".into()],
+                query: Expr::var("query"),
+                limit: Expr::int(10),
+                filter: None,
+            },
+            output: SearchOutputPlan {
+                kind: SearchOutputKind::Score,
+                alias: "similarity".into(),
+            },
+        }]);
+
+        let ctx = GqlExecutionContext {
+            resolved_search: Some(ResolvedSearchWire {
+                binding: "d".into(),
+                output_alias: "similarity".into(),
+                vertex_hits: vec![ResolvedSearchVertexHitWire {
+                    local_vertex_id: 7,
+                    value: f64::NAN,
+                }],
+            }),
+            ..GqlExecutionContext::default()
+        };
+
+        let err = store
+            .execute_plan_query(&plan, &params(), ctx)
+            .expect_err("non-finite value");
+        assert!(
+            err.to_string().contains("non-finite"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn search_join_without_context_fails_closed() {
+        let store = GraphStore::new();
+        let plan = plan(vec![PlanOp::Search {
+            binding: "d".into(),
+            provider: SearchProviderPlan::VectorIndex {
+                index_name: vec!["doc_vec".into()],
+                query: Expr::var("query"),
+                limit: Expr::int(10),
+                filter: None,
+            },
+            output: SearchOutputPlan {
+                kind: SearchOutputKind::Score,
+                alias: "similarity".into(),
+            },
+        }]);
+
+        let err = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect_err("search without context");
+        assert!(
+            err.to_string()
+                .contains("Router lowering is not implemented yet"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn search_join_rejects_oversized_resolved_search() {
+        let store = GraphStore::new();
+        let d = store
+            .insert_vertex_named(["OversizedDoc"], [("title", Value::Text("d".into()))])
+            .expect("insert d");
+        let oversized_hits: Vec<_> = (0..=MAX_VECTOR_SEARCH_TOP_K)
+            .map(|i| ResolvedSearchVertexHitWire {
+                local_vertex_id: u32::from(d) + i,
+                value: 0.1 * i as f64,
+            })
+            .collect();
+        let ctx = GqlExecutionContext {
+            resolved_search: Some(ResolvedSearchWire {
+                binding: "d".into(),
+                output_alias: "distance".into(),
+                vertex_hits: oversized_hits,
+            }),
+            ..Default::default()
+        };
+        let plan = plan(vec![PlanOp::Search {
+            binding: "d".into(),
+            provider: SearchProviderPlan::VectorIndex {
+                index_name: vec!["doc_vec".into()],
+                query: Expr::var("query"),
+                limit: Expr::int(10),
+                filter: None,
+            },
+            output: SearchOutputPlan {
+                kind: SearchOutputKind::Distance,
+                alias: "distance".into(),
+            },
+        }]);
+
+        let err = store
+            .execute_plan_query(&plan, &params(), ctx)
+            .expect_err("oversized resolved SEARCH must fail");
+        assert!(
+            err.to_string().contains("exceeding the maximum allowed"),
+            "unexpected error: {err}"
         );
     }
 
