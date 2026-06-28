@@ -326,6 +326,26 @@ pub(crate) fn set_vector_index_target(
     Ok(())
 }
 
+/// Test-only override of the stored activation state. Production dispatch paths must never use
+/// this helper; it exists so unit tests can exercise search logic without requiring a fully
+/// vector-attached shard fleet and enabled global flag.
+#[cfg(test)]
+pub(crate) fn set_vector_index_activation_state_for_test(
+    graph_id: GraphId,
+    index_id: u32,
+    state: VectorIndexActivationState,
+) -> Result<(), RouterError> {
+    let key = VectorIndexKey::new(graph_id, index_id);
+    ROUTER_VECTOR_INDEXES.with_borrow_mut(|map| {
+        let mut def = map
+            .get(&key)
+            .ok_or_else(|| RouterError::NotFound(format!("vector index {index_id}")))?;
+        def.activation_state = state;
+        map.insert(key, def);
+        Ok(())
+    })
+}
+
 /// Reject a `requested` target that differs from any *other* definition's already-set target in the
 /// graph (one vector-index target per graph; ADR 0031 Slice 4). `exclude_index_id` skips the
 /// definition being registered/retargeted so re-setting the same def's target is a no-op.
@@ -369,6 +389,29 @@ pub(crate) fn graph_single_target(graph_id: GraphId) -> Option<Principal> {
 
 pub(crate) fn get_vector_index(graph_id: GraphId, index_id: u32) -> Option<VectorIndexDefRecord> {
     ROUTER_VECTOR_INDEXES.with_borrow(|map| map.get(&VectorIndexKey::new(graph_id, index_id)))
+}
+
+/// Fail closed unless the dynamic per-graph vector dispatch gate is satisfied for `def`.
+///
+/// The gate is `global activation flag ON && every live shard of the graph vector-attached`. This
+/// is the same check performed by the public `vector_search` surface and must precede any internal
+/// Router → vector-canister forwarding (including empty-candidate early returns in GQL SEARCH).
+pub(crate) fn assert_vector_search_dispatch_ready(
+    graph_id: GraphId,
+    store: &crate::facade::store::RouterStore,
+    def: &VectorIndexDefRecord,
+) -> Result<(), crate::state::RouterError> {
+    let global_enabled =
+        crate::facade::stable::vector_activation::vector_dispatch_globally_enabled();
+    let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
+    if let Some(reason) =
+        activation_block_reason(def.activation_state, global_enabled, dispatch_ready)
+    {
+        return Err(crate::state::RouterError::VectorDispatchActivationBlocked(
+            reason,
+        ));
+    }
+    Ok(())
 }
 
 /// Resolve the single dispatch target of a definition to its canister principal (ADR 0031 Slice 3,

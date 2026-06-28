@@ -1,7 +1,7 @@
 # Property index
 
 Last updated: 2026-06-28
-Anchor timestamp: 2026-06-28 01:05:14 UTC +0000
+Anchor timestamp: 2026-06-28 15:32:10 UTC +0000
 
 ## Status
 
@@ -164,13 +164,18 @@ predicates. The Router consumes postings through bounded pagination:
 - It pages through `lookup_equal_page` for `(property_id, encoded_value)`, deduplicating by
   `(shard_id, vertex_id)` and stopping as soon as a 4097th distinct subject is observed. Exceeding the
   bound returns an explicit `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` error.
-- Malformed postings (invalid shard id or non-vertex subject) are rejected fail-closed.
+- The candidate set is intersected with the searched vertex label on each page using
+  `filter_hits_by_label`, so vertices that do not belong to the searched label do not consume the
+  candidate bound.
+- Postings are typed as vertex subjects by the graph-index API; the Router’s allowlist carries only
+  `(shard_id, vertex_id)` tuples. Vector hits for shards that are no longer live are ignored downstream
+  by the Router while it builds per-shard search seeds (leading) or lowers resolved search relations
+  (non-leading). The Vector Index does not know live topology and therefore does not perform this filtering.
 - The resulting allowlist is passed to Vector Index as a transient `candidate_subjects` field on the
   internal `VectorSearchRequest`. No new stable region is added and no property values are duplicated in
   the vector canister.
 
-This follows the existing derived-state contract: postings may lag canonical vertex properties, and
-canonical graph state wins when they disagree.
+This follows the existing derived-state contract: postings may lag canonical vertex properties, and the search read path treats those postings as the source of filter membership. The query does not re-verify the equality property against canonical vertex properties at runtime; results are therefore eventually consistent with the primary store and may temporarily include vertices whose property has changed or omit vertices whose posting is still pending.
 
 ## Index maintenance
 

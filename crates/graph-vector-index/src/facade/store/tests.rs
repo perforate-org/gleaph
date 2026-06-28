@@ -3471,6 +3471,45 @@ fn maintenance_endpoints_reject_non_router_and_unknown_index() {
 }
 
 // --- ADR 0034 Slice 6: candidate-restricted vector search tests ---
+#[test]
+fn candidate_search_accepts_vertex_only_subjects() {
+    let store = fresh_store();
+    let mut req = search_value(0.0, 10);
+    // VectorSubject currently only has the Vertex variant; this smoke test confirms the typed
+    // contract is accepted. When a non-vertex variant is added, add an explicit rejection test.
+    req.candidate_subjects = Some(vec![VectorSubject::Vertex {
+        shard_id: ShardId::new(0),
+        vertex_id: 0,
+    }]);
+    let result = store.vector_search(&req).expect("vertex-only is accepted");
+    assert!(result.hits.is_empty());
+}
+
+#[test]
+fn candidate_search_validates_shape_before_physical_def() {
+    let store = fresh_store();
+    // No upsert, so there is no physical def for INDEX_ID. An oversized allowlist must still fail.
+    let mut req = search_value(0.0, 10);
+    let too_many: Vec<VectorSubject> = (0..MAX_VECTOR_SEARCH_FILTER_CANDIDATES as u32 + 1)
+        .map(|i| VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: i,
+        })
+        .collect();
+    req.candidate_subjects = Some(too_many);
+    let err = store
+        .vector_search(&req)
+        .expect_err("oversized on empty index");
+    assert!(matches!(err, VectorIndexError::InvalidSearchCandidates));
+
+    // Duplicate candidates on an empty index also fail.
+    let mut req = search_value(0.0, 10);
+    req.candidate_subjects = Some(vec![subject(7), subject(7)]);
+    let err = store
+        .vector_search(&req)
+        .expect_err("duplicate on empty index");
+    assert!(matches!(err, VectorIndexError::InvalidSearchCandidates));
+}
 
 #[test]
 fn candidate_search_restricts_top_k_to_allowlist() {

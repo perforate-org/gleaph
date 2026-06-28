@@ -120,6 +120,15 @@ where
         }
     }
 
+    // Resolve the vector target and fail closed on the dynamic dispatch gate before any vector
+    // canister call (including the empty-candidate early return below). This keeps GQL SEARCH
+    // aligned with the public `vector_search` activation contract (ADR 0031 Slice 4).
+    let target = def
+        .target
+        .ok_or_else(|| RouterError::Conflict(format!("vector index {index_id} has no target set")))?
+        .canister;
+    vector_index_catalog::assert_vector_search_dispatch_ready(graph_id, store, &def)?;
+
     // ADR 0034 Slice 6: a filtered leading search resolves a bounded candidate allowlist from
     // the label-scoped Property Index before asking Vector Index to rank within that set.
     let candidate_subjects = match &shape.filter {
@@ -147,6 +156,7 @@ where
             if candidates.is_empty() {
                 // Empty candidate set: skip the vector canister and feed the existing empty-hit
                 // leading dispatch path so global aggregates still produce one count=0 row.
+                // The dispatch gate was already checked above, so this path does not bypass it.
                 let empty_result =
                     gleaph_graph_kernel::vector_index::VectorSearchResult { hits: Vec::new() };
                 let stripped_plan = strip_search_prefix(plan, &shape)?;
@@ -179,11 +189,6 @@ where
         }
         None => None,
     };
-
-    let target = def
-        .target
-        .ok_or_else(|| RouterError::Conflict(format!("vector index {index_id} has no target set")))?
-        .canister;
     let search_req = VectorSearchRequest {
         index_id,
         query,
@@ -862,7 +867,7 @@ async fn resolve_filtered_candidates(
         )));
     }
 
-    collect_bounded_candidates(graph_id, store, property_id, encoded).await
+    collect_bounded_candidates(graph_id, store, label_id, property_id, encoded).await
 }
 
 fn resolve_search_property_id(
@@ -927,6 +932,7 @@ const VECTOR_FILTER_PAGE_LIMIT: u32 = 10_000;
 async fn collect_bounded_candidates(
     graph_id: GraphId,
     store: &RouterStore,
+    label_id: VertexLabelId,
     property_id: PropertyId,
     encoded_value: Vec<u8>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
@@ -943,12 +949,14 @@ async fn collect_bounded_candidates(
     let mut after: Option<gleaph_graph_kernel::index::PropertyPostingCursor> = None;
     let mut target_idx = 0usize;
 
-    // Stream equality postings from each index canister one page at a time, keeping a single global
-    // deduplication set. The bound is checked before extending the result so we never retain more
-    // than the allowed number of distinct subjects.
+    // Stream equality postings from each index canister one page at a time, intersect each page
+    // with the searched vertex label, and keep a single global deduplication set. The bound is
+    // checked after label filtering before extending the result so we never retain more than the
+    // allowed number of distinct subjects that are actually members of the searched label.
     while target_idx < targets.len() {
         let principal = targets[target_idx];
-        let page = RouterIndexClient::new(principal)
+        let client = RouterIndexClient::new(principal);
+        let page = client
             .lookup_equal_page(gleaph_graph_kernel::index::LookupEqualPageRequest {
                 property_id: property_id.raw(),
                 value: encoded_value.clone(),
@@ -960,7 +968,14 @@ async fn collect_bounded_candidates(
                 RouterError::InvalidArgument(format!("property-index lookup failed: {e}"))
             })?;
 
-        for hit in page.hits {
+        let label_hits = client
+            .filter_hits_by_label(label_id.raw() as u32, page.hits)
+            .await
+            .map_err(|e| {
+                RouterError::InvalidArgument(format!("property-index label filter failed: {e}"))
+            })?;
+
+        for hit in label_hits {
             if !seen.insert((hit.shard_id, hit.vertex_id)) {
                 continue;
             }
@@ -1509,6 +1524,14 @@ mod tests {
             vector_index_catalog::VectorIndexTarget {
                 canister: candid::Principal::from_slice(&[9]),
             },
+        )
+        .unwrap();
+        // Test-only: bypass the dynamic dispatch gate so unit tests can focus on search shape
+        // validation and seed wiring without requiring a fully vector-attached shard fleet.
+        vector_index_catalog::set_vector_index_activation_state_for_test(
+            graph_id,
+            1,
+            vector_index_catalog::VectorIndexActivationState::Registered,
         )
         .unwrap();
     }
@@ -2223,6 +2246,96 @@ mod tests {
             err.to_string()
                 .contains("only supported for a leading labeled search"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_rejects_dispatch_blocked() {
+        let (store, _admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        // Restore the production fail-closed stored state so the dynamic gate is exercised.
+        vector_index_catalog::set_vector_index_activation_state_for_test(
+            graph_id,
+            1,
+            vector_index_catalog::VectorIndexActivationState::DispatchBlocked,
+        )
+        .unwrap();
+        let plan = search_plan_with_output(SearchOutputKind::Distance, "distance");
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("DispatchBlocked must fail");
+        assert!(
+            err.to_string()
+                .contains("vector dispatch activation blocked"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_filtered_gate_checked_before_candidate_lookup() {
+        let (store, admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        // setup_with_shard creates the tenant.main graph with one shard; intern the Document label
+        // and category property, plus the exact index, so the only remaining failure path is the
+        // dispatch gate.
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern label");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
+            .expect("intern property");
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "category".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create exact index");
+        // Force the activation state back to DispatchBlocked. The target is set, so this is the
+        // production fail-closed state; the gate must fire before the candidate lookup.
+        vector_index_catalog::set_vector_index_activation_state_for_test(
+            graph_id,
+            1,
+            vector_index_catalog::VectorIndexActivationState::DispatchBlocked,
+        )
+        .unwrap();
+        let plan = search_plan_with_filter(filter_eq_expr("category", Value::Text("doc".into())));
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("DispatchBlocked must fail even with empty candidates");
+        assert!(
+            err.to_string()
+                .contains("vector dispatch activation blocked"),
+            "expected activation blocked, got {err}"
         );
     }
 

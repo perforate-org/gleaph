@@ -149,8 +149,11 @@ fn enable_vector_dispatch(env: &FederationEnv, vector: Principal) {
     let graph_id = router_graph_id(env);
     set_dispatch_activation(env, true);
     set_graph_vector_routing(env, env.graph_source, vector);
+    set_graph_vector_routing(env, env.graph_dest, vector);
     attach_shard_to_vector(env, vector, graph_id, ShardId::new(0), env.graph_source);
+    attach_shard_to_vector(env, vector, graph_id, ShardId::new(1), env.graph_dest);
     attach_shard(env, ShardId::new(0), vector);
+    attach_shard(env, ShardId::new(1), vector);
 }
 
 fn seed_embedding(
@@ -464,5 +467,71 @@ fn search_where_equality_rejects_wrong_label_index() {
     assert!(
         err.to_string().contains("vertex equality index"),
         "wrong-label index coverage must fail with a coverage error, got {err}"
+    );
+}
+
+#[test]
+fn search_where_equality_label_filter_wins_over_closer_other_vertex() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let doc_label_id = admin_intern_vertex_label(&env, "Document");
+    let other_label_id = admin_intern_vertex_label(&env, "Other");
+    let cat_id = admin_intern_property(&env, "cat_id");
+
+    // Exact index covers Document.cat_id.
+    create_vertex_property_index(
+        &env,
+        "document_cat_id_idx",
+        "Document",
+        "cat_id",
+        "create_document_cat_id_idx",
+    );
+
+    // Document with cat_id=1 and a far vector.
+    let v_doc = e2e_insert_vertex_with_label_and_property(
+        &env,
+        env.graph_source,
+        doc_label_id.raw(),
+        cat_id.raw(),
+        1,
+    );
+    seed_embedding(&env, vector, env.graph_source, v_doc.local_vertex_id, 10.0);
+
+    // Other vertex with cat_id=1 and a much closer vector. The property index for Document
+    // must not match this vertex, so LIMIT 1 still returns the Document.
+    let v_other = e2e_insert_vertex_with_label_and_property(
+        &env,
+        env.graph_source,
+        other_label_id.raw(),
+        cat_id.raw(),
+        1,
+    );
+    seed_embedding(&env, vector, env.graph_source, v_other.local_vertex_id, 0.0);
+
+    let query = format!(
+        "MATCH (d:Document)          SEARCH d IN (            VECTOR INDEX {EMBEDDING_NAME} FOR $query            WHERE d.cat_id = 1            LIMIT 1          ) DISTANCE AS distance          RETURN ELEMENT_ID(d), distance"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(0.0)),
+    )])
+    .expect("encode params");
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_eq!(
+        result.row_count, 1,
+        "label-scoped filter must ignore closer vertex from another label"
+    );
+    let rows = extract_rows(result);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("distance"),
+        Some(&gleaph_gql_ic::IcWireValue::Float64(
+            10.0_f64.powi(2) * 16.0_f64
+        )),
+        "the Document vector at 10.0 must win, not the Other vertex at 0.0"
     );
 }

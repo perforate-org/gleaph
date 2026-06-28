@@ -663,16 +663,7 @@ pub(crate) async fn admin_vector_index_backfill_step(
         )));
     }
     // Fail-closed on the dynamic gate (global flag + per-graph shard vector-attach to this target).
-    let global_enabled =
-        crate::facade::stable::vector_activation::vector_dispatch_globally_enabled();
-    let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
-    if let Some(reason) = vector_index_catalog::activation_block_reason(
-        def.activation_state,
-        global_enabled,
-        dispatch_ready,
-    ) {
-        return Err(RouterError::VectorDispatchActivationBlocked(reason));
-    }
+    vector_index_catalog::assert_vector_search_dispatch_ready(graph_id, &store, &def)?;
     // Scope the worker to the requested index's embedding spec only, so a per-index backfill cannot
     // populate sibling indexes that share this (ready) graph.
     let catalog =
@@ -752,16 +743,7 @@ pub(crate) async fn vector_search(
         })?
         .canister;
     // Fail closed on the dynamic gate (global flag + per-graph shard vector-attach to this target).
-    let global_enabled =
-        crate::facade::stable::vector_activation::vector_dispatch_globally_enabled();
-    let dispatch_ready = store.graph_vector_dispatch_ready(graph_id);
-    if let Some(reason) = vector_index_catalog::activation_block_reason(
-        def.activation_state,
-        global_enabled,
-        dispatch_ready,
-    ) {
-        return Err(RouterError::VectorDispatchActivationBlocked(reason));
-    }
+    vector_index_catalog::assert_vector_search_dispatch_ready(graph_id, &store, &def)?;
     let search = VectorSearchRequest {
         index_id: req.index_id,
         query: req.query,

@@ -316,10 +316,8 @@ impl VectorIndexStore {
         // ADR 0034 Slice 6: a bounded candidate allowlist restricts the search to an exact top-k
         // over current live vector slots. Validate the allowlist shape before the physical def check
         // so protocol violations fail closed even on an empty index.
-        if let Some(candidates) = &req.candidate_subjects
-            && candidates.len() > MAX_VECTOR_SEARCH_FILTER_CANDIDATES
-        {
-            return Err(VectorIndexError::InvalidSearchCandidates);
+        if let Some(candidates) = &req.candidate_subjects {
+            Self::validate_candidate_allowlist(candidates)?;
         }
         // The physical def is created lazily on the first upsert (see `mutation.rs`). A
         // Router-registered, activated index with no embeddings yet has no physical def, but it is a
@@ -390,11 +388,29 @@ impl VectorIndexStore {
         }
     }
 
-    /// Slice 6 exact scan restricted to a bounded candidate allowlist. Each candidate is resolved
-    /// through `VECTOR_SUBJECT_TO_ID` to its current live slot at the active index version, scored,
-    /// and pushed through the same bounded top-k heap and deterministic tie-breaker as the
-    /// unrestricted exact scan. Malformed, duplicate, deleted, stale, or superseded candidates are
-    /// skipped; an oversized allowlist fails closed before any scoring.
+    /// Validate a candidate allowlist before consulting the physical index definition.
+    ///
+    /// Fails closed for oversized, duplicate, or non-vertex candidates. The receiving canister must
+    /// not depend on the Router to police the wire contract.
+    fn validate_candidate_allowlist(candidates: &[VectorSubject]) -> Result<(), VectorIndexError> {
+        if candidates.len() > MAX_VECTOR_SEARCH_FILTER_CANDIDATES {
+            return Err(VectorIndexError::InvalidSearchCandidates);
+        }
+        let mut seen = std::collections::HashSet::with_capacity(candidates.len());
+        for subject in candidates {
+            if !matches!(subject, VectorSubject::Vertex { .. }) || !seen.insert(*subject) {
+                return Err(VectorIndexError::InvalidSearchCandidates);
+            }
+        }
+        Ok(())
+    }
+
+    /// Slice 6 exact scan restricted to a bounded candidate allowlist.
+    ///
+    /// Precondition: `candidates` has already passed [`validate_candidate_allowlist`], so the scan
+    /// only resolves each subject to its current live slot, scores, and pushes through the bounded
+    /// top-k heap. Deleted, stale, or superseded subjects are skipped silently; they represent
+    /// derived-index drift rather than protocol violations.
     fn candidate_subject_scan(
         &self,
         index_id: u32,
@@ -405,22 +421,10 @@ impl VectorIndexStore {
         top_k: u32,
     ) -> Result<VectorSearchResult, VectorIndexError> {
         let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
-        let mut seen: std::collections::HashSet<VectorSubject> = std::collections::HashSet::new();
 
-        let mut scan_result: Result<(), VectorIndexError> = Ok(());
         PAGE_STORE.with_borrow(|store| {
             VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
                 for subject in candidates {
-                    // Vertex-only subjects in this slice; a non-vertex candidate is a protocol
-                    // violation. Fail closed rather than silently truncating the result.
-                    if !matches!(subject, VectorSubject::Vertex { .. }) {
-                        scan_result = Err(VectorIndexError::InvalidSearchCandidates);
-                        return;
-                    }
-                    if !seen.insert(*subject) {
-                        scan_result = Err(VectorIndexError::InvalidSearchCandidates);
-                        return;
-                    }
                     let key = SubjectKey::new(index_id, *subject);
                     let Some(value) = subjects.get(&key) else {
                         continue;
@@ -457,7 +461,6 @@ impl VectorIndexStore {
                 }
             });
         });
-        scan_result?;
 
         Ok(finalize(heap))
     }
