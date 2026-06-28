@@ -268,7 +268,7 @@ fn test_search_binding_must_be_node_or_edge() {
 }
 
 #[test]
-fn test_search_where_filter_is_rejected_by_planner() {
+fn test_search_where_range_filter_is_rejected_by_planner() {
     let err = plan_query_err(
         "MATCH (d:Document) \
          SEARCH d IN ( \
@@ -281,8 +281,35 @@ fn test_search_where_filter_is_rejected_by_planner() {
     );
     assert!(
         err.to_string()
-            .contains("SEARCH ... WHERE filter is not supported yet"),
+            .contains("SEARCH ... WHERE only supports equality"),
         "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn test_search_where_equality_filter_is_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.category = $category \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    let search_op = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Search { .. }))
+        .expect("plan contains Search");
+    let filter = match search_op {
+        gleaph_gql_planner::plan::PlanOp::Search { provider, .. } => provider.filter(),
+        _ => unreachable!(),
+    };
+    assert!(
+        filter.is_some(),
+        "accepted equality filter must be preserved in the plan"
     );
 }
 

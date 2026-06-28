@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-06-20
-Anchor timestamp: 2026-06-20 01:27:36 UTC +0000
+Last updated: 2026-06-28
+Anchor timestamp: 2026-06-28 01:05:14 UTC +0000
 
 ## Status
 
@@ -150,6 +150,27 @@ key, or encoded index key length above `MAX_INDEX_VALUE_KEY_BYTES` — see
 find those vertices or edges until a full scan path is used. Router and graph reject oversized query
 keys before graph-index calls; graph-index read APIs reject them as `IndexValueKeyTooLarge` (no
 silent empty range).
+
+
+## Vector search filter membership (ADR 0034 Slice 6)
+
+Property-index equality postings own filter membership for leading `SEARCH ... WHERE` equality
+predicates. The Router consumes postings through bounded pagination:
+
+- It resolves the searched label and filter property to router-issued ids and proves an active vertex
+  equality index for the exact `(graph_id, label_id, property_id)` tuple in the named-index catalog.
+- It encodes the comparison value with `gleaph_gql::value_to_index_key_bytes` and validates the
+  encoded size against `MAX_INDEX_VALUE_KEY_BYTES` before calling the index.
+- It pages through `lookup_equal_page` for `(property_id, encoded_value)`, deduplicating by
+  `(shard_id, vertex_id)` and stopping as soon as a 4097th distinct subject is observed. Exceeding the
+  bound returns an explicit `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` error.
+- Malformed postings (invalid shard id or non-vertex subject) are rejected fail-closed.
+- The resulting allowlist is passed to Vector Index as a transient `candidate_subjects` field on the
+  internal `VectorSearchRequest`. No new stable region is added and no property values are duplicated in
+  the vector canister.
+
+This follows the existing derived-state contract: postings may lag canonical vertex properties, and
+canonical graph state wins when they disagree.
 
 ## Index maintenance
 

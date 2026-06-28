@@ -95,6 +95,7 @@ fn search_req(dims: u16, top_k: u32) -> VectorSearchRequest {
         dims,
         metric: VectorMetric::L2Squared,
         top_k,
+        candidate_subjects: None,
     }
 }
 
@@ -583,3 +584,62 @@ fn bench_maintenance_step_awaiting_publish_d128_nlist16() -> canbench_rs::BenchR
         black_box(result);
     })
 }
+
+// --- ADR 0034 Slice 6: bounded candidate-subject exact search ---
+
+/// Build a candidate allowlist of the first `count` live vertex subjects from the seeded store.
+fn candidate_subjects(count: u32) -> Vec<VectorSubject> {
+    (0..count)
+        .map(|vid| VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: vid,
+        })
+        .collect()
+}
+
+fn filtered_search_req(
+    dims: u16,
+    top_k: u32,
+    candidates: Vec<VectorSubject>,
+) -> VectorSearchRequest {
+    VectorSearchRequest {
+        index_id: INDEX_ID,
+        query: vec_bytes(dims, 0.0),
+        encoding: VectorEncoding::F32,
+        dims,
+        metric: VectorMetric::L2Squared,
+        top_k,
+        candidate_subjects: Some(candidates),
+    }
+}
+
+macro_rules! filtered_search_bench {
+    ($name:ident, $dims:expr, $candidates:expr, $top_k:expr) => {
+        #[bench(raw)]
+        fn $name() -> canbench_rs::BenchResult {
+            let store = setup_search_store($dims, SCAN_N);
+            let candidates = candidate_subjects($candidates);
+            let req = filtered_search_req($dims, $top_k, candidates);
+            canbench_rs::bench_fn(|| {
+                let _scope = canbench_rs::bench_scope(stringify!($name));
+                let result = store.vector_search(black_box(&req)).expect("vector_search");
+                black_box(result);
+            })
+        }
+    };
+}
+
+filtered_search_bench!(bench_filtered_search_d128_c128_k10, 128, 128, 10);
+filtered_search_bench!(bench_filtered_search_d128_c128_k100, 128, 128, 100);
+filtered_search_bench!(bench_filtered_search_d128_c1024_k10, 128, 1024, 10);
+filtered_search_bench!(bench_filtered_search_d128_c1024_k100, 128, 1024, 100);
+filtered_search_bench!(bench_filtered_search_d128_c4096_k10, 128, 4096, 10);
+filtered_search_bench!(bench_filtered_search_d128_c4096_k100, 128, 4096, 100);
+
+filtered_search_bench!(bench_filtered_search_d384_c128_k10, 384, 128, 10);
+filtered_search_bench!(bench_filtered_search_d384_c1024_k10, 384, 1024, 10);
+filtered_search_bench!(bench_filtered_search_d384_c4096_k10, 384, 4096, 10);
+
+filtered_search_bench!(bench_filtered_search_d768_c128_k10, 768, 128, 10);
+filtered_search_bench!(bench_filtered_search_d768_c1024_k10, 768, 1024, 10);
+filtered_search_bench!(bench_filtered_search_d768_c4096_k10, 768, 4096, 10);

@@ -1,7 +1,7 @@
 # Vector index
 
-Last updated: 2026-06-24
-Anchor timestamp: 2026-06-24 15:21:44 UTC +0000
+Last updated: 2026-06-28
+Anchor timestamp: 2026-06-28 01:05:14 UTC +0000
 
 ## Status
 
@@ -428,6 +428,26 @@ the incarnation fence and a two-condition gate (global flag AND per-graph shard 
   orchestration → `graph_client::backfill_vertex_embeddings` → graph endpoint → existing worker)
   taking an explicit `(shard_id, start_vertex_id, max_vertices)` resume cursor; it fails closed
   (`VectorDispatchActivationBlocked`) while dispatch is not ready.
+
+
+## Filtered exact ranking (ADR 0034 Slice 6)
+
+A bounded candidate allowlist can restrict the search to an exact top-k over current live vector
+slots. The allowlist arrives in `VectorSearchRequest.candidate_subjects`:
+
+- `None` keeps the existing unrestricted search path (exact subject scan or partition-page scan).
+- `Some([])` returns an empty result without reading vector rows.
+- A non-empty allowlist is validated at the receiving boundary: the count must not exceed
+  `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096), every subject must be a vertex, and duplicates are
+  rejected with `InvalidSearchCandidates`.
+- For each allowed subject, the canister resolves the current slot via `VECTOR_SUBJECT_TO_ID`,
+  re-reads the row through the slab page store, re-validates `vector_id` / `generation` / `slot`
+  consistency, and scores the row with the existing metric exact path. Deleted, stale, superseded, or
+  otherwise inconsistent subjects are skipped.
+- Qualifying rows are pushed through the same bounded top-k heap and deterministic tie-breaking used
+  by unrestricted search, so the result is the exact top-k over the allowlist.
+- The allowlist is transient: no new stable-memory region is introduced, and property values are not
+  copied into the vector canister.
 
 ## Purpose
 

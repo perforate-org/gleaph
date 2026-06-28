@@ -217,6 +217,11 @@ impl IndexedEmbeddingCatalog {
 /// in-heap candidate set and result size so one query stays within the canister instruction budget.
 pub const MAX_VECTOR_SEARCH_TOP_K: u32 = 1024;
 
+/// Upper bound on the number of distinct candidate subjects supplied to a filtered vector search
+/// (ADR 0034 Slice 6). The Router collects at most this many subjects from Property Index before
+/// failing closed; the Vector Index receiving boundary revalidates the count.
+pub const MAX_VECTOR_SEARCH_FILTER_CANDIDATES: usize = 4096;
+
 /// Read-only exact top-k vector search over a derived `ivf_flat` index (ADR 0031 Slice 5).
 ///
 /// `query` carries `dims` components encoded as `encoding` (`encoding.stride_bytes(dims)` bytes).
@@ -232,6 +237,10 @@ pub struct VectorSearchRequest {
     pub metric: VectorMetric,
     /// Number of nearest neighbors to return; `0 < top_k <= MAX_VECTOR_SEARCH_TOP_K`.
     pub top_k: u32,
+    /// Optional bounded candidate allowlist (ADR 0034 Slice 6). When `Some`, the result is the
+    /// exact top-k over only these subjects resolved against current live vector slots. `None`
+    /// keeps the existing unrestricted search semantics. `Some([])` returns no hits.
+    pub candidate_subjects: Option<Vec<VectorSubject>>,
 }
 
 /// One scored search result. `distance` is the metric-specific internal raw value (smaller is
@@ -723,6 +732,9 @@ pub enum VectorIndexError {
     AllocatorOverflow,
     /// `top_k` on a vector search is `0` or exceeds [`MAX_VECTOR_SEARCH_TOP_K`].
     InvalidSearchTopK,
+    /// The supplied candidate allowlist is malformed, contains a non-vertex subject, contains
+    /// duplicates, or exceeds [`MAX_VECTOR_SEARCH_FILTER_CANDIDATES`] (ADR 0034 Slice 6).
+    InvalidSearchCandidates,
     /// The metric is not supported for the selected physical read path in this slice
     /// (e.g. `Cosine` with `nlist > 1` partition-page scan).
     MetricNotSupportedForPartitionScan,
@@ -781,6 +793,9 @@ impl std::fmt::Display for VectorIndexError {
             Self::InvalidPageCapacity => "index page capacity yields fewer than one slot per page",
             Self::AllocatorOverflow => "vector index allocator overflow",
             Self::InvalidSearchTopK => "search top_k must be in 1..=MAX_VECTOR_SEARCH_TOP_K",
+            Self::InvalidSearchCandidates => {
+                "search candidate allowlist is malformed or exceeds the supported bound"
+            }
             Self::MetricNotSupportedForPartitionScan => {
                 "metric is not supported for the partition-page scan path"
             }
@@ -907,9 +922,43 @@ mod tests {
             dims: 4,
             metric: VectorMetric::L2Squared,
             top_k: 10,
+            candidate_subjects: None,
         };
         let bytes = Encode!(&req).expect("encode request");
         assert_eq!(Decode!(&bytes, VectorSearchRequest).expect("decode"), req);
+
+        let req_with_candidates = VectorSearchRequest {
+            index_id: 7,
+            query: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            encoding: VectorEncoding::F32,
+            dims: 4,
+            metric: VectorMetric::L2Squared,
+            top_k: 10,
+            candidate_subjects: Some(vec![VectorSubject::Vertex {
+                shard_id: ShardId::new(2),
+                vertex_id: 42,
+            }]),
+        };
+        let bytes = Encode!(&req_with_candidates).expect("encode request with candidates");
+        assert_eq!(
+            Decode!(&bytes, VectorSearchRequest).expect("decode with candidates"),
+            req_with_candidates
+        );
+
+        let empty_candidates = VectorSearchRequest {
+            index_id: 7,
+            query: vec![],
+            encoding: VectorEncoding::F32,
+            dims: 4,
+            metric: VectorMetric::L2Squared,
+            top_k: 10,
+            candidate_subjects: Some(vec![]),
+        };
+        let bytes = Encode!(&empty_candidates).expect("encode empty candidates");
+        assert_eq!(
+            Decode!(&bytes, VectorSearchRequest).expect("decode empty candidates"),
+            empty_candidates
+        );
 
         let result = VectorSearchResult {
             hits: vec![VectorSearchHit {
@@ -935,9 +984,43 @@ mod tests {
             dims: 4,
             metric: VectorMetric::Cosine,
             top_k: 10,
+            candidate_subjects: None,
         };
         let bytes = Encode!(&req).expect("encode request");
         assert_eq!(Decode!(&bytes, VectorSearchRequest).expect("decode"), req);
+
+        let req_with_candidates = VectorSearchRequest {
+            index_id: 7,
+            query: vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16],
+            encoding: VectorEncoding::F32,
+            dims: 4,
+            metric: VectorMetric::L2Squared,
+            top_k: 10,
+            candidate_subjects: Some(vec![VectorSubject::Vertex {
+                shard_id: ShardId::new(2),
+                vertex_id: 42,
+            }]),
+        };
+        let bytes = Encode!(&req_with_candidates).expect("encode request with candidates");
+        assert_eq!(
+            Decode!(&bytes, VectorSearchRequest).expect("decode with candidates"),
+            req_with_candidates
+        );
+
+        let empty_candidates = VectorSearchRequest {
+            index_id: 7,
+            query: vec![],
+            encoding: VectorEncoding::F32,
+            dims: 4,
+            metric: VectorMetric::L2Squared,
+            top_k: 10,
+            candidate_subjects: Some(vec![]),
+        };
+        let bytes = Encode!(&empty_candidates).expect("encode empty candidates");
+        assert_eq!(
+            Decode!(&bytes, VectorSearchRequest).expect("decode empty candidates"),
+            empty_candidates
+        );
 
         let result = VectorSearchResult {
             hits: vec![VectorSearchHit {
@@ -998,6 +1081,7 @@ mod tests {
             VectorIndexError::MetricNotSupportedForPartitionScan,
             VectorIndexError::MetricMismatch,
             VectorIndexError::InvalidQueryVector,
+            VectorIndexError::InvalidSearchCandidates,
         ] {
             let bytes = Encode!(&err).expect("encode");
             assert_eq!(Decode!(&bytes, VectorIndexError).expect("decode"), err);

@@ -769,6 +769,7 @@ pub(crate) async fn vector_search(
         dims: req.dims,
         metric: def.metric,
         top_k: req.top_k,
+        candidate_subjects: None,
     };
     crate::vector_sync::vector_search(target, search)
         .await

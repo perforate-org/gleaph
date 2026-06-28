@@ -701,7 +701,11 @@ async fn run_gql(
                 &stats,
                 &store,
                 msg_caller(),
-                crate::canister::vector_search,
+                |target, req| async move {
+                    crate::vector_sync::vector_search(target, req)
+                        .await
+                        .map_err(crate::state::RouterError::Internal)
+                },
             )
             .await?
             {
@@ -718,7 +722,11 @@ async fn run_gql(
                 &focused_stats,
                 &store,
                 msg_caller(),
-                crate::canister::vector_search,
+                |target, req| async move {
+                    crate::vector_sync::vector_search(target, req)
+                        .await
+                        .map_err(crate::state::RouterError::Internal)
+                },
             )
             .await?
             {

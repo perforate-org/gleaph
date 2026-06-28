@@ -6,7 +6,7 @@
 use std::borrow::Cow;
 use std::ops::Bound;
 
-use gleaph_graph_kernel::entry::{GraphId, IndexNameId, PropertyId};
+use gleaph_graph_kernel::entry::{GraphId, IndexNameId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::index::IndexedPropertyKind;
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 
@@ -155,6 +155,28 @@ impl Storable for IndexDefRecord {
             edge_direction_tag: bytes.get(7).copied().unwrap_or(0),
         }
     }
+}
+
+/// Whether an active vertex equality index exists for the exact `(graph_id, label_id, property_id)`
+/// tuple (ADR 0034 Slice 6). This is the source-of-truth check that proves the Router can resolve
+/// a same-label property equality predicate through the Property Index without returning a
+/// semantically weaker post-filtered result.
+pub(crate) fn has_exact_vertex_index(
+    graph_id: GraphId,
+    label_id: VertexLabelId,
+    property_id: PropertyId,
+) -> bool {
+    let target_label = label_id.raw();
+    ROUTER_NAMED_INDEXES.with_borrow(|map| {
+        let start = NamedIndexKey::new(graph_id, IndexNameId::from_raw(0));
+        map.range((Bound::Included(start), named_index_graph_upper(graph_id)))
+            .any(|entry| {
+                let def = entry.value();
+                def.kind == IndexedPropertyKind::Vertex
+                    && def.label_id == target_label
+                    && def.property_id == property_id
+            })
+    })
 }
 
 pub(crate) fn load_graph_stats(graph_id: GraphId) -> RouterGraphStats {

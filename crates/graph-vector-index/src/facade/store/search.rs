@@ -25,8 +25,8 @@ use crate::facade::stable::{
 };
 use crate::records::{PartitionKey, SlotRef, SubjectKey, VectorIndexDef};
 use gleaph_graph_kernel::vector_index::{
-    MAX_VECTOR_SEARCH_TOP_K, VectorEncoding, VectorIndexError, VectorMetric, VectorSearchHit,
-    VectorSearchRequest, VectorSearchResult, VectorSubject,
+    MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorEncoding, VectorIndexError,
+    VectorMetric, VectorSearchHit, VectorSearchRequest, VectorSearchResult, VectorSubject,
 };
 use std::cmp::Ordering;
 use std::collections::BinaryHeap;
@@ -313,6 +313,14 @@ impl VectorIndexStore {
         if req.top_k == 0 || req.top_k > MAX_VECTOR_SEARCH_TOP_K {
             return Err(VectorIndexError::InvalidSearchTopK);
         }
+        // ADR 0034 Slice 6: a bounded candidate allowlist restricts the search to an exact top-k
+        // over current live vector slots. Validate the allowlist shape before the physical def check
+        // so protocol violations fail closed even on an empty index.
+        if let Some(candidates) = &req.candidate_subjects
+            && candidates.len() > MAX_VECTOR_SEARCH_FILTER_CANDIDATES
+        {
+            return Err(VectorIndexError::InvalidSearchCandidates);
+        }
         // The physical def is created lazily on the first upsert (see `mutation.rs`). A
         // Router-registered, activated index with no embeddings yet has no physical def, but it is a
         // known-empty index, not an unknown one — return an empty result rather than `UnknownIndex`.
@@ -337,6 +345,20 @@ impl VectorIndexStore {
             || (req.metric == VectorMetric::Cosine && !vector_has_nonzero_norm(&query))
         {
             return Err(VectorIndexError::InvalidQueryVector);
+        }
+
+        // ADR 0034 Slice 6: a bounded candidate allowlist restricts the search to an exact top-k
+        // over current live vector slots. The receiving boundary validates count, vertex-only
+        // subjects, and duplicates independently of the Router.
+        if let Some(candidates) = &req.candidate_subjects {
+            return self.candidate_subject_scan(
+                req.index_id,
+                def.active_index_version,
+                &query,
+                def.metric,
+                candidates,
+                req.top_k,
+            );
         }
 
         // Resolve tuning. The default path clamps defensively to `1..=nlist`; the tuned path rejects
@@ -366,6 +388,78 @@ impl VectorIndexStore {
         } else {
             Ok(self.partition_page_scan(req, &def, &query, tuning))
         }
+    }
+
+    /// Slice 6 exact scan restricted to a bounded candidate allowlist. Each candidate is resolved
+    /// through `VECTOR_SUBJECT_TO_ID` to its current live slot at the active index version, scored,
+    /// and pushed through the same bounded top-k heap and deterministic tie-breaker as the
+    /// unrestricted exact scan. Malformed, duplicate, deleted, stale, or superseded candidates are
+    /// skipped; an oversized allowlist fails closed before any scoring.
+    fn candidate_subject_scan(
+        &self,
+        index_id: u32,
+        active_index_version: u64,
+        query: &[f32],
+        metric: VectorMetric,
+        candidates: &[VectorSubject],
+        top_k: u32,
+    ) -> Result<VectorSearchResult, VectorIndexError> {
+        let mut heap: BinaryHeap<Candidate> = BinaryHeap::new();
+        let mut seen: std::collections::HashSet<VectorSubject> = std::collections::HashSet::new();
+
+        let mut scan_result: Result<(), VectorIndexError> = Ok(());
+        PAGE_STORE.with_borrow(|store| {
+            VECTOR_SUBJECT_TO_ID.with_borrow(|subjects| {
+                for subject in candidates {
+                    // Vertex-only subjects in this slice; a non-vertex candidate is a protocol
+                    // violation. Fail closed rather than silently truncating the result.
+                    if !matches!(subject, VectorSubject::Vertex { .. }) {
+                        scan_result = Err(VectorIndexError::InvalidSearchCandidates);
+                        return;
+                    }
+                    if !seen.insert(*subject) {
+                        scan_result = Err(VectorIndexError::InvalidSearchCandidates);
+                        return;
+                    }
+                    let key = SubjectKey::new(index_id, *subject);
+                    let Some(value) = subjects.get(&key) else {
+                        continue;
+                    };
+                    if value.deleted {
+                        continue;
+                    }
+                    let Some(slot) = value.current_slot_for(active_index_version) else {
+                        continue;
+                    };
+                    let Some(expected_vector_id) = value.vector_id else {
+                        continue;
+                    };
+                    let Some((header, bytes)) = store.read_row_bytes(index_id, slot) else {
+                        continue;
+                    };
+                    if header.vector_id != expected_vector_id {
+                        continue;
+                    }
+                    let Some(distance) = raw_distance_f32(metric, query, &decode_f32(&bytes))
+                    else {
+                        continue;
+                    };
+                    push_bounded(
+                        &mut heap,
+                        top_k,
+                        Candidate {
+                            distance,
+                            subject: *subject,
+                            embedding_incarnation: value.embedding_incarnation,
+                            embedding_version: value.stored_embedding_version,
+                        },
+                    );
+                }
+            });
+        });
+        scan_result?;
+
+        Ok(finalize(heap))
     }
 
     /// Slice 5 exact scan: walk every live subject of the index and score its current slot. The live

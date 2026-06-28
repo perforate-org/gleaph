@@ -481,6 +481,51 @@ pub async fn e2e_insert_vertex_with_label(
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_insert_vertex_with_label_and_property(
+    args: super::types::E2eInsertVertexWithLabelAndPropertyArgs,
+) -> Result<super::types::E2eInsertVertexResult, String> {
+    use crate::index::{catalog_context, label_pending, pending};
+    use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::{PropertyId, VertexLabelId};
+
+    let store = GraphStore::new();
+    let vertex_id = store
+        .insert_vertex_row(gleaph_graph_kernel::entry::Vertex::default())
+        .await
+        .map_err(|e| e.to_string())?;
+    let vertex = store
+        .vertex(vertex_id)
+        .ok_or_else(|| "newly inserted vertex must be readable".to_string())?;
+    let label = VertexLabelId::from_raw(args.label_id);
+    store
+        .set_vertex_labels(vertex_id, vertex, std::iter::once(label))
+        .map_err(|e| e.to_string())?;
+    let property_id = PropertyId::from_raw(args.property_id);
+    let _catalog = catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
+        vertex_property_ids: vec![args.property_id],
+        ..Default::default()
+    });
+    store
+        .set_vertex_property(vertex_id, property_id, Value::Int64(args.value))
+        .map_err(|e| e.to_string())?;
+    let index = wasm_index_client_holder().ok_or("federation not configured")?;
+    let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
+    pending::flush_pending(Some(ix), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    label_pending::flush_pending(Some(ix), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    let global_vertex_id = store
+        .global_vertex_id(vertex_id)
+        .ok_or_else(|| "global id missing after insert".to_string())?;
+    Ok(super::types::E2eInsertVertexResult {
+        local_vertex_id: crate::index::federation_routing::local_vertex_id_raw(vertex_id),
+        global_vertex_id,
+    })
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
 pub async fn e2e_insert_directed_edge_with_label(
     args: super::types::E2eInsertDirectedEdgeWithLabelArgs,
 ) -> Result<(), String> {

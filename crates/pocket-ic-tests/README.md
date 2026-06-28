@@ -12,15 +12,13 @@
 cargo test -p gleaph-pocket-ic-tests --test smoke -- --nocapture
 
 # Full PocketIC gate
-cargo test -p gleaph-pocket-ic-tests -- --test-threads=1 --nocapture
+cargo test -p gleaph-pocket-ic-tests -- --nocapture
 ```
 
 PocketIC tests start local PocketIC server / replica processes. The Rust test
-harness defaults to running tests in parallel inside each integration-test
-binary, which can start many PocketIC instances at once and make the suite look
-stuck on slower or resource-constrained machines. Use `--test-threads=1` for the
-supported full-suite command; use the `smoke` target or a focused test filter for
-faster iteration.
+harness runs tests in parallel inside each integration-test binary, and the full
+suite supports that default execution mode. On slower or resource-constrained
+machines, use the `smoke` target or a focused test filter for faster iteration.
 
 The full suite is intentionally broad: most tests create a fresh PocketIC
 instance and reinstall the Router, Index, and Graph canisters to preserve test

@@ -70,6 +70,13 @@ The Graph executor supports one top-level non-leading `PlanOp::Search` per plan 
 - If the bound vertex is absent from a row the row is dropped (inner-join semantics).
 - A `PlanOp::Search` without a decoded `resolved_search_blob` fails closed because the Router has not lowered it.
 
+For a leading `NodeScan + Search` with a `WHERE` equality predicate, the Router does not
+forward a vector request when the Property Index candidate set is empty. Instead it dispatches the
+stripped tail plan with an empty `SeedBindingsWire` to every live shard, so a global aggregate over
+zero seed rows still produces one `count = 0` row. When the candidate set is non-empty, the vector
+canister receives a bounded allowlist and returns exact top-k hits; the normal leading-search
+hit-shard-only dispatch then applies.
+
 ## Materialization
 
 Internal bindings may stay lazy until output:

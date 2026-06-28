@@ -1,9 +1,9 @@
 # 0034. Gleaph GQL extension syntax surface
 
 Date: 2026-06-25
-Status: accepted (syntax design; Rust manifest implemented; SEARCH parser/planner and Router lowering for the accepted shape implemented; remaining syntax staged by feature)
-Last revised: 2026-06-27
-Anchor timestamp: 2026-06-27 10:59:48 UTC +0000
+Status: accepted (syntax design; Rust manifest implemented; SEARCH parser/planner and Router lowering implemented, including Slice 6 leading labeled `SEARCH ... WHERE` equality filter; remaining syntax staged by feature)
+Last revised: 2026-06-28
+Anchor timestamp: 2026-06-28 01:05:14 UTC +0000
 
 > **Summary.** Gleaph needs a coherent public GQL dialect surface for IC values, graph-local inline
 > edge data, vector search, shortest-path costs, and operational procedures. This ADR accepts a
@@ -178,8 +178,9 @@ Planned migration path:
    change behavior (done).
 4. Keep existing `GLEAPH.WEIGHT` / `GLEAPH.VECTOR.*` behavior while adding ordinary-property inline
    syntax in schema/planner/executor slices.
-5. Add `SEARCH` parser/planner support as a Gleaph dialect feature (done). Router lowering to the existing vector search API is implemented for the narrow leading `NodeScan + Search` prefix and for one top-level non-leading `SEARCH` after a bound vertex, vertex-only, no `WHERE`. `DISTANCE AS` is accepted for distance-only metrics and `SCORE AS` is accepted for exact-scan cosine indexes (`nlist == 1`); `SCORE AS` is rejected for metrics that have no natural score (e.g. `L2Squared`). Cosine partition-page scan (`nlist > 1`) is fail-closed in the vector canister in this slice. Non-leading `SEARCH` semantics are exactly `input rows INNER JOIN global vector top-k` on the bound vertex; vector search runs once per query, global top-k is computed before the join, and row multiplicity is preserved. Correlated/per-row `FOR`/`LIMIT`, candidate-restricted top-k, nested/multiple search, `SEARCH ... WHERE`, and edge subjects remain planned.
-6. Mark procedure-shaped vector search as internal/escape-hatch only if it is ever added.
+5. Add `SEARCH` parser/planner support as a Gleaph dialect feature (done). Router lowering to the existing vector search API is implemented for the narrow leading `NodeScan + Search` prefix and for one top-level non-leading `SEARCH` after a bound vertex, vertex-only. `DISTANCE AS` is accepted for distance-only metrics and `SCORE AS` is accepted for exact-scan cosine indexes (`nlist == 1`); `SCORE AS` is rejected for metrics that have no natural score (e.g. `L2Squared`). Cosine partition-page scan (`nlist > 1`) is fail-closed in the vector canister in this slice. Non-leading `SEARCH` semantics are exactly `input rows INNER JOIN global vector top-k` on the bound vertex; vector search runs once per query, global top-k is computed before the join, and row multiplicity is preserved. Correlated/per-row `FOR`/`LIMIT`, nested/multiple search, and edge subjects remain planned.
+6. Add leading labeled `SEARCH ... WHERE` equality filter (ADR 0034 Slice 6, done). The planner accepts one same-binding property equality predicate (`d.category = $category` or `$category = d.category`) and carries it in `PlanOp::Search`; the Router proves exact label/property index coverage, resolves a bounded candidate allowlist from the Property Index, and asks Vector Index to rank exactly within that set. Empty candidates preserve the leading-search aggregate dispatch contract; candidate sets larger than 4096 fail explicitly.
+7. Mark procedure-shaped vector search as internal/escape-hatch only if it is ever added.
 
 ## Design Documentation Impact
 

@@ -1,11 +1,11 @@
 # Gleaph GQL extension syntax
 
-Last updated: 2026-06-27
-Anchor timestamp: 2026-06-27 10:59:48 UTC +0000
+Last updated: 2026-06-28
+Anchor timestamp: 2026-06-28 01:05:14 UTC +0000
 
 ## Status
 
-**Dialect contract with a canonical Rust manifest and partially implemented pieces.** This document
+**Dialect contract with a canonical Rust manifest and partially implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter is implemented; other predicate forms remain planned.** This document
 is the steady-state public syntax contract for Gleaph-specific GQL extensions. It complements:
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
@@ -45,7 +45,7 @@ semantics.
 | Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph query executor                                                                        |
 | Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph edge storage/execution                                                                |
 | Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Planner fusion + Graph edge payload executor                                                |
-| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, and non-leading `SEARCH` inner-joined on a bound vertex; `SCORE AS` rejected for distance-only metrics; `WHERE`, edge subjects, nested/multiple search, and correlated `FOR`/`LIMIT` remain planned | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
+| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, leading `SEARCH ... WHERE` equality on a labeled vertex with exact label/property index coverage, and non-leading `SEARCH` inner-joined on a bound vertex; `SCORE AS` rejected for distance-only metrics; `WHERE` is fail-closed and index-owned, with only one same-binding equality predicate supported; edge subjects, nested/multiple search, and correlated `FOR`/`LIMIT` remain planned | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
 | Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                                                                                                                                                                                                                                                                          | Graph mutation executor / Router orchestration                                              |
 
 ## Namespace policy
@@ -396,23 +396,28 @@ but there must be no implicit `distance` or `score` binding.
 
 ### Optional in-index filtering
 
-`SEARCH ... WHERE` is parsed but rejected at planning time in this slice. It is reserved for future in-index filtering:
+`SEARCH ... WHERE` is implemented for one leading labeled equality predicate. The accepted shape is:
 
 ```gql
 MATCH (d:Document)
   SEARCH d IN (
     VECTOR INDEX document_embedding
     FOR $query
-    WHERE d.published_at >= $cutoff
+    WHERE d.category = $category
     LIMIT 100
   ) SCORE AS similarity
 RETURN d, similarity
 ```
 
-When implemented, the predicate subset must be explicit and index-owned; unsupported filters must fail closed rather than silently becoming post-filters.
-Initial implementation may reject this subclause. When implemented, the predicate subset must be
-explicit and index-owned; unsupported filters must fail closed rather than silently becoming
-post-filters.
+The predicate must be a single equality comparison between a property of the searched binding and a
+literal or parameter (either operand order is accepted). The property must have an active vertex
+equality index for the same label; otherwise the query fails explicitly. The result is the exact vector
+top-k over the property-index candidate set, not a post-filter over the unrestricted top-k. Candidate
+sets are bounded to `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096) distinct subjects; larger sets fail
+explicitly. Empty candidates preserve the leading-search global aggregate dispatch contract.
+Unsupported predicate forms — range, compound, `NULL`, functions, computed expressions, other bindings,
+edge subjects, and non-leading filters — remain planned and are rejected fail-closed rather than
+becoming post-filters.
 
 ### Internal lowering
 
@@ -420,18 +425,28 @@ Slice 3 lowers a leading `NodeScan(variable = d, label: optional)` followed by `
 to the existing Router/vector-index API and then dispatches the remaining graph-tail plan from
 row-shaped vector-search seeds. Slice 5 lowers one top-level non-leading `PlanOp::Search` to a
 Router-resolved global top-k relation that is partitioned by live shard and inner-joined against the
-already-bound vertex rows in Graph execution. The Router:
+already-bound vertex rows in Graph execution. ADR 0034 Slice 6 adds a filtered leading path: the
+planner validates expression shape, the Router proves exact label/property index coverage and resolves
+a bounded candidate allowlist from the Property Index, and Vector Index ranks exactly over that
+allowlist. The Router:
 
 1. Resolves the embedding name from `VECTOR INDEX <name>` against the Router catalog.
 2. Evaluates `FOR $query` and `LIMIT n` from literals or parameters; both must be row-invariant.
-3. Calls the existing `router.vector_search(...)` exactly once per query to obtain hits.
-4. Leading and non-leading search share the same derived-index staleness contract: a hit whose
+3. For a filtered leading search, proves an active vertex equality index for the exact
+   `(graph_id, label_id, property_id)` tuple, encodes the comparison value, and collects at most
+   `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096) distinct candidate subjects via paginated
+   `lookup_equal_page`. An empty candidate set skips the vector canister and dispatches the stripped
+   plan with an empty seed relation to every live shard so global aggregates still run. A non-empty
+   set is forwarded as `VectorSearchRequest.candidate_subjects`.
+4. Calls the vector canister exactly once per query to obtain hits; `candidate_subjects = None` keeps
+   the existing unrestricted search semantics.
+5. Leading and non-leading search share the same derived-index staleness contract: a hit whose
    owning shard is no longer live is ignored rather than failing the query. The remaining hits form
    the global top-k relation according to the configured metric.
-5. For a leading search, builds per-shard row-shaped seeds carrying the matched vertex binding and the
+6. For a leading search, builds per-shard row-shaped seeds carrying the matched vertex binding and the
    `DISTANCE AS` / `SCORE AS` scalar alias; strips the `NodeScan + Search` prefix and dispatches the
    tail plan to graph shards with the row-shaped seeds.
-6. For a non-leading search, converts raw hits to finite user-visible scalar values, partitions them
+7. For a non-leading search, converts raw hits to finite user-visible scalar values, partitions them
    by owning shard, and attaches an explicit per-shard resolved relation to the normal read dispatch;
    shards with no local hit receive an explicit empty relation, so empty hits still run any remaining
    plan (e.g., a global aggregate returns one zero row). Graph executes the operator as an inner
@@ -443,11 +458,13 @@ For this slice the accepted shape is intentionally narrow:
 - vertex-only (`d` must be a vertex binding);
 - one `SEARCH` per plan, at the top level (no nested or repeated search);
 - leading `NodeScan + Search` or one non-leading `SEARCH` after a bound vertex;
+- leading `SEARCH ... WHERE` is limited to one same-binding property equality predicate with a
+  literal or parameter, and the property must have an active vertex equality index for the same label;
 - non-leading `SEARCH` requires row-invariant `FOR` and `LIMIT` (literals or parameters);
 - `DISTANCE AS` accepted for all metrics;
 - `SCORE AS` rejected when the metric has no natural score (e.g. `L2Squared`);
-- no `WHERE` in-index filtering;
-- no edge subjects;
+- no other `WHERE` in-index filtering (range, compound, functions, other bindings, edge subjects,
+  correlated/per-row predicates);
 - no correlated/per-row top-k or `FOR`/`LIMIT`;
 - no mutation tail;
 - hits for non-live shards are ignored consistently for both leading and non-leading search.

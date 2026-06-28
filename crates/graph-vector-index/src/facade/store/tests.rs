@@ -6,9 +6,9 @@ use candid::Principal;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::vector_index::{
-    MAX_VECTOR_SEARCH_TOP_K, VectorEmbeddingSyncOp, VectorEncoding, VectorIndexError,
-    VectorMaintenancePolicy, VectorMaintenanceRecommendation, VectorMetric,
-    VectorPartitionPageHealth, VectorSearchRequest, VectorSubject,
+    MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorEmbeddingSyncOp,
+    VectorEncoding, VectorIndexError, VectorMaintenancePolicy, VectorMaintenanceRecommendation,
+    VectorMetric, VectorPartitionPageHealth, VectorSearchRequest, VectorSubject,
 };
 
 const INDEX_ID: u32 = 1;
@@ -658,6 +658,7 @@ fn search_value(value: f32, top_k: u32) -> VectorSearchRequest {
         dims: DIMS,
         metric: VectorMetric::L2Squared,
         top_k,
+        candidate_subjects: None,
     }
 }
 
@@ -670,6 +671,7 @@ fn search_nonzero(value: f32, top_k: u32) -> VectorSearchRequest {
         dims: DIMS,
         metric: VectorMetric::L2Squared,
         top_k,
+        candidate_subjects: None,
     }
 }
 
@@ -717,6 +719,7 @@ fn search_metric_from(values: &[f32], top_k: u32, metric: VectorMetric) -> Vecto
         dims: DIMS,
         metric,
         top_k,
+        candidate_subjects: None,
     }
 }
 
@@ -902,6 +905,7 @@ fn search_rejects_dimension_mismatch() {
         dims: DIMS + 1,
         metric: VectorMetric::L2Squared,
         top_k: 10,
+        candidate_subjects: None,
     };
     assert_eq!(
         store.vector_search(&req).unwrap_err(),
@@ -922,6 +926,7 @@ fn search_rejects_byte_width_mismatch() {
         dims: DIMS,
         metric: VectorMetric::L2Squared,
         top_k: 10,
+        candidate_subjects: None,
     };
     assert_eq!(
         store.vector_search(&req).unwrap_err(),
@@ -3463,4 +3468,110 @@ fn maintenance_endpoints_reject_non_router_and_unknown_index() {
             .unwrap_err(),
         VectorIndexError::Unauthorized
     );
+}
+
+// --- ADR 0034 Slice 6: candidate-restricted vector search tests ---
+
+#[test]
+fn candidate_search_restricts_top_k_to_allowlist() {
+    let store = fresh_store();
+    // Three vectors at 0.0, 1.0, 2.0. Query at 0.0, top_k=2.
+    // Unrestricted would return vertices 7 (distance 0) and 8 (distance 1).
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 0.0))
+        .expect("upsert 7");
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(8, 1, 1.0))
+        .expect("upsert 8");
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(9, 1, 2.0))
+        .expect("upsert 9");
+
+    let mut req = search_value(0.0, 2);
+    req.candidate_subjects = Some(vec![subject(8), subject(9)]);
+    let result = store.vector_search(&req).expect("candidate search");
+    assert_eq!(result.hits.len(), 2);
+    assert_eq!(result.hits[0].subject, subject(8));
+    assert_eq!(result.hits[1].subject, subject(9));
+    // Vertex 7 is nearer but outside the allowlist.
+    assert!(!result.hits.iter().any(|h| h.subject == subject(7)));
+}
+
+#[test]
+fn candidate_search_empty_allowlist_returns_no_hits() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .expect("upsert");
+    let mut req = search_value(0.0, 10);
+    req.candidate_subjects = Some(vec![]);
+    let result = store.vector_search(&req).expect("empty candidate search");
+    assert!(result.hits.is_empty());
+}
+
+#[test]
+fn candidate_search_skips_absent_and_deleted_subjects() {
+    let store = fresh_store();
+    // Live subject 7.
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .expect("upsert 7");
+    // Absent subject 8 is not in the index.
+    // Deleted subject 9.
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(9, 1, 2.0))
+        .expect("upsert 9");
+    store
+        .vector_remove(shard_canister(), &remove_op(9, 2))
+        .expect("remove 9");
+
+    let mut req = search_value(0.0, 10);
+    req.candidate_subjects = Some(vec![subject(7), subject(8), subject(9)]);
+    let result = store.vector_search(&req).expect("candidate search");
+    assert_eq!(result.hits.len(), 1);
+    assert_eq!(result.hits[0].subject, subject(7));
+}
+
+#[test]
+fn candidate_search_preserves_none_as_unrestricted_path() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 0.0))
+        .expect("upsert 7");
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(8, 1, 1.0))
+        .expect("upsert 8");
+
+    let req = search_value(0.0, 10);
+    assert!(req.candidate_subjects.is_none());
+    let result = store.vector_search(&req).expect("unrestricted search");
+    assert_eq!(result.hits.len(), 2);
+    assert_eq!(result.hits[0].subject, subject(7));
+}
+
+#[test]
+fn candidate_search_rejects_oversized_allowlist() {
+    let store = fresh_store();
+    let mut req = search_value(0.0, 10);
+    let too_many: Vec<VectorSubject> = (0..MAX_VECTOR_SEARCH_FILTER_CANDIDATES as u32 + 1)
+        .map(|i| VectorSubject::Vertex {
+            shard_id: ShardId::new(0),
+            vertex_id: i,
+        })
+        .collect();
+    req.candidate_subjects = Some(too_many);
+    let err = store.vector_search(&req).expect_err("oversized allowlist");
+    assert!(matches!(err, VectorIndexError::InvalidSearchCandidates));
+}
+
+#[test]
+fn candidate_search_rejects_duplicate_subjects() {
+    let store = fresh_store();
+    store
+        .vector_upsert(shard_canister(), &upsert_vec(7, 1, 1.0))
+        .expect("upsert");
+    let mut req = search_value(0.0, 10);
+    req.candidate_subjects = Some(vec![subject(7), subject(7)]);
+    let err = store.vector_search(&req).expect_err("duplicate candidates");
+    assert!(matches!(err, VectorIndexError::InvalidSearchCandidates));
 }

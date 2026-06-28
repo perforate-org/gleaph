@@ -50,6 +50,65 @@ pub(super) fn detect_conditional_candidates(
     candidates
 }
 
+/// Validates that a SEARCH ... WHERE filter is exactly one equality comparison between a
+/// property of the searched binding and a literal or parameter (ADR 0034 Slice 6).
+///
+/// The planner is provider-neutral: it checks expression shape only. Label and index coverage
+/// are validated later by the Router, which owns the named-index catalog.
+fn validate_search_filter(
+    filter: &gleaph_gql::ast::Expr,
+    binding: &str,
+) -> Result<(), PlannerError> {
+    let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &filter.kind else {
+        return Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE must be a single equality comparison in this slice".into(),
+        ));
+    };
+    if *op != gleaph_gql::ast::CmpOp::Eq {
+        return Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE only supports equality (=) in this slice".into(),
+        ));
+    }
+
+    fn is_bound_property<'a>(expr: &'a gleaph_gql::ast::Expr, binding: &'a str) -> Option<&'a str> {
+        match &expr.kind {
+            gleaph_gql::ast::ExprKind::PropertyAccess {
+                expr: base,
+                property,
+            } => {
+                if matches!(&base.kind, gleaph_gql::ast::ExprKind::Variable(name) if name == binding)
+                {
+                    Some(property.as_str())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn is_literal_or_parameter(expr: &gleaph_gql::ast::Expr) -> bool {
+        matches!(
+            &expr.kind,
+            gleaph_gql::ast::ExprKind::Literal(_) | gleaph_gql::ast::ExprKind::Parameter(_)
+        )
+    }
+
+    let left_is_property = is_bound_property(left, binding).is_some();
+    let right_is_property = is_bound_property(right, binding).is_some();
+    let left_is_value = is_literal_or_parameter(left);
+    let right_is_value = is_literal_or_parameter(right);
+
+    let valid = (left_is_property && right_is_value) || (right_is_property && left_is_value);
+    if !valid {
+        return Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE must compare a property of the searched binding with a literal or parameter in this slice".into(),
+        ));
+    }
+
+    Ok(())
+}
+
 #[allow(clippy::too_many_arguments)]
 pub(super) fn plan_simple_statement(
     stmt: &SimpleQueryStatement,
@@ -140,10 +199,8 @@ pub(super) fn plan_simple_statement(
                     s.binding
                 )));
             }
-            if let Some(ref filter) = s.provider.filter() {
-                return Err(PlannerError::UnsupportedPattern(format!(
-                    "SEARCH ... WHERE filter is not supported yet: {filter:?}"
-                )));
+            if let Some(filter) = s.provider.filter() {
+                validate_search_filter(filter, &s.binding)?;
             }
             let provider = match &s.provider {
                 SearchProvider::VectorIndex(spec) => SearchProviderPlan::VectorIndex {
@@ -281,3 +338,95 @@ mod path;
 mod result;
 
 pub(crate) use result::plan_result_statement;
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gleaph_gql::Value;
+    use gleaph_gql::ast::{Expr, ExprKind};
+
+    fn prop(var: &str, property: &str) -> Expr {
+        Expr::new(ExprKind::PropertyAccess {
+            expr: Box::new(Expr::new(ExprKind::Variable(var.to_string()))),
+            property: property.to_string(),
+        })
+    }
+
+    fn lit(value: Value) -> Expr {
+        Expr::new(ExprKind::Literal(value))
+    }
+
+    fn param(name: &str) -> Expr {
+        Expr::new(ExprKind::Parameter(name.to_string()))
+    }
+
+    fn cmp(left: Expr, right: Expr) -> Expr {
+        Expr::new(ExprKind::Compare {
+            left: Box::new(left),
+            op: gleaph_gql::ast::CmpOp::Eq,
+            right: Box::new(right),
+        })
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_property_literal_equality() {
+        let filter = cmp(prop("d", "category"), lit(Value::Text("doc".into())));
+        validate_search_filter(&filter, "d").expect("property = literal should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_literal_property_equality_reversed() {
+        let filter = cmp(lit(Value::Text("doc".into())), prop("d", "category"));
+        validate_search_filter(&filter, "d").expect("literal = property should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_property_parameter_equality() {
+        let filter = cmp(prop("d", "category"), param("$category"));
+        validate_search_filter(&filter, "d").expect("property = parameter should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_range_comparison() {
+        let filter = Expr::new(ExprKind::Compare {
+            left: Box::new(prop("d", "category")),
+            op: gleaph_gql::ast::CmpOp::Lt,
+            right: Box::new(lit(Value::Text("doc".into()))),
+        });
+        let err = validate_search_filter(&filter, "d").expect_err("range should be rejected");
+        assert!(err.to_string().contains("equality"));
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_compound_expression() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "category"), lit(Value::Text("doc".into())))),
+            Box::new(cmp(prop("d", "tag"), lit(Value::Text("hot".into())))),
+        ));
+        let err = validate_search_filter(&filter, "d").expect_err("compound should be rejected");
+        assert!(err.to_string().contains("single equality comparison"));
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_other_binding_property() {
+        let filter = cmp(prop("a", "category"), lit(Value::Text("doc".into())));
+        let err =
+            validate_search_filter(&filter, "d").expect_err("other binding should be rejected");
+        assert!(err.to_string().contains("property of the searched binding"));
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_computed_value_side() {
+        let filter = cmp(
+            prop("d", "category"),
+            Expr::new(ExprKind::BinaryOp {
+                left: Box::new(lit(Value::Int64(1))),
+                op: gleaph_gql::ast::BinaryOp::Add,
+                right: Box::new(lit(Value::Int64(2))),
+            }),
+        );
+        let err =
+            validate_search_filter(&filter, "d").expect_err("computed value should be rejected");
+        assert!(err.to_string().contains("literal or parameter"));
+    }
+}

@@ -1033,6 +1033,11 @@ async fn run_wire_plans_inner(
     } else {
         (Vec::new(), false)
     };
+    // Tracks whether the router's seed relation has not yet been consumed by the first read plan.
+    // This lets an explicitly empty seed relation (zero rows) still drive the first read plan
+    // with skip-leading-scan semantics, while later plans in the bundle fall back to a synthetic
+    // empty row as before (ADR 0034 Slice 6 empty-hit dispatch).
+    let mut seeds_remaining = seeds.is_some();
 
     for (plan_idx, plan) in plans.iter().enumerate() {
         if plan_needs_mutation_executor(plan) {
@@ -1125,9 +1130,18 @@ async fn run_wire_plans_inner(
             }
             skip_index = false;
             seed_rows.clear();
+            seeds_remaining = false;
         } else {
-            // Seeds apply to the first read plan that still has rows; `mem::take` consumes them once.
-            let use_seeds = skip_index && !seed_rows.is_empty();
+            // Seeds apply to the first read plan that consumes them; `mem::take` consumes them once.
+            // An explicitly empty seed relation must still drive that first plan with skip-leading-
+            // scan semantics so aggregate `count(*)` over zero seed rows returns 0 (ADR 0034 Slice 6).
+            // After consumption, subsequent plans fall back to a synthetic empty row as before.
+            let use_seeds = if seeds_remaining {
+                seeds_remaining = false;
+                skip_index
+            } else {
+                skip_index && !seed_rows.is_empty()
+            };
             let initial = if use_seeds {
                 std::mem::take(&mut seed_rows)
             } else {

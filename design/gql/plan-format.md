@@ -66,6 +66,31 @@ For a non-leading `PlanOp::Search` the Router supplies `ExecutePlanArgs.resolved
 
 For a leading `NodeScan + Search` prefix the Router strips the prefix and dispatches the tail plan with row-shaped `seed_bindings_blob`; the Graph executor never sees a raw `PlanOp::Search`.
 
+
+### Filtered search contract
+
+For a leading `NodeScan + Search` with an accepted `WHERE` equality predicate:
+
+- The planner carries the filter expression in `PlanOp::Search` after structural validation: exactly
+  one equality comparison between a property of the searched binding and a literal or parameter, with
+  either operand order accepted. The planner does not verify label or index coverage.
+- The Router resolves the searched label and filter property to router-issued ids, proves an active
+  vertex equality index for the exact `(graph_id, label_id, property_id)` tuple in the named-index
+  catalog, encodes the comparison value with `gleaph_gql::value_to_index_key_bytes`, and validates the
+  encoded size against `MAX_INDEX_VALUE_KEY_BYTES` before calling the index.
+- The Router collects at most `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096) distinct vertex subjects
+  from the Property Index via paginated `lookup_equal_page`. Deduplicating by `(shard_id, vertex_id)`,
+  it stops as soon as a 4097th distinct subject is observed and returns an explicit error instead of
+  truncating. Malformed postings are rejected.
+- If the candidate set is empty, the Router skips the vector canister and dispatches the stripped plan
+  with an empty `SeedBindingsWire` to every live shard, preserving the leading-search global aggregate
+  contract.
+- Otherwise the Router forwards one `VectorSearchRequest` with `candidate_subjects = Some(allowlist)`
+  to the vector canister. `candidate_subjects = None` retains the existing unrestricted search semantics;
+  `Some([])` is an empty allowlist that returns no hits.
+- The vector canister validates the allowlist count, vertex-only subjects, and duplicates at its
+  boundary, then ranks exactly over current live vector slots for those subjects.
+
 ## Federation interaction
 
 - Planner emits normal `IndexScan` / `Expand`; no `ShardId` in `PlanOp`.

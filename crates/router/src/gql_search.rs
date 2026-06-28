@@ -10,35 +10,38 @@ use candid::Encode;
 use std::collections::BTreeMap;
 
 use crate::planner_stats::RouterGraphStats;
-use gleaph_gql::Value;
 use gleaph_gql::ast::ExprKind;
+use gleaph_gql::{Value, value_to_index_key_bytes};
 use gleaph_gql_planner::plan::{
     NodeLabelRef, PhysicalPlan, PlanOp, SearchOutputKind, SearchOutputPlan, SearchProviderPlan, Str,
 };
-use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
+use gleaph_graph_kernel::entry::{GraphId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
+use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, GqlExecutionMode, GqlQueryResult, ResolvedSearchVertexHitWire,
     ResolvedSearchWire, SeedBindingsWire, SeedFloat64Binding, SeedRowWire, SeedVertexBinding,
 };
 use gleaph_graph_kernel::vector_index::{
-    MAX_VECTOR_SEARCH_TOP_K, VectorMetric, VectorOutputShape, VectorSearchHit, VectorSubject,
+    MAX_VECTOR_SEARCH_FILTER_CANDIDATES, MAX_VECTOR_SEARCH_TOP_K, VectorMetric, VectorOutputShape,
+    VectorSearchHit, VectorSearchRequest, VectorSubject,
 };
 
 use crate::RouterStore;
-use crate::facade::stable::{embedding_name_catalog, graph_catalog, vector_index_catalog};
+use crate::facade::stable::{embedding_name_catalog, indexed_catalog, vector_index_catalog};
 use crate::federation::{
     empty_execute_plan_result, federated_merge_mode_from_plans, merge_execute_plan_result,
 };
 use crate::graph_client::execute_plan_on_graph;
+use crate::index_client::RouterIndexClient;
 use crate::state::RouterError;
-use crate::types::RouterVectorSearchRequest;
 
 /// Execute a GQL plan whose leading ops are a supported `SEARCH` vector-search prefix.
 ///
 /// Returns `Ok(None)` if the plan does not contain `PlanOp::Search` at all, allowing the caller
 /// to fall through to the normal dispatch path. Returns `Err` for any `SEARCH` shape that is not
 /// accepted by Slice 3.
+#[allow(clippy::needless_borrow)]
 pub(crate) async fn try_execute_gql_search<V, Vf>(
     plan: &PhysicalPlan,
     graph_id: GraphId,
@@ -50,7 +53,7 @@ pub(crate) async fn try_execute_gql_search<V, Vf>(
     vector_search: V,
 ) -> Result<Option<GqlQueryResult>, RouterError>
 where
-    V: FnOnce(RouterVectorSearchRequest) -> Vf,
+    V: FnOnce(candid::Principal, VectorSearchRequest) -> Vf,
     Vf: std::future::Future<
             Output = Result<gleaph_graph_kernel::vector_index::VectorSearchResult, RouterError>,
         >,
@@ -117,16 +120,80 @@ where
         }
     }
 
-    let logical_graph_name = graph_catalog::graph_name(graph_id)
-        .ok_or_else(|| RouterError::NotFound(format!("graph id {graph_id}")))?;
-    let req = RouterVectorSearchRequest {
-        logical_graph_name,
+    // ADR 0034 Slice 6: a filtered leading search resolves a bounded candidate allowlist from
+    // the label-scoped Property Index before asking Vector Index to rank within that set.
+    let candidate_subjects = match &shape.filter {
+        Some(filter) => {
+            if !matches!(position, SearchPosition::Leading(_)) {
+                return Err(RouterError::InvalidArgument(
+                    "SEARCH ... WHERE is only supported for a leading labeled search in this slice"
+                        .into(),
+                ));
+            }
+            let label_id = shape.required_label_ids.first().copied().ok_or_else(|| {
+                RouterError::InvalidArgument(
+                    "SEARCH ... WHERE requires a labeled leading search in this slice".into(),
+                )
+            })?;
+            let candidates = resolve_filtered_candidates(
+                graph_id,
+                store,
+                label_id,
+                &shape.binding,
+                filter,
+                &params,
+            )
+            .await?;
+            if candidates.is_empty() {
+                // Empty candidate set: skip the vector canister and feed the existing empty-hit
+                // leading dispatch path so global aggregates still produce one count=0 row.
+                let empty_result =
+                    gleaph_graph_kernel::vector_index::VectorSearchResult { hits: Vec::new() };
+                let stripped_plan = strip_search_prefix(plan, &shape)?;
+                let stripped_plan_blob = gleaph_gql_planner::wire::encode_block_plans(
+                    std::slice::from_ref(&stripped_plan),
+                    false,
+                )
+                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+                return dispatch_search_read_plan(
+                    graph_id,
+                    plan,
+                    &stripped_plan_blob,
+                    &stripped_plan,
+                    build_search_seeds(
+                        &shape.binding,
+                        &shape.output_alias,
+                        &shape.required_label_ids,
+                        &empty_result.hits,
+                        def.metric,
+                    )?,
+                    params_blob,
+                    mode,
+                    stats,
+                    store,
+                )
+                .await
+                .map(Some);
+            }
+            Some(candidates)
+        }
+        None => None,
+    };
+
+    let target = def
+        .target
+        .ok_or_else(|| RouterError::Conflict(format!("vector index {index_id} has no target set")))?
+        .canister;
+    let search_req = VectorSearchRequest {
         index_id,
         query,
+        encoding: def.encoding,
         dims: def.dims,
+        metric: def.metric,
         top_k,
+        candidate_subjects,
     };
-    let result = vector_search(req).await?;
+    let result = vector_search(target, search_req).await?;
 
     match position {
         SearchPosition::Leading(shape) => {
@@ -197,6 +264,16 @@ fn search_shape_from_position(position: &SearchPosition) -> &SearchShape {
     }
 }
 
+/// One accepted SEARCH ... WHERE equality predicate on the searched binding.
+///
+/// The property side is normalized to `(property_name)`. The value side is the literal or
+/// parameter expression; it is resolved once against the decoded parameters at execution time.
+#[derive(Debug)]
+struct SearchFilter {
+    property_name: String,
+    value_expr: gleaph_gql::ast::Expr,
+}
+
 #[derive(Debug)]
 struct SearchShape {
     binding: String,
@@ -206,6 +283,7 @@ struct SearchShape {
     output_alias: String,
     output_kind: SearchOutputKind,
     required_label_ids: Vec<VertexLabelId>,
+    filter: Option<SearchFilter>,
 }
 
 #[derive(Debug)]
@@ -255,6 +333,11 @@ fn analyze_search_shape(
             output,
             label.as_ref(),
         )?;
+        if shape.filter.is_some() && shape.required_label_ids.is_empty() {
+            return Err(RouterError::InvalidArgument(
+                "SEARCH ... WHERE requires a labeled leading search in this slice".into(),
+            ));
+        }
         return Ok(SearchPosition::Leading(shape));
     }
 
@@ -315,17 +398,16 @@ fn extract_shape_from_search_op(
         filter,
     } = provider;
 
-    if filter.is_some() {
-        return Err(RouterError::InvalidArgument(
-            "SEARCH ... WHERE is not supported yet".into(),
-        ));
-    }
-
     let required_label_ids = node_scan_label
         .map(|label| resolve_vertex_label_id(graph_id, store, label))
         .transpose()?
         .into_iter()
         .collect();
+
+    let filter = filter
+        .as_ref()
+        .map(|expr| extract_search_filter(binding, expr))
+        .transpose()?;
 
     Ok(SearchShape {
         binding: binding.to_string(),
@@ -335,7 +417,62 @@ fn extract_shape_from_search_op(
         output_alias: output.alias.to_string(),
         output_kind: output.kind,
         required_label_ids,
+        filter,
     })
+}
+
+/// Extract an accepted equality predicate from the planner-validated filter expression.
+/// The planner already guaranteed exactly one side is `binding.property` and the other is a
+/// literal or parameter, so this function only normalizes which side is which.
+fn extract_search_filter(
+    binding: &str,
+    expr: &gleaph_gql::ast::Expr,
+) -> Result<SearchFilter, RouterError> {
+    let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &expr.kind else {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE must be an equality comparison".into(),
+        ));
+    };
+    if *op != gleaph_gql::ast::CmpOp::Eq {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE only supports equality (=)".into(),
+        ));
+    }
+
+    fn is_bound_property<'a>(expr: &'a gleaph_gql::ast::Expr, binding: &'a str) -> Option<&'a str> {
+        match &expr.kind {
+            gleaph_gql::ast::ExprKind::PropertyAccess {
+                expr: base,
+                property,
+            } => {
+                if matches!(
+                    &base.kind,
+                    gleaph_gql::ast::ExprKind::Variable(name) if name == binding
+                ) {
+                    Some(property.as_str())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    if let Some(property) = is_bound_property(left, binding) {
+        Ok(SearchFilter {
+            property_name: property.to_string(),
+            value_expr: *right.clone(),
+        })
+    } else if let Some(property) = is_bound_property(right, binding) {
+        Ok(SearchFilter {
+            property_name: property.to_string(),
+            value_expr: *left.clone(),
+        })
+    } else {
+        Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE must compare a property of the searched binding with a literal or parameter".into(),
+        ))
+    }
 }
 
 fn op_contains_search(op: &PlanOp) -> bool {
@@ -686,6 +823,171 @@ async fn dispatch_search_read_plan(
     Ok(GqlQueryResult::from_merged(&merged))
 }
 
+// ════════════════════════════════════════════════════════════════════════════════
+// ADR 0034 Slice 6: filtered SEARCH candidate resolution
+// ════════════════════════════════════════════════════════════════════════════════
+
+/// Resolve a bounded set of vector-search candidate subjects for one same-binding property
+/// equality predicate.
+///
+/// Steps:
+/// 1. Resolve the property name to a property id and verify an active vertex equality index for the
+///    exact `(label_id, property_id)` tuple.
+/// 2. Resolve the literal/parameter value and encode it with the shared property-index key encoder.
+/// 3. Validate the encoded key size against `MAX_INDEX_VALUE_KEY_BYTES`.
+/// 4. Page through the matching Property Index equality bucket, stopping at the 4097th distinct
+///    `(shard_id, vertex_id)` subject and returning an explicit error.
+async fn resolve_filtered_candidates(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    binding: &str,
+    filter: &SearchFilter,
+    params: &BTreeMap<String, Value>,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    let property_id = resolve_search_property_id(graph_id, store, binding, &filter.property_name)?;
+    if !indexed_catalog::has_exact_vertex_index(graph_id, label_id, property_id) {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE requires an active vertex equality index for label {} property {}",
+            label_id.raw(),
+            filter.property_name
+        )));
+    }
+
+    let value = resolve_filter_value(&filter.value_expr, params)?;
+    let encoded = encode_filter_value(&value)?;
+    if encoded.len() > MAX_INDEX_VALUE_KEY_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE value exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
+        )));
+    }
+
+    collect_bounded_candidates(graph_id, store, property_id, encoded).await
+}
+
+fn resolve_search_property_id(
+    graph_id: GraphId,
+    store: &RouterStore,
+    binding: &str,
+    property_name: &str,
+) -> Result<PropertyId, RouterError> {
+    store
+        .lookup_property_id(graph_id, property_name)
+        .map_err(|e| {
+            RouterError::InvalidArgument(format!(
+                "SEARCH ... WHERE binding `{binding}` property `{property_name}`: {e}"
+            ))
+        })
+}
+
+fn resolve_filter_value(
+    expr: &gleaph_gql::ast::Expr,
+    params: &BTreeMap<String, Value>,
+) -> Result<Value, RouterError> {
+    match &expr.kind {
+        ExprKind::Literal(v) => Ok(v.clone()),
+        ExprKind::Parameter(name) => {
+            let key = name.strip_prefix('$').unwrap_or(name.as_str());
+            params
+                .get(key)
+                .ok_or_else(|| RouterError::InvalidArgument(format!("missing parameter ${name}")))
+                .cloned()
+        }
+        _ => Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE value must be a literal or parameter".into(),
+        )),
+    }
+}
+
+fn encode_filter_value(value: &Value) -> Result<Vec<u8>, RouterError> {
+    if matches!(value, Value::Null) {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE value must not be NULL".into(),
+        ));
+    }
+    let Some(bytes) = value_to_index_key_bytes(value).map_err(|e| {
+        RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE value is not supported by property index keys: {e}"
+        ))
+    })?
+    else {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE value must not be NULL".into(),
+        ));
+    };
+    Ok(bytes)
+}
+
+const VECTOR_FILTER_PAGE_LIMIT: u32 = 10_000;
+
+/// Collect at most `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` distinct vertex subjects from the Property
+/// Index equality bucket for `(property_id, encoded_value)`. Stops at the first page that would
+/// exceed the bound and returns an explicit `InvalidArgument` error without materializing the
+/// remaining postings.
+async fn collect_bounded_candidates(
+    graph_id: GraphId,
+    store: &RouterStore,
+    property_id: PropertyId,
+    encoded_value: Vec<u8>,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    let targets = store
+        .graph_index_lookup_targets(graph_id)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    if targets.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "no index canister registered for logical graph".into(),
+        ));
+    }
+
+    let mut seen: std::collections::HashSet<(ShardId, u32)> = std::collections::HashSet::new();
+    let mut after: Option<gleaph_graph_kernel::index::PropertyPostingCursor> = None;
+    let mut target_idx = 0usize;
+
+    // Stream equality postings from each index canister one page at a time, keeping a single global
+    // deduplication set. The bound is checked before extending the result so we never retain more
+    // than the allowed number of distinct subjects.
+    while target_idx < targets.len() {
+        let principal = targets[target_idx];
+        let page = RouterIndexClient::new(principal)
+            .lookup_equal_page(gleaph_graph_kernel::index::LookupEqualPageRequest {
+                property_id: property_id.raw(),
+                value: encoded_value.clone(),
+                after,
+                limit: VECTOR_FILTER_PAGE_LIMIT,
+            })
+            .await
+            .map_err(|e| {
+                RouterError::InvalidArgument(format!("property-index lookup failed: {e}"))
+            })?;
+
+        for hit in page.hits {
+            if !seen.insert((hit.shard_id, hit.vertex_id)) {
+                continue;
+            }
+            if seen.len() > MAX_VECTOR_SEARCH_FILTER_CANDIDATES {
+                return Err(RouterError::InvalidArgument(format!(
+                    "SEARCH ... WHERE candidate set exceeds maximum of {MAX_VECTOR_SEARCH_FILTER_CANDIDATES}"
+                )));
+            }
+        }
+
+        if page.done {
+            target_idx += 1;
+            after = None;
+        } else {
+            after = page.next;
+        }
+    }
+
+    Ok(seen
+        .into_iter()
+        .map(|(shard_id, vertex_id)| VectorSubject::Vertex {
+            shard_id,
+            vertex_id,
+        })
+        .collect())
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -697,17 +999,18 @@ mod tests {
     use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
     use gleaph_graph_kernel::federation::ShardId;
     use gleaph_graph_kernel::vector_index::{
-        VectorEncoding, VectorIndexKind, VectorMetric, VectorSearchHit, VectorSearchResult,
-        VectorSubject,
+        VectorEncoding, VectorIndexKind, VectorMetric, VectorSearchHit, VectorSearchRequest,
+        VectorSearchResult, VectorSubject,
     };
     use std::collections::BTreeMap;
 
     fn vector_search_unreachable() -> impl FnOnce(
-        RouterVectorSearchRequest,
+        candid::Principal,
+        VectorSearchRequest,
     ) -> std::future::Ready<
         Result<VectorSearchResult, RouterError>,
     > {
-        |_req| {
+        |_target, _req| {
             std::future::ready(Err(RouterError::Internal(
                 "vector_search should not be called in this test".into(),
             )))
@@ -719,12 +1022,13 @@ mod tests {
     ) -> (
         std::sync::Arc<std::sync::atomic::AtomicUsize>,
         impl FnOnce(
-            RouterVectorSearchRequest,
+            candid::Principal,
+            VectorSearchRequest,
         ) -> std::future::Ready<Result<VectorSearchResult, RouterError>>,
     ) {
         let count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let count_clone = count.clone();
-        let mock = move |_req: RouterVectorSearchRequest| {
+        let mock = move |_target, _req: VectorSearchRequest| {
             count_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
             std::future::ready(Ok(VectorSearchResult { hits }))
         };
@@ -1080,6 +1384,7 @@ mod tests {
             output_alias: "distance".into(),
             output_kind: SearchOutputKind::Distance,
             required_label_ids: vec![],
+            filter: None,
         };
         let stripped = strip_search_prefix(&plan, &shape).unwrap();
         assert_eq!(stripped.ops.len(), 1);
@@ -1116,6 +1421,7 @@ mod tests {
             output_alias: "distance".into(),
             output_kind: SearchOutputKind::Distance,
             required_label_ids: vec![],
+            filter: None,
         };
         let err = strip_search_prefix(&plan, &shape).unwrap_err();
         assert!(err.to_string().contains("no tail"));
@@ -1195,6 +1501,14 @@ mod tests {
             3,
             None,
             false,
+        )
+        .unwrap();
+        vector_index_catalog::set_vector_index_target(
+            graph_id,
+            1,
+            vector_index_catalog::VectorIndexTarget {
+                canister: candid::Principal::from_slice(&[9]),
+            },
         )
         .unwrap();
     }
@@ -1781,6 +2095,169 @@ mod tests {
         let err = result.expect_err("SCORE AS on L2Squared must fail");
         assert!(
             err.to_string().contains("not supported for metric"),
+            "unexpected error: {err}"
+        );
+    }
+
+    // --- ADR 0034 Slice 6: filtered SEARCH classification and validation tests ---
+
+    fn filter_eq_expr(property: &str, value: Value) -> Expr {
+        Expr::new(ExprKind::Compare {
+            left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                expr: Box::new(Expr::new(ExprKind::Variable("d".to_string()))),
+                property: property.to_string(),
+            })),
+            op: gleaph_gql::ast::CmpOp::Eq,
+            right: Box::new(Expr::new(ExprKind::Literal(value))),
+        })
+    }
+
+    fn search_plan_with_filter(filter: Expr) -> PhysicalPlan {
+        PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "d".into(),
+                label: Some("Document".into()),
+                property_projection: None,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: bytes_expr(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+                    limit: Expr::int(10),
+                    filter: Some(filter),
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Distance,
+                    alias: "distance".into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ])
+    }
+
+    #[test]
+    fn extract_search_filter_normalizes_reversed_operands() {
+        let filter = Expr::new(ExprKind::Compare {
+            left: Box::new(Expr::new(ExprKind::Literal(Value::Text("doc".into())))),
+            op: gleaph_gql::ast::CmpOp::Eq,
+            right: Box::new(Expr::new(ExprKind::PropertyAccess {
+                expr: Box::new(Expr::new(ExprKind::Variable("d".to_string()))),
+                property: "category".to_string(),
+            })),
+        });
+        let f = extract_search_filter("d", &filter).expect("reversed operands");
+        assert_eq!(f.property_name, "category");
+        assert!(matches!(f.value_expr.kind, ExprKind::Literal(_)));
+    }
+
+    #[test]
+    fn analyze_search_shape_rejects_filtered_leading_without_label() {
+        let store = crate::facade::store::RouterStore::new();
+        store.init_from_args(&crate::init::RouterInitArgs {
+            issuing_principal: candid::Principal::anonymous(),
+            initial_admins: vec![],
+        });
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "d".into(),
+                label: None,
+                property_projection: None,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: bytes_expr(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+                    limit: Expr::int(10),
+                    filter: Some(filter_eq_expr("category", Value::Text("doc".into()))),
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Distance,
+                    alias: "distance".into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ]);
+        let err = analyze_search_shape(&plan, GraphId::from_raw(0), &store)
+            .expect_err("filtered search without label");
+        assert!(
+            err.to_string()
+                .contains("requires a labeled leading search"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_rejects_filtered_non_leading() {
+        let (store, _admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        let mut plan = non_leading_search_plan_with_distance();
+        if let PlanOp::Search { provider, .. } = &mut plan.ops[1] {
+            let SearchProviderPlan::VectorIndex { filter, .. } = provider;
+            *filter = Some(filter_eq_expr("category", Value::Text("doc".into())));
+        }
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("filtered non-leading must fail");
+        assert!(
+            err.to_string()
+                .contains("only supported for a leading labeled search"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_filtered_rejects_missing_exact_index() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern label");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
+            .expect("intern property");
+        // Property "category" is registered, but there is no active vertex equality index for
+        // (Document, category).
+        let plan = search_plan_with_filter(filter_eq_expr("category", Value::Text("doc".into())));
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("missing property must fail");
+        assert!(
+            err.to_string()
+                .contains("requires an active vertex equality index"),
             "unexpected error: {err}"
         );
     }
