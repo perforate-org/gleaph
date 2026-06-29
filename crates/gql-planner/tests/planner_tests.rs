@@ -369,7 +369,45 @@ fn test_search_where_range_rejects_mix_with_equality() {
 }
 
 #[test]
-fn test_search_where_range_rejects_two_range_conjuncts() {
+fn test_search_where_two_sided_range_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.price >= 10 AND d.price < 100 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    let filter = search_filter_from_plan(&plan);
+    assert!(
+        filter.is_some(),
+        "accepted two-sided range filter must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_two_sided_range_non_leading_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (a:Author)-[:WROTE]->(d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.price > $low AND d.price <= $high \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN a, d, similarity",
+    );
+    let filter = search_filter_from_plan(&plan);
+    assert!(
+        filter.is_some(),
+        "accepted non-leading two-sided range filter must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_two_sided_range_rejects_different_properties() {
     let err = plan_query_err(
         "MATCH (d:Document) \
          SEARCH d IN ( \
@@ -381,8 +419,62 @@ fn test_search_where_range_rejects_two_range_conjuncts() {
          RETURN d, similarity",
     );
     assert!(
+        err.to_string().contains("same property"),
+        "different-property ranges must be rejected, got {err}"
+    );
+}
+
+#[test]
+fn test_search_where_two_sided_range_rejects_two_lower_bounds() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.price >= 10 AND d.price > 5 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string().contains("lower bound"),
+        "two lower bounds must be rejected, got {err}"
+    );
+}
+
+#[test]
+fn test_search_where_two_sided_range_rejects_two_upper_bounds() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.price < 100 AND d.price <= 50 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string().contains("upper bound"),
+        "two upper bounds must be rejected, got {err}"
+    );
+}
+
+#[test]
+fn test_search_where_two_sided_range_rejects_equality_plus_range() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.price >= 10 AND d.price = 50 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
         err.to_string().contains("mix equality and range"),
-        "two range conjuncts must be rejected, got {err}"
+        "equality-plus-range must be rejected, got {err}"
     );
 }
 

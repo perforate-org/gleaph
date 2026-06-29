@@ -50,13 +50,15 @@ pub(super) fn detect_conditional_candidates(
     candidates
 }
 
-/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-9.
+/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-10.
 ///
 /// Accepts:
 /// - exactly one same-binding equality comparison between a property and a literal/parameter,
-/// - exactly two AND-connected same-binding equality comparisons on distinct properties, or
+/// - exactly two AND-connected same-binding equality comparisons on distinct properties,
 /// - exactly one same-binding range comparison (`<`, `<=`, `>`, `>=`) between a property and a
-///   literal/parameter.
+///   literal/parameter, or
+/// - exactly two same-binding range comparisons on the same property where one arm is a lower
+///   bound (`>`, `>=`) and the other is an upper bound (`<`, `<=`).
 ///
 /// The planner is provider-neutral: it checks expression shape only. Label, index coverage, and
 /// numeric-domain verification are validated later by the Router.
@@ -79,6 +81,10 @@ fn validate_search_filter(
     let all_equality = predicates
         .iter()
         .all(|p| matches!(p, SearchFilterPredicate::Equality { .. }));
+    let all_range = predicates
+        .iter()
+        .all(|p| matches!(p, SearchFilterPredicate::Range { .. }));
+
     if all_equality {
         let mut seen = std::collections::HashSet::new();
         for p in &predicates {
@@ -91,14 +97,59 @@ fn validate_search_filter(
             }
         }
         Ok(())
-    } else if predicates.len() == 1 {
-        match &predicates[0] {
-            SearchFilterPredicate::Range { .. } => Ok(()),
-            _ => unreachable!("non-equality single predicate must be a range"),
-        }
+    } else if predicates.len() == 1 && matches!(&predicates[0], SearchFilterPredicate::Range { .. })
+    {
+        Ok(())
+    } else if all_range {
+        validate_two_sided_range(&predicates)
     } else {
         Err(PlannerError::UnsupportedPattern(
             "SEARCH ... WHERE does not mix equality and range predicates in this slice".into(),
+        ))
+    }
+}
+
+fn validate_two_sided_range(predicates: &[SearchFilterPredicate]) -> Result<(), PlannerError> {
+    fn is_lower(op: gleaph_gql::ast::CmpOp) -> bool {
+        matches!(op, gleaph_gql::ast::CmpOp::Gt | gleaph_gql::ast::CmpOp::Ge)
+    }
+    fn is_upper(op: gleaph_gql::ast::CmpOp) -> bool {
+        matches!(op, gleaph_gql::ast::CmpOp::Lt | gleaph_gql::ast::CmpOp::Le)
+    }
+
+    if predicates.len() != 2 {
+        return Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE two-sided range requires exactly two range predicates".into(),
+        ));
+    }
+    let [first, second] = predicates else {
+        return Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE two-sided range requires exactly two range predicates".into(),
+        ));
+    };
+    let (prop1, op1) = match first {
+        SearchFilterPredicate::Range { property, op, .. } => (property, *op),
+        _ => unreachable!("validate_two_sided_range called with non-range"),
+    };
+    let (prop2, op2) = match second {
+        SearchFilterPredicate::Range { property, op, .. } => (property, *op),
+        _ => unreachable!("validate_two_sided_range called with non-range"),
+    };
+    if prop1 != prop2 {
+        return Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE two-sided range requires both predicates to refer to the same property".into(),
+        ));
+    }
+    if (is_lower(op1) && is_lower(op2)) || (is_upper(op1) && is_upper(op2)) {
+        return Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE two-sided range requires one lower bound (> or >=) and one upper bound (< or <=)".into(),
+        ));
+    }
+    if (is_lower(op1) && is_upper(op2)) || (is_upper(op1) && is_lower(op2)) {
+        Ok(())
+    } else {
+        Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE two-sided range requires one lower bound (> or >=) and one upper bound (< or <=)".into(),
         ))
     }
 }
@@ -583,7 +634,78 @@ mod tests {
     }
 
     #[test]
-    fn validate_search_filter_rejects_two_range_conjuncts() {
+    fn validate_search_filter_accepts_two_sided_numeric_range() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Ge,
+                lit(Value::Int64(5)),
+            )),
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Lt,
+                lit(Value::Int64(10)),
+            )),
+        ));
+        validate_search_filter(&filter, "d")
+            .expect("two-sided range on same property should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_two_sided_range_all_endpoint_combinations() {
+        let combos = [
+            (gleaph_gql::ast::CmpOp::Ge, gleaph_gql::ast::CmpOp::Lt),
+            (gleaph_gql::ast::CmpOp::Ge, gleaph_gql::ast::CmpOp::Le),
+            (gleaph_gql::ast::CmpOp::Gt, gleaph_gql::ast::CmpOp::Lt),
+            (gleaph_gql::ast::CmpOp::Gt, gleaph_gql::ast::CmpOp::Le),
+        ];
+        for (lower, upper) in combos {
+            let filter = Expr::new(ExprKind::And(
+                Box::new(cmp_op(prop("d", "price"), lower, lit(Value::Int64(5)))),
+                Box::new(cmp_op(prop("d", "price"), upper, lit(Value::Int64(10)))),
+            ));
+            validate_search_filter(&filter, "d")
+                .unwrap_or_else(|e| panic!("{lower:?}/{upper:?} should be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_two_sided_range_reversed_conjunct_order() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Lt,
+                lit(Value::Int64(10)),
+            )),
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Ge,
+                lit(Value::Int64(5)),
+            )),
+        ));
+        validate_search_filter(&filter, "d").expect("upper-then-lower order should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_two_sided_range_reversed_operands() {
+        // 10 > d.price >= 5 normalizes to d.price < 10 and d.price >= 5.
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp_op(
+                lit(Value::Int64(10)),
+                gleaph_gql::ast::CmpOp::Gt,
+                prop("d", "price"),
+            )),
+            Box::new(cmp_op(
+                lit(Value::Int64(5)),
+                gleaph_gql::ast::CmpOp::Le,
+                prop("d", "price"),
+            )),
+        ));
+        validate_search_filter(&filter, "d").expect("reversed operands should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_two_range_conjuncts_on_different_properties() {
         let filter = Expr::new(ExprKind::And(
             Box::new(cmp_op(
                 prop("d", "price"),
@@ -597,8 +719,69 @@ mod tests {
             )),
         ));
         let err = validate_search_filter(&filter, "d")
-            .expect_err("two range conjuncts should be rejected");
-        assert!(err.to_string().contains("mix equality and range"));
+            .expect_err("different-property ranges should be rejected");
+        assert!(err.to_string().contains("same property"));
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_two_lower_bounds() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Ge,
+                lit(Value::Int64(5)),
+            )),
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Gt,
+                lit(Value::Int64(2)),
+            )),
+        ));
+        let err = validate_search_filter(&filter, "d").expect_err("two lower bounds must fail");
+        assert!(err.to_string().contains("lower bound"));
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_two_upper_bounds() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Lt,
+                lit(Value::Int64(10)),
+            )),
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Le,
+                lit(Value::Int64(8)),
+            )),
+        ));
+        let err = validate_search_filter(&filter, "d").expect_err("two upper bounds must fail");
+        assert!(err.to_string().contains("upper bound"));
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_three_predicate_range() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Ge,
+                lit(Value::Int64(5)),
+            )),
+            Box::new(Expr::new(ExprKind::And(
+                Box::new(cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Lt,
+                    lit(Value::Int64(10)),
+                )),
+                Box::new(cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Le,
+                    lit(Value::Int64(8)),
+                )),
+            ))),
+        ));
+        let err = validate_search_filter(&filter, "d").expect_err("three range arms must fail");
+        assert!(err.to_string().contains("at most two predicates"));
     }
 
     #[test]

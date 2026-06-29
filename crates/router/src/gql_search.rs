@@ -1,14 +1,16 @@
 //! Router-side lowering of GQL `SEARCH ... IN (VECTOR INDEX ... FOR ... LIMIT ...)`
-//! (ADR 0034 Slices 3, 5, 6, 7 and 9).
+//! (ADR 0034 Slices 3, 4, 5, 6, 7, 8, 9 and 10).
 //!
 //! This module is the execution boundary between the provider-neutral GQL planner
 //! (`PlanOp::Search`) and the Router-owned vector-index catalog / canister dispatch. It supports
 //! a narrow leading `NodeScan + Search` shape, one top-level non-leading `SEARCH` after a bound
-//! vertex, one or two `AND`-connected same-binding equality `SEARCH ... WHERE` predicates, and
-//! one numeric range predicate (`<`, `<=`, `>`, `>=`) for both positions (Slices 6, 7, 8 and 9).
-//! All unsupported shapes are rejected with explicit `InvalidArgument` errors. For a leading search it dispatches the remaining graph-tail plan
-//! from row-shaped vector-search seeds; for a non-leading search it attaches an explicit
-//! per-shard resolved-search relation to the normal read dispatch.
+//! vertex, one or two `AND`-connected same-binding equality `SEARCH ... WHERE` predicates on
+//! distinct properties, one same-binding numeric range `SEARCH ... WHERE` predicate, or exactly two
+//! same-binding numeric range predicates on the same property forming one lower (`>`/`>=`) and one
+//! upper (`<`/`<=`) bound, for both positions (Slices 6, 7, 8, 9 and 10). All unsupported shapes are
+//! rejected with explicit `InvalidArgument` errors. For a leading search it dispatches the
+//! remaining graph-tail plan from row-shaped vector-search seeds; for a non-leading search it
+//! attaches an explicit per-shard resolved-search relation to the normal read dispatch.
 
 use candid::Encode;
 use gleaph_graph_kernel::index::{PostingHit, PostingHitPage, PropertyPostingCursor};
@@ -271,19 +273,20 @@ struct SearchFilterArm {
 /// One accepted SEARCH ... WHERE range predicate on the searched binding.
 ///
 /// The operator is normalized so that the predicate reads `binding.property OP value`.
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct SearchFilterRange {
     property_name: String,
     op: gleaph_gql::ast::CmpOp,
     value_expr: gleaph_gql::ast::Expr,
 }
 
-/// ADR 0034 Slice 8/9: either one or two same-binding equality conjuncts, or exactly one
-/// numeric range predicate.
+/// ADR 0034 Slice 8/9/10: either one or two same-binding equality conjuncts, exactly one
+/// numeric range predicate, or exactly two same-property range predicates forming one lower and
+/// one upper bound.
 #[derive(Debug)]
 enum SearchFilter {
     Equality(Vec<SearchFilterArm>),
-    Range(SearchFilterRange),
+    Range(Vec<SearchFilterRange>),
 }
 
 #[derive(Debug)]
@@ -623,7 +626,7 @@ fn extract_shape_from_search_op(
 /// Extract an accepted SEARCH ... WHERE predicate from the planner-validated filter
 /// expression. The planner already guaranteed exactly one side is `binding.property` and the
 /// other is a literal or parameter, so this function only normalizes which side is which and
-/// distinguishes equality arms from a single range arm.
+/// distinguishes equality arms from one or two range arms.
 fn extract_search_filter(
     binding: &str,
     expr: &gleaph_gql::ast::Expr,
@@ -631,7 +634,7 @@ fn extract_search_filter(
     let leaves = collect_and_leaves(expr);
     if leaves.is_empty() || leaves.len() > 2 {
         return Err(RouterError::InvalidArgument(
-            "SEARCH ... WHERE supports one predicate or two equality conjuncts in this slice"
+            "SEARCH ... WHERE supports one predicate or two equality/range conjuncts in this slice"
                 .into(),
         ));
     }
@@ -661,22 +664,63 @@ fn extract_search_filter(
             ));
         }
         Ok(SearchFilter::Equality(arms))
-    } else if predicates.len() == 1 {
-        match predicates.into_iter().next().unwrap() {
-            SearchPredicate::Range(property_name, op, value_expr) => {
-                Ok(SearchFilter::Range(SearchFilterRange {
+    } else if predicates
+        .iter()
+        .all(|p| matches!(p, SearchPredicate::Range(..)))
+    {
+        let ranges: Vec<SearchFilterRange> = predicates
+            .into_iter()
+            .map(|p| match p {
+                SearchPredicate::Range(property_name, op, value_expr) => SearchFilterRange {
                     property_name,
                     op,
                     value_expr,
-                }))
-            }
-            _ => unreachable!(),
-        }
+                },
+                _ => unreachable!(),
+            })
+            .collect();
+        validate_search_filter_ranges(&ranges)
+            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        Ok(SearchFilter::Range(ranges))
     } else {
         Err(RouterError::InvalidArgument(
             "SEARCH ... WHERE does not mix equality and range predicates in this slice".into(),
         ))
     }
+}
+
+fn validate_search_filter_ranges(ranges: &[SearchFilterRange]) -> Result<(), String> {
+    fn is_lower(op: gleaph_gql::ast::CmpOp) -> bool {
+        matches!(op, gleaph_gql::ast::CmpOp::Gt | gleaph_gql::ast::CmpOp::Ge)
+    }
+    fn is_upper(op: gleaph_gql::ast::CmpOp) -> bool {
+        matches!(op, gleaph_gql::ast::CmpOp::Lt | gleaph_gql::ast::CmpOp::Le)
+    }
+
+    if ranges.len() == 1 {
+        if !is_lower(ranges[0].op) && !is_upper(ranges[0].op) {
+            return Err("SEARCH ... WHERE range must be <, <=, >, or >=".into());
+        }
+        return Ok(());
+    }
+    if ranges.len() != 2 {
+        return Err("SEARCH ... WHERE supports at most two range predicates in this slice".into());
+    }
+    if ranges[0].property_name != ranges[1].property_name {
+        return Err(
+            "SEARCH ... WHERE two-sided range requires both predicates to refer to the same property"
+                .into(),
+        );
+    }
+    let first_lower = is_lower(ranges[0].op);
+    let second_lower = is_lower(ranges[1].op);
+    if first_lower == second_lower {
+        return Err(
+            "SEARCH ... WHERE two-sided range requires one lower bound (> or >=) and one upper bound (< or <=)"
+                .into(),
+        );
+    }
+    Ok(())
 }
 
 enum SearchPredicate {
@@ -1234,8 +1278,8 @@ async fn resolve_filtered_candidates(
             resolve_filtered_equality_candidates(graph_id, store, label_id, binding, arms, params)
                 .await
         }
-        SearchFilter::Range(range) => {
-            resolve_filtered_range_candidates(graph_id, store, label_id, binding, range, params)
+        SearchFilter::Range(ranges) => {
+            resolve_filtered_range_candidates(graph_id, store, label_id, binding, ranges, params)
                 .await
         }
     }
@@ -1287,34 +1331,86 @@ async fn resolve_filtered_equality_candidates(
     }
 }
 
+/// Resolve the property, coverage, and encoded half-open interval for a range SEARCH filter.
+/// Returns `Ok(None)` when the interval is empty or contradictory, so the caller can apply the
+/// empty-candidate dispatch contract without touching the Property Index. Returns `Ok(Some)` with
+/// the validated bounds when the interval is non-empty.
+fn resolve_filtered_range_interval(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    binding: &str,
+    ranges: &[SearchFilterRange],
+    params: &BTreeMap<String, Value>,
+) -> Result<Option<(PropertyId, Vec<u8>, Vec<u8>)>, RouterError> {
+    if ranges.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE range filter is empty".into(),
+        ));
+    }
+    // All range arms share the same property in accepted shapes (two-sided) or a single arm.
+    let property_id =
+        resolve_search_property_id(graph_id, store, binding, &ranges[0].property_name)?;
+    if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
+            label_id.raw(),
+            ranges[0].property_name
+        )));
+    }
+
+    let mut final_low: Option<Vec<u8>> = None;
+    let mut final_high: Option<Vec<u8>> = None;
+    for range in ranges {
+        let value = resolve_filter_value(&range.value_expr, params)?;
+        let (low, high) = gleaph_gql::numeric_range_bounds(&value, range.op).map_err(|e| {
+            RouterError::InvalidArgument(format!(
+                "SEARCH ... WHERE numeric range value is not supported: {e}"
+            ))
+        })?;
+        if low.len() > MAX_INDEX_VALUE_KEY_BYTES || high.len() > MAX_INDEX_VALUE_KEY_BYTES {
+            return Err(RouterError::InvalidArgument(format!(
+                "SEARCH ... WHERE range bound exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
+            )));
+        }
+        final_low = Some(match final_low {
+            Some(prev) => std::cmp::max(prev, low),
+            None => low,
+        });
+        final_high = Some(match final_high {
+            Some(prev) => std::cmp::min(prev, high),
+            None => high,
+        });
+    }
+
+    let low = final_low.unwrap();
+    let high = final_high.unwrap();
+    if low >= high {
+        Ok(None)
+    } else {
+        Ok(Some((property_id, low, high)))
+    }
+}
+
 async fn resolve_filtered_range_candidates(
     graph_id: GraphId,
     store: &RouterStore,
     label_id: VertexLabelId,
     binding: &str,
-    range: &SearchFilterRange,
+    ranges: &[SearchFilterRange],
     params: &BTreeMap<String, Value>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
-    let property_id = resolve_search_property_id(graph_id, store, binding, &range.property_name)?;
-    if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
-        return Err(RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
-            label_id.raw(),
-            range.property_name
-        )));
+    match resolve_filtered_range_interval(graph_id, store, label_id, binding, ranges, params)? {
+        Some((property_id, low, high)) => {
+            collect_bounded_candidates_range(graph_id, store, label_id, property_id, low, high)
+                .await
+        }
+        None => {
+            // Contradictory or empty numeric interval: the candidate set is empty without touching
+            // the Property Index, but the dispatch contract still runs the prefix/aggregate path.
+            Ok(Vec::new())
+        }
     }
-    let value = resolve_filter_value(&range.value_expr, params)?;
-    let (low, high) = gleaph_gql::numeric_range_bounds(&value, range.op).map_err(|e| {
-        RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE numeric range value is not supported: {e}"
-        ))
-    })?;
-    if low.len() > MAX_INDEX_VALUE_KEY_BYTES || high.len() > MAX_INDEX_VALUE_KEY_BYTES {
-        return Err(RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE range bound exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
-        )));
-    }
-    collect_bounded_candidates_range(graph_id, store, label_id, property_id, low, high).await
 }
 
 fn resolve_search_property_id(
@@ -3444,9 +3540,10 @@ mod tests {
             let f = extract_search_filter("d", &filter_range_expr("price", op, Value::Int64(5)))
                 .expect("range predicate must be accepted");
             match f {
-                SearchFilter::Range(r) => {
-                    assert_eq!(r.property_name, "price");
-                    assert_eq!(r.op, op);
+                SearchFilter::Range(ranges) => {
+                    assert_eq!(ranges.len(), 1);
+                    assert_eq!(ranges[0].property_name, "price");
+                    assert_eq!(ranges[0].op, op);
                 }
                 _ => panic!("expected range filter for {op:?}"),
             }
@@ -3465,13 +3562,77 @@ mod tests {
         });
         let f = extract_search_filter("d", &filter).expect("reversed range operands");
         match f {
-            SearchFilter::Range(r) => {
-                assert_eq!(r.property_name, "price");
+            SearchFilter::Range(ranges) => {
+                assert_eq!(ranges.len(), 1);
+                assert_eq!(ranges[0].property_name, "price");
                 // 5 < d.price normalizes to d.price > 5.
-                assert_eq!(r.op, gleaph_gql::ast::CmpOp::Gt);
+                assert_eq!(ranges[0].op, gleaph_gql::ast::CmpOp::Gt);
             }
             _ => panic!("expected range filter"),
         }
+    }
+
+    #[test]
+    fn extract_search_filter_accepts_two_sided_range() {
+        let lower = filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(5));
+        let upper = filter_range_expr("price", gleaph_gql::ast::CmpOp::Lt, Value::Int64(10));
+        let f = extract_search_filter("d", &filter_and_expr(lower, upper))
+            .expect("two-sided range must be accepted");
+        match f {
+            SearchFilter::Range(ranges) => {
+                assert_eq!(ranges.len(), 2);
+                assert!(ranges.iter().all(|r| r.property_name == "price"));
+            }
+            _ => panic!("expected range filter"),
+        }
+    }
+
+    #[test]
+    fn extract_search_filter_accepts_two_sided_range_reversed_order() {
+        let upper = filter_range_expr("price", gleaph_gql::ast::CmpOp::Lt, Value::Int64(10));
+        let lower = filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(5));
+        let f = extract_search_filter("d", &filter_and_expr(upper, lower))
+            .expect("two-sided range in any order must be accepted");
+        match f {
+            SearchFilter::Range(ranges) => assert_eq!(ranges.len(), 2),
+            _ => panic!("expected range filter"),
+        }
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_two_lower_bounds() {
+        let a = filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(5));
+        let b = filter_range_expr("price", gleaph_gql::ast::CmpOp::Gt, Value::Int64(2));
+        let err = extract_search_filter("d", &filter_and_expr(a, b))
+            .expect_err("two lower bounds must fail");
+        assert!(
+            err.to_string().contains("lower bound"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_two_upper_bounds() {
+        let a = filter_range_expr("price", gleaph_gql::ast::CmpOp::Lt, Value::Int64(10));
+        let b = filter_range_expr("price", gleaph_gql::ast::CmpOp::Le, Value::Int64(8));
+        let err = extract_search_filter("d", &filter_and_expr(a, b))
+            .expect_err("two upper bounds must fail");
+        assert!(
+            err.to_string().contains("upper bound"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_two_sided_range_different_properties() {
+        let lower = filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(5));
+        let upper = filter_range_expr("score", gleaph_gql::ast::CmpOp::Lt, Value::Int64(10));
+        let err = extract_search_filter("d", &filter_and_expr(lower, upper))
+            .expect_err("different-property two-sided range must fail");
+        assert!(
+            err.to_string().contains("same property"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -3483,6 +3644,96 @@ mod tests {
         assert!(
             err.to_string().contains("mix equality and range"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_filtered_range_candidates_short_circuits_empty_intersection() {
+        let (store, admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        let label_id = store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern label");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
+            .expect("intern property");
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "price".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create price index");
+
+        // d.price > 10 AND d.price <= 10: the intersection is empty. The Router must short-circuit
+        // before issuing a Property Index request and return an empty candidate vector.
+        let filter = SearchFilter::Range(vec![
+            SearchFilterRange {
+                property_name: "price".into(),
+                op: gleaph_gql::ast::CmpOp::Gt,
+                value_expr: Expr::new(ExprKind::Literal(Value::Int64(10))),
+            },
+            SearchFilterRange {
+                property_name: "price".into(),
+                op: gleaph_gql::ast::CmpOp::Le,
+                value_expr: Expr::new(ExprKind::Literal(Value::Int64(10))),
+            },
+        ]);
+        let params = BTreeMap::new();
+        let candidates = pollster::block_on(resolve_filtered_candidates(
+            graph_id, &store, label_id, "d", &filter, &params,
+        ))
+        .expect("resolve filtered candidates");
+        assert!(
+            candidates.is_empty(),
+            "empty intersection must yield no candidates"
+        );
+    }
+
+    #[test]
+    fn resolve_filtered_range_interval_intersects_mixed_numeric_widths() {
+        let (store, admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        let label_id = store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern label");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
+            .expect("intern property");
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "price".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create price index");
+
+        // d.price >= 5 (Int64) AND d.price < 10.0 (Float64) must produce a non-empty encoded
+        // interval, proving mixed-width values share the same canonical numeric domain.
+        let ranges = vec![
+            SearchFilterRange {
+                property_name: "price".into(),
+                op: gleaph_gql::ast::CmpOp::Ge,
+                value_expr: Expr::new(ExprKind::Literal(Value::Int64(5))),
+            },
+            SearchFilterRange {
+                property_name: "price".into(),
+                op: gleaph_gql::ast::CmpOp::Lt,
+                value_expr: Expr::new(ExprKind::Literal(Value::Float64(10.0))),
+            },
+        ];
+        let params = BTreeMap::new();
+        let interval =
+            resolve_filtered_range_interval(graph_id, &store, label_id, "d", &ranges, &params)
+                .expect("resolve interval");
+        let (_property_id, low, high) = interval.expect("interval must be non-empty");
+        assert!(
+            low < high,
+            "mixed-width intersection must produce a valid half-open interval"
         );
     }
 

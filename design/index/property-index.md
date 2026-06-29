@@ -1,7 +1,7 @@
 # Property index
 
 Last updated: 2026-06-29
-Anchor timestamp: 2026-06-29 14:50:26 UTC +0000
+Anchor timestamp: 2026-06-29 23:24:26 UTC +0000
 
 ## Status
 
@@ -152,15 +152,15 @@ keys before graph-index calls; graph-index read APIs reject them as `IndexValueK
 silent empty range).
 
 
-## Vector search filter membership (ADR 0034 Slices 6, 7, 8 and 9)
+## Vector search filter membership (ADR 0034 Slices 6, 7, 8, 9 and 10)
 
 Property-index postings own filter membership for leading and non-leading `SEARCH ... WHERE`
 predicates. The Router consumes postings through bounded pagination:
 
 - The planner accepts one same-binding equality predicate, exactly two `AND`-connected
-  same-binding equality predicates on distinct properties, or exactly one same-binding numeric
-  range predicate (`<`, `<=`, `>`, `>=`), and preserves the original filter expression in
-  `PlanOp::Search`.
+  same-binding equality predicates on distinct properties, exactly one same-binding numeric range
+  predicate (`<`, `<=`, `>`, `>=`), or exactly two same-property range predicates forming one lower
+  and one upper bound, and preserves the original filter expression in `PlanOp::Search`.
 - The Router resolves the searched label and every filter property to router-issued ids and proves
   an active vertex property index for the exact `(graph_id, label_id, property_id)` tuple in the
   named-index catalog for every arm. For a leading search the label is taken from the leading
@@ -173,12 +173,18 @@ predicates. The Router consumes postings through bounded pagination:
   two equality arms it constructs vertex-only `IndexEqualSpec`s and pages through the server-side
   `lookup_intersection_page`, which walks the first arm one page at a time and sieves the remaining
   arms in heap without materializing full buckets.
-- For a numeric range arm it derives a finite half-open encoded comparison-domain range with the
+- For one numeric range arm it derives a finite half-open encoded comparison-domain range with the
   canonical `gleaph_gql::numeric_range_bounds` helper, validates each bound size against
   `MAX_INDEX_VALUE_KEY_BYTES`, and pages through `lookup_range_page` with
-  `PostingRangeRequest::Between { low, high }`. The Property Index validates the bounds structurally
-  (`low < high`, key sizes) and scans only the opaque encoded interval inside the requested
-  property bucket; it does not interpret GQL value types or numeric ordering. In both cases it deduplicates by
+  `PostingRangeRequest::Between { low, high }`. For two same-property range arms the Router derives
+  both half-open intervals through the same canonical helper, intersects them once (`low =
+  max(first.low, second.low)`, `high = min(first.high, second.high)`), validates the final bounds, and
+  issues one paginated `lookup_range_page` stream with the same `PostingRangeRequest::Between`. If the
+  intersection is empty (`low >= high`) the Router returns an empty candidate set before calling the
+  Property Index or Vector Index, preserving the empty-candidate dispatch contract. The Property Index
+  validates the bounds structurally (`low < high`, key sizes) and scans only the opaque encoded
+  interval inside the requested property bucket; it does not interpret GQL value types or numeric
+  ordering. In both cases it deduplicates by
   `(shard_id, vertex_id)` and stops as soon as a 4097th distinct subject is observed. Exceeding the
   bound returns an explicit `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` error.
 - The candidate set is intersected with the searched vertex label on each page using

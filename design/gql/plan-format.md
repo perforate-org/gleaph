@@ -75,9 +75,11 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
 
 - The planner carries the filter expression in `PlanOp::Search` after structural validation: either
   exactly one equality comparison, exactly two `AND`-connected equality comparisons on distinct
-  properties of the searched binding and a literal or parameter, or exactly one range comparison
-  (`<`, `<=`, `>`, `>=`) between a property of the searched binding and a literal or parameter, with
-  either operand order accepted per comparison. The planner does not verify label, index coverage, or
+  properties of the searched binding and a literal or parameter, exactly one range comparison
+  (`<`, `<=`, `>`, `>=`) between a property of the searched binding and a literal or parameter, or
+  exactly two range comparisons on the same property of the searched binding where one arm is a
+  lower bound (`>` or `>=`) and the other is an upper bound (`<` or `<=`), with either operand order
+  and either conjunct order accepted. The planner does not verify label, index coverage, or
   numeric-domain semantics.
 - The Router resolves the searched label and every filter property to router-issued ids, proves an
   active vertex property index for the exact `(graph_id, label_id, property_id)` tuple in the
