@@ -63,6 +63,11 @@ pub(crate) fn posting_key_half_open_range(
             let high = PostingKey::prefix_lower(property_id, b);
             Some((low, high))
         }
+        PostingRangeRequest::Between { low, high } => {
+            let low_key = PostingKey::prefix_lower(property_id, low);
+            let high_key = PostingKey::prefix_lower(property_id, high);
+            Some((low_key, high_key))
+        }
     }
 }
 

@@ -75,6 +75,19 @@ fn plan_block(input: &str) -> PhysicalPlan {
 // Basic plan generation
 // ════════════════════════════════════════════════════════════════════════════════
 
+fn search_filter_from_plan(
+    plan: &gleaph_gql_planner::plan::PhysicalPlan,
+) -> Option<&gleaph_gql::ast::Expr> {
+    let search_op = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Search { .. }))?;
+    match search_op {
+        gleaph_gql_planner::plan::PlanOp::Search { provider, .. } => provider.filter(),
+        _ => unreachable!(),
+    }
+}
+
 #[test]
 fn test_simple_match_return() {
     let plan = plan_query("MATCH (n:User) RETURN n");
@@ -268,21 +281,108 @@ fn test_search_binding_must_be_node_or_edge() {
 }
 
 #[test]
-fn test_search_where_range_filter_is_rejected_by_planner() {
+fn test_search_where_numeric_range_filter_is_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.price >= 10 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    let search_op = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Search { .. }))
+        .expect("plan contains Search");
+    let filter = match search_op {
+        gleaph_gql_planner::plan::PlanOp::Search { provider, .. } => provider.filter(),
+        _ => unreachable!(),
+    };
+    assert!(
+        filter.is_some(),
+        "accepted numeric range filter must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_numeric_range_parameter_is_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.price > $min_price \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    let filter = search_filter_from_plan(&plan);
+    assert!(
+        filter.is_some(),
+        "accepted parameterized range filter must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_numeric_range_reversed_operands_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (d:Document) SEARCH d IN (VECTOR INDEX document_embedding FOR $query WHERE 10 <= d.price LIMIT 100) SCORE AS similarity RETURN d, similarity",
+    );
+    let filter = search_filter_from_plan(&plan);
+    assert!(
+        filter.is_some(),
+        "accepted reversed-operand range filter must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_non_leading_numeric_range_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (a:Author)-[:WROTE]->(d:Document) SEARCH d IN (VECTOR INDEX document_embedding FOR $query WHERE d.price >= 10 LIMIT 100) SCORE AS similarity RETURN a, d, similarity",
+    );
+    let filter = search_filter_from_plan(&plan);
+    assert!(
+        filter.is_some(),
+        "accepted non-leading numeric range filter must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_range_rejects_mix_with_equality() {
     let err = plan_query_err(
         "MATCH (d:Document) \
          SEARCH d IN ( \
            VECTOR INDEX document_embedding \
            FOR $query \
-           WHERE d.published_at \u{003e}= $cutoff \
+           WHERE d.category = 1 AND d.price >= 10 \
            LIMIT 100 \
          ) SCORE AS similarity \
          RETURN d, similarity",
     );
     assert!(
-        err.to_string()
-            .contains("SEARCH ... WHERE only supports equality"),
-        "unexpected error: {err}"
+        err.to_string().contains("mix equality and range"),
+        "mixed equality/range must be rejected, got {err}"
+    );
+}
+
+#[test]
+fn test_search_where_range_rejects_two_range_conjuncts() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.price >= 10 AND d.score < 100 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string().contains("mix equality and range"),
+        "two range conjuncts must be rejected, got {err}"
     );
 }
 
@@ -411,7 +511,7 @@ fn test_search_where_equality_conjunction_rejects_three_arms() {
          RETURN d, similarity",
     );
     assert!(
-        err.to_string().contains("at most two equality conjuncts"),
+        err.to_string().contains("at most two predicates"),
         "three-arm conjunction must be rejected, got {err}"
     );
 }
@@ -429,7 +529,7 @@ fn test_search_where_disjunction_rejected_by_planner() {
          RETURN d, similarity",
     );
     assert!(
-        err.to_string().contains("equality comparison"),
+        err.to_string().contains("equality or range"),
         "OR filter must be rejected, got {err}"
     );
 }

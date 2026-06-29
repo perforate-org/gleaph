@@ -157,11 +157,10 @@ impl Storable for IndexDefRecord {
     }
 }
 
-/// Whether an active vertex equality index exists for the exact `(graph_id, label_id, property_id)`
-/// tuple (ADR 0034 Slice 6). This is the source-of-truth check that proves the Router can resolve
-/// a same-label property equality predicate through the Property Index without returning a
-/// semantically weaker post-filtered result.
-pub(crate) fn has_exact_vertex_index(
+/// Whether an active vertex property index exists for the exact `(graph_id, label_id, property_id)`
+/// tuple. This is the source-of-truth coverage check used by both equality and numeric range
+/// `SEARCH ... WHERE` predicates (ADR 0034 Slices 6 and 9).
+pub(crate) fn has_active_vertex_property_index(
     graph_id: GraphId,
     label_id: VertexLabelId,
     property_id: PropertyId,

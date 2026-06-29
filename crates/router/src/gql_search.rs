@@ -1,12 +1,12 @@
 //! Router-side lowering of GQL `SEARCH ... IN (VECTOR INDEX ... FOR ... LIMIT ...)`
-//! (ADR 0034 Slices 3, 5, 6 and 7).
+//! (ADR 0034 Slices 3, 5, 6, 7 and 9).
 //!
 //! This module is the execution boundary between the provider-neutral GQL planner
 //! (`PlanOp::Search`) and the Router-owned vector-index catalog / canister dispatch. It supports
 //! a narrow leading `NodeScan + Search` shape, one top-level non-leading `SEARCH` after a bound
-//! vertex, and one or two `AND`-connected same-binding equality `SEARCH ... WHERE` predicates
-//! for both positions (Slices 6, 7 and 8). All unsupported shapes are rejected with explicit
-//! `InvalidArgument` errors. For a leading search it dispatches the remaining graph-tail plan
+//! vertex, one or two `AND`-connected same-binding equality `SEARCH ... WHERE` predicates, and
+//! one numeric range predicate (`<`, `<=`, `>`, `>=`) for both positions (Slices 6, 7, 8 and 9).
+//! All unsupported shapes are rejected with explicit `InvalidArgument` errors. For a leading search it dispatches the remaining graph-tail plan
 //! from row-shaped vector-search seeds; for a non-leading search it attaches an explicit
 //! per-shard resolved-search relation to the normal read dispatch.
 
@@ -268,10 +268,22 @@ struct SearchFilterArm {
     value_expr: gleaph_gql::ast::Expr,
 }
 
-/// ADR 0034 Slice 8: one or two same-binding equality conjuncts.
+/// One accepted SEARCH ... WHERE range predicate on the searched binding.
+///
+/// The operator is normalized so that the predicate reads `binding.property OP value`.
 #[derive(Debug)]
-struct SearchFilter {
-    arms: Vec<SearchFilterArm>,
+struct SearchFilterRange {
+    property_name: String,
+    op: gleaph_gql::ast::CmpOp,
+    value_expr: gleaph_gql::ast::Expr,
+}
+
+/// ADR 0034 Slice 8/9: either one or two same-binding equality conjuncts, or exactly one
+/// numeric range predicate.
+#[derive(Debug)]
+enum SearchFilter {
+    Equality(Vec<SearchFilterArm>),
+    Range(SearchFilterRange),
 }
 
 #[derive(Debug)]
@@ -608,42 +620,74 @@ fn extract_shape_from_search_op(
     })
 }
 
-/// Extract an accepted equality predicate from the planner-validated filter expression.
-/// The planner already guaranteed exactly one side is `binding.property` and the other is a
-/// literal or parameter, so this function only normalizes which side is which.
+/// Extract an accepted SEARCH ... WHERE predicate from the planner-validated filter
+/// expression. The planner already guaranteed exactly one side is `binding.property` and the
+/// other is a literal or parameter, so this function only normalizes which side is which and
+/// distinguishes equality arms from a single range arm.
 fn extract_search_filter(
     binding: &str,
     expr: &gleaph_gql::ast::Expr,
 ) -> Result<SearchFilter, RouterError> {
-    let arms = flatten_search_filter_arms(binding, expr)?;
-    if arms.is_empty() || arms.len() > 2 {
+    let leaves = collect_and_leaves(expr);
+    if leaves.is_empty() || leaves.len() > 2 {
         return Err(RouterError::InvalidArgument(
-            "SEARCH ... WHERE supports one or two equality conjuncts in this slice".into(),
+            "SEARCH ... WHERE supports one predicate or two equality conjuncts in this slice"
+                .into(),
         ));
     }
-    let mut seen = std::collections::HashSet::new();
-    for (prop, _) in &arms {
-        if !seen.insert(prop.clone()) {
+
+    let mut predicates = Vec::with_capacity(leaves.len());
+    for leaf in leaves {
+        predicates.push(split_search_predicate(binding, &leaf)?);
+    }
+
+    if predicates
+        .iter()
+        .all(|p| matches!(p, SearchPredicate::Equality(..)))
+    {
+        let arms: Vec<SearchFilterArm> = predicates
+            .into_iter()
+            .map(|p| match p {
+                SearchPredicate::Equality(property_name, value_expr) => SearchFilterArm {
+                    property_name,
+                    value_expr,
+                },
+                _ => unreachable!(),
+            })
+            .collect();
+        if arms.len() == 2 && arms[0].property_name == arms[1].property_name {
             return Err(RouterError::InvalidArgument(
                 "SEARCH ... WHERE equality conjuncts must refer to distinct properties".into(),
             ));
         }
+        Ok(SearchFilter::Equality(arms))
+    } else if predicates.len() == 1 {
+        match predicates.into_iter().next().unwrap() {
+            SearchPredicate::Range(property_name, op, value_expr) => {
+                Ok(SearchFilter::Range(SearchFilterRange {
+                    property_name,
+                    op,
+                    value_expr,
+                }))
+            }
+            _ => unreachable!(),
+        }
+    } else {
+        Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE does not mix equality and range predicates in this slice".into(),
+        ))
     }
-    Ok(SearchFilter {
-        arms: arms
-            .into_iter()
-            .map(|(property_name, value_expr)| SearchFilterArm {
-                property_name,
-                value_expr,
-            })
-            .collect(),
-    })
 }
 
-fn flatten_search_filter_arms(
+enum SearchPredicate {
+    Equality(String, gleaph_gql::ast::Expr),
+    Range(String, gleaph_gql::ast::CmpOp, gleaph_gql::ast::Expr),
+}
+
+fn split_search_predicate(
     binding: &str,
     expr: &gleaph_gql::ast::Expr,
-) -> Result<Vec<(String, gleaph_gql::ast::Expr)>, RouterError> {
+) -> Result<SearchPredicate, RouterError> {
     fn is_bound_property(expr: &gleaph_gql::ast::Expr, binding: &str) -> Option<String> {
         match &expr.kind {
             gleaph_gql::ast::ExprKind::PropertyAccess {
@@ -670,52 +714,73 @@ fn flatten_search_filter_arms(
         )
     }
 
-    fn split_eq(
-        expr: &gleaph_gql::ast::Expr,
-        binding: &str,
-    ) -> Result<(String, gleaph_gql::ast::Expr), RouterError> {
-        let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &expr.kind else {
-            return Err(RouterError::InvalidArgument(
-                "SEARCH ... WHERE must be an equality comparison".into(),
-            ));
-        };
-        if *op != gleaph_gql::ast::CmpOp::Eq {
-            return Err(RouterError::InvalidArgument(
-                "SEARCH ... WHERE only supports equality (=)".into(),
-            ));
+    let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &expr.kind else {
+        return Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE must be a comparison predicate".into(),
+        ));
+    };
+
+    match op {
+        gleaph_gql::ast::CmpOp::Eq => {
+            if let Some(property) = is_bound_property(left, binding)
+                && is_literal_or_parameter(right)
+            {
+                return Ok(SearchPredicate::Equality(property, *right.clone()));
+            }
+            if let Some(property) = is_bound_property(right, binding)
+                && is_literal_or_parameter(left)
+            {
+                return Ok(SearchPredicate::Equality(property, *left.clone()));
+            }
         }
-        if let Some(property) = is_bound_property(left, binding)
-            && is_literal_or_parameter(right)
-        {
-            return Ok((property, *right.clone()));
+        gleaph_gql::ast::CmpOp::Lt
+        | gleaph_gql::ast::CmpOp::Le
+        | gleaph_gql::ast::CmpOp::Gt
+        | gleaph_gql::ast::CmpOp::Ge => {
+            if let Some(property) = is_bound_property(left, binding)
+                && is_literal_or_parameter(right)
+            {
+                return Ok(SearchPredicate::Range(property, *op, *right.clone()));
+            }
+            if let Some(property) = is_bound_property(right, binding)
+                && is_literal_or_parameter(left)
+            {
+                // Normalize reversed operand order by inverting the operator.
+                let normalized_op = match op {
+                    gleaph_gql::ast::CmpOp::Lt => gleaph_gql::ast::CmpOp::Gt,
+                    gleaph_gql::ast::CmpOp::Le => gleaph_gql::ast::CmpOp::Ge,
+                    gleaph_gql::ast::CmpOp::Gt => gleaph_gql::ast::CmpOp::Lt,
+                    gleaph_gql::ast::CmpOp::Ge => gleaph_gql::ast::CmpOp::Le,
+                    _ => unreachable!(),
+                };
+                return Ok(SearchPredicate::Range(
+                    property,
+                    normalized_op,
+                    *left.clone(),
+                ));
+            }
         }
-        if let Some(property) = is_bound_property(right, binding)
-            && is_literal_or_parameter(left)
-        {
-            return Ok((property, *left.clone()));
-        }
-        Err(RouterError::InvalidArgument(
-            "SEARCH ... WHERE must compare a property of the searched binding with a literal or parameter".into(),
-        ))
+        _ => {}
     }
 
-    fn collect_and_leaves(expr: &gleaph_gql::ast::Expr, out: &mut Vec<gleaph_gql::ast::Expr>) {
+    Err(RouterError::InvalidArgument(
+        "SEARCH ... WHERE must compare a property of the searched binding with a literal or parameter".into(),
+    ))
+}
+
+fn collect_and_leaves(expr: &gleaph_gql::ast::Expr) -> Vec<gleaph_gql::ast::Expr> {
+    fn walk(expr: &gleaph_gql::ast::Expr, out: &mut Vec<gleaph_gql::ast::Expr>) {
         match &expr.kind {
             gleaph_gql::ast::ExprKind::And(left, right) => {
-                collect_and_leaves(left, out);
-                collect_and_leaves(right, out);
+                walk(left, out);
+                walk(right, out);
             }
             _ => out.push(expr.clone()),
         }
     }
-
-    let mut leaves = Vec::new();
-    collect_and_leaves(expr, &mut leaves);
-    let mut out = Vec::with_capacity(leaves.len());
-    for leaf in &leaves {
-        out.push(split_eq(leaf, binding)?);
-    }
-    Ok(out)
+    let mut out = Vec::new();
+    walk(expr, &mut out);
+    out
 }
 
 fn op_contains_search(op: &PlanOp) -> bool {
@@ -1146,17 +1211,16 @@ async fn dispatch_search_read_plan(
 // ADR 0034 Slice 6: filtered SEARCH candidate resolution
 // ════════════════════════════════════════════════════════════════════════════════
 
-/// Resolve a bounded set of vector-search candidate subjects for one or two same-binding
-/// property equality predicates.
+/// Resolve and collect the candidate set for a filtered SEARCH.
 ///
 /// Steps:
-/// 1. Resolve every property name to a property id and verify an active vertex equality index for
+/// 1. Resolve the property name to a property id and verify an active vertex property index for
 ///    the exact `(label_id, property_id)` tuple.
-/// 2. Resolve every literal/parameter value and encode it with the shared property-index key encoder.
+/// 2. Resolve the literal/parameter value and encode it with the shared property-index key encoder.
 /// 3. Validate each encoded key size against `MAX_INDEX_VALUE_KEY_BYTES`.
-/// 4. For one arm, page through the matching Property Index equality bucket. For two arms, page
-///    through the server-side equality intersection. In both cases stop at the 4097th distinct
-///    label-qualified `(shard_id, vertex_id)` subject and return an explicit error.
+/// 4. For equality filters, page through the equality bucket or server-side intersection. For a
+///    numeric range filter, page through the finite encoded interval. In all cases stop at the
+///    4097th distinct label-qualified `(shard_id, vertex_id)` subject and return an explicit error.
 async fn resolve_filtered_candidates(
     graph_id: GraphId,
     store: &RouterStore,
@@ -1165,10 +1229,30 @@ async fn resolve_filtered_candidates(
     filter: &SearchFilter,
     params: &BTreeMap<String, Value>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
-    let mut resolved_arms = Vec::with_capacity(filter.arms.len());
-    for arm in &filter.arms {
+    match filter {
+        SearchFilter::Equality(arms) => {
+            resolve_filtered_equality_candidates(graph_id, store, label_id, binding, arms, params)
+                .await
+        }
+        SearchFilter::Range(range) => {
+            resolve_filtered_range_candidates(graph_id, store, label_id, binding, range, params)
+                .await
+        }
+    }
+}
+
+async fn resolve_filtered_equality_candidates(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    binding: &str,
+    arms: &[SearchFilterArm],
+    params: &BTreeMap<String, Value>,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    let mut resolved_arms = Vec::with_capacity(arms.len());
+    for arm in arms {
         let property_id = resolve_search_property_id(graph_id, store, binding, &arm.property_name)?;
-        if !indexed_catalog::has_exact_vertex_index(graph_id, label_id, property_id) {
+        if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
             return Err(RouterError::InvalidArgument(format!(
                 "SEARCH ... WHERE requires an active vertex equality index for label {} property {}",
                 label_id.raw(),
@@ -1201,6 +1285,36 @@ async fn resolve_filtered_candidates(
             "SEARCH ... WHERE supports one or two equality conjuncts in this slice".into(),
         )),
     }
+}
+
+async fn resolve_filtered_range_candidates(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    binding: &str,
+    range: &SearchFilterRange,
+    params: &BTreeMap<String, Value>,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    let property_id = resolve_search_property_id(graph_id, store, binding, &range.property_name)?;
+    if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
+            label_id.raw(),
+            range.property_name
+        )));
+    }
+    let value = resolve_filter_value(&range.value_expr, params)?;
+    let (low, high) = gleaph_gql::numeric_range_bounds(&value, range.op).map_err(|e| {
+        RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE numeric range value is not supported: {e}"
+        ))
+    })?;
+    if low.len() > MAX_INDEX_VALUE_KEY_BYTES || high.len() > MAX_INDEX_VALUE_KEY_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE range bound exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
+        )));
+    }
+    collect_bounded_candidates_range(graph_id, store, label_id, property_id, low, high).await
 }
 
 fn resolve_search_property_id(
@@ -1303,6 +1417,31 @@ async fn collect_bounded_candidates_intersection(
                     after,
                     limit: VECTOR_FILTER_PAGE_LIMIT,
                 })
+                .await
+        }
+    })
+    .await
+}
+
+/// Collect at most `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` distinct vertex subjects from a finite
+/// half-open encoded numeric range for `(property_id, low, high)`. Stops at the first page that
+/// would exceed the bound and returns an explicit error.
+async fn collect_bounded_candidates_range(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    property_id: PropertyId,
+    low: Vec<u8>,
+    high: Vec<u8>,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    collect_bounded_candidates(graph_id, store, label_id, |client, after| {
+        let range = gleaph_graph_kernel::index::PostingRangeRequest::Between {
+            low: low.clone(),
+            high: high.clone(),
+        };
+        async move {
+            client
+                .lookup_range_page(property_id.raw(), range, after, VECTOR_FILTER_PAGE_LIMIT)
                 .await
         }
     })
@@ -2538,6 +2677,16 @@ mod tests {
     fn filter_and_expr(left: Expr, right: Expr) -> Expr {
         Expr::new(ExprKind::And(Box::new(left), Box::new(right)))
     }
+    fn filter_range_expr(property: &str, op: gleaph_gql::ast::CmpOp, value: Value) -> Expr {
+        Expr::new(ExprKind::Compare {
+            left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                expr: Box::new(Expr::new(ExprKind::Variable("d".to_string()))),
+                property: property.to_string(),
+            })),
+            op,
+            right: Box::new(Expr::new(ExprKind::Literal(value))),
+        })
+    }
 
     fn search_plan_with_filter(filter: Expr) -> PhysicalPlan {
         PhysicalPlan::from_ops(vec![
@@ -2577,9 +2726,13 @@ mod tests {
             })),
         });
         let f = extract_search_filter("d", &filter).expect("reversed operands");
-        assert_eq!(f.arms.len(), 1);
-        assert_eq!(f.arms[0].property_name, "category");
-        assert!(matches!(f.arms[0].value_expr.kind, ExprKind::Literal(_)));
+        let arms = match f {
+            SearchFilter::Equality(arms) => arms,
+            _ => panic!("expected equality filter"),
+        };
+        assert_eq!(arms.len(), 1);
+        assert_eq!(arms[0].property_name, "category");
+        assert!(matches!(arms[0].value_expr.kind, ExprKind::Literal(_)));
     }
 
     #[test]
@@ -3206,8 +3359,12 @@ mod tests {
         let left = filter_eq_expr("category", Value::Text("doc".into()));
         let right = filter_eq_expr("tenant_id", Value::Int64(7));
         let f = extract_search_filter("d", &filter_and_expr(left, right)).expect("two arms");
-        assert_eq!(f.arms.len(), 2);
-        let props: Vec<_> = f.arms.iter().map(|a| a.property_name.as_str()).collect();
+        let arms = match f {
+            SearchFilter::Equality(arms) => arms,
+            _ => panic!("expected equality filter"),
+        };
+        assert_eq!(arms.len(), 2);
+        let props: Vec<_> = arms.iter().map(|a| a.property_name.as_str()).collect();
         assert!(props.contains(&"category"));
         assert!(props.contains(&"tenant_id"));
     }
@@ -3276,7 +3433,107 @@ mod tests {
         );
     }
 
-    // --- ADR 0034 Slice 8: bounded candidate collector regression tests ---
+    #[test]
+    fn extract_search_filter_accepts_numeric_range_operators() {
+        for op in [
+            gleaph_gql::ast::CmpOp::Ge,
+            gleaph_gql::ast::CmpOp::Gt,
+            gleaph_gql::ast::CmpOp::Le,
+            gleaph_gql::ast::CmpOp::Lt,
+        ] {
+            let f = extract_search_filter("d", &filter_range_expr("price", op, Value::Int64(5)))
+                .expect("range predicate must be accepted");
+            match f {
+                SearchFilter::Range(r) => {
+                    assert_eq!(r.property_name, "price");
+                    assert_eq!(r.op, op);
+                }
+                _ => panic!("expected range filter for {op:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn extract_search_filter_normalizes_reversed_range_operands() {
+        let filter = Expr::new(ExprKind::Compare {
+            left: Box::new(Expr::new(ExprKind::Literal(Value::Int64(5)))),
+            op: gleaph_gql::ast::CmpOp::Lt,
+            right: Box::new(Expr::new(ExprKind::PropertyAccess {
+                expr: Box::new(Expr::new(ExprKind::Variable("d".to_string()))),
+                property: "price".to_string(),
+            })),
+        });
+        let f = extract_search_filter("d", &filter).expect("reversed range operands");
+        match f {
+            SearchFilter::Range(r) => {
+                assert_eq!(r.property_name, "price");
+                // 5 < d.price normalizes to d.price > 5.
+                assert_eq!(r.op, gleaph_gql::ast::CmpOp::Gt);
+            }
+            _ => panic!("expected range filter"),
+        }
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_mixed_equality_and_range() {
+        let eq = filter_eq_expr("category", Value::Text("doc".into()));
+        let range = filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(5));
+        let err = extract_search_filter("d", &filter_and_expr(eq, range))
+            .expect_err("mixed equality/range must fail");
+        assert!(
+            err.to_string().contains("mix equality and range"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_non_leading_range_rejects_text_value() {
+        let (store, admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .unwrap();
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
+            .unwrap();
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "category".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create exact index");
+
+        let plan = non_leading_search_plan_with_property_filter_proof(filter_range_expr(
+            "category",
+            gleaph_gql::ast::CmpOp::Ge,
+            Value::Text("doc".into()),
+        ));
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("text range value must fail");
+        assert!(
+            err.to_string()
+                .contains("numeric range value is not supported"),
+            "unexpected error: {err}"
+        );
+    }
 
     fn collect_candidates_with_pages(
         graph_id: GraphId,

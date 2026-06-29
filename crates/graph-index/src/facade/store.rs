@@ -31,6 +31,14 @@ pub(super) fn ensure_posting_range_request(req: &PostingRangeRequest) -> Result<
         | PostingRangeRequest::Gt(b)
         | PostingRangeRequest::Le(b)
         | PostingRangeRequest::Lt(b) => ensure_index_value_key(b),
+        PostingRangeRequest::Between { low, high } => {
+            ensure_index_value_key(low)?;
+            ensure_index_value_key(high)?;
+            if low.is_empty() || high.is_empty() || low >= high {
+                return Err(IndexError::InvalidRangeBounds);
+            }
+            Ok(())
+        }
     }
 }
 

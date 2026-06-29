@@ -15,6 +15,7 @@ pub enum IndexError {
     InvalidIndexGroupConfig,
     ShardOutOfRangeForGroup,
     IndexValueKeyTooLarge,
+    InvalidRangeBounds,
 }
 
 impl std::fmt::Display for IndexError {
@@ -52,6 +53,9 @@ impl std::fmt::Display for IndexError {
                 "index value key exceeds maximum encoded size ({} bytes)",
                 gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES
             ),
+            Self::InvalidRangeBounds => {
+                write!(f, "range bounds are empty, inverted, or otherwise invalid")
+            }
         }
     }
 }

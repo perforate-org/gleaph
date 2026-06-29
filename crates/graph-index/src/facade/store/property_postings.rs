@@ -394,14 +394,28 @@ impl IndexStore {
         if low >= high {
             return Ok(empty_posting_page());
         }
-        let upper = Bound::Excluded(high);
+        let upper = Bound::Excluded(high.clone());
         let lower = match &req.after {
-            Some(cursor) => Bound::Excluded(PostingKey {
-                property_id: req.property_id,
-                value: cursor.value.clone(),
-                shard_id: cursor.shard_id,
-                vertex_id: cursor.vertex_id,
-            }),
+            Some(cursor) => {
+                ensure_index_value_key(&cursor.value)
+                    .map_err(|_| IndexError::IndexValueKeyTooLarge)?;
+                let cursor_key = PostingKey {
+                    property_id: req.property_id,
+                    value: cursor.value.clone(),
+                    shard_id: cursor.shard_id,
+                    vertex_id: cursor.vertex_id,
+                };
+                // A cursor outside the requested range would silently change the interval. Clamp it
+                // to the interval boundary; if it is already at or beyond `high` the page is empty.
+                if cursor_key >= high {
+                    return Ok(empty_posting_page());
+                }
+                if cursor_key < low {
+                    Bound::Included(low)
+                } else {
+                    Bound::Excluded(cursor_key)
+                }
+            }
             None => Bound::Included(low),
         };
         Ok(collect_vertex_posting_page(lower, upper, limit))

@@ -277,6 +277,58 @@ fn index_key_error_from_numeric(error: NumericOrderError) -> ValueIndexKeyError 
     }
 }
 
+/// Lexicographic successor of a byte sequence in `memcmp` order.
+fn lex_succ_bytes(b: &[u8]) -> Vec<u8> {
+    let mut out = b.to_vec();
+    for i in (0..out.len()).rev() {
+        if out[i] < 255 {
+            out[i] += 1;
+            out.truncate(i + 1);
+            return out;
+        }
+    }
+    // All bytes are 255: append a trailing 0 so the successor is longer and greater.
+    out.push(0);
+    out
+}
+
+/// Derive a finite half-open encoded-key range `[low, high)` that corresponds to the numeric
+/// comparison-domain of `property OP value`.
+///
+/// The returned bounds are encoded bytes that, when used as a `[low, high)` scan over the
+/// ordered property-index posting keys for the same `property_id`, return exactly the postings
+/// whose stored value satisfies the GQL comparison. Non-numeric values and non-range operators
+/// are rejected because their comparison semantics do not map to a single contiguous encoded
+/// interval.
+///
+/// This is the canonical place where GQL value-type tags meet numeric ordering. Router and
+/// Property Index must not duplicate tag or numeric-ordering knowledge.
+pub fn numeric_range_bounds(
+    value: &Value,
+    op: crate::ast::CmpOp,
+) -> Result<(Vec<u8>, Vec<u8>), ValueIndexKeyError> {
+    use crate::ast::CmpOp;
+
+    if !matches!(op, CmpOp::Lt | CmpOp::Le | CmpOp::Gt | CmpOp::Ge) {
+        return Err(ValueIndexKeyError::UnsupportedValue);
+    }
+
+    let bound_key = value_to_index_key_bytes(value)?.ok_or(ValueIndexKeyError::UnsupportedValue)?;
+    if bound_key.is_empty() || bound_key[0] != INDEX_KEY_NUMERIC {
+        return Err(ValueIndexKeyError::UnsupportedValue);
+    }
+
+    let numeric_prefix = vec![INDEX_KEY_NUMERIC];
+    let after_numeric = lex_succ_bytes(&numeric_prefix);
+    match op {
+        CmpOp::Ge => Ok((bound_key.clone(), after_numeric)),
+        CmpOp::Gt => Ok((lex_succ_bytes(&bound_key), after_numeric)),
+        CmpOp::Le => Ok((numeric_prefix, lex_succ_bytes(&bound_key))),
+        CmpOp::Lt => Ok((numeric_prefix, bound_key)),
+        _ => unreachable!(),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -746,5 +798,117 @@ mod tests {
             None
         );
         assert!(key(cross_left) < key(cross_right));
+    }
+
+    #[test]
+    fn numeric_range_bounds_rejects_non_range_operators() {
+        use crate::ast::CmpOp;
+        assert!(numeric_range_bounds(&Value::Int64(5), CmpOp::Eq).is_err());
+        assert!(numeric_range_bounds(&Value::Int64(5), CmpOp::Ne).is_err());
+    }
+
+    #[test]
+    fn numeric_range_bounds_rejects_non_numeric_and_null() {
+        use crate::ast::CmpOp;
+        assert!(numeric_range_bounds(&Value::Text("a".into()), CmpOp::Ge).is_err());
+        assert!(numeric_range_bounds(&Value::Null, CmpOp::Ge).is_err());
+        assert!(numeric_range_bounds(&Value::Bytes(vec![1]), CmpOp::Lt).is_err());
+    }
+
+    #[test]
+    fn numeric_range_bounds_rejects_non_finite_floats() {
+        use crate::ast::CmpOp;
+        assert!(numeric_range_bounds(&Value::Float64(f64::NAN), CmpOp::Ge).is_err());
+        assert!(numeric_range_bounds(&Value::Float64(f64::INFINITY), CmpOp::Lt).is_err());
+    }
+
+    #[test]
+    fn numeric_range_bounds_are_half_open_and_ordered() {
+        use crate::ast::CmpOp;
+        use crate::value_cmp::compare_values;
+
+        // Pick values that straddle the bound.
+        let cases = [
+            (Value::Int64(5), CmpOp::Ge, Value::Int64(4), false), // 4 not in [5, ...)
+            (Value::Int64(5), CmpOp::Ge, Value::Int64(5), true),  // 5 in [5, ...)
+            (Value::Int64(5), CmpOp::Ge, Value::Int64(6), true),
+            (Value::Int64(5), CmpOp::Gt, Value::Int64(5), false), // 5 not in (5, ...)
+            (Value::Int64(5), CmpOp::Gt, Value::Int64(6), true),
+            (Value::Int64(5), CmpOp::Le, Value::Int64(4), true), // 4 in (... 5]
+            (Value::Int64(5), CmpOp::Le, Value::Int64(5), true),
+            (Value::Int64(5), CmpOp::Le, Value::Int64(6), false),
+            (Value::Int64(5), CmpOp::Lt, Value::Int64(4), true), // 4 in (... 5)
+            (Value::Int64(5), CmpOp::Lt, Value::Int64(5), false),
+        ];
+
+        for (bound_value, op, probe_value, expected_in_range) in cases {
+            let (low, high) = numeric_range_bounds(&bound_value, op).expect("numeric range");
+            let probe_key = value_to_index_key_bytes(&probe_value).unwrap().unwrap();
+            let in_range = low <= probe_key && probe_key < high;
+            assert_eq!(
+                in_range,
+                expected_in_range,
+                "{probe_value:?} should {} satisfy {bound_value:?} {op:?}",
+                if expected_in_range { "" } else { "not" }
+            );
+
+            // The relational answer from GQL must agree.
+            let relation_satisfies = match op {
+                CmpOp::Ge => {
+                    compare_values(&probe_value, &bound_value) == Some(std::cmp::Ordering::Greater)
+                        || compare_values(&probe_value, &bound_value)
+                            == Some(std::cmp::Ordering::Equal)
+                }
+                CmpOp::Gt => {
+                    compare_values(&probe_value, &bound_value) == Some(std::cmp::Ordering::Greater)
+                }
+                CmpOp::Le => {
+                    compare_values(&probe_value, &bound_value) == Some(std::cmp::Ordering::Less)
+                        || compare_values(&probe_value, &bound_value)
+                            == Some(std::cmp::Ordering::Equal)
+                }
+                CmpOp::Lt => {
+                    compare_values(&probe_value, &bound_value) == Some(std::cmp::Ordering::Less)
+                }
+                _ => unreachable!(),
+            };
+            assert_eq!(
+                in_range, relation_satisfies,
+                "encoded range disagrees with compare_values for {probe_value:?} {op:?} {bound_value:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn numeric_range_bounds_excludes_adjacent_non_numeric_domains() {
+        use crate::ast::CmpOp;
+
+        // All numeric keys start with INDEX_KEY_NUMERIC. A `Ge` scan must stop before the next
+        // type domain, so a text key is never included.
+        let (low, high) = numeric_range_bounds(&Value::Int64(0), CmpOp::Ge).unwrap();
+        assert_eq!(low[0], INDEX_KEY_NUMERIC);
+        assert_eq!(high[0], INDEX_KEY_NUMERIC + 1);
+        let text_key = value_to_index_key_bytes(&Value::Text("a".into()))
+            .unwrap()
+            .unwrap();
+        assert!(
+            text_key >= high || text_key < low,
+            "text key must be outside numeric range"
+        );
+    }
+
+    #[test]
+    fn numeric_range_bounds_unifies_across_numeric_widths() {
+        use crate::ast::CmpOp;
+
+        // Int64(5), Uint8(5), Decimal("5.0") and Float64(5.0) should all produce the same
+        // encoded bound and therefore the same range.
+        let bound1 = numeric_range_bounds(&Value::Int64(5), CmpOp::Ge).unwrap();
+        let bound2 = numeric_range_bounds(&Value::Uint8(5), CmpOp::Ge).unwrap();
+        let bound3 = numeric_range_bounds(&Value::Float64(5.0), CmpOp::Ge).unwrap();
+        let bound4 = numeric_range_bounds(&decimal("5.0"), CmpOp::Ge).unwrap();
+        assert_eq!(bound1, bound2);
+        assert_eq!(bound2, bound3);
+        assert_eq!(bound3, bound4);
     }
 }

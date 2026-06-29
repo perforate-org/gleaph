@@ -11,7 +11,7 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     IndexEqualSpec, IndexIntersectionRequest, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, PostingHit,
+    LookupIntersectionPageRequest, LookupRangePageRequest, PostingHit, PostingRangeRequest,
 };
 use std::cell::Cell;
 use std::hint::black_box;
@@ -182,6 +182,137 @@ fn bench_lookup_intersection_page() -> canbench_rs::BenchResult {
         let page = store
             .lookup_intersection_page(black_box(&req))
             .expect("lookup_intersection_page");
+        black_box(page);
+    })
+}
+
+const RANGE_BENCH_PROPERTY: u32 = 3;
+const RANGE_BENCH_COUNT: u32 = 4096;
+
+fn setup_numeric_range_store() -> (IndexStore, Principal) {
+    let (store, _router, owner) = setup_index_store();
+    for vid in 0..RANGE_BENCH_COUNT {
+        let value = value_to_index_key_bytes(&gleaph_gql::Value::Int64(vid as i64))
+            .expect("index key")
+            .expect("indexable");
+        store
+            .posting_insert(owner, ShardId::new(0), RANGE_BENCH_PROPERTY, value, vid)
+            .expect("numeric posting insert");
+    }
+    // Add one later non-numeric posting to exercise encoded-domain isolation.
+    let text_value = value_to_index_key_bytes(&gleaph_gql::Value::Text("zzzz".to_string()))
+        .expect("text index key")
+        .expect("indexable");
+    store
+        .posting_insert(
+            owner,
+            ShardId::new(0),
+            RANGE_BENCH_PROPERTY,
+            text_value,
+            RANGE_BENCH_COUNT,
+        )
+        .expect("text posting insert");
+    (store, owner)
+}
+
+fn numeric_range_bounds(value: i64, op: gleaph_gql::ast::CmpOp) -> (Vec<u8>, Vec<u8>) {
+    gleaph_gql::numeric_range_bounds(&gleaph_gql::Value::Int64(value), op).expect("range bounds")
+}
+
+/// First page of a bounded numeric range that covers roughly half the postings.
+#[bench(raw)]
+fn bench_lookup_range_page_between_first_page() -> canbench_rs::BenchResult {
+    let (store, _owner) = setup_numeric_range_store();
+    let (low, high) = numeric_range_bounds(1024, gleaph_gql::ast::CmpOp::Ge);
+    let req = LookupRangePageRequest {
+        property_id: RANGE_BENCH_PROPERTY,
+        range: PostingRangeRequest::Between { low, high },
+        after: None,
+        limit: 1024,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_range_page_between_first_page");
+        let page = store
+            .lookup_range_page(black_box(&req))
+            .expect("lookup_range_page between");
+        black_box(page);
+    })
+}
+
+/// Resumed page after the first 1024 hits; exercises cursor continuation.
+#[bench(raw)]
+fn bench_lookup_range_page_between_resumed_page() -> canbench_rs::BenchResult {
+    let (store, _owner) = setup_numeric_range_store();
+    let (low, high) = numeric_range_bounds(1024, gleaph_gql::ast::CmpOp::Ge);
+    let first = store
+        .lookup_range_page(&LookupRangePageRequest {
+            property_id: RANGE_BENCH_PROPERTY,
+            range: PostingRangeRequest::Between {
+                low: low.clone(),
+                high: high.clone(),
+            },
+            after: None,
+            limit: 1024,
+        })
+        .expect("first page");
+    let after = first.next.expect("first page cursor");
+    let req = LookupRangePageRequest {
+        property_id: RANGE_BENCH_PROPERTY,
+        range: PostingRangeRequest::Between { low, high },
+        after: Some(after),
+        limit: 1024,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_range_page_between_resumed_page");
+        let page = store
+            .lookup_range_page(black_box(&req))
+            .expect("lookup_range_page resumed");
+        black_box(page);
+    })
+}
+
+/// Sparse range containing exactly one posting; measures scan-to-first-hit overhead
+/// and encoded-domain boundary handling.
+#[bench(raw)]
+fn bench_lookup_range_page_between_sparse_range() -> canbench_rs::BenchResult {
+    let (store, _owner) = setup_numeric_range_store();
+    let low = value_to_index_key_bytes(&gleaph_gql::Value::Int64(2345))
+        .expect("low key")
+        .expect("indexable");
+    let high = value_to_index_key_bytes(&gleaph_gql::Value::Int64(2346))
+        .expect("high key")
+        .expect("indexable");
+    let req = LookupRangePageRequest {
+        property_id: RANGE_BENCH_PROPERTY,
+        range: PostingRangeRequest::Between { low, high },
+        after: None,
+        limit: 1024,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_range_page_between_sparse_range");
+        let page = store
+            .lookup_range_page(black_box(&req))
+            .expect("lookup_range_page sparse");
+        black_box(page);
+    })
+}
+
+/// Full numeric comparison-domain range that must stop before later non-numeric postings.
+#[bench(raw)]
+fn bench_lookup_range_page_between_numeric_domain_boundary() -> canbench_rs::BenchResult {
+    let (store, _owner) = setup_numeric_range_store();
+    let (low, high) = numeric_range_bounds(0, gleaph_gql::ast::CmpOp::Ge);
+    let req = LookupRangePageRequest {
+        property_id: RANGE_BENCH_PROPERTY,
+        range: PostingRangeRequest::Between { low, high },
+        after: None,
+        limit: 4096,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_range_page_between_numeric_domain_boundary");
+        let page = store
+            .lookup_range_page(black_box(&req))
+            .expect("lookup_range_page numeric domain");
         black_box(page);
     })
 }

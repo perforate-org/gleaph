@@ -50,45 +50,80 @@ pub(super) fn detect_conditional_candidates(
     candidates
 }
 
-/// Validates that a SEARCH ... WHERE filter is exactly one equality comparison or exactly
-/// two equality comparisons joined by AND, all on the same searched binding, in this slice.
+/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-9.
 ///
-/// The planner is provider-neutral: it checks expression shape only. Label and index coverage
-/// are validated later by the Router, which owns the named-index catalog.
+/// Accepts:
+/// - exactly one same-binding equality comparison between a property and a literal/parameter,
+/// - exactly two AND-connected same-binding equality comparisons on distinct properties, or
+/// - exactly one same-binding range comparison (`<`, `<=`, `>`, `>=`) between a property and a
+///   literal/parameter.
+///
+/// The planner is provider-neutral: it checks expression shape only. Label, index coverage, and
+/// numeric-domain verification are validated later by the Router.
 fn validate_search_filter(
     filter: &gleaph_gql::ast::Expr,
     binding: &str,
 ) -> Result<(), PlannerError> {
-    let conjuncts = flatten_search_filter(filter, binding)?;
-    if conjuncts.is_empty() {
+    let predicates = flatten_search_filter(filter, binding)?;
+    if predicates.is_empty() {
         return Err(PlannerError::UnsupportedPattern(
             "SEARCH ... WHERE filter is empty".into(),
         ));
     }
-    if conjuncts.len() > 2 {
+    if predicates.len() > 2 {
         return Err(PlannerError::UnsupportedPattern(
-            "SEARCH ... WHERE supports at most two equality conjuncts in this slice".into(),
+            "SEARCH ... WHERE supports at most two predicates in this slice".into(),
         ));
     }
-    let mut seen_properties = std::collections::HashSet::new();
-    for (property, _value) in &conjuncts {
-        if !seen_properties.insert(property.to_string()) {
-            return Err(PlannerError::UnsupportedPattern(
-                "SEARCH ... WHERE equality conjuncts must refer to distinct properties".into(),
-            ));
+
+    let all_equality = predicates
+        .iter()
+        .all(|p| matches!(p, SearchFilterPredicate::Equality { .. }));
+    if all_equality {
+        let mut seen = std::collections::HashSet::new();
+        for p in &predicates {
+            if let SearchFilterPredicate::Equality { property, .. } = p
+                && !seen.insert(property.clone())
+            {
+                return Err(PlannerError::UnsupportedPattern(
+                    "SEARCH ... WHERE equality conjuncts must refer to distinct properties".into(),
+                ));
+            }
         }
+        Ok(())
+    } else if predicates.len() == 1 {
+        match &predicates[0] {
+            SearchFilterPredicate::Range { .. } => Ok(()),
+            _ => unreachable!("non-equality single predicate must be a range"),
+        }
+    } else {
+        Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE does not mix equality and range predicates in this slice".into(),
+        ))
     }
-    Ok(())
 }
 
-/// Flatten a SEARCH ... WHERE expression into one or two normalized equality conjuncts.
-/// Each conjunct is `(property_name, value_expr)` with the property side normalized to the
-/// searched binding. Rejects every shape other than a single equality or an AND of one or
-/// two equalities on the same binding.
+#[derive(Debug)]
+#[allow(dead_code)]
+enum SearchFilterPredicate {
+    Equality {
+        property: String,
+        value: gleaph_gql::ast::Expr,
+    },
+    Range {
+        property: String,
+        op: gleaph_gql::ast::CmpOp,
+        value: gleaph_gql::ast::Expr,
+    },
+}
+
+/// Flatten a SEARCH ... WHERE expression into one or two normalized predicates.
+/// Rejects every shape other than a single accepted comparison or an AND of one or two
+/// accepted comparisons on the same binding.
 fn flatten_search_filter(
     filter: &gleaph_gql::ast::Expr,
     binding: &str,
-) -> Result<Vec<(String, gleaph_gql::ast::Expr)>, PlannerError> {
+) -> Result<Vec<SearchFilterPredicate>, PlannerError> {
     fn is_bound_property(expr: &gleaph_gql::ast::Expr, binding: &str) -> Option<String> {
         match &expr.kind {
             gleaph_gql::ast::ExprKind::PropertyAccess {
@@ -113,30 +148,73 @@ fn flatten_search_filter(
         )
     }
 
-    fn validate_and_split_eq(
+    fn split_predicate(
         expr: &gleaph_gql::ast::Expr,
         binding: &str,
-    ) -> Result<(String, gleaph_gql::ast::Expr), PlannerError> {
+    ) -> Result<SearchFilterPredicate, PlannerError> {
         let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &expr.kind else {
             return Err(PlannerError::UnsupportedPattern(
-                "SEARCH ... WHERE must be an equality comparison in this slice".into(),
+                "SEARCH ... WHERE must be an equality or range comparison in this slice".into(),
             ));
         };
-        if *op != gleaph_gql::ast::CmpOp::Eq {
-            return Err(PlannerError::UnsupportedPattern(
-                "SEARCH ... WHERE only supports equality (=) in this slice".into(),
-            ));
+
+        match op {
+            gleaph_gql::ast::CmpOp::Eq => {
+                if let Some(property) = is_bound_property(left, binding)
+                    && is_literal_or_parameter(right)
+                {
+                    return Ok(SearchFilterPredicate::Equality {
+                        property,
+                        value: *right.clone(),
+                    });
+                }
+                if let Some(property) = is_bound_property(right, binding)
+                    && is_literal_or_parameter(left)
+                {
+                    return Ok(SearchFilterPredicate::Equality {
+                        property,
+                        value: *left.clone(),
+                    });
+                }
+            }
+            gleaph_gql::ast::CmpOp::Lt
+            | gleaph_gql::ast::CmpOp::Le
+            | gleaph_gql::ast::CmpOp::Gt
+            | gleaph_gql::ast::CmpOp::Ge => {
+                if let Some(property) = is_bound_property(left, binding)
+                    && is_literal_or_parameter(right)
+                {
+                    return Ok(SearchFilterPredicate::Range {
+                        property,
+                        op: *op,
+                        value: *right.clone(),
+                    });
+                }
+                if let Some(property) = is_bound_property(right, binding)
+                    && is_literal_or_parameter(left)
+                {
+                    // Normalize so the predicate always reads `binding.property OP value`.
+                    let normalized_op = match op {
+                        gleaph_gql::ast::CmpOp::Lt => gleaph_gql::ast::CmpOp::Gt,
+                        gleaph_gql::ast::CmpOp::Le => gleaph_gql::ast::CmpOp::Ge,
+                        gleaph_gql::ast::CmpOp::Gt => gleaph_gql::ast::CmpOp::Lt,
+                        gleaph_gql::ast::CmpOp::Ge => gleaph_gql::ast::CmpOp::Le,
+                        _ => unreachable!(),
+                    };
+                    return Ok(SearchFilterPredicate::Range {
+                        property,
+                        op: normalized_op,
+                        value: *left.clone(),
+                    });
+                }
+            }
+            _ => {
+                return Err(PlannerError::UnsupportedPattern(
+                    "SEARCH ... WHERE only supports equality (=) or a single numeric range predicate (<, <=, >, >=) in this slice".into(),
+                ));
+            }
         }
-        if let Some(property) = is_bound_property(left, binding)
-            && is_literal_or_parameter(right)
-        {
-            return Ok((property, *right.clone()));
-        }
-        if let Some(property) = is_bound_property(right, binding)
-            && is_literal_or_parameter(left)
-        {
-            return Ok((property, *left.clone()));
-        }
+
         Err(PlannerError::UnsupportedPattern(
             "SEARCH ... WHERE must compare a property of the searched binding with a literal or parameter in this slice".into(),
         ))
@@ -145,7 +223,7 @@ fn flatten_search_filter(
     let leaves = result::flatten_conjunction(filter);
     let mut out = Vec::with_capacity(leaves.len());
     for leaf in &leaves {
-        out.push(validate_and_split_eq(leaf, binding)?);
+        out.push(split_predicate(leaf, binding)?);
     }
     Ok(out)
 }
@@ -427,15 +505,47 @@ mod tests {
         validate_search_filter(&filter, "d").expect("property = parameter should be accepted");
     }
 
+    fn cmp_op(left: Expr, op: gleaph_gql::ast::CmpOp, right: Expr) -> Expr {
+        Expr::new(ExprKind::Compare {
+            left: Box::new(left),
+            op,
+            right: Box::new(right),
+        })
+    }
+
     #[test]
-    fn validate_search_filter_rejects_range_comparison() {
-        let filter = Expr::new(ExprKind::Compare {
-            left: Box::new(prop("d", "category")),
-            op: gleaph_gql::ast::CmpOp::Lt,
-            right: Box::new(lit(Value::Text("doc".into()))),
-        });
-        let err = validate_search_filter(&filter, "d").expect_err("range should be rejected");
-        assert!(err.to_string().contains("equality"));
+    fn validate_search_filter_accepts_numeric_range() {
+        let filter = cmp_op(
+            prop("d", "price"),
+            gleaph_gql::ast::CmpOp::Ge,
+            lit(Value::Int64(5)),
+        );
+        validate_search_filter(&filter, "d").expect("numeric range predicate should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_all_numeric_range_operators() {
+        for op in [
+            gleaph_gql::ast::CmpOp::Lt,
+            gleaph_gql::ast::CmpOp::Le,
+            gleaph_gql::ast::CmpOp::Gt,
+            gleaph_gql::ast::CmpOp::Ge,
+        ] {
+            let filter = cmp_op(prop("d", "price"), op, lit(Value::Int64(5)));
+            validate_search_filter(&filter, "d")
+                .unwrap_or_else(|e| panic!("range operator {op:?} should be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_reversed_range_operands() {
+        // `5 < d.price` normalizes to `d.price > 5` and is accepted by the shape check.
+        let filter = cmp_op(
+            lit(Value::Int64(5)),
+            gleaph_gql::ast::CmpOp::Lt,
+            prop("d", "price"),
+        );
+        validate_search_filter(&filter, "d").expect("reversed range operands should be accepted");
     }
 
     #[test]
@@ -458,7 +568,7 @@ mod tests {
         ));
         let err = validate_search_filter(&filter, "d")
             .expect_err("three-arm conjunction should be rejected");
-        assert!(err.to_string().contains("at most two equality conjuncts"));
+        assert!(err.to_string().contains("at most two predicates"));
     }
 
     #[test]
@@ -470,6 +580,40 @@ mod tests {
         let err = validate_search_filter(&filter, "d")
             .expect_err("duplicate property conjuncts should be rejected");
         assert!(err.to_string().contains("distinct properties"));
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_two_range_conjuncts() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Ge,
+                lit(Value::Int64(5)),
+            )),
+            Box::new(cmp_op(
+                prop("d", "score"),
+                gleaph_gql::ast::CmpOp::Lt,
+                lit(Value::Int64(10)),
+            )),
+        ));
+        let err = validate_search_filter(&filter, "d")
+            .expect_err("two range conjuncts should be rejected");
+        assert!(err.to_string().contains("mix equality and range"));
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_mixed_equality_and_range() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "category"), lit(Value::Text("doc".into())))),
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Ge,
+                lit(Value::Int64(5)),
+            )),
+        ));
+        let err = validate_search_filter(&filter, "d")
+            .expect_err("mixed equality and range should be rejected");
+        assert!(err.to_string().contains("mix equality and range"));
     }
 
     #[test]
@@ -493,5 +637,16 @@ mod tests {
         let err =
             validate_search_filter(&filter, "d").expect_err("computed value should be rejected");
         assert!(err.to_string().contains("literal or parameter"));
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_non_range_non_equality_operators() {
+        let filter = cmp_op(
+            prop("d", "category"),
+            gleaph_gql::ast::CmpOp::Ne,
+            lit(Value::Text("doc".into())),
+        );
+        let err = validate_search_filter(&filter, "d").expect_err("!= must be rejected");
+        assert!(err.to_string().contains("single numeric range predicate"));
     }
 }

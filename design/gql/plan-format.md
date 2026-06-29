@@ -71,20 +71,25 @@ For a leading `NodeScan + Search` prefix the Router strips the prefix and dispat
 ### Filtered search contract
 
 For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex with an accepted
-`WHERE` equality predicate:
+`WHERE` predicate:
 
 - The planner carries the filter expression in `PlanOp::Search` after structural validation: either
-  exactly one equality comparison or exactly two `AND`-connected equality comparisons on distinct
-  properties of the searched binding and a literal or parameter, with either operand order accepted
-  per comparison. The planner does not verify label or index coverage.
+  exactly one equality comparison, exactly two `AND`-connected equality comparisons on distinct
+  properties of the searched binding and a literal or parameter, or exactly one range comparison
+  (`<`, `<=`, `>`, `>=`) between a property of the searched binding and a literal or parameter, with
+  either operand order accepted per comparison. The planner does not verify label, index coverage, or
+  numeric-domain semantics.
 - The Router resolves the searched label and every filter property to router-issued ids, proves an
-  active vertex equality index for the exact `(graph_id, label_id, property_id)` tuple in the
-  named-index catalog for every arm, encodes each comparison value with
-  `gleaph_gql::value_to_index_key_bytes`, and validates each encoded size against
-  `MAX_INDEX_VALUE_KEY_BYTES` before calling the index.
+  active vertex property index for the exact `(graph_id, label_id, property_id)` tuple in the
+  named-index catalog for every arm, and validates each encoded size against
+  `MAX_INDEX_VALUE_KEY_BYTES` before calling the index. For equality arms it encodes each comparison
+  value with `gleaph_gql::value_to_index_key_bytes`. For a numeric range arm it derives a finite
+  half-open encoded comparison-domain range with `gleaph_gql::numeric_range_bounds`, normalizing
+  reversed operands by inverting the operator.
 - The Router collects at most `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096) distinct vertex subjects
-  from the Property Index via paginated `lookup_equal_page` for one arm or the server-side
-  `lookup_intersection_page` for two arms. Deduplicating by `(shard_id, vertex_id)`, it stops as soon
+  from the Property Index via paginated `lookup_equal_page` for one equality arm, the server-side
+  `lookup_intersection_page` for two equality arms, or `lookup_range_page` with
+  `PostingRangeRequest::Between { low, high }` for a numeric range arm. Deduplicating by `(shard_id, vertex_id)`, it stops as soon
   as a 4097th distinct subject is observed and returns an explicit error instead of truncating.
   Malformed postings are rejected.
 - If the candidate set is empty, the Router skips the vector canister. For a leading search it dispatches
@@ -98,7 +103,7 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
 - For a non-leading filtered search the Router proves exactly one positive simple label for the searched
   binding from the top-level prefix. Accepted proofs are a labeled `NodeScan` for the binding, or a
   `PropertyFilter`/`ExpandFilter` containing `IS LABELED(binding, label, negated = false)` before the
-  `PlanOp::Search`. Zero labels, multiple distinct labels, negated labels, dynamic/nested label
+  `PlanOp::Search`. This applies equally to equality and range filter arms. Zero labels, multiple distinct labels, negated labels, dynamic/nested label
   expressions, a label proof that appears after `SEARCH`, or a later prefix operator rebinding the
   searched variable are all rejected fail-closed.
 - The vector canister validates the allowlist count, vertex-only subjects, and duplicates at its

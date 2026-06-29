@@ -1465,6 +1465,353 @@ fn lookup_edge_equal_page_paginates_and_resumes() {
 }
 
 #[test]
+fn lookup_range_page_between_is_exact_and_excludes_non_numeric_domain() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    // Numeric postings for property 42.
+    let neg_one = index_key(Value::Int64(-1));
+    let zero = index_key(Value::Int64(0));
+    let five = index_key(Value::Int64(5));
+    let nine = index_key(Value::Int64(9));
+    let text_a = index_key(Value::Text("a".into()));
+
+    for (vid, val) in [
+        (100u32, neg_one.clone()),
+        (200u32, zero.clone()),
+        (300u32, five.clone()),
+        (400u32, nine.clone()),
+        (500u32, text_a.clone()),
+    ] {
+        store
+            .posting_insert(shard_a, ShardId::new(0), 42, val, vid)
+            .expect("insert");
+    }
+
+    // [0, 9): includes 0 and 5, excludes -1 and 9, and excludes the text value.
+    let (low, _high_for_0) =
+        gleaph_gql::numeric_range_bounds(&Value::Int64(0), gleaph_gql::ast::CmpOp::Ge).unwrap();
+    let high = gleaph_gql::numeric_range_bounds(&Value::Int64(9), gleaph_gql::ast::CmpOp::Lt)
+        .unwrap()
+        .1;
+
+    let page = store
+        .lookup_range_page(&LookupRangePageRequest {
+            property_id: 42,
+            range: PostingRangeRequest::Between { low, high },
+            after: None,
+            limit: 100,
+        })
+        .expect("bounded range page");
+    assert!(page.done);
+    let mut ids: Vec<_> = page.hits.iter().map(|h| h.vertex_id).collect();
+    ids.sort_unstable();
+    assert_eq!(ids, vec![200, 300]);
+}
+
+#[test]
+fn lookup_range_page_between_unpopulated_range_returns_done() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    let five = index_key(Value::Int64(5));
+    let six = index_key(Value::Int64(6));
+    let seven = index_key(Value::Int64(7));
+    store
+        .posting_insert(shard_a, ShardId::new(0), 42, five.clone(), 1)
+        .expect("insert");
+
+    // [6, 7) is structurally valid but contains no postings in this fixture.
+    let page = store
+        .lookup_range_page(&LookupRangePageRequest {
+            property_id: 42,
+            range: PostingRangeRequest::Between {
+                low: six,
+                high: seven,
+            },
+            after: None,
+            limit: 100,
+        })
+        .expect("unpopulated range page");
+    assert!(page.done);
+    assert!(page.hits.is_empty());
+}
+
+#[test]
+fn lookup_range_page_between_clamps_cursor_below_low_to_inclusive_low() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    // Posting exactly at the lower bound: (property 42, value 2, shard 0, vertex 0).
+    let low = index_key(Value::Int64(2));
+    let high = index_key(Value::Int64(4));
+    store
+        .posting_insert(shard_a, ShardId::new(0), 42, low.clone(), 0)
+        .expect("insert low-bound posting");
+    // One above low.
+    let key3 = index_key(Value::Int64(3));
+    store
+        .posting_insert(shard_a, ShardId::new(0), 42, key3, 1)
+        .expect("insert");
+
+    // A cursor below `low` must be clamped to an inclusive low bound, so the posting at vertex 0
+    // is returned.
+    let below_low = index_key(Value::Int64(0));
+    let page = store
+        .lookup_range_page(&LookupRangePageRequest {
+            property_id: 42,
+            range: PostingRangeRequest::Between {
+                low: low.clone(),
+                high: high.clone(),
+            },
+            after: Some(PropertyPostingCursor {
+                value: below_low,
+                shard_id: ShardId::new(0),
+                vertex_id: 0,
+            }),
+            limit: 100,
+        })
+        .expect("page with cursor below low");
+    assert!(page.done);
+    let ids: Vec<_> = page.hits.iter().map(|h| h.vertex_id).collect();
+    assert_eq!(ids, vec![0, 1]);
+}
+
+#[test]
+fn lookup_range_page_between_returns_empty_when_cursor_at_or_above_high() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    for vid in 0..5u32 {
+        let key = index_key(Value::Int64(vid as i64));
+        store
+            .posting_insert(shard_a, ShardId::new(0), 42, key, vid + 100)
+            .expect("insert");
+    }
+
+    let low = index_key(Value::Int64(0));
+    let high = index_key(Value::Int64(4));
+
+    // Cursor at `high` itself means nothing remains in [low, high).
+    let at_high = index_key(Value::Int64(4));
+    let page = store
+        .lookup_range_page(&LookupRangePageRequest {
+            property_id: 42,
+            range: PostingRangeRequest::Between {
+                low: low.clone(),
+                high: high.clone(),
+            },
+            after: Some(PropertyPostingCursor {
+                value: at_high,
+                shard_id: ShardId::new(0),
+                vertex_id: 0,
+            }),
+            limit: 100,
+        })
+        .expect("page with cursor at high");
+    assert!(page.done);
+    assert!(page.hits.is_empty());
+}
+
+#[test]
+fn lookup_range_page_between_rejects_oversized_cursor() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    let low = index_key(Value::Int64(0));
+    let high = index_key(Value::Int64(4));
+    let oversized = vec![0u8; gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES + 1];
+    let err = store
+        .lookup_range_page(&LookupRangePageRequest {
+            property_id: 42,
+            range: PostingRangeRequest::Between { low, high },
+            after: Some(PropertyPostingCursor {
+                value: oversized,
+                shard_id: ShardId::new(0),
+                vertex_id: 0,
+            }),
+            limit: 100,
+        })
+        .expect_err("oversized cursor must fail");
+    assert!(
+        err.to_string().contains("index value key exceeds")
+            || err.to_string().contains("IndexValueKeyTooLarge"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn lookup_range_page_between_paginates_and_resumes() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    // Insert five numeric values 0..=4 under property 42.
+    for vid in 0..5u32 {
+        let key = index_key(Value::Int64(vid as i64));
+        store
+            .posting_insert(shard_a, ShardId::new(0), 42, key, vid + 100)
+            .expect("insert");
+    }
+
+    // [1, 4) should return vids 1 and 2 (vertex ids 101 and 102), then vid 3 (103).
+    let low = index_key(Value::Int64(1));
+    let high = index_key(Value::Int64(4));
+
+    let page1 = store
+        .lookup_range_page(&LookupRangePageRequest {
+            property_id: 42,
+            range: PostingRangeRequest::Between {
+                low: low.clone(),
+                high: high.clone(),
+            },
+            after: None,
+            limit: 2,
+        })
+        .expect("first page");
+    assert!(!page1.done);
+    assert_eq!(page1.hits.len(), 2);
+    let ids1: Vec<_> = page1.hits.iter().map(|h| h.vertex_id).collect();
+    assert_eq!(ids1, vec![101, 102]);
+    let cursor = page1.next.expect("page1 cursor");
+
+    let page2 = store
+        .lookup_range_page(&LookupRangePageRequest {
+            property_id: 42,
+            range: PostingRangeRequest::Between { low, high },
+            after: Some(cursor),
+            limit: 2,
+        })
+        .expect("second page");
+    assert!(page2.done);
+    assert_eq!(page2.hits.len(), 1);
+    assert_eq!(page2.hits[0].vertex_id, 103);
+}
+
+#[test]
+fn lookup_range_page_between_is_isolated_per_property_id() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    let low = index_key(Value::Int64(0));
+    let high = index_key(Value::Int64(10));
+    store
+        .posting_insert(shard_a, ShardId::new(0), 7, low.clone(), 1)
+        .expect("insert property 7");
+    store
+        .posting_insert(shard_a, ShardId::new(0), 8, low.clone(), 2)
+        .expect("insert property 8");
+
+    let page = store
+        .lookup_range_page(&LookupRangePageRequest {
+            property_id: 7,
+            range: PostingRangeRequest::Between {
+                low: low.clone(),
+                high: high.clone(),
+            },
+            after: None,
+            limit: 100,
+        })
+        .expect("property 7 page");
+    assert!(page.done);
+    assert_eq!(page.hits.len(), 1);
+    assert_eq!(page.hits[0].vertex_id, 1);
+}
+
+#[test]
+fn lookup_range_page_between_rejects_inverted_bounds() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    let err = store
+        .lookup_range_page(&LookupRangePageRequest {
+            property_id: 42,
+            range: PostingRangeRequest::Between {
+                low: index_key(Value::Int64(9)),
+                high: index_key(Value::Int64(1)),
+            },
+            after: None,
+            limit: 100,
+        })
+        .expect_err("inverted bounds must fail");
+    assert!(
+        err.to_string()
+            .contains("range bounds are empty, inverted, or otherwise invalid"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn lookup_range_page_between_rejects_oversized_bound() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    let oversized = vec![0u8; gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES + 1];
+    let valid = index_key(Value::Int64(1));
+    let err = store
+        .lookup_range_page(&LookupRangePageRequest {
+            property_id: 42,
+            range: PostingRangeRequest::Between {
+                low: oversized,
+                high: valid,
+            },
+            after: None,
+            limit: 100,
+        })
+        .expect_err("oversized low bound must fail");
+    assert!(
+        err.to_string().contains("IndexValueKeyTooLarge")
+            || err.to_string().contains("index value key exceeds"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn lookup_range_page_between_clamps_zero_limit() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_a = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_a);
+
+    let key = index_key(Value::Int64(5));
+    store
+        .posting_insert(shard_a, ShardId::new(0), 42, key.clone(), 1)
+        .expect("insert");
+
+    let page = store
+        .lookup_range_page(&LookupRangePageRequest {
+            property_id: 42,
+            range: PostingRangeRequest::Between {
+                low: key.clone(),
+                high: index_key(Value::Int64(6)),
+            },
+            after: None,
+            limit: 0,
+        })
+        .expect("page with zero limit");
+    // Limit is clamped to at least one, so the single posting is returned.
+    assert!(page.done);
+    assert_eq!(page.hits.len(), 1);
+}
+
+#[test]
 fn lookup_label_intersection_returns_common_vertices() {
     let store = IndexStore::new();
     let router = init_test_store(&store);

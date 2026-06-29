@@ -70,20 +70,21 @@ The Graph executor supports one top-level non-leading `PlanOp::Search` per plan 
 - If the bound vertex is absent from a row the row is dropped (inner-join semantics).
 - A `PlanOp::Search` without a decoded `resolved_search_blob` fails closed because the Router has not lowered it.
 
-For a leading `NodeScan + Search` with a `WHERE` equality predicate (one equality or exactly two
-`AND`-connected same-binding equalities on distinct properties), the Router does not forward a vector
-request when the Property Index candidate set is empty. Instead it dispatches the stripped tail
-plan with an empty `SeedBindingsWire` to every live shard, so a global aggregate over zero seed
-rows still produces one `count = 0` row. When the candidate set is non-empty, the vector canister
-receives a bounded allowlist and returns exact top-k hits; the normal leading-search hit-shard-only
-dispatch then applies.
+For a leading `NodeScan + Search` with a `WHERE` predicate (one equality, exactly two
+`AND`-connected same-binding equalities on distinct properties, or one numeric range predicate), the
+Router does not forward a vector request when the Property Index candidate set is empty. Instead it
+dispatches the stripped tail plan with an empty `SeedBindingsWire` to every live shard, so a global
+aggregate over zero seed rows still produces one `count = 0` row. When the candidate set is
+non-empty, the vector canister receives a bounded allowlist and returns exact top-k hits; the normal
+leading-search hit-shard-only dispatch then applies.
 
-For a non-leading `PlanOp::Search` with a `WHERE` equality predicate (one equality or exactly two
-`AND`-connected same-binding equalities on distinct properties), the Router requires exactly one
-positive simple label proof for the searched binding from the top-level prefix, resolves every
-filter arm through the same bounded Property Index candidate collection (`lookup_equal_page` for
-one arm or `lookup_intersection_page` for two arms), and skips the vector canister when the
-candidate set is empty. It dispatches the full plan with an explicit empty `ResolvedSearchWire` to
+For a non-leading `PlanOp::Search` with a `WHERE` predicate (one equality, exactly two
+`AND`-connected same-binding equalities on distinct properties, or one numeric range predicate),
+the Router requires exactly one positive simple label proof for the searched binding from the
+top-level prefix, resolves every filter arm through the same bounded Property Index candidate
+collection (`lookup_equal_page` for one equality arm, `lookup_intersection_page` for two equality
+arms, or `lookup_range_page` with a finite half-open encoded interval for a numeric range arm), and
+skips the vector canister when the candidate set is empty. It dispatches the full plan with an explicit empty `ResolvedSearchWire` to
 every live shard, so the Graph executor still runs the prefix and any global aggregate returns one
 `count = 0` row. When the candidate set is non-empty, the vector canister ranks exactly within the
 allowlist and the Router partitions hits into per-shard resolved relations as for unfiltered

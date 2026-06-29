@@ -143,6 +143,12 @@ pub enum PostingRangeRequest {
     Gt(Vec<u8>),
     Le(Vec<u8>),
     Lt(Vec<u8>),
+    /// Finite half-open encoded interval `[low, high)` supplied by the caller.
+    /// Property Index validates the bounds structurally and scans only that interval.
+    Between {
+        low: Vec<u8>,
+        high: Vec<u8>,
+    },
 }
 
 /// Global posting cardinality for one encoded property value (all shards).
@@ -360,6 +366,21 @@ mod tests {
         assert_eq!(
             Decode!(&bytes, LookupRangePageRequest).expect("decode range"),
             range
+        );
+
+        let bounded_range = LookupRangePageRequest {
+            property_id: 4,
+            range: PostingRangeRequest::Between {
+                low: vec![2, 0, 128, 0, 0, 0],
+                high: vec![2, 2, 128, 0, 0, 0],
+            },
+            after: Some(cursor.clone()),
+            limit: 256,
+        };
+        let bytes = Encode!(&bounded_range).expect("encode bounded range");
+        assert_eq!(
+            Decode!(&bytes, LookupRangePageRequest).expect("decode bounded range"),
+            bounded_range
         );
 
         let page = PostingHitPage {
