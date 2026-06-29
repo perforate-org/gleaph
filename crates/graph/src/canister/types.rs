@@ -34,6 +34,15 @@ pub struct E2eInsertVertexWithLabelAndPropertyArgs {
     pub property_id: u32,
     pub value: i64,
 }
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eInsertVertexWithLabelAndTwoPropertiesArgs {
+    pub label_id: u16,
+    pub property_a: u32,
+    pub value_a: i64,
+    pub property_b: u32,
+    pub value_b: i64,
+}
 
 /// Arguments for [`super::handlers::e2e_insert_directed_edge_with_label`] (PocketIC E2E only).
 #[cfg(feature = "pocket-ic-e2e")]

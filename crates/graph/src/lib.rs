@@ -198,6 +198,13 @@ async fn e2e_insert_vertex_with_label_and_property(
 ) -> Result<canister::types::E2eInsertVertexResult, String> {
     canister::handlers::e2e_insert_vertex_with_label_and_property(args).await
 }
+#[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
+async fn e2e_insert_vertex_with_label_and_two_properties(
+    args: canister::types::E2eInsertVertexWithLabelAndTwoPropertiesArgs,
+) -> Result<canister::types::E2eInsertVertexResult, String> {
+    canister::handlers::e2e_insert_vertex_with_label_and_two_properties(args).await
+}
 
 #[cfg(feature = "pocket-ic-e2e")]
 #[update(guard = "guard_control_plane_admin")]

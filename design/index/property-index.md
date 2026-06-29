@@ -1,7 +1,7 @@
 # Property index
 
 Last updated: 2026-06-29
-Anchor timestamp: 2026-06-29 02:44:58 UTC +0000
+Anchor timestamp: 2026-06-29 10:16:32 UTC +0000
 
 ## Status
 
@@ -152,21 +152,27 @@ keys before graph-index calls; graph-index read APIs reject them as `IndexValueK
 silent empty range).
 
 
-## Vector search filter membership (ADR 0034 Slice 6 and Slice 7)
+## Vector search filter membership (ADR 0034 Slices 6, 7 and 8)
 
 Property-index equality postings own filter membership for leading and non-leading `SEARCH ... WHERE`
 equality predicates. The Router consumes postings through bounded pagination:
 
-- It resolves the searched label and filter property to router-issued ids and proves an active vertex
-  equality index for the exact `(graph_id, label_id, property_id)` tuple in the named-index catalog.
-  For a leading search the label is taken from the leading labeled `NodeScan`. For a non-leading
-  search the label is proved from the top-level prefix: a labeled `NodeScan` for the searched
-  binding, or a `PropertyFilter`/`ExpandFilter` carrying `IS LABELED(binding, label, negated = false)`
-  before the `PlanOp::Search`.
-- It encodes the comparison value with `gleaph_gql::value_to_index_key_bytes` and validates the
+- The planner accepts one same-binding equality predicate or exactly two `AND`-connected
+  same-binding equality predicates on distinct properties and preserves the original filter
+  expression in `PlanOp::Search`.
+- The Router resolves the searched label and every filter property to router-issued ids and proves
+  an active vertex equality index for the exact `(graph_id, label_id, property_id)` tuple in the
+  named-index catalog for every arm. For a leading search the label is taken from the leading
+  labeled `NodeScan`. For a non-leading search the label is proved from the top-level prefix: a
+  labeled `NodeScan` for the searched binding, or a `PropertyFilter`/`ExpandFilter` carrying
+  `IS LABELED(binding, label, negated = false)` before the `PlanOp::Search`.
+- It encodes every comparison value with `gleaph_gql::value_to_index_key_bytes` and validates each
   encoded size against `MAX_INDEX_VALUE_KEY_BYTES` before calling the index.
-- It pages through `lookup_equal_page` for `(property_id, encoded_value)`, deduplicating by
-  `(shard_id, vertex_id)` and stopping as soon as a 4097th distinct subject is observed. Exceeding the
+- For one arm it pages through `lookup_equal_page` for `(property_id, encoded_value)`. For two arms
+  it constructs vertex-only `IndexEqualSpec`s and pages through the server-side
+  `lookup_intersection_page`, which walks the first arm one page at a time and sieves the remaining
+  arms in heap without materializing full buckets. In both cases it deduplicates by
+  `(shard_id, vertex_id)` and stops as soon as a 4097th distinct subject is observed. Exceeding the
   bound returns an explicit `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` error.
 - The candidate set is intersected with the searched vertex label on each page using
   `filter_hits_by_label`, so vertices that do not belong to the searched label do not consume the

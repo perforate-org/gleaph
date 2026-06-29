@@ -76,14 +76,16 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
 - The planner carries the filter expression in `PlanOp::Search` after structural validation: exactly
   one equality comparison between a property of the searched binding and a literal or parameter, with
   either operand order accepted. The planner does not verify label or index coverage.
-- The Router resolves the searched label and filter property to router-issued ids, proves an active
-  vertex equality index for the exact `(graph_id, label_id, property_id)` tuple in the named-index
-  catalog, encodes the comparison value with `gleaph_gql::value_to_index_key_bytes`, and validates the
-  encoded size against `MAX_INDEX_VALUE_KEY_BYTES` before calling the index.
+- The Router resolves the searched label and every filter property to router-issued ids, proves an
+  active vertex equality index for the exact `(graph_id, label_id, property_id)` tuple in the
+  named-index catalog for every arm, encodes each comparison value with
+  `gleaph_gql::value_to_index_key_bytes`, and validates each encoded size against
+  `MAX_INDEX_VALUE_KEY_BYTES` before calling the index.
 - The Router collects at most `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096) distinct vertex subjects
-  from the Property Index via paginated `lookup_equal_page`. Deduplicating by `(shard_id, vertex_id)`,
-  it stops as soon as a 4097th distinct subject is observed and returns an explicit error instead of
-  truncating. Malformed postings are rejected.
+  from the Property Index via paginated `lookup_equal_page` for one arm or the server-side
+  `lookup_intersection_page` for two arms. Deduplicating by `(shard_id, vertex_id)`, it stops as soon
+  as a 4097th distinct subject is observed and returns an explicit error instead of truncating.
+  Malformed postings are rejected.
 - If the candidate set is empty, the Router skips the vector canister. For a leading search it dispatches
   the stripped plan with an empty `SeedBindingsWire` to every live shard, preserving the leading-search
   global aggregate contract. For a non-leading search it keeps the full plan and attaches an explicit

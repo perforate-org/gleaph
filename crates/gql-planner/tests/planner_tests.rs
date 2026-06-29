@@ -314,6 +314,145 @@ fn test_search_where_equality_filter_is_accepted_by_planner() {
 }
 
 #[test]
+fn test_search_where_equality_conjunction_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.category = $category AND d.tenant_id = $tenant \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    let search_op = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Search { .. }))
+        .expect("plan contains Search");
+    let filter = match search_op {
+        gleaph_gql_planner::plan::PlanOp::Search { provider, .. } => provider.filter(),
+        _ => unreachable!(),
+    };
+    assert!(
+        filter.is_some(),
+        "accepted two-equality conjunction filter must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_equality_conjunction_reversed_operands_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (d:Document) SEARCH d IN (VECTOR INDEX document_embedding FOR $query WHERE $category = d.category AND d.tenant_id = $tenant LIMIT 100) SCORE AS similarity RETURN d, similarity",
+    );
+    let search_op = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Search { .. }))
+        .expect("plan contains Search");
+    let filter = match search_op {
+        gleaph_gql_planner::plan::PlanOp::Search { provider, .. } => provider.filter(),
+        _ => unreachable!(),
+    };
+    assert!(
+        filter.is_some(),
+        "accepted two-equality conjunction with reversed operands must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_non_leading_equality_conjunction_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (a:Author)-[:WROTE]->(d:Document) SEARCH d IN (VECTOR INDEX document_embedding FOR $query WHERE d.category = $category AND d.tenant_id = $tenant LIMIT 100) SCORE AS similarity RETURN a, d, similarity",
+    );
+    let search_op = plan
+        .ops
+        .iter()
+        .find(|op| matches!(op, gleaph_gql_planner::plan::PlanOp::Search { .. }))
+        .expect("plan contains Search");
+    let filter = match search_op {
+        gleaph_gql_planner::plan::PlanOp::Search { provider, .. } => provider.filter(),
+        _ => unreachable!(),
+    };
+    assert!(
+        filter.is_some(),
+        "accepted non-leading two-equality conjunction filter must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_equality_conjunction_rejects_duplicate_property() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.category = 1 AND d.category = 2 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string().contains("distinct properties"),
+        "duplicate property conjuncts must be rejected, got {err}"
+    );
+}
+
+#[test]
+fn test_search_where_equality_conjunction_rejects_three_arms() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.a = 1 AND d.b = 2 AND d.c = 3 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string().contains("at most two equality conjuncts"),
+        "three-arm conjunction must be rejected, got {err}"
+    );
+}
+
+#[test]
+fn test_search_where_disjunction_rejected_by_planner() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.category = 1 OR d.tenant_id = 2 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string().contains("equality comparison"),
+        "OR filter must be rejected, got {err}"
+    );
+}
+
+#[test]
+fn test_search_where_conjunction_rejects_other_binding() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.category = 1 AND d.tenant_id = a.tenant_id \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string().contains("literal or parameter"),
+        "non-literal second operand must be rejected, got {err}"
+    );
+}
+
+#[test]
 fn test_search_plan_is_not_dml() {
     let plan = plan_query(
         "MATCH (d:Document) \

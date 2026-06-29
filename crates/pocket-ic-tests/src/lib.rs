@@ -156,6 +156,14 @@ pub struct E2eInsertVertexWithLabelAndPropertyArgs {
     pub property_id: u32,
     pub value: i64,
 }
+#[derive(CandidType, Clone, Debug)]
+pub struct E2eInsertVertexWithLabelAndTwoPropertiesArgs {
+    pub label_id: u16,
+    pub property_a: u32,
+    pub value_a: i64,
+    pub property_b: u32,
+    pub value_b: i64,
+}
 
 #[derive(CandidType, Clone, Debug)]
 pub struct E2eInsertDirectedEdgeWithPropertyArgs {
@@ -887,6 +895,28 @@ pub fn e2e_insert_vertex_with_label_and_property(
             label_id,
             property_id,
             value,
+        },
+    )
+}
+pub fn e2e_insert_vertex_with_label_and_two_properties(
+    env: &FederationEnv,
+    graph: Principal,
+    label_id: u16,
+    property_a: u32,
+    value_a: i64,
+    property_b: u32,
+    value_b: i64,
+) -> E2eInsertVertexResult {
+    update_as_router(
+        env,
+        graph,
+        "e2e_insert_vertex_with_label_and_two_properties",
+        E2eInsertVertexWithLabelAndTwoPropertiesArgs {
+            label_id,
+            property_a,
+            value_a,
+            property_b,
+            value_b,
         },
     )
 }

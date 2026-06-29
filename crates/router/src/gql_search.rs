@@ -4,11 +4,11 @@
 //! This module is the execution boundary between the provider-neutral GQL planner
 //! (`PlanOp::Search`) and the Router-owned vector-index catalog / canister dispatch. It supports
 //! a narrow leading `NodeScan + Search` shape, one top-level non-leading `SEARCH` after a bound
-//! vertex, and a single equality `SEARCH ... WHERE` predicate for both positions (Slice 6 and
-//! Slice 7). All unsupported shapes are rejected with explicit `InvalidArgument` errors. For a
-//! leading search it dispatches the remaining graph-tail plan from row-shaped vector-search seeds;
-//! for a non-leading search it attaches an explicit per-shard resolved-search relation to the
-//! normal read dispatch.
+//! vertex, and one or two `AND`-connected same-binding equality `SEARCH ... WHERE` predicates
+//! for both positions (Slices 6, 7 and 8). All unsupported shapes are rejected with explicit
+//! `InvalidArgument` errors. For a leading search it dispatches the remaining graph-tail plan
+//! from row-shaped vector-search seeds; for a non-leading search it attaches an explicit
+//! per-shard resolved-search relation to the normal read dispatch.
 
 use candid::Encode;
 use std::collections::BTreeMap;
@@ -21,7 +21,9 @@ use gleaph_gql_planner::plan::{
 };
 use gleaph_graph_kernel::entry::{GraphId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
-use gleaph_graph_kernel::index::MAX_INDEX_VALUE_KEY_BYTES;
+use gleaph_graph_kernel::index::{
+    IndexEqualSpec, LookupIntersectionPageRequest, MAX_INDEX_VALUE_KEY_BYTES, PostingHitPage,
+};
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, GqlExecutionMode, GqlQueryResult, ResolvedSearchVertexHitWire,
     ResolvedSearchWire, SeedBindingsWire, SeedFloat64Binding, SeedRowWire, SeedVertexBinding,
@@ -260,9 +262,15 @@ fn search_shape_from_position(position: &SearchPosition) -> &SearchShape {
 /// The property side is normalized to `(property_name)`. The value side is the literal or
 /// parameter expression; it is resolved once against the decoded parameters at execution time.
 #[derive(Debug)]
-struct SearchFilter {
+struct SearchFilterArm {
     property_name: String,
     value_expr: gleaph_gql::ast::Expr,
+}
+
+/// ADR 0034 Slice 8: one or two same-binding equality conjuncts.
+#[derive(Debug)]
+struct SearchFilter {
+    arms: Vec<SearchFilterArm>,
 }
 
 #[derive(Debug)]
@@ -606,18 +614,36 @@ fn extract_search_filter(
     binding: &str,
     expr: &gleaph_gql::ast::Expr,
 ) -> Result<SearchFilter, RouterError> {
-    let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &expr.kind else {
+    let arms = flatten_search_filter_arms(binding, expr)?;
+    if arms.is_empty() || arms.len() > 2 {
         return Err(RouterError::InvalidArgument(
-            "SEARCH ... WHERE must be an equality comparison".into(),
-        ));
-    };
-    if *op != gleaph_gql::ast::CmpOp::Eq {
-        return Err(RouterError::InvalidArgument(
-            "SEARCH ... WHERE only supports equality (=)".into(),
+            "SEARCH ... WHERE supports one or two equality conjuncts in this slice".into(),
         ));
     }
+    let mut seen = std::collections::HashSet::new();
+    for (prop, _) in &arms {
+        if !seen.insert(prop.clone()) {
+            return Err(RouterError::InvalidArgument(
+                "SEARCH ... WHERE equality conjuncts must refer to distinct properties".into(),
+            ));
+        }
+    }
+    Ok(SearchFilter {
+        arms: arms
+            .into_iter()
+            .map(|(property_name, value_expr)| SearchFilterArm {
+                property_name,
+                value_expr,
+            })
+            .collect(),
+    })
+}
 
-    fn is_bound_property<'a>(expr: &'a gleaph_gql::ast::Expr, binding: &'a str) -> Option<&'a str> {
+fn flatten_search_filter_arms(
+    binding: &str,
+    expr: &gleaph_gql::ast::Expr,
+) -> Result<Vec<(String, gleaph_gql::ast::Expr)>, RouterError> {
+    fn is_bound_property(expr: &gleaph_gql::ast::Expr, binding: &str) -> Option<String> {
         match &expr.kind {
             gleaph_gql::ast::ExprKind::PropertyAccess {
                 expr: base,
@@ -627,7 +653,7 @@ fn extract_search_filter(
                     &base.kind,
                     gleaph_gql::ast::ExprKind::Variable(name) if name == binding
                 ) {
-                    Some(property.as_str())
+                    Some(property.clone())
                 } else {
                     None
                 }
@@ -636,21 +662,59 @@ fn extract_search_filter(
         }
     }
 
-    if let Some(property) = is_bound_property(left, binding) {
-        Ok(SearchFilter {
-            property_name: property.to_string(),
-            value_expr: *right.clone(),
-        })
-    } else if let Some(property) = is_bound_property(right, binding) {
-        Ok(SearchFilter {
-            property_name: property.to_string(),
-            value_expr: *left.clone(),
-        })
-    } else {
+    fn is_literal_or_parameter(expr: &gleaph_gql::ast::Expr) -> bool {
+        matches!(
+            &expr.kind,
+            gleaph_gql::ast::ExprKind::Literal(_) | gleaph_gql::ast::ExprKind::Parameter(_)
+        )
+    }
+
+    fn split_eq(
+        expr: &gleaph_gql::ast::Expr,
+        binding: &str,
+    ) -> Result<(String, gleaph_gql::ast::Expr), RouterError> {
+        let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &expr.kind else {
+            return Err(RouterError::InvalidArgument(
+                "SEARCH ... WHERE must be an equality comparison".into(),
+            ));
+        };
+        if *op != gleaph_gql::ast::CmpOp::Eq {
+            return Err(RouterError::InvalidArgument(
+                "SEARCH ... WHERE only supports equality (=)".into(),
+            ));
+        }
+        if let Some(property) = is_bound_property(left, binding)
+            && is_literal_or_parameter(right)
+        {
+            return Ok((property, *right.clone()));
+        }
+        if let Some(property) = is_bound_property(right, binding)
+            && is_literal_or_parameter(left)
+        {
+            return Ok((property, *left.clone()));
+        }
         Err(RouterError::InvalidArgument(
             "SEARCH ... WHERE must compare a property of the searched binding with a literal or parameter".into(),
         ))
     }
+
+    fn collect_and_leaves(expr: &gleaph_gql::ast::Expr, out: &mut Vec<gleaph_gql::ast::Expr>) {
+        match &expr.kind {
+            gleaph_gql::ast::ExprKind::And(left, right) => {
+                collect_and_leaves(left, out);
+                collect_and_leaves(right, out);
+            }
+            _ => out.push(expr.clone()),
+        }
+    }
+
+    let mut leaves = Vec::new();
+    collect_and_leaves(expr, &mut leaves);
+    let mut out = Vec::with_capacity(leaves.len());
+    for leaf in &leaves {
+        out.push(split_eq(leaf, binding)?);
+    }
+    Ok(out)
 }
 
 fn op_contains_search(op: &PlanOp) -> bool {
@@ -1081,16 +1145,17 @@ async fn dispatch_search_read_plan(
 // ADR 0034 Slice 6: filtered SEARCH candidate resolution
 // ════════════════════════════════════════════════════════════════════════════════
 
-/// Resolve a bounded set of vector-search candidate subjects for one same-binding property
-/// equality predicate.
+/// Resolve a bounded set of vector-search candidate subjects for one or two same-binding
+/// property equality predicates.
 ///
 /// Steps:
-/// 1. Resolve the property name to a property id and verify an active vertex equality index for the
-///    exact `(label_id, property_id)` tuple.
-/// 2. Resolve the literal/parameter value and encode it with the shared property-index key encoder.
-/// 3. Validate the encoded key size against `MAX_INDEX_VALUE_KEY_BYTES`.
-/// 4. Page through the matching Property Index equality bucket, stopping at the 4097th distinct
-///    `(shard_id, vertex_id)` subject and returning an explicit error.
+/// 1. Resolve every property name to a property id and verify an active vertex equality index for
+///    the exact `(label_id, property_id)` tuple.
+/// 2. Resolve every literal/parameter value and encode it with the shared property-index key encoder.
+/// 3. Validate each encoded key size against `MAX_INDEX_VALUE_KEY_BYTES`.
+/// 4. For one arm, page through the matching Property Index equality bucket. For two arms, page
+///    through the server-side equality intersection. In both cases stop at the 4097th distinct
+///    label-qualified `(shard_id, vertex_id)` subject and return an explicit error.
 async fn resolve_filtered_candidates(
     graph_id: GraphId,
     store: &RouterStore,
@@ -1099,24 +1164,42 @@ async fn resolve_filtered_candidates(
     filter: &SearchFilter,
     params: &BTreeMap<String, Value>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
-    let property_id = resolve_search_property_id(graph_id, store, binding, &filter.property_name)?;
-    if !indexed_catalog::has_exact_vertex_index(graph_id, label_id, property_id) {
-        return Err(RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE requires an active vertex equality index for label {} property {}",
-            label_id.raw(),
-            filter.property_name
-        )));
+    let mut resolved_arms = Vec::with_capacity(filter.arms.len());
+    for arm in &filter.arms {
+        let property_id = resolve_search_property_id(graph_id, store, binding, &arm.property_name)?;
+        if !indexed_catalog::has_exact_vertex_index(graph_id, label_id, property_id) {
+            return Err(RouterError::InvalidArgument(format!(
+                "SEARCH ... WHERE requires an active vertex equality index for label {} property {}",
+                label_id.raw(),
+                arm.property_name
+            )));
+        }
+        let value = resolve_filter_value(&arm.value_expr, params)?;
+        let encoded = encode_filter_value(&value)?;
+        if encoded.len() > MAX_INDEX_VALUE_KEY_BYTES {
+            return Err(RouterError::InvalidArgument(format!(
+                "SEARCH ... WHERE value exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
+            )));
+        }
+        resolved_arms.push((property_id, encoded));
     }
 
-    let value = resolve_filter_value(&filter.value_expr, params)?;
-    let encoded = encode_filter_value(&value)?;
-    if encoded.len() > MAX_INDEX_VALUE_KEY_BYTES {
-        return Err(RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE value exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
-        )));
+    match resolved_arms.len() {
+        1 => {
+            let (property_id, encoded) = resolved_arms.into_iter().next().unwrap();
+            collect_bounded_candidates_equal(graph_id, store, label_id, property_id, encoded).await
+        }
+        2 => {
+            let specs = resolved_arms
+                .into_iter()
+                .map(|(property_id, value)| IndexEqualSpec::vertex(property_id.raw(), value))
+                .collect();
+            collect_bounded_candidates_intersection(graph_id, store, label_id, specs).await
+        }
+        _ => Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE supports one or two equality conjuncts in this slice".into(),
+        )),
     }
-
-    collect_bounded_candidates(graph_id, store, label_id, property_id, encoded).await
 }
 
 fn resolve_search_property_id(
@@ -1178,13 +1261,66 @@ const VECTOR_FILTER_PAGE_LIMIT: u32 = 10_000;
 /// Index equality bucket for `(property_id, encoded_value)`. Stops at the first page that would
 /// exceed the bound and returns an explicit `InvalidArgument` error without materializing the
 /// remaining postings.
-async fn collect_bounded_candidates(
+async fn collect_bounded_candidates_equal(
     graph_id: GraphId,
     store: &RouterStore,
     label_id: VertexLabelId,
     property_id: PropertyId,
     encoded_value: Vec<u8>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
+    collect_bounded_candidates(graph_id, store, label_id, |client, after| {
+        let value = encoded_value.clone();
+        async move {
+            client
+                .lookup_equal_page(gleaph_graph_kernel::index::LookupEqualPageRequest {
+                    property_id: property_id.raw(),
+                    value: value.clone(),
+                    after,
+                    limit: VECTOR_FILTER_PAGE_LIMIT,
+                })
+                .await
+        }
+    })
+    .await
+}
+
+/// Collect at most `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` distinct vertex subjects from the
+/// server-side equality intersection of two `(property_id, encoded_value)` arms. Stops at the
+/// first page that would exceed the bound and returns an explicit error.
+async fn collect_bounded_candidates_intersection(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    specs: Vec<IndexEqualSpec>,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    collect_bounded_candidates(graph_id, store, label_id, |client, after| {
+        let value = specs.clone();
+        async move {
+            client
+                .lookup_intersection_page(LookupIntersectionPageRequest {
+                    specs: value.clone(),
+                    after,
+                    limit: VECTOR_FILTER_PAGE_LIMIT,
+                })
+                .await
+        }
+    })
+    .await
+}
+
+/// Generic bounded candidate collector used by both single-arm equality and two-arm intersection.
+/// Calls `fetch_page` for each index-canister target, label-filters the survivors, deduplicates
+/// globally, and fails on the 4097th distinct label-qualified subject.
+async fn collect_bounded_candidates<F, Fut>(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    mut fetch_page: F,
+) -> Result<Vec<VectorSubject>, RouterError>
+where
+    F: FnMut(RouterIndexClient, Option<gleaph_graph_kernel::index::PropertyPostingCursor>) -> Fut,
+    Fut: std::future::Future<Output = Result<PostingHitPage, String>>,
+{
     let targets = store
         .graph_index_lookup_targets(graph_id)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
@@ -1198,24 +1334,16 @@ async fn collect_bounded_candidates(
     let mut after: Option<gleaph_graph_kernel::index::PropertyPostingCursor> = None;
     let mut target_idx = 0usize;
 
-    // Stream equality postings from each index canister one page at a time, intersect each page
-    // with the searched vertex label, and keep a single global deduplication set. The bound is
-    // checked after label filtering before extending the result so we never retain more than the
-    // allowed number of distinct subjects that are actually members of the searched label.
+    // Stream postings from each index canister one page at a time, intersect each page with the
+    // searched vertex label, and keep a single global deduplication set. The bound is checked
+    // after label filtering before extending the result so we never retain more than the allowed
+    // number of distinct subjects that are actually members of the searched label.
     while target_idx < targets.len() {
         let principal = targets[target_idx];
         let client = RouterIndexClient::new(principal);
-        let page = client
-            .lookup_equal_page(gleaph_graph_kernel::index::LookupEqualPageRequest {
-                property_id: property_id.raw(),
-                value: encoded_value.clone(),
-                after,
-                limit: VECTOR_FILTER_PAGE_LIMIT,
-            })
-            .await
-            .map_err(|e| {
-                RouterError::InvalidArgument(format!("property-index lookup failed: {e}"))
-            })?;
+        let page = fetch_page(client.clone(), after).await.map_err(|e| {
+            RouterError::InvalidArgument(format!("property-index lookup failed: {e}"))
+        })?;
 
         let label_hits = client
             .filter_hits_by_label(label_id.raw() as u32, page.hits)
@@ -2385,6 +2513,9 @@ mod tests {
             right: Box::new(Expr::new(ExprKind::Literal(value))),
         })
     }
+    fn filter_and_expr(left: Expr, right: Expr) -> Expr {
+        Expr::new(ExprKind::And(Box::new(left), Box::new(right)))
+    }
 
     fn search_plan_with_filter(filter: Expr) -> PhysicalPlan {
         PhysicalPlan::from_ops(vec![
@@ -2424,8 +2555,9 @@ mod tests {
             })),
         });
         let f = extract_search_filter("d", &filter).expect("reversed operands");
-        assert_eq!(f.property_name, "category");
-        assert!(matches!(f.value_expr.kind, ExprKind::Literal(_)));
+        assert_eq!(f.arms.len(), 1);
+        assert_eq!(f.arms[0].property_name, "category");
+        assert!(matches!(f.arms[0].value_expr.kind, ExprKind::Literal(_)));
     }
 
     #[test]
@@ -3044,6 +3176,81 @@ mod tests {
             err.to_string()
                 .contains("vector dispatch activation blocked"),
             "expected activation blocked, got {err}"
+        );
+    }
+
+    #[test]
+    fn extract_search_filter_accepts_two_arm_conjunction() {
+        let left = filter_eq_expr("category", Value::Text("doc".into()));
+        let right = filter_eq_expr("tenant_id", Value::Int64(7));
+        let f = extract_search_filter("d", &filter_and_expr(left, right)).expect("two arms");
+        assert_eq!(f.arms.len(), 2);
+        let props: Vec<_> = f.arms.iter().map(|a| a.property_name.as_str()).collect();
+        assert!(props.contains(&"category"));
+        assert!(props.contains(&"tenant_id"));
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_duplicate_property_in_conjunction() {
+        let left = filter_eq_expr("category", Value::Text("doc".into()));
+        let right = filter_eq_expr("category", Value::Int64(7));
+        let err = extract_search_filter("d", &filter_and_expr(left, right))
+            .expect_err("duplicate property must fail");
+        assert!(
+            err.to_string().contains("distinct properties"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_non_leading_conjunction_rejects_missing_second_exact_index() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern label");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
+            .expect("intern category");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "tenant_id")
+            .expect("intern tenant_id");
+        // Only category has an active vertex equality index; tenant_id is covered but no index.
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "category".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create category index");
+        let filter = filter_and_expr(
+            filter_eq_expr("category", Value::Text("doc".into())),
+            filter_eq_expr("tenant_id", Value::Int64(7)),
+        );
+        let plan = non_leading_search_plan_with_property_filter_proof(filter);
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("missing second exact index must fail");
+        assert!(
+            err.to_string()
+                .contains("requires an active vertex equality index"),
+            "unexpected error: {err}"
         );
     }
 }

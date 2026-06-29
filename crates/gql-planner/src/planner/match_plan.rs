@@ -50,8 +50,8 @@ pub(super) fn detect_conditional_candidates(
     candidates
 }
 
-/// Validates that a SEARCH ... WHERE filter is exactly one equality comparison between a
-/// property of the searched binding and a literal or parameter (ADR 0034 Slice 6).
+/// Validates that a SEARCH ... WHERE filter is exactly one equality comparison or exactly
+/// two equality comparisons joined by AND, all on the same searched binding, in this slice.
 ///
 /// The planner is provider-neutral: it checks expression shape only. Label and index coverage
 /// are validated later by the Router, which owns the named-index catalog.
@@ -59,18 +59,37 @@ fn validate_search_filter(
     filter: &gleaph_gql::ast::Expr,
     binding: &str,
 ) -> Result<(), PlannerError> {
-    let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &filter.kind else {
+    let conjuncts = flatten_search_filter(filter, binding)?;
+    if conjuncts.is_empty() {
         return Err(PlannerError::UnsupportedPattern(
-            "SEARCH ... WHERE must be a single equality comparison in this slice".into(),
-        ));
-    };
-    if *op != gleaph_gql::ast::CmpOp::Eq {
-        return Err(PlannerError::UnsupportedPattern(
-            "SEARCH ... WHERE only supports equality (=) in this slice".into(),
+            "SEARCH ... WHERE filter is empty".into(),
         ));
     }
+    if conjuncts.len() > 2 {
+        return Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE supports at most two equality conjuncts in this slice".into(),
+        ));
+    }
+    let mut seen_properties = std::collections::HashSet::new();
+    for (property, _value) in &conjuncts {
+        if !seen_properties.insert(property.to_string()) {
+            return Err(PlannerError::UnsupportedPattern(
+                "SEARCH ... WHERE equality conjuncts must refer to distinct properties".into(),
+            ));
+        }
+    }
+    Ok(())
+}
 
-    fn is_bound_property<'a>(expr: &'a gleaph_gql::ast::Expr, binding: &'a str) -> Option<&'a str> {
+/// Flatten a SEARCH ... WHERE expression into one or two normalized equality conjuncts.
+/// Each conjunct is `(property_name, value_expr)` with the property side normalized to the
+/// searched binding. Rejects every shape other than a single equality or an AND of one or
+/// two equalities on the same binding.
+fn flatten_search_filter(
+    filter: &gleaph_gql::ast::Expr,
+    binding: &str,
+) -> Result<Vec<(String, gleaph_gql::ast::Expr)>, PlannerError> {
+    fn is_bound_property(expr: &gleaph_gql::ast::Expr, binding: &str) -> Option<String> {
         match &expr.kind {
             gleaph_gql::ast::ExprKind::PropertyAccess {
                 expr: base,
@@ -78,7 +97,7 @@ fn validate_search_filter(
             } => {
                 if matches!(&base.kind, gleaph_gql::ast::ExprKind::Variable(name) if name == binding)
                 {
-                    Some(property.as_str())
+                    Some(property.clone())
                 } else {
                     None
                 }
@@ -94,19 +113,41 @@ fn validate_search_filter(
         )
     }
 
-    let left_is_property = is_bound_property(left, binding).is_some();
-    let right_is_property = is_bound_property(right, binding).is_some();
-    let left_is_value = is_literal_or_parameter(left);
-    let right_is_value = is_literal_or_parameter(right);
-
-    let valid = (left_is_property && right_is_value) || (right_is_property && left_is_value);
-    if !valid {
-        return Err(PlannerError::UnsupportedPattern(
+    fn validate_and_split_eq(
+        expr: &gleaph_gql::ast::Expr,
+        binding: &str,
+    ) -> Result<(String, gleaph_gql::ast::Expr), PlannerError> {
+        let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &expr.kind else {
+            return Err(PlannerError::UnsupportedPattern(
+                "SEARCH ... WHERE must be an equality comparison in this slice".into(),
+            ));
+        };
+        if *op != gleaph_gql::ast::CmpOp::Eq {
+            return Err(PlannerError::UnsupportedPattern(
+                "SEARCH ... WHERE only supports equality (=) in this slice".into(),
+            ));
+        }
+        if let Some(property) = is_bound_property(left, binding)
+            && is_literal_or_parameter(right)
+        {
+            return Ok((property, *right.clone()));
+        }
+        if let Some(property) = is_bound_property(right, binding)
+            && is_literal_or_parameter(left)
+        {
+            return Ok((property, *left.clone()));
+        }
+        Err(PlannerError::UnsupportedPattern(
             "SEARCH ... WHERE must compare a property of the searched binding with a literal or parameter in this slice".into(),
-        ));
+        ))
     }
 
-    Ok(())
+    let leaves = result::flatten_conjunction(filter);
+    let mut out = Vec::with_capacity(leaves.len());
+    for leaf in &leaves {
+        out.push(validate_and_split_eq(leaf, binding)?);
+    }
+    Ok(out)
 }
 
 #[allow(clippy::too_many_arguments)]
@@ -398,13 +439,37 @@ mod tests {
     }
 
     #[test]
-    fn validate_search_filter_rejects_compound_expression() {
+    fn validate_search_filter_accepts_two_equality_conjunction() {
         let filter = Expr::new(ExprKind::And(
             Box::new(cmp(prop("d", "category"), lit(Value::Text("doc".into())))),
             Box::new(cmp(prop("d", "tag"), lit(Value::Text("hot".into())))),
         ));
-        let err = validate_search_filter(&filter, "d").expect_err("compound should be rejected");
-        assert!(err.to_string().contains("single equality comparison"));
+        validate_search_filter(&filter, "d").expect("two-equality conjunction should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_three_arm_conjunction() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "a"), lit(Value::Int64(1)))),
+            Box::new(Expr::new(ExprKind::And(
+                Box::new(cmp(prop("d", "b"), lit(Value::Int64(2)))),
+                Box::new(cmp(prop("d", "c"), lit(Value::Int64(3)))),
+            ))),
+        ));
+        let err = validate_search_filter(&filter, "d")
+            .expect_err("three-arm conjunction should be rejected");
+        assert!(err.to_string().contains("at most two equality conjuncts"));
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_duplicate_property_conjunction() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "category"), lit(Value::Text("doc".into())))),
+            Box::new(cmp(prop("d", "category"), lit(Value::Text("hot".into())))),
+        ));
+        let err = validate_search_filter(&filter, "d")
+            .expect_err("duplicate property conjuncts should be rejected");
+        assert!(err.to_string().contains("distinct properties"));
     }
 
     #[test]
