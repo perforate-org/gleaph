@@ -1,7 +1,7 @@
 # Gleaph GQL extension syntax
 
 Last updated: 2026-06-29
-Anchor timestamp: 2026-06-29 10:16:32 UTC +0000
+Anchor timestamp: 2026-06-29 12:37:08 UTC +0000
 
 ## Status
 
@@ -294,7 +294,7 @@ be implied by the initial syntax.
 
 ### Target vector-search syntax
 
-**Status:** Parser and planner representation implemented. Router lowering to the existing vector search API is implemented for the narrow accepted shape: a leading `NodeScan(variable = d, label: optional)` immediately followed by `PlanOp::Search { binding = d, provider: VectorIndex, output: DISTANCE AS alias or SCORE AS alias }`, and one top-level non-leading `PlanOp::Search` after preceding graph operators have bound the vertex variable. Both shapes are vertex-only. Both leading and non-leading shapes accept `SEARCH ... WHERE` with one same-binding labeled equality predicate backed by an active vertex equality index (ADR 0034 Slice 6 and Slice 7); every other `WHERE` predicate is rejected. `SCORE AS` is accepted only for indexes whose metric exposes a score (currently exact-scan `Cosine`, `nlist == 1`); it is rejected for distance-only metrics such as `L2Squared`. Unsupported shapes (multiple `SEARCH`, nested `SEARCH`, edge subjects, `WHERE` filtering beyond the implemented equality shape, correlated `FOR`/`LIMIT`, or any mutation tail) fail closed with an explicit `InvalidArgument` error.
+**Status:** Parser and planner representation implemented. Router lowering to the existing vector search API is implemented for the narrow accepted shape: a leading `NodeScan(variable = d, label: optional)` immediately followed by `PlanOp::Search { binding = d, provider: VectorIndex, output: DISTANCE AS alias or SCORE AS alias }`, and one top-level non-leading `PlanOp::Search` after preceding graph operators have bound the vertex variable. Both shapes are vertex-only. Both leading and non-leading shapes accept `SEARCH ... WHERE` with one same-binding labeled equality predicate or exactly two `AND`-connected same-binding labeled equality predicates on distinct properties, each backed by an active vertex equality index (ADR 0034 Slice 6, Slice 7, and Slice 8); every other `WHERE` predicate is rejected. `SCORE AS` is accepted only for indexes whose metric exposes a score (currently exact-scan `Cosine`, `nlist == 1`); it is rejected for distance-only metrics such as `L2Squared`. Unsupported shapes (multiple `SEARCH`, nested `SEARCH`, edge subjects, `WHERE` filtering beyond the implemented equality shape, correlated `FOR`/`LIMIT`, or any mutation tail) fail closed with an explicit `InvalidArgument` error.
 
 Current runtime exposes vector search through Router Candid API `vector_search(RouterVectorSearchRequest)`.
 

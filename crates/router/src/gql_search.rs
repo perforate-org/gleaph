@@ -3282,18 +3282,21 @@ mod tests {
         graph_id: GraphId,
         store: &RouterStore,
         label_id: VertexLabelId,
-        pages: Vec<Vec<PostingHit>>,
-        filtered_hits: Vec<Vec<PostingHit>>,
+        pages: Vec<Vec<Vec<PostingHit>>>,
+        filtered_hits: Vec<Vec<Vec<PostingHit>>>,
     ) -> Result<Vec<VectorSubject>, RouterError> {
-        let mut page_iter = pages.into_iter();
-        let mut filter_iter = filtered_hits.into_iter();
+        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let filter_count = call_count.clone();
+        let mut page_iters: Vec<_> = pages.into_iter().map(|p| p.into_iter()).collect();
+        let mut filter_iters: Vec<_> = filtered_hits.into_iter().map(|p| p.into_iter()).collect();
         pollster::block_on(collect_bounded_candidates_inner(
             graph_id,
             store,
             label_id,
             |_client, _after| {
-                let hits = page_iter.next().unwrap_or_default();
-                let done = page_iter.len() == 0;
+                let idx = call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let hits = page_iters[idx].next().unwrap_or_default();
+                let done = page_iters[idx].len() == 0;
                 std::future::ready(Ok(PostingHitPage {
                     hits,
                     next: None,
@@ -3301,7 +3304,8 @@ mod tests {
                 }))
             },
             |_client, _label_id, _hits| {
-                let filtered = filter_iter.next().unwrap_or_default();
+                let idx = filter_count.load(std::sync::atomic::Ordering::SeqCst) - 1;
+                let filtered = filter_iters[idx].next().unwrap_or_default();
                 std::future::ready(Ok(filtered))
             },
         ))
@@ -3333,8 +3337,8 @@ mod tests {
             graph_id,
             &store,
             label_id,
-            vec![page.clone()],
-            vec![page],
+            vec![vec![page.clone()]],
+            vec![vec![page]],
         )
         .expect_err("4097th distinct subject must fail");
         assert!(
@@ -3358,8 +3362,8 @@ mod tests {
             graph_id,
             &store,
             label_id,
-            vec![page.clone()],
-            vec![page],
+            vec![vec![page.clone()]],
+            vec![vec![page]],
         )
         .expect("4096 distinct subjects must succeed");
         assert_eq!(candidates.len(), MAX_VECTOR_SEARCH_FILTER_CANDIDATES);
@@ -3383,9 +3387,14 @@ mod tests {
             .take(MAX_VECTOR_SEARCH_FILTER_CANDIDATES)
             .copied()
             .collect();
-        let candidates =
-            collect_candidates_with_pages(graph_id, &store, label_id, vec![page], vec![filtered])
-                .expect("label-filtered survivors must fit the bound");
+        let candidates = collect_candidates_with_pages(
+            graph_id,
+            &store,
+            label_id,
+            vec![vec![page]],
+            vec![vec![filtered]],
+        )
+        .expect("label-filtered survivors must fit the bound");
         assert_eq!(candidates.len(), MAX_VECTOR_SEARCH_FILTER_CANDIDATES);
     }
 
@@ -3470,8 +3479,8 @@ mod tests {
             graph_id,
             &store,
             label_id,
-            vec![hits.clone(), hits.clone()],
-            vec![hits.clone(), hits.clone()],
+            vec![vec![hits.clone()], vec![hits.clone()]],
+            vec![vec![hits.clone()], vec![hits.clone()]],
         )
         .expect("dedup across targets");
         assert_eq!(candidates.len(), 1);
