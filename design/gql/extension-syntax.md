@@ -348,8 +348,10 @@ ORDER BY similarity DESC
 ```
 
 More complex patterns — multiple `SEARCH` operators, nested `SEARCH`, correlated `FOR`/`LIMIT`,
-compound or range `SEARCH ... WHERE`, and edge subjects — remain staged until the planner can
-reason about the interaction between vector candidate generation, post-filtering, and traversal:
+`OR`/`XOR`/`NOT` `SEARCH ... WHERE`, range predicates, three-or-more conjuncts, repeated
+properties in a conjunction, other bindings in the predicate, edge subjects, and compound vector
+shapes — remain staged until the planner can reason about the interaction between vector candidate
+generation, post-filtering, and traversal:
 
 ```gql
 MATCH (u:User { id: $user_id })-[e:LIKED]->(d:Document)

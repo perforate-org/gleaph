@@ -11,6 +11,7 @@
 //! per-shard resolved-search relation to the normal read dispatch.
 
 use candid::Encode;
+use gleaph_graph_kernel::index::{PostingHit, PostingHitPage, PropertyPostingCursor};
 use std::collections::BTreeMap;
 
 use crate::planner_stats::RouterGraphStats;
@@ -22,7 +23,7 @@ use gleaph_gql_planner::plan::{
 use gleaph_graph_kernel::entry::{GraphId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    IndexEqualSpec, LookupIntersectionPageRequest, MAX_INDEX_VALUE_KEY_BYTES, PostingHitPage,
+    IndexEqualSpec, LookupIntersectionPageRequest, MAX_INDEX_VALUE_KEY_BYTES,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, GqlExecutionMode, GqlQueryResult, ResolvedSearchVertexHitWire,
@@ -1315,11 +1316,34 @@ async fn collect_bounded_candidates<F, Fut>(
     graph_id: GraphId,
     store: &RouterStore,
     label_id: VertexLabelId,
-    mut fetch_page: F,
+    fetch_page: F,
 ) -> Result<Vec<VectorSubject>, RouterError>
 where
     F: FnMut(RouterIndexClient, Option<gleaph_graph_kernel::index::PropertyPostingCursor>) -> Fut,
     Fut: std::future::Future<Output = Result<PostingHitPage, String>>,
+{
+    collect_bounded_candidates_inner(
+        graph_id,
+        store,
+        label_id,
+        fetch_page,
+        |client, label_id, hits| async move { client.filter_hits_by_label(label_id, hits).await },
+    )
+    .await
+}
+
+async fn collect_bounded_candidates_inner<F, Fut, L, Lfut>(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    mut fetch_page: F,
+    mut filter_hits: L,
+) -> Result<Vec<VectorSubject>, RouterError>
+where
+    F: FnMut(RouterIndexClient, Option<PropertyPostingCursor>) -> Fut,
+    Fut: std::future::Future<Output = Result<PostingHitPage, String>>,
+    L: FnMut(RouterIndexClient, u32, Vec<PostingHit>) -> Lfut,
+    Lfut: std::future::Future<Output = Result<Vec<PostingHit>, String>>,
 {
     let targets = store
         .graph_index_lookup_targets(graph_id)
@@ -1331,13 +1355,9 @@ where
     }
 
     let mut seen: std::collections::HashSet<(ShardId, u32)> = std::collections::HashSet::new();
-    let mut after: Option<gleaph_graph_kernel::index::PropertyPostingCursor> = None;
+    let mut after: Option<PropertyPostingCursor> = None;
     let mut target_idx = 0usize;
 
-    // Stream postings from each index canister one page at a time, intersect each page with the
-    // searched vertex label, and keep a single global deduplication set. The bound is checked
-    // after label filtering before extending the result so we never retain more than the allowed
-    // number of distinct subjects that are actually members of the searched label.
     while target_idx < targets.len() {
         let principal = targets[target_idx];
         let client = RouterIndexClient::new(principal);
@@ -1345,8 +1365,7 @@ where
             RouterError::InvalidArgument(format!("property-index lookup failed: {e}"))
         })?;
 
-        let label_hits = client
-            .filter_hits_by_label(label_id.raw() as u32, page.hits)
+        let label_hits = filter_hits(client, label_id.raw() as u32, page.hits)
             .await
             .map_err(|e| {
                 RouterError::InvalidArgument(format!("property-index label filter failed: {e}"))
@@ -1385,11 +1404,14 @@ mod tests {
     use super::*;
     use crate::facade::stable::{embedding_name_catalog, vector_index_catalog};
     use crate::facade::store::catalog_test_support;
+    use candid::Principal;
     use gleaph_gql::Value;
     use gleaph_gql::ast::{Expr, ExprKind};
     use gleaph_gql_planner::plan::{SearchOutputKind, SearchOutputPlan, SearchProviderPlan};
     use gleaph_graph_kernel::entry::{GraphId, VertexLabelId};
     use gleaph_graph_kernel::federation::ShardId;
+    use gleaph_graph_kernel::index::{PostingHit, PostingHitPage, PropertyPostingCursor};
+    use gleaph_graph_kernel::vector_index::MAX_VECTOR_SEARCH_FILTER_CANDIDATES;
     use gleaph_graph_kernel::vector_index::{
         VectorEncoding, VectorIndexKind, VectorMetric, VectorSearchHit, VectorSearchRequest,
         VectorSearchResult, VectorSubject,
@@ -3252,5 +3274,251 @@ mod tests {
                 .contains("requires an active vertex equality index"),
             "unexpected error: {err}"
         );
+    }
+
+    // --- ADR 0034 Slice 8: bounded candidate collector regression tests ---
+
+    fn collect_candidates_with_pages(
+        graph_id: GraphId,
+        store: &RouterStore,
+        label_id: VertexLabelId,
+        pages: Vec<Vec<PostingHit>>,
+        filtered_hits: Vec<Vec<PostingHit>>,
+    ) -> Result<Vec<VectorSubject>, RouterError> {
+        let mut page_iter = pages.into_iter();
+        let mut filter_iter = filtered_hits.into_iter();
+        pollster::block_on(collect_bounded_candidates_inner(
+            graph_id,
+            store,
+            label_id,
+            |_client, _after| {
+                let hits = page_iter.next().unwrap_or_default();
+                let done = page_iter.len() == 0;
+                std::future::ready(Ok(PostingHitPage {
+                    hits,
+                    next: None,
+                    done,
+                }))
+            },
+            |_client, _label_id, _hits| {
+                let filtered = filter_iter.next().unwrap_or_default();
+                std::future::ready(Ok(filtered))
+            },
+        ))
+    }
+
+    fn store_with_one_index_canister() -> (RouterStore, Principal, GraphId) {
+        let (store, admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .unwrap();
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
+            .unwrap();
+        (store, admin, graph_id)
+    }
+
+    #[test]
+    fn collect_bounded_candidates_rejects_4097th_subject() {
+        let (store, _admin, graph_id) = store_with_one_index_canister();
+        let label_id = VertexLabelId::from_raw(1);
+        let mut page = Vec::new();
+        for i in 0..=MAX_VECTOR_SEARCH_FILTER_CANDIDATES {
+            page.push(PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: i as u32,
+            });
+        }
+        let err = collect_candidates_with_pages(
+            graph_id,
+            &store,
+            label_id,
+            vec![page.clone()],
+            vec![page],
+        )
+        .expect_err("4097th distinct subject must fail");
+        assert!(
+            err.to_string().contains("candidate set exceeds maximum"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn collect_bounded_candidates_allows_exactly_4096_subjects() {
+        let (store, _admin, graph_id) = store_with_one_index_canister();
+        let label_id = VertexLabelId::from_raw(1);
+        let mut page = Vec::new();
+        for i in 0..MAX_VECTOR_SEARCH_FILTER_CANDIDATES {
+            page.push(PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: i as u32,
+            });
+        }
+        let candidates = collect_candidates_with_pages(
+            graph_id,
+            &store,
+            label_id,
+            vec![page.clone()],
+            vec![page],
+        )
+        .expect("4096 distinct subjects must succeed");
+        assert_eq!(candidates.len(), MAX_VECTOR_SEARCH_FILTER_CANDIDATES);
+    }
+
+    #[test]
+    fn collect_bounded_candidates_label_filter_happens_before_counting() {
+        let (store, _admin, graph_id) = store_with_one_index_canister();
+        let label_id = VertexLabelId::from_raw(1);
+        // Raw page carries 4097 hits, but all but 4096 are filtered out by label filtering
+        // before counting.
+        let mut page = Vec::new();
+        for i in 0..=MAX_VECTOR_SEARCH_FILTER_CANDIDATES {
+            page.push(PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: i as u32,
+            });
+        }
+        let filtered: Vec<PostingHit> = page
+            .iter()
+            .take(MAX_VECTOR_SEARCH_FILTER_CANDIDATES)
+            .copied()
+            .collect();
+        let candidates =
+            collect_candidates_with_pages(graph_id, &store, label_id, vec![page], vec![filtered])
+                .expect("label-filtered survivors must fit the bound");
+        assert_eq!(candidates.len(), MAX_VECTOR_SEARCH_FILTER_CANDIDATES);
+    }
+
+    fn store_with_two_index_canisters() -> (RouterStore, Principal, GraphId) {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        let make_principal = |seed: u8| {
+            let mut bytes = [seed; 29];
+            bytes[0] = seed + 10;
+            Principal::from_slice(&bytes)
+        };
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            crate::types::AdminRegisterShardArgs {
+                shard_id: ShardId::new(0),
+                graph_canister: make_principal(1),
+                index_canister: make_principal(2),
+                logical_graph_name: catalog_test_support::GRAPH.into(),
+            },
+        ))
+        .unwrap();
+        futures::executor::block_on(store.admin_register_shard(
+            admin,
+            crate::types::AdminRegisterShardArgs {
+                shard_id: ShardId::new(1),
+                graph_canister: make_principal(3),
+                index_canister: make_principal(4),
+                logical_graph_name: catalog_test_support::GRAPH.into(),
+            },
+        ))
+        .unwrap();
+        (store, admin, graph_id)
+    }
+
+    #[test]
+    fn collect_bounded_candidates_resets_cursor_across_targets() {
+        let (store, _admin, graph_id) = store_with_two_index_canisters();
+        let label_id = VertexLabelId::from_raw(1);
+        let calls = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let calls_clone = calls.clone();
+        let result = pollster::block_on(collect_bounded_candidates_inner(
+            graph_id,
+            &store,
+            label_id,
+            |_client, after| {
+                let calls = calls_clone.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                assert!(
+                    after.is_none(),
+                    "each target must start from a fresh cursor, got {after:?}"
+                );
+                std::future::ready(Ok(PostingHitPage {
+                    hits: vec![PostingHit {
+                        shard_id: ShardId::new(0),
+                        vertex_id: calls as u32 + 1,
+                    }],
+                    next: Some(PropertyPostingCursor {
+                        value: vec![1],
+                        shard_id: ShardId::new(0),
+                        vertex_id: 1,
+                    }),
+                    done: true,
+                }))
+            },
+            |_client, _label_id, hits| std::future::ready(Ok(hits)),
+        ));
+        assert_eq!(result.unwrap().len(), 2);
+        assert_eq!(
+            calls.load(std::sync::atomic::Ordering::SeqCst),
+            2,
+            "cursor must reset so each target gets its own call"
+        );
+    }
+
+    #[test]
+    fn collect_bounded_candidates_dedups_across_targets() {
+        let (store, _admin, graph_id) = store_with_two_index_canisters();
+        let label_id = VertexLabelId::from_raw(1);
+        let hits = vec![PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 7,
+        }];
+        let candidates = collect_candidates_with_pages(
+            graph_id,
+            &store,
+            label_id,
+            vec![hits.clone(), hits.clone()],
+            vec![hits.clone(), hits.clone()],
+        )
+        .expect("dedup across targets");
+        assert_eq!(candidates.len(), 1);
+    }
+
+    #[test]
+    fn collect_bounded_candidates_continues_past_first_page() {
+        let (store, _admin, graph_id) = store_with_one_index_canister();
+        let label_id = VertexLabelId::from_raw(1);
+        let cursor = PropertyPostingCursor {
+            value: vec![1],
+            shard_id: ShardId::new(0),
+            vertex_id: 0,
+        };
+        let mut saw_after = false;
+        let result = pollster::block_on(collect_bounded_candidates_inner(
+            graph_id,
+            &store,
+            label_id,
+            |_client, after| {
+                if after.is_some() {
+                    saw_after = true;
+                    return std::future::ready(Ok(PostingHitPage {
+                        hits: vec![PostingHit {
+                            shard_id: ShardId::new(0),
+                            vertex_id: 2,
+                        }],
+                        next: None,
+                        done: true,
+                    }));
+                }
+                std::future::ready(Ok(PostingHitPage {
+                    hits: vec![PostingHit {
+                        shard_id: ShardId::new(0),
+                        vertex_id: 1,
+                    }],
+                    next: Some(cursor.clone()),
+                    done: false,
+                }))
+            },
+            |_client, _label_id, hits| std::future::ready(Ok(hits)),
+        ))
+        .expect("multi-page continuation");
+        assert!(
+            saw_after,
+            "second call must receive the cursor from the first page"
+        );
+        assert_eq!(result.len(), 2);
     }
 }

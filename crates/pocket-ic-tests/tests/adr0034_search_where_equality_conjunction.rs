@@ -487,7 +487,7 @@ fn non_leading_search_where_conjunction_excludes_globally_nearer_one_arm_vertice
     let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
     let a2 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
 
-    // d_match matches both filter arms and has the same vector as the query.
+    // d_match matches both filter arms with vector 6.0 (distance 16 from query 5.0).
     let d_match = e2e_insert_vertex_with_label_and_two_properties(
         &env,
         env.graph_source,
@@ -497,7 +497,9 @@ fn non_leading_search_where_conjunction_excludes_globally_nearer_one_arm_vertice
         tenant_id.raw(),
         1,
     );
-    // d_one matches only the cat_id arm and is globally nearer (vector 0 vs query 5).
+    // d_one matches only the cat_id arm and is globally nearer (vector 5.0 vs query 5.0,
+    // distance 0 vs d_match distance 16). If the implementation incorrectly used a union or
+    // unrestricted top-k, d_one would win; the correct intersection keeps it out.
     let d_one = e2e_insert_vertex_with_label_and_two_properties(
         &env,
         env.graph_source,
@@ -525,8 +527,8 @@ fn non_leading_search_where_conjunction_excludes_globally_nearer_one_arm_vertice
         );
     }
 
-    seed_embedding(&env, vector, env.graph_source, d_match.local_vertex_id, 5.0);
-    seed_embedding(&env, vector, env.graph_source, d_one.local_vertex_id, 0.0);
+    seed_embedding(&env, vector, env.graph_source, d_match.local_vertex_id, 6.0);
+    seed_embedding(&env, vector, env.graph_source, d_one.local_vertex_id, 5.0);
 
     // LIMIT 1 global top-k, restricted to the intersection, must contain only d_match.
     // Both author rows pointing to d_match survive the inner join.
@@ -557,7 +559,7 @@ fn non_leading_search_where_conjunction_excludes_globally_nearer_one_arm_vertice
         match row.get("distance").expect("distance column") {
             gleaph_gql_ic::IcWireValue::Float64(d) => {
                 assert!(
-                    (d - 0.0f64).abs() < 1e-6,
+                    (d - 16.0f64).abs() < 1e-6,
                     "only the exact-match intersection document survives global top-k"
                 );
             }

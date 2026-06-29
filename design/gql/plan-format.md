@@ -73,9 +73,10 @@ For a leading `NodeScan + Search` prefix the Router strips the prefix and dispat
 For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex with an accepted
 `WHERE` equality predicate:
 
-- The planner carries the filter expression in `PlanOp::Search` after structural validation: exactly
-  one equality comparison between a property of the searched binding and a literal or parameter, with
-  either operand order accepted. The planner does not verify label or index coverage.
+- The planner carries the filter expression in `PlanOp::Search` after structural validation: either
+  exactly one equality comparison or exactly two `AND`-connected equality comparisons on distinct
+  properties of the searched binding and a literal or parameter, with either operand order accepted
+  per comparison. The planner does not verify label or index coverage.
 - The Router resolves the searched label and every filter property to router-issued ids, proves an
   active vertex equality index for the exact `(graph_id, label_id, property_id)` tuple in the
   named-index catalog for every arm, encodes each comparison value with
