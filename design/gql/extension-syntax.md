@@ -1,11 +1,11 @@
 # Gleaph GQL extension syntax
 
-Last updated: 2026-06-28
-Anchor timestamp: 2026-06-28 12:36:50 UTC +0000
+Last updated: 2026-06-29
+Anchor timestamp: 2026-06-29 03:56:39 UTC +0000
 
 ## Status
 
-**Dialect contract with a canonical Rust manifest and partially implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter is implemented; other predicate forms remain planned.** This document
+**Dialect contract with a canonical Rust manifest and partially implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter and Slice 7 non-leading labeled `SEARCH ... WHERE` equality filter are implemented; other predicate forms remain planned.** This document
 is the steady-state public syntax contract for Gleaph-specific GQL extensions. It complements:
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
@@ -294,7 +294,7 @@ be implied by the initial syntax.
 
 ### Target vector-search syntax
 
-**Status:** Parser and planner representation implemented. Router lowering to the existing vector search API is implemented for the narrow accepted shape: a leading `NodeScan(variable = d, label: optional)` immediately followed by `PlanOp::Search { binding = d, provider: VectorIndex, output: DISTANCE AS alias or SCORE AS alias }`, and one top-level non-leading `PlanOp::Search` after preceding graph operators have bound the vertex variable. Both shapes are vertex-only. The leading shape also accepts `SEARCH ... WHERE` with one same-binding labeled equality predicate backed by an active vertex equality index (ADR 0034 Slice 6); every other `WHERE` predicate, including non-leading filters, is rejected. `SCORE AS` is accepted only for indexes whose metric exposes a score (currently exact-scan `Cosine`, `nlist == 1`); it is rejected for distance-only metrics such as `L2Squared`. Unsupported shapes (multiple `SEARCH`, nested `SEARCH`, edge subjects, `WHERE` filtering beyond the implemented leading equality shape, correlated `FOR`/`LIMIT`, or any mutation tail) fail closed with an explicit `InvalidArgument` error.
+**Status:** Parser and planner representation implemented. Router lowering to the existing vector search API is implemented for the narrow accepted shape: a leading `NodeScan(variable = d, label: optional)` immediately followed by `PlanOp::Search { binding = d, provider: VectorIndex, output: DISTANCE AS alias or SCORE AS alias }`, and one top-level non-leading `PlanOp::Search` after preceding graph operators have bound the vertex variable. Both shapes are vertex-only. Both leading and non-leading shapes accept `SEARCH ... WHERE` with one same-binding labeled equality predicate backed by an active vertex equality index (ADR 0034 Slice 6 and Slice 7); every other `WHERE` predicate is rejected. `SCORE AS` is accepted only for indexes whose metric exposes a score (currently exact-scan `Cosine`, `nlist == 1`); it is rejected for distance-only metrics such as `L2Squared`. Unsupported shapes (multiple `SEARCH`, nested `SEARCH`, edge subjects, `WHERE` filtering beyond the implemented equality shape, correlated `FOR`/`LIMIT`, or any mutation tail) fail closed with an explicit `InvalidArgument` error.
 
 Current runtime exposes vector search through Router Candid API `vector_search(RouterVectorSearchRequest)`.
 
@@ -348,8 +348,8 @@ ORDER BY similarity DESC
 ```
 
 More complex patterns — multiple `SEARCH` operators, nested `SEARCH`, correlated `FOR`/`LIMIT`,
-`SEARCH ... WHERE`, and edge subjects — can be staged after the planner can reason about the
-interaction between vector candidate generation, post-filtering, and traversal:
+compound or range `SEARCH ... WHERE`, and edge subjects — remain staged until the planner can
+reason about the interaction between vector candidate generation, post-filtering, and traversal:
 
 ```gql
 MATCH (u:User { id: $user_id })-[e:LIKED]->(d:Document)
@@ -396,7 +396,8 @@ but there must be no implicit `distance` or `score` binding.
 
 ### Optional in-index filtering
 
-`SEARCH ... WHERE` is implemented for one leading labeled equality predicate. The accepted shape is:
+`SEARCH ... WHERE` is implemented for one same-binding labeled equality predicate on both
+leading and non-leading `SEARCH`. The accepted leading shape is:
 
 ```gql
 MATCH (d:Document)
@@ -409,15 +410,29 @@ MATCH (d:Document)
 RETURN d, similarity
 ```
 
+The accepted non-leading shape binds the searched variable earlier in the graph pattern:
+
+```gql
+MATCH (a:Author)-[:WROTE]->(d:Document)
+  SEARCH d IN (
+    VECTOR INDEX document_embedding
+    FOR $query
+    WHERE d.category = $category
+    LIMIT 100
+  ) SCORE AS similarity
+RETURN a, d, similarity
+```
+
 The predicate must be a single equality comparison between a property of the searched binding and a
 literal or parameter (either operand order is accepted). The property must have an active vertex
-equality index for the same label; otherwise the query fails explicitly. The result is the exact vector
-top-k over the property-index candidate set, not a post-filter over the unrestricted top-k. Candidate
-sets are bounded to `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096) distinct subjects; larger sets fail
-explicitly. Empty candidates preserve the leading-search global aggregate dispatch contract.
-Unsupported predicate forms — range, compound, `NULL`, functions, computed expressions, other bindings,
-edge subjects, and non-leading filters — remain planned and are rejected fail-closed rather than
-becoming post-filters.
+equality index for the same label; for a non-leading search the label is proved from the statically
+known prefix. Otherwise the query fails explicitly. The result is the exact vector top-k over the
+property-index candidate set, not a post-filter over the unrestricted top-k. Candidate sets are bounded
+to `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096) distinct subjects; larger sets fail explicitly.
+Empty candidates preserve the global aggregate dispatch contract for both leading and non-leading
+search. Unsupported predicate forms — range, compound, `NULL`, functions, computed expressions,
+other bindings, and edge subjects — remain planned and are rejected fail-closed rather than becoming
+post-filters.
 
 ### Internal lowering
 
@@ -425,19 +440,23 @@ Slice 3 lowers a leading `NodeScan(variable = d, label: optional)` followed by `
 to the existing Router/vector-index API and then dispatches the remaining graph-tail plan from
 row-shaped vector-search seeds. Slice 5 lowers one top-level non-leading `PlanOp::Search` to a
 Router-resolved global top-k relation that is partitioned by live shard and inner-joined against the
-already-bound vertex rows in Graph execution. ADR 0034 Slice 6 adds a filtered leading path: the
-planner validates expression shape, the Router proves exact label/property index coverage and resolves
-a bounded candidate allowlist from the Property Index, and Vector Index ranks exactly over that
-allowlist. The Router:
+already-bound vertex rows in Graph execution. ADR 0034 Slice 6 and Slice 7 add a filtered path for
+leading and non-leading search: the planner validates expression shape, the Router proves exact
+label/property index coverage and resolves a bounded candidate allowlist from the Property Index,
+and Vector Index ranks exactly over that allowlist. For a non-leading filtered search the Router
+additionally proves one positive simple label for the searched binding from the top-level prefix.
+The Router:
 
 1. Resolves the embedding name from `VECTOR INDEX <name>` against the Router catalog.
 2. Evaluates `FOR $query` and `LIMIT n` from literals or parameters; both must be row-invariant.
-3. For a filtered leading search, proves an active vertex equality index for the exact
-   `(graph_id, label_id, property_id)` tuple, encodes the comparison value, and collects at most
+3. For a filtered search, proves an active vertex equality index for the exact
+   `(graph_id, label_id, property_id)` tuple (for non-leading search `label_id` comes from the
+   statically proved prefix label), encodes the comparison value, and collects at most
    `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096) distinct candidate subjects via paginated
-   `lookup_equal_page`. An empty candidate set skips the vector canister and dispatches the stripped
-   plan with an empty seed relation to every live shard so global aggregates still run. A non-empty
-   set is forwarded as `VectorSearchRequest.candidate_subjects`.
+   `lookup_equal_page`. An empty candidate set skips the vector canister. For a leading search the
+   stripped plan is dispatched with an empty seed relation to every live shard; for a non-leading
+   search the full plan is dispatched with an empty resolved-search relation to every live shard. A
+   non-empty set is forwarded as `VectorSearchRequest.candidate_subjects`.
 4. Calls the vector canister exactly once per query to obtain hits; `candidate_subjects = None` keeps
    the existing unrestricted search semantics.
 5. Leading and non-leading search share the same derived-index staleness contract: a hit whose
@@ -458,8 +477,9 @@ For this slice the accepted shape is intentionally narrow:
 - vertex-only (`d` must be a vertex binding);
 - one `SEARCH` per plan, at the top level (no nested or repeated search);
 - leading `NodeScan + Search` or one non-leading `SEARCH` after a bound vertex;
-- leading `SEARCH ... WHERE` is limited to one same-binding property equality predicate with a
-  literal or parameter, and the property must have an active vertex equality index for the same label;
+- both leading and non-leading `SEARCH ... WHERE` are limited to one same-binding property equality
+  predicate with a literal or parameter, and the property must have an active vertex equality index
+  for the same label (non-leading search obtains the label from the statically proved prefix);
 - non-leading `SEARCH` requires row-invariant `FOR` and `LIMIT` (literals or parameters);
 - `DISTANCE AS` accepted for all metrics;
 - `SCORE AS` rejected when the metric has no natural score (e.g. `L2Squared`);
@@ -558,7 +578,7 @@ This expresses the intended flow:
 | 1     | Document the dialect contract and keep existing behavior unchanged                                     | Implemented                                                                                                          |
 | 2     | Add the Rust extension manifest for canonical extension names, classes, status, owner, and doc anchors | Implemented                                                                                                          |
 | 3     | Add `SEARCH` parser/planner representation without backend-specific storage details                    | Implemented                                                                                                          |
-| 4     | Add Router lowering from vector `SEARCH` to the existing vector search API                             | Implemented for leading `NodeScan + Search` prefix, vertex-only, leading `SEARCH ... WHERE` equality on a labeled vertex with exact label/property index coverage, `DISTANCE AS` and `SCORE AS` for cosine |
+| 4     | Add Router lowering from vector `SEARCH` to the existing vector search API                             | Implemented for leading `NodeScan + Search` prefix and non-leading `SEARCH` after a bound vertex, vertex-only, leading and non-leading `SEARCH ... WHERE` equality on a labeled vertex with exact label/property index coverage, `DISTANCE AS` and `SCORE AS` for cosine |
 | 5     | Add result hydration from vector hits to graph vertex bindings                                         | Implemented via row-shaped `SeedBindingsWire`                                                                        |
 | 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Implemented: shape validated against metric; `SCORE AS` works for exact-scan `Cosine`, rejected for `L2Squared`      |
 | 7     | Add inline edge property schema syntax and lower `e.inline_field` to existing edge-payload reads       | Planned                                                                                                              |

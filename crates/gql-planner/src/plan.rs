@@ -787,6 +787,29 @@ fn ops_contain_dml(ops: &[PlanOp]) -> bool {
     })
 }
 
+fn collect_label_uses_in_expr(expr: &Expr, uses: &mut PlanLabelUses) {
+    if let ExprKind::IsLabeled { label, .. } = &expr.kind {
+        collect_label_uses_in_label_expr(label, uses);
+    }
+    crate::expr_children::for_each_immediate_child_expr(expr, |child| {
+        collect_label_uses_in_expr(child, uses)
+    });
+}
+
+fn collect_label_uses_in_label_expr(expr: &LabelExpr, uses: &mut PlanLabelUses) {
+    match expr {
+        LabelExpr::Name(name) => {
+            let label_ref = NodeLabelRef::new(name.as_str());
+            uses.add_node(&label_ref, LabelUseIntent::ReadExisting);
+        }
+        LabelExpr::And(left, right) | LabelExpr::Or(left, right) => {
+            collect_label_uses_in_label_expr(left, uses);
+            collect_label_uses_in_label_expr(right, uses);
+        }
+        LabelExpr::Not(inner) => collect_label_uses_in_label_expr(inner, uses),
+        LabelExpr::Wildcard => {}
+    }
+}
 fn collect_label_uses_in_ops(ops: &[PlanOp], uses: &mut PlanLabelUses) {
     for op in ops {
         match op {
@@ -797,10 +820,19 @@ fn collect_label_uses_in_ops(ops: &[PlanOp], uses: &mut PlanLabelUses) {
             }
             PlanOp::EdgeBindEndpoints { label, .. }
             | PlanOp::Expand { label, .. }
-            | PlanOp::ExpandFilter { label, .. }
             | PlanOp::ShortestPath { label, .. } => {
                 if let Some(label) = label {
                     uses.add_edge(label, LabelUseIntent::ReadExisting);
+                }
+            }
+            PlanOp::ExpandFilter {
+                label, dst_filter, ..
+            } => {
+                if let Some(label) = label {
+                    uses.add_edge(label, LabelUseIntent::ReadExisting);
+                }
+                for pred in dst_filter {
+                    collect_label_uses_in_expr(pred, uses);
                 }
             }
             PlanOp::ConditionalIndexScan { fallback_label, .. } => {

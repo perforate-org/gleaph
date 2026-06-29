@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-06-28
-Anchor timestamp: 2026-06-28 15:32:10 UTC +0000
+Last updated: 2026-06-29
+Anchor timestamp: 2026-06-29 02:44:58 UTC +0000
 
 ## Status
 
@@ -152,13 +152,17 @@ keys before graph-index calls; graph-index read APIs reject them as `IndexValueK
 silent empty range).
 
 
-## Vector search filter membership (ADR 0034 Slice 6)
+## Vector search filter membership (ADR 0034 Slice 6 and Slice 7)
 
-Property-index equality postings own filter membership for leading `SEARCH ... WHERE` equality
-predicates. The Router consumes postings through bounded pagination:
+Property-index equality postings own filter membership for leading and non-leading `SEARCH ... WHERE`
+equality predicates. The Router consumes postings through bounded pagination:
 
 - It resolves the searched label and filter property to router-issued ids and proves an active vertex
   equality index for the exact `(graph_id, label_id, property_id)` tuple in the named-index catalog.
+  For a leading search the label is taken from the leading labeled `NodeScan`. For a non-leading
+  search the label is proved from the top-level prefix: a labeled `NodeScan` for the searched
+  binding, or a `PropertyFilter`/`ExpandFilter` carrying `IS LABELED(binding, label, negated = false)`
+  before the `PlanOp::Search`.
 - It encodes the comparison value with `gleaph_gql::value_to_index_key_bytes` and validates the
   encoded size against `MAX_INDEX_VALUE_KEY_BYTES` before calling the index.
 - It pages through `lookup_equal_page` for `(property_id, encoded_value)`, deduplicating by

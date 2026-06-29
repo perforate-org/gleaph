@@ -824,6 +824,7 @@ fn stream_expand(
                         dst_filter,
                         caller,
                         gleaph_weight_decoders,
+                        execution,
                     )?
                 {
                     return Ok(false);
@@ -905,6 +906,7 @@ fn stream_expand(
                     dst_filter,
                     caller,
                     gleaph_weight_decoders,
+                    execution,
                 )?
             {
                 continue;

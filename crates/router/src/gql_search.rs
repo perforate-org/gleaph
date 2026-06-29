@@ -1,10 +1,14 @@
 //! Router-side lowering of GQL `SEARCH ... IN (VECTOR INDEX ... FOR ... LIMIT ...)`
-//! (ADR 0034 Slice 3).
+//! (ADR 0034 Slices 3, 5, 6 and 7).
 //!
 //! This module is the execution boundary between the provider-neutral GQL planner
-//! (`PlanOp::Search`) and the Router-owned vector-index catalog / canister dispatch. It accepts
-//! only a narrow leading shape, rejects everything else with explicit `InvalidArgument` errors, and
-//! dispatches the remaining graph-tail plan from row-shaped vector-search seeds.
+//! (`PlanOp::Search`) and the Router-owned vector-index catalog / canister dispatch. It supports
+//! a narrow leading `NodeScan + Search` shape, one top-level non-leading `SEARCH` after a bound
+//! vertex, and a single equality `SEARCH ... WHERE` predicate for both positions (Slice 6 and
+//! Slice 7). All unsupported shapes are rejected with explicit `InvalidArgument` errors. For a
+//! leading search it dispatches the remaining graph-tail plan from row-shaped vector-search seeds;
+//! for a non-leading search it attaches an explicit per-shard resolved-search relation to the
+//! normal read dispatch.
 
 use candid::Encode;
 use std::collections::BTreeMap;
@@ -129,19 +133,14 @@ where
         .canister;
     vector_index_catalog::assert_vector_search_dispatch_ready(graph_id, store, &def)?;
 
-    // ADR 0034 Slice 6: a filtered leading search resolves a bounded candidate allowlist from
-    // the label-scoped Property Index before asking Vector Index to rank within that set.
+    // ADR 0034 Slice 6/7: a filtered search resolves a bounded label-scoped candidate allowlist
+    // from the Property Index before asking Vector Index to rank within that set. The same path
+    // is used for leading and non-leading positions once the searched label has been proved.
     let candidate_subjects = match &shape.filter {
         Some(filter) => {
-            if !matches!(position, SearchPosition::Leading(_)) {
-                return Err(RouterError::InvalidArgument(
-                    "SEARCH ... WHERE is only supported for a leading labeled search in this slice"
-                        .into(),
-                ));
-            }
-            let label_id = shape.required_label_ids.first().copied().ok_or_else(|| {
+            let label_id = shape.filter_label_id.ok_or_else(|| {
                 RouterError::InvalidArgument(
-                    "SEARCH ... WHERE requires a labeled leading search in this slice".into(),
+                    "SEARCH ... WHERE requires a statically proved label for the searched binding in this slice".into(),
                 )
             })?;
             let candidates = resolve_filtered_candidates(
@@ -154,36 +153,23 @@ where
             )
             .await?;
             if candidates.is_empty() {
-                // Empty candidate set: skip the vector canister and feed the existing empty-hit
-                // leading dispatch path so global aggregates still produce one count=0 row.
-                // The dispatch gate was already checked above, so this path does not bypass it.
-                let empty_result =
-                    gleaph_graph_kernel::vector_index::VectorSearchResult { hits: Vec::new() };
-                let stripped_plan = strip_search_prefix(plan, &shape)?;
-                let stripped_plan_blob = gleaph_gql_planner::wire::encode_block_plans(
-                    std::slice::from_ref(&stripped_plan),
-                    false,
-                )
-                .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-                return dispatch_search_read_plan(
-                    graph_id,
+                // Empty candidate set: skip the vector canister and dispatch an explicit empty
+                // relation so global aggregates still produce one count=0 row. The dispatch gate
+                // was already checked above, so this path does not bypass it.
+                return dispatch_empty_filtered_search(
                     plan,
-                    &stripped_plan_blob,
-                    &stripped_plan,
-                    build_search_seeds(
-                        &shape.binding,
-                        &shape.output_alias,
-                        &shape.required_label_ids,
-                        &empty_result.hits,
-                        def.metric,
-                    )?,
+                    graph_id,
                     params_blob,
+                    &params,
                     mode,
                     stats,
                     store,
+                    caller,
+                    &position,
+                    &shape,
+                    def.metric,
                 )
-                .await
-                .map(Some);
+                .await;
             }
             Some(candidates)
         }
@@ -196,7 +182,7 @@ where
         dims: def.dims,
         metric: def.metric,
         top_k,
-        candidate_subjects,
+        candidate_subjects: candidate_subjects.clone(),
     };
     let result = vector_search(target, search_req).await?;
 
@@ -288,6 +274,11 @@ struct SearchShape {
     output_alias: String,
     output_kind: SearchOutputKind,
     required_label_ids: Vec<VertexLabelId>,
+    /// Label used for property-index candidate filtering. For a leading filtered search this is
+    /// the leading labeled `NodeScan`; for a non-leading filtered search it is derived from the
+    /// top-level prefix operators that statically prove exactly one positive label for the
+    /// searched binding.
+    filter_label_id: Option<VertexLabelId>,
     filter: Option<SearchFilter>,
 }
 
@@ -330,6 +321,10 @@ fn analyze_search_shape(
                 "GQL SEARCH plan has no tail after the vector-search prefix".into(),
             ));
         }
+        let filter_label_id = label
+            .as_ref()
+            .map(|label| resolve_vertex_label_id(graph_id, store, label))
+            .transpose()?;
         let shape = extract_shape_from_search_op(
             graph_id,
             store,
@@ -337,8 +332,9 @@ fn analyze_search_shape(
             provider,
             output,
             label.as_ref(),
+            filter_label_id,
         )?;
-        if shape.filter.is_some() && shape.required_label_ids.is_empty() {
+        if shape.filter.is_some() && shape.filter_label_id.is_none() {
             return Err(RouterError::InvalidArgument(
                 "SEARCH ... WHERE requires a labeled leading search in this slice".into(),
             ));
@@ -383,9 +379,184 @@ fn analyze_search_shape(
         unreachable!("position returned a Search op");
     };
 
-    let shape =
-        extract_shape_from_search_op(graph_id, store, binding.as_ref(), provider, output, None)?;
+    let filter_label_id = if provider.filter().is_some() {
+        Some(prove_searched_label(
+            plan,
+            graph_id,
+            store,
+            binding.as_ref(),
+            search_idx,
+        )?)
+    } else {
+        None
+    };
+
+    let shape = extract_shape_from_search_op(
+        graph_id,
+        store,
+        binding.as_ref(),
+        provider,
+        output,
+        None,
+        filter_label_id,
+    )?;
     Ok(SearchPosition::NonLeading(shape))
+}
+
+/// Inspect the top-level prefix `plan.ops[..search_idx]` and prove exactly one positive simple
+/// label for `binding`. Accepts a labeled `NodeScan` for the binding or a `PropertyFilter` whose
+/// predicates contain `IsLabeled(binding, label, negated: false)`. Rejects zero labels, multiple
+/// distinct labels, negated labels, dynamic/nested label expressions, or any prefix operator that
+/// rebinds the searched variable after the accepted proof.
+fn prove_searched_label(
+    plan: &PhysicalPlan,
+    graph_id: GraphId,
+    store: &RouterStore,
+    binding: &str,
+    search_idx: usize,
+) -> Result<VertexLabelId, RouterError> {
+    let mut proven_label: Option<VertexLabelId> = None;
+    let mut proof_idx: Option<usize> = None;
+
+    for (idx, op) in plan.ops[..search_idx].iter().enumerate() {
+        match op {
+            PlanOp::NodeScan {
+                variable,
+                label: Some(label),
+                ..
+            } if variable.as_ref() == binding => {
+                let label_id = resolve_vertex_label_id(graph_id, store, label)?;
+                match proven_label {
+                    Some(existing) if existing != label_id => {
+                        return Err(RouterError::InvalidArgument(
+                            "SEARCH ... WHERE prefix proves multiple distinct labels for the searched binding".into(),
+                        ));
+                    }
+                    Some(_) => {}
+                    None => {
+                        proven_label = Some(label_id);
+                        proof_idx = Some(idx);
+                    }
+                }
+            }
+            PlanOp::PropertyFilter { predicates, .. }
+            | PlanOp::ExpandFilter {
+                dst_filter: predicates,
+                ..
+            } => {
+                // PropertyFilter and ExpandFilter both carry conjunctive predicates on bound
+                // vertices; either can provide a positive simple label proof for the searched
+                // binding.
+                for predicate in predicates {
+                    match &predicate.kind {
+                        ExprKind::IsLabeled {
+                            expr,
+                            label,
+                            negated: false,
+                        } if matches!(&expr.kind, ExprKind::Variable(name) if name == binding) => {
+                            let label_name = require_simple_label_name(label)?;
+                            let label_id = resolve_vertex_label_id(
+                                graph_id,
+                                store,
+                                &NodeLabelRef::new(label_name),
+                            )?;
+                            match proven_label {
+                                Some(existing) if existing != label_id => {
+                                    return Err(RouterError::InvalidArgument(
+                                        "SEARCH ... WHERE prefix proves multiple distinct labels for the searched binding".into(),
+                                    ));
+                                }
+                                Some(_) => {}
+                                None => {
+                                    proven_label = Some(label_id);
+                                    proof_idx = Some(idx);
+                                }
+                            }
+                        }
+                        ExprKind::IsLabeled {
+                            expr,
+                            negated: true,
+                            ..
+                        } if matches!(&expr.kind, ExprKind::Variable(name) if name == binding) => {
+                            return Err(RouterError::InvalidArgument(
+                                "SEARCH ... WHERE label proof must not be negated".into(),
+                            ));
+                        }
+                        _ => {}
+                    }
+                }
+            }
+            _ => {}
+        }
+    }
+
+    // Fail closed if a later prefix operator rebinds the searched variable after the accepted proof.
+    if let Some(proof) = proof_idx {
+        for op in &plan.ops[proof + 1..search_idx] {
+            if op_writes_variable(op, binding) {
+                return Err(RouterError::InvalidArgument(
+                    "SEARCH ... WHERE label proof is invalidated by a later prefix operator rebinding the searched binding".into(),
+                ));
+            }
+        }
+    }
+
+    match proven_label {
+        Some(label_id) => Ok(label_id),
+        None => Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE requires a statically proved label for the searched binding in this slice".into(),
+        )),
+    }
+}
+
+/// Return true if `op` writes `variable` at the top level or inside a nested subplan that the
+/// router search proof analyzer inspects. Used only for fail-closed rebind detection.
+fn op_writes_variable(op: &PlanOp, variable: &str) -> bool {
+    fn subplan_writes_variable(ops: &[PlanOp], variable: &str) -> bool {
+        ops.iter().any(|op| op_writes_variable(op, variable))
+    }
+
+    match op {
+        PlanOp::NodeScan { variable: v, .. }
+        | PlanOp::IndexScan { variable: v, .. }
+        | PlanOp::EdgeIndexScan { variable: v, .. } => v.as_ref() == variable,
+        PlanOp::ConditionalIndexScan {
+            fallback_variable: v,
+            ..
+        } => v.as_ref() == variable,
+        PlanOp::Expand { edge, dst, .. } | PlanOp::ExpandFilter { edge, dst, .. } => {
+            edge.as_ref() == variable || dst.as_ref() == variable
+        }
+        PlanOp::EdgeBindEndpoints {
+            edge, near, far, ..
+        } => edge.as_ref() == variable || near.as_ref() == variable || far.as_ref() == variable,
+        PlanOp::Let { bindings } => bindings.iter().any(|b| b.variable == variable),
+        PlanOp::OptionalMatch { sub_plan }
+        | PlanOp::UseGraph {
+            sub_plan: Some(sub_plan),
+            ..
+        } => subplan_writes_variable(sub_plan, variable),
+        PlanOp::InlineProcedureCall { sub_plan, .. } => {
+            subplan_writes_variable(&sub_plan.ops, variable)
+        }
+        PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right, .. } => {
+            subplan_writes_variable(left, variable) || subplan_writes_variable(right, variable)
+        }
+        PlanOp::SetOperation { right, .. } => subplan_writes_variable(&right.ops, variable),
+        _ => false,
+    }
+}
+
+/// A positive label proof must name exactly one simple label. Wildcard, conjunction, disjunction,
+/// and negation are rejected because the Router needs a single router-issued `VertexLabelId` to
+/// scope the Property Index candidate lookup.
+fn require_simple_label_name(expr: &gleaph_gql::types::LabelExpr) -> Result<&str, RouterError> {
+    match expr {
+        gleaph_gql::types::LabelExpr::Name(name) => Ok(name.as_str()),
+        _ => Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE label proof must be a simple positive label name".into(),
+        )),
+    }
 }
 
 fn extract_shape_from_search_op(
@@ -395,6 +566,7 @@ fn extract_shape_from_search_op(
     provider: &SearchProviderPlan,
     output: &SearchOutputPlan,
     node_scan_label: Option<&NodeLabelRef>,
+    filter_label_id: Option<VertexLabelId>,
 ) -> Result<SearchShape, RouterError> {
     let SearchProviderPlan::VectorIndex {
         index_name,
@@ -422,6 +594,7 @@ fn extract_shape_from_search_op(
         output_alias: output.alias.to_string(),
         output_kind: output.kind,
         required_label_ids,
+        filter_label_id,
         filter,
     })
 }
@@ -741,6 +914,82 @@ fn strip_search_prefix(
         output: plan.output.clone(),
         binding_layout: plan.binding_layout.clone(),
     })
+}
+
+/// Dispatch a filtered SEARCH whose candidate set is empty without calling the vector canister.
+/// For a leading search this strips the prefix and sends empty seeds; for a non-leading search
+/// it sends an explicit empty resolved-search relation to every live shard. Both paths preserve
+/// the global aggregate contract of returning one zero row for `count(*)` over an empty relation.
+async fn dispatch_empty_filtered_search(
+    plan: &PhysicalPlan,
+    graph_id: GraphId,
+    params_blob: &[u8],
+    params: &BTreeMap<String, Value>,
+    mode: GqlExecutionMode,
+    stats: &RouterGraphStats,
+    store: &RouterStore,
+    caller: candid::Principal,
+    position: &SearchPosition,
+    shape: &SearchShape,
+    metric: VectorMetric,
+) -> Result<Option<GqlQueryResult>, RouterError> {
+    let empty_hits: &[VectorSearchHit] = &[];
+    match position {
+        SearchPosition::Leading(_) => {
+            let stripped_plan = strip_search_prefix(plan, shape)?;
+            let stripped_plan_blob = gleaph_gql_planner::wire::encode_block_plans(
+                std::slice::from_ref(&stripped_plan),
+                false,
+            )
+            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+            dispatch_search_read_plan(
+                graph_id,
+                plan,
+                &stripped_plan_blob,
+                &stripped_plan,
+                build_search_seeds(
+                    &shape.binding,
+                    &shape.output_alias,
+                    &shape.required_label_ids,
+                    empty_hits,
+                    metric,
+                )?,
+                params_blob,
+                mode,
+                stats,
+                store,
+            )
+            .await
+            .map(Some)
+        }
+        SearchPosition::NonLeading(_) => {
+            let resolved_search_by_shard = build_resolved_search_wires(
+                &shape.binding,
+                &shape.output_alias,
+                empty_hits,
+                metric,
+                graph_id,
+                store,
+            )?;
+            let plan_blob =
+                gleaph_gql_planner::wire::encode_block_plans(std::slice::from_ref(plan), false)
+                    .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+            crate::gql::dispatch_plan_blob_with_search(
+                graph_id,
+                &plan_blob,
+                std::slice::from_ref(plan),
+                params,
+                params_blob,
+                mode,
+                None,
+                stats,
+                Some(resolved_search_by_shard),
+                caller,
+            )
+            .await
+            .map(Some)
+        }
+    }
 }
 
 async fn dispatch_search_read_plan(
@@ -1399,6 +1648,7 @@ mod tests {
             output_alias: "distance".into(),
             output_kind: SearchOutputKind::Distance,
             required_label_ids: vec![],
+            filter_label_id: None,
             filter: None,
         };
         let stripped = strip_search_prefix(&plan, &shape).unwrap();
@@ -1436,6 +1686,7 @@ mod tests {
             output_alias: "distance".into(),
             output_kind: SearchOutputKind::Distance,
             required_label_ids: vec![],
+            filter_label_id: None,
             filter: None,
         };
         let err = strip_search_prefix(&plan, &shape).unwrap_err();
@@ -2218,7 +2469,7 @@ mod tests {
     }
 
     #[test]
-    fn try_execute_gql_search_rejects_filtered_non_leading() {
+    fn try_execute_gql_search_rejects_filtered_non_leading_without_label() {
         let (store, _admin, graph_id) = catalog_test_support::setup();
         register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
         let mut plan = non_leading_search_plan_with_distance();
@@ -2241,10 +2492,10 @@ mod tests {
             candid::Principal::anonymous(),
             vector_search_unreachable(),
         ));
-        let err = result.expect_err("filtered non-leading must fail");
+        let err = result.expect_err("filtered non-leading without label proof must fail");
         assert!(
             err.to_string()
-                .contains("only supported for a leading labeled search"),
+                .contains("requires a statically proved label"),
             "unexpected error: {err}"
         );
     }
@@ -2372,6 +2623,427 @@ mod tests {
             err.to_string()
                 .contains("requires an active vertex equality index"),
             "unexpected error: {err}"
+        );
+    }
+
+    // --- ADR 0034 Slice 7: non-leading filtered SEARCH label-proof tests ---
+
+    fn is_labeled_expr(var: &str, label: &str, negated: bool) -> Expr {
+        Expr::new(ExprKind::IsLabeled {
+            expr: Box::new(Expr::new(ExprKind::Variable(var.to_string()))),
+            label: gleaph_gql::types::LabelExpr::Name(label.to_string()),
+            negated,
+        })
+    }
+
+    fn non_leading_search_plan_with_property_filter_proof(filter: Expr) -> PhysicalPlan {
+        PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("Author".into()),
+                property_projection: None,
+            },
+            PlanOp::Expand {
+                src: "a".into(),
+                edge: "e".into(),
+                dst: "d".into(),
+                direction: gleaph_gql::types::EdgeDirection::PointingRight,
+                label: Some("WROTE".into()),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: None,
+                edge_payload_predicate: None,
+                edge_vector_predicate: None,
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+                emit_edge_binding: true,
+                near_group_var: None,
+                far_group_var: None,
+                path_var: None,
+                emit_path_binding: true,
+            },
+            PlanOp::PropertyFilter {
+                predicates: vec![is_labeled_expr("d", "Document", false)],
+                stage: 0,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: bytes_expr(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+                    limit: Expr::int(10),
+                    filter: Some(filter),
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Distance,
+                    alias: "distance".into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ])
+    }
+
+    fn non_leading_search_plan_with_node_scan_label_proof(filter: Expr) -> PhysicalPlan {
+        PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("Author".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "d".into(),
+                label: Some("Document".into()),
+                property_projection: None,
+            },
+            PlanOp::Search {
+                binding: "d".into(),
+                provider: SearchProviderPlan::VectorIndex {
+                    index_name: vec!["doc_vec".into()],
+                    query: bytes_expr(vec![1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12]),
+                    limit: Expr::int(10),
+                    filter: Some(filter),
+                },
+                output: SearchOutputPlan {
+                    kind: SearchOutputKind::Distance,
+                    alias: "distance".into(),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![],
+                distinct: false,
+            },
+        ])
+    }
+
+    #[test]
+    fn analyze_search_shape_accepts_non_leading_filtered_property_filter_proof() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern Document");
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Author")
+            .expect("intern Author");
+        let plan = non_leading_search_plan_with_property_filter_proof(filter_eq_expr(
+            "category",
+            Value::Text("doc".into()),
+        ));
+        let position = analyze_search_shape(&plan, graph_id, &store)
+            .expect("non-leading filtered shape with property-filter proof");
+        assert!(matches!(position, SearchPosition::NonLeading(_)));
+    }
+
+    #[test]
+    fn analyze_search_shape_accepts_non_leading_filtered_node_scan_proof() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern Document");
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Author")
+            .expect("intern Author");
+        let plan = non_leading_search_plan_with_node_scan_label_proof(filter_eq_expr(
+            "category",
+            Value::Text("doc".into()),
+        ));
+        let position = analyze_search_shape(&plan, graph_id, &store)
+            .expect("non-leading filtered shape with node-scan proof");
+        assert!(matches!(position, SearchPosition::NonLeading(_)));
+    }
+
+    #[test]
+    fn analyze_search_shape_accepts_repeated_same_label_proof() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern Document");
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Author")
+            .expect("intern Author");
+        let mut plan = non_leading_search_plan_with_node_scan_label_proof(filter_eq_expr(
+            "category",
+            Value::Text("doc".into()),
+        ));
+        // Add a redundant PropertyFilter IsLabeled(d, Document) before Search.
+        plan.ops.insert(
+            2,
+            PlanOp::PropertyFilter {
+                predicates: vec![is_labeled_expr("d", "Document", false)],
+                stage: 0,
+            },
+        );
+        let position = analyze_search_shape(&plan, graph_id, &store)
+            .expect("repeated same-label proof should be accepted");
+        assert!(matches!(position, SearchPosition::NonLeading(_)));
+    }
+
+    #[test]
+    fn analyze_search_shape_rejects_non_leading_filtered_missing_label() {
+        let (store, _admin, graph_id) = catalog_test_support::setup();
+        let mut plan = non_leading_search_plan_with_distance();
+        if let PlanOp::Search { provider, .. } = &mut plan.ops[1] {
+            let SearchProviderPlan::VectorIndex { filter, .. } = provider;
+            *filter = Some(filter_eq_expr("category", Value::Text("doc".into())));
+        }
+        let err = analyze_search_shape(&plan, graph_id, &store)
+            .expect_err("non-leading filtered search without label proof");
+        assert!(
+            err.to_string()
+                .contains("requires a statically proved label"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn analyze_search_shape_rejects_non_leading_filtered_two_labels() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern Document");
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Other")
+            .expect("intern Other");
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Author")
+            .expect("intern Author");
+        let mut plan = non_leading_search_plan_with_node_scan_label_proof(filter_eq_expr(
+            "category",
+            Value::Text("doc".into()),
+        ));
+        // Add a contradictory PropertyFilter IsLabeled(d, Other) before Search.
+        plan.ops.insert(
+            2,
+            PlanOp::PropertyFilter {
+                predicates: vec![is_labeled_expr("d", "Other", false)],
+                stage: 0,
+            },
+        );
+        let err =
+            analyze_search_shape(&plan, graph_id, &store).expect_err("two distinct label proofs");
+        assert!(
+            err.to_string().contains("multiple distinct labels"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn analyze_search_shape_rejects_non_leading_filtered_negated_label() {
+        let (store, _admin, graph_id) = catalog_test_support::setup();
+        let mut plan = non_leading_search_plan_with_distance();
+        plan.ops.insert(
+            1,
+            PlanOp::PropertyFilter {
+                predicates: vec![is_labeled_expr("d", "Document", true)],
+                stage: 0,
+            },
+        );
+        if let PlanOp::Search { provider, .. } = &mut plan.ops[2] {
+            let SearchProviderPlan::VectorIndex { filter, .. } = provider;
+            *filter = Some(filter_eq_expr("category", Value::Text("doc".into())));
+        }
+        let err = analyze_search_shape(&plan, graph_id, &store).expect_err("negated label proof");
+        assert!(
+            err.to_string().contains("must not be negated"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn analyze_search_shape_rejects_non_leading_filtered_label_after_search() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern Document");
+        let mut plan = non_leading_search_plan_with_distance();
+        if let PlanOp::Search { provider, .. } = &mut plan.ops[1] {
+            let SearchProviderPlan::VectorIndex { filter, .. } = provider;
+            *filter = Some(filter_eq_expr("category", Value::Text("doc".into())));
+        }
+        // Append the label proof after SEARCH so it is not in the prefix.
+        plan.ops.insert(
+            2,
+            PlanOp::PropertyFilter {
+                predicates: vec![is_labeled_expr("d", "Document", false)],
+                stage: 0,
+            },
+        );
+        let err =
+            analyze_search_shape(&plan, graph_id, &store).expect_err("label proof after search");
+        assert!(
+            err.to_string()
+                .contains("requires a statically proved label"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn analyze_search_shape_rejects_non_leading_filtered_rebound_variable() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern Document");
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Author")
+            .expect("intern Author");
+        let mut plan = non_leading_search_plan_with_node_scan_label_proof(filter_eq_expr(
+            "category",
+            Value::Text("doc".into()),
+        ));
+        // Insert a Let that rebinds d between the proof and the Search.
+        plan.ops.insert(
+            2,
+            PlanOp::Let {
+                bindings: vec![gleaph_gql::ast::LetBinding {
+                    span: gleaph_gql::token::Span::DUMMY,
+                    variable: "d".to_string(),
+                    value: Expr::new(ExprKind::Variable("a".to_string())),
+                }],
+            },
+        );
+        let err =
+            analyze_search_shape(&plan, graph_id, &store).expect_err("rebound searched variable");
+        assert!(
+            err.to_string()
+                .contains("invalidated by a later prefix operator"),
+            "unexpected error: {err}"
+        );
+    }
+    #[test]
+    fn analyze_search_shape_accepts_non_leading_filtered_search_with_src_expand() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern Document");
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Author")
+            .expect("intern Author");
+        // d is introduced by a NodeScan proof, then used as the src of a later Expand.
+        // Reading d as an expand source must not invalidate the earlier label proof.
+        let mut plan = non_leading_search_plan_with_node_scan_label_proof(filter_eq_expr(
+            "category",
+            Value::Text("doc".into()),
+        ));
+        plan.ops.insert(
+            2,
+            PlanOp::Expand {
+                src: "d".into(),
+                edge: "e".into(),
+                dst: "x".into(),
+                direction: gleaph_gql::types::EdgeDirection::PointingRight,
+                label: Some("CITES".into()),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: None,
+                edge_payload_predicate: None,
+                edge_vector_predicate: None,
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+                emit_edge_binding: true,
+                near_group_var: None,
+                far_group_var: None,
+                path_var: None,
+                emit_path_binding: true,
+            },
+        );
+        let position = analyze_search_shape(&plan, graph_id, &store)
+            .expect("expand source read should not invalidate label proof");
+        assert!(matches!(position, SearchPosition::NonLeading(_)));
+    }
+
+    #[test]
+    fn try_execute_gql_search_non_leading_filtered_rejects_missing_exact_index() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern label");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
+            .expect("intern property");
+        // Property "category" is registered but there is no active vertex equality index for
+        // (Document, category).
+        let plan = non_leading_search_plan_with_property_filter_proof(filter_eq_expr(
+            "category",
+            Value::Text("doc".into()),
+        ));
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("missing exact index must fail");
+        assert!(
+            err.to_string()
+                .contains("requires an active vertex equality index"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_non_leading_filtered_gate_checked_before_candidate_lookup() {
+        let (store, admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern label");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
+            .expect("intern property");
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "category".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create exact index");
+        vector_index_catalog::set_vector_index_activation_state_for_test(
+            graph_id,
+            1,
+            vector_index_catalog::VectorIndexActivationState::DispatchBlocked,
+        )
+        .unwrap();
+        let plan = non_leading_search_plan_with_property_filter_proof(filter_eq_expr(
+            "category",
+            Value::Text("doc".into()),
+        ));
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("DispatchBlocked must fail even with empty candidates");
+        assert!(
+            err.to_string()
+                .contains("vector dispatch activation blocked"),
+            "expected activation blocked, got {err}"
         );
     }
 }

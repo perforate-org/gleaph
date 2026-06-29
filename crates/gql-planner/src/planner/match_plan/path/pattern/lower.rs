@@ -266,17 +266,13 @@ pub(super) fn try_parse_quantified_hop_subpath(
     }))
 }
 
-fn node_emits_unlabeled_full_vertex_scan(
+fn node_emits_full_vertex_scan(
     var: &str,
-    label: &Option<String>,
     node: &NodePattern,
     stats: Option<&dyn GraphStats>,
     conditional_candidates: &[ConditionalScanCandidate],
     annotations: &PlanAnnotations,
 ) -> bool {
-    if label.is_some() {
-        return false;
-    }
     if let Some(stats) = stats
         && let Some(where_expr) = &node.where_clause
         && anchor::find_index_intersection(var, where_expr, stats).is_some()
@@ -388,15 +384,16 @@ pub(super) fn first_hop_supports_leading_edge_index(
     ) {
         return false;
     }
-    let label = extract_simple_label(&node.label);
-    if !node_emits_unlabeled_full_vertex_scan(
-        nv,
-        &label,
-        node,
-        stats,
-        conditional_candidates,
-        annotations,
-    ) {
+    // Keep the first hop as a normal scan when the path is cyclic. WCOJ rewriting only recognises
+    // Expand/ExpandFilter hops; converting the first hop into EdgeIndexScan+EdgeBindEndpoints would
+    // prevent cycle detection and optimisation.
+    if elements[2..]
+        .iter()
+        .any(|e| matches!(e, PathElement::Node { var, .. } if var == nv))
+    {
+        return false;
+    }
+    if !node_emits_full_vertex_scan(nv, node, stats, conditional_candidates, annotations) {
         return false;
     }
     edge_has_indexed_scannable_equality(ev, edge, stats, where_conjuncts)

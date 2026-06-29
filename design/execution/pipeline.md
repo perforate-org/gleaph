@@ -77,6 +77,14 @@ zero seed rows still produces one `count = 0` row. When the candidate set is non
 canister receives a bounded allowlist and returns exact top-k hits; the normal leading-search
 hit-shard-only dispatch then applies.
 
+For a non-leading `PlanOp::Search` with a `WHERE` equality predicate, the Router requires exactly one
+positive simple label proof for the searched binding from the top-level prefix, reuses the same
+bounded Property Index candidate resolution, and skips the vector canister when the candidate set is
+empty. It dispatches the full plan with an explicit empty `ResolvedSearchWire` to every live shard,
+so the Graph executor still runs the prefix and any global aggregate returns one `count = 0` row.
+When the candidate set is non-empty, the vector canister ranks exactly within the allowlist and the
+Router partitions hits into per-shard resolved relations as for unfiltered non-leading search.
+
 ## Materialization
 
 Internal bindings may stay lazy until output:

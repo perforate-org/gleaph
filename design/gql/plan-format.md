@@ -58,18 +58,20 @@ Plan must be written so remaining ops are valid given seeded rows (planner + rou
 
 For a non-leading `PlanOp::Search` the Router supplies `ExecutePlanArgs.resolved_search_blob`:
 
-- The blob is a per-shard `ResolvedSearchWire` produced by the Router from a single global vector top-k call.
+- The blob is a per-shard `ResolvedSearchWire` produced by the Router from a single global vector top-k call (or from an invocation-local empty result when the filtered candidate set is empty).
 - The wire carries the bound vertex variable name, the scalar output alias, and the finite, de-duplicated shard-local vertex hits with their user-visible scalar values.
 - Shards with no local hit receive an explicit empty wire, not an absent field.
 - The Graph executor decodes the wire, validates it against the `PlanOp::Search` binding/alias, and executes the operator as an inner join: input rows whose bound vertex matches a hit survive and get the scalar alias bound.
 - A `PlanOp::Search` that reaches the Graph executor without a matching resolved relation fails closed with `PlanQueryError::UnsupportedOp`.
+- The full non-leading plan is preserved even when the resolved relation is empty, so global aggregates and other downstream operators still run.
 
 For a leading `NodeScan + Search` prefix the Router strips the prefix and dispatches the tail plan with row-shaped `seed_bindings_blob`; the Graph executor never sees a raw `PlanOp::Search`.
 
 
 ### Filtered search contract
 
-For a leading `NodeScan + Search` with an accepted `WHERE` equality predicate:
+For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex with an accepted
+`WHERE` equality predicate:
 
 - The planner carries the filter expression in `PlanOp::Search` after structural validation: exactly
   one equality comparison between a property of the searched binding and a literal or parameter, with
@@ -82,12 +84,20 @@ For a leading `NodeScan + Search` with an accepted `WHERE` equality predicate:
   from the Property Index via paginated `lookup_equal_page`. Deduplicating by `(shard_id, vertex_id)`,
   it stops as soon as a 4097th distinct subject is observed and returns an explicit error instead of
   truncating. Malformed postings are rejected.
-- If the candidate set is empty, the Router skips the vector canister and dispatches the stripped plan
-  with an empty `SeedBindingsWire` to every live shard, preserving the leading-search global aggregate
-  contract.
+- If the candidate set is empty, the Router skips the vector canister. For a leading search it dispatches
+  the stripped plan with an empty `SeedBindingsWire` to every live shard, preserving the leading-search
+  global aggregate contract. For a non-leading search it keeps the full plan and attaches an explicit
+  empty `ResolvedSearchWire` to every live shard, so Graph still executes the prefix and any global
+  aggregate returns one zero row.
 - Otherwise the Router forwards one `VectorSearchRequest` with `candidate_subjects = Some(allowlist)`
   to the vector canister. `candidate_subjects = None` retains the existing unrestricted search semantics;
   `Some([])` is an empty allowlist that returns no hits.
+- For a non-leading filtered search the Router proves exactly one positive simple label for the searched
+  binding from the top-level prefix. Accepted proofs are a labeled `NodeScan` for the binding, or a
+  `PropertyFilter`/`ExpandFilter` containing `IS LABELED(binding, label, negated = false)` before the
+  `PlanOp::Search`. Zero labels, multiple distinct labels, negated labels, dynamic/nested label
+  expressions, a label proof that appears after `SEARCH`, or a later prefix operator rebinding the
+  searched variable are all rejected fail-closed.
 - The vector canister validates the allowlist count, vertex-only subjects, and duplicates at its
   boundary, then ranks exactly over current live vector slots for those subjects.
 

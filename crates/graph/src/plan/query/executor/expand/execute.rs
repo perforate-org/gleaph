@@ -146,6 +146,7 @@ pub(crate) async fn execute_expand(
                                     dst_filter,
                                     caller,
                                     gleaph_weight_decoders,
+                                    &ctx.execution,
                                 )?
                             {
                                 return Ok(false);
@@ -253,6 +254,7 @@ pub(crate) async fn execute_expand(
                                 dst_filter,
                                 caller,
                                 gleaph_weight_decoders,
+                                &ctx.execution,
                             )?
                         {
                             continue;

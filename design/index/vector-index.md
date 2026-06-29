@@ -1,7 +1,7 @@
 # Vector index
 
-Last updated: 2026-06-28
-Anchor timestamp: 2026-06-28 01:05:14 UTC +0000
+Last updated: 2026-06-29
+Anchor timestamp: 2026-06-29 02:45:14 UTC +0000
 
 ## Status
 
@@ -430,10 +430,11 @@ the incarnation fence and a two-condition gate (global flag AND per-graph shard 
   (`VectorDispatchActivationBlocked`) while dispatch is not ready.
 
 
-## Filtered exact ranking (ADR 0034 Slice 6)
+## Filtered exact ranking (ADR 0034 Slice 6 and Slice 7)
 
 A bounded candidate allowlist can restrict the search to an exact top-k over current live vector
-slots. The allowlist arrives in `VectorSearchRequest.candidate_subjects`:
+slots. The allowlist is produced by the Router from the Property Index for both leading and
+non-leading `SEARCH ... WHERE` equality predicates and arrives in `VectorSearchRequest.candidate_subjects`:
 
 - `None` keeps the existing unrestricted search path (exact subject scan or partition-page scan).
 - `Some([])` returns an empty result without reading vector rows.

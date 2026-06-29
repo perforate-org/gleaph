@@ -334,6 +334,7 @@ pub(crate) fn vertex_row_matches_dst_filters(
     dst_filter: &[Expr],
     caller: Option<Principal>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    execution: &GqlExecutionContext,
 ) -> Result<bool, PlanQueryError> {
     let mut stub = PlanRow::new();
     stub.insert(dst.to_string(), PlanBinding::Vertex(dst_id));
@@ -342,8 +343,8 @@ pub(crate) fn vertex_row_matches_dst_filters(
         parameters,
         aggregate_specs: None,
         caller,
-        resolved_labels: None,
-        resolved_properties: None,
+        resolved_labels: execution.resolved_labels.as_ref(),
+        resolved_properties: execution.resolved_properties.as_ref(),
         gleaph_weight_decoders,
         element_id_key: *element_id_key,
     };

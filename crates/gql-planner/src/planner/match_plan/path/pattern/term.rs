@@ -184,9 +184,24 @@ pub(super) fn plan_path_term(
                     let var_len = quantifier.as_ref().and_then(quantifier_to_var_len);
 
                     // FilterIntoPattern: collect dst node's inline filters for fusion.
-                    let dst_filters = dst_node
+                    // Include the destination label so the check is evaluated before any
+                    // property projection drops the vertex binding, and so the Router can
+                    // prove the searched label for ADR 0034 Slice 7 non-leading SEARCH WHERE.
+                    let mut dst_filters = dst_node
                         .map(|n| super::super::filters::collect_node_inline_predicates(&dst_var, n))
                         .unwrap_or_default();
+                    if let Some(dst_node) = dst_node.as_ref()
+                        && let Some(label) = &dst_node.label
+                    {
+                        dst_filters.insert(
+                            0,
+                            Expr::new(ExprKind::IsLabeled {
+                                expr: Box::new(Expr::var(&dst_var)),
+                                label: label.clone(),
+                                negated: false,
+                            }),
+                        );
+                    }
 
                     let src_str: Str = src_var.as_str().into();
                     let edge_str: Str = edge_var.as_str().into();
@@ -251,6 +266,16 @@ pub(super) fn plan_path_term(
                             fused_nodes.insert(dst_var.clone());
                         }
                         super::super::filters::emit_node_inline_filters(src_var, &near_node, ops);
+                        if let Some(label) = &near_node.label {
+                            ops.push(PlanOp::PropertyFilter {
+                                predicates: vec![Expr::new(ExprKind::IsLabeled {
+                                    expr: Box::new(Expr::var(src_var)),
+                                    label: label.clone(),
+                                    negated: false,
+                                })],
+                                stage: 0,
+                            });
+                        }
                     } else {
                         if let Some((v, lbl, n)) = pending_deferred_first_scan.take() {
                             super::super::filters::emit_scan_for_node(

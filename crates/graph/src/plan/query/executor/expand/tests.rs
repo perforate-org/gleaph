@@ -600,6 +600,11 @@ fn var_len_edge_property_projection_returns_projected_properties() {
             var_len,
             edge_property_projection,
             ..
+        }
+        | PlanOp::ExpandFilter {
+            var_len,
+            edge_property_projection,
+            ..
         } if var_len.is_some() => edge_property_projection.clone(),
         _ => None,
     });
@@ -652,6 +657,9 @@ fn expand_hop_aux_binding_returns_edge_payload_bytes() {
     let hop_aux_binding = plan.ops.iter().find_map(|op| match op {
         PlanOp::Expand {
             hop_aux_binding, ..
+        }
+        | PlanOp::ExpandFilter {
+            hop_aux_binding, ..
         } => hop_aux_binding.clone(),
         _ => None,
     });
@@ -703,6 +711,11 @@ fn var_len_hop_aux_binding_returns_payload_bytes_list() {
     );
     let hop_aux_binding = plan.ops.iter().find_map(|op| match op {
         PlanOp::Expand {
+            var_len,
+            hop_aux_binding,
+            ..
+        }
+        | PlanOp::ExpandFilter {
             var_len,
             hop_aux_binding,
             ..
@@ -1834,6 +1847,12 @@ fn gql_var_len_path_var_binds_traversed_path() {
     );
     let path_expand = plan.ops.iter().find_map(|op| match op {
         PlanOp::Expand {
+            path_var,
+            emit_path_binding,
+            var_len,
+            ..
+        }
+        | PlanOp::ExpandFilter {
             path_var,
             emit_path_binding,
             var_len,

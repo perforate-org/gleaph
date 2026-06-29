@@ -110,7 +110,7 @@ fn test_match_with_edge() {
     assert!(
         plan.ops
             .iter()
-            .any(|op| matches!(op, PlanOp::Expand { .. })),
+            .any(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. })),
         "expected Expand op, got: {:?}",
         plan.ops
     );
@@ -602,13 +602,18 @@ fn expand_hop_aux_binding_none_when_not_referenced() {
     let expand = plan
         .ops
         .iter()
-        .find(|op| matches!(op, PlanOp::Expand { .. }))
+        .find(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
         .expect("Expand");
-    let PlanOp::Expand {
+    let (PlanOp::Expand {
         edge,
         hop_aux_binding,
         ..
-    } = expand
+    }
+    | PlanOp::ExpandFilter {
+        edge,
+        hop_aux_binding,
+        ..
+    }) = expand
     else {
         unreachable!()
     };
@@ -625,13 +630,18 @@ fn expand_hop_aux_binding_some_when_return_references_named_edge() {
     let expand = plan
         .ops
         .iter()
-        .find(|op| matches!(op, PlanOp::Expand { .. }))
+        .find(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
         .expect("Expand");
-    let PlanOp::Expand {
+    let (PlanOp::Expand {
         edge,
         hop_aux_binding,
         ..
-    } = expand
+    }
+    | PlanOp::ExpandFilter {
+        edge,
+        hop_aux_binding,
+        ..
+    }) = expand
     else {
         unreachable!()
     };
@@ -645,11 +655,14 @@ fn expand_hop_aux_binding_none_when_anonymous_edge_not_referenced() {
     let expand = plan
         .ops
         .iter()
-        .find(|op| matches!(op, PlanOp::Expand { .. }))
+        .find(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
         .expect("Expand");
-    let PlanOp::Expand {
+    let (PlanOp::Expand {
         hop_aux_binding, ..
-    } = expand
+    }
+    | PlanOp::ExpandFilter {
+        hop_aux_binding, ..
+    }) = expand
     else {
         unreachable!()
     };
@@ -663,10 +676,10 @@ fn expand_hop_aux_binding_none_when_anonymous_edge_not_referenced() {
 fn expand_hop_aux_binding_some_when_return_references_anonymous_edge_hop_aux() {
     let base = "MATCH (a:Person)-[:KNOWS]->(b:Person) RETURN a, b";
     let plan0 = plan_query(base);
-    let PlanOp::Expand { edge, .. } = plan0
+    let (PlanOp::Expand { edge, .. } | PlanOp::ExpandFilter { edge, .. }) = plan0
         .ops
         .iter()
-        .find(|op| matches!(op, PlanOp::Expand { .. }))
+        .find(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
         .expect("Expand")
     else {
         unreachable!()
@@ -676,13 +689,18 @@ fn expand_hop_aux_binding_some_when_return_references_anonymous_edge_hop_aux() {
     let expand = plan
         .ops
         .iter()
-        .find(|op| matches!(op, PlanOp::Expand { .. }))
+        .find(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. }))
         .expect("Expand");
-    let PlanOp::Expand {
+    let (PlanOp::Expand {
         edge: edge2,
         hop_aux_binding,
         ..
-    } = expand
+    }
+    | PlanOp::ExpandFilter {
+        edge: edge2,
+        hop_aux_binding,
+        ..
+    }) = expand
     else {
         unreachable!()
     };
@@ -701,6 +719,9 @@ fn test_multi_hop_edge_dst_resolved() {
         .iter()
         .filter_map(|op| match op {
             PlanOp::Expand {
+                src, dst, label, ..
+            }
+            | PlanOp::ExpandFilter {
                 src, dst, label, ..
             } => Some((src.clone(), dst.clone(), label.clone())),
             _ => None,
@@ -726,28 +747,41 @@ fn test_indexed_edge_equality_inline_property_with_stats() {
         &stats,
     );
 
+    // Both endpoints have labels, so the planner emits a leading EdgeIndexScan (which still
+    // preserves the source label via an IsLabeled PropertyFilter) rather than fusing the edge
+    // equality into an Expand.
     let idx = plan.ops.iter().find_map(|op| match op {
-        PlanOp::Expand {
-            indexed_edge_equality,
-            ..
-        }
-        | PlanOp::ExpandFilter {
-            indexed_edge_equality,
-            ..
-        } => indexed_edge_equality.as_ref(),
+        PlanOp::EdgeIndexScan {
+            property, value, ..
+        } => Some((property.clone(), value.clone())),
         _ => None,
     });
     let Some((prop, sv)) = idx else {
         panic!(
-            "expected indexed edge equality on Expand, got ops={:?}",
+            "expected leading EdgeIndexScan for indexed edge equality, got ops={:?}",
             plan.ops
         );
     };
-    assert_eq!(&**prop, "weight");
+    assert_eq!(prop.as_ref(), "weight");
     match sv {
         ScanValue::Literal(v) => assert!(matches!(v, gleaph_gql::Value::Int64(5))),
         other => panic!("expected Literal(Int64(5)), got {:?}", other),
     }
+
+    // Source label must still be enforced because the NodeScan was replaced.
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| matches!(
+                    p.kind,
+                    ExprKind::IsLabeled { ref label, negated: false, .. }
+                        if matches!(label, LabelExpr::Name(s) if s == "Person")
+                ))
+        )),
+        "source Person label must survive leading edge index scan, ops={:?}",
+        plan.ops
+    );
 }
 
 #[test]
@@ -978,32 +1012,158 @@ fn test_indexed_edge_equality_top_level_where_strips_conjunct() {
         &stats,
     );
 
+    // Both endpoints have labels, so the equality is pushed into a leading EdgeIndexScan and
+    // the source label is preserved via an explicit IsLabeled predicate.
     assert!(
         plan.ops.iter().any(|op| matches!(
             op,
-            PlanOp::Expand {
-                indexed_edge_equality: Some(_),
-                ..
-            } | PlanOp::ExpandFilter {
-                indexed_edge_equality: Some(_),
-                ..
-            }
+            PlanOp::EdgeIndexScan { property, .. } if property.as_ref() == "weight"
         )),
-        "expected Expand indexed_edge_equality, ops={:?}",
+        "expected leading EdgeIndexScan for e.weight = 5, ops={:?}",
         plan.ops
     );
 
-    let tail_pred_count: usize = plan
+    let weight_filter_in_tail: usize = plan
         .ops
         .iter()
         .filter_map(|op| match op {
-            PlanOp::PropertyFilter { predicates, .. } => Some(predicates.len()),
+            PlanOp::PropertyFilter { predicates, .. } => {
+                let cnt = predicates
+                    .iter()
+                    .filter(|p| {
+                        matches!(
+                            p.kind,
+                            ExprKind::Compare { ref right, .. }
+                                if matches!(
+                                    right.kind,
+                                    ExprKind::Literal(gleaph_gql::Value::Int64(5))
+                                )
+                        )
+                    })
+                    .count();
+                if cnt > 0 { Some(cnt) } else { None }
+            }
             _ => None,
         })
         .sum();
     assert_eq!(
-        tail_pred_count, 0,
-        "WHERE e.weight = 5 should be stripped after index fusion"
+        weight_filter_in_tail, 0,
+        "WHERE e.weight = 5 should be stripped after edge index fusion"
+    );
+
+    // Source label must survive the EdgeIndexScan replacement.
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| matches!(
+                    p.kind,
+                    ExprKind::IsLabeled { ref label, negated: false, .. }
+                        if matches!(label, LabelExpr::Name(s) if s == "Person")
+                ))
+        )),
+        "source Person label must survive leading edge index scan, ops={:?}",
+        plan.ops
+    );
+}
+
+#[test]
+fn edge_bind_endpoint_for_filtered_search_keeps_full_vertex_binding() {
+    // Regression for ADR 0034 Slice 7: when an indexed-edge anchor produces EdgeIndexScan +
+    // EdgeBindEndpoints and the far endpoint is also the binding of a later filtered SEARCH, the
+    // far endpoint must NOT be projected down to a property-only Value::Record. Graph SEARCH join
+    // requires PlanBinding::Vertex.
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_owned());
+
+    let plan = plan_query_with_stats(
+        r#"MATCH ()-[e:REL {weight: 7}]->(d:Document)
+         SEARCH d IN (
+           VECTOR INDEX doc_embedding FOR $query
+           WHERE d.category = 1
+           LIMIT 10
+         ) DISTANCE AS distance
+         RETURN d, distance"#,
+        &stats,
+    );
+
+    // The far endpoint binding must not be projected.
+    let ebind = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::EdgeBindEndpoints {
+                far,
+                far_property_projection,
+                ..
+            } if far.as_ref() == "d" => Some(far_property_projection.clone()),
+            _ => None,
+        })
+        .expect("EdgeBindEndpoints binding d must exist");
+    assert!(
+        ebind.is_none(),
+        "filtered SEARCH binding d must keep full vertex binding, got projection {:?}",
+        ebind
+    );
+}
+
+#[test]
+fn edge_bind_endpoint_source_label_preserved_for_filtered_search() {
+    // Regression for ADR 0034 Slice 7: when an indexed-edge anchor replaces a leading
+    // NodeScan, the near (source) endpoint label must still be emitted. The Router needs the
+    // static label proof for a same-binding filtered SEARCH; without it the plan is rejected.
+    let mut stats = TableStats::default();
+    stats.indexed_edge_properties.insert("weight".to_owned());
+
+    let plan = plan_query_with_stats(
+        r#"MATCH (d:Document)-[e:REL {weight: 7}]->()
+         SEARCH d IN (
+           VECTOR INDEX doc_embedding FOR $query
+           WHERE d.category = 1
+           LIMIT 10
+         ) DISTANCE AS distance
+         RETURN d, distance"#,
+        &stats,
+    );
+
+    // The first op must be the indexed-edge scan, not a NodeScan; the source label must still
+    // be enforced by an IsLabeled PropertyFilter before the SEARCH binding is used.
+    assert!(
+        matches!(plan.ops.first(), Some(PlanOp::EdgeIndexScan { .. })),
+        "expected EdgeIndexScan first, ops={:?}",
+        plan.ops
+    );
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::PropertyFilter { predicates, .. }
+                if predicates.iter().any(|p| matches!(
+                    p.kind,
+                    ExprKind::IsLabeled { ref label, negated: false, .. }
+                        if matches!(label, LabelExpr::Name(s) if s == "Document")
+                ))
+        )),
+        "source Document label must be preserved as IsLabeled predicate, ops={:?}",
+        plan.ops
+    );
+
+    // The near endpoint must keep full vertex binding (no projection) for the SEARCH join.
+    let ebind = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::EdgeBindEndpoints {
+                near,
+                near_property_projection,
+                ..
+            } if near.as_ref() == "d" => Some(near_property_projection.clone()),
+            _ => None,
+        })
+        .expect("EdgeBindEndpoints binding d must exist");
+    assert!(
+        ebind.is_none(),
+        "filtered SEARCH binding d must keep full vertex binding, got projection {:?}",
+        ebind
     );
 }
 
@@ -1714,12 +1874,26 @@ fn test_ev_fusion_multi_predicate() {
         .find(|op| matches!(op, PlanOp::ExpandFilter { .. }));
     assert!(ef.is_some(), "expected ExpandFilter, got: {:?}", plan.ops);
     if let Some(PlanOp::ExpandFilter { dst_filter, .. }) = ef {
+        // With destination-label enforcement, the label check is fused into ExpandFilter
+        // and the remaining top-level WHERE predicates remain in a PropertyFilter.
         assert!(
-            dst_filter.len() >= 2,
-            "expected at least 2 fused filters, got {}",
-            dst_filter.len()
+            dst_filter
+                .iter()
+                .any(|p| matches!(p.kind, ExprKind::IsLabeled { negated: false, .. })),
+            "destination label must be enforced in ExpandFilter: {:?}",
+            dst_filter
         );
     }
+    let has_residual_property_filter = plan.ops.iter().any(|op| {
+        matches!(op, PlanOp::PropertyFilter { predicates, .. } if predicates.iter().any(|p| {
+            format!("{p:?}").contains("Variable(\"b\")")
+        }))
+    });
+    assert!(
+        has_residual_property_filter,
+        "top-level WHERE predicates on b should remain reachable: {:?}",
+        plan.ops
+    );
 }
 
 #[test]
@@ -2416,13 +2590,13 @@ fn test_simplified_path_lowers_to_expand() {
     assert!(
         plan.ops
             .iter()
-            .any(|op| matches!(op, PlanOp::Expand { .. })),
+            .any(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. })),
         "simplified edge should plan as Expand, got: {:?}",
         plan.ops
     );
     assert!(
         plan.ops.iter().any(
-            |op| matches!(op, PlanOp::Expand { label, .. } if label.as_deref() == Some("KNOWS"))
+            |op| matches!(op, PlanOp::Expand { label, .. } | PlanOp::ExpandFilter { label, .. } if label.as_deref() == Some("KNOWS"))
         ),
         "simplified /KNOWS/ label should reach Expand, got: {:?}",
         plan.ops
@@ -2437,7 +2611,9 @@ fn test_simplified_path_concat_is_multi_expand() {
         .ops
         .iter()
         .filter_map(|op| match op {
-            PlanOp::Expand { label, .. } => label.as_deref().map(str::to_string),
+            PlanOp::Expand { label, .. } | PlanOp::ExpandFilter { label, .. } => {
+                label.as_deref().map(str::to_string)
+            }
             _ => None,
         })
         .collect();
@@ -2457,6 +2633,9 @@ fn test_simplified_path_union_label_one_expand() {
         .iter()
         .filter_map(|op| match op {
             PlanOp::Expand {
+                label, label_expr, ..
+            }
+            | PlanOp::ExpandFilter {
                 label, label_expr, ..
             } => {
                 assert!(
@@ -2491,6 +2670,9 @@ fn test_simplified_path_multiset_label_one_expand() {
         .iter()
         .filter_map(|op| match op {
             PlanOp::Expand {
+                label, label_expr, ..
+            }
+            | PlanOp::ExpandFilter {
                 label, label_expr, ..
             } => {
                 assert!(
@@ -2582,7 +2764,7 @@ fn test_triangle_cycle_uses_wcoj() {
         !plan
             .ops
             .iter()
-            .any(|op| matches!(op, PlanOp::Expand { .. })),
+            .any(|op| matches!(op, PlanOp::Expand { .. } | PlanOp::ExpandFilter { .. })),
         "triangle should replace Expands with WCOJ, got: {:?}",
         plan.ops
     );

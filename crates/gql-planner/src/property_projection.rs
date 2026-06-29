@@ -6,7 +6,7 @@ use std::rc::Rc;
 use gleaph_gql::ast::{Expr, ExprKind, LetBinding};
 
 use crate::expr_children::for_each_immediate_child_expr;
-use crate::plan::{AggregateSpec, PlanOp, SetPlanItem, Str};
+use crate::plan::{AggregateSpec, PhysicalPlan, PlanOp, SetPlanItem, Str};
 
 /// Walks the plan tree and fills projection fields on scan/expand/bind operators when safe.
 pub fn apply_node_property_projections(ops: &mut [PlanOp]) {
@@ -67,6 +67,42 @@ impl OpProjectionPatch {
     }
 }
 
+/// Collect binding names from later `PlanOp::Search` operators. A search binding must
+/// remain a full vertex binding so the downstream inner join can resolve it.
+fn collect_search_bindings(rest: &[PlanOp], tail: &[&[PlanOp]]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    fn scan_physical(plan: &PhysicalPlan, out: &mut BTreeSet<String>) {
+        scan(&plan.ops, out);
+    }
+    fn scan(ops: &[PlanOp], out: &mut BTreeSet<String>) {
+        for op in ops {
+            if let PlanOp::Search { binding, .. } = op {
+                out.insert(binding.to_string());
+            }
+            match op {
+                PlanOp::OptionalMatch { sub_plan } => scan(sub_plan, out),
+                PlanOp::HashJoin { left, right, .. }
+                | PlanOp::CartesianProduct { left, right, .. } => {
+                    scan(left, out);
+                    scan(right, out);
+                }
+                PlanOp::SetOperation { right, .. } => scan_physical(right, out),
+                PlanOp::InlineProcedureCall { sub_plan, .. } => scan_physical(sub_plan, out),
+                PlanOp::UseGraph {
+                    sub_plan: Some(sub),
+                    ..
+                } => scan(sub, out),
+                _ => {}
+            }
+        }
+    }
+    scan(rest, &mut out);
+    for seg in tail {
+        scan(seg, &mut out);
+    }
+    out
+}
+
 fn apply_recursive(ops: &mut [PlanOp], tail: &[&[PlanOp]]) {
     let n = ops.len();
     let mut patches: Vec<OpProjectionPatch> = Vec::with_capacity(n);
@@ -80,8 +116,9 @@ fn apply_recursive(ops: &mut [PlanOp], tail: &[&[PlanOp]]) {
                 collect_exprs_from_op_deep(op, &mut expr_refs);
             }
         }
+        let search_bindings = collect_search_bindings(&ops[i + 1..], tail);
         let patch = if projection_inference_may_be_needed(&ops[i], &expr_refs) {
-            op_projection_patch(&ops[i], &expr_refs)
+            op_projection_patch(&ops[i], &expr_refs, &search_bindings)
         } else {
             OpProjectionPatch::all_empty()
         };
@@ -170,7 +207,11 @@ fn expand_edge_patch(
     patch
 }
 
-fn op_projection_patch(op: &PlanOp, exprs: &[&Expr]) -> OpProjectionPatch {
+fn op_projection_patch(
+    op: &PlanOp,
+    exprs: &[&Expr],
+    search_bindings: &BTreeSet<String>,
+) -> OpProjectionPatch {
     let mut p = OpProjectionPatch::noop();
     match op {
         PlanOp::NodeScan { variable, .. } => {
@@ -212,7 +253,11 @@ fn op_projection_patch(op: &PlanOp, exprs: &[&Expr]) -> OpProjectionPatch {
                 .as_ref()
                 .map(|(prop, _)| prop.as_ref());
             p.expand_edge = expand_edge_patch(exprs, edge.as_ref(), idx_prop);
-            p.expand_dst = infer_vertex_scan_patch(exprs, dst.as_ref());
+            p.expand_dst = if search_bindings.contains(dst.as_ref()) {
+                ScanProjectionPatch::FullProperties
+            } else {
+                infer_vertex_scan_patch(exprs, dst.as_ref())
+            };
         }
         PlanOp::ExpandFilter {
             edge,
@@ -227,11 +272,23 @@ fn op_projection_patch(op: &PlanOp, exprs: &[&Expr]) -> OpProjectionPatch {
             p.expand_edge = expand_edge_patch(exprs, edge.as_ref(), idx_prop);
             let mut dst_exprs: Vec<&Expr> = dst_filter.iter().collect();
             dst_exprs.extend(exprs.iter().copied());
-            p.expand_dst = infer_vertex_scan_patch(&dst_exprs, dst.as_ref());
+            p.expand_dst = if search_bindings.contains(dst.as_ref()) {
+                ScanProjectionPatch::FullProperties
+            } else {
+                infer_vertex_scan_patch(&dst_exprs, dst.as_ref())
+            };
         }
         PlanOp::EdgeBindEndpoints { near, far, .. } => {
-            p.bind_near = infer_vertex_scan_patch(exprs, near.as_ref());
-            p.bind_far = infer_vertex_scan_patch(exprs, far.as_ref());
+            p.bind_near = if search_bindings.contains(near.as_ref()) {
+                ScanProjectionPatch::FullProperties
+            } else {
+                infer_vertex_scan_patch(exprs, near.as_ref())
+            };
+            p.bind_far = if search_bindings.contains(far.as_ref()) {
+                ScanProjectionPatch::FullProperties
+            } else {
+                infer_vertex_scan_patch(exprs, far.as_ref())
+            };
         }
         _ => {}
     }
@@ -355,6 +412,7 @@ fn var_used_as_non_property_receiver(expr: &Expr, var: &str) -> bool {
             }
         }
         ExprKind::Variable(v) => v == var,
+        ExprKind::IsLabeled { .. } => false,
         _ => {
             let mut any = false;
             for_each_immediate_child_expr(expr, |c| {

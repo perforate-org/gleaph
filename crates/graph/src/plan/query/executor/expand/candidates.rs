@@ -446,6 +446,7 @@ fn push_vector_dst_only_row_for_edge(
                 dst_filter,
                 caller,
                 gleaph_weight_decoders,
+                execution,
             )?
         {
             return Ok(());
