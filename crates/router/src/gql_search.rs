@@ -3285,8 +3285,10 @@ mod tests {
         pages: Vec<Vec<Vec<PostingHit>>>,
         filtered_hits: Vec<Vec<Vec<PostingHit>>>,
     ) -> Result<Vec<VectorSubject>, RouterError> {
-        let call_count = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
-        let filter_count = call_count.clone();
+        // `pages` and `filtered_hits` are modeled as target-then-page sequences. The helper
+        // must track the current target and advance only after that target's iterator is empty,
+        // because a target may contribute more than one page.
+        let target_idx = std::sync::Arc::new(std::sync::atomic::AtomicUsize::new(0));
         let mut page_iters: Vec<_> = pages.into_iter().map(|p| p.into_iter()).collect();
         let mut filter_iters: Vec<_> = filtered_hits.into_iter().map(|p| p.into_iter()).collect();
         pollster::block_on(collect_bounded_candidates_inner(
@@ -3294,7 +3296,7 @@ mod tests {
             store,
             label_id,
             |_client, _after| {
-                let idx = call_count.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                let idx = target_idx.load(std::sync::atomic::Ordering::SeqCst);
                 let hits = page_iters[idx].next().unwrap_or_default();
                 let done = page_iters[idx].len() == 0;
                 std::future::ready(Ok(PostingHitPage {
@@ -3304,8 +3306,11 @@ mod tests {
                 }))
             },
             |_client, _label_id, _hits| {
-                let idx = filter_count.load(std::sync::atomic::Ordering::SeqCst) - 1;
+                let idx = target_idx.load(std::sync::atomic::Ordering::SeqCst);
                 let filtered = filter_iters[idx].next().unwrap_or_default();
+                if filter_iters[idx].len() == 0 {
+                    target_idx.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+                }
                 std::future::ready(Ok(filtered))
             },
         ))
