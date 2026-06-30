@@ -351,8 +351,8 @@ fn test_search_where_non_leading_numeric_range_accepted_by_planner() {
 }
 
 #[test]
-fn test_search_where_range_rejects_mix_with_equality() {
-    let err = plan_query_err(
+fn test_search_where_mixed_equality_and_range_accepted_by_planner() {
+    let plan = plan_query(
         "MATCH (d:Document) \
          SEARCH d IN ( \
            VECTOR INDEX document_embedding \
@@ -362,9 +362,65 @@ fn test_search_where_range_rejects_mix_with_equality() {
          ) SCORE AS similarity \
          RETURN d, similarity",
     );
+    let filter = search_filter_from_plan(&plan);
     assert!(
-        err.to_string().contains("mix equality and range"),
-        "mixed equality/range must be rejected, got {err}"
+        filter.is_some(),
+        "accepted mixed equality/range filter on distinct properties must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_non_leading_mixed_equality_and_range_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (a:Author)-[:WROTE]->(d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.category = $category AND d.price >= $min_price \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN a, d, similarity",
+    );
+    let filter = search_filter_from_plan(&plan);
+    assert!(
+        filter.is_some(),
+        "accepted non-leading mixed equality/range filter must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_mixed_equality_and_range_rejects_same_property() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.price = 50 AND d.price >= 10 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string().contains("distinct properties"),
+        "same-property mixed equality/range must be rejected, got {err}"
+    );
+}
+
+#[test]
+fn test_search_where_mixed_equality_and_range_rejects_three_leaves() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.category = 1 AND d.price >= 10 AND d.price < 100 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string().contains("at most two predicates"),
+        "equality plus two-sided range must be rejected, got {err}"
     );
 }
 
@@ -473,8 +529,8 @@ fn test_search_where_two_sided_range_rejects_equality_plus_range() {
          RETURN d, similarity",
     );
     assert!(
-        err.to_string().contains("mix equality and range"),
-        "equality-plus-range must be rejected, got {err}"
+        err.to_string().contains("distinct properties"),
+        "same-property equality-plus-range must be rejected, got {err}"
     );
 }
 

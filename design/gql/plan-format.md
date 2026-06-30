@@ -76,11 +76,12 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
 - The planner carries the filter expression in `PlanOp::Search` after structural validation: either
   exactly one equality comparison, exactly two `AND`-connected equality comparisons on distinct
   properties of the searched binding and a literal or parameter, exactly one range comparison
-  (`<`, `<=`, `>`, `>=`) between a property of the searched binding and a literal or parameter, or
+  (`<`, `<=`, `>`, `>=`) between a property of the searched binding and a literal or parameter,
   exactly two range comparisons on the same property of the searched binding where one arm is a
-  lower bound (`>` or `>=`) and the other is an upper bound (`<` or `<=`), with either operand order
-  and either conjunct order accepted. The planner does not verify label, index coverage, or
-  numeric-domain semantics.
+  lower bound (`>` or `>=`) and the other is an upper bound (`<` or `<=`), or exactly one
+  equality comparison and one one-sided range comparison on distinct properties of the searched
+  binding, with either operand order and either conjunct order accepted. The planner does not verify
+  label, index coverage, or numeric-domain semantics.
 - The Router resolves the searched label and every filter property to router-issued ids, proves an
   active vertex property index for the exact `(graph_id, label_id, property_id)` tuple in the
   named-index catalog for every arm, and validates each encoded size against
@@ -90,10 +91,11 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
   reversed operands by inverting the operator.
 - The Router collects at most `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096) distinct vertex subjects
   from the Property Index via paginated `lookup_equal_page` for one equality arm, the server-side
-  `lookup_intersection_page` for two equality arms, or `lookup_range_page` with
-  `PostingRangeRequest::Between { low, high }` for a numeric range arm. Deduplicating by `(shard_id, vertex_id)`, it stops as soon
-  as a 4097th distinct subject is observed and returns an explicit error instead of truncating.
-  Malformed postings are rejected.
+  `lookup_intersection_page` for two equality arms, `lookup_range_page` with
+  `PostingRangeRequest::Between { low, high }` for a numeric range arm, or
+  `lookup_range_intersection_page` for one equality arm plus one one-sided range arm on distinct
+  properties. Deduplicating by `(shard_id, vertex_id)`, it stops as soon as a 4097th distinct subject
+  is observed and returns an explicit error instead of truncating. Malformed postings are rejected.
 - If the candidate set is empty, the Router skips the vector canister. For a leading search it dispatches
   the stripped plan with an empty `SeedBindingsWire` to every live shard, preserving the leading-search
   global aggregate contract. For a non-leading search it keeps the full plan and attaches an explicit

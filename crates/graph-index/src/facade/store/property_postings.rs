@@ -12,11 +12,29 @@ use crate::state::IndexError;
 use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    IndexSubject, LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangePageRequest,
-    PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
+    IndexSubject, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    LookupRangeIntersectionPageRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
+    PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
 };
 use nohash_hasher::IntSet;
 use std::ops::Bound;
+
+/// Decide whether the equality sieve should use a dense range scan or point lookups.
+///
+/// Preconditions: `hits` is sorted by `(shard_id, vertex_id)` and is non-empty.
+/// A dense scan is used when all hits are on the same shard and the `(shard_id, vertex_id)` span
+/// is at most four times the page length. Otherwise point lookups keep work bounded by the page
+/// size.
+pub(crate) fn equal_sieve_dense_threshold_met(hits: &[PostingHit]) -> bool {
+    debug_assert!(!hits.is_empty());
+    let first = &hits[0];
+    let last = &hits[hits.len() - 1];
+    let span = last
+        .vertex_id
+        .saturating_sub(first.vertex_id)
+        .saturating_add(1) as usize;
+    first.shard_id == last.shard_id && span <= hits.len().saturating_mul(4)
+}
 
 impl IndexStore {
     pub(super) fn commit_posting_insert(
@@ -294,17 +312,53 @@ impl IndexStore {
         out
     }
 
+    /// Point-lookup equality sieve bounded by the number of input hits.
+    ///
+    /// For each hit this performs one `BTreeSet::contains` lookup for the exact
+    /// `(property_id, value, shard_id, vertex_id)` posting. Work is therefore proportional to the
+    /// page size and safe for range-walk pages whose hits may be scattered across arbitrary
+    /// `(shard_id, vertex_id) intervals. Used by `Self::lookup_range_intersection_page`; callers
+    /// that know their hits are densely packed in `(shard_id, vertex_id)` order can use
+    /// `Self::filter_hits_by_equal` instead.
+    fn filter_hits_by_equal_point_lookup(
+        &self,
+        property_id: u32,
+        value: &[u8],
+        hits: Vec<PostingHit>,
+    ) -> Result<Vec<PostingHit>, IndexError> {
+        ensure_index_value_key(value)?;
+        if hits.is_empty() {
+            return Ok(Vec::new());
+        }
+        let mut key = PostingKey {
+            property_id,
+            value: value.to_vec(),
+            shard_id: ShardId::new(0),
+            vertex_id: 0,
+        };
+        Ok(INDEX_VERTEX_POSTINGS.with_borrow(|postings| {
+            hits.into_iter()
+                .filter(|hit| {
+                    key.shard_id = hit.shard_id;
+                    key.vertex_id = hit.vertex_id;
+                    postings.contains(&key)
+                })
+                .collect()
+        }))
+    }
+
     /// Keep only hits whose `(shard_id, vertex_id)` has a posting for `(property_id, value)`.
     ///
     /// Equality-arm sieve for streaming property intersection: the caller walks one arm in pages
     /// ([`Self::lookup_equal_page`]) and sieves each page against the other arms here, so the index
     /// never materializes a full posting bucket for any arm.
     ///
-    /// Both the input `hits` and the `(property_id, value)` bucket are ordered by
-    /// `(shard_id, vertex_id)`, so this runs a single bounded sorted merge over the bucket range
-    /// `[min(hits), max(hits)]` instead of one stable point lookup per hit — turning random tree
-    /// descents into a sequential scan. `hits` need not be pre-sorted (sorted in place); the
-    /// returned survivors are in `(shard_id, vertex_id)` order. The result is at most `len(hits)`, so
+    /// The implementation picks a dense range scan when the `(shard_id, vertex_id)` span of the
+    /// input page is small relative to its length (the common case for `lookup_equal_page`), and
+    /// falls back to per-hit point lookups when the span is large (e.g. range-walk pages whose
+    /// hits may be scattered across arbitrary subject ids). In both cases the work is bounded by
+    /// the page size, not by the equality bucket. `hits` need not be pre-sorted; the returned
+    /// survivors are in `(shard_id, vertex_id)` order. The result is at most `len(hits)`, so
     /// heap stays bounded by the page.
     pub fn filter_hits_by_equal(
         &self,
@@ -318,6 +372,20 @@ impl IndexStore {
         }
         hits.sort_unstable_by_key(|hit| (hit.shard_id, hit.vertex_id));
 
+        if equal_sieve_dense_threshold_met(&hits) {
+            self.filter_hits_by_equal_dense(property_id, value, hits)
+        } else {
+            self.filter_hits_by_equal_point_lookup(property_id, value, hits)
+        }
+    }
+
+    /// Dense-path equality sieve: single sorted merge over the bounded subject range.
+    fn filter_hits_by_equal_dense(
+        &self,
+        property_id: u32,
+        value: &[u8],
+        hits: Vec<PostingHit>,
+    ) -> Result<Vec<PostingHit>, IndexError> {
         let first = hits[0];
         let last = hits[hits.len() - 1];
         let lower = Bound::Included(PostingKey {
@@ -419,6 +487,43 @@ impl IndexStore {
             None => Bound::Included(low),
         };
         Ok(collect_vertex_posting_page(lower, upper, limit))
+    }
+
+    /// Bounded range-walk plus one equality sieve: walk `range_property_id` over `[low, high)`
+    /// one page at a time and keep only hits that also have the equality `(equal_spec.property_id,
+    /// equal_spec.value)` posting. The returned `next`/`done` always describe the range walk, so an
+    /// empty survivor page is not terminal when the range walk has more pages.
+    pub fn lookup_range_intersection_page(
+        &self,
+        req: &LookupRangeIntersectionPageRequest,
+    ) -> Result<PostingHitPage, IndexError> {
+        let equal_spec = &req.equal_spec;
+        if !matches!(equal_spec.subject, IndexSubject::VertexProperty) {
+            return Ok(empty_posting_page());
+        }
+        ensure_index_value_key(&equal_spec.value)?;
+        let walk_page = self.lookup_range_page(&LookupRangePageRequest {
+            property_id: req.range_property_id,
+            range: PostingRangeRequest::Between {
+                low: req.low.clone(),
+                high: req.high.clone(),
+            },
+            after: req.after.clone(),
+            limit: req.limit,
+        })?;
+        let survivors = if walk_page.hits.is_empty() {
+            Vec::new()
+        } else {
+            // filter_hits_by_equal is span-aware: it uses a fast dense merge scan for tightly
+            // packed subject pages and falls back to page-size-bounded point lookups when the
+            // range-walk page scatters hits across arbitrary (shard_id, vertex_id) intervals.
+            self.filter_hits_by_equal(equal_spec.property_id, &equal_spec.value, walk_page.hits)?
+        };
+        Ok(PostingHitPage {
+            hits: survivors,
+            next: walk_page.next,
+            done: walk_page.done,
+        })
     }
 }
 

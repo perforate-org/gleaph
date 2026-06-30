@@ -1,16 +1,18 @@
 //! Router-side lowering of GQL `SEARCH ... IN (VECTOR INDEX ... FOR ... LIMIT ...)`
-//! (ADR 0034 Slices 3, 4, 5, 6, 7, 8, 9 and 10).
+//! (ADR 0034 Slices 3, 4, 5, 6, 7, 8, 9, 10 and 11).
 //!
 //! This module is the execution boundary between the provider-neutral GQL planner
 //! (`PlanOp::Search`) and the Router-owned vector-index catalog / canister dispatch. It supports
 //! a narrow leading `NodeScan + Search` shape, one top-level non-leading `SEARCH` after a bound
 //! vertex, one or two `AND`-connected same-binding equality `SEARCH ... WHERE` predicates on
-//! distinct properties, one same-binding numeric range `SEARCH ... WHERE` predicate, or exactly two
+//! distinct properties, one same-binding numeric range `SEARCH ... WHERE` predicate, exactly two
 //! same-binding numeric range predicates on the same property forming one lower (`>`/`>=`) and one
-//! upper (`<`/`<=`) bound, for both positions (Slices 6, 7, 8, 9 and 10). All unsupported shapes are
-//! rejected with explicit `InvalidArgument` errors. For a leading search it dispatches the
-//! remaining graph-tail plan from row-shaped vector-search seeds; for a non-leading search it
-//! attaches an explicit per-shard resolved-search relation to the normal read dispatch.
+//! upper (`<`/`<=`) bound, or exactly two `AND`-connected predicates with one equality arm and
+//! one one-sided range arm on distinct properties, for both positions (Slices 6, 7, 8, 9, 10 and
+//! 11). All unsupported shapes are rejected with explicit `InvalidArgument` errors. For a leading
+//! search it dispatches the remaining graph-tail plan from row-shaped vector-search seeds; for a
+//! non-leading search it attaches an explicit per-shard resolved-search relation to the normal read
+//! dispatch.
 
 use candid::Encode;
 use gleaph_graph_kernel::index::{PostingHit, PostingHitPage, PropertyPostingCursor};
@@ -25,7 +27,8 @@ use gleaph_gql_planner::plan::{
 use gleaph_graph_kernel::entry::{GraphId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    IndexEqualSpec, LookupIntersectionPageRequest, MAX_INDEX_VALUE_KEY_BYTES,
+    IndexEqualSpec, LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
+    MAX_INDEX_VALUE_KEY_BYTES,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, GqlExecutionMode, GqlQueryResult, ResolvedSearchVertexHitWire,
@@ -280,13 +283,14 @@ struct SearchFilterRange {
     value_expr: gleaph_gql::ast::Expr,
 }
 
-/// ADR 0034 Slice 8/9/10: either one or two same-binding equality conjuncts, exactly one
-/// numeric range predicate, or exactly two same-property range predicates forming one lower and
-/// one upper bound.
+/// ADR 0034 Slice 8/9/10/11: either one or two same-binding equality conjuncts, exactly one
+/// numeric range predicate, exactly two same-property range predicates forming one lower and one
+/// upper bound, or exactly one equality and one one-sided range predicate on distinct properties.
 #[derive(Debug)]
 enum SearchFilter {
     Equality(Vec<SearchFilterArm>),
     Range(Vec<SearchFilterRange>),
+    Mixed(SearchFilterArm, Box<SearchFilterRange>),
 }
 
 #[derive(Debug)]
@@ -682,6 +686,39 @@ fn extract_search_filter(
         validate_search_filter_ranges(&ranges)
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
         Ok(SearchFilter::Range(ranges))
+    } else if predicates.len() == 2 {
+        // Slice 11: one equality arm and one one-sided range arm on distinct properties.
+        let mut equality: Option<SearchFilterArm> = None;
+        let mut range: Option<SearchFilterRange> = None;
+        for p in predicates {
+            match p {
+                SearchPredicate::Equality(property_name, value_expr) => {
+                    equality = Some(SearchFilterArm {
+                        property_name,
+                        value_expr,
+                    });
+                }
+                SearchPredicate::Range(property_name, op, value_expr) => {
+                    range = Some(SearchFilterRange {
+                        property_name,
+                        op,
+                        value_expr,
+                    });
+                }
+            }
+        }
+        match (equality, range) {
+            (Some(eq), Some(rng)) if eq.property_name != rng.property_name => {
+                Ok(SearchFilter::Mixed(eq, Box::new(rng)))
+            }
+            (Some(_), Some(_)) => Err(RouterError::InvalidArgument(
+                "SEARCH ... WHERE mixed equality/range arms must refer to distinct properties"
+                    .into(),
+            )),
+            _ => Err(RouterError::InvalidArgument(
+                "SEARCH ... WHERE mixed arm must contain exactly one equality and one range".into(),
+            )),
+        }
     } else {
         Err(RouterError::InvalidArgument(
             "SEARCH ... WHERE does not mix equality and range predicates in this slice".into(),
@@ -1282,7 +1319,102 @@ async fn resolve_filtered_candidates(
             resolve_filtered_range_candidates(graph_id, store, label_id, binding, ranges, params)
                 .await
         }
+        SearchFilter::Mixed(eq, range) => {
+            resolve_filtered_mixed_candidates(graph_id, store, label_id, binding, eq, range, params)
+                .await
+        }
     }
+}
+
+/// ADR 0034 Slice 11: resolve one equality arm plus one one-sided numeric range arm on distinct
+/// properties. Both properties require active vertex property indexes for the same proved label;
+/// the equality value is encoded with the shared property-index key encoder and the range bounds are
+/// derived only through `gleaph_gql::numeric_range_bounds`. The Property Index walks the finite
+/// range and sieves each page by the equality arm.
+async fn resolve_filtered_mixed_candidates(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    binding: &str,
+    eq: &SearchFilterArm,
+    range: &SearchFilterRange,
+    params: &BTreeMap<String, Value>,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    let range_property_id =
+        resolve_search_property_id(graph_id, store, binding, &range.property_name)?;
+    if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, range_property_id) {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
+            label_id.raw(),
+            range.property_name
+        )));
+    }
+
+    let eq_property_id = resolve_search_property_id(graph_id, store, binding, &eq.property_name)?;
+    if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, eq_property_id) {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
+            label_id.raw(),
+            eq.property_name
+        )));
+    }
+
+    let eq_value = resolve_filter_value(&eq.value_expr, params)?;
+    let eq_encoded = encode_filter_value(&eq_value)?;
+    if eq_encoded.len() > MAX_INDEX_VALUE_KEY_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE value exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
+        )));
+    }
+
+    let range_value = resolve_filter_value(&range.value_expr, params)?;
+    let (low, high) = gleaph_gql::numeric_range_bounds(&range_value, range.op).map_err(|e| {
+        RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE numeric range value is not supported: {e}"
+        ))
+    })?;
+    if low.len() > MAX_INDEX_VALUE_KEY_BYTES || high.len() > MAX_INDEX_VALUE_KEY_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE range bound exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
+        )));
+    }
+    if low >= high {
+        return Ok(Vec::new());
+    }
+
+    collect_bounded_candidates_range_intersection(
+        graph_id,
+        store,
+        label_id,
+        range_property_id,
+        low,
+        high,
+        IndexEqualSpec::vertex(eq_property_id.raw(), eq_encoded),
+    )
+    .await
+}
+
+async fn collect_bounded_candidates_range_intersection(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    range_property_id: PropertyId,
+    low: Vec<u8>,
+    high: Vec<u8>,
+    equal_spec: IndexEqualSpec,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    collect_bounded_candidates(graph_id, store, label_id, |client, after| {
+        let req = LookupRangeIntersectionPageRequest {
+            range_property_id: range_property_id.raw(),
+            low: low.clone(),
+            high: high.clone(),
+            equal_spec: equal_spec.clone(),
+            after,
+            limit: VECTOR_FILTER_PAGE_LIMIT,
+        };
+        async move { client.lookup_range_intersection_page(req).await }
+    })
+    .await
 }
 
 async fn resolve_filtered_equality_candidates(
@@ -3636,13 +3768,41 @@ mod tests {
     }
 
     #[test]
-    fn extract_search_filter_rejects_mixed_equality_and_range() {
+    fn extract_search_filter_accepts_mixed_equality_and_range_distinct_properties() {
         let eq = filter_eq_expr("category", Value::Text("doc".into()));
         let range = filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(5));
-        let err = extract_search_filter("d", &filter_and_expr(eq, range))
-            .expect_err("mixed equality/range must fail");
+        let f = extract_search_filter("d", &filter_and_expr(eq, range))
+            .expect("mixed equality/range on distinct properties must be accepted");
+        match f {
+            SearchFilter::Mixed(eq, rng) => {
+                assert_eq!(eq.property_name, "category");
+                assert_eq!(rng.property_name, "price");
+                assert_eq!(rng.op, gleaph_gql::ast::CmpOp::Ge);
+            }
+            _ => panic!("expected Mixed filter"),
+        }
+    }
+
+    #[test]
+    fn extract_search_filter_accepts_mixed_equality_and_range_reversed_conjunct_order() {
+        let eq = filter_eq_expr("category", Value::Text("doc".into()));
+        let range = filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(5));
+        let f = extract_search_filter("d", &filter_and_expr(range, eq))
+            .expect("range-then-equality order must be accepted");
         assert!(
-            err.to_string().contains("mix equality and range"),
+            matches!(f, SearchFilter::Mixed(..)),
+            "expected Mixed filter"
+        );
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_mixed_equality_and_range_same_property() {
+        let eq = filter_eq_expr("price", Value::Int64(50));
+        let range = filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(5));
+        let err = extract_search_filter("d", &filter_and_expr(eq, range))
+            .expect_err("same-property mixed equality/range must fail");
+        assert!(
+            err.to_string().contains("distinct properties"),
             "unexpected error: {err}"
         );
     }
@@ -3784,6 +3944,267 @@ mod tests {
                 .contains("numeric range value is not supported"),
             "unexpected error: {err}"
         );
+    }
+
+    #[test]
+    fn try_execute_gql_search_mixed_rejects_missing_range_index() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern label");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
+            .expect("intern category");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
+            .expect("intern price");
+        // Only the equality index exists; the range index is missing.
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "category".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create category index");
+
+        let filter = filter_mixed_expr(
+            "category",
+            Value::Text("doc".into()),
+            "price",
+            gleaph_gql::ast::CmpOp::Ge,
+            Value::Int64(5),
+        );
+        let plan = search_plan_with_filter(filter);
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("missing range index must fail");
+        assert!(
+            err.to_string()
+                .contains("requires an active vertex property index"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_mixed_rejects_missing_equality_index() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern label");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
+            .expect("intern category");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
+            .expect("intern price");
+        // Only the range index exists; the equality index is missing.
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "price".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create price index");
+
+        let filter = filter_mixed_expr(
+            "category",
+            Value::Text("doc".into()),
+            "price",
+            gleaph_gql::ast::CmpOp::Ge,
+            Value::Int64(5),
+        );
+        let plan = search_plan_with_filter(filter);
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("missing equality index must fail");
+        assert!(
+            err.to_string()
+                .contains("requires an active vertex property index"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_mixed_rejects_text_range_value() {
+        let (store, admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .unwrap();
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
+            .unwrap();
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
+            .unwrap();
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "category".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create category index");
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "price".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create price index");
+
+        let filter = filter_mixed_expr(
+            "category",
+            Value::Text("doc".into()),
+            "price",
+            gleaph_gql::ast::CmpOp::Ge,
+            Value::Text("cheap".into()),
+        );
+        let plan = non_leading_search_plan_with_property_filter_proof(filter);
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("text range value must fail");
+        assert!(
+            err.to_string()
+                .contains("numeric range value is not supported"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn try_execute_gql_search_mixed_gate_checked_before_candidate_lookup() {
+        let (store, admin, graph_id) = catalog_test_support::setup_with_shard(ShardId::new(0));
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern label");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "category")
+            .expect("intern category");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
+            .expect("intern price");
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "category".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create category index");
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "price".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create price index");
+        vector_index_catalog::set_vector_index_activation_state_for_test(
+            graph_id,
+            1,
+            vector_index_catalog::VectorIndexActivationState::DispatchBlocked,
+        )
+        .unwrap();
+
+        let filter = filter_mixed_expr(
+            "category",
+            Value::Text("doc".into()),
+            "price",
+            gleaph_gql::ast::CmpOp::Ge,
+            Value::Int64(5),
+        );
+        let plan = search_plan_with_filter(filter);
+        let result = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ));
+        let err = result.expect_err("DispatchBlocked must fail before candidate lookup");
+        assert!(
+            err.to_string()
+                .contains("vector dispatch activation blocked"),
+            "expected activation blocked, got {err}"
+        );
+    }
+
+    fn filter_mixed_expr(
+        eq_property: &str,
+        eq_value: Value,
+        range_property: &str,
+        range_op: gleaph_gql::ast::CmpOp,
+        range_value: Value,
+    ) -> Expr {
+        filter_and_expr(
+            filter_eq_expr(eq_property, eq_value),
+            filter_range_expr(range_property, range_op, range_value),
+        )
     }
 
     fn collect_candidates_with_pages(

@@ -1,5 +1,6 @@
 use super::*;
 use crate::facade::stable::{INDEX_EDGE_POSTINGS, INDEX_VERTEX_POSTINGS};
+use crate::facade::store::property_postings::equal_sieve_dense_threshold_met;
 use crate::init::IndexInitArgs;
 use crate::state::IndexError;
 use candid::Principal;
@@ -10,8 +11,8 @@ use gleaph_graph_kernel::federation::{IndexPurgeKind, ShardDetachStepResult, Sha
 use gleaph_graph_kernel::index::{
     EdgePostingCursor, EdgePostingHit, IndexEqualSpec, IndexIntersectionResult,
     LabelLookupPageRequest, LabelPostingCursor, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, LookupRangePageRequest, PostingHit, PostingRangeRequest,
-    PropertyPostingCursor,
+    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest, LookupRangePageRequest,
+    PostingHit, PostingRangeRequest, PropertyPostingCursor,
 };
 
 fn index_key(value: gleaph_gql::Value) -> Vec<u8> {
@@ -2122,4 +2123,293 @@ fn read_boundaries_reject_oversized_keys_without_false_empty_range() {
         }),
         Err(IndexError::IndexValueKeyTooLarge)
     );
+}
+
+#[test]
+fn lookup_range_intersection_page_filters_range_walk_by_equality_arm() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    let range_property = 10u32;
+    let eq_property = 11u32;
+    let category_doc = index_key(Value::Text("doc".into()));
+    let category_other = index_key(Value::Text("other".into()));
+
+    // price >= 5 encoded range: include vids 1..=4 by price, but only 1,3 have category=doc.
+    for vid in [1u32, 2u32, 3u32, 4u32] {
+        let price = index_key(Value::Int64(i64::from(vid)));
+        store
+            .posting_insert(shard, ShardId::new(0), range_property, price, vid)
+            .expect("price insert");
+    }
+    for vid in [1u32, 3u32] {
+        store
+            .posting_insert(
+                shard,
+                ShardId::new(0),
+                eq_property,
+                category_doc.clone(),
+                vid,
+            )
+            .expect("doc insert");
+    }
+    store
+        .posting_insert(
+            shard,
+            ShardId::new(0),
+            eq_property,
+            category_other.clone(),
+            2,
+        )
+        .expect("other insert");
+
+    let (low, high) =
+        gleaph_gql::numeric_range_bounds(&Value::Int64(2), gleaph_gql::ast::CmpOp::Ge)
+            .expect("range bounds");
+
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: range_property,
+        low,
+        high,
+        equal_spec: IndexEqualSpec::vertex(eq_property, category_doc),
+        after: None,
+        limit: 100,
+    };
+    let page = store
+        .lookup_range_intersection_page(&req)
+        .expect("lookup_range_intersection_page");
+    let mut vids: Vec<u32> = page.hits.iter().map(|h| h.vertex_id).collect();
+    vids.sort_unstable();
+    assert_eq!(vids, vec![3]);
+    assert!(page.done, "single-page range should be terminal");
+}
+
+#[test]
+fn lookup_range_intersection_page_preserves_cursor_on_empty_survivor_page() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    let range_property = 10u32;
+    let eq_property = 11u32;
+    let category_doc = index_key(Value::Text("doc".into()));
+
+    // Two range pages: first page has no doc matches; second page has one doc match.
+    for vid in [1u32, 2u32, 3u32] {
+        let price = index_key(Value::Int64(i64::from(vid)));
+        store
+            .posting_insert(shard, ShardId::new(0), range_property, price, vid)
+            .expect("price insert");
+    }
+    store
+        .posting_insert(shard, ShardId::new(0), eq_property, category_doc.clone(), 3)
+        .expect("doc insert");
+
+    let (low, high) =
+        gleaph_gql::numeric_range_bounds(&Value::Int64(1), gleaph_gql::ast::CmpOp::Ge)
+            .expect("range bounds");
+
+    // First page: limit 2 captures vids 1,2; neither has category=doc.
+    let first = LookupRangeIntersectionPageRequest {
+        range_property_id: range_property,
+        low: low.clone(),
+        high: high.clone(),
+        equal_spec: IndexEqualSpec::vertex(eq_property, category_doc.clone()),
+        after: None,
+        limit: 2,
+    };
+    let first_page = store
+        .lookup_range_intersection_page(&first)
+        .expect("first page");
+    assert!(
+        first_page.hits.is_empty(),
+        "first survivor page should be empty"
+    );
+    assert!(
+        !first_page.done,
+        "range walk must continue when survivors are empty but cursor remains"
+    );
+    let after = first_page.next.expect("first page cursor");
+
+    // Second page: captures vid 3, which has category=doc.
+    let second = LookupRangeIntersectionPageRequest {
+        range_property_id: range_property,
+        low: low.clone(),
+        high: high.clone(),
+        equal_spec: IndexEqualSpec::vertex(eq_property, category_doc),
+        after: Some(after),
+        limit: 2,
+    };
+    let second_page = store
+        .lookup_range_intersection_page(&second)
+        .expect("second page");
+    assert_eq!(second_page.hits.len(), 1);
+    assert_eq!(second_page.hits[0].vertex_id, 3);
+    assert!(second_page.done);
+}
+
+#[test]
+fn lookup_range_intersection_page_rejects_non_vertex_equal_spec() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    let (low, high) =
+        gleaph_gql::numeric_range_bounds(&Value::Int64(0), gleaph_gql::ast::CmpOp::Ge)
+            .expect("range bounds");
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: 1,
+        low,
+        high,
+        equal_spec: IndexEqualSpec::edge(2, b"v".to_vec(), Some(1)),
+        after: None,
+        limit: 10,
+    };
+    let page = store
+        .lookup_range_intersection_page(&req)
+        .expect("non-vertex spec returns empty terminal page");
+    assert!(page.hits.is_empty());
+    assert!(page.done);
+}
+
+#[test]
+fn lookup_range_intersection_page_rejects_malformed_bounds() {
+    let store = IndexStore::new();
+    init_test_store(&store);
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: 1,
+        low: vec![2u8],
+        high: vec![1u8],
+        equal_spec: IndexEqualSpec::vertex(2, b"v".to_vec()),
+        after: None,
+        limit: 10,
+    };
+    assert_eq!(
+        store.lookup_range_intersection_page(&req),
+        Err(IndexError::InvalidRangeBounds)
+    );
+}
+
+#[test]
+fn lookup_range_intersection_page_empty_range_returns_terminal_page() {
+    let store = IndexStore::new();
+    init_test_store(&store);
+    let (low, high) =
+        gleaph_gql::numeric_range_bounds(&Value::Int64(10), gleaph_gql::ast::CmpOp::Ge)
+            .expect("range bounds");
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: 1,
+        low,
+        high,
+        equal_spec: IndexEqualSpec::vertex(2, b"v".to_vec()),
+        after: None,
+        limit: 10,
+    };
+    let page = store
+        .lookup_range_intersection_page(&req)
+        .expect("empty range page");
+    assert!(page.hits.is_empty());
+    assert!(page.done);
+}
+
+#[test]
+fn lookup_range_intersection_page_uses_point_lookup_for_far_apart_hits() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    let range_property = 12u32;
+    let eq_property = 13u32;
+    let category_doc = index_key(Value::Text("doc".into()));
+
+    // Two range hits far apart in vertex_id. The matching equality posting is only on the first
+    // hit. The span-aware sieve must detect the large (shard_id, vertex_id) span and use point
+    // lookups instead of a dense range scan, returning only the one matching hit.
+    let near_vid = 0u32;
+    let far_vid = 1_000_000u32;
+    for vid in [near_vid, far_vid] {
+        let price = index_key(Value::Int64(i64::from(vid)));
+        store
+            .posting_insert(shard, ShardId::new(0), range_property, price, vid)
+            .expect("range insert");
+    }
+    store
+        .posting_insert(
+            shard,
+            ShardId::new(0),
+            eq_property,
+            category_doc.clone(),
+            near_vid,
+        )
+        .expect("doc insert near");
+
+    let low = index_key(Value::Int64(-1));
+    let high = index_key(Value::Int64(i64::from(far_vid) + 1));
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: range_property,
+        low,
+        high,
+        equal_spec: IndexEqualSpec::vertex(eq_property, category_doc),
+        after: None,
+        limit: 10,
+    };
+    let page = store
+        .lookup_range_intersection_page(&req)
+        .expect("lookup_range_intersection_page");
+    assert_eq!(
+        page.hits,
+        vec![PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: near_vid,
+        }],
+        "only the matching far-apart hit should survive"
+    );
+}
+
+fn posting_hit_for_test(shard_id: u32, vertex_id: u32) -> PostingHit {
+    PostingHit {
+        shard_id: ShardId::new(shard_id),
+        vertex_id,
+    }
+}
+
+#[test]
+fn equal_sieve_dense_threshold_met_tight_page() {
+    // Four hits on the same shard spanning three ids: span 3 <= 4 * 4.
+    let hits = vec![
+        posting_hit_for_test(0, 0),
+        posting_hit_for_test(0, 1),
+        posting_hit_for_test(0, 2),
+        posting_hit_for_test(0, 5),
+    ];
+    assert!(equal_sieve_dense_threshold_met(&hits));
+}
+
+#[test]
+fn equal_sieve_dense_threshold_met_exactly_at_threshold() {
+    // Two hits spanning ids [0, 7]: span 8 == 4 * 2.
+    let hits = vec![posting_hit_for_test(0, 0), posting_hit_for_test(0, 7)];
+    assert!(equal_sieve_dense_threshold_met(&hits));
+}
+
+#[test]
+fn equal_sieve_dense_threshold_met_far_apart_falls_back_to_point_lookup() {
+    // Two hits 1M ids apart: span far exceeds 4 * 2.
+    let hits = vec![
+        posting_hit_for_test(0, 0),
+        posting_hit_for_test(0, 1_000_000),
+    ];
+    assert!(!equal_sieve_dense_threshold_met(&hits));
+}
+
+#[test]
+fn equal_sieve_dense_threshold_met_multi_shard_falls_back_to_point_lookup() {
+    // Same vertex ids but different shards: dense scan cannot cross shard boundary.
+    let hits = vec![posting_hit_for_test(0, 0), posting_hit_for_test(1, 0)];
+    assert!(!equal_sieve_dense_threshold_met(&hits));
 }

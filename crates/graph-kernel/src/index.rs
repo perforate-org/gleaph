@@ -228,6 +228,22 @@ pub struct LookupRangePageRequest {
     pub limit: u32,
 }
 
+/// Paginated range-plus-equality intersection over one vertex property range walk.
+///
+/// The index walks the finite encoded half-open interval `[low, high)` for `range_property_id`
+/// one page at a time and sieves each page against the single `equal_spec` server-side. The
+/// returned `next` and `done` always describe the range walk, even when a page has zero survivors.
+/// This keeps the per-message heap bounded: no full range or equality bucket is materialized.
+#[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
+pub struct LookupRangeIntersectionPageRequest {
+    pub range_property_id: u32,
+    pub low: Vec<u8>,
+    pub high: Vec<u8>,
+    pub equal_spec: IndexEqualSpec,
+    pub after: Option<PropertyPostingCursor>,
+    pub limit: u32,
+}
+
 /// Paginated equality export for one edge property `(property_id, value[, label_id])` bucket.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct LookupEdgeEqualPageRequest {
@@ -381,6 +397,20 @@ mod tests {
         assert_eq!(
             Decode!(&bytes, LookupRangePageRequest).expect("decode bounded range"),
             bounded_range
+        );
+
+        let range_intersection = LookupRangeIntersectionPageRequest {
+            range_property_id: 5,
+            low: vec![2, 0, 128, 0, 0, 0],
+            high: vec![2, 2, 128, 0, 0, 0],
+            equal_spec: IndexEqualSpec::vertex(3, vec![7, 8]),
+            after: Some(cursor.clone()),
+            limit: 256,
+        };
+        let bytes = Encode!(&range_intersection).expect("encode range intersection");
+        assert_eq!(
+            Decode!(&bytes, LookupRangeIntersectionPageRequest).expect("decode range intersection"),
+            range_intersection
         );
 
         let page = PostingHitPage {

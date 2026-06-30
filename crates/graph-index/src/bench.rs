@@ -11,7 +11,8 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     IndexEqualSpec, IndexIntersectionRequest, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, LookupRangePageRequest, PostingHit, PostingRangeRequest,
+    LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest, LookupRangePageRequest,
+    PostingHit, PostingRangeRequest,
 };
 use std::cell::Cell;
 use std::hint::black_box;
@@ -313,6 +314,172 @@ fn bench_lookup_range_page_between_numeric_domain_boundary() -> canbench_rs::Ben
         let page = store
             .lookup_range_page(black_box(&req))
             .expect("lookup_range_page numeric domain");
+        black_box(page);
+    })
+}
+
+const RANGE_INTERSECTION_PROPERTY: u32 = 4;
+const RANGE_INTERSECTION_EQ_PROPERTY: u32 = 5;
+const RANGE_INTERSECTION_COUNT: u32 = 4096;
+
+/// Range postings with values `[0, RANGE_INTERSECTION_COUNT)` and an equality arm that keeps
+/// every fourth vertex. Mirrors the mixed equality-plus-range query shape.
+fn setup_range_intersection_store() -> (IndexStore, Principal, Vec<u8>) {
+    let (store, _router, owner) = setup_index_store();
+    let eq_value = index_key("keep");
+    for vid in 0..RANGE_INTERSECTION_COUNT {
+        let price = value_to_index_key_bytes(&gleaph_gql::Value::Int64(vid as i64))
+            .expect("index key")
+            .expect("indexable");
+        store
+            .posting_insert(
+                owner,
+                ShardId::new(0),
+                RANGE_INTERSECTION_PROPERTY,
+                price,
+                vid,
+            )
+            .expect("range posting insert");
+        if vid % 4 == 0 {
+            store
+                .posting_insert(
+                    owner,
+                    ShardId::new(0),
+                    RANGE_INTERSECTION_EQ_PROPERTY,
+                    eq_value.clone(),
+                    vid,
+                )
+                .expect("equality posting insert");
+        }
+    }
+    (store, owner, eq_value)
+}
+
+/// One server-side range-walk page plus equality sieve for a half-open numeric interval covering
+/// the full range. Measures the combined `lookup_range_intersection_page` primitive.
+#[bench(raw)]
+fn bench_lookup_range_intersection_page_full_range() -> canbench_rs::BenchResult {
+    let (store, _owner, eq_value) = setup_range_intersection_store();
+    let (low, high) = numeric_range_bounds(0, gleaph_gql::ast::CmpOp::Ge);
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: RANGE_INTERSECTION_PROPERTY,
+        low,
+        high,
+        equal_spec: IndexEqualSpec::vertex(RANGE_INTERSECTION_EQ_PROPERTY, eq_value),
+        after: None,
+        limit: 4096,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_range_intersection_page_full_range");
+        let page = store
+            .lookup_range_intersection_page(black_box(&req))
+            .expect("lookup_range_intersection_page");
+        black_box(page);
+    })
+}
+
+/// Sparse mixed range-equality request where the range contains exactly one hit and the equality
+/// arm keeps it. Measures scan-to-first-survivor overhead.
+#[bench(raw)]
+fn bench_lookup_range_intersection_page_sparse_survivor() -> canbench_rs::BenchResult {
+    let (store, _owner, eq_value) = setup_range_intersection_store();
+    let low = value_to_index_key_bytes(&gleaph_gql::Value::Int64(1024))
+        .expect("low key")
+        .expect("indexable");
+    let high = value_to_index_key_bytes(&gleaph_gql::Value::Int64(1025))
+        .expect("high key")
+        .expect("indexable");
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: RANGE_INTERSECTION_PROPERTY,
+        low,
+        high,
+        equal_spec: IndexEqualSpec::vertex(RANGE_INTERSECTION_EQ_PROPERTY, eq_value),
+        after: None,
+        limit: 1024,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_range_intersection_page_sparse_survivor");
+        let page = store
+            .lookup_range_intersection_page(black_box(&req))
+            .expect("lookup_range_intersection_page sparse");
+        black_box(page);
+    })
+}
+
+const RANGE_INTERSECTION_ADVERSARIAL_PROPERTY: u32 = 6;
+const RANGE_INTERSECTION_ADVERSARIAL_EQ_PROPERTY: u32 = 7;
+const ADVERSARIAL_SPAN: u32 = 4_000_000;
+const ADVERSARIAL_BUCKET_DENSITY: u32 = 100_000;
+
+/// Two range hits 4M vertices apart, with the  equality bucket densely populated between them
+/// but no corresponding range postings for those intermediate vertices. An unbounded dense merge
+/// scan would sweep 100k equality postings; the span-aware sieve must fall back to point lookups and
+/// stay bounded by the page size.
+fn setup_range_intersection_adversarial_store() -> (IndexStore, Principal, Vec<u8>) {
+    let (store, _router, owner) = setup_index_store();
+    let eq_value = index_key("keep");
+    for vid in [0u32, ADVERSARIAL_SPAN] {
+        let price = value_to_index_key_bytes(&gleaph_gql::Value::Int64(vid as i64))
+            .expect("index key")
+            .expect("indexable");
+        store
+            .posting_insert(
+                owner,
+                ShardId::new(0),
+                RANGE_INTERSECTION_ADVERSARIAL_PROPERTY,
+                price,
+                vid,
+            )
+            .expect("adversarial range posting insert");
+    }
+    // Fill the  equality bucket densely between the two range hits, but without range
+    // postings, so only the two actual range hits matter. A dense scan over this bucket would be
+    // proportional to the bucket size, not to the page size.
+    for i in 1..=ADVERSARIAL_BUCKET_DENSITY {
+        let vid =
+            ((ADVERSARIAL_SPAN as u64 * i as u64) / (ADVERSARIAL_BUCKET_DENSITY as u64 + 1)) as u32;
+        store
+            .posting_insert(
+                owner,
+                ShardId::new(0),
+                RANGE_INTERSECTION_ADVERSARIAL_EQ_PROPERTY,
+                eq_value.clone(),
+                vid,
+            )
+            .expect("adversarial equality bucket insert");
+    }
+    // One matching equality arm for the first range hit.
+    store
+        .posting_insert(
+            owner,
+            ShardId::new(0),
+            RANGE_INTERSECTION_ADVERSARIAL_EQ_PROPERTY,
+            eq_value.clone(),
+            0,
+        )
+        .expect("adversarial matching equality insert");
+    (store, owner, eq_value)
+}
+
+/// Two range hits 4M vertices apart with one unrelated equality posting in between. The sieve work
+/// must remain proportional to the page size, not to the vertex_id span.
+#[bench(raw)]
+fn bench_lookup_range_intersection_page_adversarial_span() -> canbench_rs::BenchResult {
+    let (store, _owner, eq_value) = setup_range_intersection_adversarial_store();
+    let (low, high) = numeric_range_bounds(-1, gleaph_gql::ast::CmpOp::Ge);
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: RANGE_INTERSECTION_ADVERSARIAL_PROPERTY,
+        low,
+        high,
+        equal_spec: IndexEqualSpec::vertex(RANGE_INTERSECTION_ADVERSARIAL_EQ_PROPERTY, eq_value),
+        after: None,
+        limit: 10,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_range_intersection_page_adversarial_span");
+        let page = store
+            .lookup_range_intersection_page(black_box(&req))
+            .expect("lookup_range_intersection_page adversarial");
         black_box(page);
     })
 }

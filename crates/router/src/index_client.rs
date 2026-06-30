@@ -4,8 +4,9 @@ use candid::Principal;
 use gleaph_graph_kernel::index::{
     EdgePostingHitPage, IndexIntersectionRequest, IndexIntersectionResult,
     IndexLabelIntersectionRequest, LabelLookupPageRequest, LabelLookupPageResult,
-    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupIntersectionPageRequest, PostingHit,
-    PostingHitPage, PostingRangeRequest, ValuePostingCount,
+    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    LookupRangeIntersectionPageRequest, PostingHit, PostingHitPage, PostingRangeRequest,
+    ValuePostingCount,
 };
 
 #[derive(Clone, Debug)]
@@ -169,6 +170,30 @@ impl RouterIndexClient {
         {
             let _ = (property_id, range, after, limit);
             Err("lookup_range_page unavailable in native builds".into())
+        }
+    }
+
+    pub async fn lookup_range_intersection_page(
+        &self,
+        req: LookupRangeIntersectionPageRequest,
+    ) -> Result<PostingHitPage, String> {
+        #[cfg(target_family = "wasm")]
+        {
+            use ic_cdk::call::Call;
+
+            let page: PostingHitPage =
+                Call::bounded_wait(self.index_canister, "lookup_range_intersection_page")
+                    .with_args(&(req,))
+                    .await
+                    .map_err(|e| format!("lookup_range_intersection_page: {e}"))?
+                    .candid()
+                    .map_err(|e| format!("lookup_range_intersection_page decode: {e}"))?;
+            Ok(page)
+        }
+        #[cfg(not(target_family = "wasm"))]
+        {
+            let _ = req;
+            Err("lookup_range_intersection_page unavailable in native builds".into())
         }
     }
 

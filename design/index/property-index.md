@@ -1,7 +1,7 @@
 # Property index
 
-Last updated: 2026-06-29
-Anchor timestamp: 2026-06-29 23:24:26 UTC +0000
+Last updated: 2026-06-30
+Anchor timestamp: 2026-06-30 00:52:59 UTC +0000
 
 ## Status
 
@@ -77,6 +77,7 @@ An index canister holds postings for shards attached to **one graph's index clus
 | `lookup_edge_equal_page` | Implemented | Paginated edge equality export (`after` + `limit`) |
 | `lookup_intersection` | Implemented | Intersect multiple equality arms (edge/mixed; vertex-only is streamed via `lookup_intersection_page` — [lookup-intersection.md](lookup-intersection.md)) |
 | `lookup_intersection_page` | Implemented | Paginated all-vertex equality intersection (`after` + `limit`): server-side walk-arm page + in-heap merge-join sieve; the streamed vertex-intersection read path |
+| `lookup_range_intersection_page` | Implemented | Paginated range-walk plus one equality sieve (`after` + `limit`): server-side finite range page filtered by one vertex equality arm; the mixed equality-plus-range read path |
 | `count_postings_by_value` | Implemented | Walk one property bucket; return `(encoded_value, count)` groups ([ADR 0003](../adr/0003-federated-aggregate-merge.md)) |
 
 All read APIs run entirely inside graph-index (no graph canister calls).
@@ -152,15 +153,16 @@ keys before graph-index calls; graph-index read APIs reject them as `IndexValueK
 silent empty range).
 
 
-## Vector search filter membership (ADR 0034 Slices 6, 7, 8, 9 and 10)
+## Vector search filter membership (ADR 0034 Slices 6, 7, 8, 9, 10 and 11)
 
 Property-index postings own filter membership for leading and non-leading `SEARCH ... WHERE`
 predicates. The Router consumes postings through bounded pagination:
 
 - The planner accepts one same-binding equality predicate, exactly two `AND`-connected
   same-binding equality predicates on distinct properties, exactly one same-binding numeric range
-  predicate (`<`, `<=`, `>`, `>=`), or exactly two same-property range predicates forming one lower
-  and one upper bound, and preserves the original filter expression in `PlanOp::Search`.
+  predicate (`<`, `<=`, `>`, `>=`), exactly two same-property range predicates forming one lower
+  and one upper bound, or exactly one equality predicate and one one-sided numeric range predicate
+  on distinct properties, and preserves the original filter expression in `PlanOp::Search`.
 - The Router resolves the searched label and every filter property to router-issued ids and proves
   an active vertex property index for the exact `(graph_id, label_id, property_id)` tuple in the
   named-index catalog for every arm. For a leading search the label is taken from the leading
@@ -179,14 +181,24 @@ predicates. The Router consumes postings through bounded pagination:
   `PostingRangeRequest::Between { low, high }`. For two same-property range arms the Router derives
   both half-open intervals through the same canonical helper, intersects them once (`low =
   max(first.low, second.low)`, `high = min(first.high, second.high)`), validates the final bounds, and
-  issues one paginated `lookup_range_page` stream with the same `PostingRangeRequest::Between`. If the
-  intersection is empty (`low >= high`) the Router returns an empty candidate set before calling the
-  Property Index or Vector Index, preserving the empty-candidate dispatch contract. The Property Index
-  validates the bounds structurally (`low < high`, key sizes) and scans only the opaque encoded
-  interval inside the requested property bucket; it does not interpret GQL value types or numeric
-  ordering. In both cases it deduplicates by
-  `(shard_id, vertex_id)` and stops as soon as a 4097th distinct subject is observed. Exceeding the
-  bound returns an explicit `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` error.
+  issues one paginated `lookup_range_page` stream with the same `PostingRangeRequest::Between`.
+- For one equality arm plus one one-sided range arm on distinct properties the Router proves active
+  vertex property indexes for both properties, encodes the equality value with
+  `gleaph_gql::value_to_index_key_bytes`, derives a finite half-open encoded numeric interval with
+  `gleaph_gql::numeric_range_bounds`, and pages through `lookup_range_intersection_page`. Property
+  Index walks the finite encoded range one page at a time and sieves each page against the equality
+  arm server-side. The sieve is span-aware: it uses a fast dense merge scan when the page's
+  `(shard_id, vertex_id)` span is small relative to its size, and falls back to page-size-bounded
+  point lookups when the range-walk page scatters hits across arbitrary subject ids. The returned
+  `next`/`done` always describe the range walk, so a page with zero survivors is not terminal while
+  the range walk has more pages. If the numeric interval is empty (`low >= high`) the Router returns
+  an empty candidate set before calling the Property Index or Vector Index, preserving the
+  empty-candidate dispatch contract.
+- In all cases the Router deduplicates by `(shard_id, vertex_id)` and stops as soon as a 4097th
+  distinct subject is observed. Exceeding the bound returns an explicit
+  `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` error. The Property Index validates bounds structurally
+  (`low < high`, key sizes) and scans only the opaque encoded interval inside the requested property
+  bucket; it does not interpret GQL value types or numeric ordering.
 - The candidate set is intersected with the searched vertex label on each page using
   `filter_hits_by_label`, so vertices that do not belong to the searched label do not consume the
   candidate bound.

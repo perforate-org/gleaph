@@ -50,15 +50,17 @@ pub(super) fn detect_conditional_candidates(
     candidates
 }
 
-/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-10.
+/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-11.
 ///
 /// Accepts:
 /// - exactly one same-binding equality comparison between a property and a literal/parameter,
 /// - exactly two AND-connected same-binding equality comparisons on distinct properties,
 /// - exactly one same-binding range comparison (`<`, `<=`, `>`, `>=`) between a property and a
-///   literal/parameter, or
+///   literal/parameter,
 /// - exactly two same-binding range comparisons on the same property where one arm is a lower
-///   bound (`>`, `>=`) and the other is an upper bound (`<`, `<=`).
+///   bound (`>`, `>=`) and the other is an upper bound (`<`, `<=`), or
+/// - exactly two AND-connected predicates with one equality arm and one one-sided range arm on
+///   distinct properties of the same searched binding.
 ///
 /// The planner is provider-neutral: it checks expression shape only. Label, index coverage, and
 /// numeric-domain verification are validated later by the Router.
@@ -102,10 +104,57 @@ fn validate_search_filter(
         Ok(())
     } else if all_range {
         validate_two_sided_range(&predicates)
+    } else if predicates.len() == 2 {
+        // Slice 11: one equality + one range on distinct properties.
+        validate_mixed_equality_range(&predicates)
     } else {
         Err(PlannerError::UnsupportedPattern(
             "SEARCH ... WHERE does not mix equality and range predicates in this slice".into(),
         ))
+    }
+}
+
+fn validate_mixed_equality_range(predicates: &[SearchFilterPredicate]) -> Result<(), PlannerError> {
+    fn is_range_op(op: gleaph_gql::ast::CmpOp) -> bool {
+        matches!(
+            op,
+            gleaph_gql::ast::CmpOp::Lt
+                | gleaph_gql::ast::CmpOp::Le
+                | gleaph_gql::ast::CmpOp::Gt
+                | gleaph_gql::ast::CmpOp::Ge
+        )
+    }
+
+    if predicates.len() != 2 {
+        return Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE mixed equality/range requires exactly two predicates".into(),
+        ));
+    }
+    let mut equality_property: Option<&str> = None;
+    let mut range_property: Option<&str> = None;
+    for p in predicates {
+        match p {
+            SearchFilterPredicate::Equality { property, .. } => {
+                equality_property = Some(property.as_str());
+            }
+            SearchFilterPredicate::Range { property, op, .. } if is_range_op(*op) => {
+                range_property = Some(property.as_str());
+            }
+            _ => {
+                return Err(PlannerError::UnsupportedPattern(
+                    "SEARCH ... WHERE mixed arm must be one equality and one range".into(),
+                ));
+            }
+        }
+    }
+    match (equality_property, range_property) {
+        (Some(eq), Some(range)) if eq != range => Ok(()),
+        (Some(_), Some(_)) => Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE mixed equality/range arms must refer to distinct properties".into(),
+        )),
+        _ => Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE mixed arm must contain exactly one equality and one range".into(),
+        )),
     }
 }
 
@@ -785,7 +834,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_search_filter_rejects_mixed_equality_and_range() {
+    fn validate_search_filter_accepts_mixed_equality_and_range_distinct_properties() {
         let filter = Expr::new(ExprKind::And(
             Box::new(cmp(prop("d", "category"), lit(Value::Text("doc".into())))),
             Box::new(cmp_op(
@@ -794,9 +843,88 @@ mod tests {
                 lit(Value::Int64(5)),
             )),
         ));
+        validate_search_filter(&filter, "d")
+            .expect("mixed equality/range on distinct properties should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_mixed_equality_and_range_reversed_conjunct_order() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Ge,
+                lit(Value::Int64(5)),
+            )),
+            Box::new(cmp(prop("d", "category"), lit(Value::Text("doc".into())))),
+        ));
+        validate_search_filter(&filter, "d").expect("range-then-equality order should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_mixed_equality_and_range_parameter_values() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "category"), param("$category"))),
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Ge,
+                param("$minimum_price"),
+            )),
+        ));
+        validate_search_filter(&filter, "d")
+            .expect("parameter values in mixed arms should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_mixed_equality_and_range_reversed_operands() {
+        // 5 <= d.price normalizes to d.price >= 5; equality order is unchanged.
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp_op(
+                lit(Value::Int64(5)),
+                gleaph_gql::ast::CmpOp::Le,
+                prop("d", "price"),
+            )),
+            Box::new(cmp(lit(Value::Text("doc".into())), prop("d", "category"))),
+        ));
+        validate_search_filter(&filter, "d")
+            .expect("reversed operands in mixed arms should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_mixed_equality_and_range_same_property() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "price"), lit(Value::Int64(5)))),
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Ge,
+                lit(Value::Int64(10)),
+            )),
+        ));
         let err = validate_search_filter(&filter, "d")
-            .expect_err("mixed equality and range should be rejected");
-        assert!(err.to_string().contains("mix equality and range"));
+            .expect_err("same-property mixed equality/range should be rejected");
+        assert!(err.to_string().contains("distinct properties"));
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_mixed_equality_plus_two_sided_range() {
+        // d.category = 'doc' AND d.price >= 5 AND d.price < 10: three leaves, fail-closed.
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "category"), lit(Value::Text("doc".into())))),
+            Box::new(Expr::new(ExprKind::And(
+                Box::new(cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Ge,
+                    lit(Value::Int64(5)),
+                )),
+                Box::new(cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Lt,
+                    lit(Value::Int64(10)),
+                )),
+            ))),
+        ));
+        let err = validate_search_filter(&filter, "d")
+            .expect_err("equality plus two-sided range should be rejected");
+        assert!(err.to_string().contains("at most two predicates"));
     }
 
     #[test]

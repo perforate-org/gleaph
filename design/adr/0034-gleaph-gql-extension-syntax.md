@@ -1,9 +1,9 @@
 # 0034. Gleaph GQL extension syntax surface
 
 Date: 2026-06-25
-Status: accepted (syntax design; Rust manifest implemented; SEARCH parser/planner and Router lowering implemented, including Slice 6 leading labeled `SEARCH ... WHERE` equality filter, Slice 7 non-leading `SEARCH ... WHERE` equality filter, Slice 8 one or two `AND`-connected same-binding equality conjuncts, Slice 9 one same-binding numeric range predicate for both leading and non-leading search, and Slice 10 exactly two same-property range predicates (one lower, one upper) forming a two-sided numeric range; remaining syntax staged by feature)
-Last revised: 2026-06-29
-Anchor timestamp: 2026-06-29 23:24:26 UTC +0000
+Status: accepted (syntax design; Rust manifest implemented; SEARCH parser/planner and Router lowering implemented, including Slice 6 leading labeled `SEARCH ... WHERE` equality filter, Slice 7 non-leading `SEARCH ... WHERE` equality filter, Slice 8 one or two `AND`-connected same-binding equality conjuncts, Slice 9 one same-binding numeric range predicate for both leading and non-leading search, Slice 10 exactly two same-property range predicates (one lower, one upper) forming a two-sided numeric range, and Slice 11 exactly one equality predicate plus one one-sided numeric range predicate on distinct properties of the searched vertex; remaining syntax staged by feature)
+Last revised: 2026-06-30
+Anchor timestamp: 2026-06-30 00:52:59 UTC +0000
 
 > **Summary.** Gleaph needs a coherent public GQL dialect surface for IC values, graph-local inline
 > edge data, vector search, shortest-path costs, and operational procedures. This ADR accepts a
@@ -184,7 +184,10 @@ Planned migration path:
 8. Add exactly two `AND`-connected same-binding equality conjuncts for leading and non-leading `SEARCH ... WHERE` (ADR 0034 Slice 8, done).
 9. Add one same-binding numeric range predicate (`<`, `<=`, `>`, `>=`) for leading and non-leading `SEARCH ... WHERE` (ADR 0034 Slice 9, done). The planner accepts a single range comparison between a property of the searched binding and a literal or parameter; the Router resolves the property, proves an active vertex property index for the same `(graph_id, label_id, property_id)` tuple, derives a finite half-open encoded numeric range through the canonical `gleaph_gql::numeric_range_bounds` helper, and collects label-qualified candidates through the bounded paginated `lookup_range_page` path. The candidate set is the exact label-scoped numeric range before Vector Index ranking; out-of-range and non-numeric values cannot consume top-k positions. Empty ranges preserve the leading/non-leading aggregate dispatch contract.
 10. Add exactly two same-binding range predicates on the same property of the searched binding for leading and non-leading `SEARCH ... WHERE` (ADR 0034 Slice 10, done). The planner accepts exactly one lower bound (`>` or `>=`) and one upper bound (`<` or `<=`) on the same property, with either conjunct order and either operand order; it rejects equality-plus-range, different properties, duplicate directions, three or more predicates, and computed operands. The Router resolves the property once, proves one active vertex property index, derives each arm's finite half-open encoded interval through `gleaph_gql::numeric_range_bounds`, intersects the two intervals (`low = max(first.low, second.low)`, `high = min(first.high, second.high)`), and issues at most one paginated `lookup_range_page` stream with `PostingRangeRequest::Between { low, high }`. If `low >= high` the candidate set is empty before any Property Index or Vector Index call; the leading/non-leading empty-candidate dispatch contract is preserved. Out-of-range values and non-numeric values cannot consume top-k positions.
-11. Mark procedure-shaped vector search as internal/escape-hatch only if it is ever added.
+11. Add exactly one equality predicate and one one-sided numeric range predicate on distinct properties of the searched vertex for leading and non-leading `SEARCH ... WHERE` (ADR 0034 Slice 11, done). The planner accepts the two-leaf mixed shape with either conjunct or operand order; the Router independently revalidates, resolves both property ids, proves active vertex property indexes for the same label, encodes the equality value, derives the numeric half-open interval, and collects label-qualified candidates through one bounded `lookup_range_intersection_page` stream per index target. Property Index walks the finite encoded range one page at a time and sieves each page against the equality arm server-side, preserving the range cursor even when a page has zero survivors. Empty final candidates preserve the existing leading/non-leading aggregate dispatch contract.
+
+> Procedure-shaped vector search remains an internal/escape-hatch consideration only if a concrete
+> operational need appears; it is not assigned a slice number.
 
 ## Design Documentation Impact
 

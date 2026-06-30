@@ -2,13 +2,13 @@ benches:
   bench_filter_hits_by_equal_page:
     total:
       calls: 1
-      instructions: 8410080
+      instructions: 8410097
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       filter_hits_by_equal_page:
         calls: 1
-        instructions: 8409015
+        instructions: 8409032
         heap_increase: 0
         stable_memory_increase: 0
   bench_layout_index_posting_insert_64:
@@ -38,26 +38,62 @@ benches:
   bench_lookup_intersection_page:
     total:
       calls: 1
-      instructions: 24263467
+      instructions: 24263484
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_intersection_page:
         calls: 1
-        instructions: 24262418
+        instructions: 24262435
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_intersection_two_arms:
     total:
       calls: 1
-      instructions: 27145879
+      instructions: 27145888
       heap_increase: 3
       stable_memory_increase: 0
     scopes:
       lookup_intersection_two_arms:
         calls: 1
-        instructions: 27144839
+        instructions: 27144848
         heap_increase: 3
+        stable_memory_increase: 0
+  bench_lookup_range_intersection_page_adversarial_span:
+    total:
+      calls: 1
+      instructions: 191631
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lookup_range_intersection_page_adversarial_span:
+        calls: 1
+        instructions: 190582
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lookup_range_intersection_page_full_range:
+    total:
+      calls: 1
+      instructions: 19718673
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lookup_range_intersection_page_full_range:
+        calls: 1
+        instructions: 19717624
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lookup_range_intersection_page_sparse_survivor:
+    total:
+      calls: 1
+      instructions: 102505
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lookup_range_intersection_page_sparse_survivor:
+        calls: 1
+        instructions: 101456
+        heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_range_page_between_first_page:
     total:

@@ -71,8 +71,9 @@ The Graph executor supports one top-level non-leading `PlanOp::Search` per plan 
 - A `PlanOp::Search` without a decoded `resolved_search_blob` fails closed because the Router has not lowered it.
 
 For a leading `NodeScan + Search` with a `WHERE` predicate (one equality, exactly two
-`AND`-connected same-binding equalities on distinct properties, one numeric range predicate, or
-exactly two same-property range predicates forming one lower and one upper bound), the Router does
+`AND`-connected same-binding equalities on distinct properties, one numeric range predicate,
+exactly two same-property range predicates forming one lower and one upper bound, or exactly one
+equality plus one one-sided range predicate on distinct properties), the Router does
 not forward a vector request when the Property Index candidate set is empty. For a two-sided range
 with an empty intersection (`low >= high`) the Router short-circuits before any Property Index or
 Vector Index call and dispatches the stripped tail plan with an empty `SeedBindingsWire` to every
@@ -81,13 +82,16 @@ candidate set is non-empty, the vector canister receives a bounded allowlist and
 hits; the normal leading-search hit-shard-only dispatch then applies.
 
 For a non-leading `PlanOp::Search` with a `WHERE` predicate (one equality, exactly two
-`AND`-connected same-binding equalities on distinct properties, one numeric range predicate, or
-exactly two same-property range predicates forming one lower and one upper bound), the Router
+`AND`-connected same-binding equalities on distinct properties, one numeric range predicate,
+exactly two same-property range predicates forming one lower and one upper bound, or exactly one
+equality plus one one-sided range predicate on distinct properties), the Router
 requires exactly one positive simple label proof for the searched binding from the top-level prefix,
 resolves every filter arm through the same bounded Property Index candidate collection
-(`lookup_equal_page` for one equality arm, `lookup_intersection_page` for two equality arms, or one
+(`lookup_equal_page` for one equality arm, `lookup_intersection_page` for two equality arms, one
 `lookup_range_page` stream with the intersected finite half-open encoded interval for one or two
-range arms), and skips the vector canister when the candidate set is empty. For a two-sided range
+range arms, or one `lookup_range_intersection_page` stream that walks the finite range and sieves
+each page by the equality arm for one equality plus one one-sided range on distinct properties),
+and skips the vector canister when the candidate set is empty. For a two-sided range
 with an empty intersection (`low >= high`) the Router short-circuits before any Property Index or
 Vector Index call and dispatches the full plan with an explicit empty `ResolvedSearchWire` to every
 live shard, so the Graph executor still runs the prefix and any global aggregate returns one

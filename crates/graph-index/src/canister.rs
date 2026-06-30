@@ -11,8 +11,8 @@ use gleaph_graph_kernel::federation::{
 };
 use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexIntersectionResult, LookupEdgeEqualPageRequest,
-    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangePageRequest, PostingHit,
-    PostingHitPage, PostingRangeRequest, ValuePostingCount,
+    LookupEqualPageRequest, LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
+    LookupRangePageRequest, PostingHit, PostingHitPage, PostingRangeRequest, ValuePostingCount,
 };
 use ic_cdk::api::msg_caller;
 
@@ -259,6 +259,17 @@ pub(crate) fn filter_hits_by_label(vertex_label_id: u32, hits: Vec<PostingHit>) 
 pub(crate) fn lookup_intersection_page(req: LookupIntersectionPageRequest) -> PostingHitPage {
     IndexStore::new()
         .lookup_intersection_page(&req)
+        .unwrap_or_else(|e| {
+            trap_err(e);
+            unreachable!()
+        })
+}
+
+pub(crate) fn lookup_range_intersection_page(
+    req: LookupRangeIntersectionPageRequest,
+) -> PostingHitPage {
+    IndexStore::new()
+        .lookup_range_intersection_page(&req)
         .unwrap_or_else(|e| {
             trap_err(e);
             unreachable!()
