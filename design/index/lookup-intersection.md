@@ -1,8 +1,11 @@
 # Index lookup intersection
 
+Last updated: 2026-06-30
+Anchor timestamp: 2026-06-30 08:27:33 UTC +0000
+
 ## Status
 
-**Implemented** — graph-index `lookup_intersection` returns `IndexIntersectionResult` (vertex, mixed, and all-edge arms per ADR 0009). Router seeds vertices (`PostingHit`) and edges (`LocalEdgePosting` via `EdgeIndexScan` / all-edge intersection). Graph skips leading `IndexIntersection` / `EdgeIndexScan` when seeded. Shard-local `EDGE_EQUALITY_POSTINGS` retired (ADR 0009 phase D). The vertex-only intersection query path is **streamed** (paged walk + `filter_hits_by_equal` `contains` sieve) so it no longer materializes a full posting bucket per arm; edge/mixed intersection still materializes server-side — see [Streaming intersection status](#streaming-intersection-status).
+**Implemented** — graph-index `lookup_intersection` returns `IndexIntersectionResult` (vertex, mixed, and all-edge arms per ADR 0009). Router seeds vertices (`PostingHit`) and edges (`LocalEdgePosting` via `EdgeIndexScan` / all-edge intersection). Graph skips leading `IndexIntersection` / `EdgeIndexScan` when seeded. Shard-local `EDGE_EQUALITY_POSTINGS` retired (ADR 0009 phase D). The vertex-only intersection query path is **streamed** (paged walk + `filter_hits_by_equal` `contains` sieve) so it no longer materializes a full posting bucket per arm; edge/mixed intersection still materializes server-side — see [Streaming intersection status](#streaming-intersection-status). N-way vertex equality intersection for `SEARCH ... WHERE` (ADR 0034 Slice 13) supports 2..=8 arms with deterministic walk-arm selection.
 
 ## Purpose
 
@@ -99,11 +102,13 @@ into **one inter-canister message per page** instead of one `lookup_equal_page` 
 - Standalone graph: `IcPropertyIndexClient::collect_vertex_intersection_hits` in
   `graph/src/index/ic.rs` loops the same `lookup_intersection_page` query.
 
-`lookup_intersection_page` returns an empty terminal page for fewer than two specs or any non-vertex
-spec; callers guard with `all_vertex_specs` and fall back to the materializing `lookup_intersection`
-otherwise. The walk arm is the first spec (callers order arms; matches the label precedent — no
-size-based smallest-arm selection yet, since there is no cheap per-`(property,value)` cardinality
-signal). `filter_hits_by_equal` remains an internal store method (no longer a canister endpoint).
+`lookup_intersection_page` returns an empty terminal page for fewer than two specs, and an explicit
+[`IndexError::TooManyEqualityIntersectionArms`] for more than
+`MAX_EQUALITY_INTERSECTION_ARMS` (8) specs; it also returns an empty terminal page for any non-vertex
+spec. Callers guard with `all_vertex_specs` and fall back to the materializing `lookup_intersection`
+otherwise. The walk arm is selected by canonical `(property_id, encoded_value)` order so that paging is
+deterministic regardless of how the caller ordered the specs. `filter_hits_by_equal` remains an internal
+store method (no longer a canister endpoint).
 
 **Edge / mixed intersection (dormant — intentionally not streamed).** The server-side
 `lookup_intersection` still **materializes one in-heap set per arm** for all-edge and mixed
@@ -119,35 +124,38 @@ likewise retains its materializing server impl (the router label query path alre
 
 ### Benchmarks
 
-`crates/graph-index/src/bench.rs` (canbench, two vertex arms on one shard: walk arm = 4096 ids,
-sieve arm = the 2048 even ids; `canbench_results.yml` baseline):
+`crates/graph-index/src/bench.rs` (canbench, one shard, walk arm = 1024 ids with `vid % 8` in `{0,1}`,
+every sieve arm contains the same 1024 ids, so the intersection is also 1024 ids and the per-arm
+merge shape is identical across 2/4/8 arms; `canbench_results.yml` baseline):
 
 | Benchmark | Instructions | Heap increase |
 |-----------|--------------|---------------|
-| `bench_lookup_intersection_two_arms` (materializing, server-side) | 36.4 M | 3 pages |
-| `bench_lookup_intersection_page` (server-side paged walk + merge-join sieve) | 24.3 M | 0 pages |
-| `bench_lookup_equal_page_walk_arm` (one streamed walk page) | 15.8 M | 0 pages |
-| `bench_filter_hits_by_equal_page` (merge-join sieve over a 4096-hit page) | 8.4 M | 0 pages |
+| `bench_lookup_intersection_two_arms` (materializing, server-side) | 9.41 M | 1 page |
+| `bench_lookup_intersection_page_two_arms` (server-side paged walk + one-arm dense sieve) | 7.90 M | 0 pages |
+| `bench_lookup_intersection_page_four_arms` (server-side paged walk + three-arm dense sieve) | 16.00 M | 0 pages |
+| `bench_lookup_intersection_page_eight_arms` (server-side paged walk + seven-arm dense sieve) | 32.22 M | 0 pages |
+| `bench_lookup_intersection_page_eight_arms_scattered` (server-side paged walk + seven-arm point-lookup sieve) | 201.64 M | 0 pages |
+| `bench_lookup_equal_page_walk_arm` (one streamed walk page) | 3.89 M | 0 pages |
+| `bench_filter_hits_by_equal_page` (merge-join sieve over the 1024-hit walk page) | 4.00 M | 0 pages |
 
-**Result:** the streamed `lookup_intersection_page` (walk + per-page sieve = 24.3 M for this shape,
-≈ walk 15.8 M + sieve 8.4 M) is now **both heap-bounded and fewer instructions** than the single
-materializing call (36.4 M, 3 heap pages), in **one message per page**. `filter_hits_by_equal` runs a
-**bounded sorted merge-join**: the page hits and the `(property_id, value)` bucket are both ordered by
-`(shard_id, vertex_id)`, so it scans the bucket range `[min(hits), max(hits)]` once in lockstep with
-the page instead of doing one stable point lookup per hit. This replaced a per-hit `contains` sieve
-that cost 173 M for the same page (−95%) by turning random tree descents into a sequential scan. Heap
-stays bounded (0 pages: no arm set is materialized; `hits` is sorted in place).
+**Result:** the streamed `lookup_intersection_page` path stays heap-bounded (0 pages) and scales
+linearly with the number of sieve arms when the walk page and sieve arms keep the same shape:
+two-arm ≈ 7.90 M, four-arm ≈ 16.00 M, eight-arm ≈ 32.22 M. Because the fixture now holds every arm at
+1024 postings inside a 4096-id range, all dense sieves exercise the same bounded merge-join over the
+same walk page rather than switching to point lookups or shrinking the walk bucket. The prior 24.3 M /
+24.8 M / 39.9 M / 48.1 K baselines came from fixtures where the walk arm itself shrank with arm count
+or several arms became empty mid-intersection, so they did not compare arm count in isolation.
 
-**Caveat / future work:** the merge-join scans every bucket posting within the page's key span, so a
-sparse walk page spanning a dense sieve arm can still scan many sieve postings in one message (no
-worse than the materializing scan, and still heap-bounded). **Smallest-arm walk** (see Non-goals)
-remains the main lever: walking the smaller arm minimizes both the number of pages and the sieve
-span. There is currently no cheap per-`(property, value)` cardinality signal to pick it, so the walk
-arm is the first spec.
+The scattered 8-way shape (only one vertex survives across all arms and the walk hits are far apart)
+measures the point-lookup fallback path at 201.64 M instructions; this is intentionally separate from
+the dense series because it exercises a different code path inside `filter_hits_by_equal`.
 
 ### Validation
 
-- `specs.len() < 2` → return empty vec (caller should use `lookup_equal`).
+- `specs.len() < 2` → return an empty terminal page (callers must use `lookup_equal_page` for one
+  arm and `lookup_intersection` for non-vertex arms).
+- `specs.len() > 8` → return [`IndexError::TooManyEqualityIntersectionArms`] (callers must reject
+  nine-or-more equality arms before calling).
 - Unknown `property_id` is not an error; empty posting list for that arm yields empty intersection.
 
 ## Index invariants and tombstones

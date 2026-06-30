@@ -581,6 +581,39 @@ pub async fn e2e_insert_vertex_with_label_and_two_properties(
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_set_vertex_property(
+    args: super::types::E2eSetVertexPropertyArgs,
+) -> Result<(), String> {
+    use crate::index::{catalog_context, pending};
+    use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::PropertyId;
+    use ic_stable_lara::VertexId;
+
+    let store = GraphStore::new();
+    let vertex_id = VertexId::from(args.local_vertex_id);
+    let _ = store
+        .vertex(vertex_id)
+        .ok_or_else(|| "vertex must exist".to_string())?;
+    let _catalog = catalog_context::enter(gleaph_graph_kernel::index::IndexedPropertyCatalog {
+        vertex_property_ids: vec![args.property_id],
+        ..Default::default()
+    });
+    store
+        .set_vertex_property(
+            vertex_id,
+            PropertyId::from_raw(args.property_id),
+            Value::Int64(args.value),
+        )
+        .map_err(|e| e.to_string())?;
+    let index = wasm_index_client_holder().ok_or("federation not configured")?;
+    let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
+    pending::flush_pending(Some(ix), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
 pub async fn e2e_insert_directed_edge_with_label(
     args: super::types::E2eInsertDirectedEdgeWithLabelArgs,
 ) -> Result<(), String> {

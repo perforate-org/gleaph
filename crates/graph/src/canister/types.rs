@@ -44,6 +44,14 @@ pub struct E2eInsertVertexWithLabelAndTwoPropertiesArgs {
     pub value_b: i64,
 }
 
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eSetVertexPropertyArgs {
+    pub local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    pub property_id: u32,
+    pub value: i64,
+}
+
 /// Arguments for [`super::handlers::e2e_insert_directed_edge_with_label`] (PocketIC E2E only).
 #[cfg(feature = "pocket-ic-e2e")]
 #[derive(CandidType, Deserialize, Clone, Debug)]

@@ -463,8 +463,8 @@ fn test_search_where_mixed_equality_plus_two_sided_range_rejects_same_property()
 }
 
 #[test]
-fn test_search_where_three_equalities_rejected_by_planner() {
-    let err = plan_query_err(
+fn test_search_where_three_equalities_accepted_by_planner() {
+    let plan = plan_query(
         "MATCH (d:Document) \
          SEARCH d IN ( \
            VECTOR INDEX document_embedding \
@@ -474,9 +474,50 @@ fn test_search_where_three_equalities_rejected_by_planner() {
          ) SCORE AS similarity \
          RETURN d, similarity",
     );
+    let filter = search_filter_from_plan(&plan);
     assert!(
-        err.to_string().contains("at most two equality predicates"),
-        "three equality arms must be rejected, got {err}"
+        filter.is_some(),
+        "accepted three-equality conjunction filter must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_eight_equalities_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.a1 = 1 AND d.a2 = 2 AND d.a3 = 3 AND d.a4 = 4 \
+             AND d.a5 = 5 AND d.a6 = 6 AND d.a7 = 7 AND d.a8 = 8 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    let filter = search_filter_from_plan(&plan);
+    assert!(
+        filter.is_some(),
+        "accepted eight-equality conjunction filter must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_nine_equalities_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.a1 = 1 AND d.a2 = 2 AND d.a3 = 3 AND d.a4 = 4 \
+             AND d.a5 = 5 AND d.a6 = 6 AND d.a7 = 7 AND d.a8 = 8 AND d.a9 = 9 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    let filter = search_filter_from_plan(&plan);
+    assert!(
+        filter.is_some(),
+        "accepted nine-equality conjunction filter must be preserved in the plan; execution limit is enforced by the Router"
     );
 }
 
@@ -718,24 +759,6 @@ fn test_search_where_equality_conjunction_rejects_duplicate_property() {
     assert!(
         err.to_string().contains("distinct properties"),
         "duplicate property conjuncts must be rejected, got {err}"
-    );
-}
-
-#[test]
-fn test_search_where_equality_conjunction_rejects_three_arms() {
-    let err = plan_query_err(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX document_embedding \
-           FOR $query \
-           WHERE d.a = 1 AND d.b = 2 AND d.c = 3 \
-           LIMIT 100 \
-         ) SCORE AS similarity \
-         RETURN d, similarity",
-    );
-    assert!(
-        err.to_string().contains("at most two equality predicates"),
-        "three equality arms must be rejected, got {err}"
     );
 }
 

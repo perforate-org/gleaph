@@ -1,13 +1,13 @@
-//! PocketIC coverage for ADR 0034 Slice 8: `SEARCH ... WHERE` equality conjunction.
+//! PocketIC coverage for ADR 0034 Slice 8 and Slice 13: `SEARCH ... WHERE` equality conjunction.
 //!
 //! Semantics under test:
-//!   C1 = property_index_equal(Document, cat_id, value)
-//!   C2 = property_index_equal(Document, tenant_id, value)
-//!   C  = C1 INTERSECT C2
+//!   C_i = property_index_equal(Document, property_i, value_i)
+//!   C   = INTERSECT_i C_i  (bounded by MAX_EQUALITY_INTERSECTION_ARMS)
 //!   result = vector_top_k(document_embedding, subjects = C, limit)
 //!
 //! - Candidate membership is the exact label-scoped Property Index intersection before vector ranking.
 //! - A vertex matching only one arm cannot consume a top-k position, even if it is globally nearer.
+//! - Slice 13 extends pure equality conjunctions from two to up to eight arms.
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
@@ -22,7 +22,8 @@ use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, admin_intern_edge_label, admin_intern_property,
     admin_intern_vertex_label, create_vertex_property_index, e2e_insert_edge_with_label,
     e2e_insert_vertex_with_label, e2e_insert_vertex_with_label_and_two_properties,
-    gql_query_with_params_as_admin, install_federation, install_vector_canister,
+    e2e_set_vertex_property, gql_query_with_params_as_admin, install_federation,
+    install_vector_canister,
 };
 use gleaph_router::types::{AdminAttachVectorIndexShardArgs, RegisterVectorIndexArgs};
 
@@ -297,6 +298,111 @@ fn setup_search_where_conjunction_env(env: &FederationEnv, vector: Principal) {
     );
 }
 
+fn setup_search_where_eight_way_env(env: &FederationEnv, vector: Principal) {
+    register_vector_index(env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(env, vector);
+
+    let doc_label_id = admin_intern_vertex_label(env, "Document");
+    let property_ids: Vec<_> = (0..8)
+        .map(|i| admin_intern_property(env, &format!("filter_p{i}")))
+        .collect();
+    for i in 0..8 {
+        create_vertex_property_index(
+            env,
+            &format!("document_filter_p{i}_idx"),
+            "Document",
+            &format!("filter_p{i}"),
+            &format!("create_document_filter_p{i}_idx"),
+        );
+    }
+
+    // doc_match shares the target value 1 across all eight filter properties.
+    let doc_match = e2e_insert_vertex_with_label(env, env.graph_source, doc_label_id.raw());
+    for pid in &property_ids {
+        e2e_set_vertex_property(
+            env,
+            env.graph_source,
+            doc_match.local_vertex_id,
+            pid.raw(),
+            1,
+        );
+    }
+
+    // Create one partial-match adversary per arm, each missing a different property.
+    // Every one is globally nearer than doc_match so the test fails if any arm's sieve is skipped.
+    for omitted in 0..8 {
+        let doc_partial = e2e_insert_vertex_with_label(env, env.graph_source, doc_label_id.raw());
+        for (i, pid) in property_ids.iter().enumerate() {
+            if i == omitted {
+                continue;
+            }
+            e2e_set_vertex_property(
+                env,
+                env.graph_source,
+                doc_partial.local_vertex_id,
+                pid.raw(),
+                1,
+            );
+        }
+        seed_embedding(
+            env,
+            vector,
+            env.graph_source,
+            doc_partial.local_vertex_id,
+            0.0f32 + (omitted as f32) * 0.01f32,
+        );
+    }
+
+    seed_embedding(
+        env,
+        vector,
+        env.graph_source,
+        doc_match.local_vertex_id,
+        2.0,
+    );
+}
+
+#[test]
+fn search_where_eight_way_conjunction_excludes_globally_nearer_partial_match() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    setup_search_where_eight_way_env(&env, vector);
+
+    let arms: Vec<String> = (0..8).map(|i| format!("d.filter_p{i} = 1")).collect();
+    let where_clause = arms.join(" AND ");
+    let query = format!(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE {where_clause} \
+           LIMIT 1 \
+         ) DISTANCE AS distance \
+         RETURN ELEMENT_ID(d), distance \
+         ORDER BY distance ASC"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(0.0)),
+    )])
+    .expect("encode params");
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_eq!(
+        result.row_count, 1,
+        "only the document matching all eight arms should survive intersection"
+    );
+
+    let rows = extract_rows(result);
+    assert_eq!(rows.len(), 1);
+    assert_eq!(
+        rows[0].get("distance"),
+        Some(&gleaph_gql_ic::IcWireValue::Float64(
+            2.0_f64.powi(2) * 16.0_f64
+        )),
+        "doc_match at 2.0 must win, not the nearer partial match at 0.0"
+    );
+}
+
 #[test]
 fn search_where_conjunction_excludes_globally_nearer_one_arm_vertices() {
     let env = install_federation();
@@ -451,6 +557,38 @@ fn search_where_conjunction_rejects_missing_second_exact_index() {
     assert!(
         err.to_string().contains("vertex equality index"),
         "missing second exact index must fail with a coverage error, got {err}"
+    );
+}
+
+#[test]
+fn search_where_nine_arm_equality_conjunction_is_rejected() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    setup_search_where_eight_way_env(&env, vector);
+
+    let arms: Vec<String> = (0..9).map(|i| format!("d.filter_p{i} = 1")).collect();
+    let where_clause = arms.join(" AND ");
+    let query = format!(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE {where_clause} \
+           LIMIT 1 \
+         ) DISTANCE AS distance \
+         RETURN ELEMENT_ID(d), distance \
+         ORDER BY distance ASC"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(0.0)),
+    )])
+    .expect("encode params");
+
+    let err = gql_query_with_params_as_admin_result(&env, &query, params)
+        .expect_err("nine equality arms must be rejected");
+    assert!(
+        err.to_string().contains("at most 8 equality"),
+        "nine arms must fail with an explicit arm-count error, got {err}"
     );
 }
 

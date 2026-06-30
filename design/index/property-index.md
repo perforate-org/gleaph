@@ -1,7 +1,7 @@
 # Property index
 
 Last updated: 2026-06-30
-Anchor timestamp: 2026-06-30 04:54:14 UTC +0000
+Anchor timestamp: 2026-06-30 08:27:33 UTC +0000
 
 ## Status
 
@@ -153,13 +153,13 @@ keys before graph-index calls; graph-index read APIs reject them as `IndexValueK
 silent empty range).
 
 
-## Vector search filter membership (ADR 0034 Slices 6, 7, 8, 9, 10, 11 and 12)
+## Vector search filter membership (ADR 0034 Slices 6, 7, 8, 9, 10, 11, 12 and 13)
 
 Property-index postings own filter membership for leading and non-leading `SEARCH ... WHERE`
 predicates. The Router consumes postings through bounded pagination:
 
-- The planner accepts one same-binding equality predicate, exactly two `AND`-connected
-  same-binding equality predicates on distinct properties, exactly one same-binding numeric range
+- The planner accepts one same-binding equality predicate, one to eight `AND`-connected
+  same-binding equality predicates on **distinct** properties, exactly one same-binding numeric range
   predicate (`<`, `<=`, `>`, `>=`), exactly two same-property range predicates forming one lower
   and one upper bound, exactly one equality predicate and one one-sided numeric range predicate
   on distinct properties, or exactly one equality predicate and two same-property range predicates
@@ -174,9 +174,10 @@ predicates. The Router consumes postings through bounded pagination:
 - For equality arms it encodes every comparison value with `gleaph_gql::value_to_index_key_bytes`
   and validates each encoded size against `MAX_INDEX_VALUE_KEY_BYTES` before calling the index.
   For one equality arm it pages through `lookup_equal_page` for `(property_id, encoded_value)`. For
-  two equality arms it constructs vertex-only `IndexEqualSpec`s and pages through the server-side
-  `lookup_intersection_page`, which walks the first arm one page at a time and sieves the remaining
-  arms in heap without materializing full buckets.
+  two to eight equality arms it constructs vertex-only `IndexEqualSpec`s and pages through the
+  server-side `lookup_intersection_page`, which canonicalises the walk arm by `(property_id,
+  encoded_value)` order and sieves the remaining arms in heap without materializing full buckets.
+  Nine or more equality arms are rejected with `InvalidArgument`.
 - For one numeric range arm it derives a finite half-open encoded comparison-domain range with the
   canonical `gleaph_gql::numeric_range_bounds` helper, validates each bound size against
   `MAX_INDEX_VALUE_KEY_BYTES`, and pages through `lookup_range_page` with

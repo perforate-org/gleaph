@@ -10,8 +10,8 @@ use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, IndexEqualSpec, IndexIntersectionRequest, IndexIntersectionResult,
     IndexLabelIntersectionRequest, IndexSubject, LabelLookupPageRequest, LabelLookupPageResult,
-    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupIntersectionPageRequest, PostingHit,
-    ValuePostingCount,
+    LookupEdgeEqualPageRequest, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    MAX_EQUALITY_INTERSECTION_ARMS, PostingHit, ValuePostingCount,
 };
 
 use crate::facade::store::RouterStore;
@@ -80,7 +80,7 @@ async fn collect_edge_equal_hits_paged(
 /// `true` when every arm targets a vertex property (the planner's `IndexIntersection` shape, which
 /// is vertex-only). Edge / mixed intersection still uses the server-side `lookup_intersection`.
 fn all_vertex_specs(specs: &[IndexEqualSpec]) -> bool {
-    specs.len() >= 2
+    (2..=MAX_EQUALITY_INTERSECTION_ARMS).contains(&specs.len())
         && specs
             .iter()
             .all(|s| matches!(s.subject, IndexSubject::VertexProperty))

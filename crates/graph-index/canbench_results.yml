@@ -2,13 +2,13 @@ benches:
   bench_filter_hits_by_equal_page:
     total:
       calls: 1
-      instructions: 8410097
+      instructions: 3995902
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       filter_hits_by_equal_page:
         calls: 1
-        instructions: 8409032
+        instructions: 3994868
         heap_increase: 0
         stable_memory_increase: 0
   bench_layout_index_posting_insert_64:
@@ -26,38 +26,74 @@ benches:
   bench_lookup_equal_page_walk_arm:
     total:
       calls: 1
-      instructions: 15834362
+      instructions: 3886743
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_equal_page_walk_arm:
         calls: 1
-        instructions: 15833321
+        instructions: 3885694
         heap_increase: 0
         stable_memory_increase: 0
-  bench_lookup_intersection_page:
+  bench_lookup_intersection_page_eight_arms:
     total:
       calls: 1
-      instructions: 24263484
+      instructions: 32215386
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      lookup_intersection_page:
+      lookup_intersection_page_eight_arms:
         calls: 1
-        instructions: 24262435
+        instructions: 32214337
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lookup_intersection_page_eight_arms_scattered:
+    total:
+      calls: 1
+      instructions: 201636472
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lookup_intersection_page_eight_arms_scattered:
+        calls: 1
+        instructions: 201635339
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lookup_intersection_page_four_arms:
+    total:
+      calls: 1
+      instructions: 15995646
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lookup_intersection_page_four_arms:
+        calls: 1
+        instructions: 15994597
+        heap_increase: 0
+        stable_memory_increase: 0
+  bench_lookup_intersection_page_two_arms:
+    total:
+      calls: 1
+      instructions: 7902466
+      heap_increase: 0
+      stable_memory_increase: 0
+    scopes:
+      lookup_intersection_page_two_arms:
+        calls: 1
+        instructions: 7901417
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_intersection_two_arms:
     total:
       calls: 1
-      instructions: 27145888
-      heap_increase: 3
+      instructions: 9412611
+      heap_increase: 1
       stable_memory_increase: 0
     scopes:
       lookup_intersection_two_arms:
         calls: 1
-        instructions: 27144848
-        heap_increase: 3
+        instructions: 9411571
+        heap_increase: 1
         stable_memory_increase: 0
   bench_lookup_range_intersection_page_adversarial_span:
     total:
@@ -74,25 +110,25 @@ benches:
   bench_lookup_range_intersection_page_full_range:
     total:
       calls: 1
-      instructions: 19718673
+      instructions: 19718671
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_range_intersection_page_full_range:
         calls: 1
-        instructions: 19717624
+        instructions: 19717622
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_range_intersection_page_sparse_survivor:
     total:
       calls: 1
-      instructions: 102505
+      instructions: 102503
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_range_intersection_page_sparse_survivor:
         calls: 1
-        instructions: 101456
+        instructions: 101454
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_range_page_between_first_page:
@@ -122,13 +158,13 @@ benches:
   bench_lookup_range_page_between_resumed_page:
     total:
       calls: 1
-      instructions: 3866953
+      instructions: 3866955
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
       lookup_range_page_between_resumed_page:
         calls: 1
-        instructions: 3865782
+        instructions: 3865784
         heap_increase: 0
         stable_memory_increase: 0
   bench_lookup_range_page_between_sparse_range:

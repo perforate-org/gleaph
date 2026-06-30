@@ -166,6 +166,13 @@ pub struct E2eInsertVertexWithLabelAndTwoPropertiesArgs {
 }
 
 #[derive(CandidType, Clone, Debug)]
+pub struct E2eSetVertexPropertyArgs {
+    pub local_vertex_id: u32,
+    pub property_id: u32,
+    pub value: i64,
+}
+
+#[derive(CandidType, Clone, Debug)]
 pub struct E2eInsertDirectedEdgeWithPropertyArgs {
     pub source_local_vertex_id: u32,
     pub target_local_vertex_id: u32,
@@ -917,6 +924,25 @@ pub fn e2e_insert_vertex_with_label_and_two_properties(
             value_a,
             property_b,
             value_b,
+        },
+    )
+}
+
+pub fn e2e_set_vertex_property(
+    env: &FederationEnv,
+    graph: Principal,
+    local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    property_id: u32,
+    value: i64,
+) {
+    update_as_router(
+        env,
+        graph,
+        "e2e_set_vertex_property",
+        E2eSetVertexPropertyArgs {
+            local_vertex_id,
+            property_id,
+            value,
         },
     )
 }

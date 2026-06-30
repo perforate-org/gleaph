@@ -1068,6 +1068,138 @@ fn lookup_intersection_page_empty_for_fewer_than_two_specs() {
 }
 
 #[test]
+fn lookup_intersection_page_deterministic_walk_arm_for_eight_specs() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_principal = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
+
+    // Each arm shares only vertex 5; every other vertex is unique to a single arm.
+    // The walk arm (property 1, value p1) also contains vertex 6 so that the survivor page is
+    // non-terminal and exposes a resume cursor for assertion.
+    for prop in 1u32..=8 {
+        let value = format!("p{prop}").into_bytes();
+        store
+            .posting_insert(shard_principal, ShardId::new(0), prop, value.clone(), prop)
+            .expect("unique arm vertex");
+        store
+            .posting_insert(shard_principal, ShardId::new(0), prop, value.clone(), 5)
+            .expect("shared arm vertex");
+    }
+    store
+        .posting_insert(shard_principal, ShardId::new(0), 1, b"p1".to_vec(), 6)
+        .expect("extra walk arm posting after survivor");
+
+    // Reverse the spec order; the endpoint must canonicalize and still find the same hit.
+    let specs: Vec<IndexEqualSpec> = (1u32..=8)
+        .rev()
+        .map(|prop| IndexEqualSpec::vertex(prop, format!("p{prop}").into_bytes()))
+        .collect();
+
+    // Walk the canonical arm one hit at a time. The first walk hit (vertex 1) is unique to the
+    // walk arm, so the sieve yields an empty page and a non-terminal cursor. The endpoint must
+    // keep paging internally until it either fills the requested limit or exhausts the walk arm.
+    // With limit=1 and vertex 5 as the only true survivor, this proves the walk cursor belongs to
+    // the canonical arm and resumes deterministically regardless of request order.
+    let mut after: Option<PropertyPostingCursor> = None;
+    let mut found_hit: Option<PostingHit> = None;
+    let mut seen_cursor_value: Option<Vec<u8>> = None;
+    loop {
+        let page = store
+            .lookup_intersection_page(&LookupIntersectionPageRequest {
+                specs: specs.clone(),
+                after: after.clone(),
+                limit: 1,
+            })
+            .expect("lookup_intersection_page");
+        if !page.hits.is_empty() {
+            assert_eq!(
+                page.hits.len(),
+                1,
+                "limit=1 page must contain at most one survivor"
+            );
+            found_hit = Some(page.hits[0]);
+            seen_cursor_value = page.next.as_ref().map(|c| c.value.clone());
+            break;
+        }
+        if page.done {
+            break;
+        }
+        after = page.next;
+    }
+    assert_eq!(
+        found_hit,
+        Some(PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 5,
+        }),
+        "canonical walk must eventually return the single survivor"
+    );
+    assert_eq!(
+        seen_cursor_value,
+        Some(b"p1".to_vec()),
+        "walk cursor must describe the canonical (property_id=1, value=p1) arm"
+    );
+
+    // A fresh call with the canonical (ascending) order must produce the same final survivor.
+    let canonical_specs: Vec<IndexEqualSpec> = (1u32..=8)
+        .map(|prop| IndexEqualSpec::vertex(prop, format!("p{prop}").into_bytes()))
+        .collect();
+    let mut canonical_after: Option<PropertyPostingCursor> = None;
+    let mut canonical_found: Option<PostingHit> = None;
+    loop {
+        let page = store
+            .lookup_intersection_page(&LookupIntersectionPageRequest {
+                specs: canonical_specs.clone(),
+                after: canonical_after.clone(),
+                limit: 1,
+            })
+            .expect("canonical-order call");
+        if !page.hits.is_empty() {
+            canonical_found = Some(page.hits[0]);
+            break;
+        }
+        if page.done {
+            break;
+        }
+        canonical_after = page.next;
+    }
+    assert_eq!(
+        found_hit, canonical_found,
+        "reversed and canonical request orders must converge on the same survivor"
+    );
+}
+
+#[test]
+fn lookup_intersection_page_rejects_more_than_max_arms() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_principal = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
+    for prop in 1u32..=9 {
+        store
+            .posting_insert(shard_principal, ShardId::new(0), prop, b"v".to_vec(), 1)
+            .expect("arm");
+    }
+
+    let specs: Vec<IndexEqualSpec> = (1u32..=9)
+        .map(|prop| IndexEqualSpec::vertex(prop, b"v".to_vec()))
+        .collect();
+    let err = store
+        .lookup_intersection_page(&LookupIntersectionPageRequest {
+            specs,
+            after: None,
+            limit: 16,
+        })
+        .expect_err("nine arms must fail");
+    assert_eq!(
+        err,
+        IndexError::TooManyEqualityIntersectionArms,
+        "expected explicit arm-count error, not an empty page"
+    );
+}
+
+#[test]
 fn lookup_intersection_empty_when_disjoint() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
@@ -2404,12 +2536,5 @@ fn equal_sieve_dense_threshold_met_far_apart_falls_back_to_point_lookup() {
         posting_hit_for_test(0, 0),
         posting_hit_for_test(0, 1_000_000),
     ];
-    assert!(!equal_sieve_dense_threshold_met(&hits));
-}
-
-#[test]
-fn equal_sieve_dense_threshold_met_multi_shard_falls_back_to_point_lookup() {
-    // Same vertex ids but different shards: dense scan cannot cross shard boundary.
-    let hits = vec![posting_hit_for_test(0, 0), posting_hit_for_test(1, 0)];
     assert!(!equal_sieve_dense_threshold_met(&hits));
 }

@@ -1,18 +1,18 @@
 //! Router-side lowering of GQL `SEARCH ... IN (VECTOR INDEX ... FOR ... LIMIT ...)`
-//! (ADR 0034 Slices 3, 4, 5, 6, 7, 8, 9, 10, 11 and 12).
+//! (ADR 0034 Slices 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 and 13).
 //!
 //! This module is the execution boundary between the provider-neutral GQL planner
 //! (`PlanOp::Search`) and the Router-owned vector-index catalog / canister dispatch. It supports
 //! a narrow leading `NodeScan + Search` shape, one top-level non-leading `SEARCH` after a bound
-//! vertex, one or two `AND`-connected same-binding equality `SEARCH ... WHERE` predicates on
+//! vertex, one to eight `AND`-connected same-binding equality `SEARCH ... WHERE` predicates on
 //! distinct properties, one same-binding numeric range `SEARCH ... WHERE` predicate, exactly two
 //! same-binding numeric range predicates on the same property forming one lower (`>`/`>=`) and one
-//! upper (`<`/`<=`) bound, or exactly two `AND`-connected predicates with one equality arm and
-//! one one-sided range arm on distinct properties, for both positions (Slices 6, 7, 8, 9, 10 and
-//! 11). All unsupported shapes are rejected with explicit `InvalidArgument` errors. For a leading
-//! search it dispatches the remaining graph-tail plan from row-shaped vector-search seeds; for a
-//! non-leading search it attaches an explicit per-shard resolved-search relation to the normal read
-//! dispatch.
+//! upper (`<`/`<=`) bound, one equality arm plus one one-sided range arm on distinct properties, or
+//! one equality arm plus two same-property range arms on a distinct property, for both positions
+//! (Slices 6, 7, 8, 9, 10, 11, 12 and 13). All unsupported shapes are rejected with explicit
+//! `InvalidArgument` errors. For a leading search it dispatches the remaining graph-tail plan from
+//! row-shaped vector-search seeds; for a non-leading search it attaches an explicit per-shard
+//! resolved-search relation to the normal read dispatch.
 
 use candid::Encode;
 use gleaph_graph_kernel::index::{PostingHit, PostingHitPage, PropertyPostingCursor};
@@ -28,7 +28,7 @@ use gleaph_graph_kernel::entry::{GraphId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     IndexEqualSpec, LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
-    MAX_INDEX_VALUE_KEY_BYTES,
+    MAX_EQUALITY_INTERSECTION_ARMS, MAX_INDEX_VALUE_KEY_BYTES,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, GqlExecutionMode, GqlQueryResult, ResolvedSearchVertexHitWire,
@@ -637,16 +637,15 @@ fn extract_search_filter(
     expr: &gleaph_gql::ast::Expr,
 ) -> Result<SearchFilter, RouterError> {
     let leaves = collect_and_leaves(expr);
-    if leaves.is_empty() || leaves.len() > 3 {
+    if leaves.is_empty() {
         return Err(RouterError::InvalidArgument(
-            "SEARCH ... WHERE supports one predicate, two equality/range conjuncts, or exactly one equality plus one or two range conjuncts in this slice"
-                .into(),
+            "SEARCH ... WHERE requires at least one predicate".into(),
         ));
     }
 
     let mut predicates = Vec::with_capacity(leaves.len());
-    for leaf in leaves {
-        predicates.push(split_search_predicate(binding, &leaf)?);
+    for leaf in &leaves {
+        predicates.push(split_search_predicate(binding, leaf)?);
     }
 
     let equality_count = predicates
@@ -669,17 +668,26 @@ fn extract_search_filter(
                 _ => unreachable!(),
             })
             .collect();
-        if arms.len() > 2 {
-            return Err(RouterError::InvalidArgument(
-                "SEARCH ... WHERE supports at most two equality conjuncts in this slice".into(),
-            ));
+        let mut seen = std::collections::HashSet::new();
+        for arm in &arms {
+            if !seen.insert(arm.property_name.clone()) {
+                return Err(RouterError::InvalidArgument(
+                    "SEARCH ... WHERE equality conjuncts must refer to distinct properties".into(),
+                ));
+            }
         }
-        if arms.len() == 2 && arms[0].property_name == arms[1].property_name {
-            return Err(RouterError::InvalidArgument(
-                "SEARCH ... WHERE equality conjuncts must refer to distinct properties".into(),
-            ));
+        if arms.len() > MAX_EQUALITY_INTERSECTION_ARMS {
+            return Err(RouterError::InvalidArgument(format!(
+                "SEARCH ... WHERE supports at most {MAX_EQUALITY_INTERSECTION_ARMS} equality conjuncts in this slice"
+            )));
         }
         Ok(SearchFilter::Equality(arms))
+    } else if leaves.len() > 3 || leaves.len() != predicates.len() {
+        // Mixed shapes are strictly limited to one to three leaves.
+        Err(RouterError::InvalidArgument(
+            "SEARCH ... WHERE supports one predicate, two equality/range conjuncts, or exactly one equality plus one or two range conjuncts in this slice"
+                .into(),
+        ))
     } else if range_count == predicates.len() {
         let ranges: Vec<SearchFilterRange> = predicates
             .into_iter()
@@ -1456,16 +1464,16 @@ async fn resolve_filtered_equality_candidates(
             let (property_id, encoded) = resolved_arms.into_iter().next().unwrap();
             collect_bounded_candidates_equal(graph_id, store, label_id, property_id, encoded).await
         }
-        2 => {
+        n if (2..=MAX_EQUALITY_INTERSECTION_ARMS).contains(&n) => {
             let specs = resolved_arms
                 .into_iter()
                 .map(|(property_id, value)| IndexEqualSpec::vertex(property_id.raw(), value))
                 .collect();
             collect_bounded_candidates_intersection(graph_id, store, label_id, specs).await
         }
-        _ => Err(RouterError::InvalidArgument(
-            "SEARCH ... WHERE supports one or two equality conjuncts in this slice".into(),
-        )),
+        _ => Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE supports one to {MAX_EQUALITY_INTERSECTION_ARMS} equality conjuncts in this slice"
+        ))),
     }
 }
 
@@ -3585,6 +3593,60 @@ mod tests {
             err.to_string()
                 .contains("vector dispatch activation blocked"),
             "expected activation blocked, got {err}"
+        );
+    }
+
+    #[test]
+    fn extract_search_filter_accepts_eight_arm_conjunction() {
+        let mut arms: Vec<Expr> = (1..=8)
+            .map(|i| filter_eq_expr(format!("p{i}").as_str(), Value::Int64(i)))
+            .collect();
+        // Build a left-deep AND tree; order is preserved for client-side extraction.
+        let mut filter = arms.remove(0);
+        for arm in arms {
+            filter = filter_and_expr(filter, arm);
+        }
+        let f = extract_search_filter("d", &filter).expect("eight equality arms");
+        let extracted = match f {
+            SearchFilter::Equality(arms) => arms,
+            _ => panic!("expected equality filter"),
+        };
+        assert_eq!(extracted.len(), 8);
+        let props: Vec<_> = extracted.iter().map(|a| a.property_name.as_str()).collect();
+        assert!(props.contains(&"p1"));
+        assert!(props.contains(&"p8"));
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_nine_arm_conjunction() {
+        let mut arms: Vec<Expr> = (1..=9)
+            .map(|i| filter_eq_expr(format!("p{i}").as_str(), Value::Int64(i)))
+            .collect();
+        let mut filter = arms.remove(0);
+        for arm in arms {
+            filter = filter_and_expr(filter, arm);
+        }
+        let err = extract_search_filter("d", &filter).expect_err("nine arms must fail");
+        assert!(
+            err.to_string().contains("at most 8 equality conjuncts"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_duplicate_property_in_eight_arm_conjunction() {
+        let arms: Vec<Expr> = (1..=7)
+            .map(|i| filter_eq_expr(format!("p{i}").as_str(), Value::Int64(i)))
+            .chain(std::iter::once(filter_eq_expr("p3", Value::Int64(99))))
+            .collect();
+        let mut filter = arms[0].clone();
+        for arm in &arms[1..] {
+            filter = filter_and_expr(filter, arm.clone());
+        }
+        let err = extract_search_filter("d", &filter).expect_err("duplicate property must fail");
+        assert!(
+            err.to_string().contains("distinct properties"),
+            "unexpected error: {err}"
         );
     }
 

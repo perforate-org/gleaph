@@ -6,6 +6,16 @@ use std::fmt;
 /// Maximum encoded sortable index value key size (`V` in index capacity planning).
 pub const MAX_INDEX_VALUE_KEY_BYTES: usize = 4096;
 
+/// Maximum number of equality arms the bounded server-side intersection (`lookup_intersection_page`)
+/// will accept. Shared between Router candidate resolution and Property Index execution so both
+/// enforce the same provider-neutral execution bound for pure equality conjunctions.
+///
+/// `MAX_EQUALITY_INTERSECTION_ARMS` is the execution limit, not a GQL syntax limit. The planner is
+/// free to accept longer pure equality conjunctions; the Router lowers 1 arm to a single equality
+/// lookup and 2..=MAX_EQUALITY_INTERSECTION_ARMS arms to the bounded intersection. Requests that
+/// resolve to more arms are rejected with a provider-specific error before any index canister call.
+pub const MAX_EQUALITY_INTERSECTION_ARMS: usize = 8;
+
 /// Returned when encoded index value key bytes exceed [`MAX_INDEX_VALUE_KEY_BYTES`].
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub struct IndexValueKeyTooLarge {
@@ -212,6 +222,14 @@ pub struct LookupEqualPageRequest {
 /// arms server-side, returning at most `limit` surviving hits plus a [`PropertyPostingCursor`] over
 /// the walk arm. This keeps the per-message heap bounded (no per-arm set is materialized) and folds
 /// the walk + sieve into a single inter-canister call per page (vs one call per arm per page).
+///
+/// Execution contract:
+/// - `specs` must contain between 2 and [`MAX_EQUALITY_INTERSECTION_ARMS`] arms inclusive; fewer
+///   arms produce an empty terminal page.
+/// - All specs must target [`IndexSubject::VertexProperty`]; edge or mixed specs produce an empty
+///   terminal page (the materializing [`IndexIntersectionRequest`] handles those shapes).
+/// - The walk arm is selected deterministically by canonical `(property_id, value)` order, so
+///   repeated requests and different callers converge to the same walk plan and resume cursor.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct LookupIntersectionPageRequest {
     pub specs: Vec<IndexEqualSpec>,

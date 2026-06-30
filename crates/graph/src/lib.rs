@@ -208,6 +208,14 @@ async fn e2e_insert_vertex_with_label_and_two_properties(
 
 #[cfg(feature = "pocket-ic-e2e")]
 #[update(guard = "guard_control_plane_admin")]
+async fn e2e_set_vertex_property(
+    args: canister::types::E2eSetVertexPropertyArgs,
+) -> Result<(), String> {
+    canister::handlers::e2e_set_vertex_property(args).await
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
 async fn e2e_insert_directed_edge_with_label(
     args: canister::types::E2eInsertDirectedEdgeWithLabelArgs,
 ) -> Result<(), String> {

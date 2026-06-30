@@ -16,6 +16,9 @@ pub enum IndexError {
     ShardOutOfRangeForGroup,
     IndexValueKeyTooLarge,
     InvalidRangeBounds,
+    /// An equality intersection request exceeded the supported number of arms. Callers must enforce
+    /// the provider-neutral limit before calling `lookup_intersection_page`.
+    TooManyEqualityIntersectionArms,
 }
 
 impl std::fmt::Display for IndexError {
@@ -56,6 +59,11 @@ impl std::fmt::Display for IndexError {
             Self::InvalidRangeBounds => {
                 write!(f, "range bounds are empty, inverted, or otherwise invalid")
             }
+            Self::TooManyEqualityIntersectionArms => write!(
+                f,
+                "equality intersection request has too many arms (max {})",
+                gleaph_graph_kernel::index::MAX_EQUALITY_INTERSECTION_ARMS
+            ),
         }
     }
 }

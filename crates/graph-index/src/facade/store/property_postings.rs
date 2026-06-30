@@ -13,8 +13,8 @@ use candid::Principal;
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
     IndexSubject, LookupEqualPageRequest, LookupIntersectionPageRequest,
-    LookupRangeIntersectionPageRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
-    PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
+    LookupRangeIntersectionPageRequest, LookupRangePageRequest, MAX_EQUALITY_INTERSECTION_ARMS,
+    PostingHit, PostingHitPage, PostingRangeRequest, PropertyPostingCursor, ValuePostingCount,
 };
 use nohash_hasher::IntSet;
 use std::ops::Bound;
@@ -148,22 +148,40 @@ impl IndexStore {
     /// survivors plus the walk-arm cursor — no per-arm set is ever materialized, and the walk + sieve
     /// fold into a single message per page instead of one message per arm per page.
     ///
-    /// Returns an empty terminal page when given fewer than two specs or any non-vertex spec; the
-    /// router only routes all-vertex requests here and falls back to the materializing
-    /// [`Self::lookup_intersection`] otherwise.
+    /// Execution contract:
+    /// - Requires between 2 and [`MAX_EQUALITY_INTERSECTION_ARMS`] inclusive specs, all targeting
+    ///   [`IndexSubject::VertexProperty`]. Requests with fewer than two specs return an empty terminal
+    ///   page for backward compatibility with callers that branch on arm count. Requests with more than
+    ///   [`MAX_EQUALITY_INTERSECTION_ARMS`] specs return [`IndexError::TooManyEqualityIntersectionArms`].
+    ///   Requests containing a non-vertex spec return an empty terminal page (callers must fall back to
+    ///   the materializing [`IndexIntersectionRequest`]).
+    /// - The walk arm is selected deterministically by canonical `(property_id, value)` ordering, so
+    ///   repeated calls with the same spec set use the same walk plan and resume cursor.
     pub fn lookup_intersection_page(
         &self,
         req: &LookupIntersectionPageRequest,
     ) -> Result<PostingHitPage, IndexError> {
-        if req.specs.len() < 2
-            || !req
-                .specs
-                .iter()
-                .all(|spec| matches!(spec.subject, IndexSubject::VertexProperty))
+        if req.specs.len() < 2 {
+            return Ok(empty_posting_page());
+        }
+        if req.specs.len() > MAX_EQUALITY_INTERSECTION_ARMS {
+            return Err(IndexError::TooManyEqualityIntersectionArms);
+        }
+        if !req
+            .specs
+            .iter()
+            .all(|spec| matches!(spec.subject, IndexSubject::VertexProperty))
         {
             return Ok(empty_posting_page());
         }
-        let walk = &req.specs[0];
+        let mut sorted_specs = req.specs.clone();
+        sorted_specs.sort_by(|a, b| {
+            a.property_id
+                .cmp(&b.property_id)
+                .then_with(|| a.value.cmp(&b.value))
+        });
+        let walk = &sorted_specs[0];
+        let sieves = &sorted_specs[1..];
         let walk_page = self.lookup_equal_page(&LookupEqualPageRequest {
             property_id: walk.property_id,
             value: walk.value.clone(),
@@ -171,7 +189,7 @@ impl IndexStore {
             limit: req.limit,
         })?;
         let mut survivors = walk_page.hits;
-        for arm in &req.specs[1..] {
+        for arm in sieves {
             if survivors.is_empty() {
                 break;
             }

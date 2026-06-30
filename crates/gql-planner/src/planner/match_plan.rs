@@ -50,11 +50,12 @@ pub(super) fn detect_conditional_candidates(
     candidates
 }
 
-/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-12.
+/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-13.
 ///
 /// Accepts:
-/// - exactly one same-binding equality comparison between a property and a literal/parameter,
-/// - exactly two AND-connected same-binding equality comparisons on distinct properties,
+/// - any number of AND-connected same-binding equality comparisons on distinct properties
+///   (pure equality conjunctions are provider-neutral; the Router / Property Index enforces
+///   the execution arm limit later),
 /// - exactly one same-binding range comparison (`<`, `<=`, `>`, `>=`) between a property and a
 ///   literal/parameter,
 /// - exactly two same-binding range comparisons on the same property where one arm is a lower
@@ -66,7 +67,10 @@ pub(super) fn detect_conditional_candidates(
 ///   equality property differs from the range property.
 ///
 /// The planner is provider-neutral: it checks expression shape only. Label, index coverage, and
-/// numeric-domain verification are validated later by the Router.
+/// numeric-domain verification are validated later by the Router. The execution bound on the
+/// number of equality arms (e.g. the eight-arm limit for bounded server-side intersection) is
+/// intentionally not enforced here; the Router / Property Index applies that provider-specific
+/// limit.
 fn validate_search_filter(
     filter: &gleaph_gql::ast::Expr,
     binding: &str,
@@ -75,11 +79,6 @@ fn validate_search_filter(
     if predicates.is_empty() {
         return Err(PlannerError::UnsupportedPattern(
             "SEARCH ... WHERE filter is empty".into(),
-        ));
-    }
-    if predicates.len() > 3 {
-        return Err(PlannerError::UnsupportedPattern(
-            "SEARCH ... WHERE supports at most three predicates in this slice".into(),
         ));
     }
 
@@ -93,11 +92,9 @@ fn validate_search_filter(
         .count();
 
     if equality_count == predicates.len() {
-        if predicates.len() > 2 {
-            return Err(PlannerError::UnsupportedPattern(
-                "SEARCH ... WHERE supports at most two equality predicates in this slice".into(),
-            ));
-        }
+        // Slice 13: provider-neutral pure equality conjunction on distinct properties.
+        // The execution arm limit (e.g. eight arms) is enforced later by the Router / Property Index;
+        // the planner only validates expression shape.
         let mut seen = std::collections::HashSet::new();
         for p in &predicates {
             if let SearchFilterPredicate::Equality { property, .. } = p
@@ -112,8 +109,12 @@ fn validate_search_filter(
     } else if range_count == predicates.len() {
         if predicates.len() == 1 {
             Ok(())
-        } else {
+        } else if predicates.len() == 2 {
             validate_two_sided_range(&predicates)
+        } else {
+            Err(PlannerError::UnsupportedPattern(
+                "SEARCH ... WHERE supports at most two range predicates in this slice".into(),
+            ))
         }
     } else if equality_count == 1 && range_count == 1 && predicates.len() == 2 {
         // Slice 11: one equality + one range on distinct properties.
@@ -299,10 +300,12 @@ enum SearchFilterPredicate {
     },
 }
 
-/// Flatten a SEARCH ... WHERE expression into one, two, or three normalized predicates.
-/// Rejects every shape other than a single accepted comparison or an AND of one to three
-/// accepted comparisons on the same binding, where the three-leaf shape is exactly one
-/// equality plus one or two range arms on a distinct property.
+/// Flatten a SEARCH ... WHERE expression into normalized predicates.
+/// Rejects every shape other than a single accepted comparison or an AND of accepted comparisons
+/// on the same binding, where the non-pure-equality shapes are limited to one to three leaves:
+/// one or two range arms, or exactly one equality plus one or two range arms on a distinct
+/// property. Pure equality conjunctions may contain any number of leaves as long as each compares
+/// a distinct property of the searched binding to a literal or parameter.
 fn flatten_search_filter(
     filter: &gleaph_gql::ast::Expr,
     binding: &str,
@@ -741,7 +744,66 @@ mod tests {
     }
 
     #[test]
-    fn validate_search_filter_rejects_three_arm_conjunction() {
+    fn validate_search_filter_accepts_eight_arm_conjunction() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "p1"), lit(Value::Int64(1)))),
+            Box::new(Expr::new(ExprKind::And(
+                Box::new(cmp(prop("d", "p2"), lit(Value::Int64(2)))),
+                Box::new(Expr::new(ExprKind::And(
+                    Box::new(cmp(prop("d", "p3"), lit(Value::Int64(3)))),
+                    Box::new(Expr::new(ExprKind::And(
+                        Box::new(cmp(prop("d", "p4"), lit(Value::Int64(4)))),
+                        Box::new(Expr::new(ExprKind::And(
+                            Box::new(cmp(prop("d", "p5"), lit(Value::Int64(5)))),
+                            Box::new(Expr::new(ExprKind::And(
+                                Box::new(cmp(prop("d", "p6"), lit(Value::Int64(6)))),
+                                Box::new(Expr::new(ExprKind::And(
+                                    Box::new(cmp(prop("d", "p7"), lit(Value::Int64(7)))),
+                                    Box::new(cmp(prop("d", "p8"), lit(Value::Int64(8)))),
+                                ))),
+                            ))),
+                        ))),
+                    ))),
+                ))),
+            ))),
+        ));
+        validate_search_filter(&filter, "d")
+            .expect("eight equality arms on distinct properties should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_nine_arm_conjunction() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "p1"), lit(Value::Int64(1)))),
+            Box::new(Expr::new(ExprKind::And(
+                Box::new(cmp(prop("d", "p2"), lit(Value::Int64(2)))),
+                Box::new(Expr::new(ExprKind::And(
+                    Box::new(cmp(prop("d", "p3"), lit(Value::Int64(3)))),
+                    Box::new(Expr::new(ExprKind::And(
+                        Box::new(cmp(prop("d", "p4"), lit(Value::Int64(4)))),
+                        Box::new(Expr::new(ExprKind::And(
+                            Box::new(cmp(prop("d", "p5"), lit(Value::Int64(5)))),
+                            Box::new(Expr::new(ExprKind::And(
+                                Box::new(cmp(prop("d", "p6"), lit(Value::Int64(6)))),
+                                Box::new(Expr::new(ExprKind::And(
+                                    Box::new(cmp(prop("d", "p7"), lit(Value::Int64(7)))),
+                                    Box::new(Expr::new(ExprKind::And(
+                                        Box::new(cmp(prop("d", "p8"), lit(Value::Int64(8)))),
+                                        Box::new(cmp(prop("d", "p9"), lit(Value::Int64(9)))),
+                                    ))),
+                                ))),
+                            ))),
+                        ))),
+                    ))),
+                ))),
+            ))),
+        ));
+        validate_search_filter(&filter, "d")
+            .expect("nine equality arms on distinct properties should be accepted by the provider-neutral planner");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_three_arm_conjunction() {
         let filter = Expr::new(ExprKind::And(
             Box::new(cmp(prop("d", "a"), lit(Value::Int64(1)))),
             Box::new(Expr::new(ExprKind::And(
@@ -749,9 +811,8 @@ mod tests {
                 Box::new(cmp(prop("d", "c"), lit(Value::Int64(3)))),
             ))),
         ));
-        let err = validate_search_filter(&filter, "d")
-            .expect_err("three equality arms should be rejected");
-        assert!(err.to_string().contains("at most two equality predicates"));
+        validate_search_filter(&filter, "d")
+            .expect("three equality arms on distinct properties should be accepted");
     }
 
     #[test]
@@ -915,7 +976,7 @@ mod tests {
         let err = validate_search_filter(&filter, "d").expect_err("three range arms must fail");
         assert!(
             err.to_string()
-                .contains("two-sided range requires exactly two range predicates")
+                .contains("SEARCH ... WHERE supports at most two range predicates")
         );
     }
 
@@ -1076,7 +1137,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_search_filter_rejects_three_equalities() {
+    fn validate_search_filter_accepts_three_equalities() {
         let filter = Expr::new(ExprKind::And(
             Box::new(cmp(prop("d", "a"), lit(Value::Int64(1)))),
             Box::new(Expr::new(ExprKind::And(
@@ -1084,8 +1145,7 @@ mod tests {
                 Box::new(cmp(prop("d", "c"), lit(Value::Int64(3)))),
             ))),
         ));
-        let err = validate_search_filter(&filter, "d").expect_err("three equalities must fail");
-        assert!(err.to_string().contains("at most two equality predicates"));
+        validate_search_filter(&filter, "d").expect("three equalities should be accepted");
     }
 
     #[test]
@@ -1112,7 +1172,7 @@ mod tests {
         let err = validate_search_filter(&filter, "d").expect_err("three range arms must fail");
         assert!(
             err.to_string()
-                .contains("two-sided range requires exactly two range predicates")
+                .contains("SEARCH ... WHERE supports at most two range predicates")
         );
     }
 

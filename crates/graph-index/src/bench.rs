@@ -62,11 +62,19 @@ fn bench_layout_index_posting_insert_64() -> canbench_rs::BenchResult {
     })
 }
 
-/// Number of vertices in the walk (first) intersection arm. The second arm holds the even ids, so
-/// the intersection result is `INTERSECTION_ARM_LEN / 2`.
-const INTERSECTION_ARM_LEN: u32 = 4096;
+/// Fixed-shape dense arm-count comparison. The walk arm and every sieve arm contain the same
+/// 1024-vertex set (`vid % 8` in `{0, 1}`) within a 4096-id range, so the intersection is also
+/// exactly those 1024 vertices. Each arm therefore has 1024 postings, the walk page is dense
+/// (span 4096, length 1024, threshold 4096), and the per-sieve merge-join is dense. Only the
+/// number of arms varies across the 2/4/8 series.
+const INTERSECTION_WALK_RANGE: u32 = 4096;
+const INTERSECTION_WALK_CARDINALITY: u32 = 1024;
 const INTERSECTION_WALK_PROPERTY: u32 = 1;
 const INTERSECTION_SIEVE_PROPERTY: u32 = 2;
+
+fn in_walk_set(vid: u32) -> bool {
+    vid.is_multiple_of(8) || vid % 8 == 1
+}
 
 fn index_key(text: &str) -> Vec<u8> {
     value_to_index_key_bytes(&Value::Text(text.to_string()))
@@ -74,45 +82,68 @@ fn index_key(text: &str) -> Vec<u8> {
         .expect("indexable")
 }
 
-/// Two overlapping equality arms on one shard: walk arm = `[0, INTERSECTION_ARM_LEN)`, sieve arm =
-/// even ids in the same range. Mirrors the all-vertex intersection inputs.
-fn setup_two_arm_store() -> (IndexStore, Vec<u8>, Vec<u8>) {
+fn setup_n_arm_store(arm_count: u32) -> (IndexStore, Vec<Vec<u8>>) {
+    assert!(
+        (2..=8).contains(&arm_count),
+        "benchmarked arm count must be within the supported 2..=8 range"
+    );
     let (store, _router, owner) = setup_index_store();
-    let walk_value = index_key("walk");
-    let sieve_value = index_key("sieve");
-    for vid in 0..INTERSECTION_ARM_LEN {
-        store
-            .posting_insert(
-                owner,
-                ShardId::new(0),
-                INTERSECTION_WALK_PROPERTY,
-                walk_value.clone(),
-                vid,
-            )
-            .expect("walk arm insert");
-        if vid % 2 == 0 {
+    let values: Vec<Vec<u8>> = (0..arm_count)
+        .map(|i| index_key(&format!("arm_{i}")))
+        .collect();
+
+    // Shared set of 1024 vertices that every arm contains. The intersection is exactly this set.
+    let shared_set: std::collections::HashSet<u32> = (0..INTERSECTION_WALK_RANGE)
+        .filter(|v| in_walk_set(*v))
+        .collect();
+    assert_eq!(
+        shared_set.len(),
+        INTERSECTION_WALK_CARDINALITY as usize,
+        "shared set size must be 1024"
+    );
+
+    // Every arm (walk + sieves) contains the same shared set.
+    for (arm, value) in values.iter().enumerate() {
+        let property_id = INTERSECTION_WALK_PROPERTY + arm as u32;
+        for vid in &shared_set {
             store
-                .posting_insert(
-                    owner,
-                    ShardId::new(0),
-                    INTERSECTION_SIEVE_PROPERTY,
-                    sieve_value.clone(),
-                    vid,
-                )
-                .expect("sieve arm insert");
+                .posting_insert(owner, ShardId::new(0), property_id, value.clone(), *vid)
+                .expect("arm insert");
         }
     }
-    (store, walk_value, sieve_value)
-}
 
+    // Sanity check: `lookup_intersection_page` over all arms returns exactly the shared set.
+    let sanity_req = LookupIntersectionPageRequest {
+        specs: (0..arm_count)
+            .map(|i| {
+                IndexEqualSpec::vertex(INTERSECTION_WALK_PROPERTY + i, values[i as usize].clone())
+            })
+            .collect(),
+        after: None,
+        limit: INTERSECTION_WALK_RANGE,
+    };
+    let sanity = store
+        .lookup_intersection_page(&sanity_req)
+        .expect("dense fixture sanity check");
+    let mut sanity_ids: Vec<u32> = sanity.hits.iter().map(|h| h.vertex_id).collect();
+    sanity_ids.sort_unstable();
+    let mut expected_ids: Vec<u32> = shared_set.iter().copied().collect();
+    expected_ids.sort_unstable();
+    assert_eq!(
+        sanity_ids, expected_ids,
+        "dense fixture intersection must equal the fixed shared set"
+    );
+
+    (store, values)
+}
 /// Server-side materializing intersection (one in-heap set per arm) over two vertex arms.
 #[bench(raw)]
 fn bench_lookup_intersection_two_arms() -> canbench_rs::BenchResult {
-    let (store, walk_value, sieve_value) = setup_two_arm_store();
+    let (store, values) = setup_n_arm_store(2);
     let req = IndexIntersectionRequest {
         specs: vec![
-            IndexEqualSpec::vertex(INTERSECTION_WALK_PROPERTY, walk_value),
-            IndexEqualSpec::vertex(INTERSECTION_SIEVE_PROPERTY, sieve_value),
+            IndexEqualSpec::vertex(INTERSECTION_WALK_PROPERTY, values[0].clone()),
+            IndexEqualSpec::vertex(INTERSECTION_SIEVE_PROPERTY, values[1].clone()),
         ],
     };
     canbench_rs::bench_fn(|| {
@@ -128,12 +159,12 @@ fn bench_lookup_intersection_two_arms() -> canbench_rs::BenchResult {
 /// loop over instead of collecting a full bucket.
 #[bench(raw)]
 fn bench_lookup_equal_page_walk_arm() -> canbench_rs::BenchResult {
-    let (store, walk_value, _sieve_value) = setup_two_arm_store();
+    let (store, values) = setup_n_arm_store(2);
     let req = LookupEqualPageRequest {
         property_id: INTERSECTION_WALK_PROPERTY,
-        value: walk_value,
+        value: values[0].clone(),
         after: None,
-        limit: INTERSECTION_ARM_LEN,
+        limit: INTERSECTION_WALK_RANGE,
     };
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lookup_equal_page_walk_arm");
@@ -144,12 +175,15 @@ fn bench_lookup_equal_page_walk_arm() -> canbench_rs::BenchResult {
     })
 }
 
-/// The per-page `contains` sieve applied to one full walk page against the second arm — the work
-/// the streaming intersection does per page in place of materializing the sieve arm.
+/// The per-page dense merge-join sieve applied to one full 1024-hit walk page against the second
+/// arm — the work the streaming intersection does per page in place of materializing the sieve arm.
+/// This uses the same `in_walk_set` 1024 hits as the paged intersection benchmarks so it is directly
+/// comparable to a single sieve arm in the dense series.
 #[bench(raw)]
 fn bench_filter_hits_by_equal_page() -> canbench_rs::BenchResult {
-    let (store, _walk_value, sieve_value) = setup_two_arm_store();
-    let hits: Vec<PostingHit> = (0..INTERSECTION_ARM_LEN)
+    let (store, values) = setup_n_arm_store(2);
+    let hits: Vec<PostingHit> = (0..INTERSECTION_WALK_RANGE)
+        .filter(|v| in_walk_set(*v))
         .map(|vid| PostingHit {
             shard_id: ShardId::new(0),
             vertex_id: vid,
@@ -158,28 +192,30 @@ fn bench_filter_hits_by_equal_page() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("filter_hits_by_equal_page");
         let survivors = store
-            .filter_hits_by_equal(INTERSECTION_SIEVE_PROPERTY, black_box(&sieve_value), hits)
+            .filter_hits_by_equal(
+                INTERSECTION_SIEVE_PROPERTY,
+                black_box(&values[1]),
+                hits.clone(),
+            )
             .expect("filter_hits_by_equal");
         black_box(survivors);
     })
 }
 
-/// One server-side `lookup_intersection_page` call (walk one full page + merge-join sieve in-heap) —
-/// the single inter-canister message the streaming consumers now loop over per page, replacing the
-/// previous `lookup_equal_page` + N `filter_hits_by_equal` round trips.
+/// One server-side `lookup_intersection_page` call with two arms.
 #[bench(raw)]
-fn bench_lookup_intersection_page() -> canbench_rs::BenchResult {
-    let (store, walk_value, sieve_value) = setup_two_arm_store();
+fn bench_lookup_intersection_page_two_arms() -> canbench_rs::BenchResult {
+    let (store, values) = setup_n_arm_store(2);
     let req = LookupIntersectionPageRequest {
         specs: vec![
-            IndexEqualSpec::vertex(INTERSECTION_WALK_PROPERTY, walk_value),
-            IndexEqualSpec::vertex(INTERSECTION_SIEVE_PROPERTY, sieve_value),
+            IndexEqualSpec::vertex(INTERSECTION_WALK_PROPERTY, values[0].clone()),
+            IndexEqualSpec::vertex(INTERSECTION_SIEVE_PROPERTY, values[1].clone()),
         ],
         after: None,
-        limit: INTERSECTION_ARM_LEN,
+        limit: INTERSECTION_WALK_RANGE,
     };
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("lookup_intersection_page");
+        let _scope = canbench_rs::bench_scope("lookup_intersection_page_two_arms");
         let page = store
             .lookup_intersection_page(black_box(&req))
             .expect("lookup_intersection_page");
@@ -187,7 +223,133 @@ fn bench_lookup_intersection_page() -> canbench_rs::BenchResult {
     })
 }
 
-const RANGE_BENCH_PROPERTY: u32 = 3;
+/// One server-side `lookup_intersection_page` call with four dense arms.
+#[bench(raw)]
+fn bench_lookup_intersection_page_four_arms() -> canbench_rs::BenchResult {
+    let (store, values) = setup_n_arm_store(4);
+    let req = LookupIntersectionPageRequest {
+        specs: (0..4)
+            .map(|i| {
+                IndexEqualSpec::vertex(INTERSECTION_WALK_PROPERTY + i, values[i as usize].clone())
+            })
+            .collect(),
+        after: None,
+        limit: INTERSECTION_WALK_RANGE,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_intersection_page_four_arms");
+        let page = store
+            .lookup_intersection_page(black_box(&req))
+            .expect("lookup_intersection_page");
+        black_box(page);
+    })
+}
+
+/// One server-side `lookup_intersection_page` call with eight dense arms.
+#[bench(raw)]
+fn bench_lookup_intersection_page_eight_arms() -> canbench_rs::BenchResult {
+    let (store, values) = setup_n_arm_store(8);
+    let req = LookupIntersectionPageRequest {
+        specs: (0..8)
+            .map(|i| {
+                IndexEqualSpec::vertex(INTERSECTION_WALK_PROPERTY + i, values[i as usize].clone())
+            })
+            .collect(),
+        after: None,
+        limit: INTERSECTION_WALK_RANGE,
+    };
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_intersection_page_eight_arms");
+        let page = store
+            .lookup_intersection_page(black_box(&req))
+            .expect("lookup_intersection_page");
+        black_box(page);
+    })
+}
+
+/// Sparse 8-way intersection: only one vertex survives across all arms and the walk-page hits are
+/// scattered across the full index space, forcing the per-hit point-lookup path for every sieve
+/// arm.
+#[bench(raw)]
+fn bench_lookup_intersection_page_eight_arms_scattered() -> canbench_rs::BenchResult {
+    let (store, _router, owner) = setup_index_store();
+    let arm_count = 8u32;
+    let values: Vec<Vec<u8>> = (0..arm_count)
+        .map(|i| index_key(&format!("arm_{i}")))
+        .collect();
+
+    // Walk arm: sparse, widely scattered hits so that `equal_sieve_dense_threshold_met` fails.
+    // Choose vertices roughly 256 apart within [0, 2^24) to keep the walk page below the threshold.
+    let walk_hits: Vec<u32> = (0..INTERSECTION_WALK_RANGE).map(|i| i * 256).collect();
+    for vid in &walk_hits {
+        store
+            .posting_insert(
+                owner,
+                ShardId::new(0),
+                INTERSECTION_WALK_PROPERTY,
+                values[0].clone(),
+                *vid,
+            )
+            .expect("scattered walk insert");
+    }
+
+    // Sieve arms: only the first walk vertex survives in every arm. All other walk hits are unique
+    // to a single sieve arm (and never to the walk arm), so the intersection yields one hit.
+    for (arm, value) in values.iter().enumerate().skip(1) {
+        let property_id = INTERSECTION_WALK_PROPERTY + arm as u32;
+        // Shared survivor.
+        store
+            .posting_insert(
+                owner,
+                ShardId::new(0),
+                property_id,
+                value.clone(),
+                walk_hits[0],
+            )
+            .expect("scattered survivor insert");
+        // Private hits: one arm owns every other walk hit, so most lookups miss.
+        for (i, vid) in walk_hits.iter().enumerate().skip(1) {
+            if (i - 1) % (arm_count as usize - 1) == arm - 1 {
+                store
+                    .posting_insert(owner, ShardId::new(0), property_id, value.clone(), *vid)
+                    .expect("scattered private insert");
+            }
+        }
+    }
+
+    let req = LookupIntersectionPageRequest {
+        specs: (0..8)
+            .map(|i| {
+                IndexEqualSpec::vertex(INTERSECTION_WALK_PROPERTY + i, values[i as usize].clone())
+            })
+            .collect(),
+        after: None,
+        limit: INTERSECTION_WALK_RANGE,
+    };
+
+    // Sanity-check outside the measured closure: exactly one vertex survives all eight arms.
+    let sanity = store
+        .lookup_intersection_page(&req)
+        .expect("scattered sanity check");
+    assert_eq!(
+        sanity.hits,
+        vec![PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: walk_hits[0],
+        }],
+        "scattered fixture must leave exactly the first walk hit as the survivor"
+    );
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("lookup_intersection_page_eight_arms_scattered");
+        let page = store
+            .lookup_intersection_page(black_box(&req))
+            .expect("lookup_intersection_page");
+        black_box(page);
+    })
+}
+
+const RANGE_BENCH_PROPERTY: u32 = 20;
 const RANGE_BENCH_COUNT: u32 = 4096;
 
 fn setup_numeric_range_store() -> (IndexStore, Principal) {

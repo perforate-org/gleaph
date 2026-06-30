@@ -7,8 +7,8 @@ use candid::Principal;
 use gleaph_graph_kernel::index::{
     EdgePostingHit, EdgePostingHitPage, IndexEqualSpec, IndexIntersectionRequest,
     IndexIntersectionResult, IndexSubject, LookupEdgeEqualPageRequest, LookupEqualPageRequest,
-    LookupIntersectionPageRequest, LookupRangePageRequest, PostingHit, PostingHitPage,
-    PostingRangeRequest,
+    LookupIntersectionPageRequest, LookupRangePageRequest, MAX_EQUALITY_INTERSECTION_ARMS,
+    PostingHit, PostingHitPage, PostingRangeRequest,
 };
 use ic_cdk::call::Call;
 use ic_cdk::call::CallFailed;
@@ -39,7 +39,7 @@ fn ic_candid_decode_err(op: &'static str) -> PlanQueryError {
 
 /// `true` when every arm targets a vertex property (the planner's vertex-only `IndexIntersection`).
 fn all_vertex_specs(specs: &[IndexEqualSpec]) -> bool {
-    specs.len() >= 2
+    (2..=MAX_EQUALITY_INTERSECTION_ARMS).contains(&specs.len())
         && specs
             .iter()
             .all(|s| matches!(s.subject, IndexSubject::VertexProperty))
