@@ -1068,6 +1068,27 @@ fn lookup_intersection_page_empty_for_fewer_than_two_specs() {
 }
 
 #[test]
+fn lookup_intersection_page_rejects_non_vertex_spec() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard_principal = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard_principal);
+
+    let specs: Vec<IndexEqualSpec> = vec![
+        IndexEqualSpec::vertex(1, b"v".to_vec()),
+        IndexEqualSpec::edge(2, b"v".to_vec(), Some(1)),
+    ];
+    let err = store
+        .lookup_intersection_page(&LookupIntersectionPageRequest {
+            specs,
+            after: None,
+            limit: 16,
+        })
+        .expect_err("mixed vertex+edge spec must fail");
+    assert_eq!(err, IndexError::InvalidIntersectionSubject);
+}
+
+#[test]
 fn lookup_intersection_page_deterministic_walk_arm_for_eight_specs() {
     let store = IndexStore::new();
     let router = init_test_store(&store);
@@ -2305,7 +2326,7 @@ fn lookup_range_intersection_page_filters_range_walk_by_equality_arm() {
         range_property_id: range_property,
         low,
         high,
-        equal_spec: IndexEqualSpec::vertex(eq_property, category_doc),
+        equal_specs: vec![IndexEqualSpec::vertex(eq_property, category_doc)],
         after: None,
         limit: 100,
     };
@@ -2316,6 +2337,114 @@ fn lookup_range_intersection_page_filters_range_walk_by_equality_arm() {
     vids.sort_unstable();
     assert_eq!(vids, vec![3]);
     assert!(page.done, "single-page range should be terminal");
+}
+
+#[test]
+fn lookup_range_intersection_page_filters_range_walk_by_multiple_equality_arms() {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    let range_property = 10u32;
+    let eq_category = 11u32;
+    let eq_tenant = 12u32;
+    let eq_org = 13u32;
+    let category_doc = index_key(Value::Text("doc".into()));
+    let tenant_a = index_key(Value::Text("tenant_a".into()));
+    let org_x = index_key(Value::Text("org_x".into()));
+
+    // price >= 3 => vids 3,4,5,6; only 4 satisfies all three equality arms.
+    for vid in [1u32, 2u32, 3u32, 4u32, 5u32, 6u32] {
+        let price = index_key(Value::Int64(i64::from(vid)));
+        store
+            .posting_insert(shard, ShardId::new(0), range_property, price, vid)
+            .expect("price insert");
+    }
+    for vid in [1u32, 4u32] {
+        store
+            .posting_insert(
+                shard,
+                ShardId::new(0),
+                eq_category,
+                category_doc.clone(),
+                vid,
+            )
+            .expect("category insert");
+    }
+    for vid in [3u32, 4u32] {
+        store
+            .posting_insert(shard, ShardId::new(0), eq_tenant, tenant_a.clone(), vid)
+            .expect("tenant insert");
+    }
+    for vid in [4u32, 5u32] {
+        store
+            .posting_insert(shard, ShardId::new(0), eq_org, org_x.clone(), vid)
+            .expect("org insert");
+    }
+
+    let (low, high) =
+        gleaph_gql::numeric_range_bounds(&Value::Int64(3), gleaph_gql::ast::CmpOp::Ge)
+            .expect("range bounds");
+
+    // Verify canonical sieve order: arms are sorted by (property_id, value), not request order.
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: range_property,
+        low,
+        high,
+        equal_specs: vec![
+            IndexEqualSpec::vertex(eq_org, org_x.clone()),
+            IndexEqualSpec::vertex(eq_tenant, tenant_a.clone()),
+            IndexEqualSpec::vertex(eq_category, category_doc.clone()),
+        ],
+        after: None,
+        limit: 100,
+    };
+    let page = store
+        .lookup_range_intersection_page(&req)
+        .expect("lookup_range_intersection_page multi");
+    assert_eq!(page.hits.len(), 1);
+    assert_eq!(page.hits[0].vertex_id, 4);
+    assert!(page.done);
+}
+
+#[test]
+fn lookup_range_intersection_page_rejects_zero_equal_specs() {
+    let store = IndexStore::new();
+    init_test_store(&store);
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: 1,
+        low: vec![0u8],
+        high: vec![1u8],
+        equal_specs: vec![],
+        after: None,
+        limit: 10,
+    };
+    assert_eq!(
+        store.lookup_range_intersection_page(&req),
+        Err(IndexError::MissingEqualityIntersectionArms)
+    );
+}
+
+#[test]
+fn lookup_range_intersection_page_rejects_nine_equal_specs() {
+    let store = IndexStore::new();
+    init_test_store(&store);
+    let specs: Vec<IndexEqualSpec> = (0..9)
+        .map(|i| IndexEqualSpec::vertex(i as u32, vec![i as u8]))
+        .collect();
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: 1,
+        low: vec![0u8],
+        high: vec![1u8],
+        equal_specs: specs,
+        after: None,
+        limit: 10,
+    };
+    assert_eq!(
+        store.lookup_range_intersection_page(&req),
+        Err(IndexError::TooManyEqualityIntersectionArms)
+    );
 }
 
 #[test]
@@ -2349,7 +2478,7 @@ fn lookup_range_intersection_page_preserves_cursor_on_empty_survivor_page() {
         range_property_id: range_property,
         low: low.clone(),
         high: high.clone(),
-        equal_spec: IndexEqualSpec::vertex(eq_property, category_doc.clone()),
+        equal_specs: vec![IndexEqualSpec::vertex(eq_property, category_doc.clone())],
         after: None,
         limit: 2,
     };
@@ -2371,7 +2500,7 @@ fn lookup_range_intersection_page_preserves_cursor_on_empty_survivor_page() {
         range_property_id: range_property,
         low: low.clone(),
         high: high.clone(),
-        equal_spec: IndexEqualSpec::vertex(eq_property, category_doc),
+        equal_specs: vec![IndexEqualSpec::vertex(eq_property, category_doc)],
         after: Some(after),
         limit: 2,
     };
@@ -2381,6 +2510,102 @@ fn lookup_range_intersection_page_preserves_cursor_on_empty_survivor_page() {
     assert_eq!(second_page.hits.len(), 1);
     assert_eq!(second_page.hits[0].vertex_id, 3);
     assert!(second_page.done);
+}
+
+fn build_n_arm_range_intersection_store(
+    sieve_count: usize,
+    matched_vid: u32,
+) -> (IndexStore, Principal, u32, Vec<(u32, Vec<u8>)>) {
+    let store = IndexStore::new();
+    let router = init_test_store(&store);
+    let shard = Principal::from_slice(&[1]);
+    attach_shard_canister(&store, router, ShardId::new(0), shard);
+
+    let range_property = 100u32;
+    let mut eq_properties = Vec::with_capacity(sieve_count);
+
+    // price in [3, 8] => candidate vids 3..=7; only matched_vid gets all equality postings.
+    for vid in [1u32, 2u32, 3u32, 4u32, 5u32, 6u32, 7u32, 8u32] {
+        let price = index_key(Value::Int64(i64::from(vid)));
+        store
+            .posting_insert(shard, ShardId::new(0), range_property, price, vid)
+            .expect("price insert");
+    }
+
+    for i in 0..sieve_count {
+        let eq_property = 101u32 + i as u32;
+        let value = index_key(Value::Text(format!("arm_{i}")));
+        // Only the matched vertex (and a decoy below the range) gets the value for this arm;
+        // the rest of the in-range vids are missing it.
+        for vid in [matched_vid, 2u32] {
+            store
+                .posting_insert(shard, ShardId::new(0), eq_property, value.clone(), vid)
+                .expect("eq insert");
+        }
+        eq_properties.push((eq_property, value));
+    }
+
+    (store, shard, range_property, eq_properties)
+}
+
+#[test]
+fn lookup_range_intersection_page_filters_by_four_equality_arms() {
+    let (store, _shard, range_property, eq_properties) = build_n_arm_range_intersection_store(4, 5);
+
+    let (low, high) =
+        gleaph_gql::numeric_range_bounds(&Value::Int64(3), gleaph_gql::ast::CmpOp::Ge)
+            .expect("range bounds");
+
+    let specs: Vec<IndexEqualSpec> = eq_properties
+        .into_iter()
+        .map(|(property_id, value)| IndexEqualSpec::vertex(property_id, value))
+        .collect();
+    assert_eq!(specs.len(), 4);
+
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: range_property,
+        low,
+        high,
+        equal_specs: specs,
+        after: None,
+        limit: 100,
+    };
+    let page = store
+        .lookup_range_intersection_page(&req)
+        .expect("four-arm intersection");
+    assert_eq!(page.hits.len(), 1);
+    assert_eq!(page.hits[0].vertex_id, 5);
+    assert!(page.done);
+}
+
+#[test]
+fn lookup_range_intersection_page_filters_by_eight_equality_arms() {
+    let (store, _shard, range_property, eq_properties) = build_n_arm_range_intersection_store(8, 6);
+
+    let (low, high) =
+        gleaph_gql::numeric_range_bounds(&Value::Int64(3), gleaph_gql::ast::CmpOp::Ge)
+            .expect("range bounds");
+
+    let specs: Vec<IndexEqualSpec> = eq_properties
+        .into_iter()
+        .map(|(property_id, value)| IndexEqualSpec::vertex(property_id, value))
+        .collect();
+    assert_eq!(specs.len(), 8);
+
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: range_property,
+        low,
+        high,
+        equal_specs: specs,
+        after: None,
+        limit: 100,
+    };
+    let page = store
+        .lookup_range_intersection_page(&req)
+        .expect("eight-arm intersection");
+    assert_eq!(page.hits.len(), 1);
+    assert_eq!(page.hits[0].vertex_id, 6);
+    assert!(page.done);
 }
 
 #[test]
@@ -2397,15 +2622,14 @@ fn lookup_range_intersection_page_rejects_non_vertex_equal_spec() {
         range_property_id: 1,
         low,
         high,
-        equal_spec: IndexEqualSpec::edge(2, b"v".to_vec(), Some(1)),
+        equal_specs: vec![IndexEqualSpec::edge(2, b"v".to_vec(), Some(1))],
         after: None,
         limit: 10,
     };
-    let page = store
+    let err = store
         .lookup_range_intersection_page(&req)
-        .expect("non-vertex spec returns empty terminal page");
-    assert!(page.hits.is_empty());
-    assert!(page.done);
+        .expect_err("non-vertex spec must be rejected");
+    assert_eq!(err, IndexError::InvalidIntersectionSubject);
 }
 
 #[test]
@@ -2416,7 +2640,7 @@ fn lookup_range_intersection_page_rejects_malformed_bounds() {
         range_property_id: 1,
         low: vec![2u8],
         high: vec![1u8],
-        equal_spec: IndexEqualSpec::vertex(2, b"v".to_vec()),
+        equal_specs: vec![IndexEqualSpec::vertex(2, b"v".to_vec())],
         after: None,
         limit: 10,
     };
@@ -2437,7 +2661,7 @@ fn lookup_range_intersection_page_empty_range_returns_terminal_page() {
         range_property_id: 1,
         low,
         high,
-        equal_spec: IndexEqualSpec::vertex(2, b"v".to_vec()),
+        equal_specs: vec![IndexEqualSpec::vertex(2, b"v".to_vec())],
         after: None,
         limit: 10,
     };
@@ -2486,7 +2710,7 @@ fn lookup_range_intersection_page_uses_point_lookup_for_far_apart_hits() {
         range_property_id: range_property,
         low,
         high,
-        equal_spec: IndexEqualSpec::vertex(eq_property, category_doc),
+        equal_specs: vec![IndexEqualSpec::vertex(eq_property, category_doc)],
         after: None,
         limit: 10,
     };

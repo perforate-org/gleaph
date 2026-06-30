@@ -72,10 +72,10 @@ The Graph executor supports one top-level non-leading `PlanOp::Search` per plan 
 
 For a leading `NodeScan + Search` with a `WHERE` predicate (one equality, one to eight
 `AND`-connected same-binding equalities on distinct properties, one numeric range predicate,
-exactly two same-property range predicates forming one lower and one upper bound, exactly one
-equality plus one one-sided range predicate on distinct properties, or exactly one equality plus
-two same-property range predicates on a distinct property), the Router does
-not forward a vector request when the Property Index candidate set is empty. For a two-sided range
+exactly two same-property range predicates forming one lower and one upper bound, or one to eight
+equality predicates on distinct properties together with one one- or two-sided numeric range
+predicate on a distinct property), the Router does not forward a vector request when the Property
+Index candidate set is empty. For a two-sided range
 with an empty intersection (`low >= high`) the Router short-circuits before any Property Index or
 Vector Index call and dispatches the stripped tail plan with an empty `SeedBindingsWire` to every
 live shard, so a global aggregate over zero seed rows still produces one `count = 0` row. When the
@@ -84,16 +84,15 @@ hits; the normal leading-search hit-shard-only dispatch then applies.
 
 For a non-leading `PlanOp::Search` with a `WHERE` predicate (one equality, one to eight
 `AND`-connected same-binding equalities on distinct properties, one numeric range predicate,
-exactly two same-property range predicates forming one lower and one upper bound, exactly one
-equality plus one one-sided range predicate on distinct properties, or exactly one equality plus
-two same-property range predicates on a distinct property), the Router
-requires exactly one positive simple label proof for the searched binding from the top-level prefix,
+exactly two same-property range predicates forming one lower and one upper bound, or one to eight
+equality predicates on distinct properties together with one one- or two-sided numeric range
+predicate on a distinct property), the Router requires exactly one positive simple label proof for the searched binding from the top-level prefix,
 resolves every filter arm through the same bounded Property Index candidate collection
 (`lookup_equal_page` for one equality arm, `lookup_intersection_page` for two to eight equality
 arms, one `lookup_range_page` stream with the intersected finite half-open encoded interval for one
 or two range arms, or one `lookup_range_intersection_page` stream that walks the finite range and
-sieves each page by the equality arm for one equality plus one or two same-property range arms on a
-distinct property), and skips the vector canister when the candidate set is empty. For a two-sided range
+sieves each page by one to eight equality arms for one to eight equality arms plus one or two
+same-property range arms on a distinct property), and skips the vector canister when the candidate set is empty. For a two-sided range
 with an empty intersection (`low >= high`) the Router short-circuits before any Property Index or
 Vector Index call and dispatches the full plan with an explicit empty `ResolvedSearchWire` to every
 live shard, so the Graph executor still runs the prefix and any global aggregate returns one

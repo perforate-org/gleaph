@@ -153,8 +153,7 @@ impl IndexStore {
     ///   [`IndexSubject::VertexProperty`]. Requests with fewer than two specs return an empty terminal
     ///   page for backward compatibility with callers that branch on arm count. Requests with more than
     ///   [`MAX_EQUALITY_INTERSECTION_ARMS`] specs return [`IndexError::TooManyEqualityIntersectionArms`].
-    ///   Requests containing a non-vertex spec return an empty terminal page (callers must fall back to
-    ///   the materializing [`IndexIntersectionRequest`]).
+    ///   Requests containing a non-vertex spec return [`IndexError::InvalidIntersectionSubject`].
     /// - The walk arm is selected deterministically by canonical `(property_id, value)` ordering, so
     ///   repeated calls with the same spec set use the same walk plan and resume cursor.
     pub fn lookup_intersection_page(
@@ -172,7 +171,7 @@ impl IndexStore {
             .iter()
             .all(|spec| matches!(spec.subject, IndexSubject::VertexProperty))
         {
-            return Ok(empty_posting_page());
+            return Err(IndexError::InvalidIntersectionSubject);
         }
         let mut sorted_specs = req.specs.clone();
         sorted_specs.sort_by(|a, b| {
@@ -507,19 +506,43 @@ impl IndexStore {
         Ok(collect_vertex_posting_page(lower, upper, limit))
     }
 
-    /// Bounded range-walk plus one equality sieve: walk `range_property_id` over `[low, high)`
-    /// one page at a time and keep only hits that also have the equality `(equal_spec.property_id,
-    /// equal_spec.value)` posting. The returned `next`/`done` always describe the range walk, so an
-    /// empty survivor page is not terminal when the range walk has more pages.
+    /// Bounded range-walk plus equality sieves: walk `range_property_id` over `[low, high)`
+    /// one page at a time and keep only hits that also have every equality `(property_id, value)`
+    /// posting supplied in `equal_specs`. The returned `next`/`done` always describe the range
+    /// walk, so an empty survivor page is not terminal when the range walk has more pages.
+    ///
+    /// Execution contract:
+    /// - `equal_specs` must contain between 1 and [`MAX_EQUALITY_INTERSECTION_ARMS`] vertex specs
+    ///   inclusive. Zero specs is rejected with [`IndexError::MissingEqualityIntersectionArms`].
+    ///   More than [`MAX_EQUALITY_INTERSECTION_ARMS`] specs return
+    ///   [`IndexError::TooManyEqualityIntersectionArms`].
+    /// - All specs must target [`IndexSubject::VertexProperty`]. Edge or mixed specs return
+    ///   [`IndexError::InvalidIntersectionSubject`].
+    /// - The sieve arms are applied in canonical `(property_id, value)` order for deterministic
+    ///   paging; repeated requests with the same spec set converge to the same walk plan and resume
+    ///   cursor.
     pub fn lookup_range_intersection_page(
         &self,
         req: &LookupRangeIntersectionPageRequest,
     ) -> Result<PostingHitPage, IndexError> {
-        let equal_spec = &req.equal_spec;
-        if !matches!(equal_spec.subject, IndexSubject::VertexProperty) {
-            return Ok(empty_posting_page());
+        if req.equal_specs.is_empty() {
+            return Err(IndexError::MissingEqualityIntersectionArms);
         }
-        ensure_index_value_key(&equal_spec.value)?;
+        if req.equal_specs.len() > MAX_EQUALITY_INTERSECTION_ARMS {
+            return Err(IndexError::TooManyEqualityIntersectionArms);
+        }
+        let mut equal_specs = req.equal_specs.clone();
+        equal_specs.sort_by(|a, b| {
+            a.property_id
+                .cmp(&b.property_id)
+                .then_with(|| a.value.cmp(&b.value))
+        });
+        for spec in &equal_specs {
+            if !matches!(spec.subject, IndexSubject::VertexProperty) {
+                return Err(IndexError::InvalidIntersectionSubject);
+            }
+            ensure_index_value_key(&spec.value)?;
+        }
         let walk_page = self.lookup_range_page(&LookupRangePageRequest {
             property_id: req.range_property_id,
             range: PostingRangeRequest::Between {
@@ -529,14 +552,13 @@ impl IndexStore {
             after: req.after.clone(),
             limit: req.limit,
         })?;
-        let survivors = if walk_page.hits.is_empty() {
-            Vec::new()
-        } else {
-            // filter_hits_by_equal is span-aware: it uses a fast dense merge scan for tightly
-            // packed subject pages and falls back to page-size-bounded point lookups when the
-            // range-walk page scatters hits across arbitrary (shard_id, vertex_id) intervals.
-            self.filter_hits_by_equal(equal_spec.property_id, &equal_spec.value, walk_page.hits)?
-        };
+        let mut survivors = walk_page.hits;
+        for spec in &equal_specs {
+            if survivors.is_empty() {
+                break;
+            }
+            survivors = self.filter_hits_by_equal(spec.property_id, &spec.value, survivors)?;
+        }
         Ok(PostingHitPage {
             hits: survivors,
             next: walk_page.next,

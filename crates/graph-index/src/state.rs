@@ -19,6 +19,12 @@ pub enum IndexError {
     /// An equality intersection request exceeded the supported number of arms. Callers must enforce
     /// the provider-neutral limit before calling `lookup_intersection_page`.
     TooManyEqualityIntersectionArms,
+    /// A range-equality intersection request arrived with no equality sieve arms. Callers that do not
+    /// need a sieve must use the ordinary `lookup_range_page` path.
+    MissingEqualityIntersectionArms,
+    /// An equality-intersection request contained a non-vertex subject (edge or mixed). Only vertex
+    /// property equality sieves are supported by the streamed intersection paths.
+    InvalidIntersectionSubject,
 }
 
 impl std::fmt::Display for IndexError {
@@ -64,6 +70,13 @@ impl std::fmt::Display for IndexError {
                 "equality intersection request has too many arms (max {})",
                 gleaph_graph_kernel::index::MAX_EQUALITY_INTERSECTION_ARMS
             ),
+            Self::MissingEqualityIntersectionArms => write!(
+                f,
+                "range-equality intersection request is missing at least one equality sieve arm"
+            ),
+            Self::InvalidIntersectionSubject => {
+                write!(f, "equality intersection subject must be a vertex property")
+            }
         }
     }
 }

@@ -887,6 +887,7 @@ pub fn e2e_insert_vertex_with_label(
         E2eInsertVertexWithLabelArgs { label_id },
     )
 }
+
 pub fn e2e_insert_vertex_with_label_and_property(
     env: &FederationEnv,
     graph: Principal,

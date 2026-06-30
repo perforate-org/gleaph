@@ -249,15 +249,26 @@ pub struct LookupRangePageRequest {
 /// Paginated range-plus-equality intersection over one vertex property range walk.
 ///
 /// The index walks the finite encoded half-open interval `[low, high)` for `range_property_id`
-/// one page at a time and sieves each page against the single `equal_spec` server-side. The
-/// returned `next` and `done` always describe the range walk, even when a page has zero survivors.
-/// This keeps the per-message heap bounded: no full range or equality bucket is materialized.
+/// one page at a time and sieves each page against every equality spec in `equal_specs`
+/// server-side. The returned `next` and `done` always describe the range walk, even when a page
+/// has zero survivors. This keeps the per-message heap bounded: no full range or equality bucket
+/// is materialized.
+///
+/// Execution contract:
+/// - `equal_specs` must contain between 1 and [`MAX_EQUALITY_INTERSECTION_ARMS`] vertex specs
+///   inclusive. Zero specs is an invalid request shape; callers with no equality sieve should use
+///   [`LookupRangePageRequest`] instead. More than [`MAX_EQUALITY_INTERSECTION_ARMS`] specs are
+///   rejected by the Property Index.
+/// - All specs must target [`IndexSubject::VertexProperty`]. Edge or mixed specs are rejected.
+/// - The Property Index canonicalises sieve order by `(property_id, encoded_value)` for
+///   deterministic paging; repeated requests and different callers converge to the same walk plan
+///   and resume cursor.
 #[derive(Clone, Debug, PartialEq, Eq, candid::CandidType, serde::Deserialize, serde::Serialize)]
 pub struct LookupRangeIntersectionPageRequest {
     pub range_property_id: u32,
     pub low: Vec<u8>,
     pub high: Vec<u8>,
-    pub equal_spec: IndexEqualSpec,
+    pub equal_specs: Vec<IndexEqualSpec>,
     pub after: Option<PropertyPostingCursor>,
     pub limit: u32,
 }
@@ -421,7 +432,10 @@ mod tests {
             range_property_id: 5,
             low: vec![2, 0, 128, 0, 0, 0],
             high: vec![2, 2, 128, 0, 0, 0],
-            equal_spec: IndexEqualSpec::vertex(3, vec![7, 8]),
+            equal_specs: vec![
+                IndexEqualSpec::vertex(3, vec![7, 8]),
+                IndexEqualSpec::vertex(9, vec![1, 2]),
+            ],
             after: Some(cursor.clone()),
             limit: 256,
         };
@@ -429,6 +443,38 @@ mod tests {
         assert_eq!(
             Decode!(&bytes, LookupRangeIntersectionPageRequest).expect("decode range intersection"),
             range_intersection
+        );
+
+        let range_intersection_one = LookupRangeIntersectionPageRequest {
+            range_property_id: 6,
+            low: vec![2, 0, 128, 0, 0, 0],
+            high: vec![2, 2, 128, 0, 0, 0],
+            equal_specs: vec![IndexEqualSpec::vertex(3, vec![7, 8])],
+            after: Some(cursor.clone()),
+            limit: 256,
+        };
+        let bytes = Encode!(&range_intersection_one).expect("encode range intersection one");
+        assert_eq!(
+            Decode!(&bytes, LookupRangeIntersectionPageRequest)
+                .expect("decode range intersection one"),
+            range_intersection_one
+        );
+
+        let range_intersection_max = LookupRangeIntersectionPageRequest {
+            range_property_id: 6,
+            low: vec![2, 0, 128, 0, 0, 0],
+            high: vec![2, 2, 128, 0, 0, 0],
+            equal_specs: (1..=MAX_EQUALITY_INTERSECTION_ARMS)
+                .map(|i| IndexEqualSpec::vertex(i as u32, vec![i as u8]))
+                .collect(),
+            after: Some(cursor.clone()),
+            limit: 256,
+        };
+        let bytes = Encode!(&range_intersection_max).expect("encode range intersection max");
+        assert_eq!(
+            Decode!(&bytes, LookupRangeIntersectionPageRequest)
+                .expect("decode range intersection max"),
+            range_intersection_max
         );
 
         let page = PostingHitPage {

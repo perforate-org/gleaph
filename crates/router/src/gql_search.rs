@@ -283,15 +283,16 @@ struct SearchFilterRange {
     value_expr: gleaph_gql::ast::Expr,
 }
 
-/// ADR 0034 Slice 8/9/10/11/12: either one or two same-binding equality conjuncts, exactly one
-/// numeric range predicate, exactly two same-property range predicates forming one lower and one
-/// upper bound, exactly one equality and one one-sided range predicate on distinct properties, or
-/// exactly one equality and two same-property range predicates on a distinct property.
+/// ADR 0034 Slice 8/9/10/11/12/14: any bounded number of same-binding equality conjuncts on
+/// distinct properties, exactly one numeric range predicate, exactly two same-property range
+/// predicates forming one lower and one upper bound, or one of those range shapes combined with one
+/// or more equality predicates on distinct properties. The router enforces the provider-specific
+/// eight-arm equality limit and distinct-property rules; the planner is provider-neutral.
 #[derive(Debug)]
 enum SearchFilter {
     Equality(Vec<SearchFilterArm>),
     Range(Vec<SearchFilterRange>),
-    Mixed(SearchFilterArm, Vec<SearchFilterRange>),
+    Mixed(Vec<SearchFilterArm>, Vec<SearchFilterRange>),
 }
 
 #[derive(Debug)]
@@ -668,26 +669,8 @@ fn extract_search_filter(
                 _ => unreachable!(),
             })
             .collect();
-        let mut seen = std::collections::HashSet::new();
-        for arm in &arms {
-            if !seen.insert(arm.property_name.clone()) {
-                return Err(RouterError::InvalidArgument(
-                    "SEARCH ... WHERE equality conjuncts must refer to distinct properties".into(),
-                ));
-            }
-        }
-        if arms.len() > MAX_EQUALITY_INTERSECTION_ARMS {
-            return Err(RouterError::InvalidArgument(format!(
-                "SEARCH ... WHERE supports at most {MAX_EQUALITY_INTERSECTION_ARMS} equality conjuncts in this slice"
-            )));
-        }
+        validate_pure_equality_arms(&arms)?;
         Ok(SearchFilter::Equality(arms))
-    } else if leaves.len() > 3 || leaves.len() != predicates.len() {
-        // Mixed shapes are strictly limited to one to three leaves.
-        Err(RouterError::InvalidArgument(
-            "SEARCH ... WHERE supports one predicate, two equality/range conjuncts, or exactly one equality plus one or two range conjuncts in this slice"
-                .into(),
-        ))
     } else if range_count == predicates.len() {
         let ranges: Vec<SearchFilterRange> = predicates
             .into_iter()
@@ -703,19 +686,18 @@ fn extract_search_filter(
         validate_search_filter_ranges(&ranges)
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
         Ok(SearchFilter::Range(ranges))
-    } else if equality_count == 1 && (1..=2).contains(&range_count) {
-        // Slice 11 (one equality + one range) or Slice 12 (one equality + two ranges).
-        let mut equality: Option<SearchFilterArm> = None;
+    } else if equality_count >= 1
+        && (1..=2).contains(&range_count)
+        && predicates.len() == equality_count + range_count
+    {
+        // Slice 14: N-way equality (N >= 1) plus one one-sided range or one two-sided range
+        // on a different property of the searched binding.
+        let mut arms: Vec<SearchFilterArm> = Vec::with_capacity(equality_count);
         let mut ranges: Vec<SearchFilterRange> = Vec::with_capacity(range_count);
         for p in predicates {
             match p {
                 SearchPredicate::Equality(property_name, value_expr) => {
-                    if equality.is_some() {
-                        return Err(RouterError::InvalidArgument(
-                            "SEARCH ... WHERE mixed arm must contain exactly one equality".into(),
-                        ));
-                    }
-                    equality = Some(SearchFilterArm {
+                    arms.push(SearchFilterArm {
                         property_name,
                         value_expr,
                     });
@@ -729,26 +711,39 @@ fn extract_search_filter(
                 }
             }
         }
+        validate_pure_equality_arms(&arms)?;
         validate_search_filter_ranges(&ranges)
             .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-        let eq = equality.ok_or_else(|| {
-            RouterError::InvalidArgument(
-                "SEARCH ... WHERE mixed arm must contain exactly one equality".into(),
-            )
-        })?;
         let range_property = ranges[0].property_name.clone();
-        if eq.property_name == range_property {
+        if arms.iter().any(|arm| arm.property_name == range_property) {
             return Err(RouterError::InvalidArgument(
                 "SEARCH ... WHERE mixed equality/range arms must refer to distinct properties"
                     .into(),
             ));
         }
-        Ok(SearchFilter::Mixed(eq, ranges))
+        Ok(SearchFilter::Mixed(arms, ranges))
     } else {
         Err(RouterError::InvalidArgument(
             "SEARCH ... WHERE does not support this equality/range mixture in this slice".into(),
         ))
     }
+}
+
+fn validate_pure_equality_arms(arms: &[SearchFilterArm]) -> Result<(), RouterError> {
+    let mut seen = std::collections::HashSet::new();
+    for arm in arms {
+        if !seen.insert(arm.property_name.clone()) {
+            return Err(RouterError::InvalidArgument(
+                "SEARCH ... WHERE equality conjuncts must refer to distinct properties".into(),
+            ));
+        }
+    }
+    if arms.len() > MAX_EQUALITY_INTERSECTION_ARMS {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE supports at most {MAX_EQUALITY_INTERSECTION_ARMS} equality conjuncts in this slice"
+        )));
+    }
+    Ok(())
 }
 
 fn validate_search_filter_ranges(ranges: &[SearchFilterRange]) -> Result<(), String> {
@@ -1353,45 +1348,29 @@ async fn resolve_filtered_candidates(
     }
 }
 
-/// ADR 0034 Slice 11/12: resolve one equality arm plus one or two numeric range arms on a
-/// distinct property. Both the equality property and the range property require active vertex
-/// property indexes for the same proved label; the equality value is encoded with the shared
-/// property-index key encoder and the one or two range arms are collapsed into a single finite
-/// half-open encoded interval by `resolve_filtered_range_interval`. The Property Index walks the
-/// finite range and sieves each page by the equality arm.
+/// ADR 0034 Slice 14: resolve one to eight equality arms combined with one one- or two-sided
+/// numeric range arm on a distinct property. Every equality property and the range property
+/// require active vertex property indexes for the same proved label; equality values are encoded
+/// with the shared property-index key encoder through `resolve_equality_arms` and the one or two
+/// range arms are collapsed into a single finite half-open encoded interval by
+/// `resolve_filtered_range_interval`. The Property Index walks the finite range and sieves each
+/// page by every equality arm server-side.
 async fn resolve_filtered_mixed_candidates(
     graph_id: GraphId,
     store: &RouterStore,
     label_id: VertexLabelId,
     binding: &str,
-    eq: &SearchFilterArm,
+    arms: &[SearchFilterArm],
     ranges: &[SearchFilterRange],
     params: &BTreeMap<String, Value>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
-    let eq_property_id = resolve_search_property_id(graph_id, store, binding, &eq.property_name)?;
-    if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, eq_property_id) {
-        return Err(RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
-            label_id.raw(),
-            eq.property_name
-        )));
-    }
-
-    let eq_value = resolve_filter_value(&eq.value_expr, params)?;
-    let eq_encoded = encode_filter_value(&eq_value)?;
-    if eq_encoded.len() > MAX_INDEX_VALUE_KEY_BYTES {
-        return Err(RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE value exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
-        )));
-    }
+    let equal_specs = resolve_equality_arms(graph_id, store, label_id, binding, arms, params)?;
 
     let (range_property_id, low, high) = match resolve_filtered_range_interval(
         graph_id, store, label_id, binding, ranges, params,
     )? {
         Some(interval) => interval,
         None => {
-            // Empty or contradictory numeric interval: the candidate set is empty before any
-            // Property Index or Vector Index call, while preserving the outer aggregate dispatch.
             return Ok(Vec::new());
         }
     };
@@ -1403,7 +1382,7 @@ async fn resolve_filtered_mixed_candidates(
         range_property_id,
         low,
         high,
-        IndexEqualSpec::vertex(eq_property_id.raw(), eq_encoded),
+        equal_specs,
     )
     .await
 }
@@ -1415,14 +1394,15 @@ async fn collect_bounded_candidates_range_intersection(
     range_property_id: PropertyId,
     low: Vec<u8>,
     high: Vec<u8>,
-    equal_spec: IndexEqualSpec,
+    equal_specs: Vec<IndexEqualSpec>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
     collect_bounded_candidates(graph_id, store, label_id, |client, after| {
+        let equal_specs = equal_specs.clone();
         let req = LookupRangeIntersectionPageRequest {
             range_property_id: range_property_id.raw(),
             low: low.clone(),
             high: high.clone(),
-            equal_spec: equal_spec.clone(),
+            equal_specs,
             after,
             limit: VECTOR_FILTER_PAGE_LIMIT,
         };
@@ -1439,12 +1419,46 @@ async fn resolve_filtered_equality_candidates(
     arms: &[SearchFilterArm],
     params: &BTreeMap<String, Value>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
-    let mut resolved_arms = Vec::with_capacity(arms.len());
+    let equal_specs = resolve_equality_arms(graph_id, store, label_id, binding, arms, params)?;
+
+    match equal_specs.len() {
+        1 => {
+            let spec = equal_specs.into_iter().next().unwrap();
+            collect_bounded_candidates_equal(
+                graph_id,
+                store,
+                label_id,
+                PropertyId::from_raw(spec.property_id),
+                spec.value,
+            )
+            .await
+        }
+        n if (2..=MAX_EQUALITY_INTERSECTION_ARMS).contains(&n) => {
+            collect_bounded_candidates_intersection(graph_id, store, label_id, equal_specs).await
+        }
+        _ => Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE supports one to {MAX_EQUALITY_INTERSECTION_ARMS} equality conjuncts"
+        ))),
+    }
+}
+
+/// Resolve property id, active-index proof, value encoding, and key-size validation for every
+/// equality arm. Shared between pure equality and mixed equality-plus-range filter paths so both
+/// enforce identical diagnostics.
+fn resolve_equality_arms(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    binding: &str,
+    arms: &[SearchFilterArm],
+    params: &BTreeMap<String, Value>,
+) -> Result<Vec<IndexEqualSpec>, RouterError> {
+    let mut equal_specs = Vec::with_capacity(arms.len());
     for arm in arms {
         let property_id = resolve_search_property_id(graph_id, store, binding, &arm.property_name)?;
         if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
             return Err(RouterError::InvalidArgument(format!(
-                "SEARCH ... WHERE requires an active vertex equality index for label {} property {}",
+                "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
                 label_id.raw(),
                 arm.property_name
             )));
@@ -1456,25 +1470,9 @@ async fn resolve_filtered_equality_candidates(
                 "SEARCH ... WHERE value exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
             )));
         }
-        resolved_arms.push((property_id, encoded));
+        equal_specs.push(IndexEqualSpec::vertex(property_id.raw(), encoded));
     }
-
-    match resolved_arms.len() {
-        1 => {
-            let (property_id, encoded) = resolved_arms.into_iter().next().unwrap();
-            collect_bounded_candidates_equal(graph_id, store, label_id, property_id, encoded).await
-        }
-        n if (2..=MAX_EQUALITY_INTERSECTION_ARMS).contains(&n) => {
-            let specs = resolved_arms
-                .into_iter()
-                .map(|(property_id, value)| IndexEqualSpec::vertex(property_id.raw(), value))
-                .collect();
-            collect_bounded_candidates_intersection(graph_id, store, label_id, specs).await
-        }
-        _ => Err(RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE supports one to {MAX_EQUALITY_INTERSECTION_ARMS} equality conjuncts in this slice"
-        ))),
-    }
+    Ok(equal_specs)
 }
 
 /// Resolve the property, coverage, and encoded half-open interval for a range SEARCH filter.
@@ -3170,7 +3168,7 @@ mod tests {
         let err = result.expect_err("missing property must fail");
         assert!(
             err.to_string()
-                .contains("requires an active vertex equality index"),
+                .contains("requires an active vertex property index"),
             "unexpected error: {err}"
         );
     }
@@ -3538,7 +3536,7 @@ mod tests {
         let err = result.expect_err("missing exact index must fail");
         assert!(
             err.to_string()
-                .contains("requires an active vertex equality index"),
+                .contains("requires an active vertex property index"),
             "unexpected error: {err}"
         );
     }
@@ -3724,7 +3722,7 @@ mod tests {
         let err = result.expect_err("missing second exact index must fail");
         assert!(
             err.to_string()
-                .contains("requires an active vertex equality index"),
+                .contains("requires an active vertex property index"),
             "unexpected error: {err}"
         );
     }
@@ -3842,8 +3840,9 @@ mod tests {
         let f = extract_search_filter("d", &filter_and_expr(eq, range))
             .expect("mixed equality/range on distinct properties must be accepted");
         match f {
-            SearchFilter::Mixed(eq, ranges) => {
-                assert_eq!(eq.property_name, "category");
+            SearchFilter::Mixed(arms, ranges) => {
+                assert_eq!(arms.len(), 1);
+                assert_eq!(arms[0].property_name, "category");
                 assert_eq!(ranges.len(), 1);
                 assert_eq!(ranges[0].property_name, "price");
                 assert_eq!(ranges[0].op, gleaph_gql::ast::CmpOp::Ge);
@@ -3861,8 +3860,9 @@ mod tests {
         let f = extract_search_filter("d", &filter_and_expr(eq, inner))
             .expect("mixed equality plus two-sided range must be accepted");
         match f {
-            SearchFilter::Mixed(eq, ranges) => {
-                assert_eq!(eq.property_name, "category");
+            SearchFilter::Mixed(arms, ranges) => {
+                assert_eq!(arms.len(), 1);
+                assert_eq!(arms[0].property_name, "category");
                 assert_eq!(ranges.len(), 2);
                 assert!(ranges.iter().all(|r| r.property_name == "price"));
             }
@@ -3885,17 +3885,16 @@ mod tests {
     }
 
     #[test]
-    fn extract_search_filter_rejects_mixed_two_equalities_plus_range() {
+    fn extract_search_filter_accepts_mixed_two_equalities_plus_range() {
         let a = filter_eq_expr("category", Value::Text("doc".into()));
         let b = filter_eq_expr("tenant", Value::Int64(7));
         let range = filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(5));
         let inner = filter_and_expr(a, range);
-        let err = extract_search_filter("d", &filter_and_expr(b, inner))
-            .expect_err("two equalities plus range must fail");
+        let f = extract_search_filter("d", &filter_and_expr(b, inner))
+            .expect("two equalities plus range must be accepted");
         assert!(
-            err.to_string()
-                .contains("does not support this equality/range mixture"),
-            "unexpected error: {err}"
+            matches!(f, SearchFilter::Mixed(ref arms, ref ranges) if arms.len() == 2 && ranges.len() == 1),
+            "expected Mixed with two equality arms and one range: {f:?}"
         );
     }
 
@@ -3933,6 +3932,22 @@ mod tests {
             .expect_err("same-property mixed equality/range must fail");
         assert!(
             err.to_string().contains("distinct properties"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_mixed_nine_equality_arms_plus_range() {
+        let mut conjunction =
+            filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(0));
+        for i in 0..9 {
+            let arm = filter_eq_expr(&format!("prop_{i}"), Value::Text(format!("v{i}")));
+            conjunction = filter_and_expr(conjunction, arm);
+        }
+        let err = extract_search_filter("d", &conjunction)
+            .expect_err("nine equality arms plus range must fail");
+        assert!(
+            err.to_string().contains("at most 8 equality conjuncts"),
             "unexpected error: {err}"
         );
     }
@@ -4358,10 +4373,10 @@ mod tests {
         .expect("create price index");
 
         let filter = SearchFilter::Mixed(
-            SearchFilterArm {
+            vec![SearchFilterArm {
                 property_name: "category".into(),
                 value_expr: Expr::new(ExprKind::Literal(Value::Text("doc".into()))),
-            },
+            }],
             vec![
                 SearchFilterRange {
                     property_name: "price".into(),
@@ -4420,10 +4435,10 @@ mod tests {
         .expect("create price index");
 
         let filter = SearchFilter::Mixed(
-            SearchFilterArm {
+            vec![SearchFilterArm {
                 property_name: "category".into(),
                 value_expr: Expr::new(ExprKind::Literal(Value::Text("doc".into()))),
-            },
+            }],
             vec![
                 SearchFilterRange {
                     property_name: "price".into(),
@@ -4487,10 +4502,10 @@ mod tests {
         .expect("create price index");
 
         let filter = SearchFilter::Mixed(
-            SearchFilterArm {
+            vec![SearchFilterArm {
                 property_name: "category".into(),
                 value_expr: Expr::new(ExprKind::Literal(Value::Text("doc".into()))),
-            },
+            }],
             vec![
                 SearchFilterRange {
                     property_name: "price".into(),

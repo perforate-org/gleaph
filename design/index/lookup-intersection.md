@@ -1,11 +1,11 @@
 # Index lookup intersection
 
 Last updated: 2026-06-30
-Anchor timestamp: 2026-06-30 08:27:33 UTC +0000
+Anchor timestamp: 2026-06-30 16:03:13 UTC +0000
 
 ## Status
 
-**Implemented** — graph-index `lookup_intersection` returns `IndexIntersectionResult` (vertex, mixed, and all-edge arms per ADR 0009). Router seeds vertices (`PostingHit`) and edges (`LocalEdgePosting` via `EdgeIndexScan` / all-edge intersection). Graph skips leading `IndexIntersection` / `EdgeIndexScan` when seeded. Shard-local `EDGE_EQUALITY_POSTINGS` retired (ADR 0009 phase D). The vertex-only intersection query path is **streamed** (paged walk + `filter_hits_by_equal` `contains` sieve) so it no longer materializes a full posting bucket per arm; edge/mixed intersection still materializes server-side — see [Streaming intersection status](#streaming-intersection-status). N-way vertex equality intersection for `SEARCH ... WHERE` (ADR 0034 Slice 13) supports 2..=8 arms with deterministic walk-arm selection.
+**Implemented** — graph-index `lookup_intersection` returns `IndexIntersectionResult` (vertex, mixed, and all-edge arms per ADR 0009). Router seeds vertices (`PostingHit`) and edges (`LocalEdgePosting` via `EdgeIndexScan` / all-edge intersection). Graph skips leading `IndexIntersection` / `EdgeIndexScan` when seeded. Shard-local `EDGE_EQUALITY_POSTINGS` retired (ADR 0009 phase D). The vertex-only intersection query path is **streamed** (paged walk + `filter_hits_by_equal` `contains` sieve) so it no longer materializes a full posting bucket per arm; edge/mixed intersection still materializes server-side — see [Streaming intersection status](#streaming-intersection-status). N-way vertex equality intersection for `SEARCH ... WHERE` (ADR 0034 Slice 13) supports 2..=8 arms with deterministic walk-arm selection. One to eight equality arms combined with a single numeric range on a distinct property for `SEARCH ... WHERE` (ADR 0034 Slice 14) are executed through the streamed `lookup_range_intersection_page` path, which walks the finite encoded range one page at a time and sieves each page against every equality arm server-side while preserving the range cursor.
 
 ## Purpose
 

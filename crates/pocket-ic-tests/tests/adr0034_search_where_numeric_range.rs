@@ -1,11 +1,13 @@
-//! PocketIC coverage for ADR 0034 Slices 9, 10, 11 and 12: `SEARCH ... WHERE` numeric range, two-sided numeric range, mixed equality-plus-one-sided-range, and mixed equality-plus-two-sided-range.
+//! PocketIC coverage for ADR 0034 Slices 9, 10, 11, 12 and 14: `SEARCH ... WHERE` numeric range,
+//! two-sided numeric range, mixed equality-plus-one-sided-range, mixed equality-plus-two-sided-range,
+//! and bounded N-way equality (1..=8) plus a single one- or two-sided range.
 //!
 //! Semantics under test:
 //!   R = property_index_numeric_range(Document, price, OP, value)
 //!   result = vector_top_k(document_embedding, subjects = R, limit)
 //!
-//! - Candidate membership is the exact label-scoped numeric range (optionally intersected with an equality sieve) before vector ranking.
-//! - A globally nearer vertex with an out-of-range or non-numeric value, with a value outside a two-sided interval, or with the wrong equality value,
+//! - Candidate membership is the exact label-scoped numeric range (optionally intersected with one or more equality sieves) before vector ranking.
+//! - A globally nearer vertex with an out-of-range or non-numeric value, with a value outside a two-sided interval, or with the wrong equality value(s),
 //!   must not consume a top-k position.
 
 use candid::{Decode, Encode, Principal};
@@ -21,8 +23,8 @@ use gleaph_pocket_ic_tests::{
     FederationEnv, GRAPH_NAME, admin_intern_edge_label, admin_intern_property,
     admin_intern_vertex_label, create_vertex_property_index, e2e_insert_edge_with_label,
     e2e_insert_vertex_with_label, e2e_insert_vertex_with_label_and_property,
-    e2e_insert_vertex_with_label_and_two_properties, gql_query_with_params_as_admin,
-    install_federation, install_vector_canister,
+    e2e_insert_vertex_with_label_and_two_properties, e2e_set_vertex_property,
+    gql_query_with_params_as_admin, install_federation, install_vector_canister,
 };
 use gleaph_router::types::{AdminAttachVectorIndexShardArgs, RegisterVectorIndexArgs};
 
@@ -1252,6 +1254,170 @@ fn search_where_numeric_range_two_sided_reversed_operands() {
 }
 
 #[test]
+fn search_where_mixed_nway_equality_plus_range_excludes_partial_matches() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let author_label_id = admin_intern_vertex_label(&env, "Author").raw();
+    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
+    let wrote_label_id = admin_intern_edge_label(&env, "WROTE").raw();
+    let category_id = admin_intern_property(&env, "category");
+    let tenant_id = admin_intern_property(&env, "tenant");
+    let status_id = admin_intern_property(&env, "status");
+    let price_id = admin_intern_property(&env, "price");
+
+    for property in ["category", "tenant", "status", "price"] {
+        create_vertex_property_index(
+            &env,
+            &format!("document_{property}_idx"),
+            "Document",
+            property,
+            &format!("create_document_{property}_idx"),
+        );
+    }
+
+    let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
+
+    // d_match satisfies all three equality arms and the range arm but is farthest from the query.
+    let d_match = e2e_insert_vertex_with_label(&env, env.graph_source, doc_label_id);
+    for (property_id, value) in [
+        (category_id.raw(), 1i64),
+        (tenant_id.raw(), 2i64),
+        (status_id.raw(), 3i64),
+        (price_id.raw(), 7i64),
+    ] {
+        e2e_set_vertex_property(
+            &env,
+            env.graph_source,
+            d_match.local_vertex_id,
+            property_id,
+            value,
+        );
+    }
+
+    // d_bad_category: one equality arm fails.
+    let d_bad_category = e2e_insert_vertex_with_label(&env, env.graph_source, doc_label_id);
+    for (property_id, value) in [
+        (category_id.raw(), 9i64),
+        (tenant_id.raw(), 2i64),
+        (status_id.raw(), 3i64),
+        (price_id.raw(), 7i64),
+    ] {
+        e2e_set_vertex_property(
+            &env,
+            env.graph_source,
+            d_bad_category.local_vertex_id,
+            property_id,
+            value,
+        );
+    }
+
+    // d_bad_tenant: another equality arm fails.
+    let d_bad_tenant = e2e_insert_vertex_with_label(&env, env.graph_source, doc_label_id);
+    for (property_id, value) in [
+        (category_id.raw(), 1i64),
+        (tenant_id.raw(), 9i64),
+        (status_id.raw(), 3i64),
+        (price_id.raw(), 7i64),
+    ] {
+        e2e_set_vertex_property(
+            &env,
+            env.graph_source,
+            d_bad_tenant.local_vertex_id,
+            property_id,
+            value,
+        );
+    }
+
+    // d_bad_status: third equality arm fails.
+    let d_bad_status = e2e_insert_vertex_with_label(&env, env.graph_source, doc_label_id);
+    for (property_id, value) in [
+        (category_id.raw(), 1i64),
+        (tenant_id.raw(), 2i64),
+        (status_id.raw(), 9i64),
+        (price_id.raw(), 7i64),
+    ] {
+        e2e_set_vertex_property(
+            &env,
+            env.graph_source,
+            d_bad_status.local_vertex_id,
+            property_id,
+            value,
+        );
+    }
+
+    // d_bad_range: range arm fails.
+    let d_bad_range = e2e_insert_vertex_with_label(&env, env.graph_source, doc_label_id);
+    for (property_id, value) in [
+        (category_id.raw(), 1i64),
+        (tenant_id.raw(), 2i64),
+        (status_id.raw(), 3i64),
+        (price_id.raw(), 3i64),
+    ] {
+        e2e_set_vertex_property(
+            &env,
+            env.graph_source,
+            d_bad_range.local_vertex_id,
+            property_id,
+            value,
+        );
+    }
+
+    for d in [
+        &d_match,
+        &d_bad_category,
+        &d_bad_tenant,
+        &d_bad_status,
+        &d_bad_range,
+    ] {
+        e2e_insert_edge_with_label(
+            &env,
+            env.graph_source,
+            a1.local_vertex_id,
+            d.local_vertex_id,
+            wrote_label_id,
+        );
+    }
+
+    seed_embedding(
+        &env,
+        vector,
+        env.graph_source,
+        d_match.local_vertex_id,
+        10.0,
+    );
+    for d in [
+        d_bad_category.local_vertex_id,
+        d_bad_tenant.local_vertex_id,
+        d_bad_status.local_vertex_id,
+        d_bad_range.local_vertex_id,
+    ] {
+        seed_embedding(&env, vector, env.graph_source, d, 5.0);
+    }
+
+    let query = format!(
+        "MATCH (a:Author)-[:WROTE]->(d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE d.category = 1 AND d.tenant = 2 AND d.status = 3 AND d.price >= 5 \
+           LIMIT 1 \
+         ) DISTANCE AS distance \
+         RETURN a, d, distance ORDER BY distance ASC"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(5.0)),
+    )])
+    .expect("encode params");
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_row_count_and_distance(result, 1, 400.0);
+}
+
+#[test]
 fn search_where_mixed_equality_and_range_excludes_single_arm_matches() {
     let env = install_federation();
     let vector = install_vector_canister(&env.pic, env.router);
@@ -2133,4 +2299,176 @@ fn search_where_mixed_equality_plus_two_sided_rejects_missing_range_index() {
         err.to_string().contains("active vertex property index"),
         "unexpected error: {err}"
     );
+}
+
+#[test]
+fn search_where_mixed_nine_equality_arms_plus_range_is_rejected() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let _doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
+    let _price_id = admin_intern_property(&env, "price");
+    create_vertex_property_index(
+        &env,
+        "document_price_idx",
+        "Document",
+        "price",
+        "create_document_price_idx",
+    );
+
+    // Intern nine properties; only price needs an index for the router to reach the bound check.
+    let property_names = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8"];
+    for name in &property_names {
+        let _ = admin_intern_property(&env, name);
+    }
+
+    let filters = property_names
+        .iter()
+        .enumerate()
+        .map(|(i, name)| format!("d.{name} = {i}"))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let query = format!(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE {filters} AND d.price >= 5 \
+           LIMIT 1 \
+         ) DISTANCE AS distance \
+         RETURN d, distance"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(5.0)),
+    )])
+    .expect("encode params");
+
+    let result = gql_query_with_params_as_admin_result(&env, &query, params);
+    let err = result.expect_err("9 equality arms must be rejected");
+    assert!(
+        err.to_string().contains("At most 8 equality conditions")
+            || err.to_string().contains("at most 8"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn search_where_mixed_eight_equality_arms_plus_two_sided_range_hits_boundary() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let author_label_id = admin_intern_vertex_label(&env, "Author").raw();
+    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
+    let wrote_label_id = admin_intern_edge_label(&env, "WROTE").raw();
+    let price_id = admin_intern_property(&env, "price");
+
+    // Use eight distinct filter properties plus the range property.
+    let property_names = ["p0", "p1", "p2", "p3", "p4", "p5", "p6", "p7", "p8", "p9"];
+    let properties: Vec<_> = property_names
+        .iter()
+        .map(|name| admin_intern_property(&env, name))
+        .collect();
+    for name in &property_names {
+        create_vertex_property_index(
+            &env,
+            &format!("document_{name}_idx"),
+            "Document",
+            name,
+            &format!("create_document_{name}_idx"),
+        );
+    }
+    create_vertex_property_index(
+        &env,
+        "document_price_idx",
+        "Document",
+        "price",
+        "create_document_price_idx",
+    );
+
+    let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
+    let d_match = e2e_insert_vertex_with_label(&env, env.graph_source, doc_label_id);
+    for (i, property) in properties.iter().enumerate().take(8) {
+        e2e_set_vertex_property(
+            &env,
+            env.graph_source,
+            d_match.local_vertex_id,
+            property.raw(),
+            i as i64,
+        );
+    }
+    e2e_set_vertex_property(
+        &env,
+        env.graph_source,
+        d_match.local_vertex_id,
+        price_id.raw(),
+        7,
+    );
+
+    // d_fail misses p7, so it must not win even though it is nearer.
+    let d_fail = e2e_insert_vertex_with_label(&env, env.graph_source, doc_label_id);
+    for (i, property) in properties.iter().enumerate().take(7) {
+        e2e_set_vertex_property(
+            &env,
+            env.graph_source,
+            d_fail.local_vertex_id,
+            property.raw(),
+            i as i64,
+        );
+    }
+    e2e_set_vertex_property(
+        &env,
+        env.graph_source,
+        d_fail.local_vertex_id,
+        price_id.raw(),
+        7,
+    );
+
+    for d in [&d_match, &d_fail] {
+        e2e_insert_edge_with_label(
+            &env,
+            env.graph_source,
+            a1.local_vertex_id,
+            d.local_vertex_id,
+            wrote_label_id,
+        );
+    }
+
+    seed_embedding(
+        &env,
+        vector,
+        env.graph_source,
+        d_match.local_vertex_id,
+        10.0,
+    );
+    seed_embedding(&env, vector, env.graph_source, d_fail.local_vertex_id, 5.0);
+
+    let filters = properties[..8]
+        .iter()
+        .enumerate()
+        .map(|(i, _p)| format!("d.{} = {}", property_names[i], i))
+        .collect::<Vec<_>>()
+        .join(" AND ");
+    let query = format!(
+        "MATCH (a:Author)-[:WROTE]->(d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE {filters} AND d.price >= 5 AND d.price < 10 \
+           LIMIT 1 \
+         ) DISTANCE AS distance \
+         RETURN a, d, distance ORDER BY distance ASC"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(5.0)),
+    )])
+    .expect("encode params");
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_row_count_and_distance(result, 1, 400.0);
 }

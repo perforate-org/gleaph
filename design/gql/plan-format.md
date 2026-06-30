@@ -78,12 +78,12 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
   properties of the searched binding and a literal or parameter, exactly one range comparison
   (`<`, `<=`, `>`, `>=`) between a property of the searched binding and a literal or parameter,
   exactly two range comparisons on the same property of the searched binding where one arm is a
-  lower bound (`>` or `>=`) and the other is an upper bound (`<` or `<=`), exactly one
-  equality comparison and one one-sided range comparison on distinct properties of the searched
-  binding, or exactly one equality comparison and two range comparisons on the same property of the
-  searched binding where one range arm is a lower bound and the other is an upper bound, with the
-  equality property differing from the range property, with either operand order and any conjunct
-  order accepted. The planner does not verify label, index coverage, or numeric-domain semantics.
+  lower bound (`>` or `>=`) and the other is an upper bound (`<` or `<=`), or one to eight
+  equality comparisons on distinct properties of the searched binding together with one or two
+  range comparisons on the same property where one range arm is a lower bound and the other is an
+  upper bound, with the range property distinct from every equality property, with either operand
+  order and any conjunct order accepted. The planner does not verify label, index coverage, or
+  numeric-domain semantics.
 - The Router resolves the searched label and every filter property to router-issued ids, proves an
   active vertex property index for the exact `(graph_id, label_id, property_id)` tuple in the
   named-index catalog for every arm, and validates each encoded size against
@@ -95,7 +95,7 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
   from the Property Index via paginated `lookup_equal_page` for one equality arm, the server-side
   `lookup_intersection_page` for two to eight equality arms, `lookup_range_page` with
   `PostingRangeRequest::Between { low, high }` for a numeric range arm, or
-  `lookup_range_intersection_page` for one equality arm plus one or two same-property range arms on a
+  `lookup_range_intersection_page` for one to eight equality arms plus one or two same-property range arms on a
   distinct property (the two range arms are collapsed into one intersected encoded interval in
   Router before a single range-walk/equality-sieve stream). Deduplicating by `(shard_id, vertex_id)`, it stops as soon as a 4097th distinct subject
   is observed and returns an explicit error instead of truncating. Malformed postings are rejected.

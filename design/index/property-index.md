@@ -1,11 +1,13 @@
 # Property index
 
 Last updated: 2026-06-30
-Anchor timestamp: 2026-06-30 08:27:33 UTC +0000
+Anchor timestamp: 2026-06-30 16:03:13 UTC +0000
 
 ## Status
 
 **Partially Implemented** — `lookup_equal` / `lookup_range` and DML posting sync exist. **`lookup_intersection`** is implemented on graph-index; router `IndexAnchor` + per-shard seeds and graph skip of leading intersection op are **Implemented**. Graph federated wire path does not call index; library tests may still inject a mock index client.
+
+**ADR 0034 Slice 14 — Implemented:** `lookup_range_intersection_page` supports one to eight equality arms combined with a single finite numeric range on a distinct vertex property. The index walks the finite encoded range one page at a time, sieves each page server-side against every equality arm, and preserves the range cursor even when a survivor page is empty. Zero equality arms and more than eight arms are rejected; non-vertex specs are rejected.
 
 **Phase A ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)) — superseded by [ADR 0023](../adr/0023-federated-index-consistency-upgrade-compaction.md):** Phase A gated DML/backfill posting maintenance with a **persistent shard-local registry** (`register_indexed_property`) fanned out from the router. ADR 0023 (phases 1–2 implemented) **removes that registry** because it could not survive the upgrade boundary. The graph shard now holds **no persisted indexed catalog**: the router (definitions SSOT) supplies an `IndexedPropertyCatalog` in `ExecutePlanArgs.indexed_properties` (and in the backfill request), which the shard installs in an **ephemeral per-operation context** (`index/catalog_context.rs`) consulted by `dispatch_property_index_ops` and backfill. `CREATE INDEX` / `DROP INDEX` no longer fan registrations out to shards.
 
@@ -77,7 +79,7 @@ An index canister holds postings for shards attached to **one graph's index clus
 | `lookup_edge_equal_page` | Implemented | Paginated edge equality export (`after` + `limit`) |
 | `lookup_intersection` | Implemented | Intersect multiple equality arms (edge/mixed; vertex-only is streamed via `lookup_intersection_page` — [lookup-intersection.md](lookup-intersection.md)) |
 | `lookup_intersection_page` | Implemented | Paginated all-vertex equality intersection (`after` + `limit`): server-side walk-arm page + in-heap merge-join sieve; the streamed vertex-intersection read path |
-| `lookup_range_intersection_page` | Implemented | Paginated range-walk plus one equality sieve (`after` + `limit`): server-side finite range page filtered by one vertex equality arm; the mixed equality-plus-range read path |
+| `lookup_range_intersection_page` | Implemented | Paginated range-walk plus one to eight equality sieves (`after` + `limit`): server-side finite range page filtered by up to eight vertex equality arms on distinct properties; the mixed equality-plus-range read path for ADR 0034 Slice 14 |
 | `count_postings_by_value` | Implemented | Walk one property bucket; return `(encoded_value, count)` groups ([ADR 0003](../adr/0003-federated-aggregate-merge.md)) |
 
 All read APIs run entirely inside graph-index (no graph canister calls).
@@ -153,7 +155,7 @@ keys before graph-index calls; graph-index read APIs reject them as `IndexValueK
 silent empty range).
 
 
-## Vector search filter membership (ADR 0034 Slices 6, 7, 8, 9, 10, 11, 12 and 13)
+## Vector search filter membership (ADR 0034 Slices 6, 7, 8, 9, 10, 11, 12, 13 and 14)
 
 Property-index postings own filter membership for leading and non-leading `SEARCH ... WHERE`
 predicates. The Router consumes postings through bounded pagination:
@@ -161,10 +163,9 @@ predicates. The Router consumes postings through bounded pagination:
 - The planner accepts one same-binding equality predicate, one to eight `AND`-connected
   same-binding equality predicates on **distinct** properties, exactly one same-binding numeric range
   predicate (`<`, `<=`, `>`, `>=`), exactly two same-property range predicates forming one lower
-  and one upper bound, exactly one equality predicate and one one-sided numeric range predicate
-  on distinct properties, or exactly one equality predicate and two same-property range predicates
-  (one lower and one upper) on a distinct property, and preserves the original filter expression in
-  `PlanOp::Search`.
+  and one upper bound, or one to eight equality predicates on distinct properties together with
+  one one- or two-sided numeric range predicate on a distinct property, and preserves the original
+  filter expression in `PlanOp::Search`.
 - The Router resolves the searched label and every filter property to router-issued ids and proves
   an active vertex property index for the exact `(graph_id, label_id, property_id)` tuple in the
   named-index catalog for every arm. For a leading search the label is taken from the leading

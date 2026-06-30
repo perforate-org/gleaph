@@ -484,9 +484,11 @@ const RANGE_INTERSECTION_PROPERTY: u32 = 4;
 const RANGE_INTERSECTION_EQ_PROPERTY: u32 = 5;
 const RANGE_INTERSECTION_COUNT: u32 = 4096;
 
-/// Range postings with values `[0, RANGE_INTERSECTION_COUNT)` and an equality arm that keeps
-/// every fourth vertex. Mirrors the mixed equality-plus-range query shape.
-fn setup_range_intersection_store() -> (IndexStore, Principal, Vec<u8>) {
+/// Range postings with values `[0, RANGE_INTERSECTION_COUNT)` and a set of equality arms that keep
+/// every fourth vertex, with one extra copy per additional sieve arm so that extra sieves still
+/// see matching postings. Mirrors the mixed equality-plus-range query shape for 1, 4 and 8 arms.
+fn setup_range_intersection_store(sieve_count: usize) -> (IndexStore, Principal, Vec<u8>) {
+    assert!((1..=8).contains(&sieve_count));
     let (store, _router, owner) = setup_index_store();
     let eq_value = index_key("keep");
     for vid in 0..RANGE_INTERSECTION_COUNT {
@@ -503,36 +505,139 @@ fn setup_range_intersection_store() -> (IndexStore, Principal, Vec<u8>) {
             )
             .expect("range posting insert");
         if vid % 4 == 0 {
-            store
-                .posting_insert(
-                    owner,
-                    ShardId::new(0),
-                    RANGE_INTERSECTION_EQ_PROPERTY,
-                    eq_value.clone(),
-                    vid,
-                )
-                .expect("equality posting insert");
+            // Each sieve arm uses a distinct property id so we need one posting per arm for every
+            // retained vertex.
+            for arm in 0..sieve_count {
+                store
+                    .posting_insert(
+                        owner,
+                        ShardId::new(0),
+                        RANGE_INTERSECTION_EQ_PROPERTY + arm as u32,
+                        eq_value.clone(),
+                        vid,
+                    )
+                    .expect("equality posting insert");
+            }
         }
     }
+    // Sanity check: the full range should return exactly the vertices retained by every sieve.
+    let expected_hits = (0..RANGE_INTERSECTION_COUNT)
+        .filter(|vid| vid % 4 == 0)
+        .count();
+    assert_eq!(
+        expected_hits, 1024,
+        "range-intersection fixture membership mismatch"
+    );
     (store, owner, eq_value)
 }
 
-/// One server-side range-walk page plus equality sieve for a half-open numeric interval covering
+/// One server-side range-walk page plus one equality sieve for a half-open numeric interval covering
 /// the full range. Measures the combined `lookup_range_intersection_page` primitive.
 #[bench(raw)]
-fn bench_lookup_range_intersection_page_full_range() -> canbench_rs::BenchResult {
-    let (store, _owner, eq_value) = setup_range_intersection_store();
+fn bench_lookup_range_intersection_page_full_range_one_sieve() -> canbench_rs::BenchResult {
+    let (store, _owner, eq_value) = setup_range_intersection_store(1);
     let (low, high) = numeric_range_bounds(0, gleaph_gql::ast::CmpOp::Ge);
     let req = LookupRangeIntersectionPageRequest {
         range_property_id: RANGE_INTERSECTION_PROPERTY,
         low,
         high,
-        equal_spec: IndexEqualSpec::vertex(RANGE_INTERSECTION_EQ_PROPERTY, eq_value),
+        equal_specs: vec![IndexEqualSpec::vertex(
+            RANGE_INTERSECTION_EQ_PROPERTY,
+            eq_value,
+        )],
         after: None,
         limit: 4096,
     };
+    // Membership sanity check outside measurement.
+    let sanity = store
+        .lookup_range_intersection_page(&req)
+        .expect("one-sieve sanity lookup");
+    assert_eq!(
+        sanity.hits.len(),
+        1024,
+        "one-sieve sanity membership mismatch"
+    );
+    assert!(sanity.done, "one-sieve sanity should finish in one page");
+
     canbench_rs::bench_fn(|| {
-        let _scope = canbench_rs::bench_scope("lookup_range_intersection_page_full_range");
+        let _scope =
+            canbench_rs::bench_scope("lookup_range_intersection_page_full_range_one_sieve");
+        let page = store
+            .lookup_range_intersection_page(black_box(&req))
+            .expect("lookup_range_intersection_page");
+        black_box(page);
+    })
+}
+
+/// One server-side range-walk page plus four equality sieves for the full numeric range.
+#[bench(raw)]
+fn bench_lookup_range_intersection_page_full_range_four_sieves() -> canbench_rs::BenchResult {
+    let (store, _owner, eq_value) = setup_range_intersection_store(4);
+    let (low, high) = numeric_range_bounds(0, gleaph_gql::ast::CmpOp::Ge);
+    let equal_specs = (0..4)
+        .map(|i| {
+            IndexEqualSpec::vertex(RANGE_INTERSECTION_EQ_PROPERTY + i as u32, eq_value.clone())
+        })
+        .collect();
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: RANGE_INTERSECTION_PROPERTY,
+        low,
+        high,
+        equal_specs,
+        after: None,
+        limit: 4096,
+    };
+    let sanity = store
+        .lookup_range_intersection_page(&req)
+        .expect("four-sieve sanity lookup");
+    assert_eq!(
+        sanity.hits.len(),
+        1024,
+        "four-sieve sanity membership mismatch"
+    );
+    assert!(sanity.done, "four-sieve sanity should finish in one page");
+
+    canbench_rs::bench_fn(|| {
+        let _scope =
+            canbench_rs::bench_scope("lookup_range_intersection_page_full_range_four_sieves");
+        let page = store
+            .lookup_range_intersection_page(black_box(&req))
+            .expect("lookup_range_intersection_page");
+        black_box(page);
+    })
+}
+
+/// One server-side range-walk page plus the maximum eight equality sieves for the full numeric range.
+#[bench(raw)]
+fn bench_lookup_range_intersection_page_full_range_eight_sieves() -> canbench_rs::BenchResult {
+    let (store, _owner, eq_value) = setup_range_intersection_store(8);
+    let (low, high) = numeric_range_bounds(0, gleaph_gql::ast::CmpOp::Ge);
+    let equal_specs = (0..8)
+        .map(|i| {
+            IndexEqualSpec::vertex(RANGE_INTERSECTION_EQ_PROPERTY + i as u32, eq_value.clone())
+        })
+        .collect();
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: RANGE_INTERSECTION_PROPERTY,
+        low,
+        high,
+        equal_specs,
+        after: None,
+        limit: 4096,
+    };
+    let sanity = store
+        .lookup_range_intersection_page(&req)
+        .expect("eight-sieve sanity lookup");
+    assert_eq!(
+        sanity.hits.len(),
+        1024,
+        "eight-sieve sanity membership mismatch"
+    );
+    assert!(sanity.done, "eight-sieve sanity should finish in one page");
+
+    canbench_rs::bench_fn(|| {
+        let _scope =
+            canbench_rs::bench_scope("lookup_range_intersection_page_full_range_eight_sieves");
         let page = store
             .lookup_range_intersection_page(black_box(&req))
             .expect("lookup_range_intersection_page");
@@ -544,7 +649,7 @@ fn bench_lookup_range_intersection_page_full_range() -> canbench_rs::BenchResult
 /// arm keeps it. Measures scan-to-first-survivor overhead.
 #[bench(raw)]
 fn bench_lookup_range_intersection_page_sparse_survivor() -> canbench_rs::BenchResult {
-    let (store, _owner, eq_value) = setup_range_intersection_store();
+    let (store, _owner, eq_value) = setup_range_intersection_store(1);
     let low = value_to_index_key_bytes(&gleaph_gql::Value::Int64(1024))
         .expect("low key")
         .expect("indexable");
@@ -555,10 +660,26 @@ fn bench_lookup_range_intersection_page_sparse_survivor() -> canbench_rs::BenchR
         range_property_id: RANGE_INTERSECTION_PROPERTY,
         low,
         high,
-        equal_spec: IndexEqualSpec::vertex(RANGE_INTERSECTION_EQ_PROPERTY, eq_value),
+        equal_specs: vec![IndexEqualSpec::vertex(
+            RANGE_INTERSECTION_EQ_PROPERTY,
+            eq_value,
+        )],
         after: None,
         limit: 1024,
     };
+    let sanity = store
+        .lookup_range_intersection_page(&req)
+        .expect("sparse sanity lookup");
+    assert_eq!(sanity.hits.len(), 1, "sparse sanity membership mismatch");
+    assert_eq!(
+        sanity.hits[0],
+        PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 1024,
+        },
+        "sparse sanity survivor mismatch"
+    );
+
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lookup_range_intersection_page_sparse_survivor");
         let page = store
@@ -568,8 +689,135 @@ fn bench_lookup_range_intersection_page_sparse_survivor() -> canbench_rs::BenchR
     })
 }
 
-const RANGE_INTERSECTION_ADVERSARIAL_PROPERTY: u32 = 6;
-const RANGE_INTERSECTION_ADVERSARIAL_EQ_PROPERTY: u32 = 7;
+/// Scattered range request with multiple far-apart hits across a 4M vertex span, filtered by
+/// four equality sieves. The sparse range postings force the span-aware point-lookup path; the
+/// equality bucket is densely populated between hits so an unbounded scan would sweep many
+/// postings. Membership is verified once before measurement so assertions do not pollute the
+/// persisted instruction counts.
+#[bench(raw)]
+fn bench_lookup_range_intersection_page_scattered_survivor_four_sieves() -> canbench_rs::BenchResult
+{
+    let (store, _owner, eq_value) = setup_range_intersection_scattered_store(4);
+    let (low, high) = numeric_range_bounds(-1, gleaph_gql::ast::CmpOp::Ge);
+    let equal_specs = (0..4)
+        .map(|i| {
+            IndexEqualSpec::vertex(
+                RANGE_INTERSECTION_SCATTERED_EQ_PROPERTY + i as u32,
+                eq_value.clone(),
+            )
+        })
+        .collect();
+    let req = LookupRangeIntersectionPageRequest {
+        range_property_id: RANGE_INTERSECTION_SCATTERED_PROPERTY,
+        low,
+        high,
+        equal_specs,
+        after: None,
+        limit: 10,
+    };
+
+    // Sanity check outside the measured closure: assert the expected branch and full survivor set.
+    let sanity = store
+        .lookup_range_intersection_page(&req)
+        .expect("scattered sanity lookup");
+    let expected: Vec<u32> = SCATTERED_SURVIVORS.to_vec();
+    assert!(
+        sanity.done,
+        "scattered sanity page should be terminal within limit"
+    );
+    assert_eq!(
+        sanity.hits.iter().map(|h| h.vertex_id).collect::<Vec<_>>(),
+        expected,
+        "scattered sanity membership mismatch"
+    );
+    assert_eq!(
+        sanity.hits.len(),
+        expected.len(),
+        "scattered sanity hit count mismatch"
+    );
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope(
+            "lookup_range_intersection_page_scattered_survivor_four_sieves",
+        );
+        let page = store
+            .lookup_range_intersection_page(black_box(&req))
+            .expect("lookup_range_intersection_page scattered");
+        black_box(page);
+    })
+}
+
+const RANGE_INTERSECTION_SCATTERED_PROPERTY: u32 = 6;
+const RANGE_INTERSECTION_SCATTERED_EQ_PROPERTY: u32 = 7;
+const SCATTERED_SPAN: u32 = 4_000_000;
+const SCATTERED_BUCKET_DENSITY: u32 = 100_000;
+const SCATTERED_SURVIVORS: [u32; 4] = [0, 1_000_000, 2_000_000, 3_000_000];
+
+/// Sparse range postings at fixed far-apart positions, plus a dense equality bucket between them
+/// that shares no vertex ids with the range hits (so only point-lookups of the range hits can
+/// succeed). Each sieve arm gets a matching equality posting for every survivor. The range itself is
+/// encoded using the same numeric key encoding as the other fixtures.
+fn setup_range_intersection_scattered_store(
+    sieve_count: usize,
+) -> (IndexStore, Principal, Vec<u8>) {
+    assert!((1..=8).contains(&sieve_count));
+    let (store, _router, owner) = setup_index_store();
+    let eq_value = index_key("keep");
+
+    // Insert far-apart range postings. Values are sparse enough that a naive dense scan over the
+    // equality bucket between them would be dominated by unrelated postings.
+    for vid in SCATTERED_SURVIVORS {
+        let price = value_to_index_key_bytes(&gleaph_gql::Value::Int64(vid as i64))
+            .expect("index key")
+            .expect("indexable");
+        store
+            .posting_insert(
+                owner,
+                ShardId::new(0),
+                RANGE_INTERSECTION_SCATTERED_PROPERTY,
+                price,
+                vid,
+            )
+            .expect("scattered range posting insert");
+    }
+
+    // Dense equality bucket between survivors; none of these vids have a range posting.
+    for i in 1..=SCATTERED_BUCKET_DENSITY {
+        let vid =
+            (i as u64 * (SCATTERED_SPAN as u64 - 1) / (SCATTERED_BUCKET_DENSITY as u64 + 1)) as u32;
+        for arm in 0..sieve_count {
+            store
+                .posting_insert(
+                    owner,
+                    ShardId::new(0),
+                    RANGE_INTERSECTION_SCATTERED_EQ_PROPERTY + arm as u32,
+                    eq_value.clone(),
+                    vid,
+                )
+                .expect("scattered equality bucket insert");
+        }
+    }
+
+    // Each sieve arm gets a matching equality posting for every survivor.
+    for vid in SCATTERED_SURVIVORS {
+        for arm in 0..sieve_count {
+            store
+                .posting_insert(
+                    owner,
+                    ShardId::new(0),
+                    RANGE_INTERSECTION_SCATTERED_EQ_PROPERTY + arm as u32,
+                    eq_value.clone(),
+                    vid,
+                )
+                .expect("scattered survivor equality insert");
+        }
+    }
+
+    (store, owner, eq_value)
+}
+
+const RANGE_INTERSECTION_ADVERSARIAL_PROPERTY: u32 = 14;
+const RANGE_INTERSECTION_ADVERSARIAL_EQ_PROPERTY: u32 = 15;
 const ADVERSARIAL_SPAN: u32 = 4_000_000;
 const ADVERSARIAL_BUCKET_DENSITY: u32 = 100_000;
 
@@ -633,10 +881,26 @@ fn bench_lookup_range_intersection_page_adversarial_span() -> canbench_rs::Bench
         range_property_id: RANGE_INTERSECTION_ADVERSARIAL_PROPERTY,
         low,
         high,
-        equal_spec: IndexEqualSpec::vertex(RANGE_INTERSECTION_ADVERSARIAL_EQ_PROPERTY, eq_value),
+        equal_specs: vec![IndexEqualSpec::vertex(
+            RANGE_INTERSECTION_ADVERSARIAL_EQ_PROPERTY,
+            eq_value,
+        )],
         after: None,
         limit: 10,
     };
+    let sanity = store
+        .lookup_range_intersection_page(&req)
+        .expect("adversarial sanity lookup");
+    assert!(
+        sanity.done,
+        "adversarial sanity should be terminal within limit"
+    );
+    assert_eq!(
+        sanity.hits.iter().map(|h| h.vertex_id).collect::<Vec<_>>(),
+        vec![0u32],
+        "adversarial sanity membership mismatch"
+    );
+
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("lookup_range_intersection_page_adversarial_span");
         let page = store
