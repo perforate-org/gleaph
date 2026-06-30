@@ -289,3 +289,15 @@ pub(super) fn flatten_conjunction(expr: &Expr) -> Vec<Expr> {
         _ => vec![expr.clone()],
     }
 }
+
+/// Flatten OR chains into individual predicates.
+pub(super) fn flatten_disjunction(expr: &Expr) -> Vec<Expr> {
+    match &expr.kind {
+        ExprKind::Or(left, right) => {
+            let mut result = flatten_disjunction(left);
+            result.extend(flatten_disjunction(right));
+            result
+        }
+        _ => vec![expr.clone()],
+    }
+}

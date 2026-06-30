@@ -413,7 +413,7 @@ fn search_where_equality_rejects_missing_exact_index() {
     let err = gql_query_with_params_as_admin_result(&env, &query, params)
         .expect_err("missing exact index must fail");
     assert!(
-        err.to_string().contains("vertex equality index"),
+        err.to_string().contains("active vertex property index"),
         "missing exact index must fail with a coverage error, got {err}"
     );
 }
@@ -465,7 +465,7 @@ fn search_where_equality_rejects_wrong_label_index() {
     let err = gql_query_with_params_as_admin_result(&env, &query, params)
         .expect_err("wrong-label index coverage must fail");
     assert!(
-        err.to_string().contains("vertex equality index"),
+        err.to_string().contains("active vertex property index"),
         "wrong-label index coverage must fail with a coverage error, got {err}"
     );
 }

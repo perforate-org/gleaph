@@ -39,5 +39,5 @@ pocket-ic-e2e = []
 
 [dev-dependencies]
 candid.workspace = true
-futures = "0.3"
+futures.workspace = true
 pollster = "0.4"

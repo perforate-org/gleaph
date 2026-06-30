@@ -351,6 +351,92 @@ fn test_search_where_non_leading_numeric_range_accepted_by_planner() {
 }
 
 #[test]
+fn test_search_where_equality_disjunction_accepted_by_planner() {
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.category = 1 OR d.category = 2 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    let filter = search_filter_from_plan(&plan);
+    assert!(
+        filter.is_some(),
+        "accepted same-binding same-property equality disjunction must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_equality_disjunction_arbitrary_length_accepted_by_planner() {
+    // Slice 15 planner contract is provider-neutral: any number of OR arms is accepted; the Router
+    // owns the eight-arm execution bound.
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.category = 0 OR d.category = 1 OR d.category = 2 OR d.category = 3 \
+             OR d.category = 4 OR d.category = 5 OR d.category = 6 OR d.category = 7 \
+             OR d.category = 8 OR d.category = 9 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    let filter = search_filter_from_plan(&plan);
+    assert!(
+        filter.is_some(),
+        "accepted ten-arm equality disjunction must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_equality_disjunction_rejects_different_property() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.category = 1 OR d.tenant = 2 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string()
+            .contains("must be an equality or range comparison")
+            || err.to_string().contains("single property")
+            || err.to_string().contains("equality disjunction"),
+        "different-property equality disjunction must be rejected, got {err}"
+    );
+}
+
+#[test]
+fn test_search_where_equality_disjunction_rejects_mixed_range() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.category = 1 OR d.category = 2 OR d.price >= 10 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string().contains("only equality")
+            || err.to_string().contains("equality disjunction")
+            || err.to_string().contains("Unsupported")
+            || err
+                .to_string()
+                .contains("must be an equality or range comparison"),
+        "mixed equality/range disjunction must be rejected, got {err}"
+    );
+}
+
+#[test]
 fn test_search_where_mixed_equality_and_range_accepted_by_planner() {
     let plan = plan_query(
         "MATCH (d:Document) \

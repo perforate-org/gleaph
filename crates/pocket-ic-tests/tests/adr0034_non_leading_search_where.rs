@@ -485,7 +485,7 @@ fn non_leading_search_where_empty_candidates_aggregate_returns_one_zero_row() {
     }
 }
 
-/// ADR 0034 Slice 7: non-leading filtered search requires an active vertex equality index for the
+/// ADR 0034 Slice 7: non-leading filtered search requires an active vertex property index for the
 /// exact (label, property) tuple.
 #[test]
 fn non_leading_search_where_rejects_missing_exact_index() {
@@ -539,13 +539,13 @@ fn non_leading_search_where_rejects_missing_exact_index() {
     let err = gql_query_with_params_as_admin_result(&env, &query, params)
         .expect_err("missing exact index must fail");
     assert!(
-        err.to_string().contains("vertex equality index"),
+        err.to_string().contains("active vertex property index"),
         "missing exact index must fail with a coverage error, got {err}"
     );
 }
 
-/// ADR 0034 Slice 7: non-leading filtered search requires exactly one positive simple label proof
-/// for the searched binding in the top-level prefix.
+/// ADR 0034 Slice 7: non-leading filtered search requires an active vertex property index for the
+/// exact (label, property) tuple.
 #[test]
 fn non_leading_search_where_rejects_unlabeled_searched_binding() {
     let env = install_federation();

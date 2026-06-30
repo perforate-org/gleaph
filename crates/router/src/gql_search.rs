@@ -1,5 +1,5 @@
 //! Router-side lowering of GQL `SEARCH ... IN (VECTOR INDEX ... FOR ... LIMIT ...)`
-//! (ADR 0034 Slices 3, 4, 5, 6, 7, 8, 9, 10, 11, 12 and 13).
+//! (ADR 0034 Slices 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14 and 15).
 //!
 //! This module is the execution boundary between the provider-neutral GQL planner
 //! (`PlanOp::Search`) and the Router-owned vector-index catalog / canister dispatch. It supports
@@ -7,12 +7,13 @@
 //! vertex, one to eight `AND`-connected same-binding equality `SEARCH ... WHERE` predicates on
 //! distinct properties, one same-binding numeric range `SEARCH ... WHERE` predicate, exactly two
 //! same-binding numeric range predicates on the same property forming one lower (`>`/`>=`) and one
-//! upper (`<`/`<=`) bound, one equality arm plus one one-sided range arm on distinct properties, or
-//! one equality arm plus two same-property range arms on a distinct property, for both positions
-//! (Slices 6, 7, 8, 9, 10, 11, 12 and 13). All unsupported shapes are rejected with explicit
-//! `InvalidArgument` errors. For a leading search it dispatches the remaining graph-tail plan from
-//! row-shaped vector-search seeds; for a non-leading search it attaches an explicit per-shard
-//! resolved-search relation to the normal read dispatch.
+//! upper (`<`/`<=`) bound, one equality arm plus one one-sided range arm on distinct properties,
+//! one equality arm plus two same-property range arms on a distinct property, or two to eight
+//! `OR`-connected same-binding same-property equality predicates (Slices 6, 7, 8, 9, 10, 11, 12,
+//! 13, 14 and 15). All unsupported shapes are rejected with explicit `InvalidArgument` errors. For
+//! a leading search it dispatches the remaining graph-tail plan from row-shaped vector-search
+//! seeds. For a non-leading search it attaches an explicit per-shard resolved-search relation to
+//! the normal read dispatch.
 
 use candid::Encode;
 use gleaph_graph_kernel::index::{PostingHit, PostingHitPage, PropertyPostingCursor};
@@ -27,8 +28,8 @@ use gleaph_gql_planner::plan::{
 use gleaph_graph_kernel::entry::{GraphId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::index::{
-    IndexEqualSpec, LookupIntersectionPageRequest, LookupRangeIntersectionPageRequest,
-    MAX_EQUALITY_INTERSECTION_ARMS, MAX_INDEX_VALUE_KEY_BYTES,
+    IndexEqualSpec, LookupEqualPageRequest, LookupIntersectionPageRequest,
+    LookupRangeIntersectionPageRequest, MAX_INDEX_VALUE_KEY_BYTES,
 };
 use gleaph_graph_kernel::plan_exec::{
     ExecutePlanArgs, GqlExecutionMode, GqlQueryResult, ResolvedSearchVertexHitWire,
@@ -283,17 +284,29 @@ struct SearchFilterRange {
     value_expr: gleaph_gql::ast::Expr,
 }
 
-/// ADR 0034 Slice 8/9/10/11/12/14: any bounded number of same-binding equality conjuncts on
+/// ADR 0034 Slice 8/9/10/11/12/14/15: any bounded number of same-binding equality conjuncts on
 /// distinct properties, exactly one numeric range predicate, exactly two same-property range
-/// predicates forming one lower and one upper bound, or one of those range shapes combined with one
-/// or more equality predicates on distinct properties. The router enforces the provider-specific
-/// eight-arm equality limit and distinct-property rules; the planner is provider-neutral.
+/// predicates forming one lower and one upper bound, one of those range shapes combined with one
+/// or more equality predicates on distinct properties, or a pure equality disjunction on a single
+/// property of the searched binding. The router enforces the provider-specific eight-arm equality
+/// limit and distinct-property rules; the planner is provider-neutral.
 #[derive(Debug)]
 enum SearchFilter {
     Equality(Vec<SearchFilterArm>),
     Range(Vec<SearchFilterRange>),
     Mixed(Vec<SearchFilterArm>, Vec<SearchFilterRange>),
+    /// ADR 0034 Slice 15: pure equality disjunction on the same binding and property. The planner
+    /// accepts any number of OR-connected equality arms; the router enforces the execution bound.
+    EqualityDisjunction(Vec<SearchFilterArm>),
 }
+
+/// Maximum number of `AND`-connected equality arms the Property Index intersection path admits.
+const MAX_EQUALITY_INTERSECTION_ARMS: usize = 8;
+
+/// Maximum number of `OR`-connected equality arms the Router will execute as a bounded union of
+/// `lookup_equal_page` streams. This is a Router-owned fan-out bound, independent from the Property
+/// Index intersection limit.
+const MAX_EQUALITY_DISJUNCTION_ARMS: usize = 8;
 
 #[derive(Debug)]
 struct SearchShape {
@@ -637,6 +650,15 @@ fn extract_search_filter(
     binding: &str,
     expr: &gleaph_gql::ast::Expr,
 ) -> Result<SearchFilter, RouterError> {
+    if let Some(disjunction) = try_extract_equality_disjunction(binding, expr) {
+        if disjunction.len() > MAX_EQUALITY_DISJUNCTION_ARMS {
+            return Err(RouterError::InvalidArgument(format!(
+                "SEARCH ... WHERE equality disjunction supports at most {MAX_EQUALITY_DISJUNCTION_ARMS} OR-connected arms in this slice"
+            )));
+        }
+        return Ok(SearchFilter::EqualityDisjunction(disjunction));
+    }
+
     let leaves = collect_and_leaves(expr);
     if leaves.is_empty() {
         return Err(RouterError::InvalidArgument(
@@ -882,6 +904,55 @@ fn collect_and_leaves(expr: &gleaph_gql::ast::Expr) -> Vec<gleaph_gql::ast::Expr
     let mut out = Vec::new();
     walk(expr, &mut out);
     out
+}
+
+fn collect_or_leaves(expr: &gleaph_gql::ast::Expr) -> Vec<gleaph_gql::ast::Expr> {
+    fn walk(expr: &gleaph_gql::ast::Expr, out: &mut Vec<gleaph_gql::ast::Expr>) {
+        match &expr.kind {
+            gleaph_gql::ast::ExprKind::Or(left, right) => {
+                walk(left, out);
+                walk(right, out);
+            }
+            _ => out.push(expr.clone()),
+        }
+    }
+    let mut out = Vec::new();
+    walk(expr, &mut out);
+    out
+}
+
+/// Try to extract a pure equality disjunction: an OR-connected chain where every leaf is an
+/// equality comparison between `binding.property` and a literal or parameter, and every leaf refers
+/// to the same property. Returns the normalized arms when the shape matches; otherwise returns
+/// `None` so the caller can fall back to the conjunction path. A single equality leaf is not
+/// classified as a disjunction here.
+fn try_extract_equality_disjunction(
+    binding: &str,
+    expr: &gleaph_gql::ast::Expr,
+) -> Option<Vec<SearchFilterArm>> {
+    let leaves = collect_or_leaves(expr);
+    if leaves.len() < 2 {
+        return None;
+    }
+    let mut arms = Vec::with_capacity(leaves.len());
+    let mut shared_property: Option<String> = None;
+    for leaf in &leaves {
+        match split_search_predicate(binding, leaf) {
+            Ok(SearchPredicate::Equality(property_name, value_expr)) => {
+                match &shared_property {
+                    Some(existing) if existing != &property_name => return None,
+                    Some(_) => {}
+                    None => shared_property = Some(property_name.clone()),
+                }
+                arms.push(SearchFilterArm {
+                    property_name,
+                    value_expr,
+                });
+            }
+            _ => return None,
+        }
+    }
+    Some(arms)
 }
 
 fn op_contains_search(op: &PlanOp) -> bool {
@@ -1345,6 +1416,12 @@ async fn resolve_filtered_candidates(
             )
             .await
         }
+        SearchFilter::EqualityDisjunction(arms) => {
+            resolve_filtered_equality_disjunction_candidates(
+                graph_id, store, label_id, binding, arms, params,
+            )
+            .await
+        }
     }
 }
 
@@ -1440,6 +1517,74 @@ async fn resolve_filtered_equality_candidates(
             "SEARCH ... WHERE supports one to {MAX_EQUALITY_INTERSECTION_ARMS} equality conjuncts"
         ))),
     }
+}
+
+/// ADR 0034 Slice 15: resolve a pure equality disjunction on the same binding and property as a
+/// bounded union of `lookup_equal_page` streams. Every arm must target the same property and that
+/// property must have an active vertex property index for the proved label. The Router enforces
+/// the execution arm limit (2..=MAX_EQUALITY_DISJUNCTION_ARMS) and the 4096 candidate bound.
+async fn resolve_filtered_equality_disjunction_candidates(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    binding: &str,
+    arms: &[SearchFilterArm],
+    params: &BTreeMap<String, Value>,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    if arms.is_empty() {
+        return Ok(Vec::new());
+    }
+    if arms.len() > MAX_EQUALITY_DISJUNCTION_ARMS {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE equality disjunction supports at most {MAX_EQUALITY_DISJUNCTION_ARMS} OR-connected arms in this slice"
+        )));
+    }
+
+    let property_name = arms[0].property_name.clone();
+    let property_id = resolve_search_property_id(graph_id, store, binding, &property_name)?;
+    if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
+        return Err(RouterError::InvalidArgument(format!(
+            "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
+            label_id.raw(),
+            property_name
+        )));
+    }
+
+    let mut encoded_values = Vec::with_capacity(arms.len());
+    for arm in arms {
+        if arm.property_name != property_name {
+            return Err(RouterError::InvalidArgument(
+                "SEARCH ... WHERE equality disjunction must refer to a single property".into(),
+            ));
+        }
+        let value = resolve_filter_value(&arm.value_expr, params)?;
+        let encoded = encode_filter_value(&value)?;
+        if encoded.len() > MAX_INDEX_VALUE_KEY_BYTES {
+            return Err(RouterError::InvalidArgument(format!(
+                "SEARCH ... WHERE value exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
+            )));
+        }
+        encoded_values.push(encoded);
+    }
+
+    // Runtime-equal encoded values share the same posting stream. Dedupe them after the syntactic
+    // admission bound has been enforced, preserving the order of first occurrence.
+    let mut distinct_values: Vec<Vec<u8>> = Vec::with_capacity(encoded_values.len());
+    for v in encoded_values {
+        if distinct_values.contains(&v) {
+            continue;
+        }
+        distinct_values.push(v);
+    }
+
+    collect_bounded_candidates_equal_disjunction(
+        graph_id,
+        store,
+        label_id,
+        property_id,
+        distinct_values,
+    )
+    .await
 }
 
 /// Resolve property id, active-index proof, value encoding, and key-size validation for every
@@ -1686,6 +1831,141 @@ async fn collect_bounded_candidates_range(
         }
     })
     .await
+}
+
+/// Trait for the two index operations used by the equality-disjunction collector. Production uses
+/// `RouterIndexClient`; tests inject a mock to verify paging, deduplication, and bounds without
+/// canister calls.
+trait DisjunctionLookup: Clone {
+    async fn lookup_equal_page(
+        &self,
+        property_id: u32,
+        value: Vec<u8>,
+        after: Option<PropertyPostingCursor>,
+        limit: u32,
+    ) -> Result<PostingHitPage, String>;
+
+    async fn filter_hits_by_label(
+        &self,
+        vertex_label_id: u32,
+        hits: Vec<PostingHit>,
+    ) -> Result<Vec<PostingHit>, String>;
+}
+
+impl DisjunctionLookup for RouterIndexClient {
+    async fn lookup_equal_page(
+        &self,
+        property_id: u32,
+        value: Vec<u8>,
+        after: Option<PropertyPostingCursor>,
+        limit: u32,
+    ) -> Result<PostingHitPage, String> {
+        self.lookup_equal_page(LookupEqualPageRequest {
+            property_id,
+            value,
+            after,
+            limit,
+        })
+        .await
+    }
+
+    async fn filter_hits_by_label(
+        &self,
+        vertex_label_id: u32,
+        hits: Vec<PostingHit>,
+    ) -> Result<Vec<PostingHit>, String> {
+        self.filter_hits_by_label(vertex_label_id, hits).await
+    }
+}
+
+/// Collect at most `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` distinct vertex subjects from the union of
+/// several Property Index equality buckets for the same `(property_id, encoded_value_i)`. Sources
+/// are walked sequentially per index target: each `(encoded_value, cursor)` page is fetched,
+/// label-filtered, and merged into the global deduplicated candidate set before the next page or
+/// value is requested. This preserves the existing per-page work bound and stops as soon as the
+/// 4097th distinct label-qualified subject is observed.
+async fn collect_bounded_candidates_equal_disjunction(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    property_id: PropertyId,
+    encoded_values: Vec<Vec<u8>>,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    let targets = store
+        .graph_index_lookup_targets(graph_id)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let clients = targets.into_iter().map(RouterIndexClient::new);
+    collect_bounded_candidates_equal_disjunction_inner(
+        clients,
+        label_id,
+        property_id,
+        encoded_values,
+    )
+    .await
+}
+
+async fn collect_bounded_candidates_equal_disjunction_inner<L: DisjunctionLookup>(
+    clients: impl IntoIterator<Item = L>,
+    label_id: VertexLabelId,
+    property_id: PropertyId,
+    mut encoded_values: Vec<Vec<u8>>,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    encoded_values.sort_unstable();
+    encoded_values.dedup();
+
+    let mut seen: std::collections::HashSet<(ShardId, u32)> = std::collections::HashSet::new();
+
+    for client in clients {
+        for value in &encoded_values {
+            let mut after: Option<PropertyPostingCursor> = None;
+            loop {
+                let page = client
+                    .lookup_equal_page(
+                        property_id.raw(),
+                        value.clone(),
+                        after,
+                        VECTOR_FILTER_PAGE_LIMIT,
+                    )
+                    .await
+                    .map_err(|e| {
+                        RouterError::InvalidArgument(format!("property-index lookup failed: {e}"))
+                    })?;
+
+                let label_hits = client
+                    .filter_hits_by_label(label_id.raw() as u32, page.hits)
+                    .await
+                    .map_err(|e| {
+                        RouterError::InvalidArgument(format!(
+                            "property-index label filter failed: {e}"
+                        ))
+                    })?;
+
+                for hit in label_hits {
+                    if !seen.insert((hit.shard_id, hit.vertex_id)) {
+                        continue;
+                    }
+                    if seen.len() > MAX_VECTOR_SEARCH_FILTER_CANDIDATES {
+                        return Err(RouterError::InvalidArgument(format!(
+                            "SEARCH ... WHERE filter produced more than {MAX_VECTOR_SEARCH_FILTER_CANDIDATES} candidates"
+                        )));
+                    }
+                }
+
+                if page.done {
+                    break;
+                }
+                after = page.next;
+            }
+        }
+    }
+
+    Ok(seen
+        .into_iter()
+        .map(|(shard_id, vertex_id)| VectorSubject::Vertex {
+            shard_id,
+            vertex_id,
+        })
+        .collect())
 }
 
 /// Generic bounded candidate collector used by both single-arm equality and two-arm intersection.
@@ -2953,6 +3233,100 @@ mod tests {
                 distinct: false,
             },
         ])
+    }
+
+    fn filter_or_expr(left: Expr, right: Expr) -> Expr {
+        Expr::new(ExprKind::Or(Box::new(left), Box::new(right)))
+    }
+    fn filter_or_n(exprs: Vec<Expr>) -> Expr {
+        assert!(exprs.len() >= 2);
+        let mut expr = filter_or_expr(exprs[0].clone(), exprs[1].clone());
+        for e in exprs.into_iter().skip(2) {
+            expr = filter_or_expr(expr, e);
+        }
+        expr
+    }
+
+    #[test]
+    fn extract_search_filter_classifies_equality_disjunction() {
+        let filter = filter_or_expr(
+            filter_eq_expr("category", Value::Int64(1)),
+            filter_eq_expr("category", Value::Int64(2)),
+        );
+        let f = extract_search_filter("d", &filter).expect("equality disjunction");
+        match f {
+            SearchFilter::EqualityDisjunction(arms) => {
+                assert_eq!(arms.len(), 2);
+                assert_eq!(arms[0].property_name, "category");
+                assert_eq!(arms[1].property_name, "category");
+            }
+            _ => panic!("expected EqualityDisjunction"),
+        }
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_disjunction_across_properties() {
+        let filter = filter_or_expr(
+            filter_eq_expr("category", Value::Int64(1)),
+            filter_eq_expr("tenant", Value::Int64(2)),
+        );
+        let err = extract_search_filter("d", &filter).expect_err("different-property OR must fail");
+        assert!(
+            err.to_string()
+                .contains("does not support this equality/range mixture")
+                || err.to_string().contains("must be a comparison predicate"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_mixed_range_disjunction() {
+        let filter = filter_or_expr(
+            filter_eq_expr("category", Value::Int64(1)),
+            filter_range_expr("category", gleaph_gql::ast::CmpOp::Ge, Value::Int64(10)),
+        );
+        let f = extract_search_filter("d", &filter);
+        let err = f.expect_err("range inside OR must fail");
+        assert!(
+            err.to_string()
+                .contains("does not support this equality/range mixture")
+                || err.to_string().contains("must be a comparison predicate"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn extract_search_filter_single_equality_remains_conjunction() {
+        // A single equality leaf is not classified as a disjunction.
+        let filter = filter_eq_expr("category", Value::Int64(1));
+        let f = extract_search_filter("d", &filter).expect("single equality");
+        assert!(
+            matches!(f, SearchFilter::Equality(_)),
+            "single equality must remain SearchFilter::Equality"
+        );
+    }
+
+    #[test]
+    fn analyze_search_shape_rejects_equality_disjunction_too_many_arms() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern label");
+        let arms: Vec<Expr> = (0..=MAX_EQUALITY_DISJUNCTION_ARMS)
+            .map(|i| filter_eq_expr("category", Value::Int64(i as i64)))
+            .collect();
+        let plan = search_plan_with_filter(filter_or_n(arms));
+        let err = analyze_search_shape(&plan, graph_id, &store)
+            .expect_err("disjunction with >MAX arms must fail");
+        assert!(
+            err.to_string()
+                .contains("at most {MAX_EQUALITY_DISJUNCTION_ARMS}")
+                || err
+                    .to_string()
+                    .contains("equality disjunction supports at most"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -5010,5 +5384,355 @@ mod tests {
             "second call must receive the cursor from the first page"
         );
         assert_eq!(result.len(), 2);
+    }
+
+    // --- ADR 0034 Slice 15: equality-disjunction collector contract tests ---
+
+    #[derive(Clone)]
+    struct MockDisjunctionClient {
+        calls: std::sync::Arc<std::sync::Mutex<Vec<(Vec<u8>, Option<PropertyPostingCursor>)>>>,
+        pages_by_value: std::collections::BTreeMap<Vec<u8>, Vec<PostingHitPage>>,
+        next_index: std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<Vec<u8>, usize>>>,
+        label_filter: fn(Vec<PostingHit>) -> Vec<PostingHit>,
+    }
+
+    impl Default for MockDisjunctionClient {
+        fn default() -> Self {
+            Self {
+                calls: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                pages_by_value: std::collections::BTreeMap::new(),
+                next_index: std::sync::Arc::new(std::sync::Mutex::new(
+                    std::collections::BTreeMap::new(),
+                )),
+                label_filter: |hits| hits,
+            }
+        }
+    }
+
+    impl MockDisjunctionClient {
+        fn with_pages(
+            pages_by_value: std::collections::BTreeMap<Vec<u8>, Vec<PostingHitPage>>,
+        ) -> Self {
+            Self {
+                calls: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                pages_by_value,
+                next_index: std::sync::Arc::new(std::sync::Mutex::new(
+                    std::collections::BTreeMap::new(),
+                )),
+                label_filter: |hits| hits,
+            }
+        }
+
+        fn call_count(&self) -> usize {
+            self.calls.lock().unwrap().len()
+        }
+    }
+
+    impl DisjunctionLookup for MockDisjunctionClient {
+        async fn lookup_equal_page(
+            &self,
+            _property_id: u32,
+            value: Vec<u8>,
+            after: Option<PropertyPostingCursor>,
+            _limit: u32,
+        ) -> Result<PostingHitPage, String> {
+            self.calls.lock().unwrap().push((value.clone(), after));
+            let idx = {
+                let mut map = self.next_index.lock().unwrap();
+                let entry = map.entry(value.clone()).or_insert(0);
+                let i = *entry;
+                *entry += 1;
+                i
+            };
+            let page = self
+                .pages_by_value
+                .get(&value)
+                .and_then(|pages| pages.get(idx))
+                .cloned()
+                .unwrap_or(PostingHitPage {
+                    hits: vec![],
+                    next: None,
+                    done: true,
+                });
+            Ok(page)
+        }
+
+        async fn filter_hits_by_label(
+            &self,
+            _vertex_label_id: u32,
+            hits: Vec<PostingHit>,
+        ) -> Result<Vec<PostingHit>, String> {
+            Ok((self.label_filter)(hits))
+        }
+    }
+
+    #[test]
+    fn collect_disjunction_unions_values_and_dedupes_across_arms() {
+        let value_a = vec![1u8];
+        let value_b = vec![2u8];
+        let shared = PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 100,
+        };
+        let only_a = PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 101,
+        };
+        let only_b = PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 102,
+        };
+        let client = MockDisjunctionClient::with_pages(std::collections::BTreeMap::from([
+            (
+                value_a.clone(),
+                vec![PostingHitPage {
+                    hits: vec![shared, only_a],
+                    next: None,
+                    done: true,
+                }],
+            ),
+            (
+                value_b.clone(),
+                vec![PostingHitPage {
+                    hits: vec![shared, only_b],
+                    next: None,
+                    done: true,
+                }],
+            ),
+        ]));
+
+        let result = pollster::block_on(collect_bounded_candidates_equal_disjunction_inner(
+            vec![client],
+            VertexLabelId::from_raw(1),
+            PropertyId::from_raw(7),
+            vec![value_a, value_b],
+        ))
+        .expect("union with dedup");
+
+        let ids: Vec<u32> = result
+            .into_iter()
+            .map(|s| match s {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect();
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains(&100));
+        assert!(ids.contains(&101));
+        assert!(ids.contains(&102));
+    }
+
+    #[test]
+    fn collect_disjunction_continues_past_empty_non_terminal_page() {
+        let value = vec![1u8];
+        let cursor = PropertyPostingCursor {
+            value: value.clone(),
+            shard_id: ShardId::new(0),
+            vertex_id: 0,
+        };
+        let client = MockDisjunctionClient::with_pages(std::collections::BTreeMap::from([(
+            value.clone(),
+            vec![
+                PostingHitPage {
+                    hits: vec![],
+                    next: Some(cursor.clone()),
+                    done: false,
+                },
+                PostingHitPage {
+                    hits: vec![PostingHit {
+                        shard_id: ShardId::new(0),
+                        vertex_id: 42,
+                    }],
+                    next: None,
+                    done: true,
+                },
+            ],
+        )]));
+
+        let result = pollster::block_on(collect_bounded_candidates_equal_disjunction_inner(
+            vec![client],
+            VertexLabelId::from_raw(1),
+            PropertyId::from_raw(7),
+            vec![value],
+        ))
+        .expect("empty non-terminal page must not stop the scan");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            result[0],
+            VectorSubject::Vertex {
+                shard_id: ShardId::new(0),
+                vertex_id: 42,
+            }
+        );
+    }
+
+    #[test]
+    fn collect_disjunction_rejects_4097th_distinct_subject() {
+        let value = vec![1u8];
+        let mut hits = Vec::new();
+        for i in 0..=MAX_VECTOR_SEARCH_FILTER_CANDIDATES {
+            hits.push(PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: i as u32,
+            });
+        }
+        let client = MockDisjunctionClient::with_pages(std::collections::BTreeMap::from([(
+            value.clone(),
+            vec![PostingHitPage {
+                hits,
+                next: None,
+                done: true,
+            }],
+        )]));
+
+        let err = pollster::block_on(collect_bounded_candidates_equal_disjunction_inner(
+            vec![client],
+            VertexLabelId::from_raw(1),
+            PropertyId::from_raw(7),
+            vec![value],
+        ))
+        .expect_err("4097th distinct subject must fail");
+        assert!(
+            err.to_string()
+                .contains("produced more than 4096 candidates"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn collect_disjunction_label_filter_happens_before_counting() {
+        let value = vec![1u8];
+        let mut hits = Vec::new();
+        for i in 0..=MAX_VECTOR_SEARCH_FILTER_CANDIDATES {
+            hits.push(PostingHit {
+                shard_id: ShardId::new(0),
+                vertex_id: i as u32,
+            });
+        }
+
+        fn keep_first_4096(hits: Vec<PostingHit>) -> Vec<PostingHit> {
+            hits.into_iter()
+                .take(MAX_VECTOR_SEARCH_FILTER_CANDIDATES)
+                .collect()
+        }
+
+        let client = MockDisjunctionClient {
+            calls: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+            pages_by_value: std::collections::BTreeMap::from([(
+                value.clone(),
+                vec![PostingHitPage {
+                    hits,
+                    next: None,
+                    done: true,
+                }],
+            )]),
+            next_index: std::sync::Arc::new(std::sync::Mutex::new(
+                std::collections::BTreeMap::new(),
+            )),
+            label_filter: keep_first_4096,
+        };
+
+        let result = pollster::block_on(collect_bounded_candidates_equal_disjunction_inner(
+            vec![client],
+            VertexLabelId::from_raw(1),
+            PropertyId::from_raw(7),
+            vec![value],
+        ))
+        .expect("label filtering must keep the candidate count at 4096");
+        assert_eq!(result.len(), MAX_VECTOR_SEARCH_FILTER_CANDIDATES);
+    }
+
+    #[test]
+    fn collect_disjunction_deduplicates_runtime_equal_values_before_lookup() {
+        let value = vec![1u8];
+        let hit = PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 55,
+        };
+        let client = MockDisjunctionClient::with_pages(std::collections::BTreeMap::from([(
+            value.clone(),
+            vec![PostingHitPage {
+                hits: vec![hit],
+                next: None,
+                done: true,
+            }],
+        )]));
+
+        let result = pollster::block_on(collect_bounded_candidates_equal_disjunction_inner(
+            vec![client.clone()],
+            VertexLabelId::from_raw(1),
+            PropertyId::from_raw(7),
+            vec![value.clone(), value.clone(), value.clone()],
+        ))
+        .expect("duplicate runtime values must be unioned once");
+
+        assert_eq!(result.len(), 1);
+        assert_eq!(
+            client.call_count(),
+            1,
+            "only one lookup per distinct encoded value"
+        );
+    }
+
+    #[test]
+    fn collect_disjunction_resets_cursor_per_source_for_same_value() {
+        let value = vec![7u8];
+
+        // Source A exposes one subject.
+        let client_a = MockDisjunctionClient::with_pages(std::collections::BTreeMap::from([(
+            value.clone(),
+            vec![PostingHitPage {
+                hits: vec![PostingHit {
+                    shard_id: ShardId::new(0),
+                    vertex_id: 10,
+                }],
+                next: None,
+                done: true,
+            }],
+        )]));
+
+        // Source B exposes a different subject, and starts its own walk from `None` even though
+        // the same encoded value is being queried.
+        let client_b = MockDisjunctionClient::with_pages(std::collections::BTreeMap::from([(
+            value.clone(),
+            vec![PostingHitPage {
+                hits: vec![PostingHit {
+                    shard_id: ShardId::new(1),
+                    vertex_id: 20,
+                }],
+                next: None,
+                done: true,
+            }],
+        )]));
+
+        let result = pollster::block_on(collect_bounded_candidates_equal_disjunction_inner(
+            vec![client_a.clone(), client_b.clone()],
+            VertexLabelId::from_raw(1),
+            PropertyId::from_raw(7),
+            vec![value],
+        ))
+        .expect("per-source cursor must be independent");
+
+        assert_eq!(result.len(), 2);
+        let ids: std::collections::HashSet<_> = result
+            .iter()
+            .map(|s| match s {
+                VectorSubject::Vertex { vertex_id, .. } => *vertex_id,
+            })
+            .collect();
+        assert!(ids.contains(&10));
+        assert!(ids.contains(&20));
+
+        // Both clients should have received exactly one call, and the second call must start
+        // from `None` even though the first source already completed the same value.
+        let a_calls = client_a.calls.lock().unwrap();
+        let b_calls = client_b.calls.lock().unwrap();
+        assert_eq!(a_calls.len(), 1, "source A sees one lookup");
+        assert_eq!(b_calls.len(), 1, "source B sees one lookup");
+        assert_eq!(a_calls[0].1, None, "source A starts from None");
+        assert_eq!(
+            b_calls[0].1, None,
+            "source B starts from None independently"
+        );
     }
 }
