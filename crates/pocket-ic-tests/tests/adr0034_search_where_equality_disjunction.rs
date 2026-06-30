@@ -1,7 +1,7 @@
-//! PocketIC coverage for ADR 0034 Slice 15: `SEARCH ... WHERE` same-property equality disjunction.
+//! PocketIC coverage for ADR 0034 Slice 15 and Slice 16: `SEARCH ... WHERE` equality disjunction.
 //!
 //! Semantics under test:
-//!   C_i = property_index_equal(Document, property, value_i)
+//!   C_i = property_index_equal(Document, property_i, value_i)
 //!   C   = UNION_i C_i  (bounded by MAX_EQUALITY_DISJUNCTION_ARMS, currently 8)
 //!   result = vector_top_k(document_embedding, subjects = C, limit)
 //!
@@ -9,6 +9,8 @@
 //! - A vertex matching any arm is included once, even if it matches several values or appears in
 //!   multiple arms.
 //! - The Router enforces the two-to-eight arm bound; the planner accepts any length.
+//! - Slice 16 extends the same contract to arms that reference distinct properties, provided each
+//!   property has an active vertex property index.
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
@@ -532,7 +534,7 @@ fn search_where_equality_disjunction_rejects_missing_exact_index() {
     .expect("encode params");
 
     let err = gql_query_with_params_as_admin_result(&env, &query, params)
-        .expect_err("OR across different properties must fail");
+        .expect_err("OR across properties without an active index must fail");
     assert!(
         err.to_string().contains("active vertex property index")
             || err.to_string().contains("single property")
@@ -542,6 +544,117 @@ fn search_where_equality_disjunction_rejects_missing_exact_index() {
             || err.to_string().contains("Unsupported"),
         "different-property disjunction must fail with a coverage or shape error, got {err}"
     );
+}
+
+#[test]
+fn search_where_equality_disjunction_across_properties_returns_union() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let doc_label_id = admin_intern_vertex_label(&env, "Document");
+    let cat_id = admin_intern_property(&env, "cat_id");
+    let tenant_id = admin_intern_property(&env, "tenant_id");
+    create_vertex_property_index(
+        &env,
+        "document_cat_id_idx",
+        "Document",
+        "cat_id",
+        "create_document_cat_id_idx_cross",
+    );
+    create_vertex_property_index(
+        &env,
+        "document_tenant_id_idx",
+        "Document",
+        "tenant_id",
+        "create_document_tenant_id_idx_cross",
+    );
+
+    // doc_a matches only cat_id=1; doc_b matches only tenant_id=2; doc_c matches both arms;
+    // doc_d has an embedding but matches neither arm, so it should not appear when the filter is applied.
+    let doc_a = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id.raw(),
+        cat_id.raw(),
+        1,
+        tenant_id.raw(),
+        0,
+    );
+    let doc_b = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id.raw(),
+        cat_id.raw(),
+        0,
+        tenant_id.raw(),
+        2,
+    );
+    let doc_c = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id.raw(),
+        cat_id.raw(),
+        1,
+        tenant_id.raw(),
+        2,
+    );
+    let doc_d = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id.raw(),
+        cat_id.raw(),
+        0,
+        tenant_id.raw(),
+        0,
+    );
+
+    // doc_d is the nearest vector neighbor to the zero query; if the filter is ignored it will
+    // dominate the top-k. Embed it at distance 0.0.
+    seed_embedding(&env, vector, env.graph_source, doc_d.local_vertex_id, 0.0);
+    seed_embedding(&env, vector, env.graph_source, doc_a.local_vertex_id, 1.0);
+    seed_embedding(&env, vector, env.graph_source, doc_b.local_vertex_id, 2.0);
+    seed_embedding(&env, vector, env.graph_source, doc_c.local_vertex_id, 3.0);
+
+    let query = format!(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE d.cat_id = 1 OR d.tenant_id = 2 \
+           LIMIT 10 \
+         ) DISTANCE AS distance \
+         RETURN ELEMENT_ID(d), distance \
+         ORDER BY distance ASC"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(0.0)),
+    )])
+    .expect("encode params");
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_eq!(
+        result.row_count, 3,
+        "cross-property equality OR must union the three matching documents and exclude doc_d"
+    );
+    // The non-matching doc_d is the nearest vector neighbor (embedding at distance 0.0); if the
+    // filter were ignored it would appear first. Assert the first returned distance is strictly
+    // greater than 0, proving the filter removed doc_d from the candidate set.
+    let rows = extract_rows(result);
+    let first_distance = rows
+        .first()
+        .and_then(|r| r.get("distance"))
+        .expect("first row distance");
+    match first_distance {
+        gleaph_gql_ic::IcWireValue::Float64(d) => {
+            assert!(
+                *d > 0.0,
+                "filter must exclude the vector-nearest non-matching document"
+            )
+        }
+        other => panic!("expected Float64 distance, got {other:?}"),
+    }
 }
 
 #[test]
@@ -621,6 +734,7 @@ fn non_leading_search_where_equality_disjunction_unions_values() {
     let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
     let wrote_label_id = admin_intern_edge_label(&env, "WROTE").raw();
     let cat_id = admin_intern_property(&env, "cat_id");
+    let tenant_id = admin_intern_property(&env, "tenant_id");
 
     create_vertex_property_index(
         &env,
@@ -629,17 +743,25 @@ fn non_leading_search_where_equality_disjunction_unions_values() {
         "cat_id",
         "create_document_cat_id_idx_non_leading",
     );
+    create_vertex_property_index(
+        &env,
+        "document_tenant_id_idx",
+        "Document",
+        "tenant_id",
+        "create_document_tenant_id_idx_non_leading",
+    );
 
     let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
     let a2 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
 
+    // d_match_a matches only cat_id=1; d_match_b matches only tenant_id=2; d_other matches neither.
     let d_match_a = e2e_insert_vertex_with_label_and_two_properties(
         &env,
         env.graph_source,
         doc_label_id,
         cat_id.raw(),
         1,
-        cat_id.raw(),
+        tenant_id.raw(),
         1,
     );
     let d_match_b = e2e_insert_vertex_with_label_and_two_properties(
@@ -647,8 +769,8 @@ fn non_leading_search_where_equality_disjunction_unions_values() {
         env.graph_source,
         doc_label_id,
         cat_id.raw(),
-        2,
-        cat_id.raw(),
+        3,
+        tenant_id.raw(),
         2,
     );
     let d_other = e2e_insert_vertex_with_label_and_two_properties(
@@ -657,7 +779,7 @@ fn non_leading_search_where_equality_disjunction_unions_values() {
         doc_label_id,
         cat_id.raw(),
         3,
-        cat_id.raw(),
+        tenant_id.raw(),
         3,
     );
 
@@ -705,7 +827,7 @@ fn non_leading_search_where_equality_disjunction_unions_values() {
         "MATCH (a:Author)-[:WROTE]->(d:Document) \
          SEARCH d IN ( \
            VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE d.cat_id = 1 OR d.cat_id = 2 \
+           WHERE d.cat_id = 1 OR d.tenant_id = 2 \
            LIMIT 10 \
          ) DISTANCE AS distance \
          RETURN a, d, distance ORDER BY distance ASC"
@@ -732,7 +854,7 @@ fn non_leading_search_where_equality_disjunction_unions_values() {
         assert!(
             (distance - 1.0_f64.powi(2) * 16.0_f64).abs() < 1e-6
                 || (distance - 2.0_f64.powi(2) * 16.0_f64).abs() < 1e-6,
-            "only documents with cat_id 1 or 2 may appear, got distance {distance}"
+            "only documents matching cat_id=1 or tenant_id=2 may appear, got distance {distance}"
         );
     }
 }

@@ -50,7 +50,7 @@ pub(super) fn detect_conditional_candidates(
     candidates
 }
 
-/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-15.
+/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-16.
 ///
 /// Accepts:
 /// - any number of AND-connected same-binding equality comparisons on distinct properties
@@ -65,9 +65,11 @@ pub(super) fn detect_conditional_candidates(
 /// - one or more AND-connected equality predicates on distinct properties combined with exactly
 ///   two range predicates on the same property (one lower bound and one upper bound) of the same
 ///   searched binding, where the equality properties differ from the range property.
-/// - any number of OR-connected same-binding equality comparisons on the same property
-///   (pure equality disjunctions are provider-neutral; the Router enforces the execution arm limit
-///   later). Mixed `AND`/`OR` shapes and disjunctions on different properties remain unsupported.
+/// - any number of OR-connected same-binding equality comparisons on the same searched vertex
+///   binding (pure equality disjunctions are provider-neutral; the Router enforces the execution
+///   arm limit later). Properties may differ between arms in ADR 0034 Slice 16. Mixed `AND`/`OR`
+///   shapes, range predicates inside OR, and disjunctions across different bindings remain
+///   unsupported.
 ///
 /// The planner is provider-neutral: it checks expression shape only. Label, index coverage, and
 /// numeric-domain verification are validated later by the Router. The execution bound on the
@@ -78,8 +80,8 @@ fn validate_search_filter(
     filter: &gleaph_gql::ast::Expr,
     binding: &str,
 ) -> Result<(), PlannerError> {
-    if let Some(property) = detect_pure_equality_disjunction(filter, binding) {
-        return validate_pure_equality_disjunction(filter, binding, &property);
+    if is_pure_equality_disjunction(filter, binding) {
+        return validate_pure_equality_disjunction(filter, binding);
     }
 
     let predicates = flatten_search_filter(filter, binding)?;
@@ -120,7 +122,7 @@ fn validate_search_filter(
         // Slice 14: N-way equality (N >= 1) plus one range on a distinct property.
         validate_mixed_equality_range(&predicates)
     } else if range_count == 2 && equality_count >= 1 && predicates.len() == equality_count + 2 {
-        // Slice 14: N-way equality (N >= 1) plus a two-sided range on a distinct property.
+        // Slice 14: one to eight equality predicates plus a two-sided range on a distinct property.
         validate_mixed_equality_and_two_sided_range(&predicates)
     } else {
         Err(PlannerError::UnsupportedPattern(
@@ -146,26 +148,18 @@ fn validate_pure_equality_conjunction(
 
 /// Detect a pure equality disjunction: an OR chain (or a single equality) where every leaf is an
 /// equality comparison between `binding.property` and a literal or parameter, and every leaf refers
-/// to the same property. Returns the shared property name when the shape matches.
-fn detect_pure_equality_disjunction(
-    filter: &gleaph_gql::ast::Expr,
-    binding: &str,
-) -> Option<String> {
-    fn is_bound_property(expr: &gleaph_gql::ast::Expr, binding: &str) -> Option<String> {
+/// to the same searched binding. In ADR 0034 Slice 16 the property may differ between arms. Returns
+/// `true` only when the filter is an OR chain with at least two equality leaves; a single equality
+/// leaf is handled by the existing conjunction path.
+fn is_pure_equality_disjunction(filter: &gleaph_gql::ast::Expr, binding: &str) -> bool {
+    fn is_bound_property(expr: &gleaph_gql::ast::Expr, binding: &str) -> bool {
         match &expr.kind {
-            gleaph_gql::ast::ExprKind::PropertyAccess {
-                expr: base,
-                property,
-            } => {
-                if matches!(&base.kind,
+            gleaph_gql::ast::ExprKind::PropertyAccess { expr: base, .. } => {
+                matches!(&base.kind,
                     gleaph_gql::ast::ExprKind::Variable(name) if name == binding
-                ) {
-                    Some(property.clone())
-                } else {
-                    None
-                }
+                )
             }
-            _ => None,
+            _ => false,
         }
     }
 
@@ -176,45 +170,34 @@ fn detect_pure_equality_disjunction(
         )
     }
 
+    fn is_equality_leaf(leaf: &gleaph_gql::ast::Expr, binding: &str) -> bool {
+        let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &leaf.kind else {
+            return false;
+        };
+        if *op != gleaph_gql::ast::CmpOp::Eq {
+            return false;
+        }
+        (is_bound_property(left, binding) && is_literal_or_parameter(right))
+            || (is_bound_property(right, binding) && is_literal_or_parameter(left))
+    }
+
     let leaves = result::flatten_disjunction(filter);
     if leaves.len() < 2 {
         // Single-arm equality is handled by the existing conjunction path; do not classify it as a
         // disjunction here.
-        return None;
+        return false;
     }
 
-    let mut shared_property: Option<String> = None;
-    for leaf in &leaves {
-        let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &leaf.kind else {
-            return None;
-        };
-        if *op != gleaph_gql::ast::CmpOp::Eq {
-            return None;
-        }
-        let property = if let Some(property) = is_bound_property(left, binding)
-            && is_literal_or_parameter(right)
-        {
-            property
-        } else if let Some(property) = is_bound_property(right, binding)
-            && is_literal_or_parameter(left)
-        {
-            property
-        } else {
-            return None;
-        };
-        match &shared_property {
-            Some(existing) if existing != &property => return None,
-            Some(_) => {}
-            None => shared_property = Some(property),
-        }
-    }
-    shared_property
+    leaves.iter().all(|leaf| is_equality_leaf(leaf, binding))
 }
 
+/// Validate a pure equality disjunction: every leaf is an equality comparison between a property
+/// of the searched binding and a literal or parameter, and the OR chain contains at least two arms.
+/// In ADR 0034 Slice 16 arms may refer to distinct properties; the Router proves index coverage
+/// for each property at execution time.
 fn validate_pure_equality_disjunction(
     filter: &gleaph_gql::ast::Expr,
     binding: &str,
-    expected_property: &str,
 ) -> Result<(), PlannerError> {
     let leaves = result::flatten_disjunction(filter);
     if leaves.len() < 2 {
@@ -224,21 +207,14 @@ fn validate_pure_equality_disjunction(
         ));
     }
 
-    fn is_bound_property(expr: &gleaph_gql::ast::Expr, binding: &str) -> Option<String> {
+    fn is_bound_property(expr: &gleaph_gql::ast::Expr, binding: &str) -> bool {
         match &expr.kind {
-            gleaph_gql::ast::ExprKind::PropertyAccess {
-                expr: base,
-                property,
-            } => {
-                if matches!(&base.kind,
+            gleaph_gql::ast::ExprKind::PropertyAccess { expr: base, .. } => {
+                matches!(&base.kind,
                     gleaph_gql::ast::ExprKind::Variable(name) if name == binding
-                ) {
-                    Some(property.clone())
-                } else {
-                    None
-                }
+                )
             }
-            _ => None,
+            _ => false,
         }
     }
 
@@ -262,22 +238,11 @@ fn validate_pure_equality_disjunction(
                     .into(),
             ));
         }
-        let property = if let Some(property) = is_bound_property(left, binding)
-            && is_literal_or_parameter(right)
+        if !((is_bound_property(left, binding) && is_literal_or_parameter(right))
+            || (is_bound_property(right, binding) && is_literal_or_parameter(left)))
         {
-            property
-        } else if let Some(property) = is_bound_property(right, binding)
-            && is_literal_or_parameter(left)
-        {
-            property
-        } else {
             return Err(PlannerError::UnsupportedPattern(
                 "SEARCH ... WHERE equality disjunction must compare a property of the searched binding with a literal or parameter".into(),
-            ));
-        };
-        if property != expected_property {
-            return Err(PlannerError::UnsupportedPattern(
-                "SEARCH ... WHERE equality disjunction must refer to a single property".into(),
             ));
         }
     }

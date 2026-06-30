@@ -1,7 +1,7 @@
 # Vector index
 
 Last updated: 2026-06-30
-Anchor timestamp: 2026-06-30 18:18:05 UTC +0000
+Anchor timestamp: 2026-06-30 20:26:00 UTC +0000
 
 ## Status
 
@@ -430,7 +430,7 @@ the incarnation fence and a two-condition gate (global flag AND per-graph shard 
   (`VectorDispatchActivationBlocked`) while dispatch is not ready.
 
 
-## Filtered exact ranking (ADR 0034 Slices 6, 7, 8, 9, 10, 11, 12, 13, 14 and 15)
+## Filtered exact ranking (ADR 0034 Slices 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 and 16)
 
 A bounded candidate allowlist can restrict the search to an exact top-k over current live vector
 slots. The allowlist is produced by the Router from the Property Index for both leading and
@@ -438,8 +438,10 @@ non-leading `SEARCH ... WHERE` predicates (one equality, one to eight `AND`-conn
 equalities on distinct properties, one same-binding numeric range predicate, exactly two
 same-binding numeric range predicates on the same property (one lower `>`/`>=` and one upper
 `<`/`<=`) forming a two-sided range, one to eight equality predicates on distinct properties
-plus one one- or two-sided numeric range predicate on a distinct property, or two to eight
-`OR`-connected same-binding same-property equality predicates) and arrives in `VectorSearchRequest.candidate_subjects`.
+plus one one- or two-sided numeric range predicate on a distinct property, two to eight
+`OR`-connected same-binding same-property equality predicates, or two to eight `OR`-connected
+same-binding pure equality predicates where property names may repeat or differ) and arrives in
+`VectorSearchRequest.candidate_subjects`.
 Router intersects the two range arms into one encoded interval and unions the equality disjunction
 arms before issuing the allowlist; Vector Index behavior is unchanged:
 

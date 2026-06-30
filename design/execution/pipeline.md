@@ -1,7 +1,7 @@
 # Execution pipeline
 
 Last updated: 2026-06-30
-Anchor timestamp: 2026-06-30 18:18:05 UTC +0000
+Anchor timestamp: 2026-06-30 20:26:00 UTC +0000
 
 ## Purpose
 
@@ -89,6 +89,12 @@ allowlist would exceed `MAX_VECTOR_SEARCH_FILTER_CANDIDATES`. When the candidate
 the vector canister receives a bounded allowlist and returns exact top-k hits; the normal
 leading-search hit-shard-only dispatch then applies.
 
+The two-to-eight cross-property pure equality `OR` path generalizes the same-property disjunction:
+each arm resolves its own `(graph_id, label_id, property_id)` tuple, each tuple must have an active
+vertex property index, and the candidate set is the union of paginated `lookup_equal_page` streams for
+every distinct `(property_id, encoded_value)` source, with the same per-page label filtering, global
+`(shard_id, vertex_id)` deduplication, 4096 candidate bound, and empty-candidate dispatch contract.
+
 For a non-leading `PlanOp::Search` with a `WHERE` predicate (one equality, one to eight
 `AND`-connected same-binding equalities on distinct properties, one numeric range predicate,
 exactly two same-property range predicates forming one lower and one upper bound, one to eight
@@ -101,7 +107,7 @@ eight equality arms, one `lookup_range_page` stream with the intersected finite 
 interval for one or two range arms, one `lookup_range_intersection_page` stream that walks the finite
 range and sieves each page by one to eight equality arms for one to eight equality arms plus one or
 two same-property range arms on a distinct property, or a union of `lookup_equal_page` streams for
-two to eight same-property equality disjunction arms), and skips the vector canister when the
+two to eight same-property or cross-property equality disjunction arms), and skips the vector canister when the
 candidate set is empty. For a two-sided range with an empty intersection (`low >= high`) the Router
 short-circuits before any Property Index or Vector Index call and dispatches the full plan with an
 explicit empty `ResolvedSearchWire` to every live shard, so the Graph executor still runs the prefix

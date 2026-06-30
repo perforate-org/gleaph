@@ -393,27 +393,6 @@ fn test_search_where_equality_disjunction_arbitrary_length_accepted_by_planner()
 }
 
 #[test]
-fn test_search_where_equality_disjunction_rejects_different_property() {
-    let err = plan_query_err(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX document_embedding \
-           FOR $query \
-           WHERE d.category = 1 OR d.tenant = 2 \
-           LIMIT 100 \
-         ) SCORE AS similarity \
-         RETURN d, similarity",
-    );
-    assert!(
-        err.to_string()
-            .contains("must be an equality or range comparison")
-            || err.to_string().contains("single property")
-            || err.to_string().contains("equality disjunction"),
-        "different-property equality disjunction must be rejected, got {err}"
-    );
-}
-
-#[test]
 fn test_search_where_equality_disjunction_rejects_mixed_range() {
     let err = plan_query_err(
         "MATCH (d:Document) \
@@ -433,6 +412,52 @@ fn test_search_where_equality_disjunction_rejects_mixed_range() {
                 .to_string()
                 .contains("must be an equality or range comparison"),
         "mixed equality/range disjunction must be rejected, got {err}"
+    );
+}
+
+#[test]
+fn test_search_where_equality_disjunction_across_properties_accepted_by_planner() {
+    // ADR 0034 Slice 16: the planner accepts any number of OR-connected equality arms on the same
+    // searched binding even when the property names differ.
+    let plan = plan_query(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE d.category = 1 OR d.tenant = 2 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    let filter = search_filter_from_plan(&plan);
+    assert!(
+        filter.is_some(),
+        "accepted cross-property equality disjunction must be preserved in the plan"
+    );
+}
+
+#[test]
+fn test_search_where_equality_disjunction_rejects_mixed_and_or() {
+    let err = plan_query_err(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX document_embedding \
+           FOR $query \
+           WHERE (d.category = 1 OR d.category = 2) AND d.price >= 10 \
+           LIMIT 100 \
+         ) SCORE AS similarity \
+         RETURN d, similarity",
+    );
+    assert!(
+        err.to_string().contains("Unsupported")
+            || err
+                .to_string()
+                .contains("does not support this equality/range mixture")
+            || err.to_string().contains("equality/range mixture")
+            || err
+                .to_string()
+                .contains("must be an equality or range comparison"),
+        "mixed AND/OR disjunction must be rejected, got {err}"
     );
 }
 
@@ -473,7 +498,6 @@ fn test_search_where_non_leading_mixed_equality_and_range_accepted_by_planner() 
         "accepted non-leading mixed equality/range filter must be preserved in the plan"
     );
 }
-
 #[test]
 fn test_search_where_mixed_equality_and_range_rejects_same_property() {
     let err = plan_query_err(
@@ -608,21 +632,26 @@ fn test_search_where_nine_equalities_accepted_by_planner() {
 }
 
 #[test]
-fn test_search_where_two_equalities_plus_range_rejected_by_planner() {
-    let err = plan_query_err(
+fn test_search_where_two_equalities_plus_two_sided_range_accepted_by_planner() {
+    let plan = plan_query(
         "MATCH (d:Document) \
          SEARCH d IN ( \
            VECTOR INDEX document_embedding \
            FOR $query \
-           WHERE d.category = 1 AND d.tenant = 2 AND d.price >= 10 \
+           WHERE d.category = 1 AND d.tenant = 2 AND d.price >= 10 AND d.price <= 100 \
            LIMIT 100 \
          ) SCORE AS similarity \
          RETURN d, similarity",
     );
+    let filter = search_filter_from_plan(&plan)
+        .expect("two equalities plus two-sided range must remain a filtered search");
+    let filter_text = format!("{:?}", filter);
     assert!(
-        err.to_string()
-            .contains("does not support this equality/range mixture"),
-        "two equalities plus one range must be rejected, got {err}"
+        filter_text.contains("category")
+            && filter_text.contains("tenant")
+            && filter_text.contains("price"),
+        "filter must keep all four predicates: {}",
+        filter_text
     );
 }
 
@@ -855,14 +884,19 @@ fn test_search_where_disjunction_rejected_by_planner() {
          SEARCH d IN ( \
            VECTOR INDEX document_embedding \
            FOR $query \
-           WHERE d.category = 1 OR d.tenant_id = 2 \
+           WHERE d.category = 1 OR d.category >= 2 \
            LIMIT 100 \
          ) SCORE AS similarity \
          RETURN d, similarity",
     );
     assert!(
-        err.to_string().contains("equality or range"),
-        "OR filter must be rejected, got {err}"
+        err.to_string().contains("only equality")
+            || err.to_string().contains("equality disjunction")
+            || err.to_string().contains("Unsupported")
+            || err
+                .to_string()
+                .contains("must be an equality or range comparison"),
+        "OR range disjunction must be rejected, got {err}"
     );
 }
 

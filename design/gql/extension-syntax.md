@@ -1,11 +1,11 @@
 # Gleaph GQL extension syntax
 
 Last updated: 2026-06-30
-Anchor timestamp: 2026-06-30 18:18:05 UTC +0000
+Anchor timestamp: 2026-06-30 20:26:00 UTC +0000
 
 ## Status
 
-**Dialect contract with a canonical Rust manifest and partially implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter, Slice 7 non-leading labeled `SEARCH ... WHERE` equality filter, Slice 8 one or two `AND`-connected same-binding equality conjuncts, Slice 9 one same-binding numeric range predicate (`<`, `<=`, `>`, `>=`), Slice 10 exactly two same-property range predicates (one lower, one upper) forming a two-sided numeric range, Slice 11 one equality predicate plus one one-sided numeric range predicate on distinct properties, Slice 12 one equality predicate plus two same-property numeric range predicates (one lower and one upper) on a distinct property, Slice 13 bounded N-way (1..=8) same-binding equality conjunctions on distinct properties, Slice 14 one to eight equality predicates plus one one- or two-sided numeric range predicate on a distinct property, and Slice 15 bounded same-property equality disjunctions (2..=8 OR-connected arms) are implemented; other predicate forms remain planned.** This document
+**Dialect contract with a canonical Rust manifest and partially implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter, Slice 7 non-leading labeled `SEARCH ... WHERE` equality filter, Slice 8 one or two `AND`-connected same-binding equality conjuncts, Slice 9 one same-binding numeric range predicate (`<`, `<=`, `>`, `>=`), Slice 10 exactly two same-property range predicates (one lower, one upper) forming a two-sided numeric range, Slice 11 one equality predicate plus one one-sided numeric range predicate on distinct properties, Slice 12 one equality predicate plus two same-property numeric range predicates (one lower and one upper) on a distinct property, Slice 13 bounded N-way (1..=8) same-binding equality conjunctions on distinct properties, Slice 14 one to eight equality predicates plus one one- or two-sided numeric range predicate on a distinct property, Slice 15 bounded same-property equality disjunctions (2..=8 OR-connected arms), and Slice 16 bounded cross-property pure equality disjunctions (2..=8 OR-connected arms) are implemented; other predicate forms remain planned.** This document
 is the steady-state public syntax contract for Gleaph-specific GQL extensions.
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
@@ -45,7 +45,7 @@ semantics.
 | Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph query executor                                                                        |
 | Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph edge storage/execution                                                                |
 | Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Planner fusion + Graph edge payload executor                                                |
-| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, leading `SEARCH ... WHERE` with one to eight `AND`-connected same-binding equality predicates on distinct properties backed by active vertex property indexes, one or two same-binding numeric range predicates on the same property (one lower `>`/`>=` and one upper `<`/`<=`, intersected into one encoded interval), one to eight equality predicates plus one one- or two-sided numeric range predicate on a distinct property, two to eight `OR`-connected same-binding same-property equality predicates backed by one active vertex property index (union of `lookup_equal_page` streams with global deduplication and the 4096 candidate bound), and non-leading `SEARCH` inner-joined on a bound vertex with the same filtered shapes; `SCORE AS` rejected for distance-only metrics; `WHERE` is fail-closed and index-owned; edge subjects, nested/multiple search, correlated `FOR`/`LIMIT`, text/bytes/temporal/boolean/collection/path range predicates, two ranges on different properties, OR across different properties, range inside OR, mixed OR/AND, and nine-or-more equality conjuncts remain planned | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
+| Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, leading `SEARCH ... WHERE` with one to eight `AND`-connected same-binding equality predicates on distinct properties backed by active vertex property indexes, one or two same-binding numeric range predicates on the same property (one lower `>`/`>=` and one upper `<`/`<=`, intersected into one encoded interval), one to eight equality predicates plus one one- or two-sided numeric range predicate on a distinct property, two to eight `OR`-connected same-binding same-property equality predicates backed by one active vertex property index (union of `lookup_equal_page` streams with global deduplication and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property pure equality predicates backed by active vertex property indexes (one `lookup_equal_page` stream per distinct `(property_id, encoded_value)` source, with the same union, deduplication, label filtering, and candidate bound), and non-leading `SEARCH` inner-joined on a bound vertex with the same filtered shapes; `SCORE AS` rejected for distance-only metrics; `WHERE` is fail-closed and index-owned; edge subjects, nested/multiple search, correlated `FOR`/`LIMIT`, text/bytes/temporal/boolean/collection/path range predicates, two ranges on different properties, range inside OR, mixed OR/AND, and nine-or-more equality conjuncts remain planned | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
 | Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                                                                                                                                                                                                                                                                          | Graph mutation executor / Router orchestration                                              |
 
 ## Namespace policy
@@ -294,7 +294,7 @@ be implied by the initial syntax.
 
 ### Target vector-search syntax
 
-**Status:** Parser and planner representation implemented. Router lowering to the existing vector search API is implemented for the narrow accepted shape: a leading `NodeScan(variable = d, label: optional)` immediately followed by `PlanOp::Search { binding = d, provider: VectorIndex, output: DISTANCE AS alias or SCORE AS alias }`, and one top-level non-leading `PlanOp::Search` after preceding graph operators have bound the vertex variable. Both shapes are vertex-only. Both leading and non-leading shapes accept `SEARCH ... WHERE` with one same-binding labeled equality predicate, one to eight `AND`-connected same-binding labeled equality predicates on distinct properties, one same-binding numeric range predicate (`<`, `<=`, `>`, `>=`), exactly two same-property range predicates forming a two-sided range, one to eight equality predicates on distinct properties plus one one- or two-sided numeric range predicate on a distinct property, or two to eight `OR`-connected same-binding same-property equality predicates, all backed by active vertex property indexes for the same label (ADR 0034 Slices 6-15); every other `WHERE` predicate is rejected. `SCORE AS` is accepted only for indexes whose metric exposes a score (currently exact-scan `Cosine`, `nlist == 1`); it is rejected for distance-only metrics such as `L2Squared`. Unsupported shapes (multiple `SEARCH`, nested `SEARCH`, edge subjects, `WHERE` filtering beyond the implemented equality, numeric-range, mixed equality-plus-range, and same-property equality-disjunction shapes, `OR` across different properties or with ranges, correlated `FOR`/`LIMIT`, or any mutation tail) fail closed with an explicit `InvalidArgument` error.
+**Status:** Parser and planner representation implemented. Router lowering to the existing vector search API is implemented for the narrow accepted shape: a leading `NodeScan(variable = d, label: optional)` immediately followed by `PlanOp::Search { binding = d, provider: VectorIndex, output: DISTANCE AS alias or SCORE AS alias }`, and one top-level non-leading `PlanOp::Search` after preceding graph operators have bound the vertex variable. Both shapes are vertex-only. Both leading and non-leading shapes accept `SEARCH ... WHERE` with one same-binding labeled equality predicate, one to eight `AND`-connected same-binding labeled equality predicates on distinct properties, one same-binding numeric range predicate (`<`, `<=`, `>`, `>=`), exactly two same-property range predicates forming a two-sided range, one to eight equality predicates on distinct properties plus one one- or two-sided numeric range predicate on a distinct property, two to eight `OR`-connected same-binding same-property equality predicates, or two to eight `OR`-connected same-binding pure equality predicates where property names may repeat or differ (ADR 0034 Slices 6-16); every other `WHERE` predicate is rejected. `SCORE AS` is accepted only for indexes whose metric exposes a score (currently exact-scan `Cosine`, `nlist == 1`); it is rejected for distance-only metrics such as `L2Squared`. Unsupported shapes (multiple `SEARCH`, nested `SEARCH`, edge subjects, `WHERE` filtering beyond the implemented equality, numeric-range, mixed equality-plus-range, and same-property/cross-property equality-disjunction shapes, `OR` with ranges or mixed logical operators, correlated `FOR`/`LIMIT`, or any mutation tail) fail closed with an explicit `InvalidArgument` error.
 
 Current runtime exposes vector search through Router Candid API `vector_search(RouterVectorSearchRequest)`.
 
@@ -347,9 +347,9 @@ RETURN a, d, similarity
 ORDER BY similarity DESC
 ```
 
-More complex patterns — multiple `SEARCH` operators, nested `SEARCH`, correlated `FOR`/`LIMIT`,
-`OR`/`XOR`/`NOT` `SEARCH ... WHERE` except the supported two-to-eight same-property equality
-`OR` shape, `OR` across different properties or with range predicates inside the disjunction, two
+More complex patterns — multiple `SEARCH`, nested `SEARCH`, correlated `FOR`/`LIMIT`,
+`OR`/`XOR`/`NOT` `SEARCH ... WHERE` except the supported two-to-eight same-property or cross-property
+pure equality `OR` shape, `OR` with ranges or mixed logical operators inside the disjunction, two
 ranges on different properties, text/bytes/temporal/boolean/collection/path/extension-value range
 predicates, four-or-more conjuncts, other three-leaf equality/range mixtures, repeated equality
 properties in a conjunction, duplicate-direction range arms, other bindings in the predicate, edge
@@ -404,9 +404,10 @@ but there must be no implicit `distance` or `score` binding.
 `SEARCH ... WHERE` is implemented for one same-binding labeled equality predicate, any number
 of `AND`-connected same-binding equality predicates on **distinct** properties up to the
 execution bound of 8 arms, exactly one same-binding numeric range predicate (`<`, `<=`, `>`, `>=`),
-exactly two same-property range predicates forming a two-sided range, or one to eight equality
-predicates plus one one- or two-sided numeric range predicate on a distinct property, on both
-leading and non-leading `SEARCH`. The accepted leading shapes are:
+exactly two same-property range predicates forming a two-sided range, one to eight equality
+predicates plus one one- or two-sided numeric range predicate on a distinct property, two to eight
+`OR`-connected same-property equality predicates, or two to eight `OR`-connected pure equality
+predicates on **distinct** properties, on both leading and non-leading `SEARCH`. The accepted leading shapes are:
 
 ```gql
 MATCH (d:Document)
@@ -477,7 +478,7 @@ RETURN d, similarity
 Either operand order is accepted for the range comparison (`d.price >= 10` and `10 <= d.price`
 are equivalent). The predicate must be a single equality comparison, a single range comparison, an `AND` of one to eight equality comparisons
 between distinct properties of the searched binding and a literal or parameter (either operand order
-is accepted), an `AND` of exactly two range comparisons on the same property (one lower `>`/`>=` and one upper `<`/`<=`), or an `AND` of one to eight equality comparisons on distinct properties together with one or two range comparisons on the same property, with every equality property distinct from the range property. The range comparison is restricted to numeric values; text, bytes, temporal, boolean,
+is accepted), an `AND` of exactly two range comparisons on the same property (one lower `>`/`>=` and one upper `<`/`<=`), an `AND` of one to eight equality comparisons on distinct properties together with one or two range comparisons on the same property with every equality property distinct from the range property, an `OR` of two to eight equality comparisons on the same property, or an `OR` of two to eight same-binding equality comparisons where property names may repeat or differ. Every disjunction arm must be a pure equality comparison; ranges and mixed logical operators inside `OR` remain unsupported. The range comparison is restricted to numeric values; text, bytes, temporal, boolean,
 collection, path, record, and extension-value ranges remain planned. The property or properties must
 have active vertex property indexes for the exact `(graph, label, property)` tuple; for a non-leading
 search the label is proved from the statically known prefix. Otherwise the query fails explicitly. The
@@ -486,7 +487,7 @@ unrestricted top-k. Candidate sets are bounded to `MAX_VECTOR_SEARCH_FILTER_CAND
 distinct subjects; larger sets fail explicitly. Empty candidates preserve the global aggregate dispatch
 contract for both leading and non-leading search. Unsupported predicate forms — two ranges on different properties,
 text/bytes/temporal/boolean/collection/path/extension-value ranges, compound
-`OR`/`XOR`/`NOT`, nine or more equality conjuncts, mixed equality/range forms outside the accepted shapes, repeated equality properties, duplicate-direction range arms, `NULL`, functions, computed
+`OR`/`XOR`/`NOT` other than the supported same-property or cross-property pure equality `OR`, nine or more equality conjuncts, mixed equality/range forms outside the accepted shapes, repeated equality properties, duplicate-direction range arms, `NULL`, functions, computed
 expressions, other bindings, and edge subjects — remain planned and are rejected fail-closed rather than
 becoming post-filters.
 
@@ -503,7 +504,7 @@ MATCH (a:Author)-[:WROTE]->(d:Document)
 RETURN a, d, similarity
 ```
 
-The same one-equality, two-equality `AND`, N-equality `AND` (2..=8 arms), single numeric-range, same-property two-sided-range, and mixed equality-plus-range shapes apply to non-leading
+The same one-equality, two-equality `AND`, N-equality `AND` (2..=8 arms), single numeric-range, same-property two-sided-range, mixed equality-plus-range, same-property equality-`OR`, and cross-property pure equality-`OR` shapes apply to non-leading
 search.
 
 ### Internal lowering
@@ -544,7 +545,7 @@ The Router:
    sieves each page by every equality arm server-side while preserving the range cursor. A single
    numeric range arm is converted to a finite half-open interval by
    `gleaph_gql::numeric_range_bounds` and collected through paginated `lookup_range_page` with
-   `PostingRangeRequest::Between { low, high }`. Two numeric range arms on the same property are intersected into one finite half-open interval (`low = max(first.low, second.low)`, `high = min(first.high, second.high)`) and collected through a single paginated `lookup_range_page` stream; if the intersection is empty the candidate set is empty before any Property Index or Vector Index call. Every path collects at most
+   `PostingRangeRequest::Between { low, high }`. Two numeric range arms on the same property are intersected into one finite half-open interval (`low = max(first.low, second.low)`, `high = min(first.high, second.high)`) and collected through a single paginated `lookup_range_page` stream; if the intersection is empty the candidate set is empty before any Property Index or Vector Index call. Two to eight same-property or cross-property equality arms inside an `OR` are collected through the Router-owned `EqualityDisjunction` path: each arm resolves one `(graph_id, label_id, property_id)` tuple, each tuple must have an active vertex property index, and the candidate set is the union of paginated `lookup_equal_page` results for every distinct `(property_id, encoded_value)` source, label-filtered per page and deduplicated globally by `(shard_id, vertex_id)`. Every path collects at most
    `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` (4096) distinct candidate subjects. An empty candidate set
    skips the vector canister. For a leading search the stripped plan is dispatched with an empty seed
    relation to every live shard; for a non-leading search the full plan is dispatched with an empty
@@ -578,13 +579,13 @@ For this slice the accepted shape is intentionally narrow:
   and one upper `<`/`<=`) forming a two-sided range, one to eight same-binding property equality
   predicates on distinct properties together with one one- or two-sided numeric range predicate on
   a distinct property, two to eight `OR`-connected same-binding same-property equality predicates,
-  and every property must have an active vertex property index for the same
+  two to eight `OR`-connected same-binding pure equality predicates where property names may repeat or differ, and every property must have an active vertex property index for the same
   label (non-leading search obtains the label from the statically proved prefix);
 - non-leading `SEARCH` requires row-invariant `FOR` and `LIMIT` (literals or parameters);
 - `DISTANCE AS` accepted for all metrics;
 - `SCORE AS` rejected when the metric has no natural score (e.g. `L2Squared`);
 - no other `WHERE` in-index filtering (compound `OR`/`XOR`/`NOT` other than the supported
-  same-property equality `OR`, two numeric ranges on different properties, text/bytes/temporal/boolean/collection/path/extension-value
+  same-property or cross-property pure equality `OR`, two numeric ranges on different properties, text/bytes/temporal/boolean/collection/path/extension-value
   ranges, mixed equality/range forms outside the accepted shapes, repeated equality properties,
   duplicate-direction range arms, functions, other bindings, edge subjects,
   correlated/per-row predicates);
@@ -681,7 +682,7 @@ This expresses the intended flow:
 | 1     | Document the dialect contract and keep existing behavior unchanged                                     | Implemented                                                                                                          |
 | 2     | Add the Rust extension manifest for canonical extension names, classes, status, owner, and doc anchors | Implemented                                                                                                          |
 | 3     | Add `SEARCH` parser/planner representation without backend-specific storage details                    | Implemented                                                                                                          |
-| 4     | Add Router lowering from vector `SEARCH` to the existing vector search API                             | Implemented for leading `NodeScan + Search` prefix and non-leading `SEARCH` after a bound vertex, vertex-only, leading and non-leading `SEARCH ... WHERE` with one to eight `AND`-connected equalities on distinct properties, one numeric range, a two-sided numeric range, mixed equality-plus-one-sided-range, or mixed equality-plus-two-sided-range backed by active vertex property indexes, `DISTANCE AS` and `SCORE AS` for cosine |
+| 4     | Add Router lowering from vector `SEARCH` to the existing vector search API                             | Implemented for leading `NodeScan + Search` prefix and non-leading `SEARCH` after a bound vertex, vertex-only, leading and non-leading `SEARCH ... WHERE` with one to eight `AND`-connected equalities on distinct properties, one numeric range, a two-sided numeric range, mixed equality-plus-one-sided-range, mixed equality-plus-two-sided-range, same-property equality disjunctions, and cross-property pure equality disjunctions (where property names may repeat or differ) backed by active vertex property indexes, `DISTANCE AS` and `SCORE AS` for cosine |
 | 5     | Add result hydration from vector hits to graph vertex bindings                                         | Implemented via row-shaped `SeedBindingsWire`                                                                        |
 | 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Implemented: shape validated against metric; `SCORE AS` works for exact-scan `Cosine`, rejected for `L2Squared`      |
 | 7     | Add inline edge property schema syntax and lower `e.inline_field` to existing edge-payload reads       | Planned                                                                                                              |

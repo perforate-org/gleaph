@@ -1,7 +1,7 @@
 # Physical plan format
 
 Last updated: 2026-06-30
-Anchor timestamp: 2026-06-30 18:18:05 UTC +0000
+Anchor timestamp: 2026-06-30 20:26:00 UTC +0000
 
 ## Purpose
 
@@ -84,11 +84,12 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
   lower bound (`>` or `>=`) and the other is an upper bound (`<` or `<=`), one to eight
   equality comparisons on distinct properties of the searched binding together with one or two
   range comparisons on the same property where one range arm is a lower bound and the other is an
-  upper bound, with the range property distinct from every equality property, or any number of
-  `OR`-connected equality comparisons on the same property of the searched binding. Either operand
-  order and any conjunct or disjunct order is accepted. The planner does not verify label, index
-  coverage, or numeric-domain semantics, and does not enforce the Router's eight-arm disjunction
-  execution bound.
+  upper bound, with the range property distinct from every equality property, any number of
+  `OR`-connected equality comparisons on the same property of the searched binding, or any number of
+  `OR`-connected same-binding equality comparisons where property names may repeat or differ. Either
+  operand order and any conjunct or disjunct order is accepted. The planner does not verify label,
+  index coverage, or numeric-domain semantics, and does not enforce the Router's eight-arm
+  disjunction execution bound.
 - The Router resolves the searched label and every filter property to router-issued ids, proves an
   active vertex property index for the exact `(graph_id, label_id, property_id)` tuple in the
   named-index catalog for every arm, and validates each encoded size against
@@ -103,9 +104,10 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
   `lookup_range_intersection_page` for one to eight equality arms plus one or two same-property range arms on a
   distinct property (the two range arms are collapsed into one intersected encoded interval in
   Router before a single range-walk/equality-sieve stream), or a sequential union of up to eight
-  paginated `lookup_equal_page` streams for two to eight `OR`-connected same-property equality arms
-  (one active index, one page in flight per source, per-source cursors starting from `None`, global
-  deduplication, label filtering before counting, and the 4096 candidate bound). Deduplicating by
+  paginated `lookup_equal_page` streams for two to eight `OR`-connected same-property or cross-property
+  equality arms (each arm resolves one `(graph_id, label_id, property_id)` tuple, each tuple must
+  have an active index, one page in flight per source, per-source cursors starting from `None`,
+  global deduplication, label filtering before counting, and the 4096 candidate bound). Deduplicating by
   `(shard_id, vertex_id)`, it stops as soon as a 4097th distinct subject is observed and returns an
   explicit error instead of truncating. Malformed postings are rejected. Nine or more equality arms
   are rejected with `InvalidArgument` before any Property Index call.
