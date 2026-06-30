@@ -1,11 +1,11 @@
-//! PocketIC coverage for ADR 0034 Slices 9, 10 and 11: `SEARCH ... WHERE` numeric range, two-sided numeric range, and mixed equality-plus-range.
+//! PocketIC coverage for ADR 0034 Slices 9, 10, 11 and 12: `SEARCH ... WHERE` numeric range, two-sided numeric range, mixed equality-plus-one-sided-range, and mixed equality-plus-two-sided-range.
 //!
 //! Semantics under test:
 //!   R = property_index_numeric_range(Document, price, OP, value)
 //!   result = vector_top_k(document_embedding, subjects = R, limit)
 //!
-//! - Candidate membership is the exact label-scoped numeric range before vector ranking.
-//! - A globally nearer vertex with an out-of-range or non-numeric value for the same property, or with a value outside a two-sided interval,
+//! - Candidate membership is the exact label-scoped numeric range (optionally intersected with an equality sieve) before vector ranking.
+//! - A globally nearer vertex with an out-of-range or non-numeric value, with a value outside a two-sided interval, or with the wrong equality value,
 //!   must not consume a top-k position.
 
 use candid::{Decode, Encode, Principal};
@@ -1558,6 +1558,577 @@ fn search_where_mixed_equality_and_range_rejects_missing_category_index() {
 
     let result = gql_query_with_params_as_admin_result(&env, &query, params);
     let err = result.expect_err("missing category index must fail");
+    assert!(
+        err.to_string().contains("active vertex property index"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn search_where_mixed_equality_plus_two_sided_excludes_single_arm_matches() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let author_label_id = admin_intern_vertex_label(&env, "Author").raw();
+    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
+    let wrote_label_id = admin_intern_edge_label(&env, "WROTE").raw();
+    let category_id = admin_intern_property(&env, "category");
+    let price_id = admin_intern_property(&env, "price");
+
+    create_vertex_property_index(
+        &env,
+        "document_category_idx",
+        "Document",
+        "category",
+        "create_document_category_idx",
+    );
+    create_vertex_property_index(
+        &env,
+        "document_price_idx",
+        "Document",
+        "price",
+        "create_document_price_idx",
+    );
+
+    let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
+
+    let d_match = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        7,
+    );
+    let d_eq_only = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        3,
+    );
+    let d_range_only = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        2,
+        price_id.raw(),
+        7,
+    );
+    let d_upper_only = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        12,
+    );
+
+    for d in [&d_match, &d_eq_only, &d_range_only, &d_upper_only] {
+        e2e_insert_edge_with_label(
+            &env,
+            env.graph_source,
+            a1.local_vertex_id,
+            d.local_vertex_id,
+            wrote_label_id,
+        );
+    }
+
+    seed_embedding(
+        &env,
+        vector,
+        env.graph_source,
+        d_match.local_vertex_id,
+        10.0,
+    );
+    seed_embedding(
+        &env,
+        vector,
+        env.graph_source,
+        d_eq_only.local_vertex_id,
+        5.0,
+    );
+    seed_embedding(
+        &env,
+        vector,
+        env.graph_source,
+        d_range_only.local_vertex_id,
+        5.0,
+    );
+    seed_embedding(
+        &env,
+        vector,
+        env.graph_source,
+        d_upper_only.local_vertex_id,
+        5.0,
+    );
+
+    let query = format!(
+        "MATCH (a:Author)-[:WROTE]->(d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE d.category = 1 AND d.price >= 5 AND d.price < 10 \
+           LIMIT 1 \
+         ) DISTANCE AS distance \
+         RETURN a, d, distance ORDER BY distance ASC"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(5.0)),
+    )])
+    .expect("encode params");
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_row_count_and_distance(result, 1, 400.0);
+}
+
+#[test]
+fn search_where_mixed_equality_plus_two_sided_non_leading_parameterized() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let author_label_id = admin_intern_vertex_label(&env, "Author").raw();
+    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
+    let wrote_label_id = admin_intern_edge_label(&env, "WROTE").raw();
+    let category_id = admin_intern_property(&env, "category");
+    let price_id = admin_intern_property(&env, "price");
+
+    create_vertex_property_index(
+        &env,
+        "document_category_idx",
+        "Document",
+        "category",
+        "create_document_category_idx",
+    );
+    create_vertex_property_index(
+        &env,
+        "document_price_idx",
+        "Document",
+        "price",
+        "create_document_price_idx",
+    );
+
+    let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
+    let d_match = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        7,
+    );
+    let d_out = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        3,
+    );
+
+    e2e_insert_edge_with_label(
+        &env,
+        env.graph_source,
+        a1.local_vertex_id,
+        d_match.local_vertex_id,
+        wrote_label_id,
+    );
+    e2e_insert_edge_with_label(
+        &env,
+        env.graph_source,
+        a1.local_vertex_id,
+        d_out.local_vertex_id,
+        wrote_label_id,
+    );
+
+    seed_embedding(
+        &env,
+        vector,
+        env.graph_source,
+        d_match.local_vertex_id,
+        10.0,
+    );
+    seed_embedding(&env, vector, env.graph_source, d_out.local_vertex_id, 5.0);
+
+    let query = format!(
+        "MATCH (a:Author)-[:WROTE]->(d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE $min_price <= d.price AND $category = d.category AND d.price < $max_price \
+           LIMIT 1 \
+         ) DISTANCE AS distance \
+         RETURN a, d, distance ORDER BY distance ASC"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![
+        ("query".to_string(), Value::Bytes(vec_bytes(5.0))),
+        ("min_price".to_string(), Value::Int64(5)),
+        ("category".to_string(), Value::Int64(1)),
+        ("max_price".to_string(), Value::Int64(10)),
+    ])
+    .expect("encode params");
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_row_count_and_distance(result, 1, 400.0);
+}
+
+#[test]
+fn search_where_mixed_equality_plus_two_sided_empty_intersection_returns_zero() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
+    let category_id = admin_intern_property(&env, "category");
+    let price_id = admin_intern_property(&env, "price");
+
+    create_vertex_property_index(
+        &env,
+        "document_category_idx",
+        "Document",
+        "category",
+        "create_document_category_idx",
+    );
+    create_vertex_property_index(
+        &env,
+        "document_price_idx",
+        "Document",
+        "price",
+        "create_document_price_idx",
+    );
+
+    let d = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        7,
+    );
+    seed_embedding(&env, vector, env.graph_source, d.local_vertex_id, 5.0);
+
+    let query = format!(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE d.category = 1 AND d.price > 10 AND d.price <= 10 \
+           LIMIT 1 \
+         ) DISTANCE AS distance \
+         RETURN count(*) AS n"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(5.0)),
+    )])
+    .expect("encode params");
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_eq!(
+        result.row_count, 1,
+        "empty two-sided intersection aggregate must return exactly one aggregate row"
+    );
+    let rows = extract_rows(result);
+    assert_eq!(rows.len(), 1);
+    match rows[0].get("n").expect("count column") {
+        gleaph_gql_ic::IcWireValue::Int64(v) => assert_eq!(*v, 0, "count must be zero"),
+        other => panic!("count must be Int64, got {other:?}"),
+    }
+}
+
+#[test]
+fn search_where_mixed_equality_plus_two_sided_endpoint_strictness() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
+    let category_id = admin_intern_property(&env, "category");
+    let price_id = admin_intern_property(&env, "price");
+
+    create_vertex_property_index(
+        &env,
+        "document_category_idx",
+        "Document",
+        "category",
+        "create_document_category_idx",
+    );
+    create_vertex_property_index(
+        &env,
+        "document_price_idx",
+        "Document",
+        "price",
+        "create_document_price_idx",
+    );
+
+    let d_5 = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        5,
+    );
+    let d_6 = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        6,
+    );
+    let d_7 = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        7,
+    );
+    let d_10 = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        10,
+    );
+
+    seed_embedding(&env, vector, env.graph_source, d_5.local_vertex_id, 10.0);
+    seed_embedding(&env, vector, env.graph_source, d_6.local_vertex_id, 10.0);
+    seed_embedding(&env, vector, env.graph_source, d_7.local_vertex_id, 10.0);
+    seed_embedding(&env, vector, env.graph_source, d_10.local_vertex_id, 10.0);
+
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(5.0)),
+    )])
+    .expect("encode params");
+
+    let run = |lower_op: &str, upper_op: &str, expected: usize| {
+        let query = format!(
+            "MATCH (d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+               WHERE d.category = 1 AND d.price {lower_op} 5 AND d.price {upper_op} 10 \
+               LIMIT 10 \
+             ) DISTANCE AS distance \
+             RETURN d, distance ORDER BY distance ASC"
+        );
+        let result = gql_query_with_params_as_admin(&env, &query, params.clone());
+        assert_row_count(result, expected);
+    };
+
+    run(">=", "<", 3);
+    run(">=", "<=", 4);
+    run(">", "<", 2);
+    run(">", "<=", 3);
+}
+
+#[test]
+fn search_where_mixed_equality_plus_two_sided_equal_endpoint() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
+    let category_id = admin_intern_property(&env, "category");
+    let price_id = admin_intern_property(&env, "price");
+
+    create_vertex_property_index(
+        &env,
+        "document_category_idx",
+        "Document",
+        "category",
+        "create_document_category_idx",
+    );
+    create_vertex_property_index(
+        &env,
+        "document_price_idx",
+        "Document",
+        "price",
+        "create_document_price_idx",
+    );
+
+    let d_4 = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        4,
+    );
+    let d_5 = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        5,
+    );
+    let d_6 = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+        price_id.raw(),
+        6,
+    );
+
+    seed_embedding(&env, vector, env.graph_source, d_4.local_vertex_id, 5.0);
+    seed_embedding(&env, vector, env.graph_source, d_5.local_vertex_id, 5.0);
+    seed_embedding(&env, vector, env.graph_source, d_6.local_vertex_id, 5.0);
+
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(5.0)),
+    )])
+    .expect("encode params");
+
+    let query = format!(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE d.category = 1 AND d.price >= 5 AND d.price <= 5 \
+           LIMIT 10 \
+         ) DISTANCE AS distance \
+         RETURN count(*) AS n"
+    );
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_eq!(
+        result.row_count, 1,
+        "equal inclusive endpoint must return exactly one aggregate row"
+    );
+    let rows = extract_rows(result);
+    assert_eq!(rows.len(), 1);
+    match rows[0].get("n").expect("count column") {
+        gleaph_gql_ic::IcWireValue::Int64(v) => assert_eq!(*v, 1, "count must be exactly one"),
+        other => panic!("count must be Int64, got {other:?}"),
+    }
+}
+
+#[test]
+fn search_where_mixed_equality_plus_two_sided_rejects_missing_equality_index() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
+    let _category_id = admin_intern_property(&env, "category");
+    let price_id = admin_intern_property(&env, "price");
+
+    create_vertex_property_index(
+        &env,
+        "document_price_idx",
+        "Document",
+        "price",
+        "create_document_price_idx",
+    );
+
+    e2e_insert_vertex_with_label_and_property(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        price_id.raw(),
+        7,
+    );
+
+    let query = format!(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE d.category = 1 AND d.price >= 5 AND d.price < 10 \
+           LIMIT 1 \
+         ) DISTANCE AS distance \
+         RETURN d, distance"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(5.0)),
+    )])
+    .expect("encode params");
+
+    let result = gql_query_with_params_as_admin_result(&env, &query, params);
+    let err = result.expect_err("missing category index must fail");
+    assert!(
+        err.to_string().contains("active vertex property index"),
+        "unexpected error: {err}"
+    );
+}
+
+#[test]
+fn search_where_mixed_equality_plus_two_sided_rejects_missing_range_index() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
+    let category_id = admin_intern_property(&env, "category");
+    let _price_id = admin_intern_property(&env, "price");
+
+    create_vertex_property_index(
+        &env,
+        "document_category_idx",
+        "Document",
+        "category",
+        "create_document_category_idx",
+    );
+
+    e2e_insert_vertex_with_label_and_property(
+        &env,
+        env.graph_source,
+        doc_label_id,
+        category_id.raw(),
+        1,
+    );
+
+    let query = format!(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE d.category = 1 AND d.price >= 5 AND d.price < 10 \
+           LIMIT 1 \
+         ) DISTANCE AS distance \
+         RETURN d, distance"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(5.0)),
+    )])
+    .expect("encode params");
+
+    let result = gql_query_with_params_as_admin_result(&env, &query, params);
+    let err = result.expect_err("missing price index must fail");
     assert!(
         err.to_string().contains("active vertex property index"),
         "unexpected error: {err}"

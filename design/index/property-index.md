@@ -1,7 +1,7 @@
 # Property index
 
 Last updated: 2026-06-30
-Anchor timestamp: 2026-06-30 00:52:59 UTC +0000
+Anchor timestamp: 2026-06-30 04:54:14 UTC +0000
 
 ## Status
 
@@ -153,7 +153,7 @@ keys before graph-index calls; graph-index read APIs reject them as `IndexValueK
 silent empty range).
 
 
-## Vector search filter membership (ADR 0034 Slices 6, 7, 8, 9, 10 and 11)
+## Vector search filter membership (ADR 0034 Slices 6, 7, 8, 9, 10, 11 and 12)
 
 Property-index postings own filter membership for leading and non-leading `SEARCH ... WHERE`
 predicates. The Router consumes postings through bounded pagination:
@@ -161,8 +161,10 @@ predicates. The Router consumes postings through bounded pagination:
 - The planner accepts one same-binding equality predicate, exactly two `AND`-connected
   same-binding equality predicates on distinct properties, exactly one same-binding numeric range
   predicate (`<`, `<=`, `>`, `>=`), exactly two same-property range predicates forming one lower
-  and one upper bound, or exactly one equality predicate and one one-sided numeric range predicate
-  on distinct properties, and preserves the original filter expression in `PlanOp::Search`.
+  and one upper bound, exactly one equality predicate and one one-sided numeric range predicate
+  on distinct properties, or exactly one equality predicate and two same-property range predicates
+  (one lower and one upper) on a distinct property, and preserves the original filter expression in
+  `PlanOp::Search`.
 - The Router resolves the searched label and every filter property to router-issued ids and proves
   an active vertex property index for the exact `(graph_id, label_id, property_id)` tuple in the
   named-index catalog for every arm. For a leading search the label is taken from the leading
@@ -191,9 +193,15 @@ predicates. The Router consumes postings through bounded pagination:
   `(shard_id, vertex_id)` span is small relative to its size, and falls back to page-size-bounded
   point lookups when the range-walk page scatters hits across arbitrary subject ids. The returned
   `next`/`done` always describe the range walk, so a page with zero survivors is not terminal while
-  the range walk has more pages. If the numeric interval is empty (`low >= high`) the Router returns
-  an empty candidate set before calling the Property Index or Vector Index, preserving the
-  empty-candidate dispatch contract.
+  the range walk has more pages.
+- For one equality arm plus two same-property range arms on a distinct property (ADR 0034 Slice 12)
+  the Router performs no new Property Index operation. It reuses the same `lookup_range_intersection_page`
+  path: the two range arms are collapsed into one intersected finite half-open encoded interval by the
+  same `resolve_filtered_range_interval` logic used for Slice 10, the equality value is encoded once,
+  and one paginated `lookup_range_intersection_page` stream walks the interval and sieves each page by
+  the equality arm.
+- If the numeric interval is empty (`low >= high`) the Router returns an empty candidate set before
+  calling the Property Index or Vector Index, preserving the empty-candidate dispatch contract.
 - In all cases the Router deduplicates by `(shard_id, vertex_id)` and stops as soon as a 4097th
   distinct subject is observed. Exceeding the bound returns an explicit
   `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` error. The Property Index validates bounds structurally

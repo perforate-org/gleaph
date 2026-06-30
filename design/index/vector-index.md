@@ -1,7 +1,7 @@
 # Vector index
 
 Last updated: 2026-06-30
-Anchor timestamp: 2026-06-30 00:52:59 UTC +0000
+Anchor timestamp: 2026-06-30 04:54:14 UTC +0000
 
 ## Status
 
@@ -430,15 +430,16 @@ the incarnation fence and a two-condition gate (global flag AND per-graph shard 
   (`VectorDispatchActivationBlocked`) while dispatch is not ready.
 
 
-## Filtered exact ranking (ADR 0034 Slices 6, 7, 8, 9, 10 and 11)
+## Filtered exact ranking (ADR 0034 Slices 6, 7, 8, 9, 10, 11 and 12)
 
 A bounded candidate allowlist can restrict the search to an exact top-k over current live vector
 slots. The allowlist is produced by the Router from the Property Index for both leading and
 non-leading `SEARCH ... WHERE` predicates (one equality, exactly two `AND`-connected same-binding
 equalities on distinct properties, one same-binding numeric range predicate, exactly two
 same-binding numeric range predicates on the same property (one lower `>`/`>=` and one upper
-`<`/`<=`) forming a two-sided range, or exactly one equality predicate plus one one-sided
-numeric range predicate on distinct properties) and arrives in `VectorSearchRequest.candidate_subjects`.
+`<`/`<=`) forming a two-sided range, exactly one equality predicate plus one one-sided
+numeric range predicate on distinct properties, or exactly one equality predicate plus two
+same-property numeric range predicates (one lower and one upper) on a distinct property) and arrives in `VectorSearchRequest.candidate_subjects`.
 Router intersects the two range arms into one encoded interval before issuing the allowlist; Vector Index behavior is unchanged:
 
 - `None` keeps the existing unrestricted search path (exact subject scan or partition-page scan).

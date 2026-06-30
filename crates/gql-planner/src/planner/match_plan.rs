@@ -50,7 +50,7 @@ pub(super) fn detect_conditional_candidates(
     candidates
 }
 
-/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-11.
+/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-12.
 ///
 /// Accepts:
 /// - exactly one same-binding equality comparison between a property and a literal/parameter,
@@ -58,9 +58,12 @@ pub(super) fn detect_conditional_candidates(
 /// - exactly one same-binding range comparison (`<`, `<=`, `>`, `>=`) between a property and a
 ///   literal/parameter,
 /// - exactly two same-binding range comparisons on the same property where one arm is a lower
-///   bound (`>`, `>=`) and the other is an upper bound (`<`, `<=`), or
+///   bound (`>`, `>=`) and the other is an upper bound (`<`, `<=`),
 /// - exactly two AND-connected predicates with one equality arm and one one-sided range arm on
-///   distinct properties of the same searched binding.
+///   distinct properties of the same searched binding, or
+/// - exactly three AND-connected predicates with one equality arm and two range arms on the same
+///   property where one range arm is a lower bound and the other is an upper bound, and the
+///   equality property differs from the range property.
 ///
 /// The planner is provider-neutral: it checks expression shape only. Label, index coverage, and
 /// numeric-domain verification are validated later by the Router.
@@ -74,20 +77,27 @@ fn validate_search_filter(
             "SEARCH ... WHERE filter is empty".into(),
         ));
     }
-    if predicates.len() > 2 {
+    if predicates.len() > 3 {
         return Err(PlannerError::UnsupportedPattern(
-            "SEARCH ... WHERE supports at most two predicates in this slice".into(),
+            "SEARCH ... WHERE supports at most three predicates in this slice".into(),
         ));
     }
 
-    let all_equality = predicates
+    let equality_count = predicates
         .iter()
-        .all(|p| matches!(p, SearchFilterPredicate::Equality { .. }));
-    let all_range = predicates
+        .filter(|p| matches!(p, SearchFilterPredicate::Equality { .. }))
+        .count();
+    let range_count = predicates
         .iter()
-        .all(|p| matches!(p, SearchFilterPredicate::Range { .. }));
+        .filter(|p| matches!(p, SearchFilterPredicate::Range { .. }))
+        .count();
 
-    if all_equality {
+    if equality_count == predicates.len() {
+        if predicates.len() > 2 {
+            return Err(PlannerError::UnsupportedPattern(
+                "SEARCH ... WHERE supports at most two equality predicates in this slice".into(),
+            ));
+        }
         let mut seen = std::collections::HashSet::new();
         for p in &predicates {
             if let SearchFilterPredicate::Equality { property, .. } = p
@@ -99,19 +109,91 @@ fn validate_search_filter(
             }
         }
         Ok(())
-    } else if predicates.len() == 1 && matches!(&predicates[0], SearchFilterPredicate::Range { .. })
-    {
-        Ok(())
-    } else if all_range {
-        validate_two_sided_range(&predicates)
-    } else if predicates.len() == 2 {
+    } else if range_count == predicates.len() {
+        if predicates.len() == 1 {
+            Ok(())
+        } else {
+            validate_two_sided_range(&predicates)
+        }
+    } else if equality_count == 1 && range_count == 1 && predicates.len() == 2 {
         // Slice 11: one equality + one range on distinct properties.
         validate_mixed_equality_range(&predicates)
+    } else if equality_count == 1 && range_count == 2 && predicates.len() == 3 {
+        // Slice 12: one equality + two same-property range arms on a distinct property.
+        validate_mixed_equality_and_two_sided_range(&predicates)
     } else {
         Err(PlannerError::UnsupportedPattern(
-            "SEARCH ... WHERE does not mix equality and range predicates in this slice".into(),
+            "SEARCH ... WHERE does not support this equality/range mixture in this slice".into(),
         ))
     }
+}
+
+fn validate_mixed_equality_and_two_sided_range(
+    predicates: &[SearchFilterPredicate],
+) -> Result<(), PlannerError> {
+    fn is_range_op(op: gleaph_gql::ast::CmpOp) -> bool {
+        matches!(
+            op,
+            gleaph_gql::ast::CmpOp::Lt
+                | gleaph_gql::ast::CmpOp::Le
+                | gleaph_gql::ast::CmpOp::Gt
+                | gleaph_gql::ast::CmpOp::Ge
+        )
+    }
+
+    let mut equality_property: Option<&str> = None;
+    let mut range_predicates: Vec<SearchFilterPredicate> = Vec::with_capacity(2);
+    for p in predicates {
+        match p {
+            SearchFilterPredicate::Equality { property, .. } => {
+                if equality_property.is_some() {
+                    return Err(PlannerError::UnsupportedPattern(
+                        "SEARCH ... WHERE mixed equality/range requires exactly one equality"
+                            .into(),
+                    ));
+                }
+                equality_property = Some(property.as_str());
+            }
+            SearchFilterPredicate::Range {
+                property,
+                op,
+                value,
+            } if is_range_op(*op) => {
+                range_predicates.push(SearchFilterPredicate::Range {
+                    property: property.clone(),
+                    op: *op,
+                    value: value.clone(),
+                });
+            }
+            _ => {
+                return Err(PlannerError::UnsupportedPattern(
+                    "SEARCH ... WHERE mixed arm must be one equality and one or two ranges".into(),
+                ));
+            }
+        }
+    }
+    if range_predicates.len() != 2 {
+        return Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE mixed equality/range with three leaves requires exactly two ranges"
+                .into(),
+        ));
+    }
+    validate_two_sided_range(&range_predicates)?;
+    let equality_property = equality_property.ok_or_else(|| {
+        PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE mixed arm must contain exactly one equality".into(),
+        )
+    })?;
+    let range_property = match &range_predicates[0] {
+        SearchFilterPredicate::Range { property, .. } => property.as_str(),
+        _ => unreachable!("validate_two_sided_range operates on range predicates"),
+    };
+    if equality_property == range_property {
+        return Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE mixed equality/range arms must refer to distinct properties".into(),
+        ));
+    }
+    Ok(())
 }
 
 fn validate_mixed_equality_range(predicates: &[SearchFilterPredicate]) -> Result<(), PlannerError> {
@@ -203,7 +285,7 @@ fn validate_two_sided_range(predicates: &[SearchFilterPredicate]) -> Result<(), 
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 #[allow(dead_code)]
 enum SearchFilterPredicate {
     Equality {
@@ -217,9 +299,10 @@ enum SearchFilterPredicate {
     },
 }
 
-/// Flatten a SEARCH ... WHERE expression into one or two normalized predicates.
-/// Rejects every shape other than a single accepted comparison or an AND of one or two
-/// accepted comparisons on the same binding.
+/// Flatten a SEARCH ... WHERE expression into one, two, or three normalized predicates.
+/// Rejects every shape other than a single accepted comparison or an AND of one to three
+/// accepted comparisons on the same binding, where the three-leaf shape is exactly one
+/// equality plus one or two range arms on a distinct property.
 fn flatten_search_filter(
     filter: &gleaph_gql::ast::Expr,
     binding: &str,
@@ -667,8 +750,8 @@ mod tests {
             ))),
         ));
         let err = validate_search_filter(&filter, "d")
-            .expect_err("three-arm conjunction should be rejected");
-        assert!(err.to_string().contains("at most two predicates"));
+            .expect_err("three equality arms should be rejected");
+        assert!(err.to_string().contains("at most two equality predicates"));
     }
 
     #[test]
@@ -830,7 +913,10 @@ mod tests {
             ))),
         ));
         let err = validate_search_filter(&filter, "d").expect_err("three range arms must fail");
-        assert!(err.to_string().contains("at most two predicates"));
+        assert!(
+            err.to_string()
+                .contains("two-sided range requires exactly two range predicates")
+        );
     }
 
     #[test]
@@ -905,8 +991,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_search_filter_rejects_mixed_equality_plus_two_sided_range() {
-        // d.category = 'doc' AND d.price >= 5 AND d.price < 10: three leaves, fail-closed.
+    fn validate_search_filter_accepts_mixed_equality_plus_two_sided_range() {
         let filter = Expr::new(ExprKind::And(
             Box::new(cmp(prop("d", "category"), lit(Value::Text("doc".into())))),
             Box::new(Expr::new(ExprKind::And(
@@ -922,9 +1007,135 @@ mod tests {
                 )),
             ))),
         ));
+        validate_search_filter(&filter, "d")
+            .expect("equality plus two-sided range on distinct properties should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_mixed_equality_plus_two_sided_range_all_endpoints() {
+        let combos = [
+            (gleaph_gql::ast::CmpOp::Ge, gleaph_gql::ast::CmpOp::Lt),
+            (gleaph_gql::ast::CmpOp::Ge, gleaph_gql::ast::CmpOp::Le),
+            (gleaph_gql::ast::CmpOp::Gt, gleaph_gql::ast::CmpOp::Lt),
+            (gleaph_gql::ast::CmpOp::Gt, gleaph_gql::ast::CmpOp::Le),
+        ];
+        for (lower, upper) in combos {
+            let filter = Expr::new(ExprKind::And(
+                Box::new(cmp(prop("d", "category"), lit(Value::Text("doc".into())))),
+                Box::new(Expr::new(ExprKind::And(
+                    Box::new(cmp_op(prop("d", "price"), lower, lit(Value::Int64(5)))),
+                    Box::new(cmp_op(prop("d", "price"), upper, lit(Value::Int64(10)))),
+                ))),
+            ));
+            validate_search_filter(&filter, "d")
+                .unwrap_or_else(|e| panic!("{lower:?}/{upper:?} should be accepted: {e}"));
+        }
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_mixed_equality_plus_two_sided_range_reversed_order() {
+        // Equality can appear anywhere and operands may be reversed.
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp_op(
+                lit(Value::Int64(10)),
+                gleaph_gql::ast::CmpOp::Gt,
+                prop("d", "price"),
+            )),
+            Box::new(Expr::new(ExprKind::And(
+                Box::new(cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Ge,
+                    lit(Value::Int64(5)),
+                )),
+                Box::new(cmp(lit(Value::Text("doc".into())), prop("d", "category"))),
+            ))),
+        ));
+        validate_search_filter(&filter, "d")
+            .expect("reversed order and operands for Slice 12 should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_two_equalities_plus_range() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "category"), lit(Value::Text("doc".into())))),
+            Box::new(Expr::new(ExprKind::And(
+                Box::new(cmp(prop("d", "tenant"), lit(Value::Int64(7)))),
+                Box::new(cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Ge,
+                    lit(Value::Int64(5)),
+                )),
+            ))),
+        ));
+        let err =
+            validate_search_filter(&filter, "d").expect_err("two equalities plus range must fail");
+        assert!(
+            err.to_string()
+                .contains("does not support this equality/range mixture")
+        );
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_three_equalities() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "a"), lit(Value::Int64(1)))),
+            Box::new(Expr::new(ExprKind::And(
+                Box::new(cmp(prop("d", "b"), lit(Value::Int64(2)))),
+                Box::new(cmp(prop("d", "c"), lit(Value::Int64(3)))),
+            ))),
+        ));
+        let err = validate_search_filter(&filter, "d").expect_err("three equalities must fail");
+        assert!(err.to_string().contains("at most two equality predicates"));
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_three_ranges() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Ge,
+                lit(Value::Int64(1)),
+            )),
+            Box::new(Expr::new(ExprKind::And(
+                Box::new(cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Lt,
+                    lit(Value::Int64(10)),
+                )),
+                Box::new(cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Le,
+                    lit(Value::Int64(8)),
+                )),
+            ))),
+        ));
+        let err = validate_search_filter(&filter, "d").expect_err("three range arms must fail");
+        assert!(
+            err.to_string()
+                .contains("two-sided range requires exactly two range predicates")
+        );
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_mixed_equality_plus_two_sided_range_same_property() {
+        let filter = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "price"), lit(Value::Int64(5)))),
+            Box::new(Expr::new(ExprKind::And(
+                Box::new(cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Ge,
+                    lit(Value::Int64(5)),
+                )),
+                Box::new(cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Lt,
+                    lit(Value::Int64(10)),
+                )),
+            ))),
+        ));
         let err = validate_search_filter(&filter, "d")
-            .expect_err("equality plus two-sided range should be rejected");
-        assert!(err.to_string().contains("at most two predicates"));
+            .expect_err("same-property equality/range must fail");
+        assert!(err.to_string().contains("distinct properties"));
     }
 
     #[test]
