@@ -106,6 +106,27 @@ Some macOS editor-hosted terminals cannot run PocketIC's canister-sandbox proces
 
 When the direct command fails for an unrelated code, build, or test reason, diagnose that failure normally; do not use `just` merely to bypass it.
 
+### Long-running validation budget
+
+Keep the implementation/review loop responsive. Do not spend tens of minutes waiting synchronously
+for PocketIC, full-workspace tests, or canbench.
+
+- Prefer the smallest affected PocketIC target and focused canbench pattern during development.
+- Do not start the full PocketIC suite, full workspace test suite, or unfiltered canbench merely for
+  extra confidence unless the task, plan, or user explicitly requires it. Unfiltered
+  `canbench --persist` remains required when intentionally updating final benchmark artifacts.
+- After starting a long-running command, observe it for at most 5 minutes without meaningful output
+  and at most 10 minutes total in the active agent turn. If it has not completed, stop it when safe;
+  do not keep polling for tens of minutes.
+- A command that exceeds this observation budget is **not** a pass. Report it as incomplete or
+  deferred, including the last observed state and the exact command the user or a later environment
+  can resume.
+- Do not replace a timed-out direct run with another long synchronous fallback. Use Terminal.app
+  delegation only for a known editor-hosted process-chain failure, then continue other useful work
+  instead of waiting for the delegated run.
+- Never claim completion based only on `--no-run`, successful compilation, or a background/delegated
+  process that has not returned a result. Distinguish build verification from runtime verification.
+
 ## Format, Test, and Benchmark
 
 After completing a meaningful code change, explicitly run formatting, tests, and relevant benchmarks.

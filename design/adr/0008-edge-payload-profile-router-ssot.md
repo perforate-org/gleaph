@@ -3,7 +3,7 @@
 Date: 2026-06-12  
 Status: accepted  
 Last revised: 2026-07-01
-Anchor timestamp: 2026-07-01 14:15:53 UTC +0000
+Anchor timestamp: 2026-07-01 18:02:23 UTC +0000
 
 ## Revision history
 
@@ -12,7 +12,7 @@ Anchor timestamp: 2026-07-01 14:15:53 UTC +0000
 | 2026-06-12 | Proposed; router-owned logical schema, graph `EDGE_PAYLOAD_PROFILES` retirement plan. |
 | 2026-06-12 | Accepted; policy frozen pending implementation phases A–E in §6. |
 | 2026-06-12 | Implemented phases A–E; router region 21 live; graph `EDGE_PAYLOAD_PROFILES` retired (41 regions). |
-| 2026-07-01 | ADR 0034 Slice 20 + Slice 21: store value is a versioned `EdgePayloadSchemaRecord` supporting admin `UnnamedProfile` entries and named scalar inline schemas; `ResolvedEdgeLabel` carries `inline_property_id` as a router-derived projection. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
+| 2026-07-01 | ADR 0034 Slice 20 + Slice 21 + Slice 22: store value is a versioned `EdgePayloadSchemaRecord` supporting admin `UnnamedProfile` entries and named scalar inline schemas; `ResolvedEdgeLabel` carries `inline_property_id` as a router-derived projection consumed by both reads and mutations. Graph encodes mutation values into the payload using the same shared scalar codec and never writes the inline property to sidecar state. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
 
 ## Context
 
@@ -118,7 +118,7 @@ Rules:
 | Path | Requirement |
 |------|-------------|
 | **Query (`gql_query` / physical plan)** | Router `resolve_plan_labels` (or successor) fills `payload_profile` for every edge label named in the plan **plus** any labels required for wildcard/predicate-fusion enumeration (see §3). |
-| **DML / mutation batch** | Same resolved table (or equivalent `ResolvedEdgeSchemaTable`) attached to the wire payload before graph commit. |
+| **DML / mutation batch** | Same resolved table attached to the wire. Graph classifies edge assignments, requires and encodes the inline scalar before any canonical write, and never writes the inline property id to sidecar state. |
 | **Standalone graph tests** | May inject a synthetic `ResolvedLabelTable` in memory; graph stable `EDGE_PAYLOAD_PROFILES` is not the production contract. |
 
 Graph query execution reads profiles from `GqlExecutionContext` (heap, plan-scoped) — not from

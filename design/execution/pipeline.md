@@ -1,7 +1,7 @@
 # Execution pipeline
 
 Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 14:15:53 UTC +0000
+Anchor timestamp: 2026-07-01 18:02:23 UTC +0000
 
 ## Purpose
 
@@ -143,6 +143,33 @@ Edge property evaluation uses one inline-aware read helper (`try_read_inline_edg
 5. If the inline slot matches but the payload/schema is malformed, return `PlanQueryError` instead of `NULL` or sidecar rescue.
 
 Projection, filtering, comparison, aggregate input, and `ORDER BY` all route through this helper, so the precedence and fail-closed rules are enforced uniformly.
+
+### Inline edge property mutation packing
+
+Ordinary GQL edge mutations for an `InlineScalar` edge label write the named inline property only
+through the fixed-width payload slot, never through the sidecar `EDGE_PROPERTIES` store or a Property
+Index maintenance queue:
+
+1. The mutation executor resolves the concrete edge label and reads `inline_property_id` plus the
+derived `EdgePayloadProfile` from the `ResolvedEdgeLabel` projection supplied by the Router.
+2. Before any adjacency record is created, every assignment for the mutation is evaluated, property
+ids are resolved, and assignments are classified into at most one inline value and a list of
+non-inline sidecar assignments.
+3. The inline value is encoded through the same scalar codec used for reads and predicate-byte
+preparation. Every sidecar property is also preflighted: reserved property ids are rejected and the
+value must be encodable via `Value::to_binary_bytes()`. Missing, duplicate, `NULL`, malformed,
+overflowing, unpersistable, or otherwise invalid values fail closed before storage writes begin.
+4. Directed and undirected `INSERT` creates the edge with the prepared payload bytes; non-inline
+assignments are applied as ordinary sidecar properties afterward.
+5. `SET e.inline_property = ...` and `SET e = { ... }` update the payload through the existing
+mirrored `update_edge_payload_at_handle` commit, which synchronizes the forward, reverse, and
+undirected physical mirrors so reads are direction-independent. All-properties replacement first
+materializes the complete new record, rejects it if the inline property is missing or invalid, then
+replaces only the sidecar properties and updates the payload once.
+6. `REMOVE e.inline_property` is rejected because this slice has no absence representation.
+
+Non-inline properties retain their existing sidecar storage and index-maintenance behavior. Graph
+does not persist a duplicate inline schema; Router stable state remains the source of truth.
 
 ## Materialization
 

@@ -1,9 +1,11 @@
 use super::error::PlanMutationError;
 use super::expr_evaluator::{MutationPropertyExprEvaluation, MutationPropertyExprEvaluator};
 use super::gleaph_finalize;
+use crate::edge_payload_scalar_codec::encode_edge_payload_scalar;
 use crate::facade::mutation_executor::{GraphMutationExecutor, insert_vertex_with_async};
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use crate::gql_execution_context::GqlExecutionContext;
+use crate::property::{ensure_persistable, ensure_property_id};
 use gleaph_gql::Value;
 use gleaph_gql::ast::ExprKind;
 use gleaph_gql::types::EdgeDirection;
@@ -11,6 +13,7 @@ use gleaph_gql_ic::{UniqueKeyOutcome, encode_unique_value};
 use gleaph_gql_planner::plan::{
     PhysicalPlan, PlanOp, ProjectColumn, RemovePlanItem, SetPlanItem, Str,
 };
+use gleaph_graph_kernel::entry::EdgePayloadProfile;
 use gleaph_graph_kernel::entry::{ConstraintNameId, EdgeLabelId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::plan_exec::{ConstrainedPropertyDispatch, LabelStatsDelta};
@@ -168,24 +171,32 @@ fn execute_ops_with_bindings(
                 let properties = evaluator.resolve_assignments(properties)?;
                 let resolved_label = resolve_edge_label(&execution, labels.first())?;
                 let property_ids = resolve_mutation_properties(&execution, properties)?;
+                let (inline_payload, sidecar_properties) =
+                    classify_edge_assignments(&execution, resolved_label, property_ids)?;
                 let handle = match direction {
-                    EdgeDirection::PointingRight => store.insert_directed_edge_with(
+                    EdgeDirection::PointingRight => insert_directed_edge_with_inline(
+                        store,
                         src_id,
                         dst_id,
                         resolved_label,
-                        property_ids,
+                        inline_payload.as_ref(),
+                        sidecar_properties,
                     )?,
-                    EdgeDirection::PointingLeft => store.insert_directed_edge_with(
+                    EdgeDirection::PointingLeft => insert_directed_edge_with_inline(
+                        store,
                         dst_id,
                         src_id,
                         resolved_label,
-                        property_ids,
+                        inline_payload.as_ref(),
+                        sidecar_properties,
                     )?,
-                    EdgeDirection::Undirected => store.insert_undirected_edge_with(
+                    EdgeDirection::Undirected => insert_undirected_edge_with_inline(
+                        store,
                         src_id,
                         dst_id,
                         resolved_label,
-                        property_ids,
+                        inline_payload.as_ref(),
+                        sidecar_properties,
                     )?,
                     other => return Err(PlanMutationError::UnsupportedDirection(*other)),
                 };
@@ -342,24 +353,32 @@ pub(crate) async fn apply_mutation_ops_async(
                 let properties = evaluator.resolve_assignments(properties)?;
                 let resolved_label = resolve_edge_label(&execution, labels.first())?;
                 let property_ids = resolve_mutation_properties(&execution, properties)?;
+                let (inline_payload, sidecar_properties) =
+                    classify_edge_assignments(&execution, resolved_label, property_ids)?;
                 let handle = match direction {
-                    EdgeDirection::PointingRight => store.insert_directed_edge_with(
+                    EdgeDirection::PointingRight => insert_directed_edge_with_inline(
+                        store,
                         src_id,
                         dst_id,
                         resolved_label,
-                        property_ids,
+                        inline_payload.as_ref(),
+                        sidecar_properties,
                     )?,
-                    EdgeDirection::PointingLeft => store.insert_directed_edge_with(
+                    EdgeDirection::PointingLeft => insert_directed_edge_with_inline(
+                        store,
                         dst_id,
                         src_id,
                         resolved_label,
-                        property_ids,
+                        inline_payload.as_ref(),
+                        sidecar_properties,
                     )?,
-                    EdgeDirection::Undirected => store.insert_undirected_edge_with(
+                    EdgeDirection::Undirected => insert_undirected_edge_with_inline(
+                        store,
                         src_id,
                         dst_id,
                         resolved_label,
-                        property_ids,
+                        inline_payload.as_ref(),
+                        sidecar_properties,
                     )?,
                     other => return Err(PlanMutationError::UnsupportedDirection(*other)),
                 };
@@ -577,9 +596,15 @@ fn execute_set_item(
             }
 
             if let Some(edge) = bindings.edges.get(variable.as_ref()) {
-                store
-                    .set_edge_property(*edge, property_id, value)
-                    .map_err(GraphStoreError::from)?;
+                if is_inline_edge_property(execution, *edge, property_id) {
+                    let payload_bytes =
+                        encode_inline_edge_property(execution, *edge, property_id, &value)?;
+                    store.update_edge_payload_at_handle(*edge, &payload_bytes)?;
+                } else {
+                    store
+                        .set_edge_property(*edge, property_id, value)
+                        .map_err(GraphStoreError::from)?;
+                }
                 return Ok(());
             }
 
@@ -659,11 +684,15 @@ fn execute_set_all_properties(
     }
 
     if let Some(edge) = bindings.edges.get(variable.as_ref()) {
+        let (payload_bytes, sidecar_fields) =
+            prepare_edge_record_replacement(execution, *edge, fields)?;
         for (property_id, _) in store.edge_properties(*edge) {
             store.remove_edge_property(*edge, property_id);
         }
-        for (name, value) in fields {
-            let property_id = resolve_property_id(execution, &name)?;
+        if let Some(bytes) = payload_bytes {
+            store.update_edge_payload_at_handle(*edge, &bytes)?;
+        }
+        for (property_id, value) in sidecar_fields {
             store
                 .set_edge_property(*edge, property_id, value)
                 .map_err(GraphStoreError::from)?;
@@ -723,6 +752,11 @@ fn execute_remove_item(
             }
 
             if let Some(edge) = bindings.edges.get(variable.as_ref()) {
+                if is_inline_edge_property(execution, *edge, property_id) {
+                    return Err(PlanMutationError::CannotRemoveInlineProperty {
+                        property: property.to_string(),
+                    });
+                }
                 store.remove_edge_property(*edge, property_id);
                 return Ok(());
             }
@@ -1111,6 +1145,293 @@ fn collect_detach_delete_edge_label_deltas(
     Ok(())
 }
 
+/// Packed fixed-width payload bytes plus the profile used to encode them.
+#[derive(Clone, Debug)]
+struct InlineScalarPayload {
+    payload_bytes: Vec<u8>,
+    payload_profile: EdgePayloadProfile,
+}
+
+/// Preflight every sidecar property: reserved property ids are rejected and the value must be
+/// encodable as binary bytes. Failures are reported before any canonical adjacency or payload write
+/// so invalid sidecar values cannot leave a partially initialized edge or a torn replacement.
+fn validate_sidecar_properties(
+    execution: &GqlExecutionContext,
+    sidecar: Vec<(PropertyId, Value)>,
+) -> Result<Vec<(PropertyId, Value)>, PlanMutationError> {
+    for (property_id, value) in &sidecar {
+        ensure_property_id(*property_id).map_err(|_| {
+            PlanMutationError::InvalidSidecarPropertyValue {
+                property: property_name_or_id(execution, *property_id),
+                reason: "reserved property id".to_owned(),
+            }
+        })?;
+        ensure_persistable(value).map_err(|err| {
+            PlanMutationError::InvalidSidecarPropertyValue {
+                property: property_name_or_id(execution, *property_id),
+                reason: err.to_string(),
+            }
+        })?;
+    }
+    Ok(sidecar)
+}
+
+/// Classify evaluated edge-property assignments into at most one inline scalar payload plus the
+/// remaining sidecar assignments. Rejects duplicate inline assignments, missing required inline
+/// values, and `NULL`.
+fn classify_edge_assignments(
+    execution: &GqlExecutionContext,
+    label: Option<EdgeLabelId>,
+    assignments: Vec<(PropertyId, Value)>,
+) -> Result<(Option<InlineScalarPayload>, Vec<(PropertyId, Value)>), PlanMutationError> {
+    let Some(label_id) = label else {
+        return Ok((None, validate_sidecar_properties(execution, assignments)?));
+    };
+    let Some((inline_property_id, profile)) =
+        execution.resolved_edge_label_inline_property(label_id)
+    else {
+        return Ok((None, validate_sidecar_properties(execution, assignments)?));
+    };
+
+    let mut inline_value: Option<Value> = None;
+    let mut sidecar = Vec::new();
+    for (property_id, value) in assignments {
+        if property_id == inline_property_id {
+            if inline_value.is_some() {
+                return Err(PlanMutationError::DuplicateInlinePropertyAssignment {
+                    property: property_name_or_id(execution, inline_property_id),
+                });
+            }
+            inline_value = Some(value);
+        } else {
+            sidecar.push((property_id, value));
+        }
+    }
+
+    let Some(value) = inline_value else {
+        return Err(PlanMutationError::MissingRequiredInlineProperty {
+            label: label_name_or_id(execution, label_id),
+            property: property_name_or_id(execution, inline_property_id),
+        });
+    };
+
+    if matches!(value, Value::Null) {
+        return Err(PlanMutationError::NullInlineProperty {
+            property: property_name_or_id(execution, inline_property_id),
+        });
+    }
+
+    let payload_bytes = encode_edge_payload_scalar(&profile, &value).map_err(|err| {
+        PlanMutationError::InvalidInlinePropertyValue {
+            property: property_name_or_id(execution, inline_property_id),
+            reason: err.to_string(),
+        }
+    })?;
+
+    Ok((
+        Some(InlineScalarPayload {
+            payload_bytes,
+            payload_profile: profile,
+        }),
+        validate_sidecar_properties(execution, sidecar)?,
+    ))
+}
+
+/// Returns `true` when `property_id` is the Router-resolved inline scalar property for the edge
+/// label carried by `handle`.
+fn is_inline_edge_property(
+    execution: &GqlExecutionContext,
+    handle: EdgeHandle,
+    property_id: PropertyId,
+) -> bool {
+    let Some(label_id) = crate::facade::catalog_edge_label_from_wire(handle.label_id) else {
+        return false;
+    };
+    execution
+        .resolved_edge_label_inline_property(label_id)
+        .is_some_and(|(inline_property_id, _)| inline_property_id == property_id)
+}
+
+/// Encode a single inline property value for an existing edge, failing closed on any schema or
+/// value mismatch.
+fn encode_inline_edge_property(
+    execution: &GqlExecutionContext,
+    handle: EdgeHandle,
+    property_id: PropertyId,
+    value: &Value,
+) -> Result<Vec<u8>, PlanMutationError> {
+    let Some(label_id) = crate::facade::catalog_edge_label_from_wire(handle.label_id) else {
+        return Err(PlanMutationError::InvalidInlinePropertyValue {
+            property: property_name_or_id(execution, property_id),
+            reason: "edge label has no inline schema".to_owned(),
+        });
+    };
+    let Some((inline_property_id, profile)) =
+        execution.resolved_edge_label_inline_property(label_id)
+    else {
+        return Err(PlanMutationError::InvalidInlinePropertyValue {
+            property: property_name_or_id(execution, property_id),
+            reason: "edge label has no inline schema".to_owned(),
+        });
+    };
+    if inline_property_id != property_id {
+        return Err(PlanMutationError::InvalidInlinePropertyValue {
+            property: property_name_or_id(execution, property_id),
+            reason: "property is not the inline scalar for this edge label".to_owned(),
+        });
+    }
+    if matches!(value, Value::Null) {
+        return Err(PlanMutationError::NullInlineProperty {
+            property: property_name_or_id(execution, property_id),
+        });
+    }
+    encode_edge_payload_scalar(&profile, value).map_err(|err| {
+        PlanMutationError::InvalidInlinePropertyValue {
+            property: property_name_or_id(execution, property_id),
+            reason: err.to_string(),
+        }
+    })
+}
+
+/// Preflight an all-properties replacement on a bound edge: resolve ids, classify the inline
+/// scalar, encode it, and return the sidecar replacement list. No storage write occurs here.
+fn prepare_edge_record_replacement(
+    execution: &GqlExecutionContext,
+    edge: EdgeHandle,
+    fields: Vec<(String, Value)>,
+) -> Result<(Option<Vec<u8>>, Vec<(PropertyId, Value)>), PlanMutationError> {
+    let label = crate::facade::catalog_edge_label_from_wire(edge.label_id);
+    let inline = label.and_then(|label_id| execution.resolved_edge_label_inline_property(label_id));
+
+    let mut inline_value: Option<Value> = None;
+    let mut sidecar = Vec::new();
+
+    for (name, value) in fields {
+        let property_id = resolve_property_id(execution, &name)?;
+        if let Some((expected_inline_id, _)) = inline
+            && property_id == expected_inline_id
+        {
+            if inline_value.is_some() {
+                return Err(PlanMutationError::DuplicateInlinePropertyAssignment {
+                    property: property_name_or_id(execution, expected_inline_id),
+                });
+            }
+            inline_value = Some(value);
+            continue;
+        }
+        sidecar.push((property_id, value));
+    }
+
+    let payload_bytes = if let Some((expected_inline_id, profile)) = inline {
+        let Some(value) = inline_value else {
+            return Err(PlanMutationError::MissingRequiredInlineProperty {
+                label: label
+                    .and_then(|id| execution.resolved_edge_label_name(id))
+                    .unwrap_or_default(),
+                property: property_name_or_id(execution, expected_inline_id),
+            });
+        };
+        if matches!(value, Value::Null) {
+            return Err(PlanMutationError::NullInlineProperty {
+                property: property_name_or_id(execution, expected_inline_id),
+            });
+        }
+        Some(encode_edge_payload_scalar(&profile, &value).map_err(|err| {
+            PlanMutationError::InvalidInlinePropertyValue {
+                property: property_name_or_id(execution, expected_inline_id),
+                reason: err.to_string(),
+            }
+        })?)
+    } else {
+        None
+    };
+
+    Ok((
+        payload_bytes,
+        validate_sidecar_properties(execution, sidecar)?,
+    ))
+}
+
+fn insert_directed_edge_with_inline(
+    store: &GraphStore,
+    source: VertexId,
+    target: VertexId,
+    label: Option<EdgeLabelId>,
+    inline_payload: Option<&InlineScalarPayload>,
+    sidecar_properties: Vec<(PropertyId, Value)>,
+) -> Result<EdgeHandle, PlanMutationError> {
+    if let Some(payload) = inline_payload {
+        GraphMutationExecutor::insert_directed_edge_with_payload_bytes(
+            store,
+            source,
+            target,
+            label,
+            &payload.payload_bytes,
+            sidecar_properties,
+        )
+        .map_err(PlanMutationError::from)
+    } else {
+        GraphMutationExecutor::insert_directed_edge_with(
+            store,
+            source,
+            target,
+            label,
+            sidecar_properties,
+        )
+        .map_err(PlanMutationError::from)
+    }
+}
+
+fn insert_undirected_edge_with_inline(
+    store: &GraphStore,
+    endpoint_a: VertexId,
+    endpoint_b: VertexId,
+    label: Option<EdgeLabelId>,
+    inline_payload: Option<&InlineScalarPayload>,
+    sidecar_properties: Vec<(PropertyId, Value)>,
+) -> Result<EdgeHandle, PlanMutationError> {
+    if let Some(payload) = inline_payload {
+        GraphMutationExecutor::insert_undirected_edge_with_payload_bytes(
+            store,
+            endpoint_a,
+            endpoint_b,
+            label,
+            &payload.payload_bytes,
+            sidecar_properties,
+        )
+        .map_err(PlanMutationError::from)
+    } else {
+        GraphMutationExecutor::insert_undirected_edge_with(
+            store,
+            endpoint_a,
+            endpoint_b,
+            label,
+            sidecar_properties,
+        )
+        .map_err(PlanMutationError::from)
+    }
+}
+
+fn property_name_or_id(execution: &GqlExecutionContext, property_id: PropertyId) -> String {
+    execution
+        .resolved_properties
+        .as_ref()
+        .and_then(|table| {
+            table
+                .properties
+                .iter()
+                .find(|p| p.id == property_id)
+                .map(|p| p.name.clone())
+        })
+        .unwrap_or_else(|| property_id.raw().to_string())
+}
+
+fn label_name_or_id(execution: &GqlExecutionContext, label_id: EdgeLabelId) -> String {
+    execution
+        .resolved_edge_label_name(label_id)
+        .unwrap_or_else(|| label_id.raw().to_string())
+}
+
 fn resolve_vertex_labels(
     execution: &GqlExecutionContext,
     labels: &[gleaph_gql_planner::NodeLabelRef],
@@ -1167,17 +1488,19 @@ fn resolve_mutation_properties(
 
 #[cfg(test)]
 mod tests {
+    use super::EdgeHandle;
     use super::*;
     use crate::facade::canonical_undirected_owner;
     use crate::gql_execution_context::GqlExecutionContext;
     use crate::test_labels::install_test_edge_payload_profile;
-    use gleaph_gql::Value;
     use gleaph_gql::ast::{BinaryOp, CmpOp, Expr, ExprKind, TruthValue, UnaryOp};
     use gleaph_gql::types::Decimal;
+    use gleaph_gql::{ExtensionValue, Value};
     use gleaph_gql_planner::plan::{PlanDiagnostics, PropertyAssignment};
     use gleaph_graph_kernel::entry::{EdgeSlotIndex, PropertyId};
     use ic_stable_lara::BucketLabelKey as LaraLabelId;
     use ic_stable_lara::traits::CsrEdge;
+    use std::{any::Any, fmt};
 
     #[test]
     fn executes_insert_vertex_and_edge_ops() {
@@ -2826,5 +3149,849 @@ mod tests {
             err,
             PlanMutationError::UnknownGleaphProcedure { name } if name == "db.labels"
         ));
+    }
+    // --- ADR 0034 Slice 22: inline edge scalar mutation packing ---
+
+    fn install_inline_road_fixture() -> (EdgeLabelId, PropertyId) {
+        use gleaph_graph_kernel::entry::EdgePayloadEncoding;
+
+        let label = crate::test_labels::edge_label_id_for_name("InlineRoad");
+        let property = crate::test_labels::property_id_for_name("distance");
+        crate::test_labels::install_test_edge_payload_profile(
+            label,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::RawU16,
+            },
+        );
+        crate::test_labels::install_test_edge_inline_property(label, property);
+        (label, property)
+    }
+
+    fn find_in_edge_payload(
+        store: &GraphStore,
+        target: VertexId,
+        source: VertexId,
+    ) -> Option<Vec<u8>> {
+        use ic_stable_lara::traits::CsrEdge;
+        store
+            .directed_in_edges(target)
+            .ok()?
+            .into_iter()
+            .find(|edge| edge.neighbor_vid() == source)
+            .map(|edge| edge.payload_bytes().to_vec())
+    }
+
+    fn find_out_edge_payload(
+        store: &GraphStore,
+        source: VertexId,
+        target: VertexId,
+    ) -> Option<Vec<u8>> {
+        use ic_stable_lara::traits::CsrEdge;
+        store
+            .directed_out_edges(source)
+            .ok()?
+            .into_iter()
+            .find(|edge| edge.neighbor_vid() == target)
+            .map(|edge| edge.payload_bytes().to_vec())
+    }
+
+    fn find_undirected_edge_payload(
+        store: &GraphStore,
+        endpoint: VertexId,
+        other: VertexId,
+    ) -> Option<Vec<u8>> {
+        use ic_stable_lara::traits::CsrEdge;
+        store
+            .undirected_edges(endpoint)
+            .ok()?
+            .into_iter()
+            .find(|edge| edge.neighbor_vid() == other)
+            .map(|edge| edge.payload_bytes().to_vec())
+    }
+
+    fn inline_edge_scalar_insert_directed() {
+        let store = GraphStore::new();
+        let (_road_label, _distance) = install_inline_road_fixture();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("insert inline edge");
+        let a = bindings.vertices["a"];
+        let b = bindings.vertices["b"];
+
+        assert_eq!(
+            find_out_edge_payload(&store, a, b),
+            Some(7u16.to_le_bytes().to_vec())
+        );
+        // Sidecar must not contain the inline property.
+        assert_eq!(store.edge_properties(bindings.edges["e"]), Vec::new());
+    }
+
+    #[test]
+    fn inline_edge_scalar_insert_pointing_left() {
+        let store = GraphStore::new();
+        let (_road_label, _) = install_inline_road_fixture();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingLeft,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("insert inline edge left");
+        let a = bindings.vertices["a"];
+        let b = bindings.vertices["b"];
+
+        // Logical direction is b -> a; physical reverse mirror carries the payload too.
+        assert_eq!(
+            find_out_edge_payload(&store, b, a),
+            Some(7u16.to_le_bytes().to_vec())
+        );
+    }
+
+    #[test]
+    fn inline_edge_scalar_insert_undirected() {
+        let store = GraphStore::new();
+        let (_road_label, _) = install_inline_road_fixture();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::Undirected,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("insert inline undirected edge");
+        let a = bindings.vertices["a"];
+        let b = bindings.vertices["b"];
+
+        assert_eq!(
+            find_undirected_edge_payload(&store, a, b),
+            Some(7u16.to_le_bytes().to_vec())
+        );
+        assert_eq!(
+            find_undirected_edge_payload(&store, b, a),
+            Some(7u16.to_le_bytes().to_vec())
+        );
+    }
+
+    #[test]
+    fn inline_edge_scalar_set_updates_mirrors() {
+        let store = GraphStore::new();
+        let (_road_label, _distance) = install_inline_road_fixture();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    }],
+                },
+                PlanOp::SetProperties {
+                    items: vec![SetPlanItem::Property {
+                        variable: "e".into(),
+                        property: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(9))),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("set inline property");
+        let a = bindings.vertices["a"];
+        let b = bindings.vertices["b"];
+
+        assert_eq!(
+            find_out_edge_payload(&store, a, b),
+            Some(9u16.to_le_bytes().to_vec())
+        );
+        // Reverse mirror was updated by the same commit.
+        assert_eq!(
+            find_in_edge_payload(&store, b, a),
+            Some(9u16.to_le_bytes().to_vec())
+        );
+        assert_eq!(store.edge_properties(bindings.edges["e"]), Vec::new());
+    }
+
+    #[test]
+    fn inline_edge_scalar_insert_mixed_sidecar() {
+        let store = GraphStore::new();
+        let (_road_label, _distance) = install_inline_road_fixture();
+        let note = crate::test_labels::property_id_for_name("note");
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![
+                        PropertyAssignment {
+                            name: "distance".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                        },
+                        PropertyAssignment {
+                            name: "note".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Text("hello".into()))),
+                        },
+                    ],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("insert mixed inline edge");
+        let a = bindings.vertices["a"];
+        let b = bindings.vertices["b"];
+
+        assert_eq!(
+            find_out_edge_payload(&store, a, b),
+            Some(7u16.to_le_bytes().to_vec())
+        );
+        let sidecar = store.edge_properties(bindings.edges["e"]);
+        assert_eq!(sidecar, vec![(note, Value::Text("hello".into()))]);
+    }
+
+    #[test]
+    fn inline_edge_scalar_missing_aborts_insert() {
+        let store = GraphStore::new();
+        let (_road_label, _) = install_inline_road_fixture();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let err = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect_err("missing inline value");
+        assert!(
+            matches!(err, PlanMutationError::MissingRequiredInlineProperty { .. }),
+            "got {err:?}"
+        );
+        // No edge should have been created.
+        assert!(
+            store
+                .directed_out_edges(VertexId::from(0u32))
+                .unwrap()
+                .is_empty()
+        );
+    }
+
+    #[test]
+    fn inline_edge_scalar_duplicate_aborts_insert() {
+        let store = GraphStore::new();
+        let (_road_label, _) = install_inline_road_fixture();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![
+                        PropertyAssignment {
+                            name: "distance".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                        },
+                        PropertyAssignment {
+                            name: "distance".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Int64(8))),
+                        },
+                    ],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let err = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect_err("duplicate inline value");
+        assert!(
+            matches!(
+                err,
+                PlanMutationError::DuplicateInlinePropertyAssignment { .. }
+            ),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn inline_edge_scalar_null_aborts_insert() {
+        let store = GraphStore::new();
+        let (_road_label, _) = install_inline_road_fixture();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Null)),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let err = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect_err("null inline value");
+        assert!(
+            matches!(err, PlanMutationError::NullInlineProperty { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn inline_edge_scalar_overflow_aborts_insert() {
+        let store = GraphStore::new();
+        let (_road_label, _) = install_inline_road_fixture();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(65536))),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let err = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect_err("overflow inline value");
+        assert!(
+            matches!(err, PlanMutationError::InvalidInlinePropertyValue { .. }),
+            "got {err:?}"
+        );
+    }
+
+    #[test]
+    fn inline_edge_scalar_all_properties_replacement() {
+        let store = GraphStore::new();
+        let (_road_label, _distance) = install_inline_road_fixture();
+        let note = crate::test_labels::property_id_for_name("note");
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![
+                        PropertyAssignment {
+                            name: "distance".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                        },
+                        PropertyAssignment {
+                            name: "note".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Text("old".into()))),
+                        },
+                    ],
+                },
+                PlanOp::SetProperties {
+                    items: vec![SetPlanItem::AllProperties {
+                        variable: "e".into(),
+                        value: Expr::new(ExprKind::RecordLiteral(vec![
+                            (
+                                "distance".into(),
+                                Expr::new(ExprKind::Literal(Value::Int64(9))),
+                            ),
+                            (
+                                "note".into(),
+                                Expr::new(ExprKind::Literal(Value::Text("new".into()))),
+                            ),
+                        ])),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("replace edge properties");
+        let a = bindings.vertices["a"];
+        let b = bindings.vertices["b"];
+
+        assert_eq!(
+            find_out_edge_payload(&store, a, b),
+            Some(9u16.to_le_bytes().to_vec())
+        );
+        let sidecar = store.edge_properties(bindings.edges["e"]);
+        assert_eq!(sidecar, vec![(note, Value::Text("new".into()))]);
+    }
+
+    #[test]
+    fn inline_edge_scalar_remove_rejects() {
+        let store = GraphStore::new();
+        let (_road_label, _) = install_inline_road_fixture();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![PropertyAssignment {
+                        name: "distance".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    }],
+                },
+                PlanOp::RemoveProperties {
+                    items: vec![RemovePlanItem::Property {
+                        variable: "e".into(),
+                        property: "distance".into(),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let err = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect_err("remove inline property");
+        assert!(
+            matches!(err, PlanMutationError::CannotRemoveInlineProperty { .. }),
+            "got {err:?}"
+        );
+        // Payload unchanged.
+        let a = VertexId::from(0u32);
+        let b = VertexId::from(1u32);
+        assert_eq!(
+            find_out_edge_payload(&store, a, b),
+            Some(7u16.to_le_bytes().to_vec())
+        );
+    }
+
+    #[test]
+    fn inline_edge_scalar_non_inline_label_sidecar() {
+        let store = GraphStore::new();
+        let _plain_label = crate::test_labels::edge_label_id_for_name("PlainRoad");
+        let weight = crate::test_labels::property_id_for_name("weight");
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["PlainRoad".into()],
+                    properties: vec![PropertyAssignment {
+                        name: "weight".into(),
+                        value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                    }],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect("insert plain edge");
+        let a = bindings.vertices["a"];
+        let b = bindings.vertices["b"];
+
+        // No payload profile installed, so the edge is inserted with empty payload.
+        assert_eq!(find_out_edge_payload(&store, a, b), Some(Vec::new()));
+        assert_eq!(
+            store.edge_properties(bindings.edges["e"]),
+            vec![(weight, Value::Int64(7))]
+        );
+    }
+    /// Extension value that deliberately cannot be persisted to the primary store. Used to prove
+    /// that invalid sidecar values fail closed before any edge/payload write.
+    #[derive(Debug, Clone)]
+    struct UnpersistableSidecarExtension;
+
+    impl fmt::Display for UnpersistableSidecarExtension {
+        fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+            write!(f, "UnpersistableSidecarExtension")
+        }
+    }
+
+    impl ExtensionValue for UnpersistableSidecarExtension {
+        fn type_name(&self) -> &str {
+            "unpersistable_sidecar"
+        }
+
+        fn clone_box(&self) -> Box<dyn ExtensionValue> {
+            Box::new(self.clone())
+        }
+
+        fn eq_ext(&self, _other: &dyn ExtensionValue) -> bool {
+            false
+        }
+
+        fn as_any(&self) -> &dyn Any {
+            self
+        }
+    }
+
+    fn unpersistable_value() -> Value {
+        Value::Extension(Box::new(UnpersistableSidecarExtension))
+    }
+
+    #[test]
+    fn inline_edge_scalar_unpersistable_sidecar_aborts_insert() {
+        let store = GraphStore::new();
+        let (_road_label, _distance) = install_inline_road_fixture();
+        let plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![
+                        PropertyAssignment {
+                            name: "distance".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                        },
+                        PropertyAssignment {
+                            name: "note".into(),
+                            value: Expr::new(ExprKind::Literal(unpersistable_value())),
+                        },
+                    ],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let err = store
+            .execute_plan_mutations(&plan, GqlExecutionContext::default())
+            .expect_err("unpersistable sidecar value");
+        assert!(
+            matches!(err, PlanMutationError::InvalidSidecarPropertyValue { .. }),
+            "got {err:?}"
+        );
+
+        // Vertices were created, but no edge or payload must exist.
+        let a = VertexId::from(0u32);
+        let b = VertexId::from(1u32);
+        assert_eq!(find_out_edge_payload(&store, a, b), None);
+        assert!(store.directed_out_edges(a).unwrap().is_empty());
+    }
+
+    #[test]
+    fn inline_edge_scalar_unpersistable_sidecar_aborts_replacement() {
+        let store = GraphStore::new();
+        let (_road_label, _distance) = install_inline_road_fixture();
+        let note = crate::test_labels::property_id_for_name("note");
+
+        let insert_plan = PhysicalPlan {
+            ops: vec![
+                PlanOp::InsertVertex {
+                    variable: Some("a".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertVertex {
+                    variable: Some("b".into()),
+                    labels: vec![],
+                    properties: vec![],
+                },
+                PlanOp::InsertEdge {
+                    variable: Some("e".into()),
+                    src: "a".into(),
+                    dst: "b".into(),
+                    direction: EdgeDirection::PointingRight,
+                    labels: vec!["InlineRoad".into()],
+                    properties: vec![
+                        PropertyAssignment {
+                            name: "distance".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Int64(7))),
+                        },
+                        PropertyAssignment {
+                            name: "note".into(),
+                            value: Expr::new(ExprKind::Literal(Value::Text("old".into()))),
+                        },
+                    ],
+                },
+            ],
+            diagnostics: PlanDiagnostics::default(),
+            annotations: Default::default(),
+            ..Default::default()
+        };
+
+        let bindings = store
+            .execute_plan_mutations(&insert_plan, GqlExecutionContext::default())
+            .expect("insert edge with sidecar");
+        let a = bindings.vertices["a"];
+        let b = bindings.vertices["b"];
+        let edge_handle = bindings.edges["e"];
+
+        let replace_ops = vec![PlanOp::SetProperties {
+            items: vec![SetPlanItem::AllProperties {
+                variable: "e".into(),
+                value: Expr::new(ExprKind::RecordLiteral(vec![
+                    (
+                        "distance".into(),
+                        Expr::new(ExprKind::Literal(Value::Int64(9))),
+                    ),
+                    (
+                        "note".into(),
+                        Expr::new(ExprKind::Literal(unpersistable_value())),
+                    ),
+                ])),
+            }],
+        }];
+        let parameters = BTreeMap::<String, Value>::new();
+        let mut replace_bindings = PlanMutationBindings::default();
+        replace_bindings.vertices.insert("a".into(), a);
+        replace_bindings.vertices.insert("b".into(), b);
+        replace_bindings.edges.insert("e".into(), edge_handle);
+
+        let err = execute_ops_with_bindings(
+            &store,
+            &replace_ops,
+            &parameters,
+            GqlExecutionContext::default(),
+            &mut replace_bindings,
+        )
+        .expect_err("unpersistable sidecar value during replacement");
+        assert!(
+            matches!(err, PlanMutationError::InvalidSidecarPropertyValue { .. }),
+            "got {err:?}"
+        );
+
+        // Both payload and sidecar must remain unchanged.
+        assert_eq!(
+            find_out_edge_payload(&store, a, b),
+            Some(7u16.to_le_bytes().to_vec())
+        );
+        assert_eq!(
+            store.edge_properties(edge_handle),
+            vec![(note, Value::Text("old".into()))]
+        );
     }
 }

@@ -14,6 +14,7 @@ use ic_stable_lara::VertexId;
 
 static EDGE_LABEL_NAMES: Mutex<Option<HashMap<u16, String>>> = Mutex::new(None);
 static EDGE_PAYLOAD_PROFILES: Mutex<Option<HashMap<u16, EdgePayloadProfile>>> = Mutex::new(None);
+static EDGE_INLINE_PROPERTIES: Mutex<Option<HashMap<u16, PropertyId>>> = Mutex::new(None);
 
 pub(crate) fn install_test_edge_payload_profile(label: EdgeLabelId, profile: EdgePayloadProfile) {
     EDGE_PAYLOAD_PROFILES
@@ -30,6 +31,23 @@ pub(crate) fn edge_payload_profile_for_id(label: EdgeLabelId) -> Option<EdgePayl
         .as_ref()?
         .get(&label.raw())
         .cloned()
+}
+
+pub(crate) fn install_test_edge_inline_property(label: EdgeLabelId, property_id: PropertyId) {
+    EDGE_INLINE_PROPERTIES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(label.raw(), property_id);
+}
+
+pub(crate) fn edge_inline_property_for_id(label: EdgeLabelId) -> Option<PropertyId> {
+    EDGE_INLINE_PROPERTIES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()?
+        .get(&label.raw())
+        .copied()
 }
 
 pub(crate) fn edge_label_ids_with_payload_profiles() -> Vec<EdgeLabelId> {

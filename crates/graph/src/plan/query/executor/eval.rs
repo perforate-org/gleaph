@@ -2,13 +2,13 @@
 
 use std::collections::BTreeMap;
 
+use crate::edge_payload_scalar_codec::decode_edge_payload_scalar;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{AggregateFunc, CmpOp, Expr, ExprKind, ObjectName, TruthValue};
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::{ProjectColumn, Str};
 use gleaph_graph_kernel::entry::{
-    DecodedEdgePayload, EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, PropertyId, Vertex,
-    decode_edge_payload,
+    EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, PropertyId, Vertex,
 };
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::path::GraphPathVertexId;
@@ -343,51 +343,14 @@ pub(crate) fn try_read_inline_edge_property(
         });
     }
 
-    let decoder = profile
-        .prepare()
-        .map_err(|e| PlanQueryError::InvalidExpressionValue {
+    decode_edge_payload_scalar(&profile, bytes)
+        .map(Some)
+        .map_err(|err| PlanQueryError::InvalidExpressionValue {
             expression: format!(
-                "invalid payload profile for label {}: {e}",
+                "inline payload decode error for label {}: {err}",
                 edge.handle.label_id.raw()
             ),
-        })?;
-    let decoded = decode_edge_payload(&decoder, bytes).map_err(|e| {
-        PlanQueryError::InvalidExpressionValue {
-            expression: format!(
-                "inline payload decode error for label {}: {e}",
-                edge.handle.label_id.raw()
-            ),
-        }
-    })?;
-    decoded_edge_payload_to_value(decoded)
-}
-
-/// Converts a decoded scalar edge payload into the exact GQL value, preserving width and signedness.
-fn decoded_edge_payload_to_value(
-    decoded: DecodedEdgePayload,
-) -> Result<Option<Value>, PlanQueryError> {
-    Ok(Some(match decoded {
-        DecodedEdgePayload::U8(v) => Value::Uint8(v),
-        DecodedEdgePayload::U16(v) => Value::Uint16(v),
-        DecodedEdgePayload::U32(v) => Value::Uint32(v),
-        DecodedEdgePayload::U64(v) => Value::Uint64(v),
-        DecodedEdgePayload::I8(v) => Value::Int8(v),
-        DecodedEdgePayload::I16(v) => Value::Int16(v),
-        DecodedEdgePayload::I32(v) => Value::Int32(v),
-        DecodedEdgePayload::I64(v) => Value::Int64(v),
-        DecodedEdgePayload::U128(v) => Value::Uint128(v),
-        DecodedEdgePayload::I128(v) => Value::Int128(v),
-        DecodedEdgePayload::F16(v) => Value::Float16(v),
-        DecodedEdgePayload::F32(v) => Value::Float32(v),
-        DecodedEdgePayload::F64(v) => Value::Float64(v),
-        DecodedEdgePayload::Fixed32(v) => Value::Bytes(v.to_vec()),
-        DecodedEdgePayload::Fixed64(v) => Value::Bytes(v.to_vec()),
-        other => {
-            return Err(PlanQueryError::InvalidExpressionValue {
-                expression: format!("inline property does not support decoded payload {other:?}"),
-            });
-        }
-    }))
+        })
 }
 
 impl QueryExprEvaluator<'_> {

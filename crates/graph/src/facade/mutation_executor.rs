@@ -18,11 +18,34 @@ pub trait GraphMutationExecutor {
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
     ) -> Result<EdgeHandle, GraphStoreError>;
 
+    /// Insert a directed edge with validated payload bytes plus optional sidecar properties.
+    ///
+    /// Used by ordinary DML for an `InlineScalar` edge label: the payload is the canonical value
+    /// for the inline property, and `properties` carries only non-inline sidecar assignments.
+    fn insert_directed_edge_with_payload_bytes(
+        &self,
+        source_vertex_id: VertexId,
+        target_vertex_id: VertexId,
+        label: Option<EdgeLabelId>,
+        payload_bytes: &[u8],
+        properties: impl IntoIterator<Item = (PropertyId, Value)>,
+    ) -> Result<EdgeHandle, GraphStoreError>;
+
     fn insert_undirected_edge_with(
         &self,
         endpoint_a: VertexId,
         endpoint_b: VertexId,
         label: Option<EdgeLabelId>,
+        properties: impl IntoIterator<Item = (PropertyId, Value)>,
+    ) -> Result<EdgeHandle, GraphStoreError>;
+
+    /// Insert an undirected edge with validated payload bytes plus optional sidecar properties.
+    fn insert_undirected_edge_with_payload_bytes(
+        &self,
+        endpoint_a: VertexId,
+        endpoint_b: VertexId,
+        label: Option<EdgeLabelId>,
+        payload_bytes: &[u8],
         properties: impl IntoIterator<Item = (PropertyId, Value)>,
     ) -> Result<EdgeHandle, GraphStoreError>;
 }
@@ -72,6 +95,29 @@ impl GraphMutationExecutor for GraphStore {
         Ok(handle)
     }
 
+    fn insert_directed_edge_with_payload_bytes(
+        &self,
+        source_vertex_id: VertexId,
+        target_vertex_id: VertexId,
+        label: Option<EdgeLabelId>,
+        payload_bytes: &[u8],
+        properties: impl IntoIterator<Item = (PropertyId, Value)>,
+    ) -> Result<EdgeHandle, GraphStoreError> {
+        self.assert_local_vertex_writable(source_vertex_id)?;
+        self.assert_local_vertex_writable(target_vertex_id)?;
+        let handle = GraphStore::insert_directed_edge_with_payload_bytes(
+            self,
+            source_vertex_id,
+            target_vertex_id,
+            label,
+            payload_bytes,
+        )?;
+        for (property_id, value) in properties {
+            self.set_edge_property(handle, property_id, value)?;
+        }
+        Ok(handle)
+    }
+
     fn insert_undirected_edge_with(
         &self,
         endpoint_a: VertexId,
@@ -82,6 +128,29 @@ impl GraphMutationExecutor for GraphStore {
         self.assert_local_vertex_writable(endpoint_a)?;
         self.assert_local_vertex_writable(endpoint_b)?;
         let handle = self.insert_undirected_edge(endpoint_a, endpoint_b, label)?;
+        for (property_id, value) in properties {
+            self.set_edge_property(handle, property_id, value)?;
+        }
+        Ok(handle)
+    }
+
+    fn insert_undirected_edge_with_payload_bytes(
+        &self,
+        endpoint_a: VertexId,
+        endpoint_b: VertexId,
+        label: Option<EdgeLabelId>,
+        payload_bytes: &[u8],
+        properties: impl IntoIterator<Item = (PropertyId, Value)>,
+    ) -> Result<EdgeHandle, GraphStoreError> {
+        self.assert_local_vertex_writable(endpoint_a)?;
+        self.assert_local_vertex_writable(endpoint_b)?;
+        let handle = GraphStore::insert_undirected_edge_with_payload_bytes(
+            self,
+            endpoint_a,
+            endpoint_b,
+            label,
+            payload_bytes,
+        )?;
         for (property_id, value) in properties {
             self.set_edge_property(handle, property_id, value)?;
         }

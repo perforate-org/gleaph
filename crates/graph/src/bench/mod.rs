@@ -6,7 +6,9 @@
 mod large;
 mod stable_layout;
 
+use crate::edge_payload_scalar_codec::encode_edge_payload_scalar;
 use crate::facade::GraphStore;
+use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::gql_execution_context::GqlExecutionContext;
 use crate::gql_run::{GqlCanisterExecutionMode, run_wire_plan_last_read_row_count};
 use crate::plan::query::{PlanQueryResult, execute_plan_query, execute_plan_query_bindings};
@@ -3073,4 +3075,76 @@ mod bench_setup_tests {
         assert!(progress.done);
         assert!(store.local_unique_is_empty(constraint));
     }
+}
+
+// --- ADR 0034 Slice 22 inline scalar mutation benchmarks ---
+
+fn install_bench_inline_road(label_name: &str) -> (EdgeLabelId, PropertyId) {
+    let label = crate::test_labels::edge_label_id_for_name(label_name);
+    let property = crate::test_labels::property_id_for_name("distance");
+    crate::test_labels::install_test_edge_payload_profile(
+        label,
+        EdgePayloadProfile {
+            byte_width: 2,
+            encoding: EdgePayloadEncoding::RawU16,
+        },
+    );
+    crate::test_labels::install_test_edge_inline_property(label, property);
+    (label, property)
+}
+
+#[bench(raw)]
+fn bench_inline_scalar_pack_batch_u16() -> canbench_rs::BenchResult {
+    let values: Vec<Value> = (0..256).map(Value::Int64).collect();
+    let profile = EdgePayloadProfile {
+        byte_width: 2,
+        encoding: EdgePayloadEncoding::RawU16,
+    };
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("inline_scalar_pack_batch_u16");
+        let mut total = 0usize;
+        for value in &values {
+            let bytes = encode_edge_payload_scalar(&profile, value).expect("encode");
+            total = total.wrapping_add(bytes.len());
+        }
+        black_box(total)
+    })
+}
+
+#[bench(raw)]
+fn bench_inline_scalar_set_payload_fixed_edges() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let (label, _property) = install_bench_inline_road("BenchInlineRoad");
+
+    let mut vertices = Vec::new();
+    let mut edges = Vec::new();
+    for _ in 0..100 {
+        let src = insert_bench_vertex_named(&store, &["BenchInlineCity"]);
+        let dst = insert_bench_vertex_named(&store, &["BenchInlineCity"]);
+        let handle = GraphMutationExecutor::insert_directed_edge_with_payload_bytes(
+            &store,
+            src,
+            dst,
+            Some(label),
+            &1u16.to_le_bytes(),
+            Vec::new(),
+        )
+        .expect("insert bench edge");
+        vertices.push((src, dst));
+        edges.push(handle);
+    }
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("inline_scalar_set_payload_fixed_edges");
+        let mut i = 0u16;
+        for handle in &edges {
+            let bytes = (i.wrapping_add(1)).to_le_bytes();
+            store
+                .update_edge_payload_at_handle(*handle, &bytes)
+                .expect("update payload");
+            i = i.wrapping_add(1);
+        }
+        black_box(i)
+    })
 }

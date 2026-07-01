@@ -1,12 +1,12 @@
 use std::collections::BTreeMap;
 
+use crate::edge_payload_scalar_codec::encode_edge_payload_scalar;
 use gleaph_gql::Value;
 use gleaph_gql::ast::CmpOp;
 use gleaph_gql_planner::plan::{
     EdgePayloadPredicate, EdgeVectorMetric as PlanEdgeVectorMetric, EdgeVectorPredicate, ScanValue,
 };
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile};
-use half::f16;
 
 use crate::plan::query::edge_payload_batch_kernel::PreparedEdgePayloadBatchKernel;
 use crate::plan::query::edge_vector_kernel::{
@@ -208,25 +208,30 @@ fn edge_payload_bytes_from_value(
     value: &Value,
 ) -> Result<Option<Vec<u8>>, PlanQueryError> {
     let bytes = match &profile.encoding {
-        EdgePayloadEncoding::RawU8 => u8_from_value(value).map(|v| vec![v])?,
-        EdgePayloadEncoding::RawU16 | EdgePayloadEncoding::WeightRawU16 => {
+        EdgePayloadEncoding::RawU8
+        | EdgePayloadEncoding::RawU16
+        | EdgePayloadEncoding::RawU32
+        | EdgePayloadEncoding::RawU64
+        | EdgePayloadEncoding::RawI8
+        | EdgePayloadEncoding::RawI16
+        | EdgePayloadEncoding::RawI32
+        | EdgePayloadEncoding::RawI64
+        | EdgePayloadEncoding::RawU128
+        | EdgePayloadEncoding::RawI128
+        | EdgePayloadEncoding::F16
+        | EdgePayloadEncoding::F32
+        | EdgePayloadEncoding::F64
+        | EdgePayloadEncoding::RawFixed32
+        | EdgePayloadEncoding::RawFixed64 => {
+            return encode_edge_payload_scalar(profile, value)
+                .map(Some)
+                .map_err(|err| PlanQueryError::InvalidExpressionValue {
+                    expression: format!("edge payload scalar literal: {err}"),
+                });
+        }
+        EdgePayloadEncoding::WeightRawU16 => {
             u16_from_value(value).map(|v| v.to_le_bytes().to_vec())?
         }
-        EdgePayloadEncoding::RawU32 => u32_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgePayloadEncoding::RawU64 => u64_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgePayloadEncoding::RawI8 => i8_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgePayloadEncoding::RawI16 => i16_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgePayloadEncoding::RawI32 => i32_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgePayloadEncoding::RawI64 => i64_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgePayloadEncoding::RawU128 => u128_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgePayloadEncoding::RawI128 => i128_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgePayloadEncoding::F16 => {
-            f32_from_value(value).map(|v| f16::from_f32(v).to_le_bytes().to_vec())?
-        }
-        EdgePayloadEncoding::F32 => f32_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgePayloadEncoding::F64 => f64_from_value(value).map(|v| v.to_le_bytes().to_vec())?,
-        EdgePayloadEncoding::RawFixed32 => fixed_bytes_from_value(value, 32)?,
-        EdgePayloadEncoding::RawFixed64 => fixed_bytes_from_value(value, 64)?,
         EdgePayloadEncoding::WeightLinearU16 { .. }
         | EdgePayloadEncoding::WeightLogU16 { .. }
         | EdgePayloadEncoding::WeightBinary16 => {
@@ -256,116 +261,26 @@ fn edge_payload_bytes_from_value(
     Ok(Some(bytes))
 }
 
-fn fixed_bytes_from_value(value: &Value, expected_len: usize) -> Result<Vec<u8>, PlanQueryError> {
-    match value {
-        Value::Bytes(bytes) if bytes.len() == expected_len => Ok(bytes.clone()),
-        _ => Err(PlanQueryError::InvalidExpressionValue {
-            expression: "fixed-width edge payload predicate literal".into(),
-        }),
-    }
-}
-
-fn u8_from_value(value: &Value) -> Result<u8, PlanQueryError> {
-    unsigned_from_value(value).and_then(|v| {
-        u8::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "u8 edge payload predicate literal".into(),
-        })
-    })
-}
-
 fn u16_from_value(value: &Value) -> Result<u16, PlanQueryError> {
-    unsigned_from_value(value).and_then(|v| {
-        u16::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "u16 edge payload predicate literal".into(),
-        })
-    })
+    let intermediate: u128 = match value {
+        Value::Uint8(v) => u128::from(*v),
+        Value::Uint16(v) => u128::from(*v),
+        Value::Uint32(v) => u128::from(*v),
+        Value::Uint64(v) => u128::from(*v),
+        Value::Uint128(v) => *v,
+        Value::Int8(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_payload())?,
+        Value::Int16(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_payload())?,
+        Value::Int32(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_payload())?,
+        Value::Int64(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_payload())?,
+        Value::Int128(v) => u128::try_from(*v).map_err(|_| invalid_u16_edge_payload())?,
+        _ => return Err(invalid_u16_edge_payload()),
+    };
+    u16::try_from(intermediate).map_err(|_| invalid_u16_edge_payload())
 }
 
-fn u32_from_value(value: &Value) -> Result<u32, PlanQueryError> {
-    unsigned_from_value(value).and_then(|v| {
-        u32::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "u32 edge payload predicate literal".into(),
-        })
-    })
-}
-
-fn u64_from_value(value: &Value) -> Result<u64, PlanQueryError> {
-    unsigned_from_value(value).and_then(|v| {
-        u64::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "u64 edge payload predicate literal".into(),
-        })
-    })
-}
-
-fn u128_from_value(value: &Value) -> Result<u128, PlanQueryError> {
-    unsigned_from_value(value)
-}
-
-fn i8_from_value(value: &Value) -> Result<i8, PlanQueryError> {
-    signed_from_value(value).and_then(|v| {
-        i8::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "i8 edge payload predicate literal".into(),
-        })
-    })
-}
-
-fn i16_from_value(value: &Value) -> Result<i16, PlanQueryError> {
-    signed_from_value(value).and_then(|v| {
-        i16::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "i16 edge payload predicate literal".into(),
-        })
-    })
-}
-
-fn i32_from_value(value: &Value) -> Result<i32, PlanQueryError> {
-    signed_from_value(value).and_then(|v| {
-        i32::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "i32 edge payload predicate literal".into(),
-        })
-    })
-}
-
-fn i64_from_value(value: &Value) -> Result<i64, PlanQueryError> {
-    signed_from_value(value).and_then(|v| {
-        i64::try_from(v).map_err(|_| PlanQueryError::InvalidExpressionValue {
-            expression: "i64 edge payload predicate literal".into(),
-        })
-    })
-}
-
-fn i128_from_value(value: &Value) -> Result<i128, PlanQueryError> {
-    signed_from_value(value)
-}
-
-fn unsigned_from_value(value: &Value) -> Result<u128, PlanQueryError> {
-    match value {
-        Value::Uint8(v) => Ok(u128::from(*v)),
-        Value::Uint16(v) => Ok(u128::from(*v)),
-        Value::Uint32(v) => Ok(u128::from(*v)),
-        Value::Uint64(v) => Ok(u128::from(*v)),
-        Value::Uint128(v) => Ok(*v),
-        Value::Int8(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_payload()),
-        Value::Int16(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_payload()),
-        Value::Int32(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_payload()),
-        Value::Int64(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_payload()),
-        Value::Int128(v) => u128::try_from(*v).map_err(|_| invalid_unsigned_edge_payload()),
-        _ => Err(invalid_unsigned_edge_payload()),
-    }
-}
-
-fn signed_from_value(value: &Value) -> Result<i128, PlanQueryError> {
-    match value {
-        Value::Int8(v) => Ok(i128::from(*v)),
-        Value::Int16(v) => Ok(i128::from(*v)),
-        Value::Int32(v) => Ok(i128::from(*v)),
-        Value::Int64(v) => Ok(i128::from(*v)),
-        Value::Int128(v) => Ok(*v),
-        Value::Uint8(v) => Ok(i128::from(*v)),
-        Value::Uint16(v) => Ok(i128::from(*v)),
-        Value::Uint32(v) => Ok(i128::from(*v)),
-        Value::Uint64(v) => Ok(i128::from(*v)),
-        Value::Uint128(v) => i128::try_from(*v).map_err(|_| invalid_signed_edge_payload()),
-        _ => Err(invalid_signed_edge_payload()),
+fn invalid_u16_edge_payload() -> PlanQueryError {
+    PlanQueryError::InvalidExpressionValue {
+        expression: "u16 edge payload predicate literal".into(),
     }
 }
 
@@ -377,28 +292,5 @@ fn f32_from_value(value: &Value) -> Result<f32, PlanQueryError> {
         _ => Err(PlanQueryError::InvalidExpressionValue {
             expression: "f32 edge payload predicate literal".into(),
         }),
-    }
-}
-
-fn f64_from_value(value: &Value) -> Result<f64, PlanQueryError> {
-    match value {
-        Value::Float16(v) => Ok(f64::from(v.to_f32())),
-        Value::Float32(v) => Ok(f64::from(*v)),
-        Value::Float64(v) => Ok(*v),
-        _ => Err(PlanQueryError::InvalidExpressionValue {
-            expression: "f64 edge payload predicate literal".into(),
-        }),
-    }
-}
-
-fn invalid_unsigned_edge_payload() -> PlanQueryError {
-    PlanQueryError::InvalidExpressionValue {
-        expression: "unsigned edge payload predicate literal".into(),
-    }
-}
-
-fn invalid_signed_edge_payload() -> PlanQueryError {
-    PlanQueryError::InvalidExpressionValue {
-        expression: "signed edge payload predicate literal".into(),
     }
 }

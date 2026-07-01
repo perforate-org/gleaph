@@ -1,7 +1,7 @@
 # Physical plan format
 
 Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 14:15:53 UTC +0000
+Anchor timestamp: 2026-07-01 18:02:23 UTC +0000
 
 ## Purpose
 
@@ -167,6 +167,29 @@ For a requested edge property:
 - Otherwise Graph falls back to the sidecar property store (`GraphStore::edge_property`), preserving existing non-inline behavior.
 
 This rule is shared by expression evaluation, edge-record projection, and any downstream consumer that reads an edge property.
+
+## Inline scalar mutation contract
+
+For `InsertEdge` and edge-target `SetProperties` / `SetProperties::AllProperties` / `RemoveProperties`,
+Graph classifies evaluated assignments using the same `ResolvedEdgeLabel.inline_property_id` projection:
+
+- Exactly one assignment for the inline property id is required when the concrete edge label has an
+  `InlineScalar` schema. Missing, duplicate, `NULL`, overflowing, signedness-mismatched, non-finite,
+  or malformed fixed-byte values fail closed before any storage write.
+- The inline value is encoded into the exact fixed-width payload bytes using one Graph-owned scalar
+  codec shared with read and predicate paths.
+- `InsertEdge` calls the existing payload-aware edge insert commits (`insert_*_edge_with_payload_bytes`)
+  with the encoded bytes; non-inline assignments are applied as ordinary sidecar properties.
+- `SET e.prop = val` for the inline property updates the payload through the existing mirrored
+  payload-update commit (`update_edge_payload_at_handle`). Non-matching properties continue to use
+  `GraphStore::set_edge_property`.
+- `SET e = { ... }` evaluates and resolves the complete record, rejects duplicates and missing
+  inline values, encodes the inline field, removes all existing sidecar properties, updates the payload
+  exactly once, and writes only the remaining sidecar assignments.
+- `REMOVE e.prop` for the inline property is rejected until an absence representation exists. Removing
+  non-inline sidecar properties keeps existing behavior.
+- The inline property id is never written to the sidecar `EDGE_PROPERTIES` store or an index-maintenance
+  queue.
 
 ## Federation interaction
 

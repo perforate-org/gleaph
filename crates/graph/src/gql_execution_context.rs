@@ -112,6 +112,35 @@ impl GqlExecutionContext {
         )
     }
 
+    /// Router-resolved inline scalar property and matching payload profile for an edge label.
+    ///
+    /// Returns `Some((property_id, payload_profile))` only when the Router projected an
+    /// `InlineScalar` schema for this concrete label. Graph must not infer this from the value
+    /// or from any other source.
+    pub fn resolved_edge_label_inline_property(
+        &self,
+        label_id: EdgeLabelId,
+    ) -> Option<(PropertyId, EdgePayloadProfile)> {
+        if let Some(labels) = &self.resolved_labels {
+            let entry = labels.resolved_edge_label(label_id)?;
+            let property_id = entry.inline_property_id()?;
+            return Some((property_id, entry.payload_profile.clone()));
+        }
+        #[cfg(any(test, feature = "canbench"))]
+        {
+            let profile = crate::edge_payload_schema::lookup_edge_payload_profile(label_id);
+            if profile.required_byte_width() == 0 {
+                return None;
+            }
+            let property_id = crate::test_labels::edge_inline_property_for_id(label_id)?;
+            Some((property_id, profile))
+        }
+        #[cfg(not(any(test, feature = "canbench")))]
+        {
+            None
+        }
+    }
+
     pub fn resolved_property_id(&self, name: &str) -> Option<PropertyId> {
         if let Some(properties) = &self.resolved_properties {
             return properties

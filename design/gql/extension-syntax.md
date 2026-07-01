@@ -1,11 +1,11 @@
 # Gleaph GQL extension syntax
 
 Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 14:15:53 UTC +0000
+Anchor timestamp: 2026-07-01 18:02:23 UTC +0000
 
 ## Status
 
-**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`) and Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`) to the scalar inline slot are implemented**; fixed-size `STRUCT` inline slots, mutation packing of scalar values into the inline payload, `COST BY e.property`, and vector-index DDL remain planned.** This document
+**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`), Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), and Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`) of scalar values into the inline payload are implemented**; fixed-size `STRUCT` inline slots, `COST BY e.property`, and vector-index DDL remain planned.** This document
 is the steady-state public syntax contract for Gleaph-specific GQL extensions.
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
@@ -40,7 +40,7 @@ semantics.
 | ----------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | IC value type                 | `IC.PRINCIPAL`                                                            | Implemented                                                                                                                                                                                                                                                                                          | `gleaph-gql-ic` value extension                                                             |
 | IC runtime function           | `MSG_CALLER()`                                                            | Implemented                                                                                                                                                                                                                                                                                          | Graph execution context                                                                     |
-| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar schema registration and read access implemented** (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`; ordinary `e.property`, `WHERE e.property`, `ORDER BY e.property`); `STRUCT` slots and mutation packing remain planned | Router schema/catalog + Graph edge payload execution                                        |
+| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar schema registration, read access, and mutation packing implemented** (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`; ordinary `e.property`, `WHERE e.property`, `ORDER BY e.property`, `INSERT ... {distance: 7}`, `SET e.distance = 9`); `STRUCT` slots and `COST BY e.property` remain planned | Router schema/catalog + Graph edge payload execution                                        |
 | Shortest-path cost            | `COST BY e.distance`                                                      | Planned target                                                                                                                                                                                                                                                                                       | Graph query planner/executor                                                                |
 | Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph query executor                                                                        |
 | Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph edge storage/execution                                                                |
@@ -176,7 +176,7 @@ embeddings are not inline by default.
 
 ### Scalar schema registration (Slice 20)
 
-**Status:** Partially implemented.
+**Status:** Implemented.
 
 The Router now accepts a standalone scalar-only `INLINE` schema declaration:
 
@@ -204,9 +204,12 @@ unnamed payload profile installed through the admin API). Authorization follows 
 admin/manager-with-prepare-register policy as index and constraint DDL.
 
 Slice 21 adds ordinary `e.distance` property access for scalar inline slots
-(`e.property`, `WHERE e.property`, `ORDER BY e.property`). This section does not add `COST BY e.distance`,
-fixed-size `STRUCT` inline slots, mutation packing of scalar values into the inline payload, or
-`INLINE` inside generic `CREATE GRAPH TYPE` definitions. Those remain planned.
+(`e.property`, `WHERE e.property`, `ORDER BY e.property`). Slice 22 adds ordinary mutation packing
+of scalar values into the inline payload (`INSERT ... {distance: 7}`, `SET e.distance = 9`,
+`SET e = {distance: 9, ...}`), with fail-closed rejection of missing, duplicate, `NULL`, overflowing,
+non-finite, and malformed fixed-byte values before any canonical write. This section does not add
+`COST BY e.distance`, fixed-size `STRUCT` inline slots, or `INLINE` inside generic `CREATE GRAPH TYPE`
+definitions. Those remain planned.
 
 ### Relationship to `GLEAPH.WEIGHT`
 
@@ -748,7 +751,7 @@ This expresses the intended flow:
 | 4     | Add Router lowering from vector `SEARCH` to the existing vector search API                             | Implemented for leading `NodeScan + Search` prefix and non-leading `SEARCH` after a bound vertex, vertex-only, leading and non-leading `SEARCH ... WHERE` with one to eight `AND`-connected equalities on distinct properties, one numeric range, a two-sided numeric range, mixed equality-plus-one-sided-range, mixed equality-plus-two-sided-range, same-property equality disjunctions, cross-property pure equality disjunctions (where property names may repeat or differ), same-property pure numeric-range disjunctions, and cross-property pure numeric-range disjunctions, all backed by active vertex property indexes; `DISTANCE AS` and `SCORE AS` for cosine |
 | 5     | Add result hydration from vector hits to graph vertex bindings                                         | Implemented via row-shaped `SeedBindingsWire`                                                                        |
 | 6     | Add `SCORE AS` / `DISTANCE AS` validation from vector-index metric definitions                         | Implemented: shape validated against metric; `SCORE AS` works for exact-scan `Cosine`, rejected for `L2Squared`      |
-| 7     | Add inline edge property schema syntax and lower `e.inline_field` to existing edge-payload reads       | Planned                                                                                                              |
+| 7     | Add scalar `INLINE` edge-property schema syntax, ordinary read access (`e.inline_field`), and ordinary mutation packing (`INSERT`/`SET`/`REMOVE` semantics) into the inline payload | Implemented: scalar inline schema registration, read access, and mutation packing are complete; `STRUCT` inline slots, `COST BY e.property`, and generic `CREATE GRAPH TYPE` `INLINE` annotations remain planned |
 | 8     | Deprecate daily-query use of `GLEAPH.WEIGHT` where ordinary inline property access is available        | Planned                                                                                                              |
 
 Every stage that changes public syntax must update this document and add parser/planner/executor tests.

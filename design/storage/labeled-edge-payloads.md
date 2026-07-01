@@ -59,6 +59,29 @@ property; sidecar property values are not consulted. Graph stable `EDGE_PAYLOAD_
 (facade MemoryIds 38–41 repacked to 37–40). Tests may inject profiles via `test_labels` or an
 explicit `ResolvedLabelTable`.
 
+## Mutation write semantics (implemented)
+
+For an `InlineScalar` edge label, ordinary GQL mutations treat payload bytes as the only canonical
+value for the named inline property:
+
+- **No sidecar write.** A successful `INSERT`, `SET`, or all-properties replacement never puts the
+inline property id into `EDGE_PROPERTIES`, never enqueues index maintenance for it, and never falls
+back to a sidecar value if encoding fails.
+- **Validation before write.** All mutation expressions, property-id resolutions, duplicate checks,
+inline scalar encoding, and sidecar property validation (reserved property ids and
+`Value::to_binary_bytes()` encodability) happen before the first adjacency record is created or before
+existing sidecar properties are removed. Invalid input therefore cannot leave a partially initialized
+edge, a stale payload, or a torn sidecar record.
+- **Mirrored update.** `GraphStore::update_edge_payload_at_handle` and the edge-profile commit already
+own forward/reverse and undirected-alias synchronization; mutation packing reuses that commit so every
+physical mirror of the logical edge reflects the same payload bytes.
+- **Absence not represented.** `REMOVE e.inline_property` is rejected. There is no null/presence
+bitmap in this slice, so the inline property is required on insertion and cannot be deleted.
+
+Non-inline properties on the same edge keep existing sidecar behavior, including index-maintenance
+where applicable. The inline schema itself is never written by Graph; it is derived from Router
+stable state and carried on `ResolvedEdgeLabel` per [ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md).
+
 ## Stable memories (per orientation)
 
 - Existing edge/bucket memories

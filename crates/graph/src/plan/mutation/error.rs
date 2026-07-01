@@ -44,6 +44,35 @@ pub enum PlanMutationError {
     },
     UnsupportedSetItem(&'static str),
     UnsupportedRemoveItem(&'static str),
+    /// Required inline scalar property was missing on an edge insert/replacement.
+    MissingRequiredInlineProperty {
+        label: String,
+        property: String,
+    },
+    /// The same inline property was assigned more than once.
+    DuplicateInlinePropertyAssignment {
+        property: String,
+    },
+    /// Inline scalar properties cannot be set to `NULL` until an absence representation exists.
+    NullInlineProperty {
+        property: String,
+    },
+    /// The assigned value is not representable in the inline scalar encoding.
+    InvalidInlinePropertyValue {
+        property: String,
+        reason: String,
+    },
+    /// `REMOVE e.inline_property` is rejected until an absence representation exists.
+    CannotRemoveInlineProperty {
+        property: String,
+    },
+    /// A sidecar property value cannot be persisted as binary bytes (e.g. extension without a
+    /// binary payload). Rejected before any canonical write so a partially initialized edge or a
+    /// torn all-properties replacement cannot occur.
+    InvalidSidecarPropertyValue {
+        property: String,
+        reason: String,
+    },
     MissingParameter {
         name: String,
     },
@@ -92,47 +121,58 @@ impl fmt::Display for PlanMutationError {
             Self::InvalidExpressionValue { property } => {
                 write!(f, "invalid property expression value for '{property}'")
             }
-            Self::ExpressionDivisionByZero { property } => {
-                write!(
-                    f,
-                    "division by zero in property expression for '{property}'"
-                )
-            }
-            Self::ExpressionNumericOverflow { property } => {
-                write!(
-                    f,
-                    "numeric overflow in property expression for '{property}'"
-                )
-            }
-            Self::ExpressionNumericPrecisionOverflow { property } => {
-                write!(
-                    f,
-                    "numeric precision overflow in property expression for '{property}'"
-                )
-            }
-            Self::ExpressionNonFiniteNumeric { property } => {
-                write!(
-                    f,
-                    "non-finite float result in property expression for '{property}'"
-                )
-            }
-            Self::ExpressionIncomparableValues { property } => {
-                write!(
-                    f,
-                    "incomparable values in property expression comparison for '{property}'"
-                )
-            }
-            Self::ExpressionUnsupportedNumericConversion { property } => {
-                write!(
-                    f,
-                    "unsupported numeric conversion in property expression for '{property}'"
-                )
-            }
+            Self::ExpressionDivisionByZero { property } => write!(
+                f,
+                "division by zero in property expression for '{property}'"
+            ),
+            Self::ExpressionNumericOverflow { property } => write!(
+                f,
+                "numeric overflow in property expression for '{property}'"
+            ),
+            Self::ExpressionNumericPrecisionOverflow { property } => write!(
+                f,
+                "numeric precision overflow in property expression for '{property}'"
+            ),
+            Self::ExpressionNonFiniteNumeric { property } => write!(
+                f,
+                "non-finite float result in property expression for '{property}'"
+            ),
+            Self::ExpressionIncomparableValues { property } => write!(
+                f,
+                "incomparable values in property expression comparison for '{property}'"
+            ),
+            Self::ExpressionUnsupportedNumericConversion { property } => write!(
+                f,
+                "unsupported numeric conversion in property expression for '{property}'"
+            ),
             Self::InvalidPropertyReplacement { variable } => {
                 write!(f, "SET {variable} = ... requires a record value")
             }
             Self::UnsupportedSetItem(item) => write!(f, "unsupported SET item: {item}"),
             Self::UnsupportedRemoveItem(item) => write!(f, "unsupported REMOVE item: {item}"),
+            Self::MissingRequiredInlineProperty { label, property } => write!(
+                f,
+                "edge label {label} requires inline property '{property}'"
+            ),
+            Self::DuplicateInlinePropertyAssignment { property } => {
+                write!(f, "inline property '{property}' assigned more than once")
+            }
+            Self::NullInlineProperty { property } => {
+                write!(f, "inline property '{property}' cannot be NULL")
+            }
+            Self::InvalidInlinePropertyValue { property, reason } => write!(
+                f,
+                "invalid value for inline property '{property}': {reason}"
+            ),
+            Self::CannotRemoveInlineProperty { property } => {
+                write!(f, "inline property '{property}' cannot be removed")
+            }
+            Self::InvalidSidecarPropertyValue { property, reason } => {
+                write!(
+                    f,
+                    "invalid sidecar property value for '{property}': {reason}"
+                )
+            }
             Self::MissingParameter { name } => write!(f, "missing parameter '{name}'"),
             Self::MissingResolvedLabel { namespace, name } => {
                 write!(f, "missing router-resolved {namespace} label '{name}'")
