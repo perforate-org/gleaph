@@ -6,7 +6,10 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::{AggregateFunc, CmpOp, Expr, ExprKind, ObjectName, TruthValue};
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::{ProjectColumn, Str};
-use gleaph_graph_kernel::entry::{EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, Vertex};
+use gleaph_graph_kernel::entry::{
+    DecodedEdgePayload, EdgeLabelId, EdgeSlotIndex, PreparedWeightDecoder, PropertyId, Vertex,
+    decode_edge_payload,
+};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::path::GraphPathVertexId;
 use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
@@ -293,6 +296,98 @@ fn try_eval_gleaph_weight(
             Ok(Some(Value::Float32(w)))
         }
     }
+}
+
+/// Reads an inline edge scalar property if `(label_id, property_id) matches the Router-resolved
+/// inline schema for this concrete edge label. Returns `Ok(None)` when the property is not the
+/// inline slot, allowing the caller to fall back to the sidecar property store. Returns an error
+/// when the inline slot matches but the payload/schema is malformed, missing, or unsupported.
+pub(crate) fn try_read_inline_edge_property(
+    edge: &EdgeBinding,
+    property_id: PropertyId,
+    resolved_labels: Option<&ResolvedLabelTable>,
+) -> Result<Option<Value>, PlanQueryError> {
+    let Some(label) = crate::edge_payload_schema::resolved_edge_label_with(
+        resolved_labels,
+        EdgeLabelId::from_raw(edge.handle.label_id.raw()),
+    ) else {
+        return Ok(None);
+    };
+    let Some(inline_property_id) = label.inline_property_id() else {
+        return Ok(None);
+    };
+    if inline_property_id != property_id {
+        return Ok(None);
+    }
+
+    let profile = label.payload_profile;
+    let required_width = usize::from(profile.required_byte_width());
+    if required_width == 0 {
+        return Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!(
+                "inline property read for label {} requires a non-zero payload width",
+                edge.handle.label_id.raw()
+            ),
+        });
+    }
+
+    let bytes = edge.payload_bytes_slice();
+    if bytes.len() != required_width {
+        return Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!(
+                "inline payload width mismatch for label {}: expected {} bytes, got {}",
+                edge.handle.label_id.raw(),
+                required_width,
+                bytes.len()
+            ),
+        });
+    }
+
+    let decoder = profile
+        .prepare()
+        .map_err(|e| PlanQueryError::InvalidExpressionValue {
+            expression: format!(
+                "invalid payload profile for label {}: {e}",
+                edge.handle.label_id.raw()
+            ),
+        })?;
+    let decoded = decode_edge_payload(&decoder, bytes).map_err(|e| {
+        PlanQueryError::InvalidExpressionValue {
+            expression: format!(
+                "inline payload decode error for label {}: {e}",
+                edge.handle.label_id.raw()
+            ),
+        }
+    })?;
+    decoded_edge_payload_to_value(decoded)
+}
+
+/// Converts a decoded scalar edge payload into the exact GQL value, preserving width and signedness.
+fn decoded_edge_payload_to_value(
+    decoded: DecodedEdgePayload,
+) -> Result<Option<Value>, PlanQueryError> {
+    Ok(Some(match decoded {
+        DecodedEdgePayload::U8(v) => Value::Uint8(v),
+        DecodedEdgePayload::U16(v) => Value::Uint16(v),
+        DecodedEdgePayload::U32(v) => Value::Uint32(v),
+        DecodedEdgePayload::U64(v) => Value::Uint64(v),
+        DecodedEdgePayload::I8(v) => Value::Int8(v),
+        DecodedEdgePayload::I16(v) => Value::Int16(v),
+        DecodedEdgePayload::I32(v) => Value::Int32(v),
+        DecodedEdgePayload::I64(v) => Value::Int64(v),
+        DecodedEdgePayload::U128(v) => Value::Uint128(v),
+        DecodedEdgePayload::I128(v) => Value::Int128(v),
+        DecodedEdgePayload::F16(v) => Value::Float16(v),
+        DecodedEdgePayload::F32(v) => Value::Float32(v),
+        DecodedEdgePayload::F64(v) => Value::Float64(v),
+        DecodedEdgePayload::Fixed32(v) => Value::Bytes(v.to_vec()),
+        DecodedEdgePayload::Fixed64(v) => Value::Bytes(v.to_vec()),
+        other => {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: format!("inline property does not support decoded payload {other:?}"),
+            });
+        }
+    }))
 }
 
 impl QueryExprEvaluator<'_> {
@@ -692,10 +787,18 @@ impl QueryExprEvaluator<'_> {
                     .resolved_property_id(property)
                     .and_then(|property_id| self.store.vertex_property(*vertex_id, property_id))
                     .map_or(Ok(Value::Null), Ok),
-                Some(PlanBinding::Edge(edge)) => self
-                    .resolved_property_id(property)
-                    .and_then(|property_id| self.store.edge_property(edge.handle, property_id))
-                    .map_or(Ok(Value::Null), Ok),
+                Some(PlanBinding::Edge(edge)) => {
+                    let property_id = self.resolved_property_id(property);
+                    if let Some(property_id) = property_id
+                        && let Some(value) =
+                            try_read_inline_edge_property(edge, property_id, self.resolved_labels)?
+                    {
+                        return Ok(value);
+                    }
+                    property_id
+                        .and_then(|property_id| self.store.edge_property(edge.handle, property_id))
+                        .map_or(Ok(Value::Null), Ok)
+                }
                 Some(PlanBinding::EdgeGroup(_)) => Err(PlanQueryError::InvalidExpressionValue {
                     expression: format!(
                         "property access on group edge variable '{name}.{property}' requires element indexing"
@@ -1084,6 +1187,13 @@ fn vertex_matches_label_expr(
 #[cfg(test)]
 mod tests {
     use super::super::test_support::*;
+    use super::try_read_inline_edge_property;
+    use gleaph_graph_kernel::entry::{
+        Edge, EdgeLabelId, EdgePayload, EdgePayloadEncoding, EdgePayloadProfile, EdgeSlotIndex,
+        PropertyId,
+    };
+    use gleaph_graph_kernel::plan_exec::{ResolvedEdgeLabel, ResolvedLabelTable};
+    use half::f16;
 
     #[test]
     fn executes_planner_match_return_property() {
@@ -2363,6 +2473,478 @@ mod tests {
         match result.rows[0].get("m") {
             Some(Value::Float64(f)) => assert!((f - 20.0).abs() < 1e-6),
             other => panic!("expected float median: {other:?}"),
+        }
+    }
+    fn inline_edge_binding(payload: &[u8]) -> EdgeBinding {
+        let handle = EdgeHandle {
+            owner_vertex_id: VertexId::from(1u32),
+            label_id: ic_stable_lara::labeled::BucketLabelKey::from_raw(7),
+            slot_index: 0,
+        };
+        let edge = Edge {
+            target: gleaph_graph_kernel::entry::VertexRef::local(VertexId::from(2u32)),
+            edge_slot_index: EdgeSlotIndex::from_raw(0),
+            label_id: 7,
+            payload: EdgePayload::from_slice(payload),
+        };
+        EdgeBinding::from_edge(handle, edge)
+    }
+
+    fn resolved_label_table_with_inline(
+        label_id: u16,
+        property_id: u16,
+        profile: EdgePayloadProfile,
+    ) -> ResolvedLabelTable {
+        ResolvedLabelTable {
+            vertex: Vec::new(),
+            edge: vec![ResolvedEdgeLabel::with_inline_property(
+                "Road".to_string(),
+                EdgeLabelId::from_raw(label_id),
+                profile,
+                Some(PropertyId::from_raw(u32::from(property_id))),
+            )],
+        }
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_f32_payload() {
+        let binding = inline_edge_binding(&f32::to_le_bytes(3.5));
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 4,
+                encoding: EdgePayloadEncoding::F32,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Float32(3.5));
+    }
+
+    #[test]
+    fn inline_edge_property_read_returns_none_for_non_inline_property() {
+        let binding = inline_edge_binding(&f32::to_le_bytes(3.5));
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 4,
+                encoding: EdgePayloadEncoding::F32,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(99), Some(&table))
+            .expect("decode");
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn inline_edge_property_read_fails_on_width_mismatch() {
+        let binding = inline_edge_binding(&[0u8; 2]);
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 4,
+                encoding: EdgePayloadEncoding::F32,
+            },
+        );
+        let err = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect_err("width mismatch");
+        assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
+    }
+
+    #[test]
+    fn inline_edge_property_read_preserves_f64_width() {
+        let binding = inline_edge_binding(&f64::to_le_bytes(1.23456789));
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 8,
+                encoding: EdgePayloadEncoding::F64,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Float64(1.23456789));
+    }
+
+    #[test]
+    fn inline_edge_property_read_preserves_signed_integer() {
+        let binding = inline_edge_binding(&i64::to_le_bytes(-7));
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 8,
+                encoding: EdgePayloadEncoding::RawI64,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Int64(-7));
+    }
+
+    #[test]
+    fn inline_edge_property_read_returns_none_for_unnamed_profile() {
+        let binding = inline_edge_binding(&[0u8; 4]);
+        let table = ResolvedLabelTable {
+            vertex: Vec::new(),
+            edge: vec![ResolvedEdgeLabel::new(
+                "Road".to_string(),
+                EdgeLabelId::from_raw(7),
+                EdgePayloadProfile {
+                    byte_width: 4,
+                    encoding: EdgePayloadEncoding::RawBytes,
+                },
+            )],
+        };
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode");
+        assert_eq!(value, None);
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_f16_payload() {
+        let binding = inline_edge_binding(&f16::from_f32(1.5).to_le_bytes());
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::F16,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Float16(f16::from_f32(1.5)));
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_u8_payload() {
+        let binding = inline_edge_binding(&[42u8]);
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 1,
+                encoding: EdgePayloadEncoding::RawU8,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Uint8(42));
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_u16_payload() {
+        let binding = inline_edge_binding(&u16::to_le_bytes(1000));
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::RawU16,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Uint16(1000));
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_u32_payload() {
+        let binding = inline_edge_binding(&u32::to_le_bytes(123_456_789));
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 4,
+                encoding: EdgePayloadEncoding::RawU32,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Uint32(123_456_789));
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_u64_payload() {
+        let binding = inline_edge_binding(&u64::to_le_bytes(u64::MAX));
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 8,
+                encoding: EdgePayloadEncoding::RawU64,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Uint64(u64::MAX));
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_u128_max() {
+        let binding = inline_edge_binding(&u128::to_le_bytes(u128::MAX));
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 16,
+                encoding: EdgePayloadEncoding::RawU128,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Uint128(u128::MAX));
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_i8_min() {
+        let binding = inline_edge_binding(&i8::to_le_bytes(i8::MIN));
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 1,
+                encoding: EdgePayloadEncoding::RawI8,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Int8(i8::MIN));
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_i16_min() {
+        let binding = inline_edge_binding(&i16::to_le_bytes(i16::MIN));
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::RawI16,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Int16(i16::MIN));
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_i32_min() {
+        let binding = inline_edge_binding(&i32::to_le_bytes(i32::MIN));
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 4,
+                encoding: EdgePayloadEncoding::RawI32,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Int32(i32::MIN));
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_i64_min() {
+        let binding = inline_edge_binding(&i64::to_le_bytes(i64::MIN));
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 8,
+                encoding: EdgePayloadEncoding::RawI64,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Int64(i64::MIN));
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_i128_boundaries() {
+        for (raw, expected) in [
+            (i128::MIN, Value::Int128(i128::MIN)),
+            (i128::MAX, Value::Int128(i128::MAX)),
+        ] {
+            let binding = inline_edge_binding(&i128::to_le_bytes(raw));
+            let table = resolved_label_table_with_inline(
+                7,
+                42,
+                EdgePayloadProfile {
+                    byte_width: 16,
+                    encoding: EdgePayloadEncoding::RawI128,
+                },
+            );
+            let value =
+                try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+                    .expect("decode")
+                    .expect("inline value");
+            assert_eq!(value, expected);
+        }
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_fixed32_payload() {
+        let payload = [0xabu8; 32];
+        let binding = inline_edge_binding(&payload);
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 32,
+                encoding: EdgePayloadEncoding::RawFixed32,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Bytes(payload.to_vec()));
+    }
+
+    #[test]
+    fn inline_edge_property_read_decodes_fixed64_payload() {
+        let payload = [0xcd; 64];
+        let binding = inline_edge_binding(&payload);
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 64,
+                encoding: EdgePayloadEncoding::RawFixed64,
+            },
+        );
+        let value = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect("decode")
+            .expect("inline value");
+        assert_eq!(value, Value::Bytes(payload.to_vec()));
+    }
+
+    #[test]
+    fn inline_edge_property_read_rejects_width_mismatch_for_integer_encodings() {
+        let cases: &[(EdgePayloadEncoding, u16, &[u8])] = &[
+            (EdgePayloadEncoding::RawU8, 1, &[0u8; 2]),
+            (EdgePayloadEncoding::RawU16, 2, &[0u8; 1]),
+            (EdgePayloadEncoding::RawU32, 4, &[0u8; 2]),
+            (EdgePayloadEncoding::RawU64, 8, &[0u8; 4]),
+            (EdgePayloadEncoding::RawI8, 1, &[0u8; 2]),
+            (EdgePayloadEncoding::RawI16, 2, &[0u8; 1]),
+            (EdgePayloadEncoding::RawI32, 4, &[0u8; 2]),
+            (EdgePayloadEncoding::RawI64, 8, &[0u8; 4]),
+        ];
+        for (encoding, width, payload) in cases {
+            let binding = inline_edge_binding(payload);
+            let table = resolved_label_table_with_inline(
+                7,
+                42,
+                EdgePayloadProfile {
+                    byte_width: *width,
+                    encoding: encoding.clone(),
+                },
+            );
+            let err =
+                try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+                    .expect_err("width mismatch");
+            assert!(
+                matches!(err, PlanQueryError::InvalidExpressionValue { .. }),
+                "encoding {encoding:?} should fail with width mismatch: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_edge_property_read_rejects_width_mismatch_for_128bit_encodings() {
+        let cases: &[(EdgePayloadEncoding, &[u8])] = &[
+            (EdgePayloadEncoding::RawU128, &[0u8; 8]),
+            (EdgePayloadEncoding::RawI128, &[0u8; 8]),
+        ];
+        for (encoding, payload) in cases {
+            let binding = inline_edge_binding(payload);
+            let table = resolved_label_table_with_inline(
+                7,
+                42,
+                EdgePayloadProfile {
+                    byte_width: 16,
+                    encoding: encoding.clone(),
+                },
+            );
+            let err =
+                try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+                    .expect_err("width mismatch");
+            assert!(
+                matches!(err, PlanQueryError::InvalidExpressionValue { .. }),
+                "encoding {encoding:?} should fail with width mismatch: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_edge_property_read_rejects_width_mismatch_for_float_encodings() {
+        let cases: &[(EdgePayloadEncoding, u16, &[u8])] = &[
+            (EdgePayloadEncoding::F16, 2, &[0u8; 1]),
+            (EdgePayloadEncoding::F32, 4, &[0u8; 2]),
+            (EdgePayloadEncoding::F64, 8, &[0u8; 4]),
+        ];
+        for (encoding, width, payload) in cases {
+            let binding = inline_edge_binding(payload);
+            let table = resolved_label_table_with_inline(
+                7,
+                42,
+                EdgePayloadProfile {
+                    byte_width: *width,
+                    encoding: encoding.clone(),
+                },
+            );
+            let err =
+                try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+                    .expect_err("width mismatch");
+            assert!(
+                matches!(err, PlanQueryError::InvalidExpressionValue { .. }),
+                "encoding {encoding:?} should fail with width mismatch: {err:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn inline_edge_property_read_rejects_width_mismatch_for_fixed_encodings() {
+        let cases: &[(EdgePayloadEncoding, u16, &[u8])] = &[
+            (EdgePayloadEncoding::RawFixed32, 32, &[0u8; 16]),
+            (EdgePayloadEncoding::RawFixed64, 64, &[0u8; 32]),
+        ];
+        for (encoding, width, payload) in cases {
+            let binding = inline_edge_binding(payload);
+            let table = resolved_label_table_with_inline(
+                7,
+                42,
+                EdgePayloadProfile {
+                    byte_width: *width,
+                    encoding: encoding.clone(),
+                },
+            );
+            let err =
+                try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+                    .expect_err("width mismatch");
+            assert!(
+                matches!(err, PlanQueryError::InvalidExpressionValue { .. }),
+                "encoding {encoding:?} should fail with width mismatch: {err:?}"
+            );
         }
     }
 }

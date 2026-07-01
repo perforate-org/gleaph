@@ -17,6 +17,7 @@ use crate::facade::stable::edge_payload_profiles::{
 use crate::facade::stable::graph_catalog::{
     catalog_error_to_router, list_live_shards_for_graph_id, resolve_registered_graph_id,
 };
+use crate::facade::stable::indexed_catalog::edge_index_uses_property_label;
 use crate::facade::stable::reservation_catalog::ProofShard;
 use crate::state::RouterError;
 use crate::types::{EdgeLabelId, PropertyId, VertexLabelId};
@@ -134,6 +135,18 @@ impl RouterStore {
             }
         }
 
+        // Inline/index conflict guard (ADR 0034 Slice 21): a sidecar edge Property Index
+        // for the same (label, property) would be semantically stale because inline payload
+        // mutations do not maintain postings. Reject the DDL before any catalog write.
+        if let Some(label_id) = existing_label_id
+            && let Some(property_id) = existing_property_id
+            && edge_index_uses_property_label(graph_id, property_id, label_id.raw())
+        {
+            return Err(RouterError::Conflict(format!(
+                "edge label {edge_label_name} already has a property index on {property_name}; drop the index before creating an inline scalar schema"
+            )));
+        }
+
         // Capacity preflight: prove id allocation will succeed before any mutation.
         if existing_label_id.is_none() {
             ROUTER_EDGE_LABEL_CATALOG
@@ -156,12 +169,13 @@ impl RouterStore {
             .map_err(map_edge_payload_profile_err)
     }
 
-    fn lookup_edge_payload_profile(
+    fn lookup_edge_payload_profile_and_inline_property(
         &self,
         graph_id: GraphId,
         id: EdgeLabelId,
-    ) -> EdgePayloadProfile {
-        ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|store| store.get_profile(graph_id, id))
+    ) -> (EdgePayloadProfile, Option<PropertyId>) {
+        ROUTER_EDGE_PAYLOAD_PROFILES
+            .with_borrow(|store| store.get_profile_and_inline_property_id(graph_id, id))
     }
 
     pub(crate) fn commit_intern_property_name(
@@ -447,10 +461,13 @@ impl RouterStore {
                     }
                 };
                 if !out.edge.iter().any(|entry| entry.name == name.as_ref()) {
-                    out.edge.push(ResolvedEdgeLabel::new(
+                    let (profile, inline_property_id) =
+                        self.lookup_edge_payload_profile_and_inline_property(graph_id, id);
+                    out.edge.push(ResolvedEdgeLabel::with_inline_property(
                         name.to_string(),
                         id,
-                        self.lookup_edge_payload_profile(graph_id, id),
+                        profile,
+                        inline_property_id,
                     ));
                 }
             }
@@ -471,10 +488,13 @@ impl RouterStore {
                 continue;
             }
             let name = self.reverse_edge_label_name(graph_id, id)?;
-            table.edge.push(ResolvedEdgeLabel::new(
+            let (profile, inline_property_id) =
+                self.lookup_edge_payload_profile_and_inline_property(graph_id, id);
+            table.edge.push(ResolvedEdgeLabel::with_inline_property(
                 name,
                 id,
-                self.lookup_edge_payload_profile(graph_id, id),
+                profile,
+                inline_property_id,
             ));
         }
         Ok(())

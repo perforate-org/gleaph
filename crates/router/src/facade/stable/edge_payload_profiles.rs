@@ -150,6 +150,13 @@ impl EdgePayloadSchemaRecord {
     pub fn is_inline_scalar(&self) -> bool {
         matches!(self, Self::InlineScalar { .. })
     }
+
+    pub fn inline_property_id(&self) -> Option<PropertyId> {
+        match self {
+            Self::InlineScalar { property_id, .. } => Some(*property_id),
+            Self::UnnamedProfile { .. } => None,
+        }
+    }
 }
 
 const SCHEMA_RECORD_VERSION: u8 = 1;
@@ -235,10 +242,24 @@ impl<M: Memory> EdgePayloadProfileStore<M> {
         })
     }
 
+    /// Physical profile accessor kept as a public convenience even though production planning
+    /// paths now prefer `get_profile_and_inline_property_id`.
+    #[allow(dead_code)]
     pub fn get_profile(&self, graph_id: GraphId, label: EdgeLabelId) -> EdgePayloadProfile {
         self.get_record(graph_id, label)
             .map(|record| record.profile())
             .unwrap_or_else(EdgePayloadProfile::no_payload)
+    }
+
+    /// Returns the physical profile and optional inline property id from the canonical record.
+    pub fn get_profile_and_inline_property_id(
+        &self,
+        graph_id: GraphId,
+        label: EdgeLabelId,
+    ) -> (EdgePayloadProfile, Option<PropertyId>) {
+        self.get_record(graph_id, label)
+            .map(|record| (record.profile(), record.inline_property_id()))
+            .unwrap_or_else(|| (EdgePayloadProfile::no_payload(), None))
     }
 
     fn insert_record(
@@ -576,5 +597,44 @@ mod tests {
         assert_eq!(bytes[0], SCHEMA_RECORD_VERSION);
         let decoded = EdgePayloadSchemaRecord::from_bytes(std::borrow::Cow::Owned(bytes));
         assert_eq!(decoded, record);
+    }
+    #[test]
+    fn inline_property_id_accessor_returns_property_id() {
+        let mut store = EdgePayloadProfileStore::init(mem());
+        let graph = GraphId::from_raw(1);
+        let label = EdgeLabelId::from_raw(3);
+        let property_id = PropertyId::from_raw(7);
+        store
+            .set_inline_scalar_schema(graph, label, property_id, InlineScalarType::F32)
+            .expect("set inline");
+        let record = store.get_record(graph, label).expect("record");
+        assert_eq!(record.inline_property_id(), Some(property_id));
+        let (profile, inline_id) = store.get_profile_and_inline_property_id(graph, label);
+        assert_eq!(profile.byte_width, 4);
+        assert_eq!(inline_id, Some(property_id));
+    }
+
+    #[test]
+    fn unnamed_profile_inline_property_id_is_none() {
+        let mut store = EdgePayloadProfileStore::init(mem());
+        let graph = GraphId::from_raw(1);
+        let label = EdgeLabelId::from_raw(2);
+        store
+            .insert_unnamed_profile_profile(
+                graph,
+                label,
+                EdgePayloadProfile {
+                    byte_width: 2,
+                    encoding: EdgePayloadEncoding::WeightRawU16,
+                },
+            )
+            .expect("legacy");
+        assert_eq!(
+            store.get_record(graph, label).unwrap().inline_property_id(),
+            None
+        );
+        let (profile, inline_id) = store.get_profile_and_inline_property_id(graph, label);
+        assert_eq!(profile.byte_width, 2);
+        assert_eq!(inline_id, None);
     }
 }

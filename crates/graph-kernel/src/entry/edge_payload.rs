@@ -119,7 +119,9 @@ pub enum DecodedEdgePayload {
     I128(i128),
     Fixed32([u8; 32]),
     Fixed64([u8; 64]),
+    F16(f16),
     F32(f32),
+    F64(f64),
     VectorF32(Vec<f32>),
     Weight(f32),
     Bytes(Vec<u8>),
@@ -362,13 +364,13 @@ pub fn decode_edge_payload(
             DecodedEdgePayload::I64(i64::from_le_bytes(read_fixed::<8>(bytes)))
         }
         PreparedEdgePayloadDecoder::F16 => {
-            DecodedEdgePayload::F32(f16::from_le_bytes(read_fixed::<2>(bytes)).to_f32())
+            DecodedEdgePayload::F16(f16::from_le_bytes(read_fixed::<2>(bytes)))
         }
         PreparedEdgePayloadDecoder::F32 => {
             DecodedEdgePayload::F32(f32::from_le_bytes(read_fixed::<4>(bytes)))
         }
         PreparedEdgePayloadDecoder::F64 => {
-            DecodedEdgePayload::F32(f64::from_le_bytes(read_fixed::<8>(bytes)) as f32)
+            DecodedEdgePayload::F64(f64::from_le_bytes(read_fixed::<8>(bytes)))
         }
         PreparedEdgePayloadDecoder::RawU128 => {
             DecodedEdgePayload::U128(u128::from_le_bytes(read_fixed::<16>(bytes)))
@@ -637,5 +639,32 @@ mod tests {
             encoding: EdgePayloadEncoding::RawI32,
         };
         assert_eq!(profile.to_weight_profile(), None);
+    }
+    #[test]
+    fn f16_profile_decodes_to_f16_value() {
+        let profile = EdgePayloadProfile {
+            byte_width: 2,
+            encoding: EdgePayloadEncoding::F16,
+        };
+        let dec = profile.prepare().expect("prepare");
+        let bytes = half::f16::from_f32(1.5).to_le_bytes();
+        assert_eq!(
+            decode_edge_payload(&dec, &bytes).expect("decode"),
+            DecodedEdgePayload::F16(half::f16::from_f32(1.5))
+        );
+    }
+
+    #[test]
+    fn f64_profile_decodes_to_f64_value() {
+        let profile = EdgePayloadProfile {
+            byte_width: 8,
+            encoding: EdgePayloadEncoding::F64,
+        };
+        let dec = profile.prepare().expect("prepare");
+        let bytes = 1.23456789f64.to_le_bytes();
+        assert_eq!(
+            decode_edge_payload(&dec, &bytes).expect("decode"),
+            DecodedEdgePayload::F64(1.23456789)
+        );
     }
 }

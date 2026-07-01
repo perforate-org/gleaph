@@ -299,6 +299,10 @@ pub struct ResolvedEdgeLabel {
     pub id: EdgeLabelId,
     /// Router-owned logical schema (ADR 0008). Default `no_payload` when omitted on legacy wire.
     pub payload_profile: EdgePayloadProfile,
+    /// Router-derived named inline property identity for this concrete edge label (ADR 0034 Slice 21).
+    /// `Some(property_id)` only for `EdgePayloadSchemaRecord::InlineScalar`. `UnnamedProfile` emits `None`.
+    /// Graph receives this as a plan-scoped projection and must not persist or infer it.
+    pub inline_property_id: Option<PropertyId>,
 }
 
 impl ResolvedEdgeLabel {
@@ -307,11 +311,27 @@ impl ResolvedEdgeLabel {
         id: EdgeLabelId,
         payload_profile: EdgePayloadProfile,
     ) -> Self {
+        Self::with_inline_property(name, id, payload_profile, None)
+    }
+
+    pub fn with_inline_property(
+        name: impl Into<String>,
+        id: EdgeLabelId,
+        payload_profile: EdgePayloadProfile,
+        inline_property_id: Option<PropertyId>,
+    ) -> Self {
         Self {
             name: name.into(),
             id,
             payload_profile,
+            inline_property_id,
         }
+    }
+
+    /// The inline property identity projected from Router schema, if any.
+    #[inline]
+    pub fn inline_property_id(&self) -> Option<PropertyId> {
+        self.inline_property_id
     }
 }
 
@@ -321,6 +341,10 @@ impl ResolvedLabelTable {
             .iter()
             .find(|entry| entry.id == id)
             .map(|entry| &entry.payload_profile)
+    }
+
+    pub fn resolved_edge_label(&self, id: EdgeLabelId) -> Option<&ResolvedEdgeLabel> {
+        self.edge.iter().find(|entry| entry.id == id)
     }
 
     pub fn edge_label_ids_with_nonzero_payload(&self) -> Vec<EdgeLabelId> {
@@ -422,6 +446,7 @@ pub struct ResolvedSearchWire {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::entry::EdgePayloadEncoding;
     use crate::federation::ElementIdEncodingKey;
     use candid::{Decode, Encode};
 
@@ -553,10 +578,11 @@ mod tests {
                     name: "User".into(),
                     id: VertexLabelId::from_raw(1),
                 }],
-                edge: vec![ResolvedEdgeLabel::new(
+                edge: vec![ResolvedEdgeLabel::with_inline_property(
                     "KNOWS",
                     EdgeLabelId::from_raw(1),
                     EdgePayloadProfile::no_payload(),
+                    None,
                 )],
             }),
             resolved_properties: Some(ResolvedPropertyTable {
@@ -798,5 +824,41 @@ mod tests {
         };
         let legacy_bytes = Encode!(&legacy).expect("encode legacy wire");
         let _: SeedBindingsWire = Decode!(&legacy_bytes, SeedBindingsWire).expect("decode legacy");
+    }
+    #[test]
+    fn resolved_edge_label_inline_property_id_roundtrip() {
+        let label = ResolvedEdgeLabel::with_inline_property(
+            "ROAD".to_string(),
+            EdgeLabelId::from_raw(7),
+            EdgePayloadProfile {
+                byte_width: 4,
+                encoding: EdgePayloadEncoding::F32,
+            },
+            Some(PropertyId::from_raw(42)),
+        );
+        let bytes = Encode!(&label).expect("encode ResolvedEdgeLabel with inline property id");
+        let decoded: ResolvedEdgeLabel = Decode!(&bytes, ResolvedEdgeLabel).expect("decode");
+        assert_eq!(decoded, label);
+        assert_eq!(decoded.inline_property_id, Some(PropertyId::from_raw(42)));
+    }
+
+    #[test]
+    fn resolved_label_table_resolves_edge_label_with_inline_id() {
+        let table = ResolvedLabelTable {
+            vertex: Vec::new(),
+            edge: vec![ResolvedEdgeLabel::with_inline_property(
+                "ROAD".to_string(),
+                EdgeLabelId::from_raw(7),
+                EdgePayloadProfile {
+                    byte_width: 4,
+                    encoding: EdgePayloadEncoding::F32,
+                },
+                Some(PropertyId::from_raw(42)),
+            )],
+        };
+        let entry = table
+            .resolved_edge_label(EdgeLabelId::from_raw(7))
+            .expect("label");
+        assert_eq!(entry.inline_property_id, Some(PropertyId::from_raw(42)));
     }
 }

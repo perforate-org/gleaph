@@ -1,7 +1,7 @@
 # Execution pipeline
 
 Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 07:07:02 UTC +0000
+Anchor timestamp: 2026-07-01 14:15:53 UTC +0000
 
 ## Purpose
 
@@ -131,6 +131,18 @@ explicit empty `ResolvedSearchWire` to every live shard, so the Graph executor s
 and any global aggregate returns one `count = 0` row. When the candidate set is non-empty, the vector
 canister ranks exactly within the allowlist and the Router partitions hits into per-shard resolved
 relations as for unfiltered non-leading search.
+
+### Inline edge property reads
+
+Edge property evaluation uses one inline-aware read helper (`try_read_inline_edge_property`):
+
+1. Resolve the property name through the plan's `ResolvedPropertyTable`.
+2. Use the concrete `EdgeBinding.handle.label_id` to look up the `ResolvedEdgeLabel`.
+3. If `inline_property_id` matches the requested property id, decode the bound `EdgeBinding.payload` with the profile's exact width and encoding, returning the corresponding `Value`.
+4. If the property is not the inline slot, fall back to the sidecar `store.edge_property`.
+5. If the inline slot matches but the payload/schema is malformed, return `PlanQueryError` instead of `NULL` or sidecar rescue.
+
+Projection, filtering, comparison, aggregate input, and `ORDER BY` all route through this helper, so the precedence and fail-closed rules are enforced uniformly.
 
 ## Materialization
 

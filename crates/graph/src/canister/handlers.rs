@@ -834,6 +834,45 @@ pub async fn e2e_delete_directed_edge_with_property(
     Ok(())
 }
 
+/// Set a sidecar edge property on an existing directed edge (PocketIC E2E only).
+///
+/// Used to test inline-payload precedence: the caller creates an edge with a payload through
+/// [`e2e_insert_directed_edge_with_payload`], then sets the same property id to a different
+/// sidecar value here, and finally reads `e.property` to prove payload bytes win.
+#[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_set_edge_property(
+    args: super::types::E2eSetEdgePropertyArgs,
+) -> Result<(), String> {
+    use crate::facade::EdgeHandle;
+    use gleaph_gql::Value;
+    use gleaph_graph_kernel::entry::PropertyId;
+    use ic_stable_lara::traits::CsrEdge;
+    use ic_stable_lara::{VertexId, labeled::BucketLabelKey as LaraLabelId};
+
+    let store = GraphStore::new();
+    let source = VertexId::from(args.source_local_vertex_id);
+    let target = VertexId::from(args.target_local_vertex_id);
+    let edge = store
+        .directed_out_edges(source)
+        .map_err(|e| e.to_string())?
+        .into_iter()
+        .find(|edge| edge.neighbor_vid() == target)
+        .ok_or("directed edge source -> target not found")?;
+    let handle = EdgeHandle::at_slot(
+        source,
+        LaraLabelId::from_raw(edge.label_id),
+        edge.edge_slot_index.raw(),
+    );
+    let canonical = store.canonical_edge_handle(handle);
+    let property_id = PropertyId::from_raw(args.property_id);
+    store
+        .set_edge_property(canonical, property_id, Value::Int64(args.value))
+        .map_err(|e| e.to_string())?;
+    // No index/catalog context: the inline read path must ignore this sidecar value regardless of
+    // whether an index would have maintained postings for it.
+    Ok(())
+}
+
 /// Pending deferred-maintenance work items in the stable queue (PocketIC E2E only).
 ///
 /// Lets a test poll for timer-driven drain quiescence after advancing PocketIC

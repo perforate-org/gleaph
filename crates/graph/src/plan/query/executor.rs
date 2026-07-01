@@ -11,7 +11,9 @@ mod set_operation;
 mod wcoj;
 
 pub use bindings::EdgeBinding;
-pub(crate) use eval::{binding_to_value, eval_sort_expr, project_row, value_row};
+pub(crate) use eval::{
+    binding_to_value, eval_sort_expr, project_row, try_read_inline_edge_property, value_row,
+};
 pub(crate) use ops::execute_ops_from;
 pub use path::PathBinding;
 pub(crate) use path::path_binding_to_value;
@@ -302,10 +304,21 @@ pub(crate) fn edge_to_projected_record(
 ) -> Result<Value, PlanQueryError> {
     let mut fields = Vec::with_capacity(properties.len());
     for property in properties {
-        let value = execution
-            .resolved_property_id(property.as_ref())
-            .and_then(|property_id| store.edge_property(binding.handle, property_id))
-            .unwrap_or(Value::Null);
+        let value = if let Some(property_id) = execution.resolved_property_id(property.as_ref()) {
+            if let Some(value) = try_read_inline_edge_property(
+                &binding,
+                property_id,
+                execution.resolved_labels.as_ref(),
+            )? {
+                value
+            } else {
+                store
+                    .edge_property(binding.handle, property_id)
+                    .unwrap_or(Value::Null)
+            }
+        } else {
+            Value::Null
+        };
         fields.push((property.to_string(), value));
     }
     Ok(Value::Record(fields))

@@ -13,7 +13,9 @@ use gleaph_graph_kernel::index::IndexedPropertyKind;
 use crate::edge_index_direction::{
     EdgeIndexDirectionTag, index_applies_to_query, tag_to_direction,
 };
-use crate::facade::stable::ROUTER_PROPERTY_CATALOG;
+use crate::facade::stable::{
+    ROUTER_EDGE_LABEL_CATALOG, ROUTER_EDGE_PAYLOAD_PROFILES, ROUTER_PROPERTY_CATALOG,
+};
 use crate::facade::store::RouterStore;
 
 /// One administrator-defined index (ADR 0009 §4).
@@ -177,8 +179,55 @@ impl GraphStats for RouterGraphStats {
         direction: EdgeDirection,
     ) -> bool {
         match label {
-            Some(label) => self.is_edge_indexed_for(label, property, direction),
-            None => self.is_edge_property_indexed(property),
+            Some(label) => {
+                // Defensive guard: an inline scalar schema is the canonical read source for its
+                // (label, property) pair. Until inline-index maintenance exists, exclude the pair
+                // from planner stats so a stale sidecar index cannot drive planning.
+                let label_id = RouterStore::new()
+                    .lookup_edge_label_id(self.graph_id, label)
+                    .ok();
+                let property_id = ROUTER_PROPERTY_CATALOG
+                    .with_borrow(|catalog| catalog.get_id(self.graph_id, property));
+                let inline_matches = label_id.is_some()
+                    && property_id.is_some()
+                    && ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|store| {
+                        store
+                            .get_record(self.graph_id, label_id.unwrap())
+                            .is_some_and(|record| {
+                                record.is_inline_scalar()
+                                    && record.inline_property_id() == property_id
+                            })
+                    });
+                !inline_matches && self.is_edge_indexed_for(label, property, direction)
+            }
+            None => {
+                // Fail-closed for wildcard / compound label expressions: if any edge label in this
+                // graph has the property as its inline scalar slot, we cannot answer "is this property
+                // indexed?" with a simple yes based only on a sidecar edge index for some other label.
+                // The planner would otherwise fuse a predicate into an EdgeIndexScan that ignores
+                // inline edges carrying the same property id in their payload.
+                let Some(property_id) = ROUTER_PROPERTY_CATALOG
+                    .with_borrow(|catalog| catalog.get_id(self.graph_id, property))
+                else {
+                    return false;
+                };
+                let any_label_is_inline = ROUTER_EDGE_LABEL_CATALOG.with_borrow(|catalog| {
+                    catalog.iter_ids_for_graph(self.graph_id).any(|label_id| {
+                        ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|store| {
+                            store
+                                .get_record(self.graph_id, label_id)
+                                .is_some_and(|record| {
+                                    record.is_inline_scalar()
+                                        && record.inline_property_id() == Some(property_id)
+                                })
+                        })
+                    })
+                });
+                if any_label_is_inline {
+                    return false;
+                }
+                self.is_edge_property_indexed(property)
+            }
         }
     }
 }
@@ -267,5 +316,87 @@ mod tests {
             "weight",
             EdgeDirection::Undirected,
         ));
+    }
+    #[test]
+    fn edge_property_index_for_none_fail_closed_when_any_label_is_inline() {
+        use crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES;
+        use crate::facade::stable::edge_payload_profiles::InlineScalarType;
+        let store = RouterStore::new();
+        let admin = Principal::from_slice(&[1; 29]);
+        store.init_from_args(&RouterInitArgs {
+            issuing_principal: admin,
+            initial_admins: vec![],
+        });
+        crate::facade::auth::grant_admins(&[admin]);
+        crate::facade::store::catalog_test_support::register_graph(&store, admin, TEST_GRAPH);
+        let graph_id = store.resolve_graph_id(TEST_GRAPH).expect("test graph");
+
+        let road_label_id = store
+            .admin_intern_edge_label(admin, TEST_GRAPH, "ROAD")
+            .expect("intern ROAD");
+        let _knows_label_id = store
+            .admin_intern_edge_label(admin, TEST_GRAPH, "KNOWS")
+            .expect("intern KNOWS");
+        let property_id = store
+            .admin_intern_property(admin, TEST_GRAPH, "distance")
+            .expect("intern distance");
+
+        // KNOWS has a sidecar edge index on distance; ROAD has the same property id as inline.
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Edge,
+                label: "KNOWS".into(),
+                property: "distance".into(),
+                edge_direction: Some(gleaph_gql::types::EdgeDirection::AnyDirection),
+            },
+        ))
+        .expect("create edge index on KNOWS.distance");
+
+        ROUTER_EDGE_PAYLOAD_PROFILES
+            .with_borrow_mut(|s| {
+                s.set_inline_scalar_schema(
+                    graph_id,
+                    road_label_id,
+                    property_id,
+                    InlineScalarType::U16,
+                )
+            })
+            .expect("set inline schema on ROAD.distance");
+
+        let stats = RouterGraphStats::from_catalog(
+            graph_id,
+            BTreeSet::new(),
+            [property_id].into_iter().collect(),
+            {
+                use crate::facade::stable::indexed_catalog::load_graph_stats;
+                load_graph_stats(graph_id).edge_indexes
+            },
+        );
+
+        assert!(
+            !stats.is_edge_property_indexed_for(
+                None,
+                "distance",
+                gleaph_gql::types::EdgeDirection::AnyDirection,
+            ),
+            "wildcard label query must be fail-closed when any label has an inline slot for the property"
+        );
+        assert!(
+            stats.is_edge_property_indexed_for(
+                Some("KNOWS"),
+                "distance",
+                gleaph_gql::types::EdgeDirection::AnyDirection,
+            ),
+            "KNOWS.distance sidecar index must remain visible for a concrete label query"
+        );
+        assert!(
+            !stats.is_edge_property_indexed_for(
+                Some("ROAD"),
+                "distance",
+                gleaph_gql::types::EdgeDirection::AnyDirection,
+            ),
+            "ROAD.distance inline slot must not be reported as sidecar-indexed"
+        );
     }
 }

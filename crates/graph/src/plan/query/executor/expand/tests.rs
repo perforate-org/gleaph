@@ -219,6 +219,10 @@ fn executes_planner_union_label_expr_expand() {
 fn union_label_expr_edge_payload_predicate_fuses_per_label() {
     let store = GraphStore::new();
     use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::plan_exec::{
+        ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel,
+    };
+
     let a = store
         .insert_vertex_named(["UnionPayloadFusionA"], Vec::<(&str, Value)>::new())
         .expect("insert source");
@@ -248,14 +252,12 @@ fn union_label_expr_edge_payload_predicate_fuses_per_label() {
         .expect("likes skip");
     let knows_label = crate::test_labels::edge_label_id_for_name("UnionPayloadFusionKnows");
     let likes_label = crate::test_labels::edge_label_id_for_name("UnionPayloadFusionLikes");
+    let profile = EdgePayloadProfile {
+        byte_width: 2,
+        encoding: EdgePayloadEncoding::WeightRawU16,
+    };
     for label_id in [knows_label, likes_label] {
-        crate::test_labels::install_test_edge_payload_profile(
-            label_id,
-            EdgePayloadProfile {
-                byte_width: 2,
-                encoding: EdgePayloadEncoding::WeightRawU16,
-            },
-        );
+        crate::test_labels::install_test_edge_payload_profile(label_id, profile.clone());
     }
     store
         .insert_directed_edge_with_payload_bytes(
@@ -289,6 +291,33 @@ fn union_label_expr_edge_payload_predicate_fuses_per_label() {
             &9u16.to_le_bytes(),
         )
         .unwrap();
+
+    // Provide the payload-profile projection explicitly so the test does not race
+    // against other parallel tests that mutate the process-global test label registry.
+    let a_label_id = crate::test_labels::vertex_label_id_for_name("UnionPayloadFusionA");
+    let execution = GqlExecutionContext {
+        resolved_labels: Some(ResolvedLabelTable {
+            vertex: vec![ResolvedVertexLabel {
+                name: "UnionPayloadFusionA".to_string(),
+                id: a_label_id,
+            }],
+            edge: vec![
+                ResolvedEdgeLabel::with_inline_property(
+                    "UnionPayloadFusionKnows".to_string(),
+                    knows_label,
+                    profile.clone(),
+                    None,
+                ),
+                ResolvedEdgeLabel::with_inline_property(
+                    "UnionPayloadFusionLikes".to_string(),
+                    likes_label,
+                    profile,
+                    None,
+                ),
+            ],
+        }),
+        ..GqlExecutionContext::with_host_test_element_id_key()
+    };
 
     let label_expr = LabelExpr::Or(
         Box::new(LabelExpr::Name("UnionPayloadFusionKnows".into())),
@@ -330,7 +359,7 @@ fn union_label_expr_edge_payload_predicate_fuses_per_label() {
     ]);
 
     let result = store
-        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .execute_plan_query(&plan, &params(), execution)
         .expect("execute union label_expr payload fusion");
 
     assert_eq!(result.rows.len(), 2);

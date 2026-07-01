@@ -119,6 +119,28 @@ where
         self.id_to_name.get(&GraphScopedIdKey { graph_id, id })
     }
 
+    /// Iterates over the ids allocated for `graph_id` only, using the graph-scoped id key
+    /// ordering (`graph_id || id`) to bound the scan to the target graph.
+    pub fn iter_ids_for_graph(&self, graph_id: GraphId) -> impl Iterator<Item = Id> + '_ {
+        use std::ops::Bound;
+        let start = GraphScopedIdKey {
+            graph_id,
+            id: Id::default(),
+        };
+        let upper = if let Some(raw) = graph_id.raw().checked_add(1) {
+            Bound::Excluded(GraphScopedIdKey {
+                graph_id: GraphId::from_raw(raw),
+                id: Id::default(),
+            })
+        } else {
+            // graph_id == u32::MAX: there is no next prefix, so scan to the end of the map.
+            Bound::Unbounded
+        };
+        self.id_to_name
+            .range((Bound::Included(start), upper))
+            .map(|entry| entry.key().id)
+    }
+
     pub fn get_or_insert(&mut self, graph_id: GraphId, name: &str) -> Result<Id, CatalogError<Id>> {
         if let Some(id) = self.get_id(graph_id, name) {
             return Ok(id);
@@ -311,5 +333,37 @@ mod tests {
         let id = cat.get_or_insert(graph_id, "person_idx").unwrap();
         assert_eq!(cat.get_id(graph_id, "person_idx"), Some(id));
         assert_eq!(cat.get_name(graph_id, id), Some("person_idx".to_owned()));
+    }
+
+    #[test]
+    fn iter_ids_for_graph_is_scoped_to_single_graph() {
+        let mut cat = catalog();
+        let g1 = GraphId::from_raw(1);
+        let g2 = GraphId::from_raw(2);
+        let a = cat.get_or_insert(g1, "idx_a").unwrap();
+        let b = cat.get_or_insert(g1, "idx_b").unwrap();
+        let c = cat.get_or_insert(g2, "idx_c").unwrap();
+
+        let g1_ids: Vec<_> = cat.iter_ids_for_graph(g1).collect();
+        assert_eq!(g1_ids.len(), 2, "expected g1 ids to have exactly 2 entries");
+        assert!(g1_ids.contains(&a));
+        assert!(g1_ids.contains(&b));
+
+        let g2_ids: Vec<_> = cat.iter_ids_for_graph(g2).collect();
+        assert_eq!(g2_ids.len(), 1);
+        assert!(g2_ids.contains(&c));
+    }
+
+    #[test]
+    fn iter_ids_for_graph_handles_u32_max_graph_id() {
+        let mut cat = catalog();
+        let g_max = GraphId::from_raw(u32::MAX);
+        let a = cat.get_or_insert(g_max, "idx_a").unwrap();
+        let b = cat.get_or_insert(g_max, "idx_b").unwrap();
+
+        let ids: Vec<_> = cat.iter_ids_for_graph(g_max).collect();
+        assert_eq!(ids.len(), 2);
+        assert!(ids.contains(&a));
+        assert!(ids.contains(&b));
     }
 }

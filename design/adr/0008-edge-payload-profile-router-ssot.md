@@ -3,7 +3,7 @@
 Date: 2026-06-12  
 Status: accepted  
 Last revised: 2026-07-01
-Anchor timestamp: 2026-07-01 10:14:16 UTC +0000
+Anchor timestamp: 2026-07-01 14:15:53 UTC +0000
 
 ## Revision history
 
@@ -12,7 +12,7 @@ Anchor timestamp: 2026-07-01 10:14:16 UTC +0000
 | 2026-06-12 | Proposed; router-owned logical schema, graph `EDGE_PAYLOAD_PROFILES` retirement plan. |
 | 2026-06-12 | Accepted; policy frozen pending implementation phases A–E in §6. |
 | 2026-06-12 | Implemented phases A–E; router region 21 live; graph `EDGE_PAYLOAD_PROFILES` retired (41 regions). |
-| 2026-07-01 | ADR 0034 Slice 20: store value is a versioned `EdgePayloadSchemaRecord` supporting admin `UnnamedProfile` entries and named scalar inline schemas; no new MemoryId or region count change. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
+| 2026-07-01 | ADR 0034 Slice 20 + Slice 21: store value is a versioned `EdgePayloadSchemaRecord` supporting admin `UnnamedProfile` entries and named scalar inline schemas; `ResolvedEdgeLabel` carries `inline_property_id` as a router-derived projection. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
 
 ## Context
 
@@ -40,7 +40,7 @@ duplicate *ownership* of schema between router (ids) and graph (profiles).
 | Area | Issue |
 |------|--------|
 | **Split SSOT** | Router owns `EdgeLabelId` allocation; graph owns `EdgeLabelId → EdgePayloadProfile`. Federation requires every shard to agree on schema per id without a central registry. |
-| **Wire gap** | `ResolvedEdgeLabel` carries `name` + `id` only ([`plan_exec.rs`](../../crates/graph-kernel/src/plan_exec.rs)). Planners and executors re-read graph stable for decode width and encoding. |
+| **Wire gap** | `ResolvedEdgeLabel` carries `name`, `id`, `payload_profile`, and `inline_property_id` ([`plan_exec.rs`](../../crates/graph-kernel/src/plan_exec.rs)). Graph execution consumes the router-derived projection and must not re-read graph stable for schema. |
 | **Wildcard / fusion fallback** | When `label_expr` cannot decompose to explicit names, expand uses `GraphStore::edge_catalog_label_ids_with_payload_profiles()` — a **shard-local** enumeration of labels with installed profiles ([`label_expr.rs`](../../crates/graph/src/plan/query/executor/expand/label_expr.rs)). That list can diverge from router’s logical graph schema. |
 | **Admin surface** | Tests and benches call graph-local `install_edge_label_*_at_init`; production path for schema registration is undefined at the router boundary. |
 | **Stable overhead** | One extra graph facade region (ADR [0007](0007-stable-memory-layout.md) baseline: 42 regions) for data that is graph-wide logical metadata, not per-shard adjacency or property values. |
@@ -108,7 +108,8 @@ with resolved labels:
 pub struct ResolvedEdgeLabel {
     pub name: String,
     pub id: EdgeLabelId,
-    pub payload_profile: EdgePayloadProfile, // NEW: router-filled
+    pub payload_profile: EdgePayloadProfile, // router-filled physical profile
+    pub inline_property_id: Option<PropertyId>, // router-derived named inline identity (Slice 21)
 }
 ```
 

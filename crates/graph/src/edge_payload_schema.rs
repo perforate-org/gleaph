@@ -3,7 +3,7 @@
 use std::cell::RefCell;
 
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile};
-use gleaph_graph_kernel::plan_exec::ResolvedLabelTable;
+use gleaph_graph_kernel::plan_exec::{ResolvedEdgeLabel, ResolvedLabelTable};
 
 thread_local! {
     static ACTIVE_RESOLVED_LABELS: RefCell<Option<ResolvedLabelTable>> =
@@ -43,6 +43,21 @@ pub(crate) fn lookup_edge_payload_profile_with(
 
 pub(crate) fn lookup_edge_payload_profile(label: EdgeLabelId) -> EdgePayloadProfile {
     lookup_edge_payload_profile_with(None, label)
+}
+
+/// Returns the Router-resolved edge label entry, if one was projected for this execution.
+pub(crate) fn resolved_edge_label_with(
+    labels: Option<&ResolvedLabelTable>,
+    label: EdgeLabelId,
+) -> Option<ResolvedEdgeLabel> {
+    if let Some(entry) = labels.and_then(|table| table.resolved_edge_label(label).cloned()) {
+        return Some(entry);
+    }
+    ACTIVE_RESOLVED_LABELS.with(|cell| {
+        cell.borrow()
+            .as_ref()
+            .and_then(|table| table.resolved_edge_label(label).cloned())
+    })
 }
 
 pub(crate) fn edge_label_ids_for_predicate_fusion(

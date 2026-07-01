@@ -22,7 +22,7 @@ use gleaph_gql_planner::plan::{
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::{
     ConstraintNameId, EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile, EdgeWeightProfile,
-    Vertex, WeightEncoding,
+    PropertyId, Vertex, WeightEncoding,
 };
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, UniqueEffectOp, UniqueEffectReceipt};
 use gleaph_graph_kernel::plan_exec::{ResolvedSearchVertexHitWire, ResolvedSearchWire};
@@ -2418,6 +2418,245 @@ fn bench_graph_local_unique_purge_page_256() -> canbench_rs::BenchResult {
             "the purge page drains all seeded entries"
         );
         black_box(progress.done);
+    })
+}
+
+// --- ADR 0034 Slice 21 inline edge scalar read access benches ---
+
+const INLINE_EDGE_COUNT: u32 = 1_000;
+
+fn setup_inline_scalar_edges(
+    store: &GraphStore,
+) -> (VertexId, gleaph_graph_kernel::entry::EdgeLabelId) {
+    let label_id = crate::test_labels::edge_label_id_for_name("BenchInlineRoad");
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        EdgePayloadProfile {
+            byte_width: 2,
+            encoding: EdgePayloadEncoding::RawU16,
+        },
+    );
+    let src = store
+        .insert_vertex_named(["BenchInlineSrc"], Vec::<(&str, Value)>::new())
+        .expect("src");
+    for i in 0..INLINE_EDGE_COUNT {
+        let dst = store
+            .insert_vertex_named(["BenchInlineDst"], Vec::<(&str, Value)>::new())
+            .expect("dst");
+        store
+            .insert_directed_edge_with_payload_bytes(
+                src,
+                dst,
+                Some(label_id),
+                &((i % 100) as u16).to_le_bytes(),
+            )
+            .expect("edge");
+    }
+    (src, label_id)
+}
+
+fn inline_read_execution_context(
+    label_id: EdgeLabelId,
+    property_id: PropertyId,
+) -> GqlExecutionContext {
+    use gleaph_graph_kernel::plan_exec::{
+        ResolvedEdgeLabel, ResolvedLabelTable, ResolvedProperty, ResolvedPropertyTable,
+        ResolvedVertexLabel,
+    };
+    let src_label_id = crate::test_labels::vertex_label_id_for_name("BenchInlineSrc");
+    let dst_label_id = crate::test_labels::vertex_label_id_for_name("BenchInlineDst");
+    let labels = ResolvedLabelTable {
+        vertex: vec![
+            ResolvedVertexLabel {
+                name: "BenchInlineSrc".to_string(),
+                id: src_label_id,
+            },
+            ResolvedVertexLabel {
+                name: "BenchInlineDst".to_string(),
+                id: dst_label_id,
+            },
+        ],
+        edge: vec![ResolvedEdgeLabel::with_inline_property(
+            "BenchInlineRoad".to_string(),
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::RawU16,
+            },
+            Some(property_id),
+        )],
+    };
+    let properties = ResolvedPropertyTable {
+        properties: vec![ResolvedProperty {
+            name: "distance".to_string(),
+            id: property_id,
+        }],
+    };
+    GqlExecutionContext {
+        resolved_labels: Some(labels),
+        resolved_properties: Some(properties),
+        ..GqlExecutionContext::with_host_test_element_id_key()
+    }
+}
+
+fn inline_projection_plan() -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("BenchInlineSrc".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "a".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("BenchInlineRoad".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_payload_predicate: None,
+            edge_vector_predicate: None,
+            edge_property_projection: Some(vec!["distance".into()].into()),
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
+        },
+        PlanOp::Project {
+            columns: vec![project(
+                Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(var("e")),
+                    property: "distance".into(),
+                }),
+                "d",
+            )],
+            distinct: false,
+        },
+    ])
+}
+
+fn inline_filter_plan() -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("BenchInlineSrc".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "a".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("BenchInlineRoad".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_payload_predicate: None,
+            edge_vector_predicate: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
+        },
+        PlanOp::Filter {
+            condition: Expr::new(ExprKind::Compare {
+                left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(var("e")),
+                    property: "distance".into(),
+                })),
+                op: CmpOp::Eq,
+                right: Box::new(Expr::new(ExprKind::Literal(Value::Int64(7)))),
+            }),
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ])
+}
+
+/// Inline scalar edge-property projection over a fixed out-edge set.
+#[bench(raw)]
+fn bench_graph_inline_scalar_projection_1k() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let (_src, label_id) = setup_inline_scalar_edges(&store);
+    let property_id = PropertyId::from_raw(1);
+    let ctx = inline_read_execution_context(label_id, property_id);
+    let plan = inline_projection_plan();
+
+    // Verify fixture membership once, outside the measured closure.
+    let probe = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        None,
+        ctx.clone(),
+    ))
+    .expect("inline projection probe");
+    assert_eq!(
+        probe.rows.len(),
+        INLINE_EDGE_COUNT as usize,
+        "projection benchmark should emit one row per edge"
+    );
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("inline_scalar_projection_1k");
+        let result = pollster::block_on(execute_plan_query(
+            black_box(&store),
+            black_box(&plan),
+            &params(),
+            None,
+            black_box(ctx.clone()),
+        ))
+        .expect("inline projection plan");
+        black_box(result.rows.len())
+    })
+}
+
+/// Inline scalar edge-property equality filter over a fixed out-edge set.
+#[bench(raw)]
+fn bench_graph_inline_scalar_filter_1k() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let (_src, label_id) = setup_inline_scalar_edges(&store);
+    let property_id = PropertyId::from_raw(1);
+    let ctx = inline_read_execution_context(label_id, property_id);
+    let plan = inline_filter_plan();
+
+    // Verify fixture membership once, outside the measured closure.
+    let probe = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        None,
+        ctx.clone(),
+    ))
+    .expect("inline filter probe");
+    // Fixture uses (i % 100) for 0..1000, so value 7 appears exactly 10 times.
+    assert_eq!(
+        probe.rows.len(),
+        10,
+        "filter benchmark should match exactly 10 rows for distance = 7"
+    );
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("inline_scalar_filter_1k");
+        let result = pollster::block_on(execute_plan_query(
+            black_box(&store),
+            black_box(&plan),
+            &params(),
+            None,
+            black_box(ctx.clone()),
+        ))
+        .expect("inline filter plan");
+        black_box(result.rows.len())
     })
 }
 

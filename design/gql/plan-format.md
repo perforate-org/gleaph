@@ -1,7 +1,7 @@
 # Physical plan format
 
 Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 07:07:02 UTC +0000
+Anchor timestamp: 2026-07-01 14:15:53 UTC +0000
 
 ## Purpose
 
@@ -150,6 +150,23 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
   searched variable are all rejected fail-closed.
 - The vector canister validates the allowlist count, vertex-only subjects, and duplicates at its
   boundary, then ranks exactly over current live vector slots for those subjects.
+
+## Router resolved edge-label contract
+
+`ExecutePlanArgs.label_table` carries `ResolvedEdgeLabel` entries for every edge label the plan may touch. Each entry includes:
+
+- `name`, `id` — the canonical edge label identity.
+- `payload_profile` — physical byte width and encoding from Router stable state.
+- `inline_property_id: Option<PropertyId>` — Router-derived projection of the named inline scalar property for `InlineScalar` schemas; `None` for `UnnamedProfile`.
+
+Graph must treat `inline_property_id` as a read-only plan-scoped projection. It does not own the schema and must not infer or persist the property identity.
+
+For a requested edge property:
+
+- If the concrete label's `inline_property_id` equals the resolved property id, Graph decodes the edge payload bytes strictly and returns the exact GQL scalar value. Malformed, missing, or unsupported payloads fail closed; the sidecar property store is never consulted as fallback.
+- Otherwise Graph falls back to the sidecar property store (`GraphStore::edge_property`), preserving existing non-inline behavior.
+
+This rule is shared by expression evaluation, edge-record projection, and any downstream consumer that reads an edge property.
 
 ## Federation interaction
 

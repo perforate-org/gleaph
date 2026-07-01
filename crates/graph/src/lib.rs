@@ -271,6 +271,14 @@ async fn e2e_delete_directed_edge_with_property(
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
+async fn e2e_set_edge_property(
+    args: canister::types::E2eSetEdgePropertyArgs,
+) -> Result<(), String> {
+    canister::handlers::e2e_set_edge_property(args).await
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
 #[query(guard = "guard_control_plane_admin")]
 fn e2e_maintenance_queue_len() -> u64 {
     canister::handlers::e2e_maintenance_queue_len()

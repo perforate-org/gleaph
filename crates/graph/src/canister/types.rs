@@ -117,6 +117,16 @@ pub struct E2eDeleteDirectedEdgeArgs {
     pub property_id: u32,
 }
 
+/// Arguments for [`super::handlers::e2e_set_edge_property`] (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eSetEdgePropertyArgs {
+    pub source_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    pub target_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    pub property_id: u32,
+    pub value: i64,
+}
+
 /// Arguments for [`super::handlers::e2e_reverse_resolved_edge_property`] (PocketIC E2E only).
 #[cfg(feature = "pocket-ic-e2e")]
 #[derive(CandidType, Deserialize, Clone, Debug)]

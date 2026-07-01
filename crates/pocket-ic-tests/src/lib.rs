@@ -196,6 +196,14 @@ pub struct E2eEnqueueForwardCompactionArgs {
 }
 
 #[derive(CandidType, Clone, Debug)]
+pub struct E2eSetEdgePropertyArgs {
+    pub source_local_vertex_id: u32,
+    pub target_local_vertex_id: u32,
+    pub property_id: u32,
+    pub value: i64,
+}
+
+#[derive(CandidType, Clone, Debug)]
 pub struct E2eDeleteDirectedEdgeArgs {
     pub source_local_vertex_id: u32,
     pub target_local_vertex_id: u32,
@@ -955,6 +963,27 @@ pub fn e2e_set_vertex_property(
             value,
         },
     )
+}
+
+pub fn e2e_set_edge_property(
+    env: &FederationEnv,
+    graph: Principal,
+    source_local: u32,
+    target_local: u32,
+    property_id: u32,
+    value: i64,
+) {
+    let _: () = update_as_router(
+        env,
+        graph,
+        "e2e_set_edge_property",
+        E2eSetEdgePropertyArgs {
+            source_local_vertex_id: source_local,
+            target_local_vertex_id: target_local,
+            property_id,
+            value,
+        },
+    );
 }
 
 pub fn e2e_insert_vertex_with_property(

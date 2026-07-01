@@ -1,11 +1,12 @@
 //! Router index catalog mutations and shard fan-out (ADR 0009 §4, ADR 0012).
 
-use gleaph_graph_kernel::entry::GraphId;
+use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId};
 use gleaph_graph_kernel::index::IndexedPropertyKind;
 
 use gleaph_graph_kernel::federation::IndexPurgeKind;
 
 use crate::edge_index_direction::direction_tag;
+use crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES;
 use crate::facade::stable::index_name_catalog::{intern_index_name, lookup_index_name_id};
 use crate::facade::stable::indexed_catalog::{
     create_named_index, drop_named_index, edge_index_uses_property_label, is_property_registered,
@@ -76,6 +77,24 @@ async fn create_index(
                 .expect("edge CREATE INDEX requires direction"),
         ) as u8,
     };
+
+    // Inline/index conflict guard (ADR 0034 Slice 21): an active inline scalar schema for the
+    // same (label, property) owns the only valid read source for that property; a sidecar edge
+    // index would be semantically stale because payload mutations do not maintain postings.
+    if target.kind == IndexedPropertyKind::Edge
+        && ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|store| {
+            store
+                .get_record(graph_id, EdgeLabelId::from_raw(label_id))
+                .is_some_and(|record| {
+                    record.is_inline_scalar() && record.inline_property_id() == Some(property_id)
+                })
+        })
+    {
+        return Err(RouterError::Conflict(format!(
+            "edge label {} has an inline scalar schema for property {}; drop the inline schema before creating an edge property index",
+            target.label, target.property
+        )));
+    }
 
     let entry = IndexCatalogEntry {
         kind: target.kind,
@@ -292,5 +311,92 @@ mod tests {
             "weight",
             EdgeDirection::PointingRight
         ));
+    }
+    use crate::facade::stable::edge_payload_profiles::InlineScalarType;
+
+    #[test]
+    fn edge_index_create_rejects_inline_scalar_property() {
+        let store = RouterStore::new();
+        let graph_id = register_test_graph(&store, "tenant.inline_index_conflict");
+        store
+            .admin_intern_edge_label(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.inline_index_conflict",
+                "ROAD",
+            )
+            .expect("intern edge label");
+        store
+            .admin_intern_property(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.inline_index_conflict",
+                "distance",
+            )
+            .expect("intern property");
+        store
+            .commit_set_edge_label_inline_scalar_schema(
+                graph_id,
+                "ROAD",
+                "distance",
+                InlineScalarType::F32,
+            )
+            .expect("create inline schema");
+
+        let err = futures::executor::block_on(create_admin_compat_property_index(
+            graph_id,
+            IndexTarget {
+                kind: IndexedPropertyKind::Edge,
+                label: "ROAD".into(),
+                property: "distance".into(),
+                edge_direction: Some(EdgeDirection::AnyDirection),
+            },
+        ))
+        .expect_err("edge index on inline property should fail");
+        assert!(
+            matches!(err, RouterError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn inline_schema_create_rejects_existing_edge_index() {
+        let store = RouterStore::new();
+        let graph_id = register_test_graph(&store, "tenant.index_inline_conflict");
+        store
+            .admin_intern_edge_label(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.index_inline_conflict",
+                "ROAD",
+            )
+            .expect("intern edge label");
+        store
+            .admin_intern_property(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.index_inline_conflict",
+                "distance",
+            )
+            .expect("intern property");
+        futures::executor::block_on(create_admin_compat_property_index(
+            graph_id,
+            IndexTarget {
+                kind: IndexedPropertyKind::Edge,
+                label: "ROAD".into(),
+                property: "distance".into(),
+                edge_direction: Some(EdgeDirection::AnyDirection),
+            },
+        ))
+        .expect("create edge index");
+
+        let err = store
+            .commit_set_edge_label_inline_scalar_schema(
+                graph_id,
+                "ROAD",
+                "distance",
+                InlineScalarType::F32,
+            )
+            .expect_err("inline schema on indexed property should fail");
+        assert!(
+            matches!(err, RouterError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
     }
 }
