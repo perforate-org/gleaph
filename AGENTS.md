@@ -127,6 +127,31 @@ for PocketIC, full-workspace tests, or canbench.
 - Never claim completion based only on `--no-run`, successful compilation, or a background/delegated
   process that has not returned a result. Distinguish build verification from runtime verification.
 
+### herdr plan / implementation / review workflow
+
+When `HERDR_ENV=1`, keep the primary pane focused on architecture ownership and use sibling herdr
+panes for implementation and validation. The default workflow is:
+
+1. The primary pane inspects the repository, chooses the next bounded slice, and writes the
+   reviewable implementation plan.
+2. The primary pane creates or reuses a sibling herdr pane and gives that pane the plan plus the
+   relevant repository instructions. The sibling pane owns code changes, tests, design-document
+   synchronization, and benchmarks for that iteration.
+3. The primary pane does not duplicate the implementation. It remains available for user
+   interaction and reads the sibling pane's completion report and the actual repository diff.
+4. The primary pane performs an independent architecture, contract, test, benchmark, and design-doc
+   review. Findings must be based on the diff, not only on the sibling pane's report.
+5. If findings remain, the primary pane sends the concrete review queue back to an implementation
+   pane. Repeat implementation and independent review until no blocking findings remain.
+6. Only after the primary-pane review approves the change does the primary pane run final lightweight
+   integrity checks and create or amend the commit. Implementation panes must not commit unless the
+   user explicitly changes this workflow.
+
+Run long PocketIC suites, workspace tests, and canbench in sibling panes. Use bounded `herdr wait`
+calls or inspect their current output between useful review work; do not block the primary pane for
+tens of minutes. A sibling process is not considered successful until its actual terminal result is
+read and verified.
+
 ## Format, Test, and Benchmark
 
 After completing a meaningful code change, explicitly run formatting, tests, and relevant benchmarks.
