@@ -1,7 +1,7 @@
 # Execution pipeline
 
 Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 03:13:00 UTC +0000
+Anchor timestamp: 2026-07-01 05:19:35 UTC +0000
 
 ## Purpose
 
@@ -78,7 +78,9 @@ For a leading `NodeScan + Search` with a `WHERE` predicate (one equality, one to
 exactly two same-property range predicates forming one lower and one upper bound, one to eight
 equality predicates on distinct properties together with one one- or two-sided numeric range
 predicate on a distinct property, two to eight `OR`-connected same-binding same-property
-equality predicates, or two to eight `OR`-connected same-binding same-property one-sided numeric
+equality predicates, two to eight `OR`-connected same-binding pure equality predicates where
+property names may repeat or differ, two to eight `OR`-connected same-binding same-property
+numeric range predicates, or two to eight `OR`-connected same-binding cross-property numeric
 range predicates), the Router does not forward a vector request when the Property Index
 candidate set is empty. For a two-sided range with an empty intersection (`low >= high`) the Router
 short-circuits before any Property Index or Vector Index call and dispatches the stripped tail plan
@@ -96,12 +98,16 @@ vertex property index, and the candidate set is the union of paginated `lookup_e
 every distinct `(property_id, encoded_value)` source, with the same per-page label filtering, global
 `(shard_id, vertex_id)` deduplication, 4096 candidate bound, and empty-candidate dispatch contract.
 
+The two-to-eight same-property or cross-property numeric range `OR` path generalizes the same-property disjunction: each arm resolves its own `(graph_id, label_id, property_id)` tuple, each tuple must have an active vertex property index, the arms for each property are converted to finite half-open encoded intervals via `gleaph_gql::numeric_range_bounds`, overlapping/touching intervals are merged **within each property id**, and the candidate set is the union of paginated `lookup_range_page` streams for every merged interval across all involved properties, with the same per-page label filtering, global `(shard_id, vertex_id)` deduplication, 4096 candidate bound, and empty-candidate dispatch contract. Intervals are not merged across property ids because encoded numeric keys are property-specific.
+
 For a non-leading `PlanOp::Search` with a `WHERE` predicate (one equality, one to eight
 `AND`-connected same-binding equalities on distinct properties, one numeric range predicate,
 exactly two same-property range predicates forming one lower and one upper bound, one to eight
 equality predicates on distinct properties together with one one- or two-sided numeric range
 predicate on a distinct property, two to eight `OR`-connected same-binding same-property
-equality predicates, or two to eight `OR`-connected same-binding same-property one-sided numeric
+equality predicates, two to eight `OR`-connected same-binding pure equality predicates where
+property names may repeat or differ, two to eight `OR`-connected same-binding same-property
+numeric range predicates, or two to eight `OR`-connected same-binding cross-property numeric
 range predicates), the Router requires exactly one positive simple label proof for the searched
 binding from the top-level prefix, resolves every filter arm through the same bounded Property Index
 candidate collection (`lookup_equal_page` for one equality arm, `lookup_intersection_page` for two to
@@ -110,7 +116,7 @@ interval for one or two range arms, one `lookup_range_intersection_page` stream 
 range and sieves each page by one to eight equality arms for one to eight equality arms plus one or
 two same-property range arms on a distinct property, a union of `lookup_equal_page` streams for
 two to eight same-property or cross-property equality disjunction arms, or a union of `lookup_range_page`
-streams for two to eight same-property one-sided range disjunction arms), and skips the vector canister when the
+streams for two to eight same-property or cross-property one-sided range disjunction arms), and skips the vector canister when the
 candidate set is empty. For a two-sided range with an empty intersection (`low >= high`) the Router
 short-circuits before any Property Index or Vector Index call and dispatches the full plan with an
 explicit empty `ResolvedSearchWire` to every live shard, so the Graph executor still runs the prefix

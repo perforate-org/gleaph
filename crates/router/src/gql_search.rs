@@ -285,14 +285,16 @@ struct SearchFilterRange {
     value_expr: gleaph_gql::ast::Expr,
 }
 
-/// ADR 0034 Slice 8/9/10/11/12/14/15/16/17: any bounded number of same-binding equality
+/// ADR 0034 Slice 8/9/10/11/12/14/15/16/17/18: any bounded number of same-binding equality
 /// conjuncts on distinct properties, exactly one numeric range predicate, exactly two
 /// same-property range predicates forming one lower and one upper bound, one of those range shapes
 /// combined with one or more equality predicates on distinct properties, a same-property pure
 /// equality disjunction, a cross-property pure equality disjunction where property names may
-/// repeat or differ, or a same-property pure numeric range disjunction. The router enforces the
-/// provider-specific eight-arm equality/range limit and distinct-property rules for conjunctions;
-/// the planner is provider-neutral.
+/// repeat or differ, a same-property pure numeric range disjunction, or a cross-property pure
+/// numeric range disjunction. The router enforces the provider-specific eight-arm equality/range
+/// limit and distinct-property rules for conjunctions; the planner is provider-neutral. In Slice 18
+/// range-disjunction arms may target different properties, and the router merges encoded intervals
+/// only within each resolved property id before walking the union of sources.
 #[derive(Debug)]
 enum SearchFilter {
     Equality(Vec<SearchFilterArm>),
@@ -303,11 +305,13 @@ enum SearchFilter {
     /// number of OR-connected equality arms; the router enforces the execution bound and
     /// deduplicates identical `(property_id, encoded_value)` sources before lookup.
     EqualityDisjunction(Vec<SearchFilterArm>),
-    /// ADR 0034 Slice 17: pure same-property numeric range disjunction on the searched binding.
-    /// Every arm compares the same property to a literal or parameter using a range operator. The
-    /// planner accepts any number of OR-connected range arms; the router resolves each arm to a
-    /// finite half-open encoded interval, drops empty intervals, merges overlapping/touching
-    /// intervals, and enforces the execution bound before lookup.
+    /// ADR 0034 Slice 17 and 18: pure same-binding numeric range disjunction on the searched
+    /// binding. Every arm compares a property of the searched binding to a literal or parameter
+    /// using a range operator. In Slice 17 every arm uses the same property; in Slice 18 arms may
+    /// target different properties. The planner accepts any number of OR-connected range arms; the
+    /// router resolves each arm to its own property id, proves an active index per property, derives
+    /// a finite half-open encoded interval per arm, drops empty intervals, merges overlapping/touching
+    /// intervals within each property id, and enforces the execution bound before lookup.
     RangeDisjunction(Vec<SearchFilterRange>),
 }
 
@@ -988,11 +992,12 @@ fn try_extract_equality_disjunction(
     Some(arms)
 }
 
-/// Try to extract a pure same-property numeric range disjunction: an OR-connected chain where
+/// Try to extract a pure same-binding numeric range disjunction: an OR-connected chain where
 /// every leaf is a range comparison (`<`, `<=`, `>`, `>=`) between `binding.property` and a
-/// literal or parameter, and every leaf refers to the same property. Returns the normalized
-/// ranges when the shape matches; otherwise returns `None` so the caller can fall back to the
-/// conjunction path. A single range leaf is handled by the conjunction path.
+/// literal or parameter. In ADR 0034 Slice 18 the property may differ between arms; the Router
+/// resolves and proves each property independently. Returns the normalized ranges when the shape
+/// matches; otherwise returns `None` so the caller can fall through to the conjunction path. A
+/// single range leaf is handled by the conjunction path.
 fn try_extract_range_disjunction(
     binding: &str,
     expr: &gleaph_gql::ast::Expr,
@@ -1002,17 +1007,9 @@ fn try_extract_range_disjunction(
         return None;
     }
     let mut ranges = Vec::with_capacity(leaves.len());
-    let mut property_name: Option<String> = None;
     for leaf in &leaves {
         match split_search_predicate(binding, leaf) {
             Ok(SearchPredicate::Range(prop, op, value_expr)) => {
-                if let Some(ref existing) = property_name {
-                    if existing != &prop {
-                        return None;
-                    }
-                } else {
-                    property_name = Some(prop.clone());
-                }
                 ranges.push(SearchFilterRange {
                     property_name: prop,
                     op,
@@ -1670,10 +1667,15 @@ async fn resolve_filtered_equality_disjunction_candidates(
     .await
 }
 
-/// ADR 0034 Slice 17: resolve a pure same-property numeric range disjunction. Each arm is
+/// ADR 0034 Slice 17 and 18: resolve a pure same-binding numeric range disjunction. Each arm is
 /// resolved to a finite half-open encoded interval; empty intervals are dropped and the rest are
-/// merged into a minimal set of disjoint intervals. The resulting merged intervals are then
-/// collected as a bounded union of `lookup_range_page` streams.
+/// merged into a minimal set of disjoint intervals **within each resolved property id**. The
+/// resulting merged intervals are then collected as a bounded union of `lookup_range_page` streams.
+///
+/// In Slice 17 all arms share a single property; in Slice 18 arms may reference different
+/// properties. Property ids are resolved and active-index coverage is proved per property, and
+/// normalization is scoped to each property id because encoded numeric keys from different
+/// properties are not comparable.
 async fn resolve_filtered_range_disjunction_candidates(
     graph_id: GraphId,
     store: &RouterStore,
@@ -1691,19 +1693,20 @@ async fn resolve_filtered_range_disjunction_candidates(
         )));
     }
 
-    // All arms share the same property; resolve once and prove a single active index.
-    let property_id =
-        resolve_search_property_id(graph_id, store, binding, &ranges[0].property_name)?;
-    if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
-        return Err(RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
-            label_id.raw(),
-            ranges[0].property_name
-        )));
-    }
-
-    let mut intervals: Vec<(Vec<u8>, Vec<u8>)> = Vec::with_capacity(ranges.len());
+    // Resolve every arm to its property id, prove an active vertex property index per property,
+    // and derive the finite half-open encoded interval. Group intervals by property id so merging
+    // only occurs within a single property bucket.
+    let mut by_property: BTreeMap<u32, Vec<(Vec<u8>, Vec<u8>)>> = BTreeMap::new();
     for range in ranges {
+        let property_id =
+            resolve_search_property_id(graph_id, store, binding, &range.property_name)?;
+        if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
+            return Err(RouterError::InvalidArgument(format!(
+                "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
+                label_id.raw(),
+                range.property_name
+            )));
+        }
         let value = resolve_filter_value(&range.value_expr, params)?;
         let (low, high) = gleaph_gql::numeric_range_bounds(&value, range.op).map_err(|e| {
             RouterError::InvalidArgument(format!(
@@ -1715,20 +1718,31 @@ async fn resolve_filtered_range_disjunction_candidates(
                 "SEARCH ... WHERE range bound exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
             )));
         }
-        intervals.push((low, high));
+        by_property
+            .entry(property_id.raw())
+            .or_default()
+            .push((low, high));
     }
 
-    let merged = merge_encoded_intervals(intervals);
-    if merged.is_empty() {
+    // Normalize per property id. Each distinct property yields one or more disjoint merged
+    // intervals, all of which are emitted as range sources. Property ids are already validated
+    // above so we can carry the raw id through the source enum.
+    let mut union_intervals: Vec<(PropertyId, (Vec<u8>, Vec<u8>))> = Vec::new();
+    for (property_id_raw, intervals) in by_property {
+        let merged = merge_encoded_intervals(intervals);
+        for interval in merged {
+            union_intervals.push((PropertyId::from_raw(property_id_raw), interval));
+        }
+    }
+    if union_intervals.is_empty() {
         return Ok(Vec::new());
     }
 
-    collect_bounded_candidates_range_disjunction_with_store(
+    collect_bounded_candidates_range_disjunction_multi_property_with_store(
         graph_id,
         store,
         label_id,
-        property_id,
-        merged,
+        union_intervals,
     )
     .await
 }
@@ -1776,6 +1790,40 @@ async fn collect_bounded_candidates_range_disjunction<L: DisjunctionLookup>(
     collect_bounded_candidates_union_inner(clients, label_id, union_sources).await
 }
 
+/// Collect at most `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` distinct vertex subjects from the union
+/// of one or more finite half-open encoded numeric intervals across **one or more property ids**.
+/// Intervals are grouped by property id, merged within each property, and each merged interval
+/// becomes a range source on the shared union collector.
+async fn collect_bounded_candidates_range_disjunction_multi_property<L: DisjunctionLookup>(
+    clients: impl IntoIterator<Item = L>,
+    label_id: VertexLabelId,
+    intervals: Vec<(PropertyId, (Vec<u8>, Vec<u8>))>,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    let mut by_property: BTreeMap<u32, Vec<(Vec<u8>, Vec<u8>)>> = BTreeMap::new();
+    for (property_id, interval) in intervals {
+        by_property
+            .entry(property_id.raw())
+            .or_default()
+            .push(interval);
+    }
+    let union_sources: Vec<CandidateUnionSource> = by_property
+        .into_iter()
+        .flat_map(|(property_id_raw, intervals)| {
+            let merged = merge_encoded_intervals(intervals);
+            merged
+                .into_iter()
+                .map(move |(low, high)| CandidateUnionSource::Range {
+                    property_id: property_id_raw,
+                    low,
+                    high,
+                })
+        })
+        .collect();
+    collect_bounded_candidates_union_inner(clients, label_id, union_sources).await
+}
+
+// Kept for Slice 17 tests that call with a single property id.
+#[allow(dead_code)]
 async fn collect_bounded_candidates_range_disjunction_with_store(
     graph_id: GraphId,
     store: &RouterStore,
@@ -1790,6 +1838,23 @@ async fn collect_bounded_candidates_range_disjunction_with_store(
         targets.into_iter().map(RouterIndexClient::new),
         label_id,
         property_id,
+        intervals,
+    )
+    .await
+}
+
+async fn collect_bounded_candidates_range_disjunction_multi_property_with_store(
+    graph_id: GraphId,
+    store: &RouterStore,
+    label_id: VertexLabelId,
+    intervals: Vec<(PropertyId, (Vec<u8>, Vec<u8>))>,
+) -> Result<Vec<VectorSubject>, RouterError> {
+    let targets = store
+        .graph_index_lookup_targets(graph_id)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    collect_bounded_candidates_range_disjunction_multi_property(
+        targets.into_iter().map(RouterIndexClient::new),
+        label_id,
         intervals,
     )
     .await
@@ -3601,20 +3666,20 @@ mod tests {
     }
 
     #[test]
-    fn extract_search_filter_rejects_range_disjunction_across_properties() {
+    fn extract_search_filter_classifies_cross_property_range_disjunction() {
         let filter = filter_or_expr(
             filter_range_expr("price", gleaph_gql::ast::CmpOp::Lt, Value::Int64(10)),
             filter_range_expr("rating", gleaph_gql::ast::CmpOp::Ge, Value::Int64(4)),
         );
-        let err = extract_search_filter("d", &filter)
-            .expect_err("range disjunction across properties must fail");
-        assert!(
-            err.to_string()
-                .contains("does not support this equality/range mixture")
-                || err.to_string().contains("must be a comparison predicate")
-                || err.to_string().contains("OR-connected arms must all be"),
-            "unexpected error: {err}"
-        );
+        let f = extract_search_filter("d", &filter).expect("cross-property range disjunction");
+        match f {
+            SearchFilter::RangeDisjunction(ranges) => {
+                assert_eq!(ranges.len(), 2);
+                assert_eq!(ranges[0].property_name, "price");
+                assert_eq!(ranges[1].property_name, "rating");
+            }
+            _ => panic!("expected RangeDisjunction"),
+        }
     }
 
     #[test]
@@ -3761,6 +3826,104 @@ mod tests {
         assert!(
             err.to_string()
                 .contains("requires a statically proved label"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn analyze_search_shape_accepts_non_leading_cross_property_range_disjunction() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern Document");
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Author")
+            .expect("intern Author");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
+            .expect("intern price");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "rating")
+            .expect("intern rating");
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "price".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create price index");
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "rating".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create rating index");
+
+        let filter = filter_or_expr(
+            filter_range_expr("price", gleaph_gql::ast::CmpOp::Lt, Value::Int64(10)),
+            filter_range_expr("rating", gleaph_gql::ast::CmpOp::Ge, Value::Int64(4)),
+        );
+        let plan = non_leading_search_plan_with_node_scan_label_proof(filter);
+
+        let position = analyze_search_shape(&plan, graph_id, &store)
+            .expect("non-leading cross-property range disjunction accepted");
+        assert!(
+            matches!(
+                position,
+                SearchPosition::NonLeading(SearchShape {
+                    filter: Some(SearchFilter::RangeDisjunction(_)),
+                    filter_label_id: Some(_),
+                    ..
+                })
+            ),
+            "expected filtered non-leading cross-property range disjunction, got {position:?}"
+        );
+    }
+
+    #[test]
+    fn analyze_search_shape_rejects_non_leading_cross_property_range_disjunction_missing_index() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern Document");
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Author")
+            .expect("intern Author");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
+            .expect("intern price");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "rating")
+            .expect("intern rating");
+        // Only "price" gets an active index; "rating" remains unindexed.
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "price".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create price index");
+
+        let filter = filter_or_expr(
+            filter_range_expr("price", gleaph_gql::ast::CmpOp::Lt, Value::Int64(10)),
+            filter_range_expr("rating", gleaph_gql::ast::CmpOp::Ge, Value::Int64(4)),
+        );
+        let plan = non_leading_search_plan_with_node_scan_label_proof(filter);
+        let err = analyze_search_shape(&plan, graph_id, &store)
+            .expect_err("cross-property range disjunction with missing index must fail");
+        assert!(
+            err.to_string()
+                .contains("requires an active vertex property index"),
             "unexpected error: {err}"
         );
     }
@@ -5808,7 +5971,8 @@ mod tests {
         calls:
             std::sync::Arc<std::sync::Mutex<Vec<(EqualOrRangeKey, Option<PropertyPostingCursor>)>>>,
         pages_by_value: std::collections::BTreeMap<Vec<u8>, Vec<PostingHitPage>>,
-        pages_by_interval: std::collections::BTreeMap<(Vec<u8>, Vec<u8>), Vec<PostingHitPage>>,
+        pages_by_interval:
+            std::collections::BTreeMap<(PropertyId, Vec<u8>, Vec<u8>), Vec<PostingHitPage>>,
         next_index:
             std::sync::Arc<std::sync::Mutex<std::collections::BTreeMap<EqualOrRangeKey, usize>>>,
         label_filter: fn(Vec<PostingHit>) -> Vec<PostingHit>,
@@ -5817,7 +5981,7 @@ mod tests {
     #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
     enum EqualOrRangeKey {
         Equal(Vec<u8>),
-        Range(Vec<u8>, Vec<u8>),
+        Range(PropertyId, Vec<u8>, Vec<u8>),
     }
 
     impl Default for MockDisjunctionClient {
@@ -5850,7 +6014,10 @@ mod tests {
         }
 
         fn with_interval_pages(
-            pages_by_interval: std::collections::BTreeMap<(Vec<u8>, Vec<u8>), Vec<PostingHitPage>>,
+            pages_by_interval: std::collections::BTreeMap<
+                (PropertyId, Vec<u8>, Vec<u8>),
+                Vec<PostingHitPage>,
+            >,
         ) -> Self {
             Self {
                 calls: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
@@ -5900,14 +6067,18 @@ mod tests {
 
         async fn lookup_range_page(
             &self,
-            _property_id: u32,
+            property_id: u32,
             range: gleaph_graph_kernel::index::PostingRangeRequest,
             after: Option<PropertyPostingCursor>,
             _limit: u32,
         ) -> Result<PostingHitPage, String> {
             let key = match range {
                 gleaph_graph_kernel::index::PostingRangeRequest::Between { low, high } => {
-                    EqualOrRangeKey::Range(low.clone(), high.clone())
+                    EqualOrRangeKey::Range(
+                        PropertyId::from_raw(property_id),
+                        low.clone(),
+                        high.clone(),
+                    )
                 }
                 _ => return Err("mock only supports Between range requests".into()),
             };
@@ -5920,9 +6091,9 @@ mod tests {
                 i
             };
             let page = match &key {
-                EqualOrRangeKey::Range(low, high) => self
+                EqualOrRangeKey::Range(property_id, low, high) => self
                     .pages_by_interval
-                    .get(&(low.clone(), high.clone()))
+                    .get(&(property_id.clone(), low.clone(), high.clone()))
                     .and_then(|pages| pages.get(idx))
                     .cloned(),
                 EqualOrRangeKey::Equal(_) => None,
@@ -5966,7 +6137,7 @@ mod tests {
         // inputs into one lookup.
         let client =
             MockDisjunctionClient::with_interval_pages(std::collections::BTreeMap::from([(
-                merged.clone(),
+                (PropertyId::from_raw(7), merged.0.clone(), merged.1.clone()),
                 vec![PostingHitPage {
                     hits: vec![shared, only_a, only_b],
                     next: None,
@@ -6060,7 +6231,11 @@ mod tests {
         let interval = (vec![1u8], vec![2u8]);
         let client =
             MockDisjunctionClient::with_interval_pages(std::collections::BTreeMap::from([(
-                interval.clone(),
+                (
+                    PropertyId::from_raw(7),
+                    interval.0.clone(),
+                    interval.1.clone(),
+                ),
                 vec![PostingHitPage {
                     hits: page,
                     next: None,
@@ -6472,6 +6647,83 @@ mod tests {
     }
 
     #[test]
+    fn collect_range_disjunction_cross_property_merges_within_property_not_across() {
+        // Two properties, each with two touching intervals that should merge within the property.
+        // The two properties are given *identical* encoded merged intervals so that if the mock key
+        // ignored property_id it would return the same page twice and collapse the result to one
+        // subject. This test proves that source identity includes the property id.
+        let prop_a = PropertyId::from_raw(1);
+        let prop_b = PropertyId::from_raw(2);
+        let label = VertexLabelId::from_raw(1);
+
+        // Same merged bounds for both properties: (0..20)
+        let merged = (vec![0u8], vec![20u8]);
+
+        let hit_a = PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 1,
+        };
+        let hit_b = PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 2,
+        };
+
+        let mut pages_by_interval: std::collections::BTreeMap<
+            (PropertyId, Vec<u8>, Vec<u8>),
+            Vec<PostingHitPage>,
+        > = std::collections::BTreeMap::new();
+        pages_by_interval.insert(
+            (prop_a, merged.0.clone(), merged.1.clone()),
+            vec![PostingHitPage {
+                hits: vec![hit_a],
+                next: None,
+                done: true,
+            }],
+        );
+        pages_by_interval.insert(
+            (prop_b, merged.0.clone(), merged.1.clone()),
+            vec![PostingHitPage {
+                hits: vec![hit_b],
+                next: None,
+                done: true,
+            }],
+        );
+
+        let client = MockDisjunctionClient::with_interval_pages(pages_by_interval);
+
+        // Both properties are given touching intervals that merge to the same encoded bounds
+        // (0..20). The mock stores a separate page per `(property_id, low, high)` key, so the
+        // collector must perform two distinct lookups to return both subjects; this proves source
+        // identity includes the property id.
+        let interval_a1 = (vec![0u8], vec![10u8]);
+        let interval_a2 = (vec![10u8], vec![20u8]);
+
+        let result =
+            pollster::block_on(collect_bounded_candidates_range_disjunction_multi_property(
+                vec![client.clone()],
+                label,
+                vec![
+                    (prop_a, interval_a1.clone()),
+                    (prop_a, interval_a2.clone()),
+                    (prop_b, interval_a1.clone()),
+                    (prop_b, interval_a2.clone()),
+                ],
+            ))
+            .expect("cross-property range disjunction with shared bounds");
+
+        assert_eq!(
+            result.len(),
+            2,
+            "two distinct properties must produce two distinct subjects"
+        );
+        assert_eq!(
+            client.call_count(),
+            2,
+            "cross-property sources with identical bounds must be distinct lookups"
+        );
+    }
+
+    #[test]
     fn collect_range_disjunction_label_filter_happens_before_counting() {
         let interval = (vec![1u8], vec![2u8]);
         let included = PostingHit {
@@ -6484,7 +6736,11 @@ mod tests {
         };
         let mut client =
             MockDisjunctionClient::with_interval_pages(std::collections::BTreeMap::from([(
-                interval.clone(),
+                (
+                    PropertyId::from_raw(1),
+                    interval.0.clone(),
+                    interval.1.clone(),
+                ),
                 vec![PostingHitPage {
                     hits: vec![included, excluded],
                     next: None,
@@ -6525,7 +6781,7 @@ mod tests {
         };
         let client =
             MockDisjunctionClient::with_interval_pages(std::collections::BTreeMap::from([(
-                merged.clone(),
+                (PropertyId::from_raw(7), merged.0.clone(), merged.1.clone()),
                 vec![PostingHitPage {
                     hits: vec![hit_a, hit_b],
                     next: None,
@@ -6582,7 +6838,11 @@ mod tests {
         let client =
             MockDisjunctionClient::with_interval_pages(std::collections::BTreeMap::from([
                 (
-                    int32_le_negative.clone(),
+                    (
+                        PropertyId::from_raw(7),
+                        int32_le_negative.0.clone(),
+                        int32_le_negative.1.clone(),
+                    ),
                     vec![PostingHitPage {
                         hits: vec![hit_negative],
                         next: None,
@@ -6590,7 +6850,11 @@ mod tests {
                     }],
                 ),
                 (
-                    int64_ge_zero.clone(),
+                    (
+                        PropertyId::from_raw(7),
+                        int64_ge_zero.0.clone(),
+                        int64_ge_zero.1.clone(),
+                    ),
                     vec![PostingHitPage {
                         hits: vec![hit_non_negative],
                         next: None,
@@ -6627,7 +6891,11 @@ mod tests {
         let interval = (vec![1u8], vec![2u8]);
         let client =
             MockDisjunctionClient::with_interval_pages(std::collections::BTreeMap::from([(
-                interval.clone(),
+                (
+                    PropertyId::from_raw(7),
+                    interval.0.clone(),
+                    interval.1.clone(),
+                ),
                 vec![PostingHitPage {
                     hits,
                     next: None,

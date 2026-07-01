@@ -1,7 +1,7 @@
 # Property index
 
 Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 03:13:00 UTC +0000
+Anchor timestamp: 2026-07-01 05:19:35 UTC +0000
 
 ## Status
 
@@ -13,6 +13,8 @@ Anchor timestamp: 2026-07-01 03:13:00 UTC +0000
 
 **ADR 0034 Slice 16 — Implemented (Router-side):** cross-property pure equality disjunctions for `SEARCH ... WHERE` are executed by the Router as a union of up to eight `lookup_equal_page` streams, one stream per distinct `(property_id, encoded_value)` source. Each arm resolves its own `(property_id, label_id, graph_id)` active vertex property index; the Property Index endpoint contract still does not change. The Router applies the same per-page label filtering, global `(shard_id, vertex_id)` deduplication, and 4096 candidate bound as Slice 15.
 **ADR 0034 Slice 17 — Implemented (Router-side):** same-property numeric range disjunctions for `SEARCH ... WHERE` are executed by the Router as a union of up to eight finite encoded numeric intervals against the same `(property_id, label_id, graph_id)` active vertex property index. Each arm is normalized to a half-open encoded interval; empty or contradictory intervals are dropped; the remaining intervals are sorted and merged into disjoint encoded bounds before any lookup. The candidate set is collected through paginated `lookup_range_page` calls with `PostingRangeRequest::Between`, followed by the same per-page label filtering, global `(shard_id, vertex_id)` deduplication, and 4096 candidate bound as the equality disjunction paths. The Property Index endpoint contract does not change; `lookup_range_page` remains the primitive for a finite encoded range.
+
+**ADR 0034 Slice 18 — Implemented (Router-side):** cross-property numeric range disjunctions for `SEARCH ... WHERE` are executed by the Router as a union of up to eight finite encoded numeric intervals across one or more `(property_id, label_id, graph_id)` active vertex property indexes. Each arm resolves its own property id and is normalized to a half-open encoded interval; empty or contradictory intervals are dropped; intervals are grouped by property id and merged **within each group** into disjoint encoded bounds. The candidate set is collected through paginated `lookup_range_page` calls with `PostingRangeRequest::Between` for every merged interval across all involved properties, followed by the same per-page label filtering, global `(shard_id, vertex_id)` deduplication, and 4096 candidate bound as the other disjunction paths. The Property Index endpoint contract does not change; `lookup_range_page` remains the primitive for a finite encoded range and intervals are never merged across property ids because encoded numeric keys are property-specific.
 
 
 **Phase A ([ADR 0009](../adr/0009-edge-property-index-and-index-ddl.md)) — superseded by [ADR 0023](../adr/0023-federated-index-consistency-upgrade-compaction.md):** Phase A gated DML/backfill posting maintenance with a **persistent shard-local registry** (`register_indexed_property`) fanned out from the router. ADR 0023 (phases 1–2 implemented) **removes that registry** because it could not survive the upgrade boundary. The graph shard now holds **no persisted indexed catalog**: the router (definitions SSOT) supplies an `IndexedPropertyCatalog` in `ExecutePlanArgs.indexed_properties` (and in the backfill request), which the shard installs in an **ephemeral per-operation context** (`index/catalog_context.rs`) consulted by `dispatch_property_index_ops` and backfill. `CREATE INDEX` / `DROP INDEX` no longer fan registrations out to shards.

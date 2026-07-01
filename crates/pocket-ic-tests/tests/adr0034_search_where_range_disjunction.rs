@@ -1,15 +1,22 @@
-//! PocketIC coverage for ADR 0034 Slice 17: `SEARCH ... WHERE` bounded same-property numeric range disjunction.
+//! PocketIC coverage for ADR 0034 Slice 17 and Slice 18: `SEARCH ... WHERE` bounded numeric range
+//! disjunction on the same binding. Slice 17 restricts all arms to the same property; Slice 18
+//! permits arms to target different properties. In both cases the Router resolves each arm,
+//! proves an active property index per property, derives a finite half-open encoded interval per
+//! arm, drops empty intervals, merges overlapping/touching intervals **within each property id**,
+//! and executes the union through `lookup_range_page`.
 //!
 //! Semantics under test:
-//!   R_i = property_index_numeric_range(Document, price, OP_i, value_i)
-//!   R   = UNION_i R_i  merged into disjoint encoded intervals
+//!   R_i = property_index_numeric_range(Document, property_i, OP_i, value_i)
+//!   R_p   = merge_encoded_intervals({ R_i | property(R_i) = p }) for each property p
+//!   R   = UNION_p R_p
 //!   C   = label_filter(R)
 //!   result = vector_top_k(document_embedding, subjects = C, limit)
 //!
 //! - Candidate membership is the label-scoped union of postings from each range arm before vector ranking.
 //! - A vertex matching any arm is included once, even if overlapping intervals would cover it twice.
-//! - The Router enforces the two-to-eight arm bound and merges overlapping/touching encoded intervals.
+//! - The Router enforces the two-to-eight arm bound and merges overlapping/touching encoded intervals per property.
 //! - An arm whose resolved interval is empty or contradictory is silently dropped from the union.
+//! - Cross-property arms are not merged with each other because encoded numeric keys are property-specific.
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
@@ -229,6 +236,59 @@ fn gql_query_with_params_as_admin_result(
     Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_query result")
 }
 
+fn setup_search_where_cross_property_range_disjunction_env(env: &FederationEnv, vector: Principal) {
+    register_vector_index(env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(env, vector);
+
+    let doc_label_id = admin_intern_vertex_label(env, "Document");
+    let price_id = admin_intern_property(env, "price");
+    let score_id = admin_intern_property(env, "score");
+    create_vertex_property_index(
+        env,
+        "document_price_idx_cross_property",
+        "Document",
+        "price",
+        "create_document_price_idx_cross_property",
+    );
+    create_vertex_property_index(
+        env,
+        "document_score_idx_cross_property",
+        "Document",
+        "score",
+        "create_document_score_idx_cross_property",
+    );
+
+    // Documents:
+    // - price_doc matches only the price arm (price < 10, score out of range).
+    // - score_doc matches only the score arm (score >= 4, price out of range).
+    // - both_doc matches both arms.
+    // - neither_doc matches neither.
+    for (price, score, vec_value, name) in [
+        (5, 1, 0.5_f32, "price_doc"),
+        (50, 5, 1.5_f32, "score_doc"),
+        (5, 5, 2.5_f32, "both_doc"),
+        (50, 1, 3.5_f32, "neither_doc"),
+    ] {
+        let _name = name;
+        let doc = e2e_insert_vertex_with_label_and_two_properties(
+            env,
+            env.graph_source,
+            doc_label_id.raw(),
+            price_id.raw(),
+            price,
+            score_id.raw(),
+            score,
+        );
+        seed_embedding(
+            env,
+            vector,
+            env.graph_source,
+            doc.local_vertex_id,
+            vec_value,
+        );
+    }
+}
+
 fn setup_search_where_range_disjunction_env(env: &FederationEnv, vector: Principal) {
     register_vector_index(env, VectorMetric::L2Squared, vector);
     enable_vector_dispatch(env, vector);
@@ -301,6 +361,116 @@ fn setup_search_where_eight_way_range_disjunction_env(env: &FederationEnv, vecto
 
 fn distance_for_vec_value(value: f32) -> f64 {
     value.powi(2) as f64 * DIMS as f64
+}
+
+#[test]
+fn search_where_cross_property_range_disjunction_unions_values() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    setup_search_where_cross_property_range_disjunction_env(&env, vector);
+
+    let query = format!(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE d.price < 10 OR d.score >= 4 \
+           LIMIT 10 \
+         ) DISTANCE AS distance \
+         RETURN ELEMENT_ID(d), distance \
+         ORDER BY distance ASC"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(0.0)),
+    )])
+    .expect("encode params");
+
+    let result = gql_query_with_params_as_admin(&env, &query, params);
+    assert_eq!(
+        result.row_count, 3,
+        "union across price and score must return three rows"
+    );
+
+    let rows = extract_rows(result);
+    assert_eq!(rows.len(), 3);
+    let distances: Vec<f64> = rows
+        .iter()
+        .map(|r| match r.get("distance").expect("distance column") {
+            gleaph_gql_ic::IcWireValue::Float64(d) => *d,
+            other => panic!("distance must be Float64, got {other:?}"),
+        })
+        .collect();
+    assert!(
+        distances
+            .iter()
+            .any(|d| (d - distance_for_vec_value(0.5_f32)).abs() < 1e-6),
+        "price-only document must appear"
+    );
+    assert!(
+        distances
+            .iter()
+            .any(|d| (d - distance_for_vec_value(1.5_f32)).abs() < 1e-6),
+        "score-only document must appear"
+    );
+    assert!(
+        distances
+            .iter()
+            .any(|d| (d - distance_for_vec_value(2.5_f32)).abs() < 1e-6),
+        "both-arms document must appear"
+    );
+}
+
+#[test]
+fn search_where_cross_property_range_disjunction_rejects_missing_index() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+
+    let doc_label_id = admin_intern_vertex_label(&env, "Document");
+    let price_id = admin_intern_property(&env, "price");
+    let score_id = admin_intern_property(&env, "score");
+    // Only price is indexed; score is not.
+    create_vertex_property_index(
+        &env,
+        "document_price_idx_cross_missing",
+        "Document",
+        "price",
+        "create_document_price_idx_cross_missing",
+    );
+
+    let doc = e2e_insert_vertex_with_label_and_two_properties(
+        &env,
+        env.graph_source,
+        doc_label_id.raw(),
+        price_id.raw(),
+        5,
+        score_id.raw(),
+        5,
+    );
+    seed_embedding(&env, vector, env.graph_source, doc.local_vertex_id, 1.0);
+
+    let query = format!(
+        "MATCH (d:Document) \
+         SEARCH d IN ( \
+           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+           WHERE d.price < 10 OR d.score >= 4 \
+           LIMIT 10 \
+         ) DISTANCE AS distance \
+         RETURN ELEMENT_ID(d), distance"
+    );
+    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(0.0)),
+    )])
+    .expect("encode params");
+
+    let err = gql_query_with_params_as_admin_result(&env, &query, params)
+        .expect_err("cross-property range disjunction with missing index must fail");
+    assert!(
+        err.to_string().contains("active vertex property index"),
+        "missing score index must fail with coverage error, got {err}"
+    );
 }
 
 #[test]

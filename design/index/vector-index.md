@@ -1,7 +1,7 @@
 # Vector index
 
 Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 03:13:00 UTC +0000
+Anchor timestamp: 2026-07-01 05:19:35 UTC +0000
 
 ## Status
 
@@ -430,7 +430,7 @@ the incarnation fence and a two-condition gate (global flag AND per-graph shard 
   (`VectorDispatchActivationBlocked`) while dispatch is not ready.
 
 
-## Filtered exact ranking (ADR 0034 Slices 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16 and 17)
+## Filtered exact ranking (ADR 0034 Slices 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17 and 18)
 
 A bounded candidate allowlist can restrict the search to an exact top-k over current live vector
 slots. The allowlist is produced by the Router from the Property Index for both leading and
@@ -440,11 +440,12 @@ same-binding numeric range predicates on the same property (one lower `>`/`>=` a
 `<`/`<=`) forming a two-sided range, one to eight equality predicates on distinct properties
 plus one one- or two-sided numeric range predicate on a distinct property, two to eight
 `OR`-connected same-binding same-property equality predicates, two to eight `OR`-connected
-same-binding pure equality predicates where property names may repeat or differ, or two to eight
-`OR`-connected same-binding same-property one-sided numeric range predicates) and arrives in
+same-binding pure equality predicates where property names may repeat or differ, two to eight
+`OR`-connected same-binding same-property one-sided numeric range predicates, or two to eight
+`OR`-connected same-binding cross-property one-sided numeric range predicates) and arrives in
 `VectorSearchRequest.candidate_subjects`.
 Router intersects the two range arms into one encoded interval, unions equality disjunction arms,
-and merges range disjunction arms into disjoint encoded intervals before issuing the allowlist;
+and merges range disjunction arms into disjoint encoded intervals **within each property id** before issuing the allowlist;
 Vector Index behavior is unchanged:
 
 - `None` keeps the existing unrestricted search path (exact subject scan or partition-page scan).

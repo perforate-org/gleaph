@@ -50,7 +50,7 @@ pub(super) fn detect_conditional_candidates(
     candidates
 }
 
-/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-17.
+/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-18.
 ///
 /// Accepts:
 /// - any number of AND-connected same-binding equality comparisons on distinct properties
@@ -68,12 +68,14 @@ pub(super) fn detect_conditional_candidates(
 /// - any number of OR-connected same-binding equality comparisons on the same searched vertex
 ///   binding (pure equality disjunctions are provider-neutral; the Router enforces the execution
 ///   arm limit later). Properties may differ between arms in ADR 0034 Slice 16.
-/// - any number of OR-connected same-binding range comparisons on the same property of the searched
-///   binding (pure same-property numeric range disjunctions are provider-neutral; the Router
-///   enforces the execution arm limit and interval merging later in ADR 0034 Slice 17).
+/// - any number of OR-connected same-binding range comparisons on the same searched vertex binding
+///   (pure numeric range disjunctions are provider-neutral; the Router enforces the execution arm
+///   limit, resolves each arm to its own property id, and merges overlapping encoded intervals
+///   only within each property id in ADR 0034 Slice 18). Property names may repeat or differ
+///   between arms; the Router proves index coverage per property at execution time.
 ///
-///   Mixed `AND`/`OR` shapes, equality inside OR, range predicates across different properties inside
-///   OR, and disjunctions across different bindings remain unsupported.
+///   Mixed `AND`/`OR` shapes, equality inside OR, nested logical operators, and disjunctions
+///   across different bindings remain unsupported.
 ///
 /// The planner is provider-neutral: it checks expression shape only. Label, index coverage, and
 /// numeric-domain verification are validated later by the Router. The execution bound on the
@@ -257,10 +259,14 @@ fn validate_pure_equality_disjunction(
     Ok(())
 }
 
-/// Detect a pure same-property numeric range disjunction: an OR chain where every leaf is a
-/// range comparison (`<`, `<=`, `>`, `>=`) between the same searched binding/property and a
-/// literal or parameter. Returns `true` only when the filter is an OR chain with at least two
-/// such range leaves; a single range leaf is handled by the existing conjunction path.
+/// Detect a pure same-binding numeric range disjunction: an OR chain where every leaf is a
+/// range comparison (`<`, `<=`, `>`, `>=`) between the searched binding and a literal or
+/// parameter. In ADR 0034 Slice 18 the property may differ between arms; the Router proves
+/// index coverage per property at execution time and merges encoded intervals only within each
+/// property id.
+///
+/// Returns `true` only when the filter is an OR chain with at least two such range leaves; a
+/// single range leaf is handled by the existing conjunction path.
 fn is_pure_range_disjunction(filter: &gleaph_gql::ast::Expr, binding: &str) -> bool {
     fn is_bound_property_of<'a>(
         expr: &'a gleaph_gql::ast::Expr,
@@ -320,25 +326,17 @@ fn is_pure_range_disjunction(filter: &gleaph_gql::ast::Expr, binding: &str) -> b
     if leaves.len() < 2 {
         return false;
     }
-    let mut property_name: Option<&str> = None;
-    for leaf in &leaves {
-        let prop = match is_range_leaf(leaf, binding) {
-            Some(p) => p,
-            None => return false,
-        };
-        match property_name {
-            Some(existing) if existing != prop => return false,
-            Some(_) => {}
-            None => property_name = Some(prop),
-        }
-    }
-    true
+    // In Slice 18 the property may differ between arms; only leaf shape matters here.
+    leaves
+        .iter()
+        .all(|leaf| is_range_leaf(leaf, binding).is_some())
 }
 
-/// Validate a pure same-property numeric range disjunction: every leaf is a range comparison
-/// between the same property of the searched binding and a literal or parameter, and the OR chain
-/// contains at least two arms. The Router proves index coverage, resolves numeric bounds, and
-/// merges overlapping intervals at execution time.
+/// Validate a pure same-binding numeric range disjunction: every leaf is a range comparison
+/// between a property of the searched binding and a literal or parameter, and the OR chain
+/// contains at least two arms. In ADR 0034 Slice 18 the property may differ between arms; the
+/// Router proves index coverage per property and merges encoded intervals only within each
+/// property id at execution time.
 fn validate_pure_range_disjunction(
     filter: &gleaph_gql::ast::Expr,
     binding: &str,
@@ -379,7 +377,6 @@ fn validate_pure_range_disjunction(
         )
     }
 
-    let mut property_name: Option<&str> = None;
     for leaf in &leaves {
         let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &leaf.kind else {
             return Err(PlannerError::UnsupportedPattern(
@@ -411,15 +408,10 @@ fn validate_pure_range_disjunction(
                 "SEARCH ... WHERE range disjunction must compare a property of the searched binding with a literal or parameter".into(),
             ));
         };
-        match property_name {
-            Some(existing) if existing != prop => {
-                return Err(PlannerError::UnsupportedPattern(
-                    "SEARCH ... WHERE range disjunction requires every arm to refer to the same property of the searched binding".into(),
-                ));
-            }
-            Some(_) => {}
-            None => property_name = Some(prop),
-        }
+        // In Slice 18 the property may differ between arms; do not enforce a single shared
+        // property name here. The Router proves index coverage and normalizes intervals per
+        // resolved property id.
+        let _ = prop;
     }
     Ok(())
 }
@@ -1721,7 +1713,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_search_filter_rejects_range_disjunction_across_properties() {
+    fn validate_search_filter_accepts_cross_property_range_disjunction() {
         let filter = or(
             cmp_op(
                 prop("d", "price"),
@@ -1734,20 +1726,33 @@ mod tests {
                 lit(Value::Int64(4)),
             ),
         );
-        let err = validate_search_filter(&filter, "d")
-            .expect_err("range disjunction across properties must fail");
-        assert!(
-            err.to_string()
-                .contains("every arm to refer to the same property of the searched binding")
-                || err
-                    .to_string()
-                    .contains("equality/range mixture in this slice")
-                || err
-                    .to_string()
-                    .contains("must be an equality or range comparison")
-                || err.to_string().contains("must contain only range"),
-            "unexpected error: {err}"
+        validate_search_filter(&filter, "d")
+            .expect("cross-property range disjunction should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_three_arm_cross_property_range_disjunction() {
+        let filter = or(
+            cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Lt,
+                lit(Value::Int64(10)),
+            ),
+            or(
+                cmp_op(
+                    prop("d", "rating"),
+                    gleaph_gql::ast::CmpOp::Ge,
+                    lit(Value::Int64(4)),
+                ),
+                cmp_op(
+                    prop("d", "score"),
+                    gleaph_gql::ast::CmpOp::Le,
+                    lit(Value::Int64(30)),
+                ),
+            ),
         );
+        validate_search_filter(&filter, "d")
+            .expect("three-arm cross-property range disjunction should be accepted");
     }
 
     #[test]
