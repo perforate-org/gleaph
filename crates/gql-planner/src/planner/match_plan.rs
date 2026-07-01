@@ -50,7 +50,7 @@ pub(super) fn detect_conditional_candidates(
     candidates
 }
 
-/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-18.
+/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-19.
 ///
 /// Accepts:
 /// - any number of AND-connected same-binding equality comparisons on distinct properties
@@ -65,17 +65,17 @@ pub(super) fn detect_conditional_candidates(
 /// - one or more AND-connected equality predicates on distinct properties combined with exactly
 ///   two range predicates on the same property (one lower bound and one upper bound) of the same
 ///   searched binding, where the equality properties differ from the range property.
-/// - any number of OR-connected same-binding equality comparisons on the same searched vertex
-///   binding (pure equality disjunctions are provider-neutral; the Router enforces the execution
-///   arm limit later). Properties may differ between arms in ADR 0034 Slice 16.
-/// - any number of OR-connected same-binding range comparisons on the same searched vertex binding
-///   (pure numeric range disjunctions are provider-neutral; the Router enforces the execution arm
-///   limit, resolves each arm to its own property id, and merges overlapping encoded intervals
-///   only within each property id in ADR 0034 Slice 18). Property names may repeat or differ
-///   between arms; the Router proves index coverage per property at execution time.
+/// - any number of OR-connected same-binding comparison predicates on the same searched vertex
+///   binding where each leaf is either an equality comparison or a one-sided numeric range
+///   comparison (ADR 0034 Slices 15-19: same-property or cross-property pure equality disjunction,
+///   same-property or cross-property pure numeric range disjunction, and bounded heterogeneous
+///   equality/range disjunction). The property may repeat or differ across arms and across
+///   comparison kinds; the Router enforces the 2..=8 execution bound, proves index coverage per
+///   arm, normalizes equality sources and range intervals, and executes the union through the
+///   shared bounded candidate collector.
 ///
-///   Mixed `AND`/`OR` shapes, equality inside OR, nested logical operators, and disjunctions
-///   across different bindings remain unsupported.
+///   General mixed `AND`/`OR` shapes, two-sided range disjuncts, equality inside a nested logical
+///   operator, and disjunctions across different bindings remain unsupported.
 ///
 /// The planner is provider-neutral: it checks expression shape only. Label, index coverage, and
 /// numeric-domain verification are validated later by the Router. The execution bound on the
@@ -86,11 +86,8 @@ fn validate_search_filter(
     filter: &gleaph_gql::ast::Expr,
     binding: &str,
 ) -> Result<(), PlannerError> {
-    if is_pure_equality_disjunction(filter, binding) {
-        return validate_pure_equality_disjunction(filter, binding);
-    }
-    if is_pure_range_disjunction(filter, binding) {
-        return validate_pure_range_disjunction(filter, binding);
+    if is_comparison_disjunction(filter, binding) {
+        return Ok(());
     }
 
     let predicates = flatten_search_filter(filter, binding)?;
@@ -156,18 +153,18 @@ fn validate_pure_equality_conjunction(
     Ok(())
 }
 
-/// Detect a pure equality disjunction: an OR chain (or a single equality) where every leaf is an
-/// equality comparison between `binding.property` and a literal or parameter, and every leaf refers
-/// to the same searched binding. In ADR 0034 Slice 16 the property may differ between arms. Returns
-/// `true` only when the filter is an OR chain with at least two equality leaves; a single equality
-/// leaf is handled by the existing conjunction path.
-fn is_pure_equality_disjunction(filter: &gleaph_gql::ast::Expr, binding: &str) -> bool {
+/// Detect a same-binding comparison disjunction: an `OR` chain with at least two leaves where
+/// every leaf is an equality (`=`) or one-sided numeric range (`<`, `<=`, `>`, `>=`) comparison
+/// between a property of the searched binding and a literal or parameter, with either operand
+/// order. This is the single Planner validation boundary for pure equality, pure range, and
+/// heterogeneous equality/range disjunctions (ADR 0034 Slices 15-19). The Router owns the 2..=8
+/// execution bound, index coverage per arm, and source normalization later.
+fn is_comparison_disjunction(filter: &gleaph_gql::ast::Expr, binding: &str) -> bool {
     fn is_bound_property(expr: &gleaph_gql::ast::Expr, binding: &str) -> bool {
         match &expr.kind {
             gleaph_gql::ast::ExprKind::PropertyAccess { expr: base, .. } => {
                 matches!(&base.kind,
-                    gleaph_gql::ast::ExprKind::Variable(name) if name == binding
-                )
+                    gleaph_gql::ast::ExprKind::Variable(name) if name == binding)
             }
             _ => false,
         }
@@ -180,11 +177,18 @@ fn is_pure_equality_disjunction(filter: &gleaph_gql::ast::Expr, binding: &str) -
         )
     }
 
-    fn is_equality_leaf(leaf: &gleaph_gql::ast::Expr, binding: &str) -> bool {
+    fn is_comparison_leaf(leaf: &gleaph_gql::ast::Expr, binding: &str) -> bool {
         let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &leaf.kind else {
             return false;
         };
-        if *op != gleaph_gql::ast::CmpOp::Eq {
+        if !matches!(
+            *op,
+            gleaph_gql::ast::CmpOp::Eq
+                | gleaph_gql::ast::CmpOp::Lt
+                | gleaph_gql::ast::CmpOp::Le
+                | gleaph_gql::ast::CmpOp::Gt
+                | gleaph_gql::ast::CmpOp::Ge
+        ) {
             return false;
         }
         (is_bound_property(left, binding) && is_literal_or_parameter(right))
@@ -192,228 +196,7 @@ fn is_pure_equality_disjunction(filter: &gleaph_gql::ast::Expr, binding: &str) -
     }
 
     let leaves = result::flatten_disjunction(filter);
-    if leaves.len() < 2 {
-        // Single-arm equality is handled by the existing conjunction path; do not classify it as a
-        // disjunction here.
-        return false;
-    }
-
-    leaves.iter().all(|leaf| is_equality_leaf(leaf, binding))
-}
-
-/// Validate a pure equality disjunction: every leaf is an equality comparison between a property
-/// of the searched binding and a literal or parameter, and the OR chain contains at least two arms.
-/// In ADR 0034 Slice 16 arms may refer to distinct properties; the Router proves index coverage
-/// for each property at execution time.
-fn validate_pure_equality_disjunction(
-    filter: &gleaph_gql::ast::Expr,
-    binding: &str,
-) -> Result<(), PlannerError> {
-    let leaves = result::flatten_disjunction(filter);
-    if leaves.len() < 2 {
-        return Err(PlannerError::UnsupportedPattern(
-            "SEARCH ... WHERE equality disjunction requires at least two OR-connected equality predicates"
-                .into(),
-        ));
-    }
-
-    fn is_bound_property(expr: &gleaph_gql::ast::Expr, binding: &str) -> bool {
-        match &expr.kind {
-            gleaph_gql::ast::ExprKind::PropertyAccess { expr: base, .. } => {
-                matches!(&base.kind,
-                    gleaph_gql::ast::ExprKind::Variable(name) if name == binding
-                )
-            }
-            _ => false,
-        }
-    }
-
-    fn is_literal_or_parameter(expr: &gleaph_gql::ast::Expr) -> bool {
-        matches!(
-            &expr.kind,
-            gleaph_gql::ast::ExprKind::Literal(_) | gleaph_gql::ast::ExprKind::Parameter(_)
-        )
-    }
-
-    for leaf in &leaves {
-        let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &leaf.kind else {
-            return Err(PlannerError::UnsupportedPattern(
-                "SEARCH ... WHERE equality disjunction must contain only equality comparisons"
-                    .into(),
-            ));
-        };
-        if *op != gleaph_gql::ast::CmpOp::Eq {
-            return Err(PlannerError::UnsupportedPattern(
-                "SEARCH ... WHERE equality disjunction must contain only equality (=) comparisons"
-                    .into(),
-            ));
-        }
-        if !((is_bound_property(left, binding) && is_literal_or_parameter(right))
-            || (is_bound_property(right, binding) && is_literal_or_parameter(left)))
-        {
-            return Err(PlannerError::UnsupportedPattern(
-                "SEARCH ... WHERE equality disjunction must compare a property of the searched binding with a literal or parameter".into(),
-            ));
-        }
-    }
-    Ok(())
-}
-
-/// Detect a pure same-binding numeric range disjunction: an OR chain where every leaf is a
-/// range comparison (`<`, `<=`, `>`, `>=`) between the searched binding and a literal or
-/// parameter. In ADR 0034 Slice 18 the property may differ between arms; the Router proves
-/// index coverage per property at execution time and merges encoded intervals only within each
-/// property id.
-///
-/// Returns `true` only when the filter is an OR chain with at least two such range leaves; a
-/// single range leaf is handled by the existing conjunction path.
-fn is_pure_range_disjunction(filter: &gleaph_gql::ast::Expr, binding: &str) -> bool {
-    fn is_bound_property_of<'a>(
-        expr: &'a gleaph_gql::ast::Expr,
-        binding: &'a str,
-    ) -> Option<&'a str> {
-        match &expr.kind {
-            gleaph_gql::ast::ExprKind::PropertyAccess {
-                expr: base,
-                property,
-            } => {
-                if matches!(&base.kind,
-                    gleaph_gql::ast::ExprKind::Variable(name) if name == binding)
-                {
-                    Some(property.as_str())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
-    fn is_literal_or_parameter(expr: &gleaph_gql::ast::Expr) -> bool {
-        matches!(
-            &expr.kind,
-            gleaph_gql::ast::ExprKind::Literal(_) | gleaph_gql::ast::ExprKind::Parameter(_)
-        )
-    }
-
-    fn is_range_leaf<'a>(leaf: &'a gleaph_gql::ast::Expr, binding: &'a str) -> Option<&'a str> {
-        let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &leaf.kind else {
-            return None;
-        };
-        if !matches!(
-            *op,
-            gleaph_gql::ast::CmpOp::Lt
-                | gleaph_gql::ast::CmpOp::Le
-                | gleaph_gql::ast::CmpOp::Gt
-                | gleaph_gql::ast::CmpOp::Ge
-        ) {
-            return None;
-        }
-        if let Some(property) = is_bound_property_of(left, binding)
-            && is_literal_or_parameter(right)
-        {
-            return Some(property);
-        }
-        if let Some(property) = is_bound_property_of(right, binding)
-            && is_literal_or_parameter(left)
-        {
-            return Some(property);
-        }
-        None
-    }
-
-    let leaves = result::flatten_disjunction(filter);
-    if leaves.len() < 2 {
-        return false;
-    }
-    // In Slice 18 the property may differ between arms; only leaf shape matters here.
-    leaves
-        .iter()
-        .all(|leaf| is_range_leaf(leaf, binding).is_some())
-}
-
-/// Validate a pure same-binding numeric range disjunction: every leaf is a range comparison
-/// between a property of the searched binding and a literal or parameter, and the OR chain
-/// contains at least two arms. In ADR 0034 Slice 18 the property may differ between arms; the
-/// Router proves index coverage per property and merges encoded intervals only within each
-/// property id at execution time.
-fn validate_pure_range_disjunction(
-    filter: &gleaph_gql::ast::Expr,
-    binding: &str,
-) -> Result<(), PlannerError> {
-    let leaves = result::flatten_disjunction(filter);
-    if leaves.len() < 2 {
-        return Err(PlannerError::UnsupportedPattern(
-            "SEARCH ... WHERE range disjunction requires at least two OR-connected range predicates"
-                .into(),
-        ));
-    }
-
-    fn is_bound_property_of<'a>(
-        expr: &'a gleaph_gql::ast::Expr,
-        binding: &'a str,
-    ) -> Option<&'a str> {
-        match &expr.kind {
-            gleaph_gql::ast::ExprKind::PropertyAccess {
-                expr: base,
-                property,
-            } => {
-                if matches!(&base.kind,
-                    gleaph_gql::ast::ExprKind::Variable(name) if name == binding)
-                {
-                    Some(property.as_str())
-                } else {
-                    None
-                }
-            }
-            _ => None,
-        }
-    }
-
-    fn is_literal_or_parameter(expr: &gleaph_gql::ast::Expr) -> bool {
-        matches!(
-            &expr.kind,
-            gleaph_gql::ast::ExprKind::Literal(_) | gleaph_gql::ast::ExprKind::Parameter(_)
-        )
-    }
-
-    for leaf in &leaves {
-        let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &leaf.kind else {
-            return Err(PlannerError::UnsupportedPattern(
-                "SEARCH ... WHERE range disjunction must contain only range comparisons".into(),
-            ));
-        };
-        if !matches!(
-            *op,
-            gleaph_gql::ast::CmpOp::Lt
-                | gleaph_gql::ast::CmpOp::Le
-                | gleaph_gql::ast::CmpOp::Gt
-                | gleaph_gql::ast::CmpOp::Ge
-        ) {
-            return Err(PlannerError::UnsupportedPattern(
-                "SEARCH ... WHERE range disjunction must contain only range (<, <=, >, >=) comparisons"
-                    .into(),
-            ));
-        }
-        let prop = if let Some(property) = is_bound_property_of(left, binding)
-            && is_literal_or_parameter(right)
-        {
-            property
-        } else if let Some(property) = is_bound_property_of(right, binding)
-            && is_literal_or_parameter(left)
-        {
-            property
-        } else {
-            return Err(PlannerError::UnsupportedPattern(
-                "SEARCH ... WHERE range disjunction must compare a property of the searched binding with a literal or parameter".into(),
-            ));
-        };
-        // In Slice 18 the property may differ between arms; do not enforce a single shared
-        // property name here. The Router proves index coverage and normalizes intervals per
-        // resolved property id.
-        let _ = prop;
-    }
-    Ok(())
+    leaves.len() >= 2 && leaves.iter().all(|leaf| is_comparison_leaf(leaf, binding))
 }
 
 fn validate_mixed_equality_and_two_sided_range(
@@ -1756,7 +1539,7 @@ mod tests {
     }
 
     #[test]
-    fn validate_search_filter_rejects_mixed_equality_and_range_disjunction() {
+    fn validate_search_filter_accepts_mixed_equality_and_range_disjunction() {
         let filter = or(
             cmp(prop("d", "price"), lit(Value::Int64(10))),
             cmp_op(
@@ -1765,18 +1548,190 @@ mod tests {
                 lit(Value::Int64(50)),
             ),
         );
-        let err = validate_search_filter(&filter, "d")
-            .expect_err("mixed equality/range disjunction must fail");
+        validate_search_filter(&filter, "d")
+            .expect("mixed equality/range disjunction should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_eight_arm_heterogeneous_disjunction() {
+        let mut filter = cmp(prop("d", "p1"), lit(Value::Int64(1)));
+        for i in 2..=8u8 {
+            let arm = if i % 2 == 0 {
+                cmp(prop("d", &format!("p{i}")), lit(Value::Int64(i as i64)))
+            } else {
+                cmp_op(
+                    prop("d", &format!("p{i}")),
+                    gleaph_gql::ast::CmpOp::Ge,
+                    lit(Value::Int64(i as i64)),
+                )
+            };
+            filter = or(filter, arm);
+        }
+        validate_search_filter(&filter, "d")
+            .expect("eight-arm heterogeneous disjunction should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_ten_arm_heterogeneous_disjunction() {
+        let mut filter = cmp(prop("d", "p1"), lit(Value::Int64(1)));
+        for i in 2..=10u8 {
+            let arm = if i % 2 == 0 {
+                cmp(prop("d", &format!("p{i}")), lit(Value::Int64(i as i64)))
+            } else {
+                cmp_op(
+                    prop("d", &format!("p{i}")),
+                    gleaph_gql::ast::CmpOp::Ge,
+                    lit(Value::Int64(i as i64)),
+                )
+            };
+            filter = or(filter, arm);
+        }
+        validate_search_filter(&filter, "d")
+            .expect("ten-arm heterogeneous disjunction is provider-neutral");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_heterogeneous_disjunction_repeated_and_distinct_properties() {
+        let filter = or(
+            cmp(prop("d", "category"), lit(Value::Int64(1))),
+            or(
+                cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Lt,
+                    lit(Value::Int64(10)),
+                ),
+                cmp(prop("d", "category"), lit(Value::Int64(2))),
+            ),
+        );
+        validate_search_filter(&filter, "d")
+            .expect("repeated and distinct properties in heterogeneous OR should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_heterogeneous_disjunction_reversed_operands() {
+        let filter = or(
+            cmp(lit(Value::Int64(10)), prop("d", "price")),
+            cmp_op(
+                lit(Value::Int64(50)),
+                gleaph_gql::ast::CmpOp::Le,
+                prop("d", "score"),
+            ),
+        );
+        validate_search_filter(&filter, "d")
+            .expect("reversed operands in heterogeneous OR should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_heterogeneous_disjunction_parameter_values() {
+        let filter = or(
+            cmp(prop("d", "category"), param("$category")),
+            cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Lt,
+                param("$max_price"),
+            ),
+        );
+        validate_search_filter(&filter, "d")
+            .expect("parameter values in heterogeneous OR should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_heterogeneous_disjunction_nested_and() {
+        let nested = Expr::new(ExprKind::And(
+            Box::new(cmp(prop("d", "category"), lit(Value::Int64(1)))),
+            Box::new(cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Lt,
+                lit(Value::Int64(10)),
+            )),
+        ));
+        let filter = or(nested, cmp(prop("d", "category"), lit(Value::Int64(2))));
+        let err = validate_search_filter(&filter, "d").expect_err("nested AND inside OR must fail");
         assert!(
-            err.to_string().contains("only range comparisons")
-                || err.to_string().contains("must contain only range")
+            err.to_string()
+                .contains("must be an equality or range comparison")
                 || err
                     .to_string()
-                    .contains("equality/range mixture in this slice")
-                || err
-                    .to_string()
-                    .contains("must be an equality or range comparison"),
+                    .contains("does not support this equality/range mixture"),
             "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_heterogeneous_disjunction_other_binding() {
+        let filter = or(
+            cmp(prop("a", "category"), lit(Value::Int64(1))),
+            cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Lt,
+                lit(Value::Int64(10)),
+            ),
+        );
+        let err = validate_search_filter(&filter, "d").expect_err("other binding in OR must fail");
+        assert!(
+            err.to_string()
+                .contains("must be an equality or range comparison")
+                || err
+                    .to_string()
+                    .contains("does not support this equality/range mixture")
+        );
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_heterogeneous_disjunction_computed_value() {
+        let filter = or(
+            cmp(
+                prop("d", "price"),
+                Expr::new(ExprKind::BinaryOp {
+                    left: Box::new(lit(Value::Int64(1))),
+                    op: gleaph_gql::ast::BinaryOp::Add,
+                    right: Box::new(lit(Value::Int64(2))),
+                }),
+            ),
+            cmp(prop("d", "category"), lit(Value::Int64(1))),
+        );
+        let err = validate_search_filter(&filter, "d").expect_err("computed value in OR must fail");
+        assert!(
+            err.to_string()
+                .contains("must be an equality or range comparison")
+                || err.to_string().contains("literal or parameter")
+        );
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_heterogeneous_disjunction_unsupported_operator() {
+        let filter = or(
+            cmp_op(
+                prop("d", "category"),
+                gleaph_gql::ast::CmpOp::Ne,
+                lit(Value::Int64(1)),
+            ),
+            cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Lt,
+                lit(Value::Int64(10)),
+            ),
+        );
+        let err =
+            validate_search_filter(&filter, "d").expect_err("unsupported operator in OR must fail");
+        assert!(
+            err.to_string()
+                .contains("must be an equality or range comparison")
+                || err.to_string().contains("single numeric range predicate")
+        );
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_heterogeneous_disjunction_non_comparison_leaf() {
+        let filter = or(
+            Expr::new(ExprKind::Literal(Value::Bool(true))),
+            cmp(prop("d", "category"), lit(Value::Int64(1))),
+        );
+        let err =
+            validate_search_filter(&filter, "d").expect_err("non-comparison leaf in OR must fail");
+        assert!(
+            err.to_string()
+                .contains("must be an equality or range comparison")
         );
     }
 

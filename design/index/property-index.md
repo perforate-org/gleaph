@@ -1,7 +1,7 @@
 # Property index
 
 Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 05:19:35 UTC +0000
+Anchor timestamp: 2026-07-01 07:07:02 UTC +0000
 
 ## Status
 
@@ -163,7 +163,7 @@ keys before graph-index calls; graph-index read APIs reject them as `IndexValueK
 silent empty range).
 
 
-## Vector search filter membership (ADR 0034 Slices 6, 7, 8, 9, 10, 11, 12, 13 and 14)
+## Vector search filter membership (ADR 0034 Slices 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 and 19)
 
 Property-index postings own filter membership for leading and non-leading `SEARCH ... WHERE`
 predicates. The Router consumes postings through bounded pagination:
@@ -171,9 +171,11 @@ predicates. The Router consumes postings through bounded pagination:
 - The planner accepts one same-binding equality predicate, one to eight `AND`-connected
   same-binding equality predicates on **distinct** properties, exactly one same-binding numeric range
   predicate (`<`, `<=`, `>`, `>=`), exactly two same-property range predicates forming one lower
-  and one upper bound, or one to eight equality predicates on distinct properties together with
-  one one- or two-sided numeric range predicate on a distinct property, and preserves the original
-  filter expression in `PlanOp::Search`.
+  and one upper bound, one to eight equality predicates on distinct properties together with
+  one one- or two-sided numeric range predicate on a distinct property, or any number of
+  `OR`-connected same-binding comparison predicates where each leaf is independently an equality
+  or a one-sided numeric range comparison, and preserves the original filter expression in
+  `PlanOp::Search`.
 - The Router resolves the searched label and every filter property to router-issued ids and proves
   an active vertex property index for the exact `(graph_id, label_id, property_id)` tuple in the
   named-index catalog for every arm. For a leading search the label is taken from the leading
@@ -210,6 +212,22 @@ predicates. The Router consumes postings through bounded pagination:
   same `resolve_filtered_range_interval` logic used for Slice 10, the equality value is encoded once,
   and one paginated `lookup_range_intersection_page` stream walks the interval and sieves each page by
   the equality arm.
+- For two to eight same-property or cross-property equality arms inside an `OR` the candidate set is
+  the union of paginated `lookup_equal_page` results for every distinct `(property_id, encoded_value)`
+  source, label-filtered per page and deduplicated globally by `(shard_id, vertex_id)`.
+- For two to eight same-property or cross-property one-sided numeric range arms inside an `OR` the
+  candidate set is the union of paginated `lookup_range_page` results. Each arm resolves one
+  `(graph_id, label_id, property_id)` tuple, derives a finite half-open encoded interval, and
+  contributes to a per-property-id merged interval set before lookup. The same per-page label
+  filtering, global `(shard_id, vertex_id)` deduplication, and 4096 candidate bound apply.
+- For two to eight same-binding heterogeneous equality/range arms inside an `OR` (ADR 0034 Slice 19)
+  each arm is classified independently as equality or range, resolves one
+  `(graph_id, label_id, property_id)` tuple, and is normalized using the same equality-deduplication
+  and per-property range-merge rules as the pure paths. The candidate set is the union of paginated
+  `lookup_equal_page` and `lookup_range_page` results for the combined normalized sources, with the
+  same per-page label filtering, global `(shard_id, vertex_id)` deduplication, and 4096 candidate
+  bound. Equality and range sources are never merged with each other because they are semantically
+  distinct postings lookups.
 - If the numeric interval is empty (`low >= high`) the Router returns an empty candidate set before
   calling the Property Index or Vector Index, preserving the empty-candidate dispatch contract.
 - In all cases the Router deduplicates by `(shard_id, vertex_id)` and stops as soon as a 4097th

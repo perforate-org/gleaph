@@ -1,7 +1,7 @@
 # Physical plan format
 
 Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 05:19:35 UTC +0000
+Anchor timestamp: 2026-07-01 07:07:02 UTC +0000
 
 ## Purpose
 
@@ -86,11 +86,14 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
   range comparisons on the same property where one range arm is a lower bound and the other is an
   upper bound, with the range property distinct from every equality property, any number of
   `OR`-connected equality comparisons on the same property of the searched binding, any number of
-  `OR`-connected same-binding equality comparisons where property names may repeat or differ, **or
-  any number of `OR`-connected range comparisons on the same binding where each arm is a pure numeric
-  range comparison (`<`, `<=`, `>`, `>=`) and no equality or nested logical operator appears. The
-  arms may reference the same property or different properties; the property names may repeat or
-  differ**. Either operand order and any conjunct or disjunct order is accepted. The planner does not verify label,
+  `OR`-connected same-binding equality comparisons where property names may repeat or differ, any
+  number of `OR`-connected range comparisons on the same binding where each arm is a pure numeric
+  range comparison (`<`, `<=`, `>`, `>=`) and no equality or nested logical operator appears, **or
+  any number of `OR`-connected same-binding comparison predicates where each leaf is independently
+  either an equality comparison or a one-sided numeric range comparison (`<`, `<=`, `>`, `>=`) and no
+  nested logical operator or two-sided range disjunct appears. The arms may reference the same
+  property or different properties; the property names may repeat or differ across arms and across
+  comparison kinds**. Either operand order and any conjunct or disjunct order is accepted. The planner does not verify label,
   index coverage, or numeric-domain semantics, and does not enforce the Router's eight-arm
   disjunction execution bound.
 - The Router resolves the searched label and every filter property to router-issued ids, proves an
@@ -110,20 +113,27 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
   paginated `lookup_equal_page` streams for two to eight `OR`-connected same-property or cross-property
   equality arms (each arm resolves one `(graph_id, label_id, property_id)` tuple, each tuple must
   have an active index, one page in flight per source, per-source cursors starting from `None`,
-  global deduplication, label filtering before counting, and the 4096 candidate bound), **or a
+  global deduplication, label filtering before counting, and the 4096 candidate bound), a
   sequential union of up to eight paginated `lookup_range_page` streams for two to eight `OR`-connected
-  same-property or cross-property range arms. Each range arm resolves its own `(graph_id, label_id,
+  same-property or cross-property range arms (each range arm resolves its own `(graph_id, label_id,
   property_id)` tuple and its own finite half-open encoded interval; empty arms are dropped, the
   remaining intervals are grouped by property id, sorted and merged into disjoint encoded intervals
-  within each group, and each merged interval is walked per index source through `lookup_range_page`.
+  within each group, and each merged interval is walked per index source through `lookup_range_page`),
+  **or a sequential union of up to eight paginated `lookup_equal_page` and/or `lookup_range_page`
+  streams for two to eight `OR`-connected same-binding heterogeneous comparison arms. Each arm is
+  independently classified as equality or range, resolves its own `(graph_id, label_id, property_id)`
+  tuple, and is normalized like the pure equality and pure range paths. Equality sources are
+  deduplicated by `(property_id, encoded_value)`, range intervals are grouped by property id and merged
+  within each group, and the combined normalized sources are walked through the shared union collector.
   The same 4096 candidate bound, per-page label filtering, and global `(shard_id, vertex_id)`
   deduplication are enforced, and the collector stops at the 4097th distinct subject with an explicit
   error. Intervals are never merged across property ids because encoded numeric keys are
-  property-specific.**
+  property-specific, and equality/range sources are never merged with each other because they are
+  semantically distinct postings lookups.**
 - Deduplicating by
   `(shard_id, vertex_id)`, it stops as soon as a 4097th distinct subject is observed and returns an
-  explicit error instead of truncating. Malformed postings are rejected. Nine or more equality arms
-  are rejected with `InvalidArgument` before any Property Index call.
+  explicit error instead of truncating. Malformed postings are rejected. Nine or more syntactic
+  disjunction arms are rejected with `InvalidArgument` before any Property Index call.
 - If the candidate set is empty, the Router skips the vector canister. For a leading search it dispatches
   the stripped plan with an empty `SeedBindingsWire` to every live shard, preserving the leading-search
   global aggregate contract. For a non-leading search it keeps the full plan and attaches an explicit

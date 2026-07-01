@@ -393,8 +393,8 @@ fn test_search_where_equality_disjunction_arbitrary_length_accepted_by_planner()
 }
 
 #[test]
-fn test_search_where_equality_disjunction_rejects_mixed_range() {
-    let err = plan_query_err(
+fn test_search_where_heterogeneous_disjunction_accepted_by_planner() {
+    let plan = plan_query(
         "MATCH (d:Document) \
          SEARCH d IN ( \
            VECTOR INDEX document_embedding \
@@ -404,14 +404,15 @@ fn test_search_where_equality_disjunction_rejects_mixed_range() {
          ) SCORE AS similarity \
          RETURN d, similarity",
     );
+    let filter = match &plan.ops[1] {
+        PlanOp::Search { provider, .. } => match provider {
+            SearchProviderPlan::VectorIndex { filter, .. } => filter.as_ref(),
+        },
+        _ => panic!("expected Search op"),
+    };
     assert!(
-        err.to_string().contains("only equality")
-            || err.to_string().contains("equality disjunction")
-            || err.to_string().contains("Unsupported")
-            || err
-                .to_string()
-                .contains("must be an equality or range comparison"),
-        "mixed equality/range disjunction must be rejected, got {err}"
+        filter.is_some(),
+        "heterogeneous equality/range disjunction must be preserved in the plan"
     );
 }
 
@@ -878,8 +879,8 @@ fn test_search_where_equality_conjunction_rejects_duplicate_property() {
 }
 
 #[test]
-fn test_search_where_disjunction_rejected_by_planner() {
-    let err = plan_query_err(
+fn test_search_where_same_property_heterogeneous_disjunction_accepted_by_planner() {
+    let plan = plan_query(
         "MATCH (d:Document) \
          SEARCH d IN ( \
            VECTOR INDEX document_embedding \
@@ -889,14 +890,15 @@ fn test_search_where_disjunction_rejected_by_planner() {
          ) SCORE AS similarity \
          RETURN d, similarity",
     );
+    let filter = match &plan.ops[1] {
+        PlanOp::Search { provider, .. } => match provider {
+            SearchProviderPlan::VectorIndex { filter, .. } => filter.as_ref(),
+        },
+        _ => panic!("expected Search op"),
+    };
     assert!(
-        err.to_string().contains("only equality")
-            || err.to_string().contains("equality disjunction")
-            || err.to_string().contains("Unsupported")
-            || err
-                .to_string()
-                .contains("must be an equality or range comparison"),
-        "OR range disjunction must be rejected, got {err}"
+        filter.is_some(),
+        "same-property equality/range disjunction must be preserved in the plan"
     );
 }
 

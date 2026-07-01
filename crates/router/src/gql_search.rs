@@ -1,5 +1,5 @@
 //! Router-side lowering of GQL `SEARCH ... IN (VECTOR INDEX ... FOR ... LIMIT ...)`
-//! (ADR 0034 Slices 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 and 16).
+//! (ADR 0034 Slices 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 and 19).
 //!
 //! This module is the execution boundary between the provider-neutral GQL planner
 //! (`PlanOp::Search`) and the Router-owned vector-index catalog / canister dispatch. It supports
@@ -9,10 +9,13 @@
 //! same-binding numeric range predicates on the same property forming one lower (`>`/`>=`) and one
 //! upper (`<`/`<=`) bound, one equality arm plus one one-sided range arm on distinct properties,
 //! one equality arm plus two same-property range arms on a distinct property, two to eight
-//! `OR`-connected same-binding same-property equality predicates, or two to eight
-//! `OR`-connected same-binding pure equality predicates where property names may repeat or differ
-//! (Slices 6, 7, 8, 9, 10, 11, 12, 13, 14, 15 and 16). All unsupported shapes are rejected with
-//! explicit `InvalidArgument` errors. For a leading search it dispatches the remaining graph-tail
+//! `OR`-connected same-binding same-property equality predicates, two to eight
+//! `OR`-connected same-binding pure equality predicates where property names may repeat or differ,
+//! two to eight `OR`-connected same-binding same-property or cross-property one-sided numeric range
+//! predicates, and two to eight `OR`-connected same-binding heterogeneous equality/range predicates
+//! where each leaf is independently an equality or a one-sided numeric range comparison
+//! (Slices 6, 7, 8, 9, 10, 11, 12, 13, 14, 15, 16, 17, 18 and 19). All unsupported shapes are rejected
+//! with explicit `InvalidArgument` errors. For a leading search it dispatches the remaining graph-tail
 //! plan from row-shaped vector-search seeds. For a non-leading search it attaches an explicit
 //! per-shard resolved-search relation to the normal read dispatch.
 
@@ -285,49 +288,48 @@ struct SearchFilterRange {
     value_expr: gleaph_gql::ast::Expr,
 }
 
-/// ADR 0034 Slice 8/9/10/11/12/14/15/16/17/18: any bounded number of same-binding equality
+/// ADR 0034 Slice 8/9/10/11/12/14/15/16/17/18/19: any bounded number of same-binding equality
 /// conjuncts on distinct properties, exactly one numeric range predicate, exactly two
 /// same-property range predicates forming one lower and one upper bound, one of those range shapes
 /// combined with one or more equality predicates on distinct properties, a same-property pure
 /// equality disjunction, a cross-property pure equality disjunction where property names may
-/// repeat or differ, a same-property pure numeric range disjunction, or a cross-property pure
-/// numeric range disjunction. The router enforces the provider-specific eight-arm equality/range
-/// limit and distinct-property rules for conjunctions; the planner is provider-neutral. In Slice 18
-/// range-disjunction arms may target different properties, and the router merges encoded intervals
-/// only within each resolved property id before walking the union of sources.
+/// repeat or differ, a same-property pure numeric range disjunction, a cross-property pure
+/// numeric range disjunction, or a heterogeneous disjunction whose leaves may independently be
+/// equality or one-sided numeric range comparisons. The router enforces the provider-specific
+/// eight-arm disjunction limit and distinct-property rules for conjunctions; the planner is
+/// provider-neutral. In Slices 18 and 19 range-disjunction arms may target different properties,
+/// and the router merges encoded intervals only within each resolved property id before walking
+/// the union of sources.
+#[derive(Debug)]
+enum SearchFilterDisjunctionArm {
+    Equality(SearchFilterArm),
+    Range(SearchFilterRange),
+}
+
 #[derive(Debug)]
 enum SearchFilter {
     Equality(Vec<SearchFilterArm>),
     Range(Vec<SearchFilterRange>),
     Mixed(Vec<SearchFilterArm>, Vec<SearchFilterRange>),
-    /// ADR 0034 Slices 15 and 16: pure equality disjunction on the same binding. Each arm owns a
-    /// property name and value; property names may repeat or differ. The planner accepts any
-    /// number of OR-connected equality arms; the router enforces the execution bound and
-    /// deduplicates identical `(property_id, encoded_value)` sources before lookup.
-    EqualityDisjunction(Vec<SearchFilterArm>),
-    /// ADR 0034 Slice 17 and 18: pure same-binding numeric range disjunction on the searched
-    /// binding. Every arm compares a property of the searched binding to a literal or parameter
-    /// using a range operator. In Slice 17 every arm uses the same property; in Slice 18 arms may
-    /// target different properties. The planner accepts any number of OR-connected range arms; the
-    /// router resolves each arm to its own property id, proves an active index per property, derives
-    /// a finite half-open encoded interval per arm, drops empty intervals, merges overlapping/touching
-    /// intervals within each property id, and enforces the execution bound before lookup.
-    RangeDisjunction(Vec<SearchFilterRange>),
+    /// ADR 0034 Slices 15, 16, 17, 18 and 19: a same-binding disjunction of two to eight
+    /// comparison arms. Each leaf is independently either an equality comparison or a one-sided
+    /// numeric range comparison; property names may repeat or differ across arms and across
+    /// comparison kinds. The planner accepts any number of OR-connected comparison arms; the
+    /// router enforces the 2..=8 execution bound, proves an active index per arm, normalizes
+    /// equality sources and range intervals per property id, and executes the union through the
+    /// shared bounded candidate collector.
+    Disjunction(Vec<SearchFilterDisjunctionArm>),
 }
 
 /// Maximum number of `AND`-connected equality arms the Property Index intersection path admits.
 const MAX_EQUALITY_INTERSECTION_ARMS: usize = 8;
 
-/// Maximum number of `OR`-connected equality arms the Router will execute as a bounded union of
-/// `lookup_equal_page` streams. This is a Router-owned fan-out bound, independent from the Property
-/// Index intersection limit.
-const MAX_EQUALITY_DISJUNCTION_ARMS: usize = 8;
-
-/// Maximum number of `OR`-connected range arms the Router will execute as a bounded union of
-/// `lookup_range_page` streams. This is a Router-owned fan-out bound, independent from the equality
-/// disjunction limit. Interval merging may reduce the number of distinct range sources actually
-/// walked, but the syntactic arm count is bounded here before normalization.
-const MAX_RANGE_DISJUNCTION_ARMS: usize = 8;
+/// Maximum number of `OR`-connected comparison arms the Router will execute as a bounded union of
+/// Property Index sources. This is a single Router-owned fan-out bound for equality, range, and
+/// heterogeneous disjunctions, independent from the Property Index intersection limit. Source
+/// normalization may reduce the number of distinct sources actually walked, but the syntactic arm
+/// count is bounded here before normalization.
+const MAX_SEARCH_FILTER_DISJUNCTION_ARMS: usize = 8;
 
 #[derive(Debug)]
 struct SearchShape {
@@ -671,25 +673,17 @@ fn extract_search_filter(
     binding: &str,
     expr: &gleaph_gql::ast::Expr,
 ) -> Result<SearchFilter, RouterError> {
-    if let Some(disjunction) = try_extract_equality_disjunction(binding, expr) {
-        if disjunction.len() > MAX_EQUALITY_DISJUNCTION_ARMS {
+    // First check for any OR-connected disjunction of comparison arms. This path now covers
+    // pure equality disjunctions (Slices 15/16), pure range disjunctions (Slices 17/18), and
+    // heterogeneous equality/range disjunctions (Slice 19) through one shared classifier. A
+    // single equality or range leaf is intentionally left to the conjunction path below.
+    if let Some(arms) = try_extract_disjunction(binding, expr) {
+        if arms.len() > MAX_SEARCH_FILTER_DISJUNCTION_ARMS {
             return Err(RouterError::InvalidArgument(format!(
-                "SEARCH ... WHERE equality disjunction supports at most {MAX_EQUALITY_DISJUNCTION_ARMS} OR-connected arms in this slice"
+                "SEARCH ... WHERE disjunction supports at most {MAX_SEARCH_FILTER_DISJUNCTION_ARMS} OR-connected arms in this slice"
             )));
         }
-        return Ok(SearchFilter::EqualityDisjunction(disjunction));
-    }
-
-    // First check whether the top-level expression is a range disjunction. If it is not, we
-    // fall through to the AND/conjunction path below. The disjunction extractor requires every
-    // OR leaf to be a range predicate on the same binding property.
-    if let Some(disjunction) = try_extract_range_disjunction(binding, expr) {
-        if disjunction.len() > MAX_RANGE_DISJUNCTION_ARMS {
-            return Err(RouterError::InvalidArgument(format!(
-                "SEARCH ... WHERE range disjunction supports at most {MAX_RANGE_DISJUNCTION_ARMS} OR-connected arms in this slice"
-            )));
-        }
-        return Ok(SearchFilter::RangeDisjunction(disjunction));
+        return Ok(SearchFilter::Disjunction(arms));
     }
 
     let leaves = collect_and_leaves(expr);
@@ -699,13 +693,12 @@ fn extract_search_filter(
         ));
     }
 
-    // Detect OR-connected mixed shapes before treating the expression as a conjunction. The
-    // equality and range disjunction extractors already rejected anything that was not a pure
-    // disjunction of their respective predicate families, so a top-level OR that reaches this
-    // point is a mixed or otherwise unsupported disjunction and should report a clear error.
+    // A top-level OR that did not match the shared disjunction extractor contains an unsupported
+    // leaf (nested logical operator, computed operand, non-comparison, etc.). Report a clear
+    // shape error before falling through to the conjunction classifier.
     if matches!(&expr.kind, gleaph_gql::ast::ExprKind::Or(..)) {
         return Err(RouterError::InvalidArgument(
-            "SEARCH ... WHERE OR-connected arms must all be equality comparisons or all be range comparisons on the same property in this slice".into(),
+            "SEARCH ... WHERE OR-connected arms must be equality or range comparisons between a property of the searched binding and a literal or parameter in this slice".into(),
         ));
     }
 
@@ -964,15 +957,16 @@ fn collect_or_leaves(expr: &gleaph_gql::ast::Expr) -> Vec<gleaph_gql::ast::Expr>
     out
 }
 
-/// Try to extract a pure equality disjunction: an OR-connected chain where every leaf is an
-/// equality comparison between `binding.property` and a literal or parameter, and every leaf refers
-/// to the same property. Returns the normalized arms when the shape matches; otherwise returns
-/// `None` so the caller can fall back to the conjunction path. A single equality leaf is not
-/// classified as a disjunction here.
-fn try_extract_equality_disjunction(
+/// Try to extract a same-binding comparison disjunction. An OR-connected chain with at least
+/// two leaves is accepted when every leaf is either an equality comparison or a one-sided numeric
+/// range comparison (`<`, `<=`, `>`, `>=`) between a property of the searched binding and a literal
+/// or parameter. This single extractor covers the pure equality, pure range, and heterogeneous
+/// equality/range disjunctions (ADR 0034 Slices 15-19). A single equality or range leaf is
+/// intentionally left to the conjunction path.
+fn try_extract_disjunction(
     binding: &str,
     expr: &gleaph_gql::ast::Expr,
-) -> Option<Vec<SearchFilterArm>> {
+) -> Option<Vec<SearchFilterDisjunctionArm>> {
     let leaves = collect_or_leaves(expr);
     if leaves.len() < 2 {
         return None;
@@ -981,45 +975,22 @@ fn try_extract_equality_disjunction(
     for leaf in &leaves {
         match split_search_predicate(binding, leaf) {
             Ok(SearchPredicate::Equality(property_name, value_expr)) => {
-                arms.push(SearchFilterArm {
+                arms.push(SearchFilterDisjunctionArm::Equality(SearchFilterArm {
                     property_name,
                     value_expr,
-                });
+                }));
             }
-            _ => return None,
+            Ok(SearchPredicate::Range(property_name, op, value_expr)) => {
+                arms.push(SearchFilterDisjunctionArm::Range(SearchFilterRange {
+                    property_name,
+                    op,
+                    value_expr,
+                }));
+            }
+            Err(_) => return None,
         }
     }
     Some(arms)
-}
-
-/// Try to extract a pure same-binding numeric range disjunction: an OR-connected chain where
-/// every leaf is a range comparison (`<`, `<=`, `>`, `>=`) between `binding.property` and a
-/// literal or parameter. In ADR 0034 Slice 18 the property may differ between arms; the Router
-/// resolves and proves each property independently. Returns the normalized ranges when the shape
-/// matches; otherwise returns `None` so the caller can fall through to the conjunction path. A
-/// single range leaf is handled by the conjunction path.
-fn try_extract_range_disjunction(
-    binding: &str,
-    expr: &gleaph_gql::ast::Expr,
-) -> Option<Vec<SearchFilterRange>> {
-    let leaves = collect_or_leaves(expr);
-    if leaves.len() < 2 {
-        return None;
-    }
-    let mut ranges = Vec::with_capacity(leaves.len());
-    for leaf in &leaves {
-        match split_search_predicate(binding, leaf) {
-            Ok(SearchPredicate::Range(prop, op, value_expr)) => {
-                ranges.push(SearchFilterRange {
-                    property_name: prop,
-                    op,
-                    value_expr,
-                });
-            }
-            _ => return None,
-        }
-    }
-    Some(ranges)
 }
 
 fn op_contains_search(op: &PlanOp) -> bool {
@@ -1483,15 +1454,9 @@ async fn resolve_filtered_candidates(
             )
             .await
         }
-        SearchFilter::EqualityDisjunction(arms) => {
-            resolve_filtered_equality_disjunction_candidates(
+        SearchFilter::Disjunction(arms) => {
+            resolve_filtered_disjunction_candidates(
                 graph_id, store, label_id, binding, arms, params,
-            )
-            .await
-        }
-        SearchFilter::RangeDisjunction(ranges) => {
-            resolve_filtered_range_disjunction_candidates(
-                graph_id, store, label_id, binding, ranges, params,
             )
             .await
         }
@@ -1592,159 +1557,143 @@ async fn resolve_filtered_equality_candidates(
     }
 }
 
-/// ADR 0034 Slices 15 and 16: resolve a pure equality disjunction on the same binding as a
-/// bounded union of `lookup_equal_page` streams. Every arm may target any property of the searched
-/// binding; each arm's property must have an active vertex property index for the proved label.
-/// The Router enforces the execution arm limit (2..=MAX_EQUALITY_DISJUNCTION_ARMS) and the 4096
-/// candidate bound.
-async fn resolve_filtered_equality_disjunction_candidates(
+/// ADR 0034 Slices 15 through 19: resolve any same-binding comparison disjunction (pure
+/// equality, pure range, or heterogeneous equality/range) as a bounded union of Property Index
+/// sources. Every arm is resolved and validated before the first lookup so that a missing index,
+/// unknown property, non-numeric range value, or oversized key fails closed with no index calls.
+async fn resolve_filtered_disjunction_candidates(
     graph_id: GraphId,
     store: &RouterStore,
     label_id: VertexLabelId,
     binding: &str,
-    arms: &[SearchFilterArm],
+    arms: &[SearchFilterDisjunctionArm],
     params: &BTreeMap<String, Value>,
 ) -> Result<Vec<VectorSubject>, RouterError> {
     if arms.is_empty() {
         return Ok(Vec::new());
     }
-    if arms.len() > MAX_EQUALITY_DISJUNCTION_ARMS {
+    if arms.len() > MAX_SEARCH_FILTER_DISJUNCTION_ARMS {
         return Err(RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE equality disjunction supports at most {MAX_EQUALITY_DISJUNCTION_ARMS} OR-connected arms in this slice"
+            "SEARCH ... WHERE disjunction supports at most {MAX_SEARCH_FILTER_DISJUNCTION_ARMS} OR-connected arms in this slice"
         )));
     }
 
-    let property_name = arms[0].property_name.clone();
-    let property_id = resolve_search_property_id(graph_id, store, binding, &property_name)?;
-    if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
-        return Err(RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
-            label_id.raw(),
-            property_name
-        )));
+    let sources = resolve_search_filter_disjunction_sources(
+        graph_id, store, label_id, binding, arms, params,
+    )?;
+    if sources.is_empty() {
+        return Ok(Vec::new());
     }
 
-    let mut sources = Vec::with_capacity(arms.len());
-    for arm in arms {
-        let property_id = resolve_search_property_id(graph_id, store, binding, &arm.property_name)?;
-        if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
-            return Err(RouterError::InvalidArgument(format!(
-                "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
-                label_id.raw(),
-                arm.property_name
-            )));
-        }
-        let value = resolve_filter_value(&arm.value_expr, params)?;
-        let encoded = encode_filter_value(&value)?;
-        if encoded.len() > MAX_INDEX_VALUE_KEY_BYTES {
-            return Err(RouterError::InvalidArgument(format!(
-                "SEARCH ... WHERE value exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
-            )));
-        }
-        sources.push((property_id, encoded));
-    }
-
-    // Runtime-equal `(property_id, encoded_value)` pairs share the same posting stream. Dedupe them
-    // after the syntactic admission bound has been enforced, preserving the order of first
-    // occurrence.
-    let mut distinct_sources: Vec<(PropertyId, Vec<u8>)> = Vec::with_capacity(sources.len());
-    for (pid, v) in sources {
-        if distinct_sources
-            .iter()
-            .any(|(p, val)| p.raw() == pid.raw() && val == &v)
-        {
-            continue;
-        }
-        distinct_sources.push((pid, v));
-    }
-
-    collect_bounded_candidates_equal_disjunction_with_store(
-        graph_id,
-        store,
+    let targets = store
+        .graph_index_lookup_targets(graph_id)
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    collect_bounded_candidates_union_inner(
+        targets.into_iter().map(RouterIndexClient::new),
         label_id,
-        distinct_sources,
+        sources,
     )
     .await
 }
 
-/// ADR 0034 Slice 17 and 18: resolve a pure same-binding numeric range disjunction. Each arm is
-/// resolved to a finite half-open encoded interval; empty intervals are dropped and the rest are
-/// merged into a minimal set of disjoint intervals **within each resolved property id**. The
-/// resulting merged intervals are then collected as a bounded union of `lookup_range_page` streams.
-///
-/// In Slice 17 all arms share a single property; in Slice 18 arms may reference different
-/// properties. Property ids are resolved and active-index coverage is proved per property, and
-/// normalization is scoped to each property id because encoded numeric keys from different
-/// properties are not comparable.
-async fn resolve_filtered_range_disjunction_candidates(
+/// Resolve every disjunction arm to its normalized `CandidateUnionSource` form. All property ids,
+/// active-index coverage, parameter values, encoded equality keys, numeric range intervals, and key
+/// sizes are validated before any source is emitted, preserving the preflight invariant.
+fn resolve_search_filter_disjunction_sources(
     graph_id: GraphId,
     store: &RouterStore,
     label_id: VertexLabelId,
     binding: &str,
-    ranges: &[SearchFilterRange],
+    arms: &[SearchFilterDisjunctionArm],
     params: &BTreeMap<String, Value>,
-) -> Result<Vec<VectorSubject>, RouterError> {
-    if ranges.is_empty() {
-        return Ok(Vec::new());
-    }
-    if ranges.len() > MAX_RANGE_DISJUNCTION_ARMS {
-        return Err(RouterError::InvalidArgument(format!(
-            "SEARCH ... WHERE range disjunction supports at most {MAX_RANGE_DISJUNCTION_ARMS} OR-connected arms in this slice"
-        )));
+) -> Result<Vec<CandidateUnionSource>, RouterError> {
+    let mut equality_sources: Vec<(PropertyId, Vec<u8>)> = Vec::new();
+    let mut range_by_property: BTreeMap<u32, Vec<(Vec<u8>, Vec<u8>)>> = BTreeMap::new();
+
+    for arm in arms {
+        match arm {
+            SearchFilterDisjunctionArm::Equality(arm) => {
+                let property_id =
+                    resolve_search_property_id(graph_id, store, binding, &arm.property_name)?;
+                if !indexed_catalog::has_active_vertex_property_index(
+                    graph_id,
+                    label_id,
+                    property_id,
+                ) {
+                    return Err(RouterError::InvalidArgument(format!(
+                        "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
+                        label_id.raw(),
+                        arm.property_name
+                    )));
+                }
+                let value = resolve_filter_value(&arm.value_expr, params)?;
+                let encoded = encode_filter_value(&value)?;
+                if encoded.len() > MAX_INDEX_VALUE_KEY_BYTES {
+                    return Err(RouterError::InvalidArgument(format!(
+                        "SEARCH ... WHERE value exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
+                    )));
+                }
+                if !equality_sources
+                    .iter()
+                    .any(|(p, v)| p.raw() == property_id.raw() && v == &encoded)
+                {
+                    equality_sources.push((property_id, encoded));
+                }
+            }
+            SearchFilterDisjunctionArm::Range(range) => {
+                let property_id =
+                    resolve_search_property_id(graph_id, store, binding, &range.property_name)?;
+                if !indexed_catalog::has_active_vertex_property_index(
+                    graph_id,
+                    label_id,
+                    property_id,
+                ) {
+                    return Err(RouterError::InvalidArgument(format!(
+                        "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
+                        label_id.raw(),
+                        range.property_name
+                    )));
+                }
+                let value = resolve_filter_value(&range.value_expr, params)?;
+                let (low, high) =
+                    gleaph_gql::numeric_range_bounds(&value, range.op).map_err(|e| {
+                        RouterError::InvalidArgument(format!(
+                            "SEARCH ... WHERE numeric range value is not supported: {e}"
+                        ))
+                    })?;
+                if low.len() > MAX_INDEX_VALUE_KEY_BYTES || high.len() > MAX_INDEX_VALUE_KEY_BYTES {
+                    return Err(RouterError::InvalidArgument(format!(
+                        "SEARCH ... WHERE range bound exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
+                    )));
+                }
+                range_by_property
+                    .entry(property_id.raw())
+                    .or_default()
+                    .push((low, high));
+            }
+        }
     }
 
-    // Resolve every arm to its property id, prove an active vertex property index per property,
-    // and derive the finite half-open encoded interval. Group intervals by property id so merging
-    // only occurs within a single property bucket.
-    let mut by_property: BTreeMap<u32, Vec<(Vec<u8>, Vec<u8>)>> = BTreeMap::new();
-    for range in ranges {
-        let property_id =
-            resolve_search_property_id(graph_id, store, binding, &range.property_name)?;
-        if !indexed_catalog::has_active_vertex_property_index(graph_id, label_id, property_id) {
-            return Err(RouterError::InvalidArgument(format!(
-                "SEARCH ... WHERE requires an active vertex property index for label {} property {}",
-                label_id.raw(),
-                range.property_name
-            )));
+    let mut sources: Vec<CandidateUnionSource> = Vec::new();
+    for (property_id, value) in equality_sources {
+        sources.push(CandidateUnionSource::Equal {
+            property_id: property_id.raw(),
+            value,
+        });
+    }
+    for (property_id_raw, intervals) in range_by_property {
+        for (low, high) in merge_encoded_intervals(intervals) {
+            sources.push(CandidateUnionSource::Range {
+                property_id: property_id_raw,
+                low,
+                high,
+            });
         }
-        let value = resolve_filter_value(&range.value_expr, params)?;
-        let (low, high) = gleaph_gql::numeric_range_bounds(&value, range.op).map_err(|e| {
-            RouterError::InvalidArgument(format!(
-                "SEARCH ... WHERE numeric range value is not supported: {e}"
-            ))
-        })?;
-        if low.len() > MAX_INDEX_VALUE_KEY_BYTES || high.len() > MAX_INDEX_VALUE_KEY_BYTES {
-            return Err(RouterError::InvalidArgument(format!(
-                "SEARCH ... WHERE range bound exceeds maximum index key size of {MAX_INDEX_VALUE_KEY_BYTES} bytes"
-            )));
-        }
-        by_property
-            .entry(property_id.raw())
-            .or_default()
-            .push((low, high));
     }
 
-    // Normalize per property id. Each distinct property yields one or more disjoint merged
-    // intervals, all of which are emitted as range sources. Property ids are already validated
-    // above so we can carry the raw id through the source enum.
-    let mut union_intervals: Vec<(PropertyId, (Vec<u8>, Vec<u8>))> = Vec::new();
-    for (property_id_raw, intervals) in by_property {
-        let merged = merge_encoded_intervals(intervals);
-        for interval in merged {
-            union_intervals.push((PropertyId::from_raw(property_id_raw), interval));
-        }
-    }
-    if union_intervals.is_empty() {
-        return Ok(Vec::new());
-    }
-
-    collect_bounded_candidates_range_disjunction_multi_property_with_store(
-        graph_id,
-        store,
-        label_id,
-        union_intervals,
-    )
-    .await
+    sources.sort();
+    sources.dedup();
+    Ok(sources)
 }
 
 /// Normalize a list of finite half-open encoded intervals by dropping empty intervals,
@@ -1772,6 +1721,7 @@ fn merge_encoded_intervals(mut intervals: Vec<(Vec<u8>, Vec<u8>)>) -> Vec<(Vec<u
 /// Collect at most `MAX_VECTOR_SEARCH_FILTER_CANDIDATES` distinct vertex subjects from the union
 /// of one or more finite half-open encoded numeric intervals for `(property_id)`. Sources are
 /// normalized before this call, then forwarded to the shared union collector.
+#[allow(dead_code)]
 async fn collect_bounded_candidates_range_disjunction<L: DisjunctionLookup>(
     clients: impl IntoIterator<Item = L>,
     label_id: VertexLabelId,
@@ -1794,6 +1744,7 @@ async fn collect_bounded_candidates_range_disjunction<L: DisjunctionLookup>(
 /// of one or more finite half-open encoded numeric intervals across **one or more property ids**.
 /// Intervals are grouped by property id, merged within each property, and each merged interval
 /// becomes a range source on the shared union collector.
+#[allow(dead_code)]
 async fn collect_bounded_candidates_range_disjunction_multi_property<L: DisjunctionLookup>(
     clients: impl IntoIterator<Item = L>,
     label_id: VertexLabelId,
@@ -1820,44 +1771,6 @@ async fn collect_bounded_candidates_range_disjunction_multi_property<L: Disjunct
         })
         .collect();
     collect_bounded_candidates_union_inner(clients, label_id, union_sources).await
-}
-
-// Kept for Slice 17 tests that call with a single property id.
-#[allow(dead_code)]
-async fn collect_bounded_candidates_range_disjunction_with_store(
-    graph_id: GraphId,
-    store: &RouterStore,
-    label_id: VertexLabelId,
-    property_id: PropertyId,
-    intervals: Vec<(Vec<u8>, Vec<u8>)>,
-) -> Result<Vec<VectorSubject>, RouterError> {
-    let targets = store
-        .graph_index_lookup_targets(graph_id)
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    collect_bounded_candidates_range_disjunction(
-        targets.into_iter().map(RouterIndexClient::new),
-        label_id,
-        property_id,
-        intervals,
-    )
-    .await
-}
-
-async fn collect_bounded_candidates_range_disjunction_multi_property_with_store(
-    graph_id: GraphId,
-    store: &RouterStore,
-    label_id: VertexLabelId,
-    intervals: Vec<(PropertyId, (Vec<u8>, Vec<u8>))>,
-) -> Result<Vec<VectorSubject>, RouterError> {
-    let targets = store
-        .graph_index_lookup_targets(graph_id)
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    collect_bounded_candidates_range_disjunction_multi_property(
-        targets.into_iter().map(RouterIndexClient::new),
-        label_id,
-        intervals,
-    )
-    .await
 }
 
 /// Shared bounded candidate union collector for equality and numeric range disjunctions.
@@ -2276,6 +2189,7 @@ enum CandidateUnionSource {
 /// label-filter, and merge step preserves the existing per-page work bound and stops as soon as the
 /// 4097th distinct label-qualified subject is observed. Sources are normalized before lookup so
 /// identical equality values and merged range intervals are walked once.
+#[allow(dead_code)]
 async fn collect_bounded_candidates_equal_disjunction<L: DisjunctionLookup>(
     clients: impl IntoIterator<Item = L>,
     label_id: VertexLabelId,
@@ -2289,23 +2203,6 @@ async fn collect_bounded_candidates_equal_disjunction<L: DisjunctionLookup>(
         })
         .collect();
     collect_bounded_candidates_union_inner(clients, label_id, union_sources).await
-}
-
-async fn collect_bounded_candidates_equal_disjunction_with_store(
-    graph_id: GraphId,
-    store: &RouterStore,
-    label_id: VertexLabelId,
-    sources: Vec<(PropertyId, Vec<u8>)>,
-) -> Result<Vec<VectorSubject>, RouterError> {
-    let targets = store
-        .graph_index_lookup_targets(graph_id)
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    collect_bounded_candidates_equal_disjunction(
-        targets.into_iter().map(RouterIndexClient::new),
-        label_id,
-        sources,
-    )
-    .await
 }
 
 /// Generic bounded candidate collector used by both single-arm equality and two-arm intersection.
@@ -3595,12 +3492,18 @@ mod tests {
         );
         let f = extract_search_filter("d", &filter).expect("equality disjunction");
         match f {
-            SearchFilter::EqualityDisjunction(arms) => {
+            SearchFilter::Disjunction(arms) => {
                 assert_eq!(arms.len(), 2);
-                assert_eq!(arms[0].property_name, "category");
-                assert_eq!(arms[1].property_name, "category");
+                let names: Vec<&str> = arms
+                    .iter()
+                    .map(|a| match a {
+                        SearchFilterDisjunctionArm::Equality(a) => a.property_name.as_str(),
+                        _ => panic!("expected equality arm"),
+                    })
+                    .collect();
+                assert_eq!(names, vec!["category", "category"]);
             }
-            _ => panic!("expected EqualityDisjunction"),
+            _ => panic!("expected Disjunction"),
         }
     }
 
@@ -3611,30 +3514,36 @@ mod tests {
             filter_eq_expr("tenant", Value::Int64(2)),
         );
         match extract_search_filter("d", &filter).expect("cross-property OR must be accepted") {
-            SearchFilter::EqualityDisjunction(arms) => {
+            SearchFilter::Disjunction(arms) => {
                 assert_eq!(arms.len(), 2);
-                assert_eq!(arms[0].property_name, "category");
-                assert_eq!(arms[1].property_name, "tenant");
+                let names: Vec<&str> = arms
+                    .iter()
+                    .map(|a| match a {
+                        SearchFilterDisjunctionArm::Equality(a) => a.property_name.as_str(),
+                        _ => panic!("expected equality arm"),
+                    })
+                    .collect();
+                assert_eq!(names, vec!["category", "tenant"]);
             }
-            other => panic!("expected EqualityDisjunction, got {other:?}"),
+            other => panic!("expected Disjunction, got {other:?}"),
         }
     }
 
     #[test]
-    fn extract_search_filter_rejects_mixed_range_disjunction() {
+    fn extract_search_filter_classifies_mixed_equality_range_disjunction() {
         let filter = filter_or_expr(
             filter_eq_expr("category", Value::Int64(1)),
-            filter_range_expr("category", gleaph_gql::ast::CmpOp::Ge, Value::Int64(10)),
+            filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(10)),
         );
-        let f = extract_search_filter("d", &filter);
-        let err = f.expect_err("range inside OR must fail");
-        assert!(
-            err.to_string()
-                .contains("does not support this equality/range mixture")
-                || err.to_string().contains("must be a comparison predicate")
-                || err.to_string().contains("OR-connected arms must all be"),
-            "unexpected error: {err}"
-        );
+        let f = extract_search_filter("d", &filter).expect("mixed OR must be accepted");
+        match f {
+            SearchFilter::Disjunction(arms) => {
+                assert_eq!(arms.len(), 2);
+                assert!(matches!(arms[0], SearchFilterDisjunctionArm::Equality(_)));
+                assert!(matches!(arms[1], SearchFilterDisjunctionArm::Range(_)));
+            }
+            _ => panic!("expected Disjunction"),
+        }
     }
 
     #[test]
@@ -3656,12 +3565,14 @@ mod tests {
         );
         let f = extract_search_filter("d", &filter).expect("range disjunction");
         match f {
-            SearchFilter::RangeDisjunction(ranges) => {
-                assert_eq!(ranges.len(), 2);
-                assert_eq!(ranges[0].property_name, "price");
-                assert_eq!(ranges[1].property_name, "price");
+            SearchFilter::Disjunction(arms) => {
+                assert_eq!(arms.len(), 2);
+                assert!(
+                    arms.iter()
+                        .all(|a| matches!(a, SearchFilterDisjunctionArm::Range(_)))
+                );
             }
-            _ => panic!("expected RangeDisjunction"),
+            _ => panic!("expected Disjunction"),
         }
     }
 
@@ -3673,13 +3584,74 @@ mod tests {
         );
         let f = extract_search_filter("d", &filter).expect("cross-property range disjunction");
         match f {
-            SearchFilter::RangeDisjunction(ranges) => {
-                assert_eq!(ranges.len(), 2);
-                assert_eq!(ranges[0].property_name, "price");
-                assert_eq!(ranges[1].property_name, "rating");
+            SearchFilter::Disjunction(arms) => {
+                assert_eq!(arms.len(), 2);
+                let names: Vec<&str> = arms
+                    .iter()
+                    .map(|a| match a {
+                        SearchFilterDisjunctionArm::Range(r) => r.property_name.as_str(),
+                        _ => panic!("expected range arm"),
+                    })
+                    .collect();
+                assert_eq!(names, vec!["price", "rating"]);
             }
-            _ => panic!("expected RangeDisjunction"),
+            _ => panic!("expected Disjunction"),
         }
+    }
+
+    #[test]
+    fn extract_search_filter_classifies_heterogeneous_disjunction() {
+        let filter = filter_or_expr(
+            filter_eq_expr("category", Value::Int64(1)),
+            filter_range_expr("price", gleaph_gql::ast::CmpOp::Lt, Value::Int64(10)),
+        );
+        let f = extract_search_filter("d", &filter).expect("heterogeneous disjunction");
+        match f {
+            SearchFilter::Disjunction(arms) => {
+                assert_eq!(arms.len(), 2);
+                assert!(matches!(arms[0], SearchFilterDisjunctionArm::Equality(_)));
+                assert!(matches!(arms[1], SearchFilterDisjunctionArm::Range(_)));
+            }
+            _ => panic!("expected Disjunction"),
+        }
+    }
+
+    #[test]
+    fn extract_search_filter_classifies_heterogeneous_disjunction_range_first() {
+        let filter = filter_or_expr(
+            filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(10)),
+            filter_eq_expr("category", Value::Int64(1)),
+        );
+        let f = extract_search_filter("d", &filter).expect("heterogeneous disjunction range first");
+        match f {
+            SearchFilter::Disjunction(arms) => {
+                assert_eq!(arms.len(), 2);
+                assert!(matches!(arms[0], SearchFilterDisjunctionArm::Range(_)));
+                assert!(matches!(arms[1], SearchFilterDisjunctionArm::Equality(_)));
+            }
+            _ => panic!("expected Disjunction"),
+        }
+    }
+
+    #[test]
+    fn extract_search_filter_rejects_nine_arm_disjunction() {
+        let arms: Vec<Expr> = (0..9)
+            .map(|i| {
+                if i % 2 == 0 {
+                    filter_eq_expr("category", Value::Int64(i))
+                } else {
+                    filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(i))
+                }
+            })
+            .collect();
+        let filter = filter_or_n(arms);
+        let err =
+            extract_search_filter("d", &filter).expect_err("nine-arm disjunction must be rejected");
+        assert!(
+            err.to_string().contains("disjunction supports at most")
+                || err.to_string().contains("at most 8"),
+            "unexpected error: {err}"
+        );
     }
 
     #[test]
@@ -3699,18 +3671,15 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        let arms: Vec<Expr> = (0..=MAX_RANGE_DISJUNCTION_ARMS)
+        let arms: Vec<Expr> = (0..=MAX_SEARCH_FILTER_DISJUNCTION_ARMS)
             .map(|i| filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(i as i64)))
             .collect();
         let plan = search_plan_with_filter(filter_or_n(arms));
         let err = analyze_search_shape(&plan, graph_id, &store)
             .expect_err("range disjunction with >MAX arms must fail");
         assert!(
-            err.to_string()
-                .contains("range disjunction supports at most")
-                || err
-                    .to_string()
-                    .contains("at most {MAX_RANGE_DISJUNCTION_ARMS}"),
+            err.to_string().contains("disjunction supports at most")
+                || err.to_string().contains("at most 8"),
             "unexpected error: {err}"
         );
     }
@@ -3722,18 +3691,15 @@ mod tests {
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern label");
-        let arms: Vec<Expr> = (0..=MAX_EQUALITY_DISJUNCTION_ARMS)
+        let arms: Vec<Expr> = (0..=MAX_SEARCH_FILTER_DISJUNCTION_ARMS)
             .map(|i| filter_eq_expr("category", Value::Int64(i as i64)))
             .collect();
         let plan = search_plan_with_filter(filter_or_n(arms));
         let err = analyze_search_shape(&plan, graph_id, &store)
             .expect_err("disjunction with >MAX arms must fail");
         assert!(
-            err.to_string()
-                .contains("at most {MAX_EQUALITY_DISJUNCTION_ARMS}")
-                || err
-                    .to_string()
-                    .contains("equality disjunction supports at most"),
+            err.to_string().contains("disjunction supports at most")
+                || err.to_string().contains("at most 8"),
             "unexpected error: {err}"
         );
     }
@@ -3878,7 +3844,7 @@ mod tests {
             matches!(
                 position,
                 SearchPosition::NonLeading(SearchShape {
-                    filter: Some(SearchFilter::RangeDisjunction(_)),
+                    filter: Some(SearchFilter::Disjunction(_)),
                     filter_label_id: Some(_),
                     ..
                 })
@@ -3888,8 +3854,9 @@ mod tests {
     }
 
     #[test]
-    fn analyze_search_shape_rejects_non_leading_cross_property_range_disjunction_missing_index() {
+    fn execute_non_leading_cross_property_range_disjunction_rejects_missing_index() {
         let (store, admin, graph_id) = catalog_test_support::setup();
+        register_vector_index_for_test(&store, graph_id, VectorMetric::L2Squared);
         store
             .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
             .expect("intern Document");
@@ -3919,8 +3886,22 @@ mod tests {
             filter_range_expr("rating", gleaph_gql::ast::CmpOp::Ge, Value::Int64(4)),
         );
         let plan = non_leading_search_plan_with_node_scan_label_proof(filter);
-        let err = analyze_search_shape(&plan, graph_id, &store)
-            .expect_err("cross-property range disjunction with missing index must fail");
+        let err = pollster::block_on(try_execute_gql_search(
+            &plan,
+            graph_id,
+            &[],
+            GqlExecutionMode::Query,
+            &RouterGraphStats::from_catalog(
+                graph_id,
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+                std::collections::BTreeSet::new(),
+            ),
+            &store,
+            candid::Principal::anonymous(),
+            vector_search_unreachable(),
+        ))
+        .expect_err("cross-property range disjunction with missing index must fail");
         assert!(
             err.to_string()
                 .contains("requires an active vertex property index"),
@@ -3963,7 +3944,7 @@ mod tests {
             matches!(
                 position,
                 SearchPosition::NonLeading(SearchShape {
-                    filter: Some(SearchFilter::RangeDisjunction(_)),
+                    filter: Some(SearchFilter::Disjunction(_)),
                     filter_label_id: Some(_),
                     ..
                 })
@@ -6030,6 +6011,24 @@ mod tests {
             }
         }
 
+        fn with_mixed_pages(
+            pages_by_value: std::collections::BTreeMap<Vec<u8>, Vec<PostingHitPage>>,
+            pages_by_interval: std::collections::BTreeMap<
+                (PropertyId, Vec<u8>, Vec<u8>),
+                Vec<PostingHitPage>,
+            >,
+        ) -> Self {
+            Self {
+                calls: std::sync::Arc::new(std::sync::Mutex::new(Vec::new())),
+                pages_by_value,
+                pages_by_interval,
+                next_index: std::sync::Arc::new(std::sync::Mutex::new(
+                    std::collections::BTreeMap::new(),
+                )),
+                label_filter: |hits| hits,
+            }
+        }
+
         fn call_count(&self) -> usize {
             self.calls.lock().unwrap().len()
         }
@@ -6093,7 +6092,7 @@ mod tests {
             let page = match &key {
                 EqualOrRangeKey::Range(property_id, low, high) => self
                     .pages_by_interval
-                    .get(&(property_id.clone(), low.clone(), high.clone()))
+                    .get(&(*property_id, low.clone(), high.clone()))
                     .and_then(|pages| pages.get(idx))
                     .cloned(),
                 EqualOrRangeKey::Equal(_) => None,
@@ -6737,7 +6736,7 @@ mod tests {
         let mut client =
             MockDisjunctionClient::with_interval_pages(std::collections::BTreeMap::from([(
                 (
-                    PropertyId::from_raw(1),
+                    PropertyId::from_raw(7),
                     interval.0.clone(),
                     interval.1.clone(),
                 ),
@@ -6911,5 +6910,308 @@ mod tests {
         ))
         .expect("exactly 4096 subjects must be accepted");
         assert_eq!(result.len(), MAX_VECTOR_SEARCH_FILTER_CANDIDATES);
+    }
+
+    // --- ADR 0034 Slice 19: heterogeneous equality/range disjunction contract tests ---
+
+    #[test]
+    fn resolve_disjunction_sources_preflight_missing_later_arm() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern Document");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "price")
+            .expect("intern price");
+        store
+            .admin_intern_property(admin, catalog_test_support::GRAPH, "rating")
+            .expect("intern rating");
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                label: "Document".into(),
+                property: "price".into(),
+                edge_direction: None,
+            },
+        ))
+        .expect("create price index");
+
+        let label_id = store
+            .lookup_vertex_label_id(graph_id, "Document")
+            .expect("lookup Document label");
+        let params = BTreeMap::new();
+        let filter = filter_or_expr(
+            filter_range_expr("rating", gleaph_gql::ast::CmpOp::Ge, Value::Int64(4)),
+            filter_range_expr("price", gleaph_gql::ast::CmpOp::Lt, Value::Int64(10)),
+        );
+        let arms = match extract_search_filter("d", &filter).expect("filter shape") {
+            SearchFilter::Disjunction(arms) => arms,
+            other => panic!("expected Disjunction, got {other:?}"),
+        };
+        let err = resolve_search_filter_disjunction_sources(
+            graph_id, &store, label_id, "d", &arms, &params,
+        )
+        .expect_err("missing rating index must fail before lookup");
+        assert!(
+            err.to_string()
+                .contains("requires an active vertex property index"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn resolve_disjunction_sources_deduplicates_equality_and_merges_ranges() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern Document");
+        for prop in ["category", "price", "rating"] {
+            store
+                .admin_intern_property(admin, catalog_test_support::GRAPH, prop)
+                .expect("intern property");
+        }
+        for prop in ["category", "price", "rating"] {
+            futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+                graph_id,
+                crate::index_ddl::IndexTarget {
+                    kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                    label: "Document".into(),
+                    property: prop.into(),
+                    edge_direction: None,
+                },
+            ))
+            .expect("create index");
+        }
+
+        let label_id = store
+            .lookup_vertex_label_id(graph_id, "Document")
+            .expect("lookup Document label");
+        let params = BTreeMap::new();
+        // Duplicate category=1, overlapping price ranges on the same property, and a separate
+        // rating range so cross-property separation is observable.
+        let filter = filter_or_expr(
+            filter_eq_expr("category", Value::Int64(1)),
+            filter_or_expr(
+                filter_eq_expr("category", Value::Int64(1)),
+                filter_or_expr(
+                    filter_range_expr("price", gleaph_gql::ast::CmpOp::Ge, Value::Int64(10)),
+                    filter_or_expr(
+                        filter_range_expr("price", gleaph_gql::ast::CmpOp::Lt, Value::Int64(20)),
+                        filter_range_expr("rating", gleaph_gql::ast::CmpOp::Ge, Value::Int64(3)),
+                    ),
+                ),
+            ),
+        );
+        let arms = match extract_search_filter("d", &filter).expect("filter shape") {
+            SearchFilter::Disjunction(arms) => arms,
+            other => panic!("expected Disjunction, got {other:?}"),
+        };
+        let sources = resolve_search_filter_disjunction_sources(
+            graph_id, &store, label_id, "d", &arms, &params,
+        )
+        .expect("sources");
+
+        assert_eq!(
+            sources.len(),
+            3,
+            "expected one deduped equality and two range sources"
+        );
+        let equal_count = sources
+            .iter()
+            .filter(|s| matches!(s, CandidateUnionSource::Equal { .. }))
+            .count();
+        let range_count = sources
+            .iter()
+            .filter(|s| matches!(s, CandidateUnionSource::Range { .. }))
+            .count();
+        assert_eq!(
+            equal_count, 1,
+            "duplicate equality arm must collapse to one source"
+        );
+        assert_eq!(
+            range_count, 2,
+            "overlapping price ranges merge, rating stays separate"
+        );
+    }
+
+    #[test]
+    fn resolve_disjunction_sources_deterministic_order() {
+        let (store, admin, graph_id) = catalog_test_support::setup();
+        store
+            .admin_intern_vertex_label(admin, catalog_test_support::GRAPH, "Document")
+            .expect("intern Document");
+        for prop in ["category", "price"] {
+            store
+                .admin_intern_property(admin, catalog_test_support::GRAPH, prop)
+                .expect("intern property");
+            futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+                graph_id,
+                crate::index_ddl::IndexTarget {
+                    kind: gleaph_graph_kernel::index::IndexedPropertyKind::Vertex,
+                    label: "Document".into(),
+                    property: prop.into(),
+                    edge_direction: None,
+                },
+            ))
+            .expect("create index");
+        }
+
+        let label_id = store
+            .lookup_vertex_label_id(graph_id, "Document")
+            .expect("lookup Document label");
+        let params = BTreeMap::new();
+        let filter_ab = filter_or_expr(
+            filter_eq_expr("category", Value::Int64(1)),
+            filter_range_expr("price", gleaph_gql::ast::CmpOp::Lt, Value::Int64(10)),
+        );
+        let filter_ba = filter_or_expr(
+            filter_range_expr("price", gleaph_gql::ast::CmpOp::Lt, Value::Int64(10)),
+            filter_eq_expr("category", Value::Int64(1)),
+        );
+        let arms_ab = match extract_search_filter("d", &filter_ab).unwrap() {
+            SearchFilter::Disjunction(arms) => arms,
+            other => panic!("expected Disjunction, got {other:?}"),
+        };
+        let arms_ba = match extract_search_filter("d", &filter_ba).unwrap() {
+            SearchFilter::Disjunction(arms) => arms,
+            other => panic!("expected Disjunction, got {other:?}"),
+        };
+        let sources_ab = resolve_search_filter_disjunction_sources(
+            graph_id, &store, label_id, "d", &arms_ab, &params,
+        )
+        .expect("sources ab");
+        let sources_ba = resolve_search_filter_disjunction_sources(
+            graph_id, &store, label_id, "d", &arms_ba, &params,
+        )
+        .expect("sources ba");
+        assert_eq!(
+            sources_ab, sources_ba,
+            "source normalization must be order-independent"
+        );
+    }
+
+    #[test]
+    fn collect_disjunction_unions_mixed_equality_and_range_sources() {
+        let eq_value = encode_filter_value(&Value::Int64(1)).expect("encode equality value");
+        let equal_hit = PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 100,
+        };
+        let range_hit = PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 200,
+        };
+        let shared_hit = PostingHit {
+            shard_id: ShardId::new(0),
+            vertex_id: 300,
+        };
+
+        let client = MockDisjunctionClient::with_mixed_pages(
+            std::collections::BTreeMap::from([(
+                eq_value.clone(),
+                vec![PostingHitPage {
+                    hits: vec![equal_hit, shared_hit],
+                    next: None,
+                    done: true,
+                }],
+            )]),
+            std::collections::BTreeMap::from([(
+                (PropertyId::from_raw(7), vec![10u8], vec![20u8]),
+                vec![PostingHitPage {
+                    hits: vec![range_hit, shared_hit],
+                    next: None,
+                    done: true,
+                }],
+            )]),
+        );
+
+        let sources = vec![
+            CandidateUnionSource::Equal {
+                property_id: 5,
+                value: eq_value,
+            },
+            CandidateUnionSource::Range {
+                property_id: 7,
+                low: vec![10u8],
+                high: vec![20u8],
+            },
+        ];
+        let result = pollster::block_on(collect_bounded_candidates_union_inner(
+            vec![client],
+            VertexLabelId::from_raw(1),
+            sources,
+        ))
+        .expect("mixed union must succeed");
+
+        let ids: Vec<u32> = result
+            .into_iter()
+            .map(|s| match s {
+                VectorSubject::Vertex { vertex_id, .. } => vertex_id,
+            })
+            .collect();
+        assert_eq!(ids.len(), 3);
+        assert!(ids.contains(&100));
+        assert!(ids.contains(&200));
+        assert!(ids.contains(&300));
+    }
+
+    #[test]
+    fn collect_disjunction_mixed_sources_resets_cursor_per_source() {
+        let eq_value = encode_filter_value(&Value::Int64(1)).expect("encode equality value");
+        let client = MockDisjunctionClient::with_mixed_pages(
+            std::collections::BTreeMap::from([(
+                eq_value.clone(),
+                vec![PostingHitPage {
+                    hits: vec![PostingHit {
+                        shard_id: ShardId::new(0),
+                        vertex_id: 100,
+                    }],
+                    next: None,
+                    done: true,
+                }],
+            )]),
+            std::collections::BTreeMap::from([(
+                (PropertyId::from_raw(7), vec![10u8], vec![20u8]),
+                vec![PostingHitPage {
+                    hits: vec![PostingHit {
+                        shard_id: ShardId::new(0),
+                        vertex_id: 200,
+                    }],
+                    next: None,
+                    done: true,
+                }],
+            )]),
+        );
+
+        let sources = vec![
+            CandidateUnionSource::Equal {
+                property_id: 5,
+                value: eq_value,
+            },
+            CandidateUnionSource::Range {
+                property_id: 7,
+                low: vec![10u8],
+                high: vec![20u8],
+            },
+        ];
+        let calls = client.calls.clone();
+        pollster::block_on(collect_bounded_candidates_union_inner(
+            vec![client],
+            VertexLabelId::from_raw(1),
+            sources,
+        ))
+        .expect("mixed union");
+        let cursors: Vec<Option<PropertyPostingCursor>> = calls
+            .lock()
+            .unwrap()
+            .iter()
+            .map(|(_, after)| after.clone())
+            .collect();
+        assert_eq!(cursors.len(), 2, "one call per source");
+        assert!(
+            cursors.iter().all(|a| a.is_none()),
+            "each source must start with a fresh cursor"
+        );
     }
 }
