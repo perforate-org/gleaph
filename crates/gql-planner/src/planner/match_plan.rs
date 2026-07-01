@@ -50,7 +50,7 @@ pub(super) fn detect_conditional_candidates(
     candidates
 }
 
-/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-16.
+/// Validates the SEARCH ... WHERE filter shape for ADR 0034 Slices 6-17.
 ///
 /// Accepts:
 /// - any number of AND-connected same-binding equality comparisons on distinct properties
@@ -67,21 +67,28 @@ pub(super) fn detect_conditional_candidates(
 ///   searched binding, where the equality properties differ from the range property.
 /// - any number of OR-connected same-binding equality comparisons on the same searched vertex
 ///   binding (pure equality disjunctions are provider-neutral; the Router enforces the execution
-///   arm limit later). Properties may differ between arms in ADR 0034 Slice 16. Mixed `AND`/`OR`
-///   shapes, range predicates inside OR, and disjunctions across different bindings remain
-///   unsupported.
+///   arm limit later). Properties may differ between arms in ADR 0034 Slice 16.
+/// - any number of OR-connected same-binding range comparisons on the same property of the searched
+///   binding (pure same-property numeric range disjunctions are provider-neutral; the Router
+///   enforces the execution arm limit and interval merging later in ADR 0034 Slice 17).
+///
+///   Mixed `AND`/`OR` shapes, equality inside OR, range predicates across different properties inside
+///   OR, and disjunctions across different bindings remain unsupported.
 ///
 /// The planner is provider-neutral: it checks expression shape only. Label, index coverage, and
 /// numeric-domain verification are validated later by the Router. The execution bound on the
-/// number of equality arms (e.g. the eight-arm limit for bounded server-side intersection or union)
-/// is intentionally not enforced here; the Router / Property Index applies that provider-specific
-/// limit.
+/// number of equality or range arms (e.g. the eight-arm limit for bounded server-side intersection
+/// or union) is intentionally not enforced here; the Router / Property Index applies that
+/// provider-specific limit.
 fn validate_search_filter(
     filter: &gleaph_gql::ast::Expr,
     binding: &str,
 ) -> Result<(), PlannerError> {
     if is_pure_equality_disjunction(filter, binding) {
         return validate_pure_equality_disjunction(filter, binding);
+    }
+    if is_pure_range_disjunction(filter, binding) {
+        return validate_pure_range_disjunction(filter, binding);
     }
 
     let predicates = flatten_search_filter(filter, binding)?;
@@ -108,16 +115,17 @@ fn validate_search_filter(
             &predicates,
             "SEARCH ... WHERE equality conjuncts must refer to distinct properties",
         )
-    } else if range_count == predicates.len() {
-        if predicates.len() == 1 {
-            Ok(())
-        } else if predicates.len() == 2 {
-            validate_two_sided_range(&predicates)
-        } else {
-            Err(PlannerError::UnsupportedPattern(
-                "SEARCH ... WHERE supports at most two range predicates in this slice".into(),
-            ))
-        }
+    } else if range_count == predicates.len() && predicates.len() == 1 {
+        // Slice 9: single range predicate, accepted by the existing conjunction path.
+        Ok(())
+    } else if range_count == predicates.len() && predicates.len() == 2 {
+        // Slice 10: exactly two same-property range predicates (one lower, one upper).
+        validate_two_sided_range(&predicates)
+    } else if range_count == predicates.len() && predicates.len() > 2 {
+        // Three or more AND-connected range predicates are not supported by any current slice.
+        Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE supports at most two range predicates in this slice".into(),
+        ))
     } else if range_count == 1 && equality_count >= 1 && predicates.len() == equality_count + 1 {
         // Slice 14: N-way equality (N >= 1) plus one range on a distinct property.
         validate_mixed_equality_range(&predicates)
@@ -244,6 +252,173 @@ fn validate_pure_equality_disjunction(
             return Err(PlannerError::UnsupportedPattern(
                 "SEARCH ... WHERE equality disjunction must compare a property of the searched binding with a literal or parameter".into(),
             ));
+        }
+    }
+    Ok(())
+}
+
+/// Detect a pure same-property numeric range disjunction: an OR chain where every leaf is a
+/// range comparison (`<`, `<=`, `>`, `>=`) between the same searched binding/property and a
+/// literal or parameter. Returns `true` only when the filter is an OR chain with at least two
+/// such range leaves; a single range leaf is handled by the existing conjunction path.
+fn is_pure_range_disjunction(filter: &gleaph_gql::ast::Expr, binding: &str) -> bool {
+    fn is_bound_property_of<'a>(
+        expr: &'a gleaph_gql::ast::Expr,
+        binding: &'a str,
+    ) -> Option<&'a str> {
+        match &expr.kind {
+            gleaph_gql::ast::ExprKind::PropertyAccess {
+                expr: base,
+                property,
+            } => {
+                if matches!(&base.kind,
+                    gleaph_gql::ast::ExprKind::Variable(name) if name == binding)
+                {
+                    Some(property.as_str())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn is_literal_or_parameter(expr: &gleaph_gql::ast::Expr) -> bool {
+        matches!(
+            &expr.kind,
+            gleaph_gql::ast::ExprKind::Literal(_) | gleaph_gql::ast::ExprKind::Parameter(_)
+        )
+    }
+
+    fn is_range_leaf<'a>(leaf: &'a gleaph_gql::ast::Expr, binding: &'a str) -> Option<&'a str> {
+        let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &leaf.kind else {
+            return None;
+        };
+        if !matches!(
+            *op,
+            gleaph_gql::ast::CmpOp::Lt
+                | gleaph_gql::ast::CmpOp::Le
+                | gleaph_gql::ast::CmpOp::Gt
+                | gleaph_gql::ast::CmpOp::Ge
+        ) {
+            return None;
+        }
+        if let Some(property) = is_bound_property_of(left, binding)
+            && is_literal_or_parameter(right)
+        {
+            return Some(property);
+        }
+        if let Some(property) = is_bound_property_of(right, binding)
+            && is_literal_or_parameter(left)
+        {
+            return Some(property);
+        }
+        None
+    }
+
+    let leaves = result::flatten_disjunction(filter);
+    if leaves.len() < 2 {
+        return false;
+    }
+    let mut property_name: Option<&str> = None;
+    for leaf in &leaves {
+        let prop = match is_range_leaf(leaf, binding) {
+            Some(p) => p,
+            None => return false,
+        };
+        match property_name {
+            Some(existing) if existing != prop => return false,
+            Some(_) => {}
+            None => property_name = Some(prop),
+        }
+    }
+    true
+}
+
+/// Validate a pure same-property numeric range disjunction: every leaf is a range comparison
+/// between the same property of the searched binding and a literal or parameter, and the OR chain
+/// contains at least two arms. The Router proves index coverage, resolves numeric bounds, and
+/// merges overlapping intervals at execution time.
+fn validate_pure_range_disjunction(
+    filter: &gleaph_gql::ast::Expr,
+    binding: &str,
+) -> Result<(), PlannerError> {
+    let leaves = result::flatten_disjunction(filter);
+    if leaves.len() < 2 {
+        return Err(PlannerError::UnsupportedPattern(
+            "SEARCH ... WHERE range disjunction requires at least two OR-connected range predicates"
+                .into(),
+        ));
+    }
+
+    fn is_bound_property_of<'a>(
+        expr: &'a gleaph_gql::ast::Expr,
+        binding: &'a str,
+    ) -> Option<&'a str> {
+        match &expr.kind {
+            gleaph_gql::ast::ExprKind::PropertyAccess {
+                expr: base,
+                property,
+            } => {
+                if matches!(&base.kind,
+                    gleaph_gql::ast::ExprKind::Variable(name) if name == binding)
+                {
+                    Some(property.as_str())
+                } else {
+                    None
+                }
+            }
+            _ => None,
+        }
+    }
+
+    fn is_literal_or_parameter(expr: &gleaph_gql::ast::Expr) -> bool {
+        matches!(
+            &expr.kind,
+            gleaph_gql::ast::ExprKind::Literal(_) | gleaph_gql::ast::ExprKind::Parameter(_)
+        )
+    }
+
+    let mut property_name: Option<&str> = None;
+    for leaf in &leaves {
+        let gleaph_gql::ast::ExprKind::Compare { left, op, right } = &leaf.kind else {
+            return Err(PlannerError::UnsupportedPattern(
+                "SEARCH ... WHERE range disjunction must contain only range comparisons".into(),
+            ));
+        };
+        if !matches!(
+            *op,
+            gleaph_gql::ast::CmpOp::Lt
+                | gleaph_gql::ast::CmpOp::Le
+                | gleaph_gql::ast::CmpOp::Gt
+                | gleaph_gql::ast::CmpOp::Ge
+        ) {
+            return Err(PlannerError::UnsupportedPattern(
+                "SEARCH ... WHERE range disjunction must contain only range (<, <=, >, >=) comparisons"
+                    .into(),
+            ));
+        }
+        let prop = if let Some(property) = is_bound_property_of(left, binding)
+            && is_literal_or_parameter(right)
+        {
+            property
+        } else if let Some(property) = is_bound_property_of(right, binding)
+            && is_literal_or_parameter(left)
+        {
+            property
+        } else {
+            return Err(PlannerError::UnsupportedPattern(
+                "SEARCH ... WHERE range disjunction must compare a property of the searched binding with a literal or parameter".into(),
+            ));
+        };
+        match property_name {
+            Some(existing) if existing != prop => {
+                return Err(PlannerError::UnsupportedPattern(
+                    "SEARCH ... WHERE range disjunction requires every arm to refer to the same property of the searched binding".into(),
+                ));
+            }
+            Some(_) => {}
+            None => property_name = Some(prop),
         }
     }
     Ok(())
@@ -1478,5 +1653,136 @@ mod tests {
         );
         let err = validate_search_filter(&filter, "d").expect_err("!= must be rejected");
         assert!(err.to_string().contains("single numeric range predicate"));
+    }
+
+    fn or(left: Expr, right: Expr) -> Expr {
+        Expr::new(ExprKind::Or(Box::new(left), Box::new(right)))
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_same_property_range_disjunction() {
+        let filter = or(
+            cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Lt,
+                lit(Value::Int64(10)),
+            ),
+            cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Ge,
+                lit(Value::Int64(50)),
+            ),
+        );
+        validate_search_filter(&filter, "d")
+            .expect("same-property range disjunction should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_three_arm_same_property_range_disjunction() {
+        let filter = or(
+            cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Lt,
+                lit(Value::Int64(10)),
+            ),
+            or(
+                cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Ge,
+                    lit(Value::Int64(20)),
+                ),
+                cmp_op(
+                    prop("d", "price"),
+                    gleaph_gql::ast::CmpOp::Le,
+                    lit(Value::Int64(30)),
+                ),
+            ),
+        );
+        validate_search_filter(&filter, "d")
+            .expect("three-arm same-property range disjunction should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_accepts_reversed_operands_range_disjunction() {
+        let filter = or(
+            cmp_op(
+                lit(Value::Int64(10)),
+                gleaph_gql::ast::CmpOp::Gt,
+                prop("d", "price"),
+            ),
+            cmp_op(
+                lit(Value::Int64(50)),
+                gleaph_gql::ast::CmpOp::Le,
+                prop("d", "price"),
+            ),
+        );
+        validate_search_filter(&filter, "d")
+            .expect("reversed-operand range disjunction should be accepted");
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_range_disjunction_across_properties() {
+        let filter = or(
+            cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Lt,
+                lit(Value::Int64(10)),
+            ),
+            cmp_op(
+                prop("d", "rating"),
+                gleaph_gql::ast::CmpOp::Ge,
+                lit(Value::Int64(4)),
+            ),
+        );
+        let err = validate_search_filter(&filter, "d")
+            .expect_err("range disjunction across properties must fail");
+        assert!(
+            err.to_string()
+                .contains("every arm to refer to the same property of the searched binding")
+                || err
+                    .to_string()
+                    .contains("equality/range mixture in this slice")
+                || err
+                    .to_string()
+                    .contains("must be an equality or range comparison")
+                || err.to_string().contains("must contain only range"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_mixed_equality_and_range_disjunction() {
+        let filter = or(
+            cmp(prop("d", "price"), lit(Value::Int64(10))),
+            cmp_op(
+                prop("d", "price"),
+                gleaph_gql::ast::CmpOp::Ge,
+                lit(Value::Int64(50)),
+            ),
+        );
+        let err = validate_search_filter(&filter, "d")
+            .expect_err("mixed equality/range disjunction must fail");
+        assert!(
+            err.to_string().contains("only range comparisons")
+                || err.to_string().contains("must contain only range")
+                || err
+                    .to_string()
+                    .contains("equality/range mixture in this slice")
+                || err
+                    .to_string()
+                    .contains("must be an equality or range comparison"),
+            "unexpected error: {err}"
+        );
+    }
+
+    #[test]
+    fn validate_search_filter_rejects_single_arm_range_disjunction() {
+        // A single range is accepted by the conjunction path, not the disjunction path.
+        let filter = cmp_op(
+            prop("d", "price"),
+            gleaph_gql::ast::CmpOp::Lt,
+            lit(Value::Int64(10)),
+        );
+        validate_search_filter(&filter, "d").expect("single range remains accepted");
     }
 }
