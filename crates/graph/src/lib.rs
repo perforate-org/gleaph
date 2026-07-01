@@ -224,6 +224,14 @@ async fn e2e_insert_directed_edge_with_label(
 
 #[cfg(feature = "pocket-ic-e2e")]
 #[update(guard = "guard_control_plane_admin")]
+async fn e2e_insert_directed_edge_with_payload(
+    args: canister::types::E2eInsertDirectedEdgeWithPayloadArgs,
+) -> Result<(), String> {
+    canister::handlers::e2e_insert_directed_edge_with_payload(args).await
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
+#[update(guard = "guard_control_plane_admin")]
 fn e2e_insert_directed_edge(
     args: canister::types::E2eInsertDirectedEdgeArgs,
 ) -> Result<(), String> {

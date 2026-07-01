@@ -11,7 +11,9 @@ use crate::facade::stable::constraint_catalog::{
 use crate::facade::stable::constraint_name_catalog::{
     intern_constraint_name, lookup_constraint_name_id,
 };
-use crate::facade::stable::edge_payload_profiles::EdgePayloadProfileStoreError;
+use crate::facade::stable::edge_payload_profiles::{
+    EdgePayloadProfileStoreError, InlineScalarType,
+};
 use crate::facade::stable::graph_catalog::{
     catalog_error_to_router, list_live_shards_for_graph_id, resolve_registered_graph_id,
 };
@@ -63,7 +65,7 @@ impl RouterStore {
             .map_err(|e| catalog_error_to_router(e, "vertex label"))
     }
 
-    pub(super) fn commit_intern_edge_label_name(
+    pub(crate) fn commit_intern_edge_label_name(
         graph_id: GraphId,
         name: &str,
     ) -> Result<EdgeLabelId, RouterError> {
@@ -79,9 +81,7 @@ impl RouterStore {
         id: EdgeLabelId,
     ) -> Result<(), RouterError> {
         ROUTER_EDGE_PAYLOAD_PROFILES
-            .with_borrow_mut(|store| {
-                store.insert_if_absent(graph_id, id, EdgePayloadProfile::no_payload())
-            })
+            .with_borrow_mut(|store| store.insert_if_absent_no_payload(graph_id, id))
             .map_err(map_edge_payload_profile_err)
     }
 
@@ -91,7 +91,68 @@ impl RouterStore {
         profile: EdgePayloadProfile,
     ) -> Result<(), RouterError> {
         ROUTER_EDGE_PAYLOAD_PROFILES
-            .with_borrow_mut(|store| store.insert(graph_id, id, profile))
+            .with_borrow_mut(|store| store.insert_unnamed_profile_profile(graph_id, id, profile))
+            .map_err(map_edge_payload_profile_err)
+    }
+
+    pub(crate) fn commit_set_edge_label_inline_scalar_schema(
+        &self,
+        graph_id: GraphId,
+        edge_label_name: &str,
+        property_name: &str,
+        scalar_type: InlineScalarType,
+    ) -> Result<(), RouterError> {
+        validate_metadata_name(edge_label_name)?;
+        validate_metadata_name(property_name)?;
+
+        // --- preflight: every validation and capacity check is read-only ---
+        let existing_label_id = self.lookup_edge_label_id(graph_id, edge_label_name).ok();
+        let existing_property_id = self.lookup_property_id(graph_id, property_name).ok();
+
+        if let Some(label_id) = existing_label_id
+            && let Some(existing) = ROUTER_EDGE_PAYLOAD_PROFILES
+                .with_borrow(|store| store.get_record(graph_id, label_id))
+        {
+            if let Some(property_id) = existing_property_id
+                    && let crate::facade::stable::edge_payload_profiles::EdgePayloadSchemaRecord::InlineScalar {
+                        property_id: existing_pid,
+                        scalar_type: existing_st,
+                        ..
+                    } = existing
+                        && existing_pid == property_id && existing_st == scalar_type {
+                            return Ok(());
+                        }
+            if existing.is_inline_scalar() {
+                return Err(RouterError::Conflict(format!(
+                    "edge label {edge_label_name} already has an inline scalar schema"
+                )));
+            }
+            if existing.profile() != EdgePayloadProfile::no_payload() {
+                return Err(RouterError::Conflict(format!(
+                    "edge label {edge_label_name} has a legacy unnamed payload profile; inline schema is incompatible"
+                )));
+            }
+        }
+
+        // Capacity preflight: prove id allocation will succeed before any mutation.
+        if existing_label_id.is_none() {
+            ROUTER_EDGE_LABEL_CATALOG
+                .with_borrow(|catalog| catalog.peek_next_id(graph_id, edge_label_name))
+                .map_err(|e| catalog_error_to_router(e, "edge label"))?;
+        }
+        if existing_property_id.is_none() {
+            ROUTER_PROPERTY_CATALOG
+                .with_borrow(|catalog| catalog.peek_next_id(graph_id, property_name))
+                .map_err(|e| catalog_error_to_router(e, "property"))?;
+        }
+
+        // --- commit: idempotent intern + schema record write ---
+        let label_id = Self::commit_intern_edge_label_name(graph_id, edge_label_name)?;
+        let property_id = Self::commit_intern_property_name(graph_id, property_name)?;
+        ROUTER_EDGE_PAYLOAD_PROFILES
+            .with_borrow_mut(|store| {
+                store.set_inline_scalar_schema(graph_id, label_id, property_id, scalar_type)
+            })
             .map_err(map_edge_payload_profile_err)
     }
 
@@ -100,12 +161,10 @@ impl RouterStore {
         graph_id: GraphId,
         id: EdgeLabelId,
     ) -> EdgePayloadProfile {
-        ROUTER_EDGE_PAYLOAD_PROFILES
-            .with_borrow(|store| store.get(graph_id, id))
-            .unwrap_or_else(EdgePayloadProfile::no_payload)
+        ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|store| store.get_profile(graph_id, id))
     }
 
-    pub(super) fn commit_intern_property_name(
+    pub(crate) fn commit_intern_property_name(
         graph_id: GraphId,
         name: &str,
     ) -> Result<PropertyId, RouterError> {

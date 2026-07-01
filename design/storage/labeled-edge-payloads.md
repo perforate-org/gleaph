@@ -48,12 +48,15 @@ does not vary among live slots in one bucket.
 
 `EdgePayloadProfile` pairs `byte_width: u16` with `EdgePayloadEncoding` (e.g. `RawI32`, `RawU16`, `F32`, `WeightLinearU16`). Legacy `EdgeWeightProfile` maps to weight encodings with 2-byte width.
 
-**Ownership (implemented):** logical schema (`EdgeLabelId → EdgePayloadProfile`) is **router SSOT**
-(`ROUTER_EDGE_PAYLOAD_PROFILES`, router MemoryId 20). Plan and mutation wire carry
-`payload_profile` on `ResolvedEdgeLabel` per [ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md).
-Graph shards resolve schema from execution context; graph stable `EDGE_PAYLOAD_PROFILES` is retired
-(facade MemoryIds 38–41 repacked to 37–40). Tests may inject profiles via `test_labels` or an
-explicit `ResolvedLabelTable`.
+**Ownership (implemented):** logical schema `(GraphId, EdgeLabelId) → EdgePayloadSchemaRecord` is
+**router SSOT** (`ROUTER_EDGE_PAYLOAD_PROFILES`, router MemoryId 21). The record is a versioned
+envelope that represents either an admin `UnnamedProfile` or a named scalar inline
+schema (`property_id`, `scalar_type`, derived `EdgePayloadProfile`) per [ADR 0034 Slice
+20](../adr/0034-gleaph-gql-extension-syntax.md). Development stable data must be wiped when this format changes because backward compatibility is not maintained. The physical `EdgePayloadProfile` is always
+derived from the canonical record and travels on `ResolvedEdgeLabel` per
+[ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md). Graph shards resolve schema from
+execution context; graph stable `EDGE_PAYLOAD_PROFILES` is retired (facade MemoryIds 38–41 repacked
+to 37–40). Tests may inject profiles via `test_labels` or an explicit `ResolvedLabelTable`.
 
 ## Stable memories (per orientation)
 

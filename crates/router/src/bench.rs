@@ -253,3 +253,80 @@ fn bench_unique_reclaim_scan_256() -> canbench_rs::BenchResult {
         black_box((candidates, scanned));
     })
 }
+
+// -----------------------------------------------------------------------------
+// ADR 0034 Slice 20: inline edge scalar schema benchmarks.
+// -----------------------------------------------------------------------------
+
+use std::sync::atomic::{AtomicU32, Ordering};
+
+static INLINE_BENCH_GRAPH_SEED: AtomicU32 = AtomicU32::new(1);
+
+fn bench_inline_graph_id() -> gleaph_graph_kernel::entry::GraphId {
+    gleaph_graph_kernel::entry::GraphId::from_raw(
+        900_000 + INLINE_BENCH_GRAPH_SEED.fetch_add(1, Ordering::SeqCst),
+    )
+}
+
+#[bench(raw)]
+fn bench_inline_edge_scalar_ddl_parse() -> canbench_rs::BenchResult {
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("inline_scalar_ddl_parse");
+        let stmt = crate::edge_payload_ddl::try_parse(
+            "CREATE EDGE LABEL ROAD { distance FLOAT32 INLINE }",
+        )
+        .expect("recognised")
+        .expect("valid");
+        black_box(stmt);
+    })
+}
+
+#[bench(raw)]
+fn bench_inline_edge_scalar_schema_lookup() -> canbench_rs::BenchResult {
+    let _store = RouterStore::new();
+    let graph_id = bench_inline_graph_id();
+    let label_id = RouterStore::commit_intern_edge_label_name(graph_id, "ROAD").expect("label");
+    let property_id =
+        RouterStore::commit_intern_property_name(graph_id, "distance").expect("property");
+    crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES
+        .with_borrow_mut(|s| {
+            s.set_inline_scalar_schema(
+                graph_id,
+                label_id,
+                property_id,
+                crate::facade::stable::edge_payload_profiles::InlineScalarType::F32,
+            )
+        })
+        .expect("seed inline schema");
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("inline_scalar_schema_lookup");
+        let profile = crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES
+            .with_borrow(|s| s.get_profile(graph_id, label_id));
+        black_box(profile);
+    })
+}
+
+#[bench(raw)]
+fn bench_inline_edge_scalar_schema_commit() -> canbench_rs::BenchResult {
+    let graph_id = bench_inline_graph_id();
+    // Commit the label and property once outside the measured closure so the benchmark measures
+    // only the schema-record commit path.
+    let label_id = RouterStore::commit_intern_edge_label_name(graph_id, "ROAD").expect("label");
+    let property_id =
+        RouterStore::commit_intern_property_name(graph_id, "distance").expect("property");
+
+    canbench_rs::bench_fn(move || {
+        let _scope = canbench_rs::bench_scope("inline_scalar_schema_commit");
+        crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES
+            .with_borrow_mut(|s| {
+                s.set_inline_scalar_schema(
+                    graph_id,
+                    label_id,
+                    property_id,
+                    crate::facade::stable::edge_payload_profiles::InlineScalarType::F32,
+                )
+            })
+            .expect("commit inline schema");
+    })
+}

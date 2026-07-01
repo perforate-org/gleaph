@@ -12,6 +12,7 @@ mod constraint_ddl;
 mod constraint_drop;
 mod edge_backfill;
 mod edge_index_direction;
+mod edge_payload_ddl;
 mod effect_recovery;
 mod execution_path;
 pub mod facade;

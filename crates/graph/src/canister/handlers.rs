@@ -636,6 +636,44 @@ pub async fn e2e_insert_directed_edge_with_label(
 }
 
 #[cfg(feature = "pocket-ic-e2e")]
+pub async fn e2e_insert_directed_edge_with_payload(
+    args: super::types::E2eInsertDirectedEdgeWithPayloadArgs,
+) -> Result<(), String> {
+    use crate::index::edge_pending;
+    use gleaph_graph_kernel::entry::EdgeLabelId;
+    use gleaph_graph_kernel::plan_exec::{ResolvedEdgeLabel, ResolvedLabelTable};
+
+    let store = GraphStore::new();
+    let source = ic_stable_lara::VertexId::from(args.source_local_vertex_id);
+    let target = ic_stable_lara::VertexId::from(args.target_local_vertex_id);
+    let label = EdgeLabelId::from_raw(args.edge_label_id);
+
+    // ADR 0034 Slice 20 E2E seam: the Router normally supplies the resolved payload profile on
+    // the DML wire. Direct graph test helpers must provide the matching profile explicitly.
+    let resolved = ResolvedLabelTable {
+        edge: vec![ResolvedEdgeLabel::new(
+            "ROAD",
+            label,
+            args.payload_profile.clone(),
+        )],
+        ..ResolvedLabelTable::default()
+    };
+    crate::edge_payload_schema::set_execution_resolved_labels(Some(resolved));
+    let result = store
+        .insert_directed_edge_with_payload_bytes(source, target, Some(label), &args.payload)
+        .map_err(|e| e.to_string());
+    crate::edge_payload_schema::set_execution_resolved_labels(None);
+    result?;
+
+    let index = wasm_index_client_holder().ok_or("federation not configured")?;
+    let ix = &index as &dyn crate::index::lookup::PropertyIndexLookup;
+    edge_pending::flush_pending(Some(ix), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
+}
+
+#[cfg(feature = "pocket-ic-e2e")]
 pub fn e2e_insert_directed_edge(
     args: super::types::E2eInsertDirectedEdgeArgs,
 ) -> Result<(), String> {

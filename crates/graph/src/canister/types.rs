@@ -90,6 +90,17 @@ pub struct E2eInsertDirectedEdgeWithPropertyArgs {
     pub value: i64,
 }
 
+/// Arguments for [`super::handlers::e2e_insert_directed_edge_with_payload`] (PocketIC E2E only).
+#[cfg(feature = "pocket-ic-e2e")]
+#[derive(CandidType, Deserialize, Clone, Debug)]
+pub struct E2eInsertDirectedEdgeWithPayloadArgs {
+    pub source_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    pub target_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
+    pub edge_label_id: u16,
+    pub payload: Vec<u8>,
+    pub payload_profile: gleaph_graph_kernel::entry::EdgePayloadProfile,
+}
+
 /// Arguments for [`super::handlers::e2e_enqueue_forward_compaction`] (PocketIC E2E only).
 #[cfg(feature = "pocket-ic-e2e")]
 #[derive(CandidType, Deserialize, Clone, Debug)]

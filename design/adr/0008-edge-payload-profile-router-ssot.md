@@ -2,8 +2,8 @@
 
 Date: 2026-06-12  
 Status: accepted  
-Last revised: 2026-06-12  
-Anchor timestamp: 2026-06-12 08:07:55 UTC +0000
+Last revised: 2026-07-01
+Anchor timestamp: 2026-07-01 10:14:16 UTC +0000
 
 ## Revision history
 
@@ -12,6 +12,7 @@ Anchor timestamp: 2026-06-12 08:07:55 UTC +0000
 | 2026-06-12 | Proposed; router-owned logical schema, graph `EDGE_PAYLOAD_PROFILES` retirement plan. |
 | 2026-06-12 | Accepted; policy frozen pending implementation phases A–E in §6. |
 | 2026-06-12 | Implemented phases A–E; router region 21 live; graph `EDGE_PAYLOAD_PROFILES` retired (41 regions). |
+| 2026-07-01 | ADR 0034 Slice 20: store value is a versioned `EdgePayloadSchemaRecord` supporting admin `UnnamedProfile` entries and named scalar inline schemas; no new MemoryId or region count change. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
 
 ## Context
 
@@ -75,17 +76,23 @@ duplicate *ownership* of schema between router (ids) and graph (profiles).
 The router is the authoritative store for:
 
 ```text
-EdgeLabelId → EdgePayloadProfile
+(GraphId, EdgeLabelId) → EdgePayloadSchemaRecord
 ```
 
-for every catalog edge label in a logical graph.
+for every catalog edge label in a logical graph. `EdgePayloadSchemaRecord` is a versioned envelope
+that represents either an admin `UnnamedProfile` or a named scalar inline schema
+(`property_id`, `scalar_type`, derived `EdgePayloadProfile`) (ADR 0034 Slice 20). The physical
+`EdgePayloadProfile` sent to Graph is always derived from the canonical record. Development stable
+data must be wiped when this format changes because backward compatibility is not maintained.
 
 Registration is coupled to edge-label identity:
 
 - **Preferred:** extend edge-label intern / admin APIs so registering or interning a catalog edge
-  label also records its `EdgePayloadProfile` (default `no_payload` / 0 bytes when omitted).
-- **Alternative:** a parallel stable map `ROUTER_EDGE_PAYLOAD_PROFILES` keyed by `EdgeLabelId`,
-  updated only through router `commit_*` catalog/schema APIs.
+  label also records its `EdgePayloadSchemaRecord` (default `UnnamedProfile` with `no_payload` / 0 bytes
+  when omitted).
+- **Alternative (rejected):** a parallel stable map `ROUTER_EDGE_PAYLOAD_PROFILES` keyed by `EdgeLabelId`,
+  updated only through router `commit_*` catalog/schema APIs. Slice 20 keeps a single map and
+  versioned value instead.
 
 Router does **not** store per-edge payload bytes — only the schema template per label id.
 
@@ -155,7 +162,7 @@ Follow ADR 0007 gates (inventory + registry + reopen tests + canbench delta).
 | Canister | Change |
 |----------|--------|
 | **Graph** | Remove MemoryId **37** (`EDGE_PAYLOAD_PROFILES`). Repack facade ids **38–41 → 37–40**. Region count **42 → 41** (32 LARA + 9 facade). |
-| **Router** | Add stable region for edge payload profiles (proposed MemoryId **21**, `ROUTER_EDGE_PAYLOAD_PROFILES`). Region count **21 → 22**. |
+| **Router** | Add stable region for edge payload schemas (proposed MemoryId **21**, `ROUTER_EDGE_PAYLOAD_PROFILES`). The value type is a versioned `EdgePayloadSchemaRecord`. Region count **21 → 22**. |
 
 Update `gleaph_graph_kernel::stable_layout`, `stable-memory-inventory.md`, and per-canister
 `layout.rs` in the same patch as code.

@@ -270,9 +270,9 @@ pub const GLEAPH_DIALECT_EXTENSIONS: &[GqlDialectExtensionSpec] = &[
     GqlDialectExtensionSpec {
         canonical_name: INLINE,
         kind: GqlDialectExtensionKind::SchemaModifier,
-        status: GqlDialectExtensionStatus::Planned,
+        status: GqlDialectExtensionStatus::PartiallyImplemented,
         owner: GqlDialectExtensionOwner::Router,
-        doc_anchor: "design/gql/extension-syntax.md#edge-inline-properties",
+        doc_anchor: "design/gql/extension-syntax.md#inline-edge-scalar-schema",
     },
     GqlDialectExtensionSpec {
         canonical_name: CREATE_VECTOR_INDEX,
@@ -417,8 +417,8 @@ mod tests {
     fn planned_extensions_are_present_and_marked_planned() {
         let planned: Vec<_> = planned_extensions().collect();
         assert!(
-            planned.iter().any(|spec| spec.canonical_name == INLINE),
-            "INLINE must be planned"
+            !planned.iter().any(|spec| spec.canonical_name == INLINE),
+            "INLINE is no longer planned"
         );
         assert!(
             planned
@@ -426,11 +426,7 @@ mod tests {
                 .any(|spec| spec.canonical_name == CREATE_VECTOR_INDEX),
             "CREATE VECTOR INDEX must be planned"
         );
-        assert_eq!(
-            planned.len(),
-            2,
-            "only INLINE and CREATE VECTOR INDEX are planned"
-        );
+        assert_eq!(planned.len(), 1, "only CREATE VECTOR INDEX is planned");
         for spec in &planned {
             assert_eq!(spec.status, GqlDialectExtensionStatus::Planned);
         }
@@ -465,6 +461,6 @@ mod tests {
         assert_eq!(operational_procedures().count(), 3);
         assert_eq!(edge_payload_functions().count(), 4);
         assert_eq!(edge_ordering_functions().count(), 1);
-        assert_eq!(planned_extensions().count(), 2);
+        assert_eq!(planned_extensions().count(), 1);
     }
 }

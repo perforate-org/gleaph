@@ -603,6 +603,29 @@ async fn run_gql(
         }
     }
 
+    if let Some(ddl) = crate::edge_payload_ddl::try_parse(query) {
+        let caller = msg_caller();
+        authorize_index_ddl(&caller)?;
+        if mode == GqlExecutionMode::Query && !force {
+            return Err(RouterError::ExecutionPathMismatch {
+                entrypoint: entrypoint.to_string(),
+                program_kind: "write".to_string(),
+                call_kind: "query".to_string(),
+                remedy: crate::execution_path::REMEDY_WRITE_ON_QUERY.to_string(),
+            });
+        }
+        let stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        let store = RouterStore::new();
+        let graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
+        store.commit_set_edge_label_inline_scalar_schema(
+            graph_id,
+            &stmt.edge_label,
+            &stmt.property,
+            stmt.scalar_type,
+        )?;
+        return Ok(GqlQueryResult::row_count_only(0));
+    }
+
     let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let flags = classify_program(&program);
     let caller = msg_caller();

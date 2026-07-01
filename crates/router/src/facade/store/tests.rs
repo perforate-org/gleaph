@@ -2,6 +2,7 @@ use super::super::stable::label_stats::{
     ClientMutationKey, LabelStats, RouterMutationRecord, RouterMutationShard,
 };
 use super::*;
+use crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES;
 use crate::init::RouterInitArgs;
 use crate::types::{
     AdminAttachVectorIndexShardArgs, AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus,
@@ -2841,4 +2842,192 @@ mod uniqueness_constraints {
             "IF NOT EXISTS does not bypass the tombstone, got {err:?}"
         );
     }
+}
+
+// -----------------------------------------------------------------------------
+// ADR 0034 Slice 20: inline edge scalar schema tests
+// -----------------------------------------------------------------------------
+
+use crate::facade::stable::edge_payload_profiles::{EdgePayloadSchemaRecord, InlineScalarType};
+
+#[test]
+fn inline_scalar_schema_creates_label_property_and_record() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+
+    store
+        .commit_set_edge_label_inline_scalar_schema(
+            graph_id,
+            "ROAD",
+            "distance",
+            InlineScalarType::F32,
+        )
+        .expect("create inline scalar schema");
+
+    let label_id = store.lookup_edge_label_id(graph_id, "ROAD").expect("label");
+    let property_id = store
+        .lookup_property_id(graph_id, "distance")
+        .expect("property");
+    let record = ROUTER_EDGE_PAYLOAD_PROFILES
+        .with_borrow(|s| s.get_record(graph_id, label_id))
+        .expect("schema record");
+    assert_eq!(
+        record,
+        EdgePayloadSchemaRecord::InlineScalar {
+            property_id,
+            scalar_type: InlineScalarType::F32,
+        }
+    );
+    assert_eq!(
+        ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|s| s.get_profile(graph_id, label_id)),
+        InlineScalarType::F32.edge_payload_profile()
+    );
+}
+
+#[test]
+fn inline_scalar_schema_is_idempotent() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+
+    store
+        .commit_set_edge_label_inline_scalar_schema(
+            graph_id,
+            "ROAD",
+            "distance",
+            InlineScalarType::F32,
+        )
+        .expect("first");
+    store
+        .commit_set_edge_label_inline_scalar_schema(
+            graph_id,
+            "ROAD",
+            "distance",
+            InlineScalarType::F32,
+        )
+        .expect("idempotent");
+}
+
+#[test]
+fn inline_scalar_schema_conflicts_with_legacy_profile() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    store
+        .admin_intern_edge_label(admin, "tenant.main", "ROAD")
+        .expect("edge label");
+    store
+        .admin_set_edge_label_payload_profile(
+            admin,
+            "tenant.main",
+            "ROAD",
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        )
+        .expect("legacy profile");
+
+    let err = store
+        .commit_set_edge_label_inline_scalar_schema(
+            tenant_main_graph_id(),
+            "ROAD",
+            "distance",
+            InlineScalarType::U16,
+        )
+        .expect_err("conflict");
+    assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+}
+
+#[test]
+fn legacy_profile_setter_conflicts_with_inline_scalar() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+
+    store
+        .commit_set_edge_label_inline_scalar_schema(
+            tenant_main_graph_id(),
+            "ROAD",
+            "distance",
+            InlineScalarType::F32,
+        )
+        .expect("inline scalar");
+
+    let err = store
+        .admin_set_edge_label_payload_profile(
+            admin,
+            "tenant.main",
+            "ROAD",
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::WeightRawU16,
+            },
+        )
+        .expect_err("conflict");
+    assert!(matches!(err, RouterError::InvalidArgument(_)), "{err:?}");
+}
+
+#[test]
+fn inline_scalar_schema_conflicts_on_different_scalar() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+
+    store
+        .commit_set_edge_label_inline_scalar_schema(
+            graph_id,
+            "ROAD",
+            "distance",
+            InlineScalarType::F32,
+        )
+        .expect("first");
+    let err = store
+        .commit_set_edge_label_inline_scalar_schema(
+            graph_id,
+            "ROAD",
+            "distance",
+            InlineScalarType::F64,
+        )
+        .expect_err("conflict");
+    assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+}
+
+#[test]
+fn inline_scalar_schema_conflicts_on_second_property() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.main");
+    let graph_id = tenant_main_graph_id();
+
+    store
+        .commit_set_edge_label_inline_scalar_schema(
+            graph_id,
+            "ROAD",
+            "distance",
+            InlineScalarType::F32,
+        )
+        .expect("first");
+    RouterStore::commit_intern_property_name(graph_id, "time").expect("property");
+    let err = store
+        .commit_set_edge_label_inline_scalar_schema(graph_id, "ROAD", "time", InlineScalarType::U32)
+        .expect_err("conflict");
+    assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
 }

@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-06-24
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog = 45 regions, 0–44; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14)
-Anchor timestamp: 2026-06-24 10:36:29 UTC +0000
+Last updated: 2026-07-01
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 edge payload schema record (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 45 regions, 0–44; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14)
+Anchor timestamp: 2026-07-01 10:14:16 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -197,7 +197,7 @@ Regions **1–2** (canonical), **3–4** (derived indexes), **`ROUTER_GRAPH_RUNT
 | 17–18 | `ROUTER_INDEX_NAME_BY_NAME` / `ROUTER_INDEX_NAME_BY_ID` | `ROUTER_INDEX_NAME_CATALOG` | `init_index_name_catalog` | catalog | resolution | Graph-scoped index name ↔ **`IndexNameId`** per `GraphId` |
 | 19 | `ROUTER_NAMED_INDEXES` | `ROUTER_NAMED_INDEXES` | `init_named_indexes` | catalog | index DDL metadata | **`(GraphId, IndexNameId) → kind, property_id, label_id`** |
 | 20 | `ROUTER_INDEXED_PROPERTY_SET` | `ROUTER_INDEXED_PROPERTY_SET` | `init_indexed_property_set` | catalog | index membership | **`(GraphId, kind, property_id)`** for planner + fan-out |
-| 21 | `ROUTER_EDGE_PAYLOAD_PROFILES` | `ROUTER_EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | catalog | edge payload schema | **`(GraphId, EdgeLabelId) → EdgePayloadProfile`** ([ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md), [ADR 0018](../adr/0018-graph-scoped-label-property-catalogs.md)) |
+| 21 | `ROUTER_EDGE_PAYLOAD_PROFILES` | `ROUTER_EDGE_PAYLOAD_PROFILES` | `init_edge_payload_profiles` | catalog | edge payload schema | **`(GraphId, EdgeLabelId) → EdgePayloadSchemaRecord`** ([ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md), [ADR 0018](../adr/0018-graph-scoped-label-property-catalogs.md), [ADR 0034 Slice 20](../adr/0034-gleaph-gql-extension-syntax.md)) |
 | 22–23 | `ROUTER_GRAPH_TYPE_DEFINITIONS` / `ROUTER_GRAPH_SCHEMA_BINDINGS` | `ROUTER_GQL_GRAPH_CATALOG` | `init_gql_graph_catalog` | catalog | graph type catalog | type defs + **`GraphId` bindings** ([ADR 0013](../adr/0013-gql-graph-type-catalog-on-router.md)) |
 | 24–25 | `ROUTER_GRAPH_TYPE_BY_NAME` / `ROUTER_GRAPH_TYPE_BY_ID` | `ROUTER_GRAPH_TYPE_CATALOG` | `init_graph_type_name_catalog` | catalog | resolution | Graph type name ↔ **`GraphTypeId`** ([ADR 0014](../adr/0014-graph-type-id-catalog-on-router.md)) |
 | 26 | `ROUTER_VERTEX_LABEL_STATS` | `ROUTER_VERTEX_LABEL_STATS` | `init_vertex_label_stats` | telemetry | label telemetry | **`(GraphId, VertexLabelId) → LabelStats`** (event replay) |

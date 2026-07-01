@@ -816,7 +816,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             21,
             StableMemoryClass::Catalog,
             "edge payload schema",
-            "(GraphId, EdgeLabelId) → EdgePayloadProfile (ADR 0008, ADR 0018)",
+            "(GraphId, EdgeLabelId) → EdgePayloadSchemaRecord (ADR 0008, ADR 0018, ADR 0034 Slice 20)",
             RebuildPath::None,
         ),
         region(

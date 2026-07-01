@@ -1,11 +1,11 @@
 # Gleaph GQL extension syntax
 
 Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 07:07:02 UTC +0000
+Anchor timestamp: 2026-07-01 10:14:16 UTC +0000
 
 ## Status
 
-**Dialect contract with a canonical Rust manifest and partially implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter, Slice 7 non-leading labeled `SEARCH ... WHERE` equality filter, Slice 8 one or two `AND`-connected same-binding equality conjuncts, Slice 9 one same-binding numeric range predicate (`<`, `<=`, `>`, `>=`), Slice 10 exactly two same-property range predicates (one lower, one upper) forming a two-sided numeric range, Slice 11 one equality predicate plus one one-sided numeric range predicate on a distinct property, Slice 12 one equality predicate plus two same-property range predicates (one lower and one upper) on a distinct property, Slice 13 one to eight `AND`-connected same-binding equality predicates on distinct properties, Slice 14 `lookup_range_intersection_page` one to eight equality arms plus one one- or two-sided numeric range on a distinct property, Slice 15 same-property equality `OR` disjunctions (2..=8 arms), Slice 16 cross-property pure equality `OR` disjunctions (2..=8 arms), Slice 17 same-property numeric range `OR` disjunctions (2..=8 arms), Slice 18 cross-property numeric range `OR` disjunctions (2..=8 arms), and Slice 19 bounded heterogeneous equality/range `OR` disjunctions (2..=8 arms, each leaf independently equality or one-sided numeric range) are implemented; other predicate forms remain planned.** This document
+**Dialect contract with a canonical Rust manifest and partially implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter, Slice 7 non-leading labeled `SEARCH ... WHERE` equality filter, Slice 8 one or two `AND`-connected same-binding equality conjuncts, Slice 9 one same-binding numeric range predicate (`<`, `<=`, `>`, `>=`), Slice 10 exactly two same-property range predicates (one lower, one upper) forming a two-sided numeric range, Slice 11 one equality predicate plus one one-sided numeric range predicate on a distinct property, Slice 12 one equality predicate plus two same-property range predicates (one lower and one upper) on a distinct property, Slice 13 one to eight `AND`-connected same-binding equality predicates on distinct properties, Slice 14 `lookup_range_intersection_page` one to eight equality arms plus one one- or two-sided numeric range on a distinct property, Slice 15 same-property equality `OR` disjunctions (2..=8 arms), Slice 16 cross-property pure equality `OR` disjunctions (2..=8 arms), Slice 17 same-property numeric range `OR` disjunctions (2..=8 arms), Slice 18 cross-property numeric range `OR` disjunctions (2..=8 arms), and Slice 19 bounded heterogeneous equality/range `OR` disjunctions (2..=8 arms, each leaf independently equality or one-sided numeric range) are implemented; **Slice 20 scalar `INLINE` edge-property schema registration (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`) is partially implemented**; other predicate forms, ordinary `e.property` inline access, fixed-size `STRUCT` inline slots, and vector-index DDL remain planned.** This document
 is the steady-state public syntax contract for Gleaph-specific GQL extensions.
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
@@ -40,7 +40,7 @@ semantics.
 | ----------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | IC value type                 | `IC.PRINCIPAL`                                                            | Implemented                                                                                                                                                                                                                                                                                          | `gleaph-gql-ic` value extension                                                             |
 | IC runtime function           | `MSG_CALLER()`                                                            | Implemented                                                                                                                                                                                                                                                                                          | Graph execution context                                                                     |
-| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | Planned target                                                                                                                                                                                                                                                                                       | Router schema/catalog + Graph edge payload execution                                        |
+| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar schema registration partially implemented** (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`); ordinary property access and `STRUCT` slots remain planned                                                                                                                            | Router schema/catalog + Graph edge payload execution                                        |
 | Shortest-path cost            | `COST BY e.distance`                                                      | Planned target                                                                                                                                                                                                                                                                                       | Graph query planner/executor                                                                |
 | Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph query executor                                                                        |
 | Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph edge storage/execution                                                                |
@@ -174,10 +174,46 @@ CREATE EDGE LABEL LIKED {
 Inline structs are restricted to fixed-size fields. Variable-length strings, blobs, arrays, and
 embeddings are not inline by default.
 
+### Scalar schema registration (Slice 20)
+
+**Status:** Partially implemented.
+
+The Router now accepts a standalone scalar-only `INLINE` schema declaration:
+
+```gql
+CREATE EDGE LABEL ROAD {
+  distance FLOAT32 INLINE
+}
+```
+
+For each edge label, exactly one scalar inline slot is allowed. The Router owns the canonical schema
+record `(graph_id, edge_label_id) → { property_id, scalar_type, derived EdgePayloadProfile }` in the
+existing `ROUTER_EDGE_PAYLOAD_PROFILES` stable region. The physical profile is derived from the scalar
+type; Graph receives it on the existing `ResolvedEdgeLabel` wire and stores/executes payload bytes
+with that width and encoding.
+
+Accepted scalar types are the fixed-width forms that map losslessly to an existing
+`EdgePayloadProfile`: `UINT8`, `UINT16`, `UINT32`, `UINT64`, `INT8`, `INT16`, `INT32`, `INT64`,
+`UINT128`, `INT128`, `FLOAT16`, `FLOAT32`, `FLOAT64`, `FIXED32`, and `FIXED64`. Every other type
+(including `STRUCT`, strings, variable-width blobs, arrays, embeddings, and weight encodings) is
+rejected fail-closed in this slice.
+
+The Router DDL is idempotent for the exact same declaration and returns `Conflict` for any
+incompatible redeclaration (different property, scalar type, or a label that already has a legacy
+unnamed payload profile installed through the admin API). Authorization follows the same
+admin/manager-with-prepare-register policy as index and constraint DDL.
+
+This slice does **not** add ordinary `e.distance` property access, `COST BY e.distance`,
+fixed-size `STRUCT` inline slots, or `INLINE` inside generic `CREATE GRAPH TYPE` definitions. Those
+remain planned.
+
 ### Relationship to `GLEAPH.WEIGHT`
 
 `GLEAPH.WEIGHT(e)` is the implemented compatibility surface for fixed-width edge payload weights.
-The target dialect replaces it with ordinary property access:
+Until Slice 21 lowers ordinary inline property access, the existing edge-payload predicate surface
+(`GLEAPH.WEIGHT(e) = ...`) can consume matching payload bytes because the planner and executor
+already read the derived `EdgePayloadProfile` from the Router-resolved wire. The target dialect
+replaces it with ordinary property access:
 
 ```gql
 MATCH ANY SHORTEST (a)-[e:ROAD]->{1,5}(b)
