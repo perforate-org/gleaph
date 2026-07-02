@@ -15,8 +15,8 @@
 //! - Each `#[test]` below builds one fresh federation + vector-index topology and runs a family of named,
 //!   sequentially observable cases against it. No PocketIC environment is shared across `#[test]` functions.
 //! - The 28 original `install_federation()` calls are reduced to 8 fixture-family bootstraps
-//! (one per `#[test]` below) while keeping every contract boundary, adversary, and failure diagnostic
-//! independently diagnosable.
+//!   (one per `#[test]` below) while keeping every contract boundary, adversary, and failure diagnostic
+//!   independently diagnosable.
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
