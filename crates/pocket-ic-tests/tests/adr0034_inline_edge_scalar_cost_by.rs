@@ -22,6 +22,8 @@ const SRC_LABEL: &str = "CitySrc";
 const MID_LABEL: &str = "CityMid";
 const DST_LABEL: &str = "CityDst";
 
+const COST_BY_QUERY: &str = "MATCH p = ANY SHORTEST (a:CitySrc)-[e:ROAD]->{1,5}(c) COST BY e.distance RETURN p, ELEMENT_ID(c) AS cid";
+
 fn road_profile() -> gleaph_graph_kernel::entry::EdgePayloadProfile {
     gleaph_graph_kernel::entry::EdgePayloadProfile {
         byte_width: 2,
@@ -36,7 +38,6 @@ fn setup() -> FederationEnv {
         &format!("CREATE EDGE LABEL {EDGE_LABEL} {{ {PROPERTY} UINT16 INLINE }}"),
         "adr0034_inline_scalar_cost_by_schema_edge",
     );
-    // Vertex labels are created implicitly through admin_intern_vertex_label in each test.
     env
 }
 
@@ -65,21 +66,19 @@ fn vertex_element_id(env: &FederationEnv, label: &str) -> IcWireValue {
     rows[0].get("v_id").cloned().expect("ELEMENT_ID(v) column")
 }
 
-#[test]
-fn inline_cost_by_selects_cheapest_path_not_fewest_hops() {
-    let env = setup();
-    let edge_label_id = admin_intern_edge_label(&env, EDGE_LABEL);
-    let src_label_id = admin_intern_vertex_label(&env, SRC_LABEL);
-    let mid_label_id = admin_intern_vertex_label(&env, MID_LABEL);
-    let dst_label_id = admin_intern_vertex_label(&env, DST_LABEL);
+fn build_cost_triangle(env: &FederationEnv) -> IcWireValue {
+    let edge_label_id = admin_intern_edge_label(env, EDGE_LABEL);
+    let src_label_id = admin_intern_vertex_label(env, SRC_LABEL);
+    let mid_label_id = admin_intern_vertex_label(env, MID_LABEL);
+    let dst_label_id = admin_intern_vertex_label(env, DST_LABEL);
 
-    let a = e2e_insert_vertex_with_label(&env, env.graph_source, src_label_id.raw());
-    let b = e2e_insert_vertex_with_label(&env, env.graph_source, mid_label_id.raw());
-    let c = e2e_insert_vertex_with_label(&env, env.graph_source, dst_label_id.raw());
+    let a = e2e_insert_vertex_with_label(env, env.graph_source, src_label_id.raw());
+    let b = e2e_insert_vertex_with_label(env, env.graph_source, mid_label_id.raw());
+    let c = e2e_insert_vertex_with_label(env, env.graph_source, dst_label_id.raw());
 
     // a->b costs 1, b->c costs 1: total 2.
     e2e_insert_directed_edge_with_payload(
-        &env,
+        env,
         env.graph_source,
         a.local_vertex_id,
         b.local_vertex_id,
@@ -88,7 +87,7 @@ fn inline_cost_by_selects_cheapest_path_not_fewest_hops() {
         road_profile(),
     );
     e2e_insert_directed_edge_with_payload(
-        &env,
+        env,
         env.graph_source,
         b.local_vertex_id,
         c.local_vertex_id,
@@ -98,7 +97,7 @@ fn inline_cost_by_selects_cheapest_path_not_fewest_hops() {
     );
     // Direct a->c costs 100.
     e2e_insert_directed_edge_with_payload(
-        &env,
+        env,
         env.graph_source,
         a.local_vertex_id,
         c.local_vertex_id,
@@ -107,120 +106,38 @@ fn inline_cost_by_selects_cheapest_path_not_fewest_hops() {
         road_profile(),
     );
 
-    let c_id = vertex_element_id(&env, DST_LABEL);
-    let result = gql_query_as_admin(
-        &env,
-        "MATCH p = ANY SHORTEST (a:CitySrc)-[e:ROAD]->{1,5}(c) COST BY e.distance RETURN p, ELEMENT_ID(c) AS cid",
-    );
-    let rows = extract_rows(result);
+    vertex_element_id(env, DST_LABEL)
+}
+
+fn cheapest_path_element_count(env: &FederationEnv, dst_id: &IcWireValue) -> usize {
+    let rows = extract_rows(gql_query_as_admin(env, COST_BY_QUERY));
     let c_rows: Vec<_> = rows
         .iter()
-        .filter(|row| row.get("cid") == Some(&c_id))
+        .filter(|row| row.get("cid") == Some(dst_id))
         .collect();
     assert_eq!(
         c_rows.len(),
         1,
         "expected exactly one shortest path ending at the CityDst vertex"
     );
+    path_element_count(c_rows[0], "p")
+}
+
+fn scenario_initial_cheapest_path_is_two_hops(env: &FederationEnv, dst_id: &IcWireValue) {
     assert_eq!(
-        path_element_count(c_rows[0], "p"),
+        cheapest_path_element_count(env, dst_id),
         5,
-        "expected a->b->c (2 hops) to beat direct a->c (1 hop) on total cost"
+        "initial cheapest path is a->b->c (cost 2), not direct a->c (cost 100)"
     );
 }
 
-#[test]
-fn inline_cost_by_observes_mutation() {
-    let env = setup();
-    let edge_label_id = admin_intern_edge_label(&env, EDGE_LABEL);
-    let src_label_id = admin_intern_vertex_label(&env, SRC_LABEL);
-    let mid_label_id = admin_intern_vertex_label(&env, MID_LABEL);
-    let dst_label_id = admin_intern_vertex_label(&env, DST_LABEL);
-
-    let a = e2e_insert_vertex_with_label(&env, env.graph_source, src_label_id.raw());
-    let b = e2e_insert_vertex_with_label(&env, env.graph_source, mid_label_id.raw());
-    let c = e2e_insert_vertex_with_label(&env, env.graph_source, dst_label_id.raw());
-
-    e2e_insert_directed_edge_with_payload(
-        &env,
-        env.graph_source,
-        a.local_vertex_id,
-        b.local_vertex_id,
-        edge_label_id.raw(),
-        1u16.to_le_bytes().to_vec(),
-        road_profile(),
-    );
-    e2e_insert_directed_edge_with_payload(
-        &env,
-        env.graph_source,
-        b.local_vertex_id,
-        c.local_vertex_id,
-        edge_label_id.raw(),
-        1u16.to_le_bytes().to_vec(),
-        road_profile(),
-    );
-    e2e_insert_directed_edge_with_payload(
-        &env,
-        env.graph_source,
-        a.local_vertex_id,
-        c.local_vertex_id,
-        edge_label_id.raw(),
-        100u16.to_le_bytes().to_vec(),
-        road_profile(),
-    );
-
-    let c_id = vertex_element_id(&env, DST_LABEL);
-    let cheapest = |env: &FederationEnv| {
-        let result = gql_query_as_admin(
-            env,
-            "MATCH p = ANY SHORTEST (a:CitySrc)-[e:ROAD]->{1,5}(c) COST BY e.distance RETURN p, ELEMENT_ID(c) AS cid",
-        );
-        let rows = extract_rows(result);
-        let c_rows: Vec<_> = rows
-            .iter()
-            .filter(|row| row.get("cid") == Some(&c_id))
-            .collect();
-        assert_eq!(c_rows.len(), 1);
-        path_element_count(c_rows[0], "p")
-    };
-
-    assert_eq!(cheapest(&env), 5, "initial cheapest path is a->b->c");
-
-    // Raise the cost of edge a->b using an inline-property mutation.
-    gql_execute_idempotent_as_admin(
-        &env,
-        "MATCH (a:CitySrc)-[e:ROAD {distance: 1}]->(b) SET e.distance = 200 RETURN e",
-        "adr0034_inline_cost_by_mutation",
-    );
-
-    assert_eq!(
-        cheapest(&env),
-        3,
-        "expected direct a->c to become cheapest after raising a->b cost"
-    );
-}
-
-#[test]
-fn inline_cost_by_rejects_missing_inline_property() {
-    let env = setup();
-    let edge_label_id = admin_intern_edge_label(&env, EDGE_LABEL);
-    let src_label_id = admin_intern_vertex_label(&env, SRC_LABEL);
-    let dst_label_id = admin_intern_vertex_label(&env, DST_LABEL);
-
-    let a = e2e_insert_vertex_with_label(&env, env.graph_source, src_label_id.raw());
-    let c = e2e_insert_vertex_with_label(&env, env.graph_source, dst_label_id.raw());
-    e2e_insert_directed_edge_with_payload(
-        &env,
-        env.graph_source,
-        a.local_vertex_id,
-        c.local_vertex_id,
-        edge_label_id.raw(),
-        1u16.to_le_bytes().to_vec(),
-        road_profile(),
-    );
-
+fn scenario_missing_cost_property_rejects_and_leaves_graph_unchanged(
+    env: &FederationEnv,
+    dst_id: &IcWireValue,
+) {
+    // Former contract: inline_cost_by_rejects_missing_inline_property.
     let err = gql_query_as_admin_expect_err(
-        &env,
+        env,
         "MATCH p = ANY SHORTEST (a:CitySrc)-[e:ROAD]->{1,5}(c) COST BY e.missing RETURN p, ELEMENT_ID(c) AS cid",
     );
     assert!(
@@ -229,6 +146,81 @@ fn inline_cost_by_rejects_missing_inline_property() {
             RouterError::InvalidArgument(_) | RouterError::NotFound(_)
         ),
         "expected planning/execution failure for missing inline cost property, got {err:?}"
+    );
+
+    // Bounded postcondition: returning the error must not have mutated graph state.
+    assert_eq!(
+        cheapest_path_element_count(env, dst_id),
+        5,
+        "after missing-property rejection the valid two-hop cheapest path must still exist"
+    );
+}
+
+fn scenario_mutation_switches_to_direct_path(env: &FederationEnv, dst_id: &IcWireValue) {
+    // Former contract: inline_cost_by_observes_mutation.
+    gql_execute_idempotent_as_admin(
+        env,
+        "MATCH (a:CitySrc)-[e:ROAD {distance: 1}]->(b) SET e.distance = 200 RETURN e",
+        "adr0034_inline_cost_by_lifecycle_mutation",
+    );
+    assert_eq!(
+        cheapest_path_element_count(env, dst_id),
+        3,
+        "direct a->c must become cheapest after raising a->b cost"
+    );
+}
+
+// ---------------------------------------------------------------------------
+// Fixture family 1: full cheapest-path lifecycle over the same triangle.
+// Former contracts preserved:
+//   - inline_cost_by_selects_cheapest_path_not_fewest_hops
+//   - inline_cost_by_observes_mutation
+//   - inline_cost_by_rejects_missing_inline_property
+// ---------------------------------------------------------------------------
+
+#[test]
+fn inline_cost_by_lifecycle() {
+    let env = setup();
+    let c_id = build_cost_triangle(&env);
+
+    scenario_initial_cheapest_path_is_two_hops(&env, &c_id);
+    scenario_missing_cost_property_rejects_and_leaves_graph_unchanged(&env, &c_id);
+    scenario_mutation_switches_to_direct_path(&env, &c_id);
+}
+
+// ---------------------------------------------------------------------------
+// Fixture family 2: symmetric directed pair proves payload is read in both
+// traversal directions.
+//
+// Two opposite directed edges (CitySrc->CityMid and CityMid->CitySrc) share the
+// same inline payload.  We run two explicit directed COST BY queries so each
+// traversal direction is independently observable; an undirected query would
+// allow either edge to satisfy the path and would not test both directions.
+// Former contract preserved:
+//   - inline_cost_by_symmetric_directed_reads_same_payload_value
+// ---------------------------------------------------------------------------
+
+fn assert_directed_cost_by_path(
+    env: &FederationEnv,
+    query: &str,
+    dst_id_column: &str,
+    expected_dst: &IcWireValue,
+    direction: &str,
+) {
+    let rows = extract_rows(gql_query_as_admin(env, query));
+    let dst_rows: Vec<_> = rows
+        .iter()
+        .filter(|row| row.get(dst_id_column) == Some(expected_dst))
+        .collect();
+    assert_eq!(
+        dst_rows.len(),
+        1,
+        "expected exactly one shortest path ending at the {direction} destination"
+    );
+    assert_eq!(
+        path_element_count(dst_rows[0], "p"),
+        3,
+        "expected a single directed hop {direction} to contain three path elements"
     );
 }
 
@@ -241,9 +233,13 @@ fn inline_cost_by_symmetric_directed_reads_same_payload_value() {
 
     let a = e2e_insert_vertex_with_label(&env, env.graph_source, src_label_id.raw());
     let b = e2e_insert_vertex_with_label(&env, env.graph_source, mid_label_id.raw());
+
     // Model a symmetric edge pair (both directions) sharing the same inline payload.
     // A true single undirected inline-payload edge is covered by a Graph unit test;
-    // this E2E test proves the cost value is read from the payload in both traversal directions.
+    // this E2E test proves the cost value is read from the payload in each
+    // traversal direction independently.  Only the start vertex is labeled in each
+    // query so the router seed-anchor prefix binds a single variable; the exact
+    // destination is asserted via the returned ELEMENT_ID.
     let payload = 5u16.to_le_bytes().to_vec();
     e2e_insert_directed_edge_with_payload(
         &env,
@@ -264,20 +260,22 @@ fn inline_cost_by_symmetric_directed_reads_same_payload_value() {
         road_profile(),
     );
 
+    let a_id = vertex_element_id(&env, SRC_LABEL);
     let b_id = vertex_element_id(&env, MID_LABEL);
-    let result = gql_query_as_admin(
+
+    assert_directed_cost_by_path(
         &env,
-        "MATCH p = ANY SHORTEST (a:CitySrc)-[e:ROAD]-{1,5}(b) COST BY e.distance RETURN p, ELEMENT_ID(b) AS bid",
+        "MATCH p = ANY SHORTEST (a:CitySrc)-[e:ROAD]->{1,5}(b) COST BY e.distance RETURN p, ELEMENT_ID(b) AS bid",
+        "bid",
+        &b_id,
+        "CitySrc -> CityMid",
     );
-    let rows = extract_rows(result);
-    let b_rows: Vec<_> = rows
-        .iter()
-        .filter(|row| row.get("bid") == Some(&b_id))
-        .collect();
-    assert_eq!(
-        b_rows.len(),
-        1,
-        "expected exactly one shortest path ending at the CityMid vertex"
+
+    assert_directed_cost_by_path(
+        &env,
+        "MATCH p = ANY SHORTEST (b:CityMid)-[e:ROAD]->{1,5}(a) COST BY e.distance RETURN p, ELEMENT_ID(a) AS aid",
+        "aid",
+        &a_id,
+        "CityMid -> CitySrc",
     );
-    assert_eq!(path_element_count(b_rows[0], "p"), 3);
 }
