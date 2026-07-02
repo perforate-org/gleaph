@@ -50,12 +50,13 @@ children.
 | `router_gql_query::router_gql_query_node_scan_on_single_shard` | Router `gql_query` composite dispatch on a single registered shard |
 | `router_gql_query::standalone_e2e_insert_assigns_global_id` | Standalone `e2e_insert_vertex` → `GlobalVertexId` from graph routing |
 | `router_gql_query::single_shard_vertex_index_lifecycle` | Single-shard vertex-index lifecycle: CREATE INDEX, indexed equality, two-index intersection, DROP INDEX, scan fallback, idempotent IF EXISTS drop, missing DROP NotFound |
-| `router_gql_query::standalone_gql_query_edge_index_seeded_property_eq` | Single-shard router `gql_query` with edge `CREATE INDEX` DDL + indexed edge property equality anchor |
+| `router_gql_query::single_shard_generic_edge_index_lifecycle` | Single-shard generic edge-index lifecycle: CREATE INDEX, indexed property equality, DROP INDEX, scan fallback |
 | `router_gql_query::standalone_gql_query_returns_element_id_bytes` | Router `gql_query` returns encoded `ELEMENT_ID` bytes via `rows_blob` |
 | `router_gql_query::standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter` | Router `gql_query` returns relationship row material needed by the knowledge-map adapter |
 | `router_gql_query::federated_gql_query_index_seeded_routes_to_hit_shard_only` | Multi-shard `gql_query` with `CREATE INDEX` DDL; slices index hits to the matching shard |
 | `router_gql_query::federated_gql_query_index_seeded_merges_across_shards` | Multi-shard `gql_query` with `CREATE INDEX` DDL; merges rows when both shards match the anchor |
-| `router_gql_query::standalone_drop_edge_index_property_eq_still_queries_via_scan` | `DROP INDEX` on single shard; edge property equality still works via scan |
+| `router_gql_query::single_shard_pointing_right_edge_index_lifecycle` | Single-shard pointing-right edge-index lifecycle: directed CREATE INDEX DDL, indexed property equality, DROP INDEX, scan fallback |
+| `router_gql_query::single_shard_undirected_edge_index_lifecycle` | Single-shard undirected edge-index lifecycle: anonymous symmetric expansion without index, undirected CREATE INDEX DDL, indexed equality, directed insert does not seed undirected index, DROP INDEX, scan fallback |
 | `router_gql_query::federated_drop_index_property_eq_loses_federated_anchor` | `DROP INDEX` on multi-shard; indexed vertex equality query fails without anchor |
 | `router_gql_query::federated_drop_edge_index_property_eq_loses_federated_anchor` | `DROP INDEX` on multi-shard; indexed edge equality query fails without anchor |
 | `router_graph_type_catalog::catalog_create_graph_type_returns_zero_rows` | ADR 0013: `CREATE GRAPH TYPE` on router stable catalog |

@@ -30,8 +30,13 @@ const INDEX_WEIGHT_NAME: &str = "pocket_ic_edge_weight";
 const INDEX_WEIGHT_RIGHT_NAME: &str = "pocket_ic_edge_weight_right";
 const INDEX_WEIGHT_UNDIR_NAME: &str = "pocket_ic_edge_weight_undir";
 const EDGE_WEIGHT_QUERY: &str = "MATCH ()-[e:KNOWS {weight: 5}]->(b) RETURN e, b";
-const EDGE_WEIGHT_UNDIR_QUERY: &str = "MATCH ()~[e:KNOWS {weight: 5}]~() RETURN e";
 const EDGE_WEIGHT_UNDIR_BOUND_QUERY: &str = "MATCH ()~[e:KNOWS {weight: 5}]~(b) RETURN e, b";
+const LIFECYCLE_EDGE_LABEL_GENERIC: &str = "LifecycleKnowsGeneric";
+const LIFECYCLE_EDGE_LABEL_RIGHT: &str = "LifecycleKnowsRight";
+const LIFECYCLE_EDGE_LABEL_UNDIR: &str = "LifecycleKnowsUndir";
+const LIFECYCLE_EDGE_WEIGHT_NAME: &str = "pocket_ic_lifecycle_edge_weight";
+const LIFECYCLE_EDGE_WEIGHT_RIGHT_NAME: &str = "pocket_ic_lifecycle_edge_weight_right";
+const LIFECYCLE_EDGE_WEIGHT_UNDIR_NAME: &str = "pocket_ic_lifecycle_edge_weight_undir";
 
 #[test]
 fn router_gql_query_node_scan_on_single_shard() {
@@ -1066,18 +1071,26 @@ fn federated_drop_index_property_eq_loses_federated_anchor() {
     );
 }
 
+/// Consolidated lifecycle for the two former generic directed edge-index contracts:
+///
+/// 1. `standalone_gql_query_edge_index_seeded_property_eq`
+/// 2. `standalone_drop_edge_index_property_eq_still_queries_via_scan` (generic edge index half)
+///
+/// Uses a unique edge label so the fixture cannot be contaminated by other lifecycle tests.
 #[test]
-fn standalone_gql_query_edge_index_seeded_property_eq() {
+fn single_shard_generic_edge_index_lifecycle() {
     let env = install_single_shard_federation();
     let weight = admin_intern_property(&env, "weight");
-    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
+    let label = admin_intern_edge_label(&env, LIFECYCLE_EDGE_LABEL_GENERIC);
+
     create_edge_property_index(
         &env,
-        INDEX_WEIGHT_NAME,
-        INDEX_EDGE_LABEL,
+        LIFECYCLE_EDGE_WEIGHT_NAME,
+        LIFECYCLE_EDGE_LABEL_GENERIC,
         "weight",
-        "standalone_gql_query_edge_index_seeded_property_eq",
+        "lifecycle_generic_create",
     );
+
     let source = e2e_insert_vertex(&env, env.graph_source);
     let target = e2e_insert_vertex(&env, env.graph_source);
     e2e_insert_directed_edge_with_property(
@@ -1085,28 +1098,57 @@ fn standalone_gql_query_edge_index_seeded_property_eq() {
         env.graph_source,
         source.local_vertex_id,
         target.local_vertex_id,
-        knows.raw(),
+        label.raw(),
         weight.raw(),
         5,
     );
 
-    let result = gql_query_as_admin(&env, EDGE_WEIGHT_QUERY);
+    let indexed = gql_query_as_admin(
+        &env,
+        "MATCH ()-[e:LifecycleKnowsGeneric {weight: 5}]->(b) RETURN e, b",
+    );
+    assert_eq!(
+        indexed.row_count, 1,
+        "generic edge index must seed directed equality lookup"
+    );
 
-    assert_eq!(result.row_count, 1);
+    drop_vertex_property_index(
+        &env,
+        LIFECYCLE_EDGE_WEIGHT_NAME,
+        true,
+        "lifecycle_generic_drop",
+    );
+
+    let after_drop = gql_query_as_admin(
+        &env,
+        "MATCH ()-[e:LifecycleKnowsGeneric {weight: 5}]->(b) RETURN e, b",
+    );
+    assert_eq!(
+        after_drop.row_count, 1,
+        "scan fallback must still answer after DROP INDEX"
+    );
 }
 
+/// Consolidated lifecycle for the former pointing-right directed edge-index contract
+/// `standalone_gql_query_edge_index_pointing_right_ddl`, with new strengthened DROP coverage.
+/// The post-DROP scan fallback assertion is not inherited from a former test; it was added here
+/// to verify that dropping a pointing-right edge index leaves canonical edge data queryable.
+///
+/// Uses a unique edge label so the fixture cannot be contaminated by other lifecycle tests.
 #[test]
-fn standalone_gql_query_edge_index_pointing_right_ddl() {
+fn single_shard_pointing_right_edge_index_lifecycle() {
     let env = install_single_shard_federation();
     let weight = admin_intern_property(&env, "weight");
-    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
+    let label = admin_intern_edge_label(&env, LIFECYCLE_EDGE_LABEL_RIGHT);
+
     create_directed_edge_property_index(
         &env,
-        INDEX_WEIGHT_RIGHT_NAME,
-        INDEX_EDGE_LABEL,
+        LIFECYCLE_EDGE_WEIGHT_RIGHT_NAME,
+        LIFECYCLE_EDGE_LABEL_RIGHT,
         "weight",
-        "standalone_gql_query_edge_index_pointing_right_ddl",
+        "lifecycle_right_create",
     );
+
     let source = e2e_insert_vertex(&env, env.graph_source);
     let target = e2e_insert_vertex(&env, env.graph_source);
     e2e_insert_directed_edge_with_property(
@@ -1114,97 +1156,133 @@ fn standalone_gql_query_edge_index_pointing_right_ddl() {
         env.graph_source,
         source.local_vertex_id,
         target.local_vertex_id,
-        knows.raw(),
+        label.raw(),
         weight.raw(),
         5,
     );
 
-    let result = gql_query_as_admin(&env, EDGE_WEIGHT_QUERY);
+    let indexed = gql_query_as_admin(
+        &env,
+        "MATCH ()-[e:LifecycleKnowsRight {weight: 5}]->(b) RETURN e, b",
+    );
+    assert_eq!(
+        indexed.row_count, 1,
+        "pointing-right edge index must seed directed equality lookup"
+    );
 
-    assert_eq!(result.row_count, 1);
+    drop_vertex_property_index(
+        &env,
+        LIFECYCLE_EDGE_WEIGHT_RIGHT_NAME,
+        true,
+        "lifecycle_right_drop",
+    );
+
+    let after_drop = gql_query_as_admin(
+        &env,
+        "MATCH ()-[e:LifecycleKnowsRight {weight: 5}]->(b) RETURN e, b",
+    );
+    assert_eq!(
+        after_drop.row_count, 1,
+        "scan fallback must still answer after DROP INDEX"
+    );
 }
 
+/// Consolidated lifecycle for the three former undirected edge-index contracts:
+///
+/// 1. `standalone_gql_query_edge_index_undirected_ddl`
+/// 2. `standalone_gql_query_undirected_index_does_not_seed_directed_edge`
+/// 3. `standalone_gql_query_undirected_symmetric_anonymous_endpoints`
+///
+/// The post-DROP scan fallback assertion is new strengthened coverage; the former standalone
+/// DROP test only covered a generic (directed) edge index. Lifecycle ordering isolates the
+/// no-index symmetric expansion, the indexed undirected expansion, the directed-insert subset
+/// exclusion, and the post-DROP scan fallback, all with a unique edge label.
 #[test]
-fn standalone_gql_query_edge_index_undirected_ddl() {
+fn single_shard_undirected_edge_index_lifecycle() {
     let env = install_single_shard_federation();
     let weight = admin_intern_property(&env, "weight");
-    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
-    create_undirected_edge_property_index(
-        &env,
-        INDEX_WEIGHT_UNDIR_NAME,
-        INDEX_EDGE_LABEL,
-        "weight",
-        "standalone_gql_query_edge_index_undirected_ddl",
-    );
-    let v = e2e_insert_vertex(&env, env.graph_source);
+    let label = admin_intern_edge_label(&env, LIFECYCLE_EDGE_LABEL_UNDIR);
+
+    let a = e2e_insert_vertex(&env, env.graph_source);
+    let b = e2e_insert_vertex(&env, env.graph_source);
     e2e_insert_undirected_edge_with_property(
         &env,
         env.graph_source,
-        v.local_vertex_id,
-        v.local_vertex_id,
-        knows.raw(),
+        a.local_vertex_id,
+        b.local_vertex_id,
+        label.raw(),
         weight.raw(),
         5,
     );
 
-    let result = gql_query_as_admin(&env, EDGE_WEIGHT_UNDIR_QUERY);
+    // Phase 1: anonymous endpoints on both sides expand the edge once per endpoint,
+    // and the standalone scan path does not require a leading edge-index anchor.
+    let anonymous = gql_query_as_admin(
+        &env,
+        "MATCH ()~[e:LifecycleKnowsUndir]~() WHERE e.weight = 5 RETURN e",
+    );
+    assert_eq!(
+        anonymous.row_count, 2,
+        "anonymous undirected expansion must return one row per endpoint without an index anchor"
+    );
 
-    assert_eq!(result.row_count, 1);
-}
-
-/// Undirected-only index maintains undirected wire postings; directed inserts must not seed
-/// an undirected leading `EdgeIndexScan` (ADR 0012 subset rule).
-#[test]
-fn standalone_gql_query_undirected_index_does_not_seed_directed_edge() {
-    let env = install_single_shard_federation();
-    let weight = admin_intern_property(&env, "weight");
-    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
+    // Phase 2: undirected-only index seeds undirected equality queries.
     create_undirected_edge_property_index(
         &env,
-        INDEX_WEIGHT_UNDIR_NAME,
-        INDEX_EDGE_LABEL,
+        LIFECYCLE_EDGE_WEIGHT_UNDIR_NAME,
+        LIFECYCLE_EDGE_LABEL_UNDIR,
         "weight",
-        "standalone_gql_query_undirected_index_does_not_seed_directed_edge",
+        "lifecycle_undir_create",
     );
-    let source = e2e_insert_vertex(&env, env.graph_source);
-    let target = e2e_insert_vertex(&env, env.graph_source);
+
+    let seeded = gql_query_as_admin(
+        &env,
+        "MATCH ()~[e:LifecycleKnowsUndir {weight: 5}]~() RETURN e",
+    );
+    assert_eq!(
+        seeded.row_count, 1,
+        "undirected-only index must seed undirected equality lookup"
+    );
+
+    // Phase 3: directed inserts must not seed an undirected-only index (ADR 0012 subset rule).
+    let c = e2e_insert_vertex(&env, env.graph_source);
+    let d = e2e_insert_vertex(&env, env.graph_source);
     e2e_insert_directed_edge_with_property(
         &env,
         env.graph_source,
-        source.local_vertex_id,
-        target.local_vertex_id,
-        knows.raw(),
+        c.local_vertex_id,
+        d.local_vertex_id,
+        label.raw(),
         weight.raw(),
-        5,
+        6,
     );
 
-    let result = gql_query_as_admin(&env, EDGE_WEIGHT_UNDIR_BOUND_QUERY);
-
-    assert_eq!(result.row_count, 0);
-}
-
-/// Anonymous endpoints on both sides of an undirected edge match once per endpoint
-/// when the planner expands from each vertex (no leading edge index anchor).
-#[test]
-fn standalone_gql_query_undirected_symmetric_anonymous_endpoints() {
-    let env = install_single_shard_federation();
-    let weight = admin_intern_property(&env, "weight");
-    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
-    let source = e2e_insert_vertex(&env, env.graph_source);
-    let target = e2e_insert_vertex(&env, env.graph_source);
-    e2e_insert_undirected_edge_with_property(
+    let undirected_after_directed = gql_query_as_admin(
         &env,
-        env.graph_source,
-        source.local_vertex_id,
-        target.local_vertex_id,
-        knows.raw(),
-        weight.raw(),
-        5,
+        "MATCH ()~[e:LifecycleKnowsUndir {weight: 6}]~() RETURN e",
+    );
+    assert_eq!(
+        undirected_after_directed.row_count, 0,
+        "directed insert must not seed an undirected-only edge index"
     );
 
-    let result = gql_query_as_admin(&env, "MATCH ()~[e:KNOWS]~() WHERE e.weight = 5 RETURN e");
+    // Phase 4: dropping the index removes only derived routing state; canonical data
+    // remains queryable by the standalone scan path.
+    drop_vertex_property_index(
+        &env,
+        LIFECYCLE_EDGE_WEIGHT_UNDIR_NAME,
+        true,
+        "lifecycle_undir_drop",
+    );
 
-    assert_eq!(result.row_count, 2);
+    let after_drop = gql_query_as_admin(
+        &env,
+        "MATCH ()~[e:LifecycleKnowsUndir {weight: 5}]~() RETURN e",
+    );
+    assert_eq!(
+        after_drop.row_count, 2,
+        "scan fallback must still answer after DROP INDEX (one row per anonymous endpoint)"
+    );
 }
 
 #[test]
@@ -1285,53 +1363,6 @@ fn federated_gql_query_edge_index_pointing_right_ddl() {
     let result = gql_query_as_admin(&env, EDGE_WEIGHT_QUERY);
 
     assert_eq!(result.row_count, 2);
-}
-
-#[test]
-fn standalone_drop_edge_index_property_eq_still_queries_via_scan() {
-    let env = install_single_shard_federation();
-    let weight = admin_intern_property(&env, "weight");
-    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
-    create_edge_property_index(
-        &env,
-        INDEX_WEIGHT_NAME,
-        INDEX_EDGE_LABEL,
-        "weight",
-        "standalone_drop_edge_index_create",
-    );
-    let source = e2e_insert_vertex(&env, env.graph_source);
-    let target = e2e_insert_vertex(&env, env.graph_source);
-    e2e_insert_directed_edge_with_property(
-        &env,
-        env.graph_source,
-        source.local_vertex_id,
-        target.local_vertex_id,
-        knows.raw(),
-        weight.raw(),
-        5,
-    );
-
-    let indexed = gql_query_as_admin(&env, EDGE_WEIGHT_QUERY);
-    assert_eq!(indexed.row_count, 1);
-
-    drop_vertex_property_index(
-        &env,
-        INDEX_WEIGHT_NAME,
-        true,
-        "standalone_drop_edge_index_drop",
-    );
-
-    let all_edges = gql_query_as_admin(&env, "MATCH ()-[e:KNOWS]->(b) RETURN e, b");
-    assert_eq!(
-        all_edges.row_count, 1,
-        "edge should still exist after DROP INDEX"
-    );
-
-    let after_drop = gql_query_as_admin(&env, EDGE_WEIGHT_QUERY);
-    assert_eq!(
-        after_drop.row_count, 1,
-        "single-shard scan path should still match after DROP INDEX"
-    );
 }
 
 #[test]
