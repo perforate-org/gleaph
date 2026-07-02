@@ -66,3 +66,12 @@ roaring = "0.11.4"
 rust_decimal = "1.42"
 serde = { version = "1", features = ["derive"] }
 thiserror = "2"
+
+# Dev/test compile-time tuning: keep line-level backtraces while reducing
+# debug-info object size and linker work. Release/bench/canister profiles are
+# intentionally unchanged.
+[profile.dev]
+debug = "line-tables-only"
+
+[profile.test]
+debug = "line-tables-only"

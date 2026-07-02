@@ -185,6 +185,24 @@ After completing a meaningful code change, explicitly run formatting, tests, and
 
 Use the `rust-workflow` skill for the expected local validation sequence.
 
+### Focused local test loop
+
+The workspace uses `debug = "line-tables-only"` for `[profile.dev]` and
+`[profile.test]` to reduce debug-artifact size and link work while keeping
+line-level backtraces. Release, bench, and canister profiles are intentionally
+unchanged.
+
+During iterative development prefer focused, scoped commands:
+
+- `cargo test -p <crate> --lib <filter>`
+- `cargo check -p <crate> --tests`
+- `cargo clippy -p <crate> --all-targets --all-features -- -D warnings`
+
+Reserve full-workspace validation, PocketIC E2E runtime, and unfiltered
+canbench runs for explicitly required final validation. Use ordinary
+`cargo test` for PocketIC/canbench targets and doctest-sensitive paths; use
+`cargo nextest run` only where compatibility with the suite is known.
+
 ## gql and gql-planner
 
 The gleaph-gql and gleaph-gql-planner crates contain the name Gleaph as an identifier, but they should remain general-purpose crates for GQL (ISO/IEC 39075).
