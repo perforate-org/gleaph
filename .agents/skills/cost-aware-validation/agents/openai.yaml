@@ -1,0 +1,4 @@
+interface:
+  display_name: "Cost-Aware Validation"
+  short_description: "Keep tests and benchmarks fast without losing signal"
+  default_prompt: "Use $cost-aware-validation to design the smallest trustworthy test and benchmark strategy for this change."

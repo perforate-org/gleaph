@@ -25,6 +25,11 @@ Review behavioral contracts, invariants, consistency mechanisms, boundaries, and
 Review test refactors and consolidations by mapping plan criteria to assertions and constructing
 wrong implementations that could still pass before approval.
 
+## cost-aware-validation
+
+Design tests, PocketIC fixtures, Rust validation loops, and canbench benchmarks for high signal at
+bounded compile and runtime cost.
+
 ## benchmark
 
 Review benchmark impact, performance regressions, invariant-preserving measurement, and benchmark fitness for purpose.
