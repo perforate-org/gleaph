@@ -204,12 +204,28 @@ pub fn build_block_plan_with_schema(
     stats: Option<&dyn GraphStats>,
     schema: &dyn PropertySchema,
 ) -> Result<PhysicalPlan, PlannerError> {
+    build_block_plan_with_schema_and_options(
+        block,
+        schema,
+        PlanBuildOptions {
+            stats,
+            path_extensions: &REJECTING_PATH_EXTENSION_HANDLER,
+        },
+    )
+}
+
+/// Like [`build_block_plan_with_schema`], but accepts custom [`PlanBuildOptions`].
+pub fn build_block_plan_with_schema_and_options(
+    block: &StatementBlock,
+    schema: &dyn PropertySchema,
+    options: PlanBuildOptions<'_>,
+) -> Result<PhysicalPlan, PlannerError> {
     let binding_kinds = infer_statement_block_binding_kinds_with_schema(block, schema);
 
     // Plan the first statement.
-    let mut plan = build_statement_plan_with_binding_kinds(
+    let mut plan = build_statement_plan_with_binding_kinds_and_options(
         &block.first,
-        stats,
+        options,
         binding_kinds.first(),
         schema,
     )?;
@@ -232,9 +248,9 @@ pub fn build_block_plan_with_schema(
         }
 
         // Plan the chained statement and merge its ops.
-        let chained = build_statement_plan_with_binding_kinds(
+        let chained = build_statement_plan_with_binding_kinds_and_options(
             &next.statement,
-            stats,
+            options,
             binding_kinds.get(index_for_next(&block.next, next)),
             schema,
         )?;
@@ -252,9 +268,9 @@ pub fn build_block_plan_with_schema(
             .extend(chained.diagnostics.type_warnings);
     }
 
-    // Re-estimate cost over the full plan.
-    plan.annotations.optimizer.estimated_cost = Some(cost::estimate_cost(&plan.ops, stats));
-    plan.annotations.optimizer.estimated_rows = Some(cost::estimate_rows(&plan.ops, stats));
+    // Re-estimate cost over the full plan using the same options stats.
+    plan.annotations.optimizer.estimated_cost = Some(cost::estimate_cost(&plan.ops, options.stats));
+    plan.annotations.optimizer.estimated_rows = Some(cost::estimate_rows(&plan.ops, options.stats));
     apply_type_checker_dml_diagnostics(
         &mut plan.diagnostics,
         &type_check_statement_block_with_schema(block, schema),

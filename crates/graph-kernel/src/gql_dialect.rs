@@ -129,6 +129,9 @@ pub const MSG_CALLER: QualifiedName = QualifiedName::new(&["MSG_CALLER"]);
 /// `GLEAPH.COST`
 pub const GLEAPH_COST: QualifiedName = QualifiedName::new(&["GLEAPH", "COST"]);
 
+/// `COST BY`
+pub const COST: QualifiedName = QualifiedName::new(&["COST"]);
+
 /// `GLEAPH.WEIGHT`
 pub const GLEAPH_WEIGHT: QualifiedName = QualifiedName::new(&["GLEAPH", "WEIGHT"]);
 
@@ -189,6 +192,13 @@ pub const GLEAPH_DIALECT_EXTENSIONS: &[GqlDialectExtensionSpec] = &[
         status: GqlDialectExtensionStatus::Implemented,
         owner: GqlDialectExtensionOwner::GraphExecution,
         doc_anchor: "design/gql/extension-syntax.md#msg_caller",
+    },
+    GqlDialectExtensionSpec {
+        canonical_name: COST,
+        kind: GqlDialectExtensionKind::PathExtension,
+        status: GqlDialectExtensionStatus::Implemented,
+        owner: GqlDialectExtensionOwner::GraphPlannerIntegration,
+        doc_anchor: "design/gql/extension-syntax.md#shortest-path-cost",
     },
     GqlDialectExtensionSpec {
         canonical_name: GLEAPH_COST,

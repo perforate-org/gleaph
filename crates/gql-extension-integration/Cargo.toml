@@ -1,0 +1,13 @@
+[package]
+name = "gleaph-gql-extension-integration"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+gleaph-gql = { workspace = true, features = ["f128", "f256"] }
+gleaph-gql-planner = { workspace = true, features = ["plan-wire"] }
+gleaph-graph-kernel.workspace = true
+
+[features]
+cypher = ["gleaph-gql/cypher", "gleaph-gql-planner/cypher"]

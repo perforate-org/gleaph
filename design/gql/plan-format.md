@@ -1,7 +1,7 @@
 # Physical plan format
 
-Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 18:02:23 UTC +0000
+Last updated: 2026-07-02
+Anchor timestamp: 2026-07-02 00:11:35 UTC +0000
 
 ## Purpose
 
@@ -166,7 +166,9 @@ For a requested edge property:
 - If the concrete label's `inline_property_id` equals the resolved property id, Graph decodes the edge payload bytes strictly and returns the exact GQL scalar value. Malformed, missing, or unsupported payloads fail closed; the sidecar property store is never consulted as fallback.
 - Otherwise Graph falls back to the sidecar property store (`GraphStore::edge_property`), preserving existing non-inline behavior.
 
-This rule is shared by expression evaluation, edge-record projection, and any downstream consumer that reads an edge property.
+This rule is shared by expression evaluation, edge-record projection, shortest-path hop cost evaluation (`COST BY e.property`), and any downstream consumer that reads an edge property.
+
+`PlanOp::ShortestPath` with `cost: ShortestPathCost::EdgeCostExpr { expr, .. }` contributes any properties read by `expr` to the plan's property-use metadata, so Router projection includes them for execution.
 
 ## Inline scalar mutation contract
 

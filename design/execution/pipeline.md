@@ -1,7 +1,7 @@
 # Execution pipeline
 
-Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 18:02:23 UTC +0000
+Last updated: 2026-07-02
+Anchor timestamp: 2026-07-02 00:11:35 UTC +0000
 
 ## Purpose
 
@@ -142,7 +142,7 @@ Edge property evaluation uses one inline-aware read helper (`try_read_inline_edg
 4. If the property is not the inline slot, fall back to the sidecar `store.edge_property`.
 5. If the inline slot matches but the payload/schema is malformed, return `PlanQueryError` instead of `NULL` or sidecar rescue.
 
-Projection, filtering, comparison, aggregate input, and `ORDER BY` all route through this helper, so the precedence and fail-closed rules are enforced uniformly.
+Projection, filtering, comparison, aggregate input, `ORDER BY`, and shortest-path hop cost (`COST BY e.property`) all route through this helper, so the precedence and fail-closed rules are enforced uniformly. Weighted shortest-path evaluation receives the plan-scoped `ResolvedLabelTable` and `ResolvedPropertyTable` and resolves the cost property once before search; if it is not the concrete label's inline slot, the search fails closed before scanning adjacency.
 
 ### Inline edge property mutation packing
 

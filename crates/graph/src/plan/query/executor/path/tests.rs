@@ -5,6 +5,8 @@ use super::{
     weighted_shortest_can_use_hop_count, weighted_shortest_paths_between,
 };
 use crate::plan::query::executor::test_support::*;
+use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile, PropertyId};
+use gleaph_graph_kernel::plan_exec::{ResolvedProperty, ResolvedPropertyTable};
 use ic_stable_lara::traits::CsrEdge;
 use path_test_helpers::*;
 
@@ -13,9 +15,15 @@ mod path_test_helpers {
     use gleaph_gql::Value;
     use gleaph_gql::types::PathElement;
     use gleaph_gql_planner::plan::PhysicalPlan;
-    use gleaph_graph_kernel::entry::EdgeLabelId;
+    use gleaph_graph_kernel::entry::{
+        EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile, PropertyId,
+    };
     use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalEdgeId, GlobalVertexId};
     use gleaph_graph_kernel::path::{GraphPathEdgeId, GraphPathVertexId};
+    use gleaph_graph_kernel::plan_exec::{
+        ResolvedEdgeLabel, ResolvedLabelTable, ResolvedProperty, ResolvedPropertyTable,
+        ResolvedVertexLabel,
+    };
 
     pub const PATH_ID_KEY: ElementIdEncodingKey = ElementIdEncodingKey::host_test_fixture();
 
@@ -57,6 +65,124 @@ mod path_test_helpers {
             PathElement::Edge(id) => GraphPathEdgeId::try_from_slice(id.as_ref()).expect("edge id"),
             other => panic!("expected edge path element, got {other:?}"),
         }
+    }
+
+    pub fn inline_cost_execution_context(
+        label_id: EdgeLabelId,
+        property_id: PropertyId,
+    ) -> GqlExecutionContext {
+        let src_label_id = crate::test_labels::vertex_label_id_for_name("InlineSrc");
+        let mid_label_id = crate::test_labels::vertex_label_id_for_name("InlineMid");
+        let dst_label_id = crate::test_labels::vertex_label_id_for_name("InlineDst");
+        let labels = ResolvedLabelTable {
+            vertex: vec![
+                ResolvedVertexLabel {
+                    name: "InlineSrc".to_string(),
+                    id: src_label_id,
+                },
+                ResolvedVertexLabel {
+                    name: "InlineMid".to_string(),
+                    id: mid_label_id,
+                },
+                ResolvedVertexLabel {
+                    name: "InlineDst".to_string(),
+                    id: dst_label_id,
+                },
+            ],
+            edge: vec![ResolvedEdgeLabel::with_inline_property(
+                "InlineRoad".to_string(),
+                label_id,
+                EdgePayloadProfile {
+                    byte_width: 2,
+                    encoding: EdgePayloadEncoding::RawU16,
+                },
+                Some(property_id),
+            )],
+        };
+        let properties = ResolvedPropertyTable {
+            properties: vec![ResolvedProperty {
+                name: "distance".to_string(),
+                id: property_id,
+            }],
+        };
+        GqlExecutionContext {
+            resolved_labels: Some(labels),
+            resolved_properties: Some(properties),
+            ..GqlExecutionContext::with_host_test_element_id_key()
+        }
+    }
+
+    pub fn setup_inline_road_graph(store: &GraphStore) -> (VertexId, VertexId, VertexId) {
+        let a = store
+            .insert_vertex_named(["InlineSrc"], Vec::<(&str, Value)>::new())
+            .expect("insert a");
+        let b = store
+            .insert_vertex_named(["InlineMid"], Vec::<(&str, Value)>::new())
+            .expect("insert b");
+        let c = store
+            .insert_vertex_named(["InlineDst"], Vec::<(&str, Value)>::new())
+            .expect("insert c");
+        let label_id = crate::test_labels::edge_label_id_for_name("InlineRoad");
+        crate::test_labels::install_test_edge_payload_profile(
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::RawU16,
+            },
+        );
+        crate::test_labels::install_test_edge_inline_property(label_id, PropertyId::from_raw(1));
+        let road = catalog_edge_label("InlineRoad");
+        // a->b costs 1, b->c costs 1: total 2 (cheapest)
+        // a->c costs 100: direct but expensive
+        store
+            .insert_directed_edge_with_payload_bytes(a, b, Some(road), &1u16.to_le_bytes())
+            .expect("a->b");
+        store
+            .insert_directed_edge_with_payload_bytes(b, c, Some(road), &1u16.to_le_bytes())
+            .expect("b->c");
+        store
+            .insert_directed_edge_with_payload_bytes(a, c, Some(road), &100u16.to_le_bytes())
+            .expect("a->c");
+        (a, b, c)
+    }
+
+    pub fn inline_cost_plan_with_direction(direction: EdgeDirection) -> PhysicalPlan {
+        plan(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("InlineSrc".into()),
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "c".into(),
+                label: Some("InlineDst".into()),
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "c".into(),
+                edge: "e".into(),
+                path_var: Some("p".into()),
+                emit_edge_binding: true,
+                emit_path_binding: true,
+                mode: ShortestMode::AnyShortest,
+                direction,
+                label: Some("InlineRoad".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
+                cost: ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: prop("e", "distance"),
+                },
+            },
+            PlanOp::Project {
+                columns: vec![project(var("p"), "p")],
+                distinct: false,
+            },
+        ])
     }
 
     pub fn catalog_edge_label(label_name: &str) -> EdgeLabelId {
@@ -2329,4 +2455,263 @@ fn weighted_shortest_path_rejects_missing_weight_profile() {
         .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
         .expect_err("missing profile");
     assert!(matches!(err, PlanQueryError::GleaphWeight { .. }));
+}
+
+#[test]
+fn inline_cost_shortest_prefers_lower_total_cost_over_fewer_hops() {
+    let store = GraphStore::new();
+    let (a, _b, c) = setup_inline_road_graph(&store);
+    let plan = inline_cost_plan_with_direction(EdgeDirection::PointingRight);
+    let execution =
+        inline_cost_execution_context(catalog_edge_label("InlineRoad"), PropertyId::from_raw(1));
+    let result = store
+        .execute_plan_query(&plan, &params(), execution)
+        .expect("inline cost shortest path");
+    let elements = path_column(&result, "p");
+    assert_eq!(
+        elements.len(),
+        5,
+        "expected a->b->c (2 hops) to beat direct a->c (1 hop) on total cost"
+    );
+    assert_path_vertex_local(&store, &elements[0], a);
+    assert_path_vertex_local(&store, &elements[4], c);
+}
+
+#[test]
+fn inline_cost_shortest_prefers_direct_edge_when_cheaper() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["InlineSrc"], Vec::<(&str, Value)>::new())
+        .expect("insert a");
+    let b = store
+        .insert_vertex_named(["InlineMid"], Vec::<(&str, Value)>::new())
+        .expect("insert b");
+    let c = store
+        .insert_vertex_named(["InlineDst"], Vec::<(&str, Value)>::new())
+        .expect("insert c");
+    let label_id = crate::test_labels::edge_label_id_for_name("InlineRoad");
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        EdgePayloadProfile {
+            byte_width: 2,
+            encoding: EdgePayloadEncoding::RawU16,
+        },
+    );
+    crate::test_labels::install_test_edge_inline_property(label_id, PropertyId::from_raw(1));
+    let road = catalog_edge_label("InlineRoad");
+    // a->b->c costs 100+100 = 200; direct a->c costs 1.
+    store
+        .insert_directed_edge_with_payload_bytes(a, b, Some(road), &100u16.to_le_bytes())
+        .expect("a->b");
+    store
+        .insert_directed_edge_with_payload_bytes(b, c, Some(road), &100u16.to_le_bytes())
+        .expect("b->c");
+    store
+        .insert_directed_edge_with_payload_bytes(a, c, Some(road), &1u16.to_le_bytes())
+        .expect("a->c");
+
+    let plan = inline_cost_plan_with_direction(EdgeDirection::PointingRight);
+    let execution = inline_cost_execution_context(road, PropertyId::from_raw(1));
+    let result = store
+        .execute_plan_query(&plan, &params(), execution)
+        .expect("inline cost shortest path");
+    let elements = path_column(&result, "p");
+    assert_eq!(
+        elements.len(),
+        3,
+        "expected direct a->c to win when it is cheaper than the detour"
+    );
+    assert_path_vertex_local(&store, &elements[0], a);
+    assert_path_vertex_local(&store, &elements[2], c);
+}
+
+#[test]
+fn inline_cost_shortest_reverse_reads_mirrored_payload() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["InlineSrc"], Vec::<(&str, Value)>::new())
+        .expect("insert a");
+    let b = store
+        .insert_vertex_named(["InlineMid"], Vec::<(&str, Value)>::new())
+        .expect("insert b");
+    let label_id = crate::test_labels::edge_label_id_for_name("InlineRoad");
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        EdgePayloadProfile {
+            byte_width: 2,
+            encoding: EdgePayloadEncoding::RawU16,
+        },
+    );
+    crate::test_labels::install_test_edge_inline_property(label_id, PropertyId::from_raw(1));
+    let road = catalog_edge_label("InlineRoad");
+    // Only a->b exists with cost 7; reverse search b->a must read the same payload.
+    store
+        .insert_directed_edge_with_payload_bytes(a, b, Some(road), &7u16.to_le_bytes())
+        .expect("a->b");
+
+    let mut plan = inline_cost_plan_with_direction(EdgeDirection::PointingRight);
+    // Mutate plan to search b->a in reverse.
+    if let PlanOp::ShortestPath {
+        ref mut src,
+        ref mut dst,
+        ref mut direction,
+        ..
+    } = plan.ops[2]
+    {
+        *src = "b".into();
+        *dst = "a".into();
+        *direction = EdgeDirection::PointingLeft;
+    } else {
+        panic!("expected ShortestPath op");
+    }
+    plan.ops[0] = PlanOp::NodeScan {
+        variable: "b".into(),
+        label: Some("InlineMid".into()),
+        property_projection: None,
+    };
+    plan.ops[1] = PlanOp::NodeScan {
+        variable: "a".into(),
+        label: Some("InlineSrc".into()),
+        property_projection: None,
+    };
+
+    let execution = inline_cost_execution_context(road, PropertyId::from_raw(1));
+    let result = store
+        .execute_plan_query(&plan, &params(), execution)
+        .expect("reverse inline cost shortest path");
+    let elements = path_column(&result, "p");
+    assert_eq!(elements.len(), 3);
+    assert_path_vertex_local(&store, &elements[0], b);
+    assert_path_vertex_local(&store, &elements[2], a);
+}
+
+#[test]
+fn inline_cost_undirected_shortest_path_uses_payload_cost() {
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["InlineSrc"], Vec::<(&str, Value)>::new())
+        .expect("insert a");
+    let b = store
+        .insert_vertex_named(["InlineDst"], Vec::<(&str, Value)>::new())
+        .expect("insert b");
+    let label_id = crate::test_labels::edge_label_id_for_name("InlineRoad");
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        EdgePayloadProfile {
+            byte_width: 2,
+            encoding: EdgePayloadEncoding::RawU16,
+        },
+    );
+    crate::test_labels::install_test_edge_inline_property(label_id, PropertyId::from_raw(1));
+    let road = catalog_edge_label("InlineRoad");
+    // A single undirected edge a-b with a fixed-width inline payload of cost 9.
+    store
+        .insert_undirected_edge_with_payload_bytes(a, b, Some(road), &9u16.to_le_bytes())
+        .expect("undirected a-b");
+
+    let plan = plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("InlineSrc".into()),
+            property_projection: None,
+        },
+        PlanOp::NodeScan {
+            variable: "c".into(),
+            label: Some("InlineDst".into()),
+            property_projection: None,
+        },
+        PlanOp::ShortestPath {
+            src: "a".into(),
+            dst: "c".into(),
+            edge: "e".into(),
+            path_var: Some("p".into()),
+            emit_edge_binding: true,
+            emit_path_binding: true,
+            mode: ShortestMode::AnyShortest,
+            direction: EdgeDirection::Undirected,
+            label: Some("InlineRoad".into()),
+            label_expr: None,
+            var_len: Some(VarLenSpec {
+                min: 1,
+                max: Some(5),
+            }),
+            cost: ShortestPathCost::EdgeCostExpr {
+                edge_var: "e".into(),
+                expr: prop("e", "distance"),
+            },
+        },
+        PlanOp::Project {
+            columns: vec![
+                project(var("p"), "p"),
+                project(prop("e", "distance"), "cost"),
+            ],
+            distinct: false,
+        },
+    ]);
+
+    let execution = inline_cost_execution_context(road, PropertyId::from_raw(1));
+    let result = store
+        .execute_plan_query(&plan, &params(), execution)
+        .expect("undirected weighted shortest path should execute");
+
+    let elements = path_column(&result, "p");
+    assert_eq!(
+        elements.len(),
+        3,
+        "expected single-edge undirected path a-b with COST BY e.distance"
+    );
+    assert_path_vertex_local(&store, &elements[0], a);
+    assert_path_vertex_local(&store, &elements[2], b);
+    assert_eq!(
+        result.rows[0].get("cost"),
+        Some(&Value::Uint16(9)),
+        "expected COST BY e.distance to read inline payload 9"
+    );
+}
+
+#[test]
+fn inline_cost_shortest_rejects_missing_property_projection() {
+    let store = GraphStore::new();
+    let (_a, _b, _c) = setup_inline_road_graph(&store);
+    let plan = inline_cost_plan_with_direction(EdgeDirection::PointingRight);
+    // Execution context with an empty resolved property table.
+    let mut execution =
+        inline_cost_execution_context(catalog_edge_label("InlineRoad"), PropertyId::from_raw(1));
+    execution.resolved_properties = Some(ResolvedPropertyTable { properties: vec![] });
+    let err = store
+        .execute_plan_query(&plan, &params(), execution)
+        .expect_err("missing property projection should fail");
+    assert!(err.to_string().contains("not projected"), "{err}");
+}
+
+#[test]
+fn inline_cost_shortest_rejects_non_inline_property() {
+    let store = GraphStore::new();
+    let (_a, _b, _c) = setup_inline_road_graph(&store);
+    let mut plan = inline_cost_plan_with_direction(EdgeDirection::PointingRight);
+    // Change cost property to a sidecar property that is not the inline slot.
+    if let PlanOp::ShortestPath { ref mut cost, .. } = plan.ops[2] {
+        *cost = ShortestPathCost::EdgeCostExpr {
+            edge_var: "e".into(),
+            expr: prop("e", "name"),
+        };
+    } else {
+        panic!("expected ShortestPath op");
+    }
+    let mut execution =
+        inline_cost_execution_context(catalog_edge_label("InlineRoad"), PropertyId::from_raw(1));
+    execution.resolved_properties = Some(ResolvedPropertyTable {
+        properties: vec![ResolvedProperty {
+            name: "name".to_string(),
+            id: PropertyId::from_raw(2),
+        }],
+    });
+    let err = store
+        .execute_plan_query(&plan, &params(), execution)
+        .expect_err("non-inline property cost should fail");
+    assert!(
+        err.to_string().contains("not the inline slot")
+            || err.to_string().contains("not projected"),
+        "{err}"
+    );
 }

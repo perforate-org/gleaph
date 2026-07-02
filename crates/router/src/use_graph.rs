@@ -6,9 +6,7 @@ use gleaph_gql::ast::{
 };
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_planner::plan::Str;
-use gleaph_gql_planner::{
-    PhysicalPlan, PlanOp, analyze_remote_use_graph_pushdown, build_block_plan_with_schema,
-};
+use gleaph_gql_planner::{PhysicalPlan, PlanOp, analyze_remote_use_graph_pushdown};
 use gleaph_graph_kernel::entry::GraphId;
 
 use crate::facade::store::RouterStore;
@@ -86,8 +84,7 @@ pub fn resolve_ingress_dispatch(
         let schema = crate::facade::stable::graph_type_catalog::property_schema_for_planning(
             focused_id, &open, &mut typed,
         )?;
-        let plan = build_block_plan_with_schema(&defocused_block, Some(&stats), schema)
-            .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+        let plan = crate::gql::build_router_block_plan(&defocused_block, schema, &stats)?;
         if plan.has_dml() {
             return Err(RouterError::InvalidArgument(
                 "DML in remote USE GRAPH is not supported".into(),
@@ -610,6 +607,7 @@ mod tests {
     use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
 
     use crate::facade::stable::graph_catalog;
+    use gleaph_gql_planner::plan::ShortestPathCost;
 
     fn register_graph(store: &RouterStore, name: &str, is_home: bool) {
         let owner = Principal::from_slice(&[1; 29]);
@@ -661,7 +659,7 @@ mod tests {
             Some(dispatch.dispatch_graph_id)
         );
         let stats = graph_stats_for(dispatch.dispatch_graph_id);
-        let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), &NoSchema)
+        let plan = crate::gql::build_router_block_plan(&dispatch.plan_block, &NoSchema, &stats)
             .expect("plan");
         assert!(
             !plan
@@ -688,7 +686,7 @@ mod tests {
             .expect("dispatch");
         assert_eq!(dispatch.dispatch_graph_id, effective);
         let stats = graph_stats_for(dispatch.dispatch_graph_id);
-        let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), &NoSchema)
+        let plan = crate::gql::build_router_block_plan(&dispatch.plan_block, &NoSchema, &stats)
             .expect("plan");
         let session_current =
             graph_context::session_current_after_activity(&store, &program, caller).expect("sess");
@@ -735,7 +733,7 @@ mod tests {
         let dispatch = resolve_ingress_dispatch(&store, &program, &block, caller, effective)
             .expect("dispatch");
         let stats = graph_stats_for(dispatch.dispatch_graph_id);
-        let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), &NoSchema)
+        let plan = crate::gql::build_router_block_plan(&dispatch.plan_block, &NoSchema, &stats)
             .expect("plan");
         let session_current =
             graph_context::session_current_after_activity(&store, &program, caller).expect("sess");
@@ -777,7 +775,7 @@ mod tests {
         let dispatch = resolve_ingress_dispatch(&store, &program, &block, caller, effective)
             .expect("dispatch");
         let stats = graph_stats_for(dispatch.dispatch_graph_id);
-        let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), &NoSchema)
+        let plan = crate::gql::build_router_block_plan(&dispatch.plan_block, &NoSchema, &stats)
             .expect("plan");
         let session_current =
             graph_context::session_current_after_activity(&store, &program, caller).expect("sess");
@@ -794,6 +792,39 @@ mod tests {
         assert_eq!(
             graph_catalog::lookup_graph_id("tenant_b"),
             Some(segments[1].graph_id)
+        );
+    }
+
+    #[test]
+    fn use_graph_defocus_accepts_cost_by_inline_property() {
+        let store = RouterStore::new();
+        register_graph(&store, "tenant_b", true);
+        let caller = Principal::from_slice(&[1; 29]);
+        let query = "USE tenant_b MATCH p = ANY SHORTEST (a)-[e:ROAD]->{1,5}(c) COST BY e.distance RETURN p";
+        let (program, block) = block_for_query(query);
+        let effective = graph_context::resolve_graph_context(&store, &program, caller)
+            .expect("resolve")
+            .graph_id;
+        let dispatch = resolve_ingress_dispatch(&store, &program, &block, caller, effective)
+            .expect("dispatch should not reject COST BY");
+        assert_eq!(
+            graph_catalog::lookup_graph_id("tenant_b"),
+            Some(dispatch.dispatch_graph_id)
+        );
+        let stats = graph_stats_for(dispatch.dispatch_graph_id);
+        let plan = crate::gql::build_router_block_plan(&dispatch.plan_block, &NoSchema, &stats)
+            .expect("plan should accept COST BY after defocus");
+        let cost = plan
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                PlanOp::ShortestPath { cost, .. } => Some(cost.clone()),
+                _ => None,
+            })
+            .expect("ShortestPath cost");
+        assert!(
+            matches!(&cost, ShortestPathCost::EdgeCostExpr { edge_var, .. } if edge_var.as_ref() == "e"),
+            "expected COST BY in USE GRAPH to lower to EdgeCostExpr, got {cost:?}"
         );
     }
 }

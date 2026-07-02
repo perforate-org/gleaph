@@ -10,7 +10,7 @@ use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql::value_cmp::compare_values;
 use gleaph_gql_planner::plan::{ShortestMode, VarLenSpec};
 use gleaph_graph_kernel::entry::{
-    EdgeLabelId, EdgeTarget, PreparedWeightDecoder, WeightDecodeError,
+    EdgeLabelId, EdgeTarget, PreparedWeightDecoder, PropertyId, WeightDecodeError,
 };
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use ic_stable_lara::VertexId;
@@ -32,6 +32,7 @@ use crate::gql_execution_context::GqlExecutionContext;
 use crate::plan::query::error::PlanQueryError;
 use crate::plan::query::executor::bindings::EdgeBinding;
 use crate::plan::query::executor::context::QueryExprEvaluator;
+use crate::plan::query::executor::eval::try_read_inline_edge_property;
 use crate::plan::query::executor::expand::{
     ExpandDst, edge_binding_handle_for_scanned_expand, edge_binding_matches_label_expr,
     expand_candidates_into,
@@ -40,6 +41,60 @@ use crate::plan::query::executor::{EdgeSequenceOrder, PlanBinding};
 use crate::plan::query::gleaph_weight;
 use crate::plan::query::row::PlanRow;
 use gleaph_graph_kernel::entry::EdgePayload;
+
+/// Pre-validates `COST BY e.property` for a concrete edge label.
+///
+/// Resolves the property name once against the Router-projected tables, proves it equals the
+/// concrete label's `inline_property_id`, and returns the resolved `PropertyId` for per-hop reads.
+/// Returns `Ok(None)` when the expression is not a direct inline-property access (e.g.
+/// `GLEAPH.COST BY GLEAPH.WEIGHT(e)`), letting the caller fall back to the generic evaluator.
+fn prepare_inline_property_cost(
+    expr: &Expr,
+    edge_var: &str,
+    execution: &GqlExecutionContext,
+    label_id: Option<EdgeLabelId>,
+) -> Result<Option<PropertyId>, PlanQueryError> {
+    let label_id = match label_id {
+        Some(id) => id,
+        None => return Ok(None),
+    };
+    let ExprKind::PropertyAccess {
+        expr: base,
+        property,
+    } = &expr.kind
+    else {
+        return Ok(None);
+    };
+    let ExprKind::Variable(v) = &base.kind else {
+        return Ok(None);
+    };
+    if v != edge_var {
+        return Ok(None);
+    }
+    let property_name = property.as_str();
+    let Some(property_id) = execution.resolved_property_id(property_name) else {
+        return Err(PlanQueryError::GleaphCost {
+            message: format!(
+                "COST BY e.property: property '{property_name}' is not projected for this query"
+            ),
+        });
+    };
+    let Some((inline_property_id, _profile)) =
+        execution.resolved_edge_label_inline_property(label_id)
+    else {
+        return Err(PlanQueryError::GleaphCost {
+            message: "COST BY e.property: edge label has no Router-resolved inline property".into(),
+        });
+    };
+    if inline_property_id != property_id {
+        return Err(PlanQueryError::GleaphCost {
+            message: format!(
+                "COST BY e.property: property '{property_name}' is not the inline slot for this edge label"
+            ),
+        });
+    }
+    Ok(Some(property_id))
+}
 
 pub(crate) fn weighted_shortest_can_use_hop_count(mode: ShortestMode, cost_expr: &Expr) -> bool {
     let ExprKind::Literal(value) = &cost_expr.kind else {
@@ -400,6 +455,8 @@ pub(crate) fn weighted_shortest_paths_between(
     let mut hop_cost_cache: WeightedHopCostCache = IntMap::default();
     let direct_gleaph_weight_decoder =
         direct_gleaph_weight_hop_cost_decoder(cost_expr, edge_var, gleaph_weight_decoders)?;
+    let prepared_inline_cost =
+        prepare_inline_property_cost(cost_expr, edge_var, execution, label_id)?;
     let use_hop_cost_cache = direct_gleaph_weight_decoder.is_none();
     let mut any_best_cost = if matches!(mode, ShortestMode::AnyShortest)
         && bounds.min <= 1
@@ -452,10 +509,11 @@ pub(crate) fn weighted_shortest_paths_between(
             continue;
         }
 
-        if let (Some(prep), Some(decoder), false) = (
+        if let (Some(prep), Some(decoder), false, None) = (
             fixed_label_expand.as_ref(),
             direct_gleaph_weight_decoder,
             emit_edge_binding,
+            prepared_inline_cost,
         ) {
             #[cfg(all(feature = "canbench", target_family = "wasm"))]
             let _expand_scope = bench_scope("weighted_shortest_expand");
@@ -572,6 +630,7 @@ pub(crate) fn weighted_shortest_paths_between(
                             let _scope = bench_scope("weighted_shortest_hop_cost_cache_miss");
                             let cost = eval_shortest_hop_cost(
                                 store,
+                                execution,
                                 &element_id_key,
                                 cost_expr,
                                 edge_var,
@@ -579,6 +638,7 @@ pub(crate) fn weighted_shortest_paths_between(
                                 label_expr,
                                 parameters,
                                 gleaph_weight_decoders,
+                                prepared_inline_cost,
                             )?;
                             hop_cost_cache
                                 .entry(outer)
@@ -662,6 +722,8 @@ fn weighted_shortest_k_paths_between(
     let mut hop_cost_cache: WeightedHopCostCache = IntMap::default();
     let direct_gleaph_weight_decoder =
         direct_gleaph_weight_hop_cost_decoder(cost_expr, edge_var, gleaph_weight_decoders)?;
+    let prepared_inline_cost =
+        prepare_inline_property_cost(cost_expr, edge_var, execution, label_id)?;
     let use_hop_cost_cache = direct_gleaph_weight_decoder.is_none();
     let mut candidates = Vec::new();
     let mut payload_scratch = LabeledEdgePayloadBatchScratch::<Edge>::default();
@@ -685,10 +747,11 @@ fn weighted_shortest_k_paths_between(
             continue;
         }
 
-        if let (Some(prep), Some(decoder), false) = (
+        if let (Some(prep), Some(decoder), false, None) = (
             fixed_label_expand.as_ref(),
             direct_gleaph_weight_decoder,
             emit_edge_binding,
+            prepared_inline_cost,
         ) {
             let base_cost = entry.cost.clone();
             prep.expand_payload_batches(store, current, &mut payload_scratch, |batch| {
@@ -787,6 +850,7 @@ fn weighted_shortest_k_paths_between(
                             }
                             let cost = eval_shortest_hop_cost(
                                 store,
+                                execution,
                                 &element_id_key,
                                 cost_expr,
                                 edge_var,
@@ -794,6 +858,7 @@ fn weighted_shortest_k_paths_between(
                                 label_expr,
                                 parameters,
                                 gleaph_weight_decoders,
+                                prepared_inline_cost,
                             )?;
                             hop_cost_cache
                                 .entry(outer)
@@ -895,6 +960,7 @@ fn decode_direct_gleaph_weight_hop_cost_from_payload(
 #[allow(clippy::too_many_arguments)]
 fn eval_shortest_hop_cost(
     store: &GraphStore,
+    execution: &GqlExecutionContext,
     element_id_key: &ElementIdEncodingKey,
     expr: &Expr,
     edge_var: &str,
@@ -902,6 +968,7 @@ fn eval_shortest_hop_cost(
     label_expr: Option<&LabelExpr>,
     parameters: &BTreeMap<String, Value>,
     gleaph_weight_decoders: Option<&BTreeMap<String, PreparedWeightDecoder>>,
+    prepared_inline_cost: Option<PropertyId>,
 ) -> Result<WeightedCost, PlanQueryError> {
     if label_expr.is_some() {
         let w = gleaph_weight::decode_shortest_hop_cost_from_edge_binding(&edge_binding)?;
@@ -915,15 +982,26 @@ fn eval_shortest_hop_cost(
     )? {
         return Ok(cost);
     }
+    if let Some(property_id) = prepared_inline_cost {
+        let value = try_read_inline_edge_property(
+            &edge_binding,
+            property_id,
+            execution.resolved_labels.as_ref(),
+        )?
+        .ok_or_else(|| PlanQueryError::GleaphCost {
+            message: "COST BY e.property: inline payload read returned no value".into(),
+        })?;
+        return WeightedCost::from_value(value);
+    }
     let mut row = PlanRow::new();
     row.insert(edge_var.to_string(), PlanBinding::Edge(edge_binding));
     let evaluator = QueryExprEvaluator {
         store,
         parameters,
         aggregate_specs: None,
-        caller: None,
-        resolved_labels: None,
-        resolved_properties: None,
+        caller: execution.caller,
+        resolved_labels: execution.resolved_labels.as_ref(),
+        resolved_properties: execution.resolved_properties.as_ref(),
         gleaph_weight_decoders,
         element_id_key: *element_id_key,
     };

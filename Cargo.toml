@@ -17,6 +17,7 @@ members = [
     "crates/ic-stable-paged-ordered-map",
     "crates/ic-stable-vec-deque",
     "crates/pocket-ic-tests",
+    "crates/gql-extension-integration",
 ]
 resolver = "2"
 
@@ -37,6 +38,7 @@ gleaph-graph-kernel = { path = "crates/graph-kernel" }
 gleaph-graph-vector-index = { path = "crates/graph-vector-index" }
 gleaph-router = { path = "crates/router" }
 gleaph-graph-prepared = { path = "crates/graph-prepared" }
+gleaph-gql-extension-integration = { path = "crates/gql-extension-integration" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }

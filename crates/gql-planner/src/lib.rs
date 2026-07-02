@@ -59,11 +59,12 @@ pub use planner::{
     PlanBuildOutput, PlannerError, analyze_remote_use_graph_pushdown, build_block_plan,
     build_block_plan_output, build_block_plan_output_for_execute,
     build_block_plan_output_for_execute_with_schema, build_block_plan_output_with_schema,
-    build_block_plan_with_schema, build_composite_plan, build_composite_plan_output,
-    build_composite_plan_output_with_schema, build_composite_plan_with_schema, build_plan,
-    build_plan_output, build_plan_output_for_execute, build_plan_output_for_execute_with_schema,
-    build_plan_output_with_schema, build_plan_with_schema, build_plan_with_schema_and_options,
-    build_statement_plan, build_statement_plan_output, build_statement_plan_output_with_schema,
+    build_block_plan_with_schema, build_block_plan_with_schema_and_options, build_composite_plan,
+    build_composite_plan_output, build_composite_plan_output_with_schema,
+    build_composite_plan_with_schema, build_plan, build_plan_output, build_plan_output_for_execute,
+    build_plan_output_for_execute_with_schema, build_plan_output_with_schema,
+    build_plan_with_schema, build_plan_with_schema_and_options, build_statement_plan,
+    build_statement_plan_output, build_statement_plan_output_with_schema,
     build_statement_plan_with_options, build_statement_plan_with_schema,
 };
 pub use pushdown::collect_variables as collect_expr_variables;

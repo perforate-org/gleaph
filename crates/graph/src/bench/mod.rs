@@ -208,6 +208,15 @@ fn execute_shortest_plan(store: &GraphStore, plan: &PhysicalPlan) -> PlanQueryRe
     .expect("shortest path plan")
 }
 
+fn execute_shortest_plan_with_context(
+    store: &GraphStore,
+    plan: &PhysicalPlan,
+    execution: GqlExecutionContext,
+) -> PlanQueryResult {
+    pollster::block_on(execute_plan_query(store, plan, &params(), None, execution))
+        .expect("shortest path plan")
+}
+
 const FRONTIER_BRANCH: usize = 4;
 const FRONTIER_DEPTH: u64 = 4;
 
@@ -323,6 +332,125 @@ fn setup_repeated_edge_cost_cache_graph(store: &GraphStore) -> (VertexId, Vertex
             reverse_vertices: vec![],
         })
         .expect("finalize bulk ingest stands in for production post-ingest finalize");
+
+    (src, dst)
+}
+
+fn inline_cost_execution_context(
+    label_id: EdgeLabelId,
+    property_id: PropertyId,
+) -> GqlExecutionContext {
+    use gleaph_graph_kernel::plan_exec::{
+        ResolvedEdgeLabel, ResolvedLabelTable, ResolvedProperty, ResolvedPropertyTable,
+        ResolvedVertexLabel,
+    };
+    let src_label_id = crate::test_labels::vertex_label_id_for_name("BenchInlineCostSrc");
+    let dst_label_id = crate::test_labels::vertex_label_id_for_name("BenchInlineCostDst");
+    let labels = ResolvedLabelTable {
+        vertex: vec![
+            ResolvedVertexLabel {
+                name: "BenchInlineCostSrc".to_string(),
+                id: src_label_id,
+            },
+            ResolvedVertexLabel {
+                name: "BenchInlineCostDst".to_string(),
+                id: dst_label_id,
+            },
+        ],
+        edge: vec![ResolvedEdgeLabel::with_inline_property(
+            "BenchInlineCostEdge".to_string(),
+            label_id,
+            EdgePayloadProfile {
+                byte_width: 2,
+                encoding: EdgePayloadEncoding::RawU16,
+            },
+            Some(property_id),
+        )],
+    };
+    let properties = ResolvedPropertyTable {
+        properties: vec![ResolvedProperty {
+            name: "distance".to_string(),
+            id: property_id,
+        }],
+    };
+    GqlExecutionContext {
+        resolved_labels: Some(labels),
+        resolved_properties: Some(properties),
+        ..GqlExecutionContext::with_host_test_element_id_key()
+    }
+}
+
+const INLINE_CACHE_PREFIX_COUNT: usize = 48;
+const INLINE_CACHE_HUB_OUT_DEGREE: usize = 24;
+
+fn setup_repeated_inline_cost_cache_graph(store: &GraphStore) -> (VertexId, VertexId) {
+    let src = store
+        .insert_vertex_named(["BenchInlineCostSrc"], Vec::<(&str, Value)>::new())
+        .expect("insert src");
+    let hub = store
+        .insert_vertex_named(["BenchInlineCostHub"], Vec::<(&str, Value)>::new())
+        .expect("insert hub");
+    let dst = store
+        .insert_vertex_named(["BenchInlineCostDst"], Vec::<(&str, Value)>::new())
+        .expect("insert dst");
+
+    let label_id = crate::test_labels::edge_label_id_for_name("BenchInlineCostEdge");
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        EdgePayloadProfile {
+            byte_width: 2,
+            encoding: EdgePayloadEncoding::RawU16,
+        },
+    );
+    crate::test_labels::install_test_edge_inline_property(label_id, PropertyId::from_raw(1));
+    let road = catalog_edge_label("BenchInlineCostEdge");
+
+    let mut prefixes = Vec::with_capacity(INLINE_CACHE_PREFIX_COUNT);
+    for _ in 0..INLINE_CACHE_PREFIX_COUNT {
+        prefixes.push(
+            store
+                .insert_vertex_named(["BenchInlineCostPrefix"], Vec::<(&str, Value)>::new())
+                .expect("insert prefix"),
+        );
+    }
+    for (i, &prefix) in prefixes.iter().enumerate() {
+        store
+            .insert_directed_edge_with_payload_bytes(prefix, hub, Some(road), &1u16.to_le_bytes())
+            .unwrap_or_else(|e| panic!("prefix->hub i={i}: {e:?}"));
+    }
+    for (i, &prefix) in prefixes.iter().enumerate() {
+        store
+            .insert_directed_edge_with_payload_bytes(
+                src,
+                prefix,
+                Some(road),
+                &((i % 10) as u16 + 1).to_le_bytes(),
+            )
+            .unwrap_or_else(|e| panic!("src->prefix i={i}: {e:?}"));
+    }
+    for j in 0..INLINE_CACHE_HUB_OUT_DEGREE {
+        let spoke = store
+            .insert_vertex_named(["BenchInlineCostSpoke"], Vec::<(&str, Value)>::new())
+            .expect("insert spoke");
+        store
+            .insert_directed_edge_with_payload_bytes(
+                hub,
+                spoke,
+                Some(road),
+                &((j % 5) as u16 + 1).to_le_bytes(),
+            )
+            .expect("hub->spoke");
+        store
+            .insert_directed_edge_with_payload_bytes(spoke, dst, Some(road), &1u16.to_le_bytes())
+            .expect("spoke->dst");
+    }
+
+    store
+        .finalize_bulk_ingest(&crate::facade::BulkIngestFinalizeSpec {
+            forward_vertices: vec![src],
+            reverse_vertices: vec![],
+        })
+        .expect("finalize bulk ingest");
 
     (src, dst)
 }
@@ -449,6 +577,47 @@ fn bench_graph_weighted_shortest_repeated_edge_cost_cache_48prefix_24hub_out()
             result.rows.len(),
             1,
             "edge-cost cache benchmark should find one path"
+        );
+        black_box(result.rows.len())
+    })
+}
+
+/// Same hub convergence workload as `bench_graph_weighted_shortest_repeated_edge_cost_cache`,
+/// but hop costs are sourced through the inline property reader (`COST BY e.distance`) rather
+/// than the direct `GLEAPH.WEIGHT(e)` decoder fast path. Measures the resolution/decode overhead
+/// of the Slice 23 path.
+#[bench(raw)]
+fn bench_graph_weighted_shortest_inline_cost_48prefix_24hub_out() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let (_src, _dst) = setup_repeated_inline_cost_cache_graph(&store);
+    let edge_label_id = catalog_edge_label("BenchInlineCostEdge");
+    let property_id = PropertyId::from_raw(1);
+    let execution = inline_cost_execution_context(edge_label_id, property_id);
+    let plan = weighted_shortest_plan(
+        "BenchInlineCostSrc",
+        "BenchInlineCostDst",
+        "BenchInlineCostEdge",
+        Expr::new(ExprKind::PropertyAccess {
+            expr: Box::new(Expr::var("e")),
+            property: "distance".into(),
+        }),
+        5,
+    );
+
+    // Warm up to ensure any one-time resolution work is outside the measured closure.
+    let _ = execute_shortest_plan_with_context(&store, &plan, execution.clone());
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("weighted_shortest_inline_cost");
+        let result = execute_shortest_plan_with_context(
+            black_box(&store),
+            black_box(&plan),
+            execution.clone(),
+        );
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "inline-cost benchmark should find one path"
         );
         black_box(result.rows.len())
     })

@@ -8,7 +8,7 @@ use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_ic::{IcWirePlanQueryResult, decode_gql_params_blob};
 use gleaph_gql_planner::wire::encode_block_plans;
-use gleaph_gql_planner::{PhysicalPlan, PlanOp, build_block_plan_with_schema};
+use gleaph_gql_planner::{PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{ClaimId, EffectId, ShardId, ShardRegistryEntry};
 use gleaph_graph_kernel::index::{
@@ -53,6 +53,28 @@ use crate::planner_stats::RouterGraphStats;
 use crate::rbac::{authorize_adhoc_gql, authorize_index_ddl};
 use crate::seed::{IndexAnchor, SeedAnchorSet, SeedProbe};
 use crate::state::RouterError;
+
+/// Build a Router ingress block plan with the shared Gleaph path-extension handler.
+///
+/// All production Router planning entry points that may see path-pattern extensions
+/// (ad-hoc `run_gql`, prepared registration, and `USE GRAPH` defocus/replanning) must use
+/// this helper so that `COST BY` and `GLEAPH.COST` are not rejected by the default handler.
+pub(crate) fn build_router_block_plan(
+    block: &gleaph_gql::ast::StatementBlock,
+    schema: &dyn gleaph_gql::type_check::PropertySchema,
+    stats: &crate::planner_stats::RouterGraphStats,
+) -> Result<PhysicalPlan, RouterError> {
+    use gleaph_gql_planner::{PlanBuildOptions, build_block_plan_with_schema_and_options};
+    build_block_plan_with_schema_and_options(
+        block,
+        schema,
+        PlanBuildOptions {
+            stats: Some(stats),
+            path_extensions: &gleaph_gql_extension_integration::GLEAPH_PATH_EXTENSION_HANDLER,
+        },
+    )
+    .map_err(|e| RouterError::InvalidArgument(e.to_string()))
+}
 
 fn pack_posting_hits(hits: &[PostingHit]) -> Vec<u64> {
     hits.iter()
@@ -679,8 +701,7 @@ async fn run_gql(
         &open,
         &mut typed,
     )?;
-    let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), schema)
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let plan = build_router_block_plan(&dispatch.plan_block, schema, &stats)?;
     let requires_write_path = plan.has_dml();
     if requires_write_path != flags.requires_write_path() {
         return Err(RouterError::InvalidArgument(

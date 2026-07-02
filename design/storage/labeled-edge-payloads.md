@@ -55,7 +55,9 @@ schema (`property_id`, `scalar_type`, derived `EdgePayloadProfile`) per [ADR 003
 20](../adr/0034-gleaph-gql-extension-syntax.md). Development stable data must be wiped when this format changes because backward compatibility is not maintained. The physical `EdgePayloadProfile` and the named inline property identity (`inline_property_id`) are both derived from the canonical record and travel on `ResolvedEdgeLabel` per
 [ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md). Graph shards resolve schema from
 execution context and must treat payload bytes as the only read source for the matching inline
-property; sidecar property values are not consulted. Graph stable `EDGE_PAYLOAD_PROFILES` is retired
+property; sidecar property values are not consulted. This applies to ordinary reads, filters,
+projections, `ORDER BY`, and shortest-path hop cost evaluation (`COST BY e.property`), all of which
+share one inline-aware read helper. Graph stable `EDGE_PAYLOAD_PROFILES` is retired
 (facade MemoryIds 38–41 repacked to 37–40). Tests may inject profiles via `test_labels` or an
 explicit `ResolvedLabelTable`.
 

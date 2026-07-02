@@ -1014,6 +1014,12 @@ fn collect_property_uses_in_ops(ops: &[PlanOp], uses: &mut PlanPropertyUses) {
                 add_property_projection(uses, near_property_projection.as_deref());
                 add_property_projection(uses, far_property_projection.as_deref());
             }
+            PlanOp::ShortestPath {
+                cost: ShortestPathCost::EdgeCostExpr { expr, .. },
+                ..
+            } => {
+                collect_read_properties_from_expr(expr, uses);
+            }
             PlanOp::InsertVertex { properties, .. } | PlanOp::InsertEdge { properties, .. } => {
                 for assignment in properties {
                     uses.add_property(&assignment.name, PropertyUseIntent::CreateIfMissing);
@@ -1458,6 +1464,52 @@ mod property_uses_tests {
         assert_eq!(
             uses.properties.get("age" as &str),
             Some(&PropertyUseIntent::ReadExisting)
+        );
+    }
+
+    #[test]
+    fn shortest_path_edge_cost_expr_contributes_read_property_uses() {
+        use gleaph_gql::types::EdgeDirection;
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: None,
+                property_projection: None,
+            },
+            PlanOp::NodeScan {
+                variable: "b".into(),
+                label: None,
+                property_projection: None,
+            },
+            PlanOp::ShortestPath {
+                src: "a".into(),
+                dst: "b".into(),
+                edge: "e".into(),
+                path_var: None,
+                emit_edge_binding: true,
+                emit_path_binding: false,
+                mode: ShortestMode::AnyShortest,
+                direction: EdgeDirection::PointingRight,
+                label: Some("ROAD".into()),
+                label_expr: None,
+                var_len: Some(VarLenSpec {
+                    min: 1,
+                    max: Some(5),
+                }),
+                cost: ShortestPathCost::EdgeCostExpr {
+                    edge_var: "e".into(),
+                    expr: Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(Expr::new(ExprKind::Variable("e".into()))),
+                        property: "distance".into(),
+                    }),
+                },
+            },
+        ]);
+        let uses = plan.property_uses();
+        assert_eq!(
+            uses.properties.get("distance" as &str),
+            Some(&PropertyUseIntent::ReadExisting),
+            "COST BY e.distance must project 'distance' as a read property"
         );
     }
 }

@@ -7,11 +7,8 @@ mod executor;
 mod gleaph_weight;
 mod live_vars;
 mod materialize;
-mod path_pattern_extensions;
 mod row;
 mod sort_keys;
-
-pub(crate) use path_pattern_extensions::GLEAPH_PATH_EXTENSION_HANDLER;
 
 pub use error::PlanQueryError;
 pub use executor::EdgeBinding;

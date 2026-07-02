@@ -1,12 +1,14 @@
 //! Prepared query catalog on the router (plan wire blobs).
 
+use candid::Principal;
 use ic_cdk::api::msg_caller;
 
+use crate::gql::build_router_block_plan;
 use gleaph_gql::parser;
 use gleaph_gql::program_modification::classify_program;
 use gleaph_gql::type_check::NoSchema;
 use gleaph_gql_ic::decode_gql_params_blob;
-use gleaph_gql_planner::build_block_plan_with_schema;
+use gleaph_gql_planner::PhysicalPlan;
 use gleaph_gql_planner::wire::encode_block_plans;
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::plan_exec::{GqlExecutionMode, GqlQueryResult, ReadMode};
@@ -23,10 +25,15 @@ use crate::index_catalog::graph_stats_for;
 use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute};
 use crate::state::RouterError;
 
-pub fn prepared_register(name: String, query: String) -> Result<(), RouterError> {
-    authorize_prepared_catalog_change(&msg_caller())?;
-    let program = parser::parse(&query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
-    let caller = msg_caller();
+/// Plan a prepared query through the production Router ingress planning seam.
+///
+/// This is the exact planning path used by `prepared_register` after authorization,
+/// exposed without `msg_caller` so unit tests can drive it with an explicit principal.
+pub(crate) fn plan_prepared_query(
+    query: &str,
+    caller: Principal,
+) -> Result<(PhysicalPlan, GraphId, bool), RouterError> {
+    let program = parser::parse(query).map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let store = RouterStore::new();
     let resolved = graph_context::resolve_graph_context(&store, &program, caller)?;
     let seed = graph_context::session_graph_seed(&store, resolved, caller);
@@ -60,8 +67,7 @@ pub fn prepared_register(name: String, query: String) -> Result<(), RouterError>
         &open,
         &mut typed,
     )?;
-    let plan = build_block_plan_with_schema(&dispatch.plan_block, Some(&stats), schema)
-        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+    let plan = build_router_block_plan(&dispatch.plan_block, schema, &stats)?;
     let requires_write_path = plan.has_dml();
     let classified = classify_program(&program).requires_write_path();
     if requires_write_path != classified {
@@ -69,9 +75,6 @@ pub fn prepared_register(name: String, query: String) -> Result<(), RouterError>
             "planner DML content does not match program classification".into(),
         ));
     }
-    // ADR 0029 Phase 5: never persist a prepared plan that is a federated multi-DML bundle; the
-    // gate runs at registration (the AST is available here) so execute-time dispatch is clean. A
-    // completely-new INSERT-only bundle is exempt (contract 1 places it on the latest shard).
     if requires_write_path && !plan.is_pure_insert() {
         crate::gql::enforce_multi_dml_bundle_gate(&store, dispatch.dispatch_graph_id, block)?;
     }
@@ -94,6 +97,13 @@ pub fn prepared_register(name: String, query: String) -> Result<(), RouterError>
             ));
         }
     };
+    Ok((plan, graph_id, requires_write_path))
+}
+
+pub fn prepared_register(name: String, query: String) -> Result<(), RouterError> {
+    authorize_prepared_catalog_change(&msg_caller())?;
+    let caller = msg_caller();
+    let (plan, graph_id, requires_write_path) = plan_prepared_query(&query, caller)?;
     let plan_blob = encode_block_plans(std::slice::from_ref(&plan), requires_write_path)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let key = prepared_key(graph_id, &name);
@@ -247,7 +257,7 @@ async fn prepared_execute(
 
 fn resolve_prepared_graph_id(
     store: &RouterStore,
-    caller: candid::Principal,
+    caller: Principal,
     name: &str,
 ) -> Result<GraphId, RouterError> {
     let visible = store.list_visible_graph_ids(caller)?;
@@ -284,6 +294,50 @@ mod tests {
         assert_ne!(
             prepared_key(graph, "q1"),
             prepared_key(GraphId::from_raw(8), "q1")
+        );
+    }
+
+    use candid::Principal;
+    use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
+    use gleaph_gql_planner::plan::{PlanOp, ShortestPathCost};
+
+    #[test]
+    fn prepared_block_plan_accepts_cost_by_inline_property() {
+        let store = crate::facade::store::RouterStore::new();
+        let owner = Principal::from_slice(&[1; 29]);
+        crate::facade::auth::grant_admins(&[owner]);
+        store
+            .admin_register_graph(
+                owner,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    graph_name: "g1".to_owned(),
+                    canister_id: Principal::management_canister(),
+                    owner,
+                    admins: Default::default(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: true,
+                },
+            )
+            .expect("register");
+        let query = "MATCH ANY SHORTEST (a:CitySrc)-[e:ROAD]->{1,5}(c:CityDst) COST BY e.distance RETURN a, c";
+        let plan = crate::prepared::plan_prepared_query(query, owner)
+            .expect("prepared planning seam should accept COST BY")
+            .0;
+        let cost = plan
+            .ops
+            .iter()
+            .find_map(|op| match op {
+                PlanOp::ShortestPath { cost, .. } => Some(cost.clone()),
+                _ => None,
+            })
+            .expect("ShortestPath cost");
+        assert!(
+            matches!(&cost, ShortestPathCost::EdgeCostExpr { edge_var, .. } if edge_var.as_ref() == "e"),
+            "expected COST BY in prepared planning to lower to EdgeCostExpr, got {cost:?}"
         );
     }
 }

@@ -1000,6 +1000,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-gql-extension-integration"
+version = "0.1.0"
+dependencies = [
+ "gleaph-gql",
+ "gleaph-gql-planner",
+ "gleaph-graph-kernel",
+]
+
+[[package]]
 name = "gleaph-gql-ic"
 version = "0.1.0"
 dependencies = [
@@ -1050,6 +1059,7 @@ dependencies = [
  "ethnum",
  "f256",
  "gleaph-gql",
+ "gleaph-gql-extension-integration",
  "gleaph-gql-ic",
  "gleaph-gql-planner",
  "gleaph-graph-kernel",
@@ -1168,6 +1178,7 @@ dependencies = [
  "futures",
  "gleaph-auth",
  "gleaph-gql",
+ "gleaph-gql-extension-integration",
  "gleaph-gql-ic",
  "gleaph-gql-planner",
  "gleaph-graph-catalog",

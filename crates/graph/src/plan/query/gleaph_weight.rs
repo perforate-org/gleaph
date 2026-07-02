@@ -5,8 +5,12 @@
 
 use std::collections::{BTreeMap, BTreeSet};
 
-use gleaph_gql::ast::{Expr, ExprKind, LetBinding, ObjectName};
+use gleaph_gql::ast::{Expr, ExprKind, LetBinding};
 use gleaph_gql::types::LabelExpr;
+pub(crate) use gleaph_gql_extension_integration::{
+    GleaphWeightEdgeRef, gleaph_weight_arg_edge_var, gleaph_weight_edge_ref,
+    gleaph_weight_single_arg, is_gleaph_weight_call,
+};
 use gleaph_gql_planner::plan::{
     PlanOp, ProjectColumn, ScanValue, ShortestPathCost, Str, VarLenSpec,
 };
@@ -14,7 +18,6 @@ use gleaph_graph_kernel::entry::{
     DecodedEdgePayload, EdgeLabelId, EdgePayloadProfileError, PreparedEdgePayloadDecoder,
     PreparedWeightDecoder, WeightDecodeError, WeightProfilePrepareError, decode_edge_payload,
 };
-use gleaph_graph_kernel::gql_dialect::GLEAPH_WEIGHT;
 
 use crate::facade::{EdgeHandle, catalog_edge_label_from_wire};
 use crate::gql_execution_context::GqlExecutionContext;
@@ -117,55 +120,6 @@ pub(crate) fn prepare_gleaph_weight_decoders(
         out.insert(edge_var, decoder);
     }
     Ok(Some(out))
-}
-
-pub(crate) fn is_gleaph_weight_call(name: &ObjectName, distinct: bool) -> bool {
-    !distinct && GLEAPH_WEIGHT.matches_ascii_case_insensitive(&name.parts)
-}
-
-pub(crate) fn gleaph_weight_single_arg(args: &[Expr]) -> Option<&Expr> {
-    if args.len() == 1 {
-        Some(&args[0])
-    } else {
-        None
-    }
-}
-
-/// How [`GLEAPH.WEIGHT`] names an edge in an expression.
-#[derive(Clone, Debug, PartialEq)]
-pub(crate) enum GleaphWeightEdgeRef {
-    /// Single-hop expand or shortest-path relax step.
-    SingletonVar(String),
-    /// Indexed element of a variable-length edge group (`e[-1]`, `e[0]`, …).
-    /// Reachable only through the cypher list-index expression.
-    #[cfg(feature = "cypher")]
-    GroupElement { group_var: String, index: Box<Expr> },
-}
-
-pub(crate) fn gleaph_weight_edge_ref(expr: &Expr) -> Option<GleaphWeightEdgeRef> {
-    match &expr.kind {
-        ExprKind::Paren(inner) => gleaph_weight_edge_ref(inner),
-        ExprKind::Variable(v) => Some(GleaphWeightEdgeRef::SingletonVar(v.clone())),
-        #[cfg(feature = "cypher")]
-        ExprKind::ListIndex { list, index } => {
-            let ExprKind::Variable(v) = &list.kind else {
-                return None;
-            };
-            Some(GleaphWeightEdgeRef::GroupElement {
-                group_var: v.clone(),
-                index: index.clone(),
-            })
-        }
-        _ => None,
-    }
-}
-
-pub(crate) fn gleaph_weight_arg_edge_var(expr: &Expr) -> Option<String> {
-    match gleaph_weight_edge_ref(expr)? {
-        GleaphWeightEdgeRef::SingletonVar(v) => Some(v),
-        #[cfg(feature = "cypher")]
-        GleaphWeightEdgeRef::GroupElement { group_var, .. } => Some(group_var),
-    }
 }
 
 pub(crate) fn expand_produces_group_edge_var(ops: &[PlanOp], edge_var: &str) -> bool {

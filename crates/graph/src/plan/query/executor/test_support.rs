@@ -17,11 +17,11 @@ use gleaph_gql_planner::{
 };
 use gleaph_graph_kernel::entry::GraphId;
 
-use super::super::GLEAPH_PATH_EXTENSION_HANDLER;
 use super::context::QueryExprEvaluator;
 use crate::facade::FederationRouting;
 use crate::index::federation_routing;
 use crate::index::lookup::PropertyIndexLookup;
+use gleaph_gql_extension_integration::GLEAPH_PATH_EXTENSION_HANDLER;
 
 pub use super::super::error::PlanQueryError;
 pub use super::super::row::PlanRow;
