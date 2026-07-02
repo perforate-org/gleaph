@@ -18,6 +18,11 @@ Read, in this order:
 
 Keep read-only reviews read-only. Do not rerun long tests, clippy, builds, or benchmarks unless explicitly assigned.
 
+Timebox a focused test-only review to about three minutes. Make one plan/base/diff/report pass, then
+finalize once traceability and counterexamples are complete. Do not repeatedly reread the whole diff,
+probe unavailable process APIs, or keep exploring inherited non-blocking weaknesses after the verdict
+is determined; list at most three useful non-blocking observations.
+
 ## Contract Traceability
 
 Map every removed or changed contract to a current named scenario and assertion. For each plan criterion record:
@@ -69,6 +74,9 @@ Verify:
 - test-only changes do not silently invalidate active docs or comments.
 
 Do not duplicate expensive validation merely to confirm the implementer's report. Inspect the transcript or evidence; run only lightweight checks allowed by the assignment.
+
+If validation evidence is incomplete, report that fact directly. Do not spend the review budget trying
+to recreate the implementation environment.
 
 ## Report
 
