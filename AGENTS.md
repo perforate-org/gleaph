@@ -135,8 +135,9 @@ panes for implementation and validation. The default workflow is:
 1. The primary pane inspects the repository, chooses the next bounded slice, and writes the
    reviewable implementation plan.
 2. The primary pane creates or reuses a sibling herdr pane and gives that pane the plan plus the
-   relevant repository instructions. The sibling pane owns code changes, tests, design-document
-   synchronization, and benchmarks for that iteration.
+   relevant repository instructions. Record the current primary and implementation pane ids from
+   `herdr pane list` and include both ids in the task prompt. The sibling pane owns code changes,
+   tests, design-document synchronization, and benchmarks for that iteration.
 3. The primary pane does not duplicate the implementation. It remains available for user
    interaction and reads the sibling pane's completion report and the actual repository diff.
 4. The primary pane performs an independent architecture, contract, test, benchmark, and design-doc
@@ -151,6 +152,20 @@ Run long PocketIC suites, workspace tests, and canbench in sibling panes. Use bo
 calls or inspect their current output between useful review work; do not block the primary pane for
 tens of minutes. A sibling process is not considered successful until its actual terminal result is
 read and verified.
+
+Every implementation prompt must also require completion notification. After the implementation
+pane has finished edits and validation and prepared its final report, but immediately before it
+returns its final answer, it must run:
+
+```sh
+herdr pane run <primary-pane-id> "Implementation pane <implementation-pane-id> finished. Please read its final report and review the actual diff."
+```
+
+The primary pane must not depend on passive `agent_status` delivery: herdr status changes are not
+automatically injected into the active Codex conversation. On receiving the message, use a bounded
+`herdr wait agent-status <implementation-pane-id> --status done` when necessary, then read the pane's
+recent unwrapped output. Re-read pane ids before sending follow-up work because ids may compact after
+tabs or panes are closed.
 
 ## Format, Test, and Benchmark
 
