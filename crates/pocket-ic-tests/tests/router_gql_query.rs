@@ -58,23 +58,166 @@ fn standalone_e2e_insert_assigns_global_id() {
     assert_eq!(inserted.global_vertex_id, same_id);
 }
 
+/// Consolidated lifecycle for the five former standalone vertex-index contracts:
+///
+/// 1. `standalone_gql_query_index_seeded_property_eq`
+/// 2. `standalone_gql_query_index_intersection_two_properties`
+/// 3. `standalone_drop_index_property_eq_still_queries_via_scan`
+/// 4. `drop_index_if_exists_is_idempotent`
+/// 5. `drop_index_without_if_exists_errors_when_missing`
+///
+/// State machine: absent -> created -> indexed equality -> two-index intersection ->
+/// dropped -> scan fallback -> idempotent IF EXISTS drop -> missing DROP error.
 #[test]
-fn standalone_gql_query_index_seeded_property_eq() {
+fn single_shard_vertex_index_lifecycle() {
     let env = install_single_shard_federation();
     let age = admin_intern_property(&env, "age");
+    let score = admin_intern_property(&env, "score");
+
+    // Unique seed values isolate each contract within the shared environment.
+    const EQUALITY_AGE: i64 = 1000;
+    const INTERSECTION_AGE: i64 = 500;
+    const INTERSECTION_SCORE: i64 = 6000;
+
+    // Create both indexes up front so every later insert is posted.
     create_vertex_property_index(
         &env,
         INDEX_AGE_NAME,
         INDEX_VERTEX_LABEL,
         "age",
-        "standalone_gql_query_index_seeded_property_eq",
+        "lifecycle_create_age",
     );
-    let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
+    create_vertex_property_index(
+        &env,
+        INDEX_SCORE_NAME,
+        INDEX_VERTEX_LABEL,
+        "score",
+        "lifecycle_create_score",
+    );
 
-    // Inline property equality yields a literal IndexScan anchor (match-level WHERE uses $age).
-    let result = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
+    let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), EQUALITY_AGE);
+    assert_indexed_equality_lookup(
+        &env,
+        "age",
+        EQUALITY_AGE,
+        "former: standalone_gql_query_index_seeded_property_eq",
+    );
 
-    assert_eq!(result.row_count, 1);
+    let _ = e2e_insert_vertex_with_two_properties(
+        &env,
+        env.graph_source,
+        age.raw(),
+        INTERSECTION_AGE,
+        score.raw(),
+        INTERSECTION_SCORE,
+    );
+    let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), INTERSECTION_AGE);
+
+    assert_indexed_intersection(
+        &env,
+        "age",
+        INTERSECTION_AGE,
+        "score",
+        INTERSECTION_SCORE,
+        "former: standalone_gql_query_index_intersection_two_properties",
+    );
+
+    // Drop the age index; canonical data must survive and scan fallback must answer.
+    drop_vertex_property_index(&env, INDEX_AGE_NAME, true, "lifecycle_drop_age");
+
+    assert_scan_fallback_after_drop(
+        &env,
+        "age",
+        EQUALITY_AGE,
+        3,
+        "former: standalone_drop_index_property_eq_still_queries_via_scan",
+    );
+
+    // Idempotent DROP ... IF EXISTS on an already absent index succeeds.
+    drop_vertex_property_index(
+        &env,
+        INDEX_AGE_NAME,
+        true,
+        "lifecycle_drop_age_if_exists_again",
+    );
+
+    // Bare DROP on a missing index returns NotFound.
+    assert_missing_index_drop_error(&env);
+}
+
+fn assert_indexed_equality_lookup(
+    env: &gleaph_pocket_ic_tests::FederationEnv,
+    property_name: &str,
+    value: i64,
+    context: &str,
+) {
+    let result = gql_query_as_admin(
+        env,
+        &format!("MATCH (n {{{property_name}: {value}}}) RETURN n"),
+    );
+    assert_eq!(
+        result.row_count, 1,
+        "indexed equality lookup should return exactly one match ({context})"
+    );
+}
+/// Two indexed equality predicates on one variable produce a `PlanOp::IndexIntersection`,
+/// served by the streaming `lookup_equal_page` + `filter_hits_by_equal` path on graph-index.
+fn assert_indexed_intersection(
+    env: &gleaph_pocket_ic_tests::FederationEnv,
+    property_a_name: &str,
+    value_a: i64,
+    property_b_name: &str,
+    value_b: i64,
+    context: &str,
+) {
+    let result = gql_query_as_admin(
+        env,
+        &format!(
+            "MATCH (n {{{property_a_name}: {value_a}, {property_b_name}: {value_b}}}) RETURN n"
+        ),
+    );
+    assert_eq!(
+        result.row_count, 1,
+        "two-property index intersection should return only the vertex matching both arms ({context})"
+    );
+}
+
+fn assert_scan_fallback_after_drop(
+    env: &gleaph_pocket_ic_tests::FederationEnv,
+    property_name: &str,
+    value: i64,
+    expected_total: u64,
+    context: &str,
+) {
+    let by_scan = gql_query_as_admin(
+        env,
+        &format!("MATCH (n {{{property_name}: {value}}}) RETURN n"),
+    );
+    assert_eq!(
+        by_scan.row_count, 1,
+        "single-shard scan path should still match after DROP INDEX ({context})"
+    );
+
+    let all_nodes = gql_query_as_admin(env, "MATCH (n) RETURN n");
+    assert_eq!(
+        all_nodes.row_count, expected_total,
+        "canonical vertices must remain after DROP INDEX ({context})"
+    );
+}
+
+fn assert_missing_index_drop_error(env: &gleaph_pocket_ic_tests::FederationEnv) {
+    let err = gql_execute_idempotent_as_admin_expect_err(
+        env,
+        &format!("DROP INDEX {INDEX_AGE_NAME}"),
+        "lifecycle_drop_missing_age",
+    );
+    assert!(
+        matches!(
+            err,
+            gleaph_graph_kernel::federation::RouterError::NotFound(_)
+        ),
+        "expected NotFound for missing index, got: {err:?}"
+    );
 }
 
 #[test]
@@ -809,41 +952,6 @@ fn federated_gql_query_index_seeded_routes_to_hit_shard_only() {
     assert_eq!(result.row_count, 1);
 }
 
-/// Two indexed equality predicates on one variable produce a `PlanOp::IndexIntersection`, now
-/// served by the streaming `lookup_equal_page` + `filter_hits_by_equal` path on graph-index.
-#[test]
-fn standalone_gql_query_index_intersection_two_properties() {
-    let env = install_single_shard_federation();
-    let age = admin_intern_property(&env, "age");
-    let score = admin_intern_property(&env, "score");
-    create_vertex_property_index(
-        &env,
-        INDEX_AGE_NAME,
-        INDEX_VERTEX_LABEL,
-        "age",
-        "standalone_intersection_age",
-    );
-    create_vertex_property_index(
-        &env,
-        INDEX_SCORE_NAME,
-        INDEX_VERTEX_LABEL,
-        "score",
-        "standalone_intersection_score",
-    );
-    // Matches both arms.
-    let _ =
-        e2e_insert_vertex_with_two_properties(&env, env.graph_source, age.raw(), 5, score.raw(), 9);
-    // Matches only the age arm — must be sieved out by the score `contains` check.
-    let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
-
-    let result = gql_query_as_admin(&env, "MATCH (n {age: 5, score: 9}) RETURN n");
-
-    assert_eq!(
-        result.row_count, 1,
-        "intersection should return only the vertex matching both arms"
-    );
-}
-
 #[test]
 fn federated_gql_query_index_intersection_merges_matching_shards() {
     let env = install_federation();
@@ -933,37 +1041,6 @@ fn federated_gql_query_index_seeded_merges_across_shards() {
 }
 
 #[test]
-fn standalone_drop_index_property_eq_still_queries_via_scan() {
-    let env = install_single_shard_federation();
-    let age = admin_intern_property(&env, "age");
-    create_vertex_property_index(
-        &env,
-        INDEX_AGE_NAME,
-        INDEX_VERTEX_LABEL,
-        "age",
-        "standalone_drop_index_create",
-    );
-    let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
-
-    let indexed = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
-    assert_eq!(indexed.row_count, 1);
-
-    drop_vertex_property_index(&env, INDEX_AGE_NAME, true, "standalone_drop_index_drop");
-
-    let all_nodes = gql_query_as_admin(&env, "MATCH (n) RETURN n");
-    assert_eq!(
-        all_nodes.row_count, 1,
-        "vertex should still exist after DROP INDEX"
-    );
-
-    let after_drop = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
-    assert_eq!(
-        after_drop.row_count, 1,
-        "single-shard scan path should still match after DROP INDEX"
-    );
-}
-
-#[test]
 fn federated_drop_index_property_eq_loses_federated_anchor() {
     let env = install_federation();
     let age = admin_intern_property(&env, "age");
@@ -987,20 +1064,6 @@ fn federated_drop_index_property_eq_loses_federated_anchor() {
         err.to_string().contains("no index anchor"),
         "expected federated dispatch without index anchor to fail, got: {err:?}"
     );
-}
-
-#[test]
-fn drop_index_if_exists_is_idempotent() {
-    let env = install_single_shard_federation();
-    create_vertex_property_index(
-        &env,
-        INDEX_AGE_NAME,
-        INDEX_VERTEX_LABEL,
-        "age",
-        "drop_index_if_exists_create",
-    );
-    drop_vertex_property_index(&env, INDEX_AGE_NAME, true, "drop_index_if_exists_first");
-    drop_vertex_property_index(&env, INDEX_AGE_NAME, true, "drop_index_if_exists_second");
 }
 
 #[test]
@@ -1320,22 +1383,5 @@ fn federated_drop_edge_index_property_eq_loses_federated_anchor() {
     assert!(
         err.to_string().contains("no index anchor"),
         "expected federated dispatch without index anchor to fail, got: {err:?}"
-    );
-}
-
-#[test]
-fn drop_index_without_if_exists_errors_when_missing() {
-    let env = install_single_shard_federation();
-    let err = gql_execute_idempotent_as_admin_expect_err(
-        &env,
-        &format!("DROP INDEX {INDEX_AGE_NAME}"),
-        "drop_index_missing",
-    );
-    assert!(
-        matches!(
-            err,
-            gleaph_graph_kernel::federation::RouterError::NotFound(_)
-        ),
-        "expected NotFound for missing index, got: {err:?}"
     );
 }
