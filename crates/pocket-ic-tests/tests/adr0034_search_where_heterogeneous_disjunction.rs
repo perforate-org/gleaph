@@ -14,6 +14,23 @@
 //!   equality sources and range intervals before any Property Index call, and executes the union
 //!   through the shared bounded candidate collector.
 //! - Equality and range sources may target the same property; they are not merged with each other.
+//!
+//! Test architecture:
+//! - Each `#[test]` below builds one fresh federation + vector-index topology and runs a family of
+//!   named, sequentially observable cases against it. No PocketIC environment is shared across
+//!   `#[test]` functions.
+//! - The 8 original `install_federation()` calls are reduced to 4 fixture-family bootstraps while
+//!   keeping every contract boundary, adversary, and failure diagnostic independently diagnosable.
+//!
+//! Former test names -> retained scenario families:
+//! - search_where_heterogeneous_disjunction_unions_equality_and_range_arms          -> Family A: unions_equality_and_range_arms
+//! - search_where_heterogeneous_disjunction_dedupes_both_arm_document              -> Family A: dedupes_both_arm_document
+//! - search_where_heterogeneous_disjunction_parameterized_and_reversed_operands  -> Family A: parameterized_and_reversed_operands
+//! - search_where_heterogeneous_disjunction_empty_result_aggregate                 -> Family A: empty_result_aggregate
+//! - search_where_heterogeneous_disjunction_rejects_missing_range_index            -> Family B: rejects_missing_range_index
+//! - search_where_eight_way_heterogeneous_disjunction_unions_all_values            -> Family C: eight_arm_boundary_and_independent_sources
+//! - search_where_nine_arm_heterogeneous_disjunction_is_rejected                  -> Family C: nine_arm_is_rejected
+//! - non_leading_search_where_heterogeneous_disjunction_unions_values             -> Family D: non_leading_unions_values
 
 use candid::{Decode, Encode, Principal};
 use gleaph_gql::Value;
@@ -32,10 +49,12 @@ use gleaph_pocket_ic_tests::{
     install_vector_canister,
 };
 use gleaph_router::types::{AdminAttachVectorIndexShardArgs, RegisterVectorIndexArgs};
+use std::panic::AssertUnwindSafe;
 
 const EMBEDDING_NAME: &str = "adr0034_doc_vec_heterogeneous_disjunction";
 const INDEX_ID: u32 = 1;
 const DIMS: u16 = 16;
+const QUERY_VEC: f32 = 0.0;
 
 fn vec_bytes(value: f32) -> Vec<u8> {
     let mut bytes = Vec::with_capacity(DIMS as usize * 4);
@@ -205,15 +224,12 @@ fn seed_embedding(
     .expect("seed embedding");
 }
 
-fn extract_rows(
-    result: GqlQueryResult,
-) -> Vec<std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue>> {
-    let rows_blob = result.rows_blob.expect("rows blob");
-    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
-    wire.rows
-        .into_iter()
-        .map(|row| row.columns.into_iter().collect())
-        .collect()
+fn install_vector_search_env() -> (FederationEnv, Principal) {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    register_vector_index(&env, VectorMetric::L2Squared, vector);
+    enable_vector_dispatch(&env, vector);
+    (env, vector)
 }
 
 fn gql_query_with_params_as_admin_result(
@@ -233,605 +249,524 @@ fn gql_query_with_params_as_admin_result(
     Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_query result")
 }
 
-fn setup_search_where_heterogeneous_disjunction_env(env: &FederationEnv, vector: Principal) {
-    register_vector_index(env, VectorMetric::L2Squared, vector);
-    enable_vector_dispatch(env, vector);
+fn gql_params(query_value: f32, extra: &[(&str, i64)]) -> Vec<u8> {
+    let mut items = vec![("query".to_string(), Value::Bytes(vec_bytes(query_value)))];
+    for (name, value) in extra {
+        items.push((name.to_string(), Value::Int64(*value)));
+    }
+    gleaph_gql_ic::wire::encode_gql_params_blob(items).expect("encode params")
+}
 
-    let doc_label_id = admin_intern_vertex_label(env, "Document");
-    let cat_id = admin_intern_property(env, "cat_id");
-    let price_id = admin_intern_property(env, "price");
-    create_vertex_property_index(
-        env,
-        "document_cat_id_idx_heterogeneous",
-        "Document",
-        "cat_id",
-        "create_document_cat_id_idx_heterogeneous",
-    );
-    create_vertex_property_index(
-        env,
-        "document_price_idx_heterogeneous",
-        "Document",
-        "price",
-        "create_document_price_idx_heterogeneous",
-    );
-
-    // doc_eq matches only the equality arm; doc_range only the range arm; doc_both both arms;
-    // doc_nonmember is the nearest vector neighbor but matches neither arm.
-    let doc_eq = e2e_insert_vertex_with_label_and_two_properties(
-        env,
-        env.graph_source,
-        doc_label_id.raw(),
-        cat_id.raw(),
-        1,
-        price_id.raw(),
-        100,
-    );
-    let doc_range = e2e_insert_vertex_with_label_and_two_properties(
-        env,
-        env.graph_source,
-        doc_label_id.raw(),
-        cat_id.raw(),
-        2,
-        price_id.raw(),
-        5,
-    );
-    let doc_both = e2e_insert_vertex_with_label_and_two_properties(
-        env,
-        env.graph_source,
-        doc_label_id.raw(),
-        cat_id.raw(),
-        1,
-        price_id.raw(),
-        5,
-    );
-    let doc_nonmember = e2e_insert_vertex_with_label_and_two_properties(
-        env,
-        env.graph_source,
-        doc_label_id.raw(),
-        cat_id.raw(),
-        2,
-        price_id.raw(),
-        100,
-    );
-
-    seed_embedding(env, vector, env.graph_source, doc_eq.local_vertex_id, 1.0);
-    seed_embedding(
-        env,
-        vector,
-        env.graph_source,
-        doc_range.local_vertex_id,
-        2.0,
-    );
-    seed_embedding(env, vector, env.graph_source, doc_both.local_vertex_id, 3.0);
-    seed_embedding(
-        env,
-        vector,
-        env.graph_source,
-        doc_nonmember.local_vertex_id,
-        0.0,
-    );
+fn extract_rows(
+    result: GqlQueryResult,
+) -> Vec<std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue>> {
+    let rows_blob = result.rows_blob.expect("rows blob");
+    let wire = IcWirePlanQueryResult::decode_blob(&rows_blob).expect("decode rows");
+    wire.rows
+        .into_iter()
+        .map(|row| row.columns.into_iter().collect())
+        .collect()
 }
 
 fn distance_for_vec_value(value: f32) -> f64 {
-    value.powi(2) as f64 * DIMS as f64
+    (value as f64).powi(2) * DIMS as f64
 }
 
-#[test]
-fn search_where_heterogeneous_disjunction_unions_equality_and_range_arms() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    setup_search_where_heterogeneous_disjunction_env(&env, vector);
-
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE d.cat_id = 1 OR d.price < 10 \
-           LIMIT 10 \
-         ) DISTANCE AS distance \
-         RETURN ELEMENT_ID(d), distance \
-         ORDER BY distance ASC"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let result = gql_query_with_params_as_admin(&env, &query, params);
+fn assert_rows(
+    case: &str,
+    result: GqlQueryResult,
+    expected_count: usize,
+) -> Vec<std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue>> {
     assert_eq!(
-        result.row_count, 3,
-        "union of equality and range arms must return three rows"
+        result.row_count, expected_count as u64,
+        "{case}: row count mismatch"
     );
-
     let rows = extract_rows(result);
-    assert_eq!(rows.len(), 3);
-    let distances: Vec<f64> = rows
-        .iter()
-        .map(|r| match r.get("distance").expect("distance column") {
-            gleaph_gql_ic::IcWireValue::Float64(d) => *d,
-            other => panic!("distance must be Float64, got {other:?}"),
-        })
-        .collect();
-    assert!(
-        distances
-            .iter()
-            .any(|d| (d - distance_for_vec_value(1.0)).abs() < 1e-6),
-        "equality-only document must appear"
-    );
-    assert!(
-        distances
-            .iter()
-            .any(|d| (d - distance_for_vec_value(2.0)).abs() < 1e-6),
-        "range-only document must appear"
-    );
-    assert!(
-        distances
-            .iter()
-            .any(|d| (d - distance_for_vec_value(3.0)).abs() < 1e-6),
-        "both-arms document must appear"
-    );
-
-    // doc_nonmember is the nearest vector neighbor (distance 0). If the filter were ignored it
-    // would appear first. Assert the first returned distance is strictly greater than 0, proving
-    // the filter removed the nonmember from the candidate set.
-    assert!(
-        distances[0] > 0.0,
-        "filter must exclude the vector-nearest non-matching document"
-    );
-}
-
-#[test]
-fn search_where_heterogeneous_disjunction_dedupes_both_arm_document() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    setup_search_where_heterogeneous_disjunction_env(&env, vector);
-
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE d.cat_id = 1 OR d.price < 10 \
-           LIMIT 10 \
-         ) DISTANCE AS distance \
-         RETURN count(*) AS n"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let result = gql_query_with_params_as_admin(&env, &query, params);
-    assert_eq!(result.row_count, 1, "aggregate must return one row");
-    let rows = extract_rows(result);
-    match rows[0].get("n").expect("count column") {
-        gleaph_gql_ic::IcWireValue::Int64(v) => assert_eq!(
-            *v, 3,
-            "document matching both arms must appear exactly once"
-        ),
-        other => panic!("count must be Int64 3, got {other:?}"),
-    }
-}
-
-#[test]
-fn search_where_heterogeneous_disjunction_parameterized_and_reversed_operands() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    setup_search_where_heterogeneous_disjunction_env(&env, vector);
-
-    // Reversed equality operand and parameterized range bound.
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE 1 = d.cat_id OR $max_price > d.price \
-           LIMIT 10 \
-         ) DISTANCE AS distance \
-         RETURN count(*) AS n"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![
-        ("query".to_string(), Value::Bytes(vec_bytes(0.0))),
-        ("max_price".to_string(), Value::Int64(10)),
-    ])
-    .expect("encode params");
-
-    let result = gql_query_with_params_as_admin(&env, &query, params);
-    assert_eq!(result.row_count, 1, "aggregate must return one row");
-    let rows = extract_rows(result);
-    match rows[0].get("n").expect("count column") {
-        gleaph_gql_ic::IcWireValue::Int64(v) => assert_eq!(*v, 3, "count must be three"),
-        other => panic!("count must be Int64 3, got {other:?}"),
-    }
-}
-
-#[test]
-fn search_where_heterogeneous_disjunction_rejects_missing_range_index() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    register_vector_index(&env, VectorMetric::L2Squared, vector);
-    enable_vector_dispatch(&env, vector);
-
-    let doc_label_id = admin_intern_vertex_label(&env, "Document");
-    let cat_id = admin_intern_property(&env, "cat_id");
-    let price_id = admin_intern_property(&env, "price");
-    // Only cat_id has an active index; price does not.
-    create_vertex_property_index(
-        &env,
-        "document_cat_id_idx_missing_range",
-        "Document",
-        "cat_id",
-        "create_document_cat_id_idx_missing_range",
-    );
-
-    let doc = e2e_insert_vertex_with_label_and_two_properties(
-        &env,
-        env.graph_source,
-        doc_label_id.raw(),
-        cat_id.raw(),
-        1,
-        price_id.raw(),
-        5,
-    );
-    seed_embedding(&env, vector, env.graph_source, doc.local_vertex_id, 1.0);
-
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE d.cat_id = 1 OR d.price < 10 \
-           LIMIT 10 \
-         ) DISTANCE AS distance \
-         RETURN ELEMENT_ID(d), distance"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let err = gql_query_with_params_as_admin_result(&env, &query, params)
-        .expect_err("heterogeneous OR with missing price index must fail");
-    assert!(
-        err.to_string().contains("active vertex property index"),
-        "missing range index must fail with coverage error, got {err}"
-    );
-}
-
-fn setup_search_where_eight_way_heterogeneous_env(env: &FederationEnv, vector: Principal) {
-    register_vector_index(env, VectorMetric::L2Squared, vector);
-    enable_vector_dispatch(env, vector);
-
-    let doc_label_id = admin_intern_vertex_label(env, "Document");
-
-    // Use eight independent properties so every one of the eight disjunction arms matches
-    // exactly one document. Omitting any arm must therefore drop exactly one result.
-    const EQ_PROPS: [&str; 4] = ["eq0", "eq1", "eq2", "eq3"];
-    const LO_PROPS: [&str; 4] = ["lo0", "lo1", "lo2", "lo3"];
-
-    let eq_ids: Vec<u32> = EQ_PROPS
-        .iter()
-        .map(|name| admin_intern_property(env, name).raw())
-        .collect();
-    let lo_ids: Vec<u32> = LO_PROPS
-        .iter()
-        .map(|name| admin_intern_property(env, name).raw())
-        .collect();
-
-    for name in EQ_PROPS {
-        create_vertex_property_index(
-            env,
-            &format!("document_{name}_idx_eight_way_heterogeneous"),
-            "Document",
-            name,
-            &format!("create_document_{name}_idx_eight_way_heterogeneous"),
-        );
-    }
-    for name in LO_PROPS {
-        create_vertex_property_index(
-            env,
-            &format!("document_{name}_idx_eight_way_heterogeneous"),
-            "Document",
-            name,
-            &format!("create_document_{name}_idx_eight_way_heterogeneous"),
-        );
-    }
-
-    // Create eight documents; document i is matched only by arm i.
-    for i in 0..8 {
-        let doc = e2e_insert_vertex_with_label(env, env.graph_source, doc_label_id.raw());
-        for (j, &id) in eq_ids.iter().enumerate() {
-            let value = if i == j { 1 } else { 0 };
-            e2e_set_vertex_property(env, env.graph_source, doc.local_vertex_id, id, value);
-        }
-        for (j, &id) in lo_ids.iter().enumerate() {
-            let value = if i == j + 4 { 1 } else { 100 };
-            e2e_set_vertex_property(env, env.graph_source, doc.local_vertex_id, id, value);
-        }
-        seed_embedding(
-            env,
-            vector,
-            env.graph_source,
-            doc.local_vertex_id,
-            i as f32 + 1.0,
-        );
-    }
-}
-
-#[test]
-fn search_where_eight_way_heterogeneous_disjunction_unions_all_values() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    setup_search_where_eight_way_heterogeneous_env(&env, vector);
-
-    let arms: Vec<String> = (0..8)
-        .map(|i| {
-            if i < 4 {
-                format!("d.eq{i} = 1")
-            } else {
-                format!("d.lo{} < 2", i - 4)
-            }
-        })
-        .collect();
-    let where_clause = arms.join(" OR ");
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE {where_clause} \
-           LIMIT 10 \
-         ) DISTANCE AS distance \
-         RETURN ELEMENT_ID(d), distance \
-         ORDER BY distance ASC"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let result = gql_query_with_params_as_admin(&env, &query, params);
     assert_eq!(
-        result.row_count, 8,
-        "eight-way heterogeneous disjunction must return all eight documents"
+        rows.len(),
+        expected_count,
+        "{case}: extracted row count mismatch"
     );
+    rows
+}
 
-    // Prove each arm is independently observable: dropping any one arm must remove exactly one
-    // document from the result set.
-    for omitted in 0..8 {
-        let subset: Vec<String> = (0..8)
-            .filter(|&i| i != omitted)
-            .map(|i| {
-                if i < 4 {
-                    format!("d.eq{i} = 1")
-                } else {
-                    format!("d.lo{} < 2", i - 4)
-                }
-            })
-            .collect();
-        let where_clause = subset.join(" OR ");
-        let query = format!(
-            "MATCH (d:Document) \
-             SEARCH d IN ( \
-               VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-               WHERE {where_clause} \
-               LIMIT 10 \
-             ) DISTANCE AS distance \
-             RETURN ELEMENT_ID(d), distance \
-             ORDER BY distance ASC"
-        );
-        let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-            "query".to_string(),
-            Value::Bytes(vec_bytes(0.0)),
-        )])
-        .expect("encode params");
-        let result = gql_query_with_params_as_admin(&env, &query, params);
-        assert_eq!(
-            result.row_count, 7,
-            "omitting arm {omitted} must return exactly seven documents"
-        );
+fn assert_distance_at(
+    case: &str,
+    row: &std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue>,
+) -> f64 {
+    match row
+        .get("distance")
+        .unwrap_or_else(|| panic!("{case}: distance column"))
+    {
+        gleaph_gql_ic::IcWireValue::Float64(d) => *d,
+        other => panic!("{case}: distance must be Float64, got {other:?}"),
     }
 }
 
-#[test]
-fn search_where_nine_arm_heterogeneous_disjunction_is_rejected() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    setup_search_where_eight_way_heterogeneous_env(&env, vector);
-
-    let mut arms: Vec<String> = (0..4).map(|i| format!("d.eq{i} = 1")).collect();
-    arms.extend((0..4).map(|i| format!("d.lo{i} < 2")));
-    arms.push("d.eq0 = 1".to_string());
-    let where_clause = arms.join(" OR ");
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE {where_clause} \
-           LIMIT 10 \
-         ) DISTANCE AS distance \
-         RETURN ELEMENT_ID(d), distance"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let err = gql_query_with_params_as_admin_result(&env, &query, params)
-        .expect_err("nine-arm heterogeneous disjunction must be rejected");
-    assert!(
-        err.to_string().contains("at most 8")
-            || err.to_string().contains("disjunction supports at most"),
-        "nine arms must fail with an explicit arm-count error, got {err}"
-    );
+fn assert_distance_set(
+    case: &str,
+    result: GqlQueryResult,
+    expected: &[f64],
+) -> Vec<std::collections::BTreeMap<String, gleaph_gql_ic::IcWireValue>> {
+    let rows = assert_rows(case, result, expected.len());
+    let mut got: Vec<f64> = rows.iter().map(|r| assert_distance_at(case, r)).collect();
+    let mut exp = expected.to_vec();
+    got.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    exp.sort_by(|a, b| a.partial_cmp(b).unwrap());
+    assert_eq!(got, exp, "{case}: distance set mismatch");
+    rows
 }
 
-#[test]
-fn search_where_heterogeneous_disjunction_empty_result_aggregate() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    setup_search_where_heterogeneous_disjunction_env(&env, vector);
-
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE d.cat_id = 999 OR d.price < 0 \
-           LIMIT 10 \
-         ) DISTANCE AS distance \
-         RETURN count(*) AS n"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let result = gql_query_with_params_as_admin(&env, &query, params);
+fn assert_aggregate_count(case: &str, result: GqlQueryResult, expected: i64) {
     assert_eq!(
         result.row_count, 1,
-        "empty disjunction candidate set must still produce one aggregate row"
+        "{case}: aggregate must return exactly one row"
     );
     let rows = extract_rows(result);
-    match rows[0].get("n").expect("count column") {
-        gleaph_gql_ic::IcWireValue::Int64(v) => assert_eq!(*v, 0, "count must be zero"),
-        other => panic!("count must be Int64 0, got {other:?}"),
+    assert_eq!(rows.len(), 1, "{case}: aggregate row count mismatch");
+    match rows[0]
+        .get("n")
+        .unwrap_or_else(|| panic!("{case}: count column"))
+    {
+        gleaph_gql_ic::IcWireValue::Int64(v) => {
+            assert_eq!(*v, expected, "{case}: count mismatch")
+        }
+        other => panic!("{case}: count must be Int64, got {other:?}"),
+    }
+}
+
+fn assert_rejected_with(case: &str, result: Result<GqlQueryResult, RouterError>, needle: &str) {
+    let err = result
+        .expect_err(&format!("{case}: expected error result"))
+        .to_string();
+    assert!(
+        err.contains(needle),
+        "{case}: expected error containing `{needle}`, got `{err}`"
+    );
+}
+
+fn run_case<F: FnOnce()>(name: &str, body: F) {
+    if let Err(payload) = std::panic::catch_unwind(AssertUnwindSafe(body)) {
+        let message = payload
+            .downcast_ref::<String>()
+            .cloned()
+            .or_else(|| payload.downcast_ref::<&str>().map(|s| (*s).to_string()))
+            .unwrap_or_else(|| format!("case `{name}` panicked"));
+        panic!("case `{name}` failed: {message}");
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Family A: common leading heterogeneous equality/range OR
+// ---------------------------------------------------------------------------
+
+struct CommonHeterogeneousFixture {
+    env: FederationEnv,
+}
+
+impl CommonHeterogeneousFixture {
+    fn new() -> Self {
+        let (env, vector) = install_vector_search_env();
+        let doc_label = admin_intern_vertex_label(&env, "Document").raw();
+        let cat_id = admin_intern_property(&env, "cat_id").raw();
+        let price_id = admin_intern_property(&env, "price").raw();
+        create_vertex_property_index(
+            &env,
+            "document_cat_id_idx_heterogeneous",
+            "Document",
+            "cat_id",
+            "create_document_cat_id_idx_heterogeneous",
+        );
+        create_vertex_property_index(
+            &env,
+            "document_price_idx_heterogeneous",
+            "Document",
+            "price",
+            "create_document_price_idx_heterogeneous",
+        );
+
+        // doc_eq matches only the equality arm; doc_range only the range arm; doc_both both arms;
+        // doc_nonmember is the nearest vector neighbor but matches neither arm.
+        let fixtures = [
+            (1_i64, 100_i64, 1.0_f32), // doc_eq
+            (2, 5, 2.0),               // doc_range
+            (1, 5, 3.0),               // doc_both
+            (2, 100, 0.0),             // doc_nonmember
+        ];
+        for (cat, price, vec) in fixtures {
+            let doc = e2e_insert_vertex_with_label_and_two_properties(
+                &env,
+                env.graph_source,
+                doc_label,
+                cat_id,
+                cat,
+                price_id,
+                price,
+            );
+            seed_embedding(&env, vector, env.graph_source, doc.local_vertex_id, vec);
+        }
+
+        Self { env }
+    }
+
+    fn query_ok(&self, query: &str, params: Vec<u8>) -> GqlQueryResult {
+        gql_query_with_params_as_admin(&self.env, query, params)
     }
 }
 
 #[test]
-fn non_leading_search_where_heterogeneous_disjunction_unions_values() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
+fn search_where_heterogeneous_disjunction_common_scenarios() {
+    let fx = CommonHeterogeneousFixture::new();
 
-    register_vector_index(&env, VectorMetric::L2Squared, vector);
-    enable_vector_dispatch(&env, vector);
-
-    let author_label_id = admin_intern_vertex_label(&env, "Author").raw();
-    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
-    let wrote_label_id = admin_intern_edge_label(&env, "WROTE").raw();
-    let cat_id = admin_intern_property(&env, "cat_id");
-    let price_id = admin_intern_property(&env, "price");
-
-    create_vertex_property_index(
-        &env,
-        "document_cat_id_idx_non_leading_heterogeneous",
-        "Document",
-        "cat_id",
-        "create_document_cat_id_idx_non_leading_heterogeneous",
-    );
-    create_vertex_property_index(
-        &env,
-        "document_price_idx_non_leading_heterogeneous",
-        "Document",
-        "price",
-        "create_document_price_idx_non_leading_heterogeneous",
-    );
-
-    let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
-    let a2 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
-
-    let d_match_eq = e2e_insert_vertex_with_label_and_two_properties(
-        &env,
-        env.graph_source,
-        doc_label_id,
-        cat_id.raw(),
-        1,
-        price_id.raw(),
-        100,
-    );
-    let d_match_range = e2e_insert_vertex_with_label_and_two_properties(
-        &env,
-        env.graph_source,
-        doc_label_id,
-        cat_id.raw(),
-        2,
-        price_id.raw(),
-        5,
-    );
-    let d_other = e2e_insert_vertex_with_label_and_two_properties(
-        &env,
-        env.graph_source,
-        doc_label_id,
-        cat_id.raw(),
-        2,
-        price_id.raw(),
-        100,
-    );
-
-    for a in [a1.local_vertex_id, a2.local_vertex_id] {
-        e2e_insert_edge_with_label(
-            &env,
-            env.graph_source,
-            a,
-            d_match_eq.local_vertex_id,
-            wrote_label_id,
+    run_case("unions_equality_and_range_arms", || {
+        let query = format!(
+            "MATCH (d:Document) SEARCH d IN ( VECTOR INDEX {EMBEDDING_NAME} FOR $query WHERE d.cat_id = 1 OR d.price < 10 LIMIT 10 ) DISTANCE AS distance RETURN ELEMENT_ID(d), distance ORDER BY distance ASC"
         );
-        e2e_insert_edge_with_label(
-            &env,
-            env.graph_source,
-            a,
-            d_match_range.local_vertex_id,
-            wrote_label_id,
+        let rows = assert_distance_set(
+            "unions_equality_and_range_arms",
+            fx.query_ok(&query, gql_params(QUERY_VEC, &[])),
+            &[
+                distance_for_vec_value(1.0),
+                distance_for_vec_value(2.0),
+                distance_for_vec_value(3.0),
+            ],
         );
-        e2e_insert_edge_with_label(
-            &env,
-            env.graph_source,
-            a,
-            d_other.local_vertex_id,
-            wrote_label_id,
-        );
-    }
-
-    seed_embedding(
-        &env,
-        vector,
-        env.graph_source,
-        d_match_eq.local_vertex_id,
-        1.0,
-    );
-    seed_embedding(
-        &env,
-        vector,
-        env.graph_source,
-        d_match_range.local_vertex_id,
-        2.0,
-    );
-    seed_embedding(&env, vector, env.graph_source, d_other.local_vertex_id, 0.0);
-
-    let query = format!(
-        "MATCH (a:Author)-[:WROTE]->(d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE d.cat_id = 1 OR d.price < 10 \
-           LIMIT 10 \
-         ) DISTANCE AS distance \
-         RETURN a, d, distance ORDER BY distance ASC"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let result = gql_query_with_params_as_admin(&env, &query, params);
-    assert_eq!(
-        result.row_count, 4,
-        "two authors joined to two surviving documents produce four rows"
-    );
-
-    let rows = extract_rows(result);
-    assert_eq!(rows.len(), 4);
-    for row in &rows {
-        let distance = match row.get("distance").expect("distance column") {
-            gleaph_gql_ic::IcWireValue::Float64(d) => *d,
-            other => panic!("distance must be Float64, got {other:?}"),
-        };
+        let first_distance = assert_distance_at("unions_equality_and_range_arms", &rows[0]);
         assert!(
-            (distance - 1.0_f64.powi(2) * 16.0_f64).abs() < 1e-6
-                || (distance - 2.0_f64.powi(2) * 16.0_f64).abs() < 1e-6,
-            "only documents matching cat_id=1 or price<10 may appear, got distance {distance}"
+            first_distance > 0.0,
+            "unions_equality_and_range_arms: filter must exclude the vector-nearest non-matching document"
         );
+    });
+
+    run_case("dedupes_both_arm_document", || {
+        let query = format!(
+            "MATCH (d:Document) SEARCH d IN ( VECTOR INDEX {EMBEDDING_NAME} FOR $query WHERE d.cat_id = 1 OR d.price < 10 LIMIT 10 ) DISTANCE AS distance RETURN count(*) AS n"
+        );
+        let result = fx.query_ok(&query, gql_params(QUERY_VEC, &[]));
+        assert_aggregate_count("dedupes_both_arm_document", result, 3);
+    });
+
+    run_case("parameterized_and_reversed_operands", || {
+        let query = format!(
+            "MATCH (d:Document) SEARCH d IN ( VECTOR INDEX {EMBEDDING_NAME} FOR $query WHERE 1 = d.cat_id OR $max_price > d.price LIMIT 10 ) DISTANCE AS distance RETURN count(*) AS n"
+        );
+        let params = gql_params(QUERY_VEC, &[("max_price", 10)]);
+        let result = fx.query_ok(&query, params);
+        assert_aggregate_count("parameterized_and_reversed_operands", result, 3);
+    });
+
+    run_case("empty_result_aggregate", || {
+        let query = format!(
+            "MATCH (d:Document) SEARCH d IN ( VECTOR INDEX {EMBEDDING_NAME} FOR $query WHERE d.cat_id = 999 OR d.price < 0 LIMIT 10 ) DISTANCE AS distance RETURN count(*) AS n"
+        );
+        let result = fx.query_ok(&query, gql_params(QUERY_VEC, &[]));
+        assert_aggregate_count("empty_result_aggregate", result, 0);
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Family B: missing range index rejection
+// ---------------------------------------------------------------------------
+
+struct MissingRangeIndexFixture {
+    env: FederationEnv,
+}
+
+impl MissingRangeIndexFixture {
+    fn new() -> Self {
+        let (env, vector) = install_vector_search_env();
+        let doc_label = admin_intern_vertex_label(&env, "Document").raw();
+        let cat_id = admin_intern_property(&env, "cat_id").raw();
+        let price_id = admin_intern_property(&env, "price").raw();
+        // Only cat_id has an active index; price does not.
+        create_vertex_property_index(
+            &env,
+            "document_cat_id_idx_missing_range",
+            "Document",
+            "cat_id",
+            "create_document_cat_id_idx_missing_range",
+        );
+
+        let doc = e2e_insert_vertex_with_label_and_two_properties(
+            &env,
+            env.graph_source,
+            doc_label,
+            cat_id,
+            1,
+            price_id,
+            5,
+        );
+        seed_embedding(&env, vector, env.graph_source, doc.local_vertex_id, 1.0);
+
+        Self { env }
     }
+}
+
+#[test]
+fn search_where_heterogeneous_disjunction_missing_index_scenarios() {
+    let fx = MissingRangeIndexFixture::new();
+
+    run_case("rejects_missing_range_index", || {
+        let query = format!(
+            "MATCH (d:Document) SEARCH d IN ( VECTOR INDEX {EMBEDDING_NAME} FOR $query WHERE d.cat_id = 1 OR d.price < 10 LIMIT 10 ) DISTANCE AS distance RETURN ELEMENT_ID(d), distance"
+        );
+        let result =
+            gql_query_with_params_as_admin_result(&fx.env, &query, gql_params(QUERY_VEC, &[]));
+        assert_rejected_with(
+            "rejects_missing_range_index",
+            result,
+            "active vertex property index",
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Family C: 8/9-arm heterogeneous boundary
+// ---------------------------------------------------------------------------
+
+struct EightArmBoundaryFixture {
+    env: FederationEnv,
+}
+
+impl EightArmBoundaryFixture {
+    fn new() -> Self {
+        let (env, vector) = install_vector_search_env();
+        let doc_label = admin_intern_vertex_label(&env, "Document").raw();
+
+        // Use eight independent properties so every one of the eight disjunction arms matches
+        // exactly one document. Omitting any arm must therefore drop exactly one result.
+        const EQ_PROPS: [&str; 4] = ["eq0", "eq1", "eq2", "eq3"];
+        const LO_PROPS: [&str; 4] = ["lo0", "lo1", "lo2", "lo3"];
+
+        let eq_ids: Vec<u32> = EQ_PROPS
+            .iter()
+            .map(|name| admin_intern_property(&env, name).raw())
+            .collect();
+        let lo_ids: Vec<u32> = LO_PROPS
+            .iter()
+            .map(|name| admin_intern_property(&env, name).raw())
+            .collect();
+
+        for name in EQ_PROPS {
+            create_vertex_property_index(
+                &env,
+                &format!("document_{name}_idx_eight_way_heterogeneous"),
+                "Document",
+                name,
+                &format!("create_document_{name}_idx_eight_way_heterogeneous"),
+            );
+        }
+        for name in LO_PROPS {
+            create_vertex_property_index(
+                &env,
+                &format!("document_{name}_idx_eight_way_heterogeneous"),
+                "Document",
+                name,
+                &format!("create_document_{name}_idx_eight_way_heterogeneous"),
+            );
+        }
+
+        // Create eight documents; document i is matched only by arm i.
+        for i in 0..8 {
+            let doc = e2e_insert_vertex_with_label(&env, env.graph_source, doc_label);
+            for (j, &id) in eq_ids.iter().enumerate() {
+                let value = if i == j { 1 } else { 0 };
+                e2e_set_vertex_property(&env, env.graph_source, doc.local_vertex_id, id, value);
+            }
+            for (j, &id) in lo_ids.iter().enumerate() {
+                let value = if i == j + 4 { 1 } else { 100 };
+                e2e_set_vertex_property(&env, env.graph_source, doc.local_vertex_id, id, value);
+            }
+            seed_embedding(
+                &env,
+                vector,
+                env.graph_source,
+                doc.local_vertex_id,
+                i as f32 + 1.0,
+            );
+        }
+
+        Self { env }
+    }
+
+    fn query_ok(&self, query: &str, params: Vec<u8>) -> GqlQueryResult {
+        gql_query_with_params_as_admin(&self.env, query, params)
+    }
+
+    fn query_result(&self, query: &str, params: Vec<u8>) -> Result<GqlQueryResult, RouterError> {
+        gql_query_with_params_as_admin_result(&self.env, query, params)
+    }
+}
+
+fn eight_arm_where_clause(excluded: &[usize]) -> String {
+    let mut arms: Vec<String> = Vec::with_capacity(8 - excluded.len());
+    for i in 0..8 {
+        if excluded.contains(&i) {
+            continue;
+        }
+        if i < 4 {
+            arms.push(format!("d.eq{i} = 1"));
+        } else {
+            arms.push(format!("d.lo{} < 2", i - 4));
+        }
+    }
+    arms.join(" OR ")
+}
+
+#[test]
+fn search_where_heterogeneous_disjunction_eight_arm_scenarios() {
+    let fx = EightArmBoundaryFixture::new();
+
+    run_case("eight_arm_boundary_and_independent_sources", || {
+        let where_clause = eight_arm_where_clause(&[]);
+        let query = format!(
+            "MATCH (d:Document) SEARCH d IN ( VECTOR INDEX {EMBEDDING_NAME} FOR $query WHERE {where_clause} LIMIT 10 ) DISTANCE AS distance RETURN ELEMENT_ID(d), distance ORDER BY distance ASC"
+        );
+        let result = fx.query_ok(&query, gql_params(QUERY_VEC, &[]));
+        let expected: Vec<f64> = (0..8)
+            .map(|i| distance_for_vec_value(i as f32 + 1.0))
+            .collect();
+        assert_distance_set(
+            "eight_arm_boundary_and_independent_sources",
+            result,
+            &expected,
+        );
+
+        // Prove each arm is independently observable: dropping any one arm must remove exactly
+        // its unique matching document from the result set.
+        for omitted in 0..8 {
+            let case = format!("eight_way_omits_arm_{omitted}");
+            let where_clause = eight_arm_where_clause(&[omitted]);
+            let query = format!(
+                "MATCH (d:Document) SEARCH d IN ( VECTOR INDEX {EMBEDDING_NAME} FOR $query WHERE {where_clause} LIMIT 10 ) DISTANCE AS distance RETURN ELEMENT_ID(d), distance ORDER BY distance ASC"
+            );
+            let result = fx.query_ok(&query, gql_params(QUERY_VEC, &[]));
+            let rows = assert_rows(&case, result, 7);
+            let omitted_distance = distance_for_vec_value(omitted as f32 + 1.0);
+            for row in &rows {
+                let d = assert_distance_at(&case, row);
+                assert!(
+                    (d - omitted_distance).abs() >= 1e-6,
+                    "{case}: omitting arm {omitted} must exclude its matching document (distance {omitted_distance}), got {d}"
+                );
+            }
+        }
+    });
+
+    run_case("nine_arm_is_rejected", || {
+        let mut arms: Vec<String> = (0..4).map(|i| format!("d.eq{i} = 1")).collect();
+        arms.extend((0..4).map(|i| format!("d.lo{i} < 2")));
+        arms.push("d.eq0 = 1".to_string());
+        let where_clause = arms.join(" OR ");
+        let query = format!(
+            "MATCH (d:Document) SEARCH d IN ( VECTOR INDEX {EMBEDDING_NAME} FOR $query WHERE {where_clause} LIMIT 10 ) DISTANCE AS distance RETURN ELEMENT_ID(d), distance"
+        );
+        let result = fx.query_result(&query, gql_params(QUERY_VEC, &[]));
+        assert_rejected_with(
+            "nine_arm_is_rejected",
+            result,
+            "disjunction supports at most",
+        );
+    });
+}
+
+// ---------------------------------------------------------------------------
+// Family D: non-leading heterogeneous equality/range OR
+// ---------------------------------------------------------------------------
+
+struct NonLeadingHeterogeneousFixture {
+    env: FederationEnv,
+}
+
+impl NonLeadingHeterogeneousFixture {
+    fn new() -> Self {
+        let (env, vector) = install_vector_search_env();
+        let author_label = admin_intern_vertex_label(&env, "Author").raw();
+        let doc_label = admin_intern_vertex_label(&env, "Document").raw();
+        let wrote_label = admin_intern_edge_label(&env, "WROTE").raw();
+        let cat_id = admin_intern_property(&env, "cat_id").raw();
+        let price_id = admin_intern_property(&env, "price").raw();
+
+        create_vertex_property_index(
+            &env,
+            "document_cat_id_idx_non_leading_heterogeneous",
+            "Document",
+            "cat_id",
+            "create_document_cat_id_idx_non_leading_heterogeneous",
+        );
+        create_vertex_property_index(
+            &env,
+            "document_price_idx_non_leading_heterogeneous",
+            "Document",
+            "price",
+            "create_document_price_idx_non_leading_heterogeneous",
+        );
+
+        let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label).local_vertex_id;
+        let a2 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label).local_vertex_id;
+
+        // d_match_eq matches only cat_id=1; d_match_range matches only price<10; d_other matches neither.
+        let docs = [
+            (1_i64, 100_i64, 1.0_f32), // d_match_eq
+            (2, 5, 2.0),               // d_match_range
+            (2, 100, 0.0),             // d_other
+        ];
+        let doc_ids: Vec<u32> = docs
+            .iter()
+            .map(|(cat, price, _vec)| {
+                e2e_insert_vertex_with_label_and_two_properties(
+                    &env,
+                    env.graph_source,
+                    doc_label,
+                    cat_id,
+                    *cat,
+                    price_id,
+                    *price,
+                )
+                .local_vertex_id
+            })
+            .collect();
+
+        for author in [a1, a2] {
+            for doc_id in &doc_ids {
+                e2e_insert_edge_with_label(&env, env.graph_source, author, *doc_id, wrote_label);
+            }
+        }
+
+        for (idx, (_, _, vec)) in docs.iter().enumerate() {
+            seed_embedding(&env, vector, env.graph_source, doc_ids[idx], *vec);
+        }
+
+        Self { env }
+    }
+
+    fn query_ok(&self, query: &str, params: Vec<u8>) -> GqlQueryResult {
+        gql_query_with_params_as_admin(&self.env, query, params)
+    }
+}
+
+#[test]
+fn search_where_non_leading_heterogeneous_disjunction_scenarios() {
+    let fx = NonLeadingHeterogeneousFixture::new();
+
+    run_case("non_leading_unions_values", || {
+        let query = format!(
+            "MATCH (a:Author)-[:WROTE]->(d:Document) SEARCH d IN ( VECTOR INDEX {EMBEDDING_NAME} FOR $query WHERE d.cat_id = 1 OR d.price < 10 LIMIT 10 ) DISTANCE AS distance RETURN a, d, distance ORDER BY distance ASC"
+        );
+        let result = fx.query_ok(&query, gql_params(QUERY_VEC, &[]));
+        assert_eq!(
+            result.row_count, 4,
+            "non_leading_unions_values: two authors joined to two surviving documents produce four rows"
+        );
+        let rows = extract_rows(result);
+        assert_eq!(rows.len(), 4);
+        for row in &rows {
+            let distance = assert_distance_at("non_leading_unions_values", row);
+            assert!(
+                (distance - distance_for_vec_value(1.0)).abs() < 1e-6
+                    || (distance - distance_for_vec_value(2.0)).abs() < 1e-6,
+                "non_leading_unions_values: only documents matching cat_id=1 or price<10 may appear, got distance {distance}"
+            );
+        }
+    });
 }
