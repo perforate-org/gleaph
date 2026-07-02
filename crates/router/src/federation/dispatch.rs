@@ -144,3 +144,78 @@ pub fn resolve_seed_routings_multi(
     }
     Ok(out)
 }
+
+#[cfg(test)]
+mod tests {
+    use candid::Principal;
+    use gleaph_graph_kernel::entry::GraphId;
+    use gleaph_graph_kernel::federation::{ShardId, ShardRegistryEntry};
+
+    use crate::federation::dispatch::{SeedHits, SeedRouting, latest_shard_routing};
+    use crate::state::RouterError;
+
+    fn shard_entry(shard_id: u32, graph_byte: u8) -> ShardRegistryEntry {
+        ShardRegistryEntry {
+            shard_id: ShardId::new(shard_id),
+            graph_canister: Principal::self_authenticating([graph_byte; 32]),
+            index_canister: Principal::anonymous(),
+            graph_id: GraphId::from_raw(7),
+            registered_at_ns: 0,
+            index_attached: true,
+            vector_index_canister: None,
+            vector_index_attached: false,
+        }
+    }
+
+    fn assert_routing(routing: &SeedRouting, expected_shard_id: u32, expected_canister: Principal) {
+        assert_eq!(routing.shard_id, ShardId::new(expected_shard_id));
+        assert_eq!(routing.graph_canister, expected_canister);
+        assert!(
+            matches!(&routing.hits, SeedHits::Vertices(hits) if hits.is_empty()),
+            "latest-shard routing must carry empty vertex hits, got {:?}",
+            routing.hits
+        );
+        assert!(
+            routing.anchor.is_none(),
+            "latest-shard routing must have no anchor, got {:?}",
+            routing.anchor
+        );
+    }
+
+    /// ADR 0029 §6, Phase 5 contract 1: with no live shards there is no latest shard.
+    #[test]
+    fn latest_shard_routing_empty_input_returns_not_registered() {
+        let err = latest_shard_routing(&[]).expect_err("empty shard list must fail");
+        assert!(
+            matches!(err, RouterError::ShardNotRegistered),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    /// ADR 0029 §6, Phase 5 contract 1: the only live shard is the latest shard.
+    #[test]
+    fn latest_shard_routing_one_shard_selects_it() {
+        let shard = shard_entry(0, 1);
+        let canister = shard.graph_canister;
+        let routings = latest_shard_routing(&[shard]).expect("one shard routes");
+
+        assert_eq!(routings.len(), 1);
+        assert_routing(&routings[0], 0, canister);
+    }
+
+    /// ADR 0029 §6, Phase 5 contract 1: latest shard is the greatest graph-local shard id,
+    /// independent of input order, and the returned canister belongs to that shard.
+    #[test]
+    fn latest_shard_routing_unordered_shards_chooses_greatest_id() {
+        let shard0 = shard_entry(0, 1);
+        let shard2 = shard_entry(2, 3);
+        let shard1 = shard_entry(1, 2);
+        let expected_canister = shard2.graph_canister;
+
+        let routings = latest_shard_routing(&[shard0, shard2, shard1])
+            .expect("unordered multi-shard list routes");
+
+        assert_eq!(routings.len(), 1);
+        assert_routing(&routings[0], 2, expected_canister);
+    }
+}

@@ -2280,6 +2280,7 @@ mod tests {
     use candid::{Decode, Principal};
     use gleaph_gql::Value;
     use gleaph_gql::ast::CmpOp;
+    use gleaph_gql::parser;
     use gleaph_gql_ic::{IcWirePlanQueryResult, IcWireValue};
     use gleaph_gql_planner::plan::ScanValue;
     use gleaph_gql_planner::wire::encode_block_plans;
@@ -2300,7 +2301,7 @@ mod tests {
         routings_to_dispatches,
     };
     use crate::gql::{
-        dispatch_plan_blob_with_index, enforce_read_consistency,
+        dispatch_plan_blob_with_index, enforce_multi_dml_bundle_gate, enforce_read_consistency,
         enforce_read_consistency_with_lookup, request_fingerprint,
     };
     use crate::init::RouterInitArgs;
@@ -2420,7 +2421,7 @@ mod tests {
         )
     }
 
-    fn store_with_shards() -> RouterStore {
+    fn store_with_shards_spec(shards: &[(ShardId, u8)]) -> RouterStore {
         let store = RouterStore::new();
         store.init_from_args(&RouterInitArgs {
             issuing_principal: Principal::anonymous(),
@@ -2429,12 +2430,12 @@ mod tests {
         let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
         register_test_graph(&store, admin, "tenant.main");
-        for (shard_id, graph_byte) in [(ShardId::new(0), 1u8), (ShardId::new(1), 4)] {
+        for (shard_id, graph_byte) in shards {
             futures::executor::block_on(store.admin_register_shard(
                 admin,
                 AdminRegisterShardArgs {
-                    shard_id,
-                    graph_canister: graph_principal(graph_byte),
+                    shard_id: *shard_id,
+                    graph_canister: graph_principal(*graph_byte),
                     index_canister: graph_principal(2),
                     logical_graph_name: "tenant.main".into(),
                 },
@@ -2442,6 +2443,89 @@ mod tests {
             .expect("register shard");
         }
         store
+    }
+
+    fn store_with_shards() -> RouterStore {
+        store_with_shards_spec(&[(ShardId::new(0), 1u8), (ShardId::new(1), 4)])
+    }
+
+    fn store_with_one_shard() -> RouterStore {
+        store_with_shards_spec(&[(ShardId::new(0), 1u8)])
+    }
+
+    fn parse_block(query: &str) -> gleaph_gql::ast::StatementBlock {
+        let program = parser::parse(query).expect("parse query");
+        program
+            .transaction_activity
+            .expect("transaction activity")
+            .body
+            .expect("statement block")
+    }
+
+    /// ADR 0029 §6 (Phase 5): zero/one top-level DML statements always pass the gate,
+    /// regardless of whether the target graph is single- or multi-shard.
+    #[test]
+    fn multi_dml_gate_zero_or_one_dml_passes() {
+        let store = store_with_shards();
+        let graph_id = tenant_main_graph_id();
+
+        assert!(enforce_multi_dml_bundle_gate(&store, graph_id, &parse_block("RETURN 1")).is_ok());
+        assert!(
+            enforce_multi_dml_bundle_gate(&store, graph_id, &parse_block("INSERT (a)")).is_ok()
+        );
+    }
+
+    /// ADR 0029 §6 (Phase 5): multiple top-level DML statements are allowed when the
+    /// graph has exactly one live shard, preserving shard-local atomicity.
+    #[test]
+    fn multi_dml_gate_single_shard_multi_dml_passes() {
+        let store = store_with_one_shard();
+        let graph_id = tenant_main_graph_id();
+        let block = parse_block("INSERT (a) NEXT INSERT (b)");
+
+        assert!(enforce_multi_dml_bundle_gate(&store, graph_id, &block).is_ok());
+    }
+
+    /// ADR 0029 §6 (Phase 5): federated graphs reject multiple top-level DML statements
+    /// before any shard dispatch, returning the exact DML and shard counts.
+    #[test]
+    fn multi_dml_gate_federated_multi_dml_rejects_with_exact_counts() {
+        let store = store_with_shards();
+        let graph_id = tenant_main_graph_id();
+
+        let err = enforce_multi_dml_bundle_gate(
+            &store,
+            graph_id,
+            &parse_block("INSERT (a) NEXT INSERT (b)"),
+        )
+        .expect_err("two DMLs on two shards must be rejected");
+        assert!(
+            matches!(
+                err,
+                RouterError::UnsupportedMultiDmlBundle {
+                    dml_statements: 2,
+                    shard_count: 2,
+                }
+            ),
+            "unexpected error: {err:?}"
+        );
+
+        let err = enforce_multi_dml_bundle_gate(
+            &store,
+            graph_id,
+            &parse_block("INSERT (a) NEXT INSERT (b) NEXT INSERT (c)"),
+        )
+        .expect_err("three DMLs on two shards must be rejected");
+        assert!(
+            matches!(
+                err,
+                RouterError::UnsupportedMultiDmlBundle {
+                    dml_statements: 3,
+                    shard_count: 2,
+                }
+            ),
+            "unexpected error: {err:?}"
+        );
     }
 
     #[derive(Clone)]

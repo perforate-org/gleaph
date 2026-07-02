@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-02 UTC
 Status: Phases 0-4 done (Phase 3 `Canonical` deferred; Phase 4 autonomous recovery is projection-only, canonical re-dispatch stays explicit-retry); Phases 5-6 planned
-Anchor timestamp: 2026-07-02 09:42:18 UTC +0000
+Anchor timestamp: 2026-07-02 09:56:23 UTC +0000
 
 ## Purpose
 
@@ -490,11 +490,18 @@ Tests:
 
 - Router rejects unsupported multi-DML before any shard dispatch. *(Done:
   `router_rejects_federated_match_based_multi_dml_bundle_before_dispatch`,
-  `router_allows_multi_dml_bundle_on_single_shard`, and
-  `program_modification::count_dml_statements_*` host unit tests.)*
+  `router_allows_multi_dml_bundle_on_single_shard`,
+  `program_modification::count_dml_statements_*`, and direct Router gate contracts
+  `multi_dml_gate_zero_or_one_dml_passes`,
+  `multi_dml_gate_single_shard_multi_dml_passes`, and
+  `multi_dml_gate_federated_multi_dml_rejects_with_exact_counts` host unit tests.)*
 - A supported one-shard bundle executes atomically on a single shard. *(Done for the completely-new
-  INSERT-only subset: `federated_pure_insert_placement_lifecycle` and `is_pure_insert_*` host unit
-  tests. Done for the anchored single-shard subset:
+  INSERT-only subset: `federated_pure_insert_placement_lifecycle`, `is_pure_insert_*`, and direct
+  latest-shard routing contracts
+  `latest_shard_routing_empty_input_returns_not_registered`,
+  `latest_shard_routing_one_shard_selects_it`, and
+  `latest_shard_routing_unordered_shards_chooses_greatest_id` host unit tests. Done for the anchored
+  single-shard subset:
   `router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard` and
   `is_single_anchor_threaded_bundle_*` host unit tests.)*
 - A supported bundle that fans out to many shards runs per shard as a roll-forward saga, and a retry
