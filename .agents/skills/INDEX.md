@@ -20,6 +20,11 @@ Evaluate major architectural changes against encapsulation, separation of concer
 
 Review behavioral contracts, invariants, consistency mechanisms, boundaries, and test coverage.
 
+## adversarial-test-review
+
+Review test refactors and consolidations by mapping plan criteria to assertions and constructing
+wrong implementations that could still pass before approval.
+
 ## benchmark
 
 Review benchmark impact, performance regressions, invariant-preserving measurement, and benchmark fitness for purpose.

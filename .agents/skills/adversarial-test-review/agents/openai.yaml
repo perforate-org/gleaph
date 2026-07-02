@@ -1,0 +1,4 @@
+interface:
+  display_name: "Adversarial Test Review"
+  short_description: "Find false-positive test contracts before approval"
+  default_prompt: "Use $adversarial-test-review to review this test consolidation against its plan and behavioral contracts."
