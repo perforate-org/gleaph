@@ -147,6 +147,14 @@ panes for implementation and validation. The default workflow is:
 6. Only after the primary-pane review approves the change does the primary pane run final lightweight
    integrity checks and create or amend the commit. Implementation panes must not commit unless the
    user explicitly changes this workflow.
+7. After the approved implementation is committed, the primary pane resets the implementation
+   agent's conversation before assigning another plan. For Codex panes, send `/new` with
+   `herdr pane run <implementation-pane-id> "/new"`. If the Codex slash-command completion menu
+   remains open, send one additional
+   `herdr pane send-keys <implementation-pane-id> Enter`, then verify the startup banner/fresh prompt.
+   Keep the same conversation during review/fix iterations for one slice; reset only after that slice is
+   approved and committed. If the agent does not support an in-session reset command, close and
+   recreate the implementation pane instead.
 
 Run long PocketIC suites, workspace tests, and canbench in sibling panes. Use bounded `herdr wait`
 calls or inspect their current output between useful review work; do not block the primary pane for
@@ -166,6 +174,10 @@ automatically injected into the active Codex conversation. On receiving the mess
 `herdr wait agent-status <implementation-pane-id> --status done` when necessary, then read the pane's
 recent unwrapped output. Re-read pane ids before sending follow-up work because ids may compact after
 tabs or panes are closed.
+
+Never assign a new plan to an implementation pane that still contains the previous completed
+implementation conversation. The primary completion report should state that the implementation
+pane was reset, or explain why it had to be recreated.
 
 ## Format, Test, and Benchmark
 
