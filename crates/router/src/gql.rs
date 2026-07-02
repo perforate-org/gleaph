@@ -496,6 +496,20 @@ pub(crate) async fn enforce_read_consistency(
     graph_id: GraphId,
     read_mode: &ReadMode,
 ) -> Result<(), RouterError> {
+    enforce_read_consistency_with_lookup(store, graph_id, read_mode, index_pending_min_mutation_id)
+        .await
+}
+
+async fn enforce_read_consistency_with_lookup<F, Fut>(
+    store: &RouterStore,
+    graph_id: GraphId,
+    read_mode: &ReadMode,
+    mut index_lookup: F,
+) -> Result<(), RouterError>
+where
+    F: FnMut(Principal) -> Fut,
+    Fut: std::future::Future<Output = Result<Option<MutationId>, String>>,
+{
     let token = match read_mode {
         ReadMode::Eventual => return Ok(()),
         ReadMode::Canonical => {
@@ -526,7 +540,7 @@ pub(crate) async fn enforce_read_consistency(
         // Graph-index watermark: the shard's repair journal must have drained past the
         // token's `mutation_id`. Index-satisfied iff `None` or `mutation_id < min_pending`.
         let entry = store.resolve_shard(graph_id, shard.shard_id)?;
-        let min_pending = index_pending_min_mutation_id(entry.graph_canister)
+        let min_pending = index_lookup(entry.graph_canister)
             .await
             .map_err(RouterError::Internal)?;
         if let Some(min_pending) = min_pending
@@ -2286,7 +2300,8 @@ mod tests {
         routings_to_dispatches,
     };
     use crate::gql::{
-        dispatch_plan_blob_with_index, enforce_read_consistency, request_fingerprint,
+        dispatch_plan_blob_with_index, enforce_read_consistency,
+        enforce_read_consistency_with_lookup, request_fingerprint,
     };
     use crate::init::RouterInitArgs;
     use crate::planner_stats::RouterGraphStats;
@@ -3511,9 +3526,11 @@ mod tests {
         );
     }
 
-    // ADR 0029 §5 (Phase 3) read barrier decision logic. The index branch performs an
-    // inter-canister query (covered by PocketIC); these host tests pin the local decisions:
-    // `Eventual` no-op, `Canonical` rejection, and the label-stats lag short-circuit.
+    // ADR 0029 §5 (Phase 3) read barrier decision logic. Production uses the real
+    // inter-canister pending-mutation lookup; the private `enforce_read_consistency_with_lookup`
+    // seam makes the graph-index branch host-testable. These host tests pin every local
+    // decision: `Eventual` no-op, `Canonical` rejection, label-stats short-circuit,
+    // graph-index lag and drain, and multi-shard lookup identity/order.
     #[test]
     fn read_barrier_eventual_is_noop() {
         let store = store_with_shards();
@@ -3544,7 +3561,8 @@ mod tests {
         let store = store_with_shards();
         let graph_id = tenant_main_graph_id();
         // Cursor defaults to 0; require seq 5 on shard 0 → unmet, so the barrier must
-        // return ProjectionLag *before* any inter-canister index call.
+        // return ProjectionLag *before* any inter-canister index call. The injected
+        // lookup panics if called, tightening the short-circuit to zero index calls.
         let token = MutationToken {
             mutation_id: 1,
             shards: vec![MutationTokenShard {
@@ -3552,10 +3570,11 @@ mod tests {
                 label_stats_seq: Some(5),
             }],
         };
-        let err = futures::executor::block_on(enforce_read_consistency(
+        let err = futures::executor::block_on(enforce_read_consistency_with_lookup(
             &store,
             graph_id,
             &ReadMode::AtLeast(token),
+            |_graph| async { panic!("index lookup must not be called for label-stats lag") },
         ))
         .expect_err("label stats projection has not caught up");
         match err {
@@ -3588,6 +3607,113 @@ mod tests {
             &ReadMode::AtLeast(token),
         ))
         .expect("no shard watermarks to satisfy");
+    }
+
+    #[test]
+    fn read_barrier_atleast_non_empty_satisfied_token_is_admitted() {
+        let store = store_with_shards();
+        let graph_id = tenant_main_graph_id();
+        // A non-empty token whose label-stats cursor is already caught up and whose
+        // graph-index watermark is past the mutation id must be admitted.
+        let token = MutationToken {
+            mutation_id: 5,
+            shards: vec![MutationTokenShard {
+                shard_id: ShardId::new(0),
+                label_stats_seq: Some(0),
+            }],
+        };
+        futures::executor::block_on(enforce_read_consistency_with_lookup(
+            &store,
+            graph_id,
+            &ReadMode::AtLeast(token),
+            |_graph| async { Ok::<_, String>(Some(10)) },
+        ))
+        .expect("non-empty satisfied token should be admitted");
+    }
+
+    #[test]
+    fn read_barrier_atleast_graph_index_lag_returns_exact_projection_lag() {
+        let store = store_with_shards();
+        let graph_id = tenant_main_graph_id();
+        let token = MutationToken {
+            mutation_id: 7,
+            shards: vec![MutationTokenShard {
+                shard_id: ShardId::new(0),
+                label_stats_seq: None,
+            }],
+        };
+        let err = futures::executor::block_on(enforce_read_consistency_with_lookup(
+            &store,
+            graph_id,
+            &ReadMode::AtLeast(token),
+            |_graph| async { Ok::<_, String>(Some(7)) },
+        ))
+        .expect_err("graph-index watermark is not drained");
+        match err {
+            RouterError::ProjectionLag {
+                shard_id,
+                watermark,
+                required,
+                current,
+            } => {
+                assert_eq!(shard_id, 0);
+                assert_eq!(watermark, "graph_index");
+                assert_eq!(required, 7);
+                assert_eq!(current, 7);
+            }
+            other => panic!("expected ProjectionLag, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn read_barrier_atleast_none_index_watermark_is_satisfied() {
+        let store = store_with_shards();
+        let graph_id = tenant_main_graph_id();
+        let token = MutationToken {
+            mutation_id: 3,
+            shards: vec![MutationTokenShard {
+                shard_id: ShardId::new(0),
+                label_stats_seq: None,
+            }],
+        };
+        futures::executor::block_on(enforce_read_consistency_with_lookup(
+            &store,
+            graph_id,
+            &ReadMode::AtLeast(token),
+            |_graph| async { Ok::<_, String>(None) },
+        ))
+        .expect("drained index watermark should satisfy any mutation_id");
+    }
+
+    #[test]
+    fn read_barrier_atleast_multishard_lookup_identity_and_order() {
+        let store = store_with_shards();
+        let graph_id = tenant_main_graph_id();
+        let token = MutationToken {
+            mutation_id: 1,
+            shards: vec![
+                MutationTokenShard {
+                    shard_id: ShardId::new(0),
+                    label_stats_seq: None,
+                },
+                MutationTokenShard {
+                    shard_id: ShardId::new(1),
+                    label_stats_seq: None,
+                },
+            ],
+        };
+        let mut calls: Vec<Principal> = Vec::new();
+        futures::executor::block_on(enforce_read_consistency_with_lookup(
+            &store,
+            graph_id,
+            &ReadMode::AtLeast(token),
+            |graph| {
+                calls.push(graph);
+                async { Ok::<_, String>(Some(5)) }
+            },
+        ))
+        .expect("all shard watermarks satisfied");
+        assert_eq!(calls, vec![graph_principal(1), graph_principal(4)]);
     }
 
     /// ADR 0030 slice 5a: the single-shard admission gate must run *before* the saga envelope record

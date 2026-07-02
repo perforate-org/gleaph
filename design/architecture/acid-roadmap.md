@@ -2,7 +2,7 @@
 
 Last updated: 2026-07-02 UTC
 Status: Phases 0-4 done (Phase 3 `Canonical` deferred; Phase 4 autonomous recovery is projection-only, canonical re-dispatch stays explicit-retry); Phases 5-6 planned
-Anchor timestamp: 2026-07-02 09:20:55 UTC +0000
+Anchor timestamp: 2026-07-02 09:42:18 UTC +0000
 
 ## Purpose
 
@@ -317,10 +317,14 @@ Tests:
 - **Done.** A successful idempotent DML followed by `AtLeast(token)` is served read-your-writes,
   while a token whose watermark is forced past the projection cursor returns retryable
   `ProjectionLag`; `Canonical` is rejected and `Eventual` is non-blocking
-  (`router_atleast_read_barrier_serves_when_satisfied_and_lags_when_unmet`, PocketIC).
+  (`single_shard_mutation_token_barrier_status_lifecycle`, PocketIC).
 - **Done.** Barrier decision logic host unit tests: `Eventual` no-op, `Canonical` rejected,
-  label-stats lag short-circuit returns `ProjectionLag`, empty token satisfied
-  (`gql::tests::read_barrier_*`).
+  label-stats lag short-circuit returns `ProjectionLag` with zero index calls, empty token
+  satisfied, non-empty satisfied token admitted, graph-index lag returns exact
+  `ProjectionLag`, drained (`None`) index watermark satisfies any mutation id, and multi-shard
+  lookup preserves shard identity and evaluation order (`gql::tests::read_barrier_*`). The
+  graph-index branch is now host-testable through a private lookup seam; production still calls
+  the real inter-canister `index_pending_min_mutation_id`.
 - **Done.** `ReadMode` candid round-trip across all variants (`read_mode_candid_roundtrip_all_variants`,
   graph-kernel `plan_exec`).
 
