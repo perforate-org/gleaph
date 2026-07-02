@@ -227,558 +227,569 @@ fn gql_query_with_params_as_admin_result(
     Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_query result")
 }
 
-fn setup_search_where_conjunction_env(env: &FederationEnv, vector: Principal) {
-    register_vector_index(env, VectorMetric::L2Squared, vector);
-    enable_vector_dispatch(env, vector);
-
-    let doc_label_id = admin_intern_vertex_label(env, "Document");
-    let cat_id = admin_intern_property(env, "cat_id");
-    let tenant_id = admin_intern_property(env, "tenant_id");
-    create_vertex_property_index(
-        env,
-        "document_cat_id_idx",
-        "Document",
-        "cat_id",
-        "create_document_cat_id_idx",
-    );
-    create_vertex_property_index(
-        env,
-        "document_tenant_id_idx",
-        "Document",
-        "tenant_id",
-        "create_document_tenant_id_idx",
-    );
-
-    // Insert three documents:
-    // - doc_match:  cat=1, tenant=1, vector 2.0 (distance 4 from query 0.0)
-    // - doc_one:    cat=1, tenant=2, vector 0.0 (distance 0) — matches only one arm
-    // - doc_other:  cat=2, tenant=1, vector 0.0 (distance 0) — matches only one arm
-    let doc_match = e2e_insert_vertex_with_label_and_two_properties(
-        env,
-        env.graph_source,
-        doc_label_id.raw(),
-        cat_id.raw(),
-        1,
-        tenant_id.raw(),
-        1,
-    );
-    let doc_one = e2e_insert_vertex_with_label_and_two_properties(
-        env,
-        env.graph_source,
-        doc_label_id.raw(),
-        cat_id.raw(),
-        1,
-        tenant_id.raw(),
-        2,
-    );
-    let doc_other = e2e_insert_vertex_with_label_and_two_properties(
-        env,
-        env.graph_source,
-        doc_label_id.raw(),
-        cat_id.raw(),
-        2,
-        tenant_id.raw(),
-        1,
-    );
-
-    seed_embedding(
-        env,
-        vector,
-        env.graph_source,
-        doc_match.local_vertex_id,
-        2.0,
-    );
-    seed_embedding(env, vector, env.graph_source, doc_one.local_vertex_id, 0.0);
-    seed_embedding(
-        env,
-        vector,
-        env.graph_source,
-        doc_other.local_vertex_id,
-        0.0,
-    );
+fn encode_query_param(value: f32) -> Vec<u8> {
+    gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
+        "query".to_string(),
+        Value::Bytes(vec_bytes(value)),
+    )])
+    .expect("encode params")
 }
 
-fn setup_search_where_eight_way_env(env: &FederationEnv, vector: Principal) {
-    register_vector_index(env, VectorMetric::L2Squared, vector);
-    enable_vector_dispatch(env, vector);
+// ---------------------------------------------------------------------------
+// Fixture family: common two-arm equality conjunction
+// ---------------------------------------------------------------------------
 
-    let doc_label_id = admin_intern_vertex_label(env, "Document");
-    let property_ids: Vec<_> = (0..8)
-        .map(|i| admin_intern_property(env, &format!("filter_p{i}")))
-        .collect();
-    for i in 0..8 {
+/// Immutable state for `d.cat_id = 1 AND d.tenant_id = 1` scenarios.
+///
+/// Former tests mapped to methods:
+/// - `search_where_conjunction_excludes_globally_nearer_one_arm_vertices`
+/// - `search_where_conjunction_parameter_predicates`
+/// - `search_where_conjunction_empty_result_aggregate`
+struct CommonConjunctionFixture<'a> {
+    env: &'a FederationEnv,
+}
+
+impl<'a> CommonConjunctionFixture<'a> {
+    fn new(env: &'a FederationEnv, vector: Principal) -> Self {
+        register_vector_index(env, VectorMetric::L2Squared, vector);
+        enable_vector_dispatch(env, vector);
+
+        let doc_label_id = admin_intern_vertex_label(env, "Document");
+        let cat_id = admin_intern_property(env, "cat_id");
+        let tenant_id = admin_intern_property(env, "tenant_id");
         create_vertex_property_index(
             env,
-            &format!("document_filter_p{i}_idx"),
+            "document_cat_id_idx",
             "Document",
-            &format!("filter_p{i}"),
-            &format!("create_document_filter_p{i}_idx"),
+            "cat_id",
+            "create_document_cat_id_idx",
         );
-    }
+        create_vertex_property_index(
+            env,
+            "document_tenant_id_idx",
+            "Document",
+            "tenant_id",
+            "create_document_tenant_id_idx",
+        );
 
-    // doc_match shares the target value 1 across all eight filter properties.
-    let doc_match = e2e_insert_vertex_with_label(env, env.graph_source, doc_label_id.raw());
-    for pid in &property_ids {
-        e2e_set_vertex_property(
+        // Insert three documents:
+        // - doc_match:  cat=1, tenant=1, vector 2.0 (distance 64 from query 0.0)
+        // - doc_one:    cat=1, tenant=2, vector 0.0 (distance 0) — matches only one arm
+        // - doc_other:  cat=2, tenant=1, vector 0.0 (distance 0) — matches only one arm
+        let doc_match = e2e_insert_vertex_with_label_and_two_properties(
             env,
             env.graph_source,
-            doc_match.local_vertex_id,
-            pid.raw(),
+            doc_label_id.raw(),
+            cat_id.raw(),
+            1,
+            tenant_id.raw(),
             1,
         );
-    }
+        let doc_one = e2e_insert_vertex_with_label_and_two_properties(
+            env,
+            env.graph_source,
+            doc_label_id.raw(),
+            cat_id.raw(),
+            1,
+            tenant_id.raw(),
+            2,
+        );
+        let doc_other = e2e_insert_vertex_with_label_and_two_properties(
+            env,
+            env.graph_source,
+            doc_label_id.raw(),
+            cat_id.raw(),
+            2,
+            tenant_id.raw(),
+            1,
+        );
 
-    // Create one partial-match adversary per arm, each missing a different property.
-    // Every one is globally nearer than doc_match so the test fails if any arm's sieve is skipped.
-    for omitted in 0..8 {
-        let doc_partial = e2e_insert_vertex_with_label(env, env.graph_source, doc_label_id.raw());
-        for (i, pid) in property_ids.iter().enumerate() {
-            if i == omitted {
-                continue;
-            }
-            e2e_set_vertex_property(
-                env,
-                env.graph_source,
-                doc_partial.local_vertex_id,
-                pid.raw(),
-                1,
-            );
-        }
         seed_embedding(
             env,
             vector,
             env.graph_source,
-            doc_partial.local_vertex_id,
-            0.0f32 + (omitted as f32) * 0.01f32,
+            doc_match.local_vertex_id,
+            2.0,
         );
-    }
-
-    seed_embedding(
-        env,
-        vector,
-        env.graph_source,
-        doc_match.local_vertex_id,
-        2.0,
-    );
-}
-
-#[test]
-fn search_where_eight_way_conjunction_excludes_globally_nearer_partial_match() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    setup_search_where_eight_way_env(&env, vector);
-
-    let arms: Vec<String> = (0..8).map(|i| format!("d.filter_p{i} = 1")).collect();
-    let where_clause = arms.join(" AND ");
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE {where_clause} \
-           LIMIT 1 \
-         ) DISTANCE AS distance \
-         RETURN ELEMENT_ID(d), distance \
-         ORDER BY distance ASC"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let result = gql_query_with_params_as_admin(&env, &query, params);
-    assert_eq!(
-        result.row_count, 1,
-        "only the document matching all eight arms should survive intersection"
-    );
-
-    let rows = extract_rows(result);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0].get("distance"),
-        Some(&gleaph_gql_ic::IcWireValue::Float64(
-            2.0_f64.powi(2) * 16.0_f64
-        )),
-        "doc_match at 2.0 must win, not the nearer partial match at 0.0"
-    );
-}
-
-#[test]
-fn search_where_conjunction_excludes_globally_nearer_one_arm_vertices() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    setup_search_where_conjunction_env(&env, vector);
-
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE d.cat_id = 1 AND d.tenant_id = 1 \
-           LIMIT 1 \
-         ) DISTANCE AS distance \
-         RETURN ELEMENT_ID(d), distance \
-         ORDER BY distance ASC"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let result = gql_query_with_params_as_admin(&env, &query, params);
-    assert_eq!(
-        result.row_count, 1,
-        "only the document matching both arms should survive intersection"
-    );
-
-    let rows = extract_rows(result);
-    assert_eq!(rows.len(), 1);
-    assert_eq!(
-        rows[0].get("distance"),
-        Some(&gleaph_gql_ic::IcWireValue::Float64(
-            2.0_f64.powi(2) * 16.0_f64
-        )),
-        "doc_match at 2.0 must win, not the nearer one-arm vertices at 0.0"
-    );
-}
-
-#[test]
-fn search_where_conjunction_parameter_predicates() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    setup_search_where_conjunction_env(&env, vector);
-
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE d.cat_id = $cat AND d.tenant_id = $tenant \
-           LIMIT 10 \
-         ) DISTANCE AS distance \
-         RETURN ELEMENT_ID(d), distance \
-         ORDER BY distance ASC"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![
-        ("query".to_string(), Value::Bytes(vec_bytes(0.0))),
-        ("cat".to_string(), Value::Int64(1)),
-        ("tenant".to_string(), Value::Int64(1)),
-    ])
-    .expect("encode params");
-
-    let result = gql_query_with_params_as_admin(&env, &query, params);
-    assert_eq!(result.row_count, 1, "expected one intersection match");
-
-    let rows = extract_rows(result);
-    assert_eq!(rows.len(), 1);
-}
-
-#[test]
-fn search_where_conjunction_empty_result_aggregate() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    setup_search_where_conjunction_env(&env, vector);
-
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE d.cat_id = 999 AND d.tenant_id = 1 \
-           LIMIT 10 \
-         ) DISTANCE AS distance \
-         RETURN count(*) AS n"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let result = gql_query_with_params_as_admin(&env, &query, params);
-    assert_eq!(
-        result.row_count, 1,
-        "empty candidate set must still produce one aggregate row"
-    );
-
-    let rows = extract_rows(result);
-    assert_eq!(rows.len(), 1);
-    match rows[0].get("n").expect("count column") {
-        gleaph_gql_ic::IcWireValue::Int64(v) => assert_eq!(*v, 0, "count must be zero"),
-        other => panic!("count must be Int64 0, got {other:?}"),
-    }
-}
-
-#[test]
-fn search_where_conjunction_rejects_missing_second_exact_index() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    register_vector_index(&env, VectorMetric::L2Squared, vector);
-    enable_vector_dispatch(&env, vector);
-
-    let doc_label_id = admin_intern_vertex_label(&env, "Document");
-    let cat_id = admin_intern_property(&env, "cat_id");
-    let tenant_id = admin_intern_property(&env, "tenant_id");
-    // Only cat_id has an active index for Document; tenant_id does not.
-    create_vertex_property_index(
-        &env,
-        "document_cat_id_idx",
-        "Document",
-        "cat_id",
-        "create_document_cat_id_idx",
-    );
-
-    let v = e2e_insert_vertex_with_label_and_two_properties(
-        &env,
-        env.graph_source,
-        doc_label_id.raw(),
-        cat_id.raw(),
-        1,
-        tenant_id.raw(),
-        1,
-    );
-    seed_embedding(&env, vector, env.graph_source, v.local_vertex_id, 1.0);
-
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE d.cat_id = 1 AND d.tenant_id = 1 \
-           LIMIT 10 \
-         ) DISTANCE AS distance \
-         RETURN ELEMENT_ID(d), distance"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let err = gql_query_with_params_as_admin_result(&env, &query, params)
-        .expect_err("missing second exact index must fail");
-    assert!(
-        err.to_string().contains("active vertex property index"),
-        "missing second exact index must fail with a coverage error, got {err}"
-    );
-}
-
-#[test]
-fn search_where_nine_arm_equality_conjunction_is_rejected() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-    setup_search_where_eight_way_env(&env, vector);
-
-    let arms: Vec<String> = (0..9).map(|i| format!("d.filter_p{i} = 1")).collect();
-    let where_clause = arms.join(" AND ");
-    let query = format!(
-        "MATCH (d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE {where_clause} \
-           LIMIT 1 \
-         ) DISTANCE AS distance \
-         RETURN ELEMENT_ID(d), distance \
-         ORDER BY distance ASC"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let err = gql_query_with_params_as_admin_result(&env, &query, params)
-        .expect_err("nine equality arms must be rejected");
-    assert!(
-        err.to_string().contains("at most 8 equality"),
-        "nine arms must fail with an explicit arm-count error, got {err}"
-    );
-}
-
-#[test]
-fn non_leading_search_where_conjunction_excludes_globally_nearer_one_arm_vertices() {
-    let env = install_federation();
-    let vector = install_vector_canister(&env.pic, env.router);
-
-    register_vector_index(&env, VectorMetric::L2Squared, vector);
-    enable_vector_dispatch(&env, vector);
-
-    let author_label_id = admin_intern_vertex_label(&env, "Author").raw();
-    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
-    let wrote_label_id = admin_intern_edge_label(&env, "WROTE").raw();
-    let cat_id = admin_intern_property(&env, "cat_id");
-    let tenant_id = admin_intern_property(&env, "tenant_id");
-
-    create_vertex_property_index(
-        &env,
-        "document_cat_id_idx",
-        "Document",
-        "cat_id",
-        "create_document_cat_id_idx",
-    );
-    create_vertex_property_index(
-        &env,
-        "document_tenant_id_idx",
-        "Document",
-        "tenant_id",
-        "create_document_tenant_id_idx",
-    );
-
-    // Two authors, both connected to the same two documents.
-    let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
-    let a2 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
-
-    // d_match matches both filter arms with vector 6.0 (distance 16 from query 5.0).
-    let d_match = e2e_insert_vertex_with_label_and_two_properties(
-        &env,
-        env.graph_source,
-        doc_label_id,
-        cat_id.raw(),
-        1,
-        tenant_id.raw(),
-        1,
-    );
-    // d_one matches only the cat_id arm and is globally nearer (vector 5.0 vs query 5.0,
-    // distance 0 vs d_match distance 16). If the implementation incorrectly used a union or
-    // unrestricted top-k, d_one would win; the correct intersection keeps it out.
-    let d_one = e2e_insert_vertex_with_label_and_two_properties(
-        &env,
-        env.graph_source,
-        doc_label_id,
-        cat_id.raw(),
-        1,
-        tenant_id.raw(),
-        2,
-    );
-
-    for a in [a1.local_vertex_id, a2.local_vertex_id] {
-        e2e_insert_edge_with_label(
-            &env,
+        seed_embedding(env, vector, env.graph_source, doc_one.local_vertex_id, 0.0);
+        seed_embedding(
+            env,
+            vector,
             env.graph_source,
-            a,
-            d_match.local_vertex_id,
-            wrote_label_id,
+            doc_other.local_vertex_id,
+            0.0,
         );
-        e2e_insert_edge_with_label(
-            &env,
-            env.graph_source,
-            a,
-            d_one.local_vertex_id,
-            wrote_label_id,
+
+        Self { env }
+    }
+
+    /// Former: `search_where_conjunction_excludes_globally_nearer_one_arm_vertices`.
+    fn two_arm_membership_excludes_nearer_one_arm_vertices(&self) {
+        let query = format!(
+            "MATCH (d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+               WHERE d.cat_id = 1 AND d.tenant_id = 1 \
+               LIMIT 1 \
+             ) DISTANCE AS distance \
+             RETURN ELEMENT_ID(d), distance \
+             ORDER BY distance ASC"
+        );
+
+        let result = gql_query_with_params_as_admin(self.env, &query, encode_query_param(0.0));
+        assert_eq!(
+            result.row_count, 1,
+            "only the document matching both arms should survive intersection"
+        );
+
+        let rows = extract_rows(result);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("distance"),
+            Some(&gleaph_gql_ic::IcWireValue::Float64(
+                2.0_f64.powi(2) * 16.0_f64
+            )),
+            "doc_match at 2.0 must win, not the nearer one-arm vertices at 0.0"
         );
     }
 
-    seed_embedding(&env, vector, env.graph_source, d_match.local_vertex_id, 6.0);
-    seed_embedding(&env, vector, env.graph_source, d_one.local_vertex_id, 5.0);
+    /// Former: `search_where_conjunction_parameter_predicates`.
+    fn parameter_predicates(&self) {
+        let query = format!(
+            "MATCH (d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+               WHERE d.cat_id = $cat AND d.tenant_id = $tenant \
+               LIMIT 10 \
+             ) DISTANCE AS distance \
+             RETURN ELEMENT_ID(d), distance \
+             ORDER BY distance ASC"
+        );
+        let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![
+            ("query".to_string(), Value::Bytes(vec_bytes(0.0))),
+            ("cat".to_string(), Value::Int64(1)),
+            ("tenant".to_string(), Value::Int64(1)),
+        ])
+        .expect("encode params");
 
-    // LIMIT 1 global top-k, restricted to the intersection, must contain only d_match.
-    // Both author rows pointing to d_match survive the inner join.
-    let query = format!(
-        "MATCH (a:Author)-[:WROTE]->(d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE d.cat_id = 1 AND d.tenant_id = 1 \
-           LIMIT 1 \
-         ) DISTANCE AS distance \
-         RETURN a, d, distance ORDER BY distance ASC"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(5.0)),
-    )])
-    .expect("encode params");
+        let result = gql_query_with_params_as_admin(self.env, &query, params);
+        assert_eq!(result.row_count, 1, "expected one intersection match");
 
-    let result = gql_query_with_params_as_admin(&env, &query, params);
-    assert_eq!(
-        result.row_count, 2,
-        "LIMIT 1 global top-k joins to the surviving document's two author rows"
-    );
+        let rows = extract_rows(result);
+        assert_eq!(rows.len(), 1);
+    }
 
-    let rows = extract_rows(result);
-    assert_eq!(rows.len(), 2);
-    for row in &rows {
-        match row.get("distance").expect("distance column") {
-            gleaph_gql_ic::IcWireValue::Float64(d) => {
-                assert!(
-                    (d - 16.0f64).abs() < 1e-6,
-                    "only the exact-match intersection document survives global top-k"
-                );
-            }
-            other => panic!("distance must be Float64, got {other:?}"),
+    /// Former: `search_where_conjunction_empty_result_aggregate`.
+    fn empty_result_aggregate(&self) {
+        let query = format!(
+            "MATCH (d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+               WHERE d.cat_id = 999 AND d.tenant_id = 1 \
+               LIMIT 10 \
+             ) DISTANCE AS distance \
+             RETURN count(*) AS n"
+        );
+
+        let result = gql_query_with_params_as_admin(self.env, &query, encode_query_param(0.0));
+        assert_eq!(
+            result.row_count, 1,
+            "empty candidate set must still produce one aggregate row"
+        );
+
+        let rows = extract_rows(result);
+        assert_eq!(rows.len(), 1);
+        match rows[0].get("n").expect("count column") {
+            gleaph_gql_ic::IcWireValue::Int64(v) => assert_eq!(*v, 0, "count must be zero"),
+            other => panic!("count must be Int64 0, got {other:?}"),
         }
     }
 }
 
+// ---------------------------------------------------------------------------
+// Fixture family: eight-way equality conjunction boundary
+// ---------------------------------------------------------------------------
+
+/// Immutable state for up-to-eight-arm equality intersection.
+///
+/// Former tests mapped to methods:
+/// - `search_where_eight_way_conjunction_excludes_globally_nearer_partial_match`
+/// - `search_where_nine_arm_equality_conjunction_is_rejected`
+struct EightWayConjunctionFixture<'a> {
+    env: &'a FederationEnv,
+}
+
+impl<'a> EightWayConjunctionFixture<'a> {
+    fn new(env: &'a FederationEnv, vector: Principal) -> Self {
+        register_vector_index(env, VectorMetric::L2Squared, vector);
+        enable_vector_dispatch(env, vector);
+
+        let doc_label_id = admin_intern_vertex_label(env, "Document");
+        let property_ids: Vec<_> = (0..8)
+            .map(|i| admin_intern_property(env, &format!("filter_p{i}")))
+            .collect();
+        for i in 0..8 {
+            create_vertex_property_index(
+                env,
+                &format!("document_filter_p{i}_idx"),
+                "Document",
+                &format!("filter_p{i}"),
+                &format!("create_document_filter_p{i}_idx"),
+            );
+        }
+
+        // doc_match shares the target value 1 across all eight filter properties.
+        let doc_match = e2e_insert_vertex_with_label(env, env.graph_source, doc_label_id.raw());
+        for pid in &property_ids {
+            e2e_set_vertex_property(
+                env,
+                env.graph_source,
+                doc_match.local_vertex_id,
+                pid.raw(),
+                1,
+            );
+        }
+
+        // Create one partial-match adversary per arm, each missing a different property.
+        // Every one is globally nearer than doc_match so the test fails if any arm's sieve is skipped.
+        for omitted in 0..8 {
+            let doc_partial =
+                e2e_insert_vertex_with_label(env, env.graph_source, doc_label_id.raw());
+            for (i, pid) in property_ids.iter().enumerate() {
+                if i == omitted {
+                    continue;
+                }
+                e2e_set_vertex_property(
+                    env,
+                    env.graph_source,
+                    doc_partial.local_vertex_id,
+                    pid.raw(),
+                    1,
+                );
+            }
+            seed_embedding(
+                env,
+                vector,
+                env.graph_source,
+                doc_partial.local_vertex_id,
+                0.0f32 + (omitted as f32) * 0.01f32,
+            );
+        }
+
+        seed_embedding(
+            env,
+            vector,
+            env.graph_source,
+            doc_match.local_vertex_id,
+            2.0,
+        );
+
+        Self { env }
+    }
+
+    /// Former: `search_where_eight_way_conjunction_excludes_globally_nearer_partial_match`.
+    fn eight_way_excludes_globally_nearer_partial_match(&self) {
+        let arms: Vec<String> = (0..8).map(|i| format!("d.filter_p{i} = 1")).collect();
+        let where_clause = arms.join(" AND ");
+        let query = format!(
+            "MATCH (d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+               WHERE {where_clause} \
+               LIMIT 1 \
+             ) DISTANCE AS distance \
+             RETURN ELEMENT_ID(d), distance \
+             ORDER BY distance ASC"
+        );
+
+        let result = gql_query_with_params_as_admin(self.env, &query, encode_query_param(0.0));
+        assert_eq!(
+            result.row_count, 1,
+            "only the document matching all eight arms should survive intersection"
+        );
+
+        let rows = extract_rows(result);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(
+            rows[0].get("distance"),
+            Some(&gleaph_gql_ic::IcWireValue::Float64(
+                2.0_f64.powi(2) * 16.0_f64
+            )),
+            "doc_match at 2.0 must win, not the nearer partial match at 0.0"
+        );
+    }
+
+    /// Former: `search_where_nine_arm_equality_conjunction_is_rejected`.
+    fn nine_arm_rejected(&self) {
+        let arms: Vec<String> = (0..9).map(|i| format!("d.filter_p{i} = 1")).collect();
+        let where_clause = arms.join(" AND ");
+        let query = format!(
+            "MATCH (d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+               WHERE {where_clause} \
+               LIMIT 1 \
+             ) DISTANCE AS distance \
+             RETURN ELEMENT_ID(d), distance \
+             ORDER BY distance ASC"
+        );
+
+        let err = gql_query_with_params_as_admin_result(self.env, &query, encode_query_param(0.0))
+            .expect_err("nine equality arms must be rejected");
+        assert!(
+            err.to_string().contains("at most 8 equality"),
+            "nine arms must fail with an explicit arm-count error, got {err}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fixture family: missing exact index coverage
+// ---------------------------------------------------------------------------
+
+/// Former test: `search_where_conjunction_rejects_missing_second_exact_index`.
+struct MissingIndexFixture<'a> {
+    env: &'a FederationEnv,
+}
+
+impl<'a> MissingIndexFixture<'a> {
+    fn new(env: &'a FederationEnv, vector: Principal) -> Self {
+        register_vector_index(env, VectorMetric::L2Squared, vector);
+        enable_vector_dispatch(env, vector);
+
+        let doc_label_id = admin_intern_vertex_label(env, "Document");
+        let cat_id = admin_intern_property(env, "cat_id");
+        let tenant_id = admin_intern_property(env, "tenant_id");
+        // Only cat_id has an active index for Document; tenant_id does not.
+        create_vertex_property_index(
+            env,
+            "document_cat_id_idx",
+            "Document",
+            "cat_id",
+            "create_document_cat_id_idx",
+        );
+
+        let vertex = e2e_insert_vertex_with_label_and_two_properties(
+            env,
+            env.graph_source,
+            doc_label_id.raw(),
+            cat_id.raw(),
+            1,
+            tenant_id.raw(),
+            1,
+        );
+        seed_embedding(env, vector, env.graph_source, vertex.local_vertex_id, 1.0);
+
+        Self { env }
+    }
+
+    fn rejects_missing_second_exact_index(&self) {
+        let query = format!(
+            "MATCH (d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+               WHERE d.cat_id = 1 AND d.tenant_id = 1 \
+               LIMIT 10 \
+             ) DISTANCE AS distance \
+             RETURN ELEMENT_ID(d), distance"
+        );
+
+        let err = gql_query_with_params_as_admin_result(self.env, &query, encode_query_param(0.0))
+            .expect_err("missing second exact index must fail");
+        assert!(
+            err.to_string().contains("active vertex property index"),
+            "missing second exact index must fail with a coverage error, got {err}"
+        );
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Fixture family: non-leading equality conjunction join
+// ---------------------------------------------------------------------------
+
+/// Immutable state for conjunctions applied to a non-leading `MATCH` variable.
+///
+/// Former tests mapped to methods:
+/// - `non_leading_search_where_conjunction_excludes_globally_nearer_one_arm_vertices`
+/// - `non_leading_search_where_conjunction_empty_result_aggregate`
+struct NonLeadingConjunctionFixture<'a> {
+    env: &'a FederationEnv,
+}
+
+impl<'a> NonLeadingConjunctionFixture<'a> {
+    fn new(env: &'a FederationEnv, vector: Principal) -> Self {
+        register_vector_index(env, VectorMetric::L2Squared, vector);
+        enable_vector_dispatch(env, vector);
+
+        let author_label_id = admin_intern_vertex_label(env, "Author").raw();
+        let doc_label_id = admin_intern_vertex_label(env, "Document").raw();
+        let wrote_label_id = admin_intern_edge_label(env, "WROTE").raw();
+        let cat_id = admin_intern_property(env, "cat_id");
+        let tenant_id = admin_intern_property(env, "tenant_id");
+
+        create_vertex_property_index(
+            env,
+            "document_cat_id_idx",
+            "Document",
+            "cat_id",
+            "create_document_cat_id_idx",
+        );
+        create_vertex_property_index(
+            env,
+            "document_tenant_id_idx",
+            "Document",
+            "tenant_id",
+            "create_document_tenant_id_idx",
+        );
+
+        // Two authors, both connected to the same two documents.
+        let a1 = e2e_insert_vertex_with_label(env, env.graph_source, author_label_id);
+        let a2 = e2e_insert_vertex_with_label(env, env.graph_source, author_label_id);
+
+        // d_match matches both filter arms with vector 6.0 (distance 16 from query 5.0).
+        let d_match = e2e_insert_vertex_with_label_and_two_properties(
+            env,
+            env.graph_source,
+            doc_label_id,
+            cat_id.raw(),
+            1,
+            tenant_id.raw(),
+            1,
+        );
+        // d_one matches only the cat_id arm and is globally nearer (vector 5.0 vs query 5.0,
+        // distance 0 vs d_match distance 16). If the implementation incorrectly used a union or
+        // unrestricted top-k, d_one would win; the correct intersection keeps it out.
+        let d_one = e2e_insert_vertex_with_label_and_two_properties(
+            env,
+            env.graph_source,
+            doc_label_id,
+            cat_id.raw(),
+            1,
+            tenant_id.raw(),
+            2,
+        );
+
+        for a in [a1.local_vertex_id, a2.local_vertex_id] {
+            e2e_insert_edge_with_label(
+                env,
+                env.graph_source,
+                a,
+                d_match.local_vertex_id,
+                wrote_label_id,
+            );
+            e2e_insert_edge_with_label(
+                env,
+                env.graph_source,
+                a,
+                d_one.local_vertex_id,
+                wrote_label_id,
+            );
+        }
+
+        seed_embedding(env, vector, env.graph_source, d_match.local_vertex_id, 6.0);
+        seed_embedding(env, vector, env.graph_source, d_one.local_vertex_id, 5.0);
+
+        Self { env }
+    }
+
+    /// Former: `non_leading_search_where_conjunction_excludes_globally_nearer_one_arm_vertices`.
+    fn excludes_globally_nearer_one_arm_vertices(&self) {
+        // LIMIT 1 global top-k, restricted to the intersection, must contain only d_match.
+        // Both author rows pointing to d_match survive the inner join.
+        let query = format!(
+            "MATCH (a:Author)-[:WROTE]->(d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+               WHERE d.cat_id = 1 AND d.tenant_id = 1 \
+               LIMIT 1 \
+             ) DISTANCE AS distance \
+             RETURN a, d, distance ORDER BY distance ASC"
+        );
+
+        let result = gql_query_with_params_as_admin(self.env, &query, encode_query_param(5.0));
+        assert_eq!(
+            result.row_count, 2,
+            "LIMIT 1 global top-k joins to the surviving document's two author rows"
+        );
+
+        let rows = extract_rows(result);
+        assert_eq!(rows.len(), 2);
+        for row in &rows {
+            match row.get("distance").expect("distance column") {
+                gleaph_gql_ic::IcWireValue::Float64(d) => {
+                    assert!(
+                        (d - 16.0f64).abs() < 1e-6,
+                        "only the exact-match intersection document survives global top-k"
+                    );
+                }
+                other => panic!("distance must be Float64, got {other:?}"),
+            }
+        }
+    }
+
+    /// Former: `non_leading_search_where_conjunction_empty_result_aggregate`.
+    fn empty_result_aggregate(&self) {
+        let query = format!(
+            "MATCH (a:Author)-[:WROTE]->(d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX {EMBEDDING_NAME} FOR $query \
+               WHERE d.cat_id = 999 AND d.tenant_id = 1 \
+               LIMIT 10 \
+             ) DISTANCE AS distance \
+             RETURN count(*) AS n"
+        );
+
+        let result = gql_query_with_params_as_admin(self.env, &query, encode_query_param(0.0));
+        assert_eq!(
+            result.row_count, 1,
+            "empty filtered non-leading search must still produce one aggregate row"
+        );
+
+        let rows = extract_rows(result);
+        assert_eq!(rows.len(), 1);
+        match rows[0].get("n").expect("count column") {
+            gleaph_gql_ic::IcWireValue::Int64(v) => assert_eq!(*v, 0, "count must be zero"),
+            other => panic!("count must be Int64 0, got {other:?}"),
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
+// Consolidated test-local scenarios
+// ---------------------------------------------------------------------------
+
 #[test]
-fn non_leading_search_where_conjunction_empty_result_aggregate() {
+fn common_search_where_conjunction_scenarios() {
     let env = install_federation();
     let vector = install_vector_canister(&env.pic, env.router);
+    let fixture = CommonConjunctionFixture::new(&env, vector);
+    fixture.two_arm_membership_excludes_nearer_one_arm_vertices();
+    fixture.parameter_predicates();
+    fixture.empty_result_aggregate();
+}
 
-    register_vector_index(&env, VectorMetric::L2Squared, vector);
-    enable_vector_dispatch(&env, vector);
+#[test]
+fn eight_way_search_where_conjunction_scenarios() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    let fixture = EightWayConjunctionFixture::new(&env, vector);
+    fixture.eight_way_excludes_globally_nearer_partial_match();
+    fixture.nine_arm_rejected();
+}
 
-    let author_label_id = admin_intern_vertex_label(&env, "Author").raw();
-    let doc_label_id = admin_intern_vertex_label(&env, "Document").raw();
-    let wrote_label_id = admin_intern_edge_label(&env, "WROTE").raw();
-    let cat_id = admin_intern_property(&env, "cat_id");
-    let tenant_id = admin_intern_property(&env, "tenant_id");
+#[test]
+fn missing_exact_index_rejects_unindexed_conjunction_arm() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    let fixture = MissingIndexFixture::new(&env, vector);
+    fixture.rejects_missing_second_exact_index();
+}
 
-    create_vertex_property_index(
-        &env,
-        "document_cat_id_idx",
-        "Document",
-        "cat_id",
-        "create_document_cat_id_idx",
-    );
-    create_vertex_property_index(
-        &env,
-        "document_tenant_id_idx",
-        "Document",
-        "tenant_id",
-        "create_document_tenant_id_idx",
-    );
-
-    let a1 = e2e_insert_vertex_with_label(&env, env.graph_source, author_label_id);
-    let d = e2e_insert_vertex_with_label_and_two_properties(
-        &env,
-        env.graph_source,
-        doc_label_id,
-        cat_id.raw(),
-        1,
-        tenant_id.raw(),
-        1,
-    );
-    e2e_insert_edge_with_label(
-        &env,
-        env.graph_source,
-        a1.local_vertex_id,
-        d.local_vertex_id,
-        wrote_label_id,
-    );
-    seed_embedding(&env, vector, env.graph_source, d.local_vertex_id, 1.0);
-
-    let query = format!(
-        "MATCH (a:Author)-[:WROTE]->(d:Document) \
-         SEARCH d IN ( \
-           VECTOR INDEX {EMBEDDING_NAME} FOR $query \
-           WHERE d.cat_id = 999 AND d.tenant_id = 1 \
-           LIMIT 10 \
-         ) DISTANCE AS distance \
-         RETURN count(*) AS n"
-    );
-    let params = gleaph_gql_ic::wire::encode_gql_params_blob(vec![(
-        "query".to_string(),
-        Value::Bytes(vec_bytes(0.0)),
-    )])
-    .expect("encode params");
-
-    let result = gql_query_with_params_as_admin(&env, &query, params);
-    assert_eq!(
-        result.row_count, 1,
-        "empty filtered non-leading search must still produce one aggregate row"
-    );
-
-    let rows = extract_rows(result);
-    assert_eq!(rows.len(), 1);
-    match rows[0].get("n").expect("count column") {
-        gleaph_gql_ic::IcWireValue::Int64(v) => assert_eq!(*v, 0, "count must be zero"),
-        other => panic!("count must be Int64 0, got {other:?}"),
-    }
+#[test]
+fn non_leading_search_where_conjunction_scenarios() {
+    let env = install_federation();
+    let vector = install_vector_canister(&env.pic, env.router);
+    let fixture = NonLeadingConjunctionFixture::new(&env, vector);
+    fixture.excludes_globally_nearer_one_arm_vertices();
+    fixture.empty_result_aggregate();
 }
