@@ -53,12 +53,10 @@ children.
 | `router_gql_query::single_shard_knowledge_map_relationship_rows` | Helper-seeded `KNOWS` relationship row material (source/edge/target ids + weight) |
 | `router_gql_query::single_shard_knowledge_map_relationship_rows_from_insert` | GQL `INSERT`-created `KNOWS` relationship row material (source/edge/target ids + weight) |
 | `router_gql_query::single_shard_knowledge_map_fan_out` | Full knowledge-map demo graph fan-out (26 seeded demo edges) |
-| `router_gql_query::federated_gql_query_index_seeded_routes_to_hit_shard_only` | Multi-shard `gql_query` with `CREATE INDEX` DDL; slices index hits to the matching shard |
-| `router_gql_query::federated_gql_query_index_seeded_merges_across_shards` | Multi-shard `gql_query` with `CREATE INDEX` DDL; merges rows when both shards match the anchor |
 | `router_gql_query::single_shard_pointing_right_edge_index_lifecycle` | Single-shard pointing-right edge-index lifecycle: directed CREATE INDEX DDL, indexed property equality, DROP INDEX, scan fallback |
 | `router_gql_query::single_shard_undirected_edge_index_lifecycle` | Single-shard undirected edge-index lifecycle: anonymous symmetric expansion without index, undirected CREATE INDEX DDL, indexed equality, directed insert does not seed undirected index, DROP INDEX, scan fallback |
-| `router_gql_query::federated_drop_index_property_eq_loses_federated_anchor` | `DROP INDEX` on multi-shard; indexed vertex equality query fails without anchor |
-| `router_gql_query::federated_drop_edge_index_property_eq_loses_federated_anchor` | `DROP INDEX` on multi-shard; indexed edge equality query fails without anchor |
+| `router_gql_query::federated_vertex_index_lifecycle` | Federated vertex-index lifecycle: hit-shard-only routing, cross-shard merge, two-property intersection with partial-match sieve, and `DROP INDEX` removing the federated anchor |
+| `router_gql_query::federated_edge_index_lifecycle` | Federated edge-index lifecycle: undirected DDL, pointing-right DDL, generic directed DDL, exact source/destination shard decoding, and `DROP INDEX` removing the federated anchor |
 | `router_graph_type_catalog::catalog_create_graph_type_returns_zero_rows` | ADR 0013: `CREATE GRAPH TYPE` on router stable catalog |
 | `router_graph_type_catalog::catalog_typed_binding_persists_across_calls` | ADR 0013: `CREATE GRAPH … TYPED` + `gql_query` after catalog DDL |
 | `router_graph_type_catalog::catalog_create_graph_unregistered_name_rejected` | ADR 0013: `CREATE GRAPH` without federation registration → `NotFound` |

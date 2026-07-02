@@ -26,11 +26,27 @@ const INDEX_VERTEX_LABEL: &str = "Person";
 const INDEX_AGE_NAME: &str = "pocket_ic_vertex_age";
 const INDEX_SCORE_NAME: &str = "pocket_ic_vertex_score";
 const INDEX_EDGE_LABEL: &str = "KNOWS";
-const INDEX_WEIGHT_NAME: &str = "pocket_ic_edge_weight";
-const INDEX_WEIGHT_RIGHT_NAME: &str = "pocket_ic_edge_weight_right";
-const INDEX_WEIGHT_UNDIR_NAME: &str = "pocket_ic_edge_weight_undir";
-const EDGE_WEIGHT_QUERY: &str = "MATCH ()-[e:KNOWS {weight: 5}]->(b) RETURN e, b";
-const EDGE_WEIGHT_UNDIR_BOUND_QUERY: &str = "MATCH ()~[e:KNOWS {weight: 5}]~(b) RETURN e, b";
+// Federated vertex-index lifecycle fixtures (plan 0032).
+const FEDERATED_VERTEX_LIFECYCLE_LABEL: &str = "Person";
+const FEDERATED_VERTEX_LIFECYCLE_AGE: &str = "pocket_ic_federated_lifecycle_vertex_age";
+const FEDERATED_VERTEX_LIFECYCLE_SCORE: &str = "pocket_ic_federated_lifecycle_vertex_score";
+const FEDERATED_VERTEX_LIFECYCLE_HIT_AGE: i64 = 3000;
+const FEDERATED_VERTEX_LIFECYCLE_MERGE_AGE: i64 = 500;
+const FEDERATED_VERTEX_LIFECYCLE_INTERSECTION_AGE: i64 = 600;
+const FEDERATED_VERTEX_LIFECYCLE_INTERSECTION_SCORE: i64 = 7000;
+
+// Federated edge-index lifecycle fixtures (plan 0032).
+const FEDERATED_EDGE_LIFECYCLE_LABEL_UNDIR: &str = "FederatedLifecycleKnowsUndir";
+const FEDERATED_EDGE_LIFECYCLE_LABEL_RIGHT: &str = "FederatedLifecycleKnowsRight";
+const FEDERATED_EDGE_LIFECYCLE_LABEL_DROP: &str = "FederatedLifecycleKnowsDrop";
+const FEDERATED_EDGE_LIFECYCLE_WEIGHT_UNDIR: &str =
+    "pocket_ic_federated_lifecycle_edge_weight_undir";
+const FEDERATED_EDGE_LIFECYCLE_WEIGHT_RIGHT: &str =
+    "pocket_ic_federated_lifecycle_edge_weight_right";
+const FEDERATED_EDGE_LIFECYCLE_WEIGHT_DROP: &str = "pocket_ic_federated_lifecycle_edge_weight_drop";
+const FEDERATED_EDGE_LIFECYCLE_WEIGHT_VALUE_UNDIR: i64 = 500;
+const FEDERATED_EDGE_LIFECYCLE_WEIGHT_VALUE_RIGHT: i64 = 600;
+const FEDERATED_EDGE_LIFECYCLE_WEIGHT_VALUE_DROP: i64 = 700;
 const LIFECYCLE_EDGE_LABEL_GENERIC: &str = "LifecycleKnowsGeneric";
 const LIFECYCLE_EDGE_LABEL_RIGHT: &str = "LifecycleKnowsRight";
 const LIFECYCLE_EDGE_LABEL_UNDIR: &str = "LifecycleKnowsUndir";
@@ -955,60 +971,6 @@ fn single_shard_knowledge_map_relationship_rows_from_insert() {
     assert_eq!(row.get("edge_weight"), Some(&Value::Int64(5)));
 }
 
-#[test]
-fn federated_gql_query_index_seeded_routes_to_hit_shard_only() {
-    let env = install_federation();
-    let age = admin_intern_property(&env, "age");
-    create_vertex_property_index(
-        &env,
-        INDEX_AGE_NAME,
-        INDEX_VERTEX_LABEL,
-        "age",
-        "federated_gql_query_index_seeded_routes_to_hit_shard_only",
-    );
-    let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
-    let _ = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 9);
-
-    let result = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
-
-    assert_eq!(result.row_count, 1);
-}
-
-#[test]
-fn federated_gql_query_index_intersection_merges_matching_shards() {
-    let env = install_federation();
-    let age = admin_intern_property(&env, "age");
-    let score = admin_intern_property(&env, "score");
-    create_vertex_property_index(
-        &env,
-        INDEX_AGE_NAME,
-        INDEX_VERTEX_LABEL,
-        "age",
-        "federated_intersection_age",
-    );
-    create_vertex_property_index(
-        &env,
-        INDEX_SCORE_NAME,
-        INDEX_VERTEX_LABEL,
-        "score",
-        "federated_intersection_score",
-    );
-    // Full match on each shard.
-    let _ =
-        e2e_insert_vertex_with_two_properties(&env, env.graph_source, age.raw(), 5, score.raw(), 9);
-    let _ =
-        e2e_insert_vertex_with_two_properties(&env, env.graph_dest, age.raw(), 5, score.raw(), 9);
-    // Partial match (age only) on dest — must be excluded.
-    let _ = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 5);
-
-    let result = gql_query_as_admin(&env, "MATCH (n {age: 5, score: 9}) RETURN n");
-
-    assert_eq!(
-        result.row_count, 2,
-        "streamed intersection should merge full matches across both shards"
-    );
-}
-
 fn decode_single_value_row(
     result: &gleaph_graph_kernel::plan_exec::GqlQueryResult,
 ) -> std::collections::BTreeMap<String, Value> {
@@ -1040,48 +1002,241 @@ fn vertex_id_column(
         .decode_global(encoding_key)
 }
 
-#[test]
-fn federated_gql_query_index_seeded_merges_across_shards() {
-    let env = install_federation();
-    let age = admin_intern_property(&env, "age");
-    create_vertex_property_index(
-        &env,
-        INDEX_AGE_NAME,
-        INDEX_VERTEX_LABEL,
-        "age",
-        "federated_gql_query_index_seeded_merges_across_shards",
-    );
-    let source = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
-    let dest = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 5);
-
-    assert_eq!(source.global_vertex_id.shard_id, SOURCE_SHARD);
-    assert_eq!(dest.global_vertex_id.shard_id, DEST_SHARD);
-
-    let result = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
-
-    assert_eq!(result.row_count, 2);
+/// Decode every row of a multi-row `ELEMENT_ID(n)` result into `GlobalVertexId`s.
+fn vertex_ids_from_result(
+    result: &gleaph_graph_kernel::plan_exec::GqlQueryResult,
+    column: &str,
+    encoding_key: &ElementIdEncodingKey,
+) -> Vec<GlobalVertexId> {
+    let rows_blob = result
+        .rows_blob
+        .as_ref()
+        .expect("router gql_query should return rows_blob");
+    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
+    wire.rows
+        .into_iter()
+        .map(|row| {
+            let value_row = row.try_into_value_row().expect("wire row to value row");
+            vertex_id_column(&value_row, column, encoding_key)
+        })
+        .collect()
 }
 
+/// Decode the bound endpoint `ELEMENT_ID(b)` column from every row of an edge-index result.
+fn edge_bound_endpoint_ids_from_result(
+    result: &gleaph_graph_kernel::plan_exec::GqlQueryResult,
+    encoding_key: &ElementIdEncodingKey,
+) -> Vec<GlobalVertexId> {
+    let rows_blob = result
+        .rows_blob
+        .as_ref()
+        .expect("router gql_query should return rows_blob");
+    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode rows_blob");
+    wire.rows
+        .into_iter()
+        .map(|row| {
+            let value_row = row.try_into_value_row().expect("wire row to value row");
+            vertex_id_column(&value_row, "b_id", encoding_key)
+        })
+        .collect()
+}
+
+/// Assert an edge-index result spans both shards by inspecting the decoded bound endpoints.
+fn assert_edge_result_spans_both_shards(
+    result: &gleaph_graph_kernel::plan_exec::GqlQueryResult,
+    encoding_key: &ElementIdEncodingKey,
+    context: &str,
+) {
+    let endpoint_ids = edge_bound_endpoint_ids_from_result(result, encoding_key);
+    assert_eq!(
+        endpoint_ids.len(),
+        2,
+        "{context}: expected exactly two rows, one per shard"
+    );
+    let shard_ids: std::collections::BTreeSet<_> =
+        endpoint_ids.iter().map(|id| id.shard_id).collect();
+    assert!(
+        shard_ids.contains(&SOURCE_SHARD) && shard_ids.contains(&DEST_SHARD),
+        "{context}: expected bound endpoints from both shards, got {shard_ids:?}"
+    );
+}
+
+/// Consolidated federated vertex-index lifecycle for the four former contracts:
+///
+/// 1. `federated_gql_query_index_seeded_routes_to_hit_shard_only`
+/// 2. `federated_gql_query_index_intersection_merges_matching_shards`
+/// 3. `federated_gql_query_index_seeded_merges_across_shards`
+/// 4. `federated_drop_index_property_eq_loses_federated_anchor`
+///
+/// One fresh multi-shard federation, unique lifecycle index names/values, and DROP last.
 #[test]
-fn federated_drop_index_property_eq_loses_federated_anchor() {
+fn federated_vertex_index_lifecycle() {
     let env = install_federation();
     let age = admin_intern_property(&env, "age");
+    let score = admin_intern_property(&env, "score");
+
     create_vertex_property_index(
         &env,
-        INDEX_AGE_NAME,
-        INDEX_VERTEX_LABEL,
+        FEDERATED_VERTEX_LIFECYCLE_AGE,
+        FEDERATED_VERTEX_LIFECYCLE_LABEL,
         "age",
-        "federated_drop_index_create",
+        "federated_vertex_index_lifecycle_create_age",
     );
-    let _ = e2e_insert_vertex_with_property(&env, env.graph_source, age.raw(), 5);
-    let _ = e2e_insert_vertex_with_property(&env, env.graph_dest, age.raw(), 5);
+    create_vertex_property_index(
+        &env,
+        FEDERATED_VERTEX_LIFECYCLE_SCORE,
+        FEDERATED_VERTEX_LIFECYCLE_LABEL,
+        "score",
+        "federated_vertex_index_lifecycle_create_score",
+    );
 
-    let indexed = gql_query_as_admin(&env, "MATCH (n {age: 5}) RETURN n");
-    assert_eq!(indexed.row_count, 2);
+    // Hit-shard-only routing: a value present on only one shard routes there.
+    let hit_only = e2e_insert_vertex_with_property(
+        &env,
+        env.graph_source,
+        age.raw(),
+        FEDERATED_VERTEX_LIFECYCLE_HIT_AGE,
+    );
+    assert_eq!(hit_only.global_vertex_id.shard_id, SOURCE_SHARD);
 
-    drop_vertex_property_index(&env, INDEX_AGE_NAME, true, "federated_drop_index_drop");
+    // Cross-shard merge: equal values on both shards fan out and merge both rows.
+    let source_merge = e2e_insert_vertex_with_property(
+        &env,
+        env.graph_source,
+        age.raw(),
+        FEDERATED_VERTEX_LIFECYCLE_MERGE_AGE,
+    );
+    let dest_merge = e2e_insert_vertex_with_property(
+        &env,
+        env.graph_dest,
+        age.raw(),
+        FEDERATED_VERTEX_LIFECYCLE_MERGE_AGE,
+    );
+    assert_eq!(source_merge.global_vertex_id.shard_id, SOURCE_SHARD);
+    assert_eq!(dest_merge.global_vertex_id.shard_id, DEST_SHARD);
 
-    let err = gql_query_as_admin_expect_err(&env, "MATCH (n {age: 5}) RETURN n");
+    // Intersection: full matches on both shards merge; partial match on dest is sieved out.
+    let _ = e2e_insert_vertex_with_two_properties(
+        &env,
+        env.graph_source,
+        age.raw(),
+        FEDERATED_VERTEX_LIFECYCLE_INTERSECTION_AGE,
+        score.raw(),
+        FEDERATED_VERTEX_LIFECYCLE_INTERSECTION_SCORE,
+    );
+    let _ = e2e_insert_vertex_with_two_properties(
+        &env,
+        env.graph_dest,
+        age.raw(),
+        FEDERATED_VERTEX_LIFECYCLE_INTERSECTION_AGE,
+        score.raw(),
+        FEDERATED_VERTEX_LIFECYCLE_INTERSECTION_SCORE,
+    );
+    let _ = e2e_insert_vertex_with_property(
+        &env,
+        env.graph_dest,
+        age.raw(),
+        FEDERATED_VERTEX_LIFECYCLE_INTERSECTION_AGE,
+    );
+
+    let encoding_key = gleaph_pocket_ic_tests::graph_element_id_encoding_key(
+        &env.pic,
+        env.admin,
+        env.router,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+    );
+
+    let hit_result = gql_query_as_admin(
+        &env,
+        &format!(
+            "MATCH (n {{age: {}}}) RETURN ELEMENT_ID(n) AS id",
+            FEDERATED_VERTEX_LIFECYCLE_HIT_AGE
+        ),
+    );
+    assert_eq!(
+        hit_result.row_count, 1,
+        "unique age value routes to exactly one row"
+    );
+    let hit_ids = vertex_ids_from_result(&hit_result, "id", &encoding_key);
+    assert_eq!(
+        hit_ids[0].shard_id, SOURCE_SHARD,
+        "hit-shard-only value landed on source shard"
+    );
+
+    let merge_result = gql_query_as_admin(
+        &env,
+        &format!(
+            "MATCH (n {{age: {}}}) RETURN ELEMENT_ID(n) AS id",
+            FEDERATED_VERTEX_LIFECYCLE_MERGE_AGE
+        ),
+    );
+    assert_eq!(
+        merge_result.row_count, 2,
+        "equal age value merges rows from both shards"
+    );
+    let merge_shard_ids: std::collections::BTreeSet<_> =
+        vertex_ids_from_result(&merge_result, "id", &encoding_key)
+            .iter()
+            .map(|id| id.shard_id)
+            .collect();
+    assert!(
+        merge_shard_ids.contains(&SOURCE_SHARD) && merge_shard_ids.contains(&DEST_SHARD),
+        "merge result must include both shards, got {merge_shard_ids:?}"
+    );
+
+    let intersection_result = gql_query_as_admin(
+        &env,
+        &format!(
+            "MATCH (n {{age: {}, score: {}}}) RETURN ELEMENT_ID(n) AS id",
+            FEDERATED_VERTEX_LIFECYCLE_INTERSECTION_AGE,
+            FEDERATED_VERTEX_LIFECYCLE_INTERSECTION_SCORE
+        ),
+    );
+    assert_eq!(
+        intersection_result.row_count, 2,
+        "intersection merges only full matches across both shards"
+    );
+    let intersection_shard_ids: std::collections::BTreeSet<_> =
+        vertex_ids_from_result(&intersection_result, "id", &encoding_key)
+            .iter()
+            .map(|id| id.shard_id)
+            .collect();
+    assert!(
+        intersection_shard_ids.contains(&SOURCE_SHARD)
+            && intersection_shard_ids.contains(&DEST_SHARD),
+        "intersection result must include both shards, got {intersection_shard_ids:?}"
+    );
+
+    // Sieve check: the partial dest match is returned by a single-property lookup but excluded
+    // from the intersection.
+    let sieve_result = gql_query_as_admin(
+        &env,
+        &format!(
+            "MATCH (n {{age: {}}}) RETURN n",
+            FEDERATED_VERTEX_LIFECYCLE_INTERSECTION_AGE
+        ),
+    );
+    assert_eq!(
+        sieve_result.row_count, 3,
+        "age-only lookup must include the partial match on the destination shard"
+    );
+
+    // DROP occurs last: removing the age index removes the only federated anchor for age
+    // equality, so the federated merge query fails closed with an explicit no-index-anchor error.
+    drop_vertex_property_index(
+        &env,
+        FEDERATED_VERTEX_LIFECYCLE_AGE,
+        true,
+        "federated_vertex_index_lifecycle_drop_age",
+    );
+
+    let err = gql_query_as_admin_expect_err(
+        &env,
+        &format!(
+            "MATCH (n {{age: {}}}) RETURN n",
+            FEDERATED_VERTEX_LIFECYCLE_MERGE_AGE
+        ),
+    );
     assert!(
         err.to_string().contains("no index anchor"),
         "expected federated dispatch without index anchor to fail, got: {err:?}"
@@ -1302,134 +1457,170 @@ fn single_shard_undirected_edge_index_lifecycle() {
     );
 }
 
+/// Consolidated federated edge-index lifecycle for the three former contracts:
+///
+/// 1. `federated_gql_query_edge_index_undirected_ddl`
+/// 2. `federated_gql_query_edge_index_pointing_right_ddl`
+/// 3. `federated_drop_edge_index_property_eq_loses_federated_anchor`
+///
+/// One fresh multi-shard federation, separate labels/directions/values per contract,
+/// all indexed assertions before DROP, and DROP last.
 #[test]
-fn federated_gql_query_edge_index_undirected_ddl() {
+fn federated_edge_index_lifecycle() {
     let env = install_federation();
     let weight = admin_intern_property(&env, "weight");
-    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
+    let knows_undir = admin_intern_edge_label(&env, FEDERATED_EDGE_LIFECYCLE_LABEL_UNDIR);
+    let knows_right = admin_intern_edge_label(&env, FEDERATED_EDGE_LIFECYCLE_LABEL_RIGHT);
+    let knows_drop = admin_intern_edge_label(&env, FEDERATED_EDGE_LIFECYCLE_LABEL_DROP);
+
     create_undirected_edge_property_index(
         &env,
-        INDEX_WEIGHT_UNDIR_NAME,
-        INDEX_EDGE_LABEL,
+        FEDERATED_EDGE_LIFECYCLE_WEIGHT_UNDIR,
+        FEDERATED_EDGE_LIFECYCLE_LABEL_UNDIR,
         "weight",
-        "federated_gql_query_edge_index_undirected_ddl",
+        "federated_edge_index_lifecycle_undir_create",
     );
-    let source_a = e2e_insert_vertex(&env, env.graph_source);
-    let target_a = e2e_insert_vertex(&env, env.graph_source);
-    e2e_insert_undirected_edge_with_property(
-        &env,
-        env.graph_source,
-        source_a.local_vertex_id,
-        target_a.local_vertex_id,
-        knows.raw(),
-        weight.raw(),
-        5,
-    );
-    let source_b = e2e_insert_vertex(&env, env.graph_dest);
-    let target_b = e2e_insert_vertex(&env, env.graph_dest);
-    e2e_insert_undirected_edge_with_property(
-        &env,
-        env.graph_dest,
-        source_b.local_vertex_id,
-        target_b.local_vertex_id,
-        knows.raw(),
-        weight.raw(),
-        5,
-    );
-
-    let result = gql_query_as_admin(&env, EDGE_WEIGHT_UNDIR_BOUND_QUERY);
-
-    assert_eq!(result.row_count, 2);
-}
-
-#[test]
-fn federated_gql_query_edge_index_pointing_right_ddl() {
-    let env = install_federation();
-    let weight = admin_intern_property(&env, "weight");
-    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
     create_directed_edge_property_index(
         &env,
-        INDEX_WEIGHT_RIGHT_NAME,
-        INDEX_EDGE_LABEL,
+        FEDERATED_EDGE_LIFECYCLE_WEIGHT_RIGHT,
+        FEDERATED_EDGE_LIFECYCLE_LABEL_RIGHT,
         "weight",
-        "federated_gql_query_edge_index_pointing_right_ddl",
+        "federated_edge_index_lifecycle_right_create",
     );
-    let source_a = e2e_insert_vertex(&env, env.graph_source);
-    let target_a = e2e_insert_vertex(&env, env.graph_source);
-    e2e_insert_directed_edge_with_property(
-        &env,
-        env.graph_source,
-        source_a.local_vertex_id,
-        target_a.local_vertex_id,
-        knows.raw(),
-        weight.raw(),
-        5,
-    );
-    let source_b = e2e_insert_vertex(&env, env.graph_dest);
-    let target_b = e2e_insert_vertex(&env, env.graph_dest);
-    e2e_insert_directed_edge_with_property(
-        &env,
-        env.graph_dest,
-        source_b.local_vertex_id,
-        target_b.local_vertex_id,
-        knows.raw(),
-        weight.raw(),
-        5,
-    );
-
-    let result = gql_query_as_admin(&env, EDGE_WEIGHT_QUERY);
-
-    assert_eq!(result.row_count, 2);
-}
-
-#[test]
-fn federated_drop_edge_index_property_eq_loses_federated_anchor() {
-    let env = install_federation();
-    let weight = admin_intern_property(&env, "weight");
-    let knows = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
     create_edge_property_index(
         &env,
-        INDEX_WEIGHT_NAME,
-        INDEX_EDGE_LABEL,
+        FEDERATED_EDGE_LIFECYCLE_WEIGHT_DROP,
+        FEDERATED_EDGE_LIFECYCLE_LABEL_DROP,
         "weight",
-        "federated_drop_edge_index_create",
+        "federated_edge_index_lifecycle_drop_create",
     );
-    let source_a = e2e_insert_vertex(&env, env.graph_source);
-    let target_a = e2e_insert_vertex(&env, env.graph_source);
+
+    // Undirected DDL: one undirected edge per shard, indexed undirected expansion.
+    let undir_source_a = e2e_insert_vertex(&env, env.graph_source);
+    let undir_target_a = e2e_insert_vertex(&env, env.graph_source);
+    e2e_insert_undirected_edge_with_property(
+        &env,
+        env.graph_source,
+        undir_source_a.local_vertex_id,
+        undir_target_a.local_vertex_id,
+        knows_undir.raw(),
+        weight.raw(),
+        FEDERATED_EDGE_LIFECYCLE_WEIGHT_VALUE_UNDIR,
+    );
+    let undir_source_b = e2e_insert_vertex(&env, env.graph_dest);
+    let undir_target_b = e2e_insert_vertex(&env, env.graph_dest);
+    e2e_insert_undirected_edge_with_property(
+        &env,
+        env.graph_dest,
+        undir_source_b.local_vertex_id,
+        undir_target_b.local_vertex_id,
+        knows_undir.raw(),
+        weight.raw(),
+        FEDERATED_EDGE_LIFECYCLE_WEIGHT_VALUE_UNDIR,
+    );
+
+    // Pointing-right DDL: one directed edge per shard, indexed directed expansion.
+    let right_source_a = e2e_insert_vertex(&env, env.graph_source);
+    let right_target_a = e2e_insert_vertex(&env, env.graph_source);
     e2e_insert_directed_edge_with_property(
         &env,
         env.graph_source,
-        source_a.local_vertex_id,
-        target_a.local_vertex_id,
-        knows.raw(),
+        right_source_a.local_vertex_id,
+        right_target_a.local_vertex_id,
+        knows_right.raw(),
         weight.raw(),
-        5,
+        FEDERATED_EDGE_LIFECYCLE_WEIGHT_VALUE_RIGHT,
     );
-    let source_b = e2e_insert_vertex(&env, env.graph_dest);
-    let target_b = e2e_insert_vertex(&env, env.graph_dest);
+    let right_source_b = e2e_insert_vertex(&env, env.graph_dest);
+    let right_target_b = e2e_insert_vertex(&env, env.graph_dest);
     e2e_insert_directed_edge_with_property(
         &env,
         env.graph_dest,
-        source_b.local_vertex_id,
-        target_b.local_vertex_id,
-        knows.raw(),
+        right_source_b.local_vertex_id,
+        right_target_b.local_vertex_id,
+        knows_right.raw(),
         weight.raw(),
-        5,
+        FEDERATED_EDGE_LIFECYCLE_WEIGHT_VALUE_RIGHT,
     );
 
-    let indexed = gql_query_as_admin(&env, EDGE_WEIGHT_QUERY);
-    assert_eq!(indexed.row_count, 2);
+    // Drop-anchor DDL: one directed edge per shard, indexed directed expansion, then drop.
+    let drop_source_a = e2e_insert_vertex(&env, env.graph_source);
+    let drop_target_a = e2e_insert_vertex(&env, env.graph_source);
+    e2e_insert_directed_edge_with_property(
+        &env,
+        env.graph_source,
+        drop_source_a.local_vertex_id,
+        drop_target_a.local_vertex_id,
+        knows_drop.raw(),
+        weight.raw(),
+        FEDERATED_EDGE_LIFECYCLE_WEIGHT_VALUE_DROP,
+    );
+    let drop_source_b = e2e_insert_vertex(&env, env.graph_dest);
+    let drop_target_b = e2e_insert_vertex(&env, env.graph_dest);
+    e2e_insert_directed_edge_with_property(
+        &env,
+        env.graph_dest,
+        drop_source_b.local_vertex_id,
+        drop_target_b.local_vertex_id,
+        knows_drop.raw(),
+        weight.raw(),
+        FEDERATED_EDGE_LIFECYCLE_WEIGHT_VALUE_DROP,
+    );
 
+    let encoding_key = gleaph_pocket_ic_tests::graph_element_id_encoding_key(
+        &env.pic,
+        env.admin,
+        env.router,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+    );
+
+    // Indexed assertions before any DROP: each query returns one row per shard, and the
+    // decoded bound endpoint `b` must originate from both shards.
+    let undir_query = format!(
+        "MATCH ()~[e:{FEDERATED_EDGE_LIFECYCLE_LABEL_UNDIR} {{weight: {FEDERATED_EDGE_LIFECYCLE_WEIGHT_VALUE_UNDIR}}}]~(b) RETURN e, ELEMENT_ID(b) AS b_id"
+    );
+    let undir_result = gql_query_as_admin(&env, &undir_query);
+    assert_eq!(
+        undir_result.row_count, 2,
+        "undirected DDL must return one indexed row per edge across shards"
+    );
+    assert_edge_result_spans_both_shards(&undir_result, &encoding_key, "undirected DDL");
+
+    let right_query = format!(
+        "MATCH ()-[e:{FEDERATED_EDGE_LIFECYCLE_LABEL_RIGHT} {{weight: {FEDERATED_EDGE_LIFECYCLE_WEIGHT_VALUE_RIGHT}}}]->(b) RETURN e, ELEMENT_ID(b) AS b_id"
+    );
+    let right_result = gql_query_as_admin(&env, &right_query);
+    assert_eq!(
+        right_result.row_count, 2,
+        "pointing-right DDL must return one indexed row per edge across shards"
+    );
+    assert_edge_result_spans_both_shards(&right_result, &encoding_key, "pointing-right DDL");
+
+    let drop_query = format!(
+        "MATCH ()-[e:{FEDERATED_EDGE_LIFECYCLE_LABEL_DROP} {{weight: {FEDERATED_EDGE_LIFECYCLE_WEIGHT_VALUE_DROP}}}]->(b) RETURN e, ELEMENT_ID(b) AS b_id"
+    );
+    let drop_indexed = gql_query_as_admin(&env, &drop_query);
+    assert_eq!(
+        drop_indexed.row_count, 2,
+        "generic directed edge DDL must return one indexed row per edge across shards before DROP"
+    );
+    assert_edge_result_spans_both_shards(
+        &drop_indexed,
+        &encoding_key,
+        "generic directed edge DDL before DROP",
+    );
+
+    // DROP occurs last: the generic directed edge index is the only anchor for the drop query.
     drop_vertex_property_index(
         &env,
-        INDEX_WEIGHT_NAME,
+        FEDERATED_EDGE_LIFECYCLE_WEIGHT_DROP,
         true,
-        "federated_drop_edge_index_drop",
+        "federated_edge_index_lifecycle_drop",
     );
 
-    let err = gql_query_as_admin_expect_err(&env, EDGE_WEIGHT_QUERY);
+    let err = gql_query_as_admin_expect_err(&env, &drop_query);
     assert!(
         err.to_string().contains("no index anchor"),
-        "expected federated dispatch without index anchor to fail, got: {err:?}"
+        "expected federated edge dispatch without index anchor to fail, got: {err:?}"
     );
 }
