@@ -1,8 +1,8 @@
 # Gleaph ACID and Consistency Roadmap
 
-Last updated: 2026-06-21 UTC
+Last updated: 2026-07-02 UTC
 Status: Phases 0-4 done (Phase 3 `Canonical` deferred; Phase 4 autonomous recovery is projection-only, canonical re-dispatch stays explicit-retry); Phases 5-6 planned
-Anchor timestamp: 2026-06-21 11:05:29 UTC +0000
+Anchor timestamp: 2026-07-02 09:20:55 UTC +0000
 
 ## Purpose
 
@@ -254,7 +254,7 @@ Tests:
   untracked sentinel (`min_tracked_mutation_id_pins_lowest_unapplied_and_ignores_untracked`,
   graph `index::repair_journal`).
 - **Done.** End-to-end token issuance + watermark exposure under PocketIC
-  (`router_idempotent_dml_issues_mutation_token_and_exposes_index_watermark`).
+  (`single_shard_mutation_token_barrier_status_lifecycle`).
 - **Done.** Token candid round-trip (`mutation_token_candid_roundtrip`,
   `gql_query_result_carries_phase_and_token`, graph-kernel `plan_exec`).
 - **Deferred to Phase 3.** Duplicate/out-of-order delivery gap handling and upgrade/reopen
@@ -489,8 +489,7 @@ Tests:
   `router_allows_multi_dml_bundle_on_single_shard`, and
   `program_modification::count_dml_statements_*` host unit tests.)*
 - A supported one-shard bundle executes atomically on a single shard. *(Done for the completely-new
-  INSERT-only subset: `router_places_completely_new_single_insert_on_latest_shard`,
-  `router_places_completely_new_insert_bundle_on_latest_shard`, and `is_pure_insert_*` host unit
+  INSERT-only subset: `federated_pure_insert_placement_lifecycle` and `is_pure_insert_*` host unit
   tests. Done for the anchored single-shard subset:
   `router_runs_anchored_multi_dml_bundle_when_anchor_resolves_to_one_shard` and
   `is_single_anchor_threaded_bundle_*` host unit tests.)*

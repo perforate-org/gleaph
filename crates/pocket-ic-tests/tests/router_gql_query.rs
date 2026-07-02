@@ -411,56 +411,52 @@ fn router_allows_multi_dml_bundle_on_single_shard() {
     );
 }
 
+/// Consolidated lifecycle for the two former latest-shard placement contracts:
+///
+/// 1. `router_places_completely_new_single_insert_on_latest_shard`
+/// 2. `router_places_completely_new_insert_bundle_on_latest_shard`
+///
+/// One fresh multi-shard federation, distinct labels and client mutation keys, and exact
+/// assertions that both the single INSERT and the pure INSERT bundle land on `DEST_SHARD`.
 #[test]
-fn router_places_completely_new_single_insert_on_latest_shard() {
-    // ADR 0029 §6 (Phase 5 contract 1): a completely-new (unanchored) INSERT on a federated graph
-    // is placed on the graph's latest shard (greatest graph-local shard id = DEST_SHARD here),
-    // instead of being rejected with `no index anchor`. The mutation token names exactly that
-    // single shard.
+fn federated_pure_insert_placement_lifecycle() {
     let env = install_federation();
 
-    let result = gql_execute_idempotent_result_as_admin(
+    // Single completely-new INSERT: no index anchor, placed on the graph's latest shard.
+    let single = gql_execute_idempotent_result_as_admin(
         &env,
         "INSERT (:Person)",
-        "router_places_completely_new_single_insert_on_latest_shard",
+        "federated_pure_insert_placement_single",
     );
-    let token = result
+    let single_token = single
         .token
         .expect("a completely-new federated INSERT issues a mutation token");
     assert_eq!(
-        token.shards.len(),
+        single_token.shards.len(),
         1,
-        "a pure insert is placed on exactly one shard"
+        "a pure single INSERT is placed on exactly one shard"
     );
     assert_eq!(
-        token.shards[0].shard_id, DEST_SHARD,
-        "the pure insert lands on the graph's latest shard"
+        single_token.shards[0].shard_id, DEST_SHARD,
+        "the single INSERT lands on the graph's latest shard"
     );
-}
 
-#[test]
-fn router_places_completely_new_insert_bundle_on_latest_shard() {
-    // ADR 0029 §6 (Phase 5 contract 1): a completely-new INSERT-only *bundle* (multiple top-level
-    // DML statements) on a federated graph is co-placed on the latest shard and executed there
-    // atomically in one canonical segment, so the federated multi-DML gate does not reject it. The
-    // token names exactly the one (latest) shard.
-    let env = install_federation();
-
-    let result = gql_execute_idempotent_result_as_admin(
+    // Completely-new INSERT-only bundle: still co-placed on the latest shard atomically.
+    let bundle = gql_execute_idempotent_result_as_admin(
         &env,
-        "INSERT (:Person) NEXT INSERT (:Project)",
-        "router_places_completely_new_insert_bundle_on_latest_shard",
+        "INSERT (:Project) NEXT INSERT (:Thing)",
+        "federated_pure_insert_placement_bundle",
     );
-    let token = result
+    let bundle_token = bundle
         .token
         .expect("a completely-new federated INSERT bundle issues a mutation token");
     assert_eq!(
-        token.shards.len(),
+        bundle_token.shards.len(),
         1,
         "the whole bundle is co-placed on one shard"
     );
     assert_eq!(
-        token.shards[0].shard_id, DEST_SHARD,
+        bundle_token.shards[0].shard_id, DEST_SHARD,
         "the bundle lands on the graph's latest shard"
     );
 }
@@ -623,17 +619,35 @@ fn router_recovers_anchored_multi_dml_roll_forward_saga_via_idempotent_retry() {
     );
 }
 
+/// Consolidated lifecycle for the three former single-shard mutation consistency contracts:
+///
+/// 1. `router_idempotent_dml_issues_mutation_token_and_exposes_index_watermark`
+/// 2. `router_atleast_read_barrier_serves_when_satisfied_and_lags_when_unmet`
+/// 3. `router_mutation_status_reports_completed_and_recovery_timer_is_safe_noop`
+///
+/// One fresh single-shard federation, one idempotent INSERT that creates edge and property
+/// posting work, and sequential assertions: the issued token carries a mutation id and shard
+/// watermarks; the graph-index watermark is clear after inline flush; the same token satisfies an
+/// `AtLeast` read-your-writes barrier for the `Person` label; an artificially lagging watermark
+/// returns retryable `ProjectionLag`; `Canonical` is rejected; `Eventual` remains non-blocking;
+/// `mutation_status` reports `Completed`; the recovery timer leaves the terminal saga untouched;
+/// and an unknown key returns `InvalidArgument`.
 #[test]
-fn router_idempotent_dml_issues_mutation_token_and_exposes_index_watermark() {
-    // ADR 0029 Phase 2: an idempotent DML returns a read-your-writes token (mutation id +
-    // per-shard label-stats watermarks) and a lifecycle phase. After a successful insert the
-    // index postings are applied inline, so the shard's index watermark is clear (`None`).
-    let env = install_single_shard_federation();
+fn single_shard_mutation_token_barrier_status_lifecycle() {
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::{MutationLifecyclePhase, MutationTokenShard, ReadMode};
 
+    let env = install_single_shard_federation();
+    let key = "single_shard_mutation_token_barrier_status_lifecycle";
+
+    // A non-vacuous mutation that creates both a vertex and an edge with a property. Edge/property
+    // postings give the graph-index pending watermark something real to track, so the
+    // `graph_index_pending_min_mutation_id == None` assertion below verifies inline flush rather
+    // than a no-work path.
     let result = gql_execute_idempotent_result_as_admin(
         &env,
         "INSERT (:Person)-[:KNOWS {weight: 5}]->(:Project)",
-        "router_idempotent_dml_issues_mutation_token_and_exposes_index_watermark",
+        key,
     );
 
     let token = result
@@ -649,34 +663,14 @@ fn router_idempotent_dml_issues_mutation_token_and_exposes_index_watermark() {
         "idempotent DML reports a lifecycle phase"
     );
 
-    // Happy-path flush applies postings inline; no tracked mutation is left pending.
+    // Happy-path flush applies edge/property postings inline; no tracked mutation is left pending.
     assert_eq!(
         graph_index_pending_min_mutation_id(&env, env.graph_source),
         None,
-        "a successfully flushed mutation leaves no pending index work"
+        "a successfully flushed edge/property mutation leaves no pending index work"
     );
-}
 
-#[test]
-fn router_atleast_read_barrier_serves_when_satisfied_and_lags_when_unmet() {
-    // ADR 0029 Phase 3: `gql_query_with_consistency(AtLeast(token))` enforces the
-    // read-your-writes barrier. After a successful idempotent DML the projections are
-    // caught up, so the real token is *served* (read-your-writes); a token whose label-stats
-    // watermark is forced beyond the projection cursor returns a retryable `ProjectionLag`
-    // without serving stale state; `Canonical` is deferred and rejected.
-    use gleaph_graph_kernel::federation::RouterError;
-    use gleaph_graph_kernel::plan_exec::{MutationTokenShard, ReadMode};
-
-    let env = install_single_shard_federation();
-
-    let result = gql_execute_idempotent_result_as_admin(
-        &env,
-        "INSERT (:Person)",
-        "router_atleast_read_barrier_serves_when_satisfied_and_lags_when_unmet",
-    );
-    let token = result.token.expect("idempotent DML issues a token");
-
-    // Watermarks satisfied → the barrier serves the read-your-writes result.
+    // Watermarks satisfied -> the barrier serves the read-your-writes result.
     let served = gql_query_with_consistency_as_admin(
         &env,
         "MATCH (n:Person) RETURN n",
@@ -685,10 +679,10 @@ fn router_atleast_read_barrier_serves_when_satisfied_and_lags_when_unmet() {
     .expect("satisfied AtLeast(token) is served");
     assert_eq!(
         served.row_count, 1,
-        "AtLeast(token) observes the just-written vertex"
+        "AtLeast(token) observes the just-written Person vertex"
     );
 
-    // Force one shard's label-stats watermark past the projection cursor → retryable lag.
+    // Force one shard's label-stats watermark past the projection cursor -> retryable lag.
     let mut lagging = token.clone();
     lagging.shards = lagging
         .shards
@@ -723,23 +717,8 @@ fn router_atleast_read_barrier_serves_when_satisfied_and_lags_when_unmet() {
         gql_query_with_consistency_as_admin(&env, "MATCH (n:Person) RETURN n", ReadMode::Eventual)
             .expect("Eventual never blocks");
     assert_eq!(eventual.row_count, 1);
-}
 
-#[test]
-fn router_mutation_status_reports_completed_and_recovery_timer_is_safe_noop() {
-    // ADR 0029 Phase 4: a successful idempotent DML finalizes its saga inline, so
-    // `mutation_status` reports `Completed` with no outstanding shard or required action. The
-    // autonomous recovery timer (armed after every idempotent DML) must find no recoverable
-    // work and leave the terminal saga untouched.
-    use gleaph_graph_kernel::federation::RouterError;
-    use gleaph_graph_kernel::plan_exec::MutationLifecyclePhase;
-
-    let env = install_single_shard_federation();
-    let key = "router_mutation_status_completed";
-
-    let result = gql_execute_idempotent_result_as_admin(&env, "INSERT (:Person)", key);
-    assert!(result.token.is_some(), "idempotent DML issues a token");
-
+    // Phase 4 status contract for the completed saga.
     let status = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
         .expect("status for a known client_mutation_key");
     assert_eq!(status.phase, MutationLifecyclePhase::Completed);
@@ -747,6 +726,7 @@ fn router_mutation_status_reports_completed_and_recovery_timer_is_safe_noop() {
     assert_eq!(status.next_action, "none");
     assert!(status.last_error.is_none());
 
+    // The autonomous recovery timer must not disturb a completed saga.
     run_router_recovery_timer(&env);
 
     let after = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, key)
@@ -757,6 +737,7 @@ fn router_mutation_status_reports_completed_and_recovery_timer_is_safe_noop() {
         "recovery timer must not disturb a completed saga"
     );
 
+    // An unknown key is rejected.
     let missing = mutation_status_as_admin(&env, gleaph_pocket_ic_tests::GRAPH_NAME, "no-such-key");
     assert!(
         matches!(missing, Err(RouterError::InvalidArgument(_))),
