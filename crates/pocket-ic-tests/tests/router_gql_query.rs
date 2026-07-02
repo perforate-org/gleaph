@@ -38,29 +38,53 @@ const LIFECYCLE_EDGE_WEIGHT_NAME: &str = "pocket_ic_lifecycle_edge_weight";
 const LIFECYCLE_EDGE_WEIGHT_RIGHT_NAME: &str = "pocket_ic_lifecycle_edge_weight_right";
 const LIFECYCLE_EDGE_WEIGHT_UNDIR_NAME: &str = "pocket_ic_lifecycle_edge_weight_undir";
 
+/// Consolidated lifecycle for the three former single-shard identity contracts:
+///
+/// 1. `router_gql_query_node_scan_on_single_shard`
+/// 2. `standalone_e2e_insert_assigns_global_id`
+/// 3. `standalone_gql_query_returns_element_id_bytes`
+///
+/// One fresh PocketIC federation, one inserted vertex, and three exact assertions:
+/// NodeScan returns one row; `GlobalVertexId` matches `(SOURCE_SHARD, local_vertex_id)`;
+/// `ELEMENT_ID(n)` bytes decode through the Router graph encoding key to that exact global id.
 #[test]
-fn router_gql_query_node_scan_on_single_shard() {
-    let env = install_single_shard_federation();
-    let _ = e2e_insert_vertex(&env, env.graph_source);
-
-    let result = gql_query_as_admin(&env, "MATCH (n) RETURN n");
-
-    assert_eq!(result.row_count, 1);
-}
-
-#[test]
-fn standalone_e2e_insert_assigns_global_id() {
+fn single_shard_identity_lifecycle() {
     let env = install_single_shard_federation();
     let inserted = e2e_insert_vertex(&env, env.graph_source);
+
+    let scan = gql_query_as_admin(&env, "MATCH (n) RETURN n");
+    assert_eq!(
+        scan.row_count, 1,
+        "NodeScan over the one-vertex fixture should return exactly one row"
+    );
 
     assert_eq!(inserted.global_vertex_id.shard_id, SOURCE_SHARD);
     assert_eq!(
         inserted.global_vertex_id.local_vertex_id,
         inserted.local_vertex_id
     );
+    let expected_id = GlobalVertexId::new(SOURCE_SHARD, inserted.local_vertex_id);
+    assert_eq!(inserted.global_vertex_id, expected_id);
 
-    let same_id = GlobalVertexId::new(SOURCE_SHARD, inserted.local_vertex_id);
-    assert_eq!(inserted.global_vertex_id, same_id);
+    let element_id = gql_query_as_admin(&env, "MATCH (n) RETURN ELEMENT_ID(n) AS id");
+    assert_eq!(
+        element_id.row_count, 1,
+        "ELEMENT_ID projection should return one row"
+    );
+    let encoding_key = gleaph_pocket_ic_tests::graph_element_id_encoding_key(
+        &env.pic,
+        env.admin,
+        env.router,
+        gleaph_pocket_ic_tests::GRAPH_NAME,
+    );
+    let id_bytes = gleaph_pocket_ic_tests::element_id_bytes_from_gql_result(&element_id, "id");
+    let decoded = GraphPathVertexId::try_from_slice(id_bytes.as_ref())
+        .expect("decode vertex ELEMENT_ID bytes")
+        .decode_global(&encoding_key);
+    assert_eq!(
+        decoded, inserted.global_vertex_id,
+        "ELEMENT_ID bytes should decode to the inserted vertex's global id"
+    );
 }
 
 /// Consolidated lifecycle for the five former standalone vertex-index contracts:
@@ -225,31 +249,13 @@ fn assert_missing_index_drop_error(env: &gleaph_pocket_ic_tests::FederationEnv) 
     );
 }
 
+/// Former `standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter`.
+///
+/// Helper-seeded `KNOWS {weight: 5}` edge: exact source, edge, target, and property columns.
+/// Kept in a fresh fixture because its exact row membership (`row_count == 1`) is incompatible
+/// with the GQL-insert path and with the broader demo fan-out graph.
 #[test]
-fn standalone_gql_query_returns_element_id_bytes() {
-    let env = install_single_shard_federation();
-    let inserted = e2e_insert_vertex(&env, env.graph_source);
-    let encoding_key = gleaph_pocket_ic_tests::graph_element_id_encoding_key(
-        &env.pic,
-        env.admin,
-        env.router,
-        gleaph_pocket_ic_tests::GRAPH_NAME,
-    );
-
-    let result = gql_query_as_admin(&env, "MATCH (n) RETURN ELEMENT_ID(n) AS id");
-
-    assert_eq!(result.row_count, 1);
-    let id_bytes = gleaph_pocket_ic_tests::element_id_bytes_from_gql_result(&result, "id");
-    assert_eq!(
-        GraphPathVertexId::try_from_slice(id_bytes.as_ref())
-            .expect("decode vertex id")
-            .decode_global(&encoding_key),
-        inserted.global_vertex_id
-    );
-}
-
-#[test]
-fn standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter() {
+fn single_shard_knowledge_map_relationship_rows() {
     let env = install_single_shard_federation();
     let weight = admin_intern_property(&env, "weight");
     let edge_label = admin_intern_edge_label(&env, INDEX_EDGE_LABEL);
@@ -301,8 +307,13 @@ fn standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter() {
     );
 }
 
+/// Former `router_gql_insert_seeds_knowledge_map_fan_out_graph`.
+///
+/// Seeds the full knowledge-map demo graph (26 unique demo edges) through idempotent Router
+/// inserts and asserts the live query returns 26 unique edge ids, including the required
+/// representative ids `alice-storage` and `project-lara`.
 #[test]
-fn router_gql_insert_seeds_knowledge_map_fan_out_graph() {
+fn single_shard_knowledge_map_fan_out() {
     let env = install_single_shard_federation();
     seed_knowledge_map_graph(&env);
 
@@ -903,14 +914,20 @@ fn router_recovery_timer_converges_projection_pending_saga_autonomously() {
     assert_eq!(completed.next_action, "none");
 }
 
+/// Former `router_gql_insert_seeds_relationship_rows_for_knowledge_map_adapter`.
+///
+/// A GQL `INSERT` creates a single `KNOWS {weight: 5}` relationship, then a second query
+/// proves the GQL-created row is observable through the relationship-row adapter projection.
+/// Kept separate from the helper-seeded relationship test to preserve independent creation-path
+/// diagnosability: both paths must produce valid source/edge/target bytes and the projected weight.
 #[test]
-fn router_gql_insert_seeds_relationship_rows_for_knowledge_map_adapter() {
+fn single_shard_knowledge_map_relationship_rows_from_insert() {
     let env = install_single_shard_federation();
 
     let row_count = gql_execute_idempotent_as_admin(
         &env,
         "INSERT (:Person)-[:KNOWS {weight: 5}]->(:Project)",
-        "router_gql_insert_seeds_relationship_rows_for_knowledge_map_adapter",
+        "single_shard_knowledge_map_relationship_rows_from_insert",
     );
     assert_eq!(row_count, 0);
 

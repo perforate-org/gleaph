@@ -1,7 +1,7 @@
 # Gleaph Knowledge Map Demo
 
-Last updated: 2026-06-13  
-Anchor timestamp: 2026-06-13 23:46:50 UTC +0000
+Last updated: 2026-07-02
+Anchor timestamp: 2026-07-02 08:38:37 UTC +0000
 
 ## Status
 
@@ -363,7 +363,7 @@ Status: complete for the frontend contract; backend API placement remains open.
 - Query through Router and assert the returned data can produce `KnowledgeMapViewModel`.
 - Keep graph-index and graph shard hidden behind Router.
 
-Status: partially implemented. `router_gql_query::standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter` verifies the Router can return source vertex id, edge id, target vertex id, and edge metadata through `gql_query` / `rows_blob`. A full named scenario API or prepared-query mapping is still planned.
+Status: partially implemented. `router_gql_query::single_shard_knowledge_map_relationship_rows` verifies the Router can return source vertex id, edge id, target vertex id, and edge metadata through `gql_query` / `rows_blob`. A full named scenario API or prepared-query mapping is still planned.
 
 ### Phase 3: Frontend shell
 
@@ -411,7 +411,7 @@ Current validation commands:
 cargo fmt --all
 cargo check -p gleaph-pocket-ic-tests --tests
 cargo clippy -p gleaph-pocket-ic-tests --tests -- -D warnings
-cargo test -p gleaph-pocket-ic-tests --test router_gql_query router_gql_insert_seeds_knowledge_map_fan_out_graph
+cargo test -p gleaph-pocket-ic-tests --test router_gql_query single_shard_knowledge_map_fan_out
 pnpm knowledge-map:check
 pnpm --filter @gleaph/knowledge-map build
 icp build knowledge-map

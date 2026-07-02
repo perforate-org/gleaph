@@ -47,12 +47,12 @@ children.
 | ----------------------------------------------------------------------- | ------------------------------------------------------- |
 | `graph_seed_dispatch::graph_execute_plan_query_skips_index_scan_with_seed_bindings` | Federated graph `execute_plan_query` + `seed_bindings_blob` |
 | `graph_seed_dispatch::graph_execute_plan_query_rejects_index_scan_without_seeds` | Federated graph rejects bare `IndexScan` without router seeds |
-| `router_gql_query::router_gql_query_node_scan_on_single_shard` | Router `gql_query` composite dispatch on a single registered shard |
-| `router_gql_query::standalone_e2e_insert_assigns_global_id` | Standalone `e2e_insert_vertex` → `GlobalVertexId` from graph routing |
+| `router_gql_query::single_shard_identity_lifecycle` | Single-shard identity lifecycle: NodeScan, `GlobalVertexId`, and `ELEMENT_ID` round-trip |
 | `router_gql_query::single_shard_vertex_index_lifecycle` | Single-shard vertex-index lifecycle: CREATE INDEX, indexed equality, two-index intersection, DROP INDEX, scan fallback, idempotent IF EXISTS drop, missing DROP NotFound |
 | `router_gql_query::single_shard_generic_edge_index_lifecycle` | Single-shard generic edge-index lifecycle: CREATE INDEX, indexed property equality, DROP INDEX, scan fallback |
-| `router_gql_query::standalone_gql_query_returns_element_id_bytes` | Router `gql_query` returns encoded `ELEMENT_ID` bytes via `rows_blob` |
-| `router_gql_query::standalone_gql_query_returns_relationship_rows_for_knowledge_map_adapter` | Router `gql_query` returns relationship row material needed by the knowledge-map adapter |
+| `router_gql_query::single_shard_knowledge_map_relationship_rows` | Helper-seeded `KNOWS` relationship row material (source/edge/target ids + weight) |
+| `router_gql_query::single_shard_knowledge_map_relationship_rows_from_insert` | GQL `INSERT`-created `KNOWS` relationship row material (source/edge/target ids + weight) |
+| `router_gql_query::single_shard_knowledge_map_fan_out` | Full knowledge-map demo graph fan-out (26 seeded demo edges) |
 | `router_gql_query::federated_gql_query_index_seeded_routes_to_hit_shard_only` | Multi-shard `gql_query` with `CREATE INDEX` DDL; slices index hits to the matching shard |
 | `router_gql_query::federated_gql_query_index_seeded_merges_across_shards` | Multi-shard `gql_query` with `CREATE INDEX` DDL; merges rows when both shards match the anchor |
 | `router_gql_query::single_shard_pointing_right_edge_index_lifecycle` | Single-shard pointing-right edge-index lifecycle: directed CREATE INDEX DDL, indexed property equality, DROP INDEX, scan fallback |
