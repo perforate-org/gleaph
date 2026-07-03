@@ -96,12 +96,15 @@ worktree and start a fresh session; do not let it diagnose the tool through repe
 ## Final approval and commit
 
 1. Require reviewer approval and read its evidence.
-2. Have the primary inspect the actual final diff, active docs, benchmark artifacts, skipped checks,
+2. Review every material gap discovered by implementation, review, or validation. Fix it, create an
+   independently reviewable prerequisite slice, or record it in `design/implementation-gaps.md`
+   before commit; do not accept terminal scrollback or a temporary report as durable tracking.
+3. Have the primary inspect the actual final diff, active docs, benchmark artifacts, skipped checks,
    and validation status.
-3. Run only lightweight integrity checks still needed for the commit.
-4. Commit only after primary approval. Separate product and agent-workflow commits when that makes
+4. Run only lightweight integrity checks still needed for the commit.
+5. Commit only after primary approval. Separate product and agent-workflow commits when that makes
    ownership clearer.
-5. Do not amend or rewrite commits outside the authority granted by the user and repository policy.
+6. Do not amend or rewrite commits outside the authority granted by the user and repository policy.
 
 ## Reset after commit
 

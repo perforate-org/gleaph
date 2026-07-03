@@ -121,6 +121,26 @@ Review the actual diff as if it came from another agent:
 9. For review fixes, re-run the original finding as a counterexample against the final code and inspect each
    required assertion literally. If any checklist item is still absent, do not notify the reviewer.
 
+## 7. Dispose of newly discovered gaps
+
+Implementation work often exposes a defect or missing capability outside the original diff. Do not
+leave it only in terminal scrollback, a temporary report, an ignored plan, or the completion summary.
+
+Before handoff, classify every material discovery:
+
+1. **Fix in the current slice** when it is a correctness/security defect, blocks the current
+   contract, has a clear owner, and stays reviewable.
+2. **Create a prerequisite slice** when it blocks the current work but needs an independent diff,
+   validation loop, or commit. Pause rather than weakening the original completion criteria.
+3. **Record it in `design/implementation-gaps.md`** when it is real but non-blocking, unresolved, or
+   would materially expand scope. Include observed behavior, owner, evidence, impact, next decision,
+   and status.
+4. **Dismiss it only with evidence** that the behavior matches an active contract.
+
+When a later slice resolves a ledger entry, update the same entry with the fixing commit and owning
+regression test. Do not create a second roadmap or duplicate an ADR's normative design in the ledger;
+link to the authoritative document instead.
+
 Do not mark a TODO complete from `--no-run`, a background process, or an interrupted runtime. Report
 completed, failed, incomplete, and deferred checks separately.
 
@@ -136,5 +156,7 @@ Before sending work to review, report:
 - skipped checks and remaining risks;
 - complexity introduced, signatures with five or more parameters, and obsolete code removed;
 - confirmation that no commit was made when the primary owns commits.
+- disposition of every material implementation gap discovered during the slice, including the
+  ledger id or prerequisite plan when it was not fixed immediately.
 
 If a known P1/P2 defect remains, keep implementing rather than presenting the slice as review-ready.
