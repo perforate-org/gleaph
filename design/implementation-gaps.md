@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
 Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 16:24:23 UTC +0000
+Anchor timestamp: 2026-07-03 17:52:45 UTC +0000
 
 ## Status
 
@@ -72,6 +72,13 @@ defect from being rediscovered without its prior reasoning.
   from administrators; or a prepared-plan public-execution flag whose graph is resolved at
   registration. If the latter two are chosen, write an authorization ADR and adversarial cross-graph
   tests.
+- **Implemented workaround (does not close this gap):** `crates/social-demo-gateway` provides an
+  application-owned canister with a fixed three-variant scenario enum. The Gateway principal is
+  registered as a graph administrator so Router can resolve the prepared plan, but it remains a
+  default Router Executor with no ad-hoc `Read` role. Anonymous callers execute the fixed scenarios
+  through the Gateway; Router observes the Gateway principal, not the original caller. This is an
+  application-layer trusted-deputy pattern, not a product change to Router prepared-query
+  authorization.
 - **Related contracts:** [security/rbac-and-prepared.md](security/rbac-and-prepared.md),
   [demo/social-graph-rag.md](demo/social-graph-rag.md)
 

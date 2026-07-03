@@ -1,0 +1,19 @@
+[package]
+name = "gleaph-social-demo-gateway"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Application-owned public read gateway for the social demo"
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+candid.workspace = true
+gleaph-graph-kernel.workspace = true
+ic-cdk.workspace = true
+ic-cdk-macros.workspace = true
+serde.workspace = true
+
+[dev-dependencies]
+candid.workspace = true

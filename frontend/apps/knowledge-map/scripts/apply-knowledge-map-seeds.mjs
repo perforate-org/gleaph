@@ -1,12 +1,17 @@
 import { spawnSync } from "node:child_process";
 import { readFileSync } from "node:fs";
-import { dirname, join } from "node:path";
+import { dirname, join, resolve } from "node:path";
 import { fileURLToPath } from "node:url";
 
 const root = join(dirname(fileURLToPath(import.meta.url)), "..");
-const seeds = JSON.parse(
-  readFileSync(join(root, "seeds/knowledge-map-seeds.json"), "utf8"),
-).seeds;
+
+const seedsPath = process.argv[2]
+  ? resolve(process.argv[2])
+  : join(root, "seeds/knowledge-map-seeds.json");
+const canisterName = process.argv[3] ?? "gleaph-router";
+const methodName = process.argv[4] ?? "gql_execute_idempotent";
+
+const seeds = JSON.parse(readFileSync(seedsPath, "utf8")).seeds;
 
 const icpEnv = () => ({
   ...process.env,
@@ -21,7 +26,7 @@ for (const seed of seeds) {
   const candid = `(\"${seed.gql}\", vec {}, \"${seed.key}\")`;
   const result = spawnSync(
     "icp",
-    ["canister", "call", "-e", "local", "gleaph-router", "gql_execute_idempotent", candid],
+    ["canister", "call", "-e", "local", canisterName, methodName, candid],
     {
       env: icpEnv(),
       encoding: "utf8",
@@ -39,5 +44,5 @@ for (const seed of seeds) {
     throw new Error(`Router rejected seed ${seed.key}: ${output}`);
   }
 
-  process.stderr.write(`[knowledge-map] Seeded ${seed.key}\n`);
+  process.stderr.write(`[seeds] Seeded ${seed.key}\n`);
 }

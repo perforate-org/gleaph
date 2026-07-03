@@ -60,6 +60,7 @@ gleaph-gql-planner = { path = "../gql-planner", features = ["plan-wire"] }
 gleaph-gql-ic.workspace = true
 gleaph-graph-kernel.workspace = true
 gleaph-router = { path = "../router" }
+gleaph-social-demo-gateway = { path = "../social-demo-gateway" }
 pocket-ic = "15.0.0"
 serde.workspace = true
 serde_json = "1"

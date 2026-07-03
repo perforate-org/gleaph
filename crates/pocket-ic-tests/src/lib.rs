@@ -6,6 +6,7 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId};
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::AdminRegisterShardArgs;
+use gleaph_social_demo_gateway::{GatewayInitArgs, SocialDemoScenario};
 use pocket_ic::{PocketIc, PocketIcBuilder};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -449,6 +450,75 @@ pub fn install_two_graph_federation() -> FederationEnv {
 /// Router + index + one federated graph shard (standalone dispatch policy).
 pub fn install_single_shard_federation() -> FederationEnv {
     install_single_shard_federation_with_graph_admins(Default::default())
+}
+
+/// Router + index + one federated graph shard, with a social-demo Gateway canister
+/// installed and registered as a graph administrator from the start. The Gateway is returned
+/// alongside the federation environment so tests can make anonymous composite-query calls
+/// through it.
+pub fn install_single_shard_federation_with_gateway() -> (FederationEnv, Principal) {
+    let pic = new_pocket_ic();
+    let admin = Principal::from_slice(&[0xAB; 29]);
+
+    let router = create_funded_canister(&pic);
+    pic.install_canister(
+        router,
+        wasm_bytes("ROUTER_WASM"),
+        Encode!(&RouterInitArgs {
+            issuing_principal: admin,
+            initial_admins: vec![],
+        })
+        .expect("encode router init"),
+        None,
+    );
+
+    let index = create_funded_canister(&pic);
+    pic.install_canister(
+        index,
+        wasm_bytes("INDEX_WASM"),
+        Encode!(&IndexInitArgs {
+            router_canister: router,
+        })
+        .expect("encode index init"),
+        None,
+    );
+
+    let graph_source = create_funded_canister(&pic);
+    let gateway = install_social_demo_gateway(&pic, router);
+    let mut graph_admins = BTreeSet::new();
+    graph_admins.insert(gateway);
+    register_graph_single_shard_with_admins(
+        &pic,
+        admin,
+        router,
+        index,
+        graph_source,
+        SOURCE_SHARD,
+        graph_admins,
+    );
+
+    pic.install_canister(
+        graph_source,
+        wasm_bytes("GRAPH_WASM"),
+        Encode!(&GraphInitArgs {
+            logical_graph_name: Some(GRAPH_NAME.into()),
+            router_canister: Some(router),
+            shard_id: Some(SOURCE_SHARD),
+            index_canister: Some(index),
+        })
+        .expect("encode graph init"),
+        None,
+    );
+
+    let env = FederationEnv {
+        pic,
+        admin,
+        router,
+        index,
+        graph_source,
+        graph_dest: Principal::anonymous(),
+    };
+    (env, gateway)
 }
 
 /// Router + index + one federated graph shard, with `graph_scoped_callers` added to
@@ -1645,6 +1715,50 @@ pub fn prepared_execute_query_with_params_as(
         Ok(Ok(result)) => result,
         Ok(Err(err)) => panic!("prepared_execute_query rejected: {err:?}"),
         Err(err) => panic!("decode prepared_execute_query: {err}"),
+    }
+}
+
+/// Install the social-demo-gateway canister, wiring it to the given Router.
+pub fn install_social_demo_gateway(pic: &PocketIc, router: Principal) -> Principal {
+    let gateway = create_funded_canister(pic);
+    pic.install_canister(
+        gateway,
+        wasm_bytes("SOCIAL_DEMO_GATEWAY_WASM"),
+        Encode!(&GatewayInitArgs {
+            router_canister: router
+        })
+        .expect("encode gateway init"),
+        None,
+    );
+    gateway
+}
+
+/// Execute a fixed social-demo scenario through the Gateway as `caller`.
+pub fn execute_social_demo_scenario_as(
+    env: &FederationEnv,
+    caller: Principal,
+    gateway: Principal,
+    scenario: SocialDemoScenario,
+) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
+    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+    use gleaph_social_demo_gateway::SocialDemoGatewayError;
+
+    let bytes = env
+        .pic
+        .query_call(
+            gateway,
+            caller,
+            "execute_social_demo_scenario",
+            Encode!(&scenario).expect("encode execute_social_demo_scenario"),
+        )
+        .unwrap_or_else(|e| panic!("execute_social_demo_scenario on gateway: {e:?}"));
+    match Decode!(&bytes, Result<GqlQueryResult, SocialDemoGatewayError>) {
+        Ok(Ok(result)) => result,
+        Ok(Err(SocialDemoGatewayError::Router(err))) => {
+            panic!("gateway scenario rejected by router: {err:?}")
+        }
+        Ok(Err(err)) => panic!("gateway scenario failed: {err:?}"),
+        Err(err) => panic!("decode execute_social_demo_scenario: {err}"),
     }
 }
 

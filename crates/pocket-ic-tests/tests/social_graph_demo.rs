@@ -1,27 +1,25 @@
-//! PocketIC: social demo Router prepared-query contract.
+//! PocketIC: social demo public-read Gateway contract.
 //!
-//! Seeds the canonical social demo graph through Router `gql_execute_idempotent` and proves
-//! that a graph-scoped default-Executor application caller (a graph admin, not a Router admin)
-//! can execute administrator-registered read-only prepared queries, while the same caller
-//! cannot run general ad-hoc `gql_query`.
+//! Seeds the canonical social demo graph through Router `gql_execute_idempotent` and proves that
+//! an anonymous browser caller can execute only the three fixed social-demo scenarios through the
+//! application-owned Gateway, while neither arbitrary ad-hoc `gql_query` nor arbitrary prepared
+//! names or parameters are expressible through the Gateway.
 //!
-//! This fixture uses one PocketIC bootstrap and asserts three named graph scenarios:
-//!   1. public timeline in reverse chronological order, excluding a private adversary post;
-//!   2. Alice's home feed reached through `FOLLOWS -> POSTED`, excluding public but unfollowed
-//!      authors;
-//!   3. a topic explanation path through a followee's post, with edge and node identities and
-//!      a non-matching topic adversary excluded.
+//! The Gateway principal is registered as a graph administrator so Router can resolve the
+//! prepared plan, but it remains a default Router Executor with no ad-hoc `Read` role. Router sees
+//! the Gateway principal, not the original anonymous caller, because the Gateway makes a composite
+//! inter-canister call.
 
 use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
-    admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label, gql_query_as,
-    install_single_shard_federation_with_graph_admins, prepared_execute_query_with_params_as,
+    admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
+    execute_social_demo_scenario_as, gql_query_as, install_single_shard_federation_with_gateway,
     prepared_register_as_admin, seed_social_graph,
 };
-use std::collections::BTreeSet;
+use gleaph_social_demo_gateway::SocialDemoScenario;
 
 const PUBLIC_TIMELINE_QUERY: &str = "\
 MATCH (p:Post) \
@@ -49,11 +47,11 @@ RETURN p.demo_id AS post_id, \
 ORDER BY created_at DESC";
 
 #[test]
-fn social_graph_demo_router_contract() {
-    let graph_scoped_caller = Principal::from_slice(&[0xCD; 29]);
-    let mut graph_admins = BTreeSet::new();
-    graph_admins.insert(graph_scoped_caller);
-    let env = install_single_shard_federation_with_graph_admins(graph_admins);
+fn social_graph_demo_gateway_contract() {
+    // A default-Executor principal that is NOT graph-visible must remain fail-closed for ad-hoc GQL.
+    let default_executor = Principal::from_slice(&[0xCD; 29]);
+
+    let (env, gateway) = install_single_shard_federation_with_gateway();
 
     intern_social_schema(&env);
     seed_social_graph(&env);
@@ -62,14 +60,22 @@ fn social_graph_demo_router_contract() {
     prepared_register_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
     prepared_register_as_admin(&env, "topic_path_explanation", TOPIC_PATH_QUERY);
 
-    assert_public_timeline(&env, graph_scoped_caller);
-    assert_alice_home_feed(&env, graph_scoped_caller);
-    assert_topic_path_explanation(&env, graph_scoped_caller);
-    assert_ad_hoc_gql_fail_closed(&env, graph_scoped_caller);
+    assert_public_timeline_through_gateway(&env, gateway);
+    assert_alice_home_feed_through_gateway(&env, gateway);
+    assert_topic_path_explanation_through_gateway(&env, gateway);
+    assert_ad_hoc_gql_fail_closed(&env, default_executor);
 }
 
-fn assert_public_timeline(env: &gleaph_pocket_ic_tests::FederationEnv, caller: Principal) {
-    let result = prepared_execute_query_with_params_as(env, caller, "public_timeline", Vec::new());
+fn assert_public_timeline_through_gateway(
+    env: &gleaph_pocket_ic_tests::FederationEnv,
+    gateway: Principal,
+) {
+    let result = execute_social_demo_scenario_as(
+        env,
+        Principal::anonymous(),
+        gateway,
+        SocialDemoScenario::PublicTimeline,
+    );
     let rows = decode_rows(&result);
     assert_eq!(
         rows.len(),
@@ -95,8 +101,16 @@ fn assert_public_timeline(env: &gleaph_pocket_ic_tests::FederationEnv, caller: P
     );
 }
 
-fn assert_alice_home_feed(env: &gleaph_pocket_ic_tests::FederationEnv, caller: Principal) {
-    let result = prepared_execute_query_with_params_as(env, caller, "alice_home_feed", Vec::new());
+fn assert_alice_home_feed_through_gateway(
+    env: &gleaph_pocket_ic_tests::FederationEnv,
+    gateway: Principal,
+) {
+    let result = execute_social_demo_scenario_as(
+        env,
+        Principal::anonymous(),
+        gateway,
+        SocialDemoScenario::AliceHomeFeed,
+    );
     let rows = decode_rows(&result);
     assert_eq!(
         rows.len(),
@@ -122,9 +136,16 @@ fn assert_alice_home_feed(env: &gleaph_pocket_ic_tests::FederationEnv, caller: P
     }
 }
 
-fn assert_topic_path_explanation(env: &gleaph_pocket_ic_tests::FederationEnv, caller: Principal) {
-    let result =
-        prepared_execute_query_with_params_as(env, caller, "topic_path_explanation", Vec::new());
+fn assert_topic_path_explanation_through_gateway(
+    env: &gleaph_pocket_ic_tests::FederationEnv,
+    gateway: Principal,
+) {
+    let result = execute_social_demo_scenario_as(
+        env,
+        Principal::anonymous(),
+        gateway,
+        SocialDemoScenario::TopicPath,
+    );
     let rows = decode_rows(&result);
     assert_eq!(
         rows.len(),
@@ -167,17 +188,22 @@ fn assert_topic_path_explanation(env: &gleaph_pocket_ic_tests::FederationEnv, ca
     }
 }
 
-fn assert_ad_hoc_gql_fail_closed(env: &gleaph_pocket_ic_tests::FederationEnv, caller: Principal) {
-    let ad_hoc = gql_query_as(
+fn assert_ad_hoc_gql_fail_closed(
+    env: &gleaph_pocket_ic_tests::FederationEnv,
+    default_executor: Principal,
+) {
+    // A default-Executor principal that is not graph-visible cannot run ad-hoc GQL directly.
+    let direct_ad_hoc = gql_query_as(
         env,
-        caller,
+        default_executor,
         "MATCH (p:Post) RETURN p.demo_id AS post_id LIMIT 1",
     );
     assert!(
-        matches!(ad_hoc, Err(RouterError::Forbidden)),
-        "graph-scoped default-Executor caller must not receive general ad-hoc GQL authority: {ad_hoc:?}"
+        matches!(direct_ad_hoc, Err(RouterError::Forbidden)),
+        "default-Executor caller must not receive general ad-hoc GQL authority: {direct_ad_hoc:?}"
     );
 
+    // Anonymous callers cannot run ad-hoc GQL directly on Router either.
     let anon_ad_hoc = gql_query_as(
         env,
         Principal::anonymous(),
@@ -187,6 +213,10 @@ fn assert_ad_hoc_gql_fail_closed(env: &gleaph_pocket_ic_tests::FederationEnv, ca
         matches!(anon_ad_hoc, Err(RouterError::Forbidden)),
         "anonymous caller must not receive general ad-hoc GQL authority: {anon_ad_hoc:?}"
     );
+
+    // The Gateway exposes no ad-hoc GQL surface at all; its only public method is the fixed
+    // scenario enum. The canister exports exactly that interface via `ic_cdk::export_candid!()`;
+    // this compile-time call site and the recipe-generated `.did` are the verification surfaces.
 }
 
 fn intern_social_schema(env: &gleaph_pocket_ic_tests::FederationEnv) {

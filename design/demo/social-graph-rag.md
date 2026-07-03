@@ -1,34 +1,45 @@
 # Social Graph and GraphRAG Comparison Demo
 Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 16:28:43 UTC +0000
+Anchor timestamp: 2026-07-03 17:52:45 UTC +0000
 
 ## Status
 
 **Partially Implemented** — Phase 1 backend subset is implemented. A canonical social graph
 manifest and reproducible Router seed operations exist, and the public-timeline, Alice home-feed,
-and topic-path prepared-query contracts are verified end-to-end with a graph-visible
-default-Executor caller (the caller is in the graph `admins` set so it can execute
-administrator-registered prepared queries scoped to that graph, but it remains a default Router
-Executor with no ad-hoc GQL Read role). Internet Identity, vector search, LLM calls, GraphRAG
+and topic-path prepared-query contracts are verified end-to-end through the application-owned
+`gleaph-social-demo-gateway` canister, with anonymous callers invoking the three fixed scenarios
+and the Gateway principal acting as the graph-visible default-Executor caller (the Gateway is in
+the graph `admins` set so Router can resolve the prepared plan, but it remains a default Router
+Executor with no ad-hoc GQL `Read` role). Internet Identity, vector search, LLM calls, GraphRAG
 orchestration, and authenticated ownership remain explicitly planned and out of scope for this
 slice.
 
 ## Phase 1 implementation note
 
-As of 2026-07-03 16:28:43 UTC +0000:
+As of 2026-07-03 17:52:45 UTC +0000:
 
 - Canonical manifest: `frontend/apps/knowledge-map/seeds/social-graph.json`.
 - Generated seed artifact: `frontend/apps/knowledge-map/seeds/social-seeds.json`.
 - Seed generator: `frontend/apps/knowledge-map/scripts/generate-seeds.mjs` now accepts arbitrary
   manifest/output paths while preserving the existing knowledge-map output by default.
-- PocketIC test target: `crates/pocket-ic-tests/tests/social_graph_demo.rs`.
+- Seed applier: `frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs` now accepts
+  optional seeds path, canister name, and method name arguments while preserving its original
+  knowledge-map defaults.
+- Gateway canister: `crates/social-demo-gateway`.
+- Gateway PocketIC test target: `crates/pocket-ic-tests/tests/social_graph_demo.rs`.
 - Verified contracts:
-  - public posts in exact reverse chronological order, excluding the private adversary post;
-  - Alice home feed through `FOLLOWS -> POSTED`, excluding public but unfollowed authors;
+  - public posts in exact reverse chronological order, excluding the private adversary post,
+    executed by an anonymous caller through the Gateway;
+  - Alice home feed through `FOLLOWS -> POSTED`, excluding public but unfollowed authors,
+    executed by an anonymous caller through the Gateway;
   - topic explanation path through a followee's post, returning the node and edge identities
-    that explain why the result was selected, with a non-matching topic adversary excluded;
-  - fail-closed RBAC (the graph-visible default-Executor caller and anonymous callers cannot
-    run general ad-hoc `gql_query`).
+    that explain why the result was selected, with a non-matching topic adversary excluded,
+    executed by an anonymous caller through the Gateway;
+  - fail-closed RBAC (the Gateway principal is graph-visible and a default Router Executor with no
+    ad-hoc `Read` role; a default-Executor principal and anonymous callers cannot run general
+    ad-hoc `gql_query` directly on Router);
+  - the Gateway API cannot express arbitrary GQL, prepared-query names, graph names, or
+    client-controlled parameters.
 
 ## Purpose
 
@@ -113,13 +124,19 @@ authenticated viewer.
 
 Consequences:
 
-- the frontend may execute only administrator-registered read-only prepared queries or an equally
-  narrow Router-owned demo read surface;
+- the frontend may execute only the three fixed read-only scenarios through the application-owned
+  `gleaph-social-demo-gateway` canister, which delegates to administrator-registered Router
+  prepared queries as the Gateway principal;
+- the Gateway exposes no arbitrary GQL, prepared-query name, graph selection, or client-controlled
+  parameters;
 - interactive writes, private drafts, account settings, and ownership-sensitive mutations are out
   of scope;
 - the UI must not display a fake login state or imply that the selected scenario user is
   `MSG_CALLER()`;
-- the demo must not present its query predicates as an RLS-equivalent security proof.
+- the demo must not present its query predicates as an RLS-equivalent security proof;
+- Router observes the Gateway principal, not the anonymous browser caller. A future caller-aware
+  prepared query may capture `ic_cdk::api::msg_caller()` in the Gateway before `await` and pass it
+  as a Gateway-generated `IC.PRINCIPAL` parameter; this slice does not add that plumbing.
 
 Internet Identity should be added in a later application phase when the demo intentionally covers
 caller-owned drafts or mutations. That addition is application work unless it reveals a missing
@@ -242,6 +259,7 @@ As verified against the repository on 2026-07-03 UTC:
 | Property equality/range indexes | Implemented with documented consistency semantics | Candidate filtering |
 | Prepared queries and `MSG_CALLER()` | Implemented | Narrow public read surface now; caller-aware queries later |
 | Graph-scoped Router roles | Implemented | Protect administration and ad-hoc query access |
+| Application-owned public read Gateway | Implemented | Anonymous callers execute fixed scenarios through the Gateway; no arbitrary GQL/names/params |
 | Transparent row-level policy engine | Not implemented | Do not claim RLS parity |
 | Canonical vertex embeddings and derived vector indexes | Implemented | Semantic post retrieval |
 | Vector `SEARCH` joined with graph execution | Implemented for bounded vertex-only shapes | Graph-aware semantic retrieval |
@@ -297,7 +315,9 @@ the application-owned `ic-llm` client, and render:
 ```mermaid
 flowchart LR
     U["Viewer"] --> F["Demo frontend"]
+    F --> GW["Social demo Gateway"]
     F --> R["Gleaph Router"]
+    GW --> R
     R --> P["Property Index"]
     R --> V["Vector Index"]
     R --> G["Graph shard"]
@@ -307,9 +327,13 @@ flowchart LR
     O --> L["IC LLM canister via ic-llm"]
 ```
 
-For the first read-only graph comparison, the orchestration, embedding, and LLM components may be
-absent. When GraphRAG is enabled, the orchestration service calls only Router-facing APIs; it must
-not query Graph, Property Index, or Vector Index canisters directly.
+For the first read-only graph comparison, the frontend calls the application-owned Gateway for
+the three fixed scenarios. Router sees the Gateway principal on the delegated composite query; the
+original browser caller remains anonymous and has no graph visibility. GraphRAG, embedding, and
+LLM components remain absent until Phase 3.
+
+When GraphRAG is enabled, the orchestration service calls only Router-facing APIs; it must not
+query Graph, Property Index, or Vector Index canisters directly.
 
 Internet Identity is intentionally absent from the initial topology. A later authenticated
 application topology inserts Internet Identity between the viewer and the application's
