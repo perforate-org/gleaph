@@ -14,14 +14,15 @@ the repository's architecture before considering the task complete.
 
 ## Development vs Completion
 
-Prefer targeted checks during development, then broader checks before completion.
+Prefer targeted checks during development and completion. Broaden only when the plan, user, or repository
+contract explicitly names a broader final gate.
 
-During iteration, you may use `-p <crate>` for faster feedback. Final verification
-should use the full workspace unless there is a known unrelated workspace-wide failure.
+Use `-p <crate>` and focused test filters for the affected ownership surface. Full-workspace validation,
+the full PocketIC suite, and unfiltered canbench are not default completion requirements.
 
 ## Required Checks
 
-After meaningful Rust code changes, run in order:
+After meaningful Rust code changes, run the affected scope in order:
 
 1. Formatting
 2. Type check
@@ -31,12 +32,16 @@ After meaningful Rust code changes, run in order:
 6. If canbench results changed intentionally, update persisted results
 
 ```sh
-cargo fmt --all
-cargo check --workspace
-cargo clippy --workspace --all-targets --all-features -- -D warnings
-cargo test --workspace
+cargo fmt --all -- --check
+cargo check -p <affected-crate> --tests
+cargo clippy -p <affected-crate> --all-targets -- -D warnings
+cargo test -p <affected-crate> --lib <focused-filter>
 # benchmarks: see the `benchmark` skill
 ```
+
+Do not run all targets/features when the change does not cross them. Do not run a compile-only command
+immediately before the same runtime target solely for reassurance. For independent validation, obey the exact
+command allowlist and non-mutation rules in `cost-aware-validation`.
 
 ## Fix Workflow (check / clippy)
 

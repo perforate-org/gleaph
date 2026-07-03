@@ -8,6 +8,25 @@ description: Design and review Rust tests, PocketIC E2E fixtures, validation loo
 Optimize validation cost only after preserving the behavioral contract. A faster suite that permits
 false passes is a regression.
 
+## Strict validation-only operating mode
+
+When assigned independent validation, validate the existing worktree; do not repair it.
+
+- If the prompt supplies an ordered command allowlist, run only those commands, once each, in that order.
+- Stop at the first failure unless the prompt explicitly asks to continue collecting independent results.
+- Do not edit, format-write, generate, stage, restore, delete, or commit files. Use `cargo fmt --check`, not
+  formatting that mutates the tree.
+- Do not invent broader commands, cold target directories, GUI fallbacks, external terminals, background
+  jobs, or delegated validation.
+- Do not invoke `ps`, `pgrep`, `/ps`, `/stop`, `pkill`, or `kill`. If the active foreground command exceeds
+  its budget, interrupt only that command through the current tool/session and report it incomplete.
+- Do not retry a failed or timed-out command through another wrapper. Record the exact failure and stop.
+- Do not diagnose by changing source. Return the evidence to the implementation/review owner.
+
+Before the first command, restate the allowlist and total budget internally. After the last completed command,
+report one row per command as passed, failed, incomplete, or not run. A notification is not proof of success;
+the terminal result is.
+
 ## Choose the Cheapest Owning Layer
 
 Place each assertion at the layer that owns the invariant:
@@ -77,8 +96,8 @@ background reassurance.
 - Prefer one affected PocketIC target and one focused benchmark pattern.
 - Stop a command after five minutes without meaningful output and stop the active validation turn
   after ten minutes.
-- Stop child cargo/rustc/PocketIC processes safely; verify they are gone without killing unrelated
-  work.
+- Cancel only the currently owned foreground command when it exceeds budget. Do not enumerate or kill
+  unrelated cargo/rustc/PocketIC processes from a validation-only pane.
 - A timed-out, background, delegated, or `--no-run` command is not a runtime pass.
 - Report the exact command, last observed state, and whether work is compiled, tested, deferred, or
   incomplete.

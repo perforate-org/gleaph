@@ -207,6 +207,24 @@ session, and instruct the replacement turn to inspect and continue the existing 
 opencode configuration should keep `permission.doom_loop = "deny"` so identical calls are blocked
 instead of asking for repeated approval.
 
+Treat every sibling-pane run as a forward-test of the skills it used. After reading a pane's report
+and terminal behavior, the primary must distinguish a task-specific mistake from a reusable process
+failure. When the failure is reusable—such as editing during read-only review, validation scope
+creep, partial-write ordering, weakened assertions, inaccurate completion claims, tool doom loops,
+or internal contradictions—update the smallest owning skill in the same iteration. Keep the rule
+concise and operational, validate the skill with `quick_validate.py`, and observe the next pane run
+to confirm that behavior improves. Do not encode one-off file names or expected answers into skills.
+
+Apply the same loop to successful behavior: if a pane demonstrates a cheaper, clearer, or more
+reliable implementation/review/validation procedure that generalizes, fold it into the owning skill.
+The primary's final report should mention material skill changes and whether the subsequent
+forward-test passed, partially passed, or exposed another gap.
+
+Every sibling-pane prompt must name each required repository skill with its exact path under
+`.agents/skills/<skill-name>/SKILL.md` and instruct the pane to read that file directly. Do not rely
+on global skill discovery or ask the pane to search `$CODEX_HOME`; repo-local skills are authoritative
+for Gleaph work. This path rule is specific to herdr delegation and belongs only in `AGENTS.md`.
+
 Never assign a new plan to an implementation pane that still contains the previous completed
 implementation conversation. The primary completion report should state that the implementation
 pane was reset, or explain why it had to be recreated.

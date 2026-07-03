@@ -8,6 +8,21 @@ description: Prevent correctness, boundary, persistence, atomicity, and test-con
 Implement from invariants outward. Do not wait for review to discover missing owners, asymmetric
 guards, partial writes, duplicated canonical data, or tests that exercise the wrong path.
 
+## Review-fix operating mode
+
+When addressing review findings, treat the coordinator's fix queue as an executable checklist:
+
+1. Copy every required correction into a short checklist before editing.
+2. Map each item to the exact production branch, test assertion, and postcondition it requires.
+3. Change only those owners unless the fix exposes a directly necessary prerequisite.
+4. After formatting, re-open the exact changed lines and check every item against the final file.
+5. Search for broadened assertions, fallback branches, or duplicate guards introduced during the fix.
+6. Report an item complete only when the final diff—not memory of the edit—proves it.
+
+Do not replace an exact error requirement with `A | B`, multiple accepted substrings, or a weaker row-count
+assertion. Do not report that code or a test was tightened, removed, or centralized without re-reading the
+final lines that establish that claim.
+
 ## 1. Build the contract map before editing
 
 Read the plan, `AGENTS.md`, relevant design contracts, nearby tests, and owning modules. Write down:
@@ -43,6 +58,12 @@ matches are better than wildcard arms when a new variant must force a decision.
   because the normal caller constructed it safely.
 - Complete all fallible validation, capacity checks, encoding-size checks, and conflict checks before
   the first canonical or catalog mutation.
+- For every operation that deletes or overwrites existing state, identify the first destructive statement
+  explicitly. Trace every possible error reachable after it. Move schema/category checks, assignment
+  classification, encoding, and persistence validation before that statement, or provide an owning atomic
+  transaction with a tested rollback contract.
+- A rejection test for destructive operations must seed distinct pre-existing state and assert that it
+  survives unchanged. Merely asserting the returned error does not prove atomicity.
 - Treat both operation orders as separate contracts: `A then B` and `B then A` must either converge
   safely or reject without partial state.
 - Use checked arithmetic and explicit limits. Do not silently saturate, truncate, default, or fall
@@ -97,6 +118,8 @@ Review the actual diff as if it came from another agent:
    processes, and inaccurate validation claims.
 8. Apply `code-quality`: review new signatures, flags, visibility, nesting, helper count, obsolete
    paths, net code growth, and whether a smaller existing abstraction can express the same contract.
+9. For review fixes, re-run the original finding as a counterexample against the final code and inspect each
+   required assertion literally. If any checklist item is still absent, do not notify the reviewer.
 
 Do not mark a TODO complete from `--no-run`, a background process, or an interrupted runtime. Report
 completed, failed, incomplete, and deferred checks separately.

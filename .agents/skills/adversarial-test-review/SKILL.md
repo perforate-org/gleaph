@@ -1,11 +1,49 @@
 ---
 name: adversarial-test-review
-description: Review test additions, consolidations, and refactors against their plan and behavioral contracts by constructing wrong implementations that could still pass. Use for PocketIC/E2E consolidation, lifecycle tests, fail-closed error paths, filtering/ranking/path selection, multi-source or multi-direction coverage, and any review where assertion strength or fixture ordering determines correctness.
+description: Perform strictly read-only adversarial reviews of test additions, consolidations, refactors, and architecture-sensitive diffs against their plan and behavioral contracts. Use for independent diff review, PocketIC/E2E consolidation, lifecycle tests, fail-closed error paths, filtering/ranking/path selection, multi-source or multi-direction coverage, and any review where assertion strength or fixture ordering determines correctness. Never edit files, run tests/builds/benchmarks, manage processes, or open external terminals during this review mode.
 ---
 
 # Adversarial Test Review
 
 Review the actual diff independently. Do not approve from the implementation report alone.
+
+## Strict read-only operating mode
+
+Treat this skill as a low-freedom inspection procedure. The review owns findings, not fixes or
+validation execution.
+
+Allowed operations are limited to:
+
+- reading the plan, instructions, source files, tests, documents, and existing terminal reports;
+- `git status`, `git diff`, `git show`, `git log`, `git grep`, `rg`, `sed`, and equivalent read-only
+  inspection;
+- reporting findings or approval to the coordinating pane.
+
+Do not:
+
+- edit, format, generate, stage, restore, delete, or create any file;
+- run `cargo test`, `cargo check`, `cargo clippy`, `cargo fmt`, canbench, PocketIC, or any build;
+- start background jobs, use `/ps` or `/stop`, invoke `pkill`/`kill`, or inspect/manage processes;
+- open Terminal.app, Ghostty, another pane, GUI application, or external validation environment;
+- send fixes directly to an implementation pane unless the coordinating prompt explicitly requires
+  that single notification after the review is complete;
+- keep exploring after the finding set and verdict are determined.
+
+If existing validation evidence is insufficient, report the exact missing evidence as a finding or
+residual risk. Do not recreate it. If any forbidden operation is accidentally attempted, stop the
+review immediately, disclose it, and do not continue with further tools.
+
+Use one bounded inspection pass. Prefer at most 15 read-only shell calls and finish within five
+minutes. Large diffs justify selective reads by owner and invariant; they do not justify executing
+the code.
+
+## Required-fix fidelity
+
+On a fix re-review, copy every required correction from the coordinator into a checklist before
+inspecting the diff. A required correction is blocking until the exact code or assertion satisfies it.
+Do not downgrade an unmet required correction because the test name is broad, the old behavior also rejects,
+or the remaining weakness seems minor. If the report observes that a required fix remains, the verdict cannot
+be `APPROVE`. Make the finding status, non-blocking observations, and final verdict internally consistent.
 
 ## Inputs
 
@@ -36,6 +74,11 @@ Map every removed or changed contract to a current named scenario and assertion.
 Missing traceability for a required criterion is a finding.
 
 ## Mandatory Counterexample Pass
+
+On a re-review, begin with the exact lines changed for each prior finding and compare the new assertions with
+the promised error and postcondition. Treat broadened assertions (`A | B`, substring alternatives, or
+"either error is acceptable") as unresolved when the corrected control-flow order should produce one precise
+diagnostic. A fix must make the intended branch observable, not make both old and new behavior pass.
 
 For every scenario, write at least one plausible wrong implementation that would still satisfy its assertions. Check these failure patterns explicitly:
 

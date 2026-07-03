@@ -127,6 +127,10 @@ Avoid:
    - Confirm all current-state claims have either been verified or marked with
      an `as of` date.
    - Confirm date formats are consistent.
+   - When one patch touches several active design contracts for the same implementation event, use
+     one OS-derived UTC anchor for all of them. Do not generate per-file timestamps during successive
+     edits. Preserve original `Date` fields while synchronizing `Last updated` / `Last revised` and
+     `Anchor timestamp` as required by repository convention.
 
 ## Output Requirements
 

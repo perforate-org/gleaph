@@ -84,6 +84,11 @@ Look for:
 - Stale benchmark expectations
 - Future plans written as current behavior
 
+When a capability moves from planned to implemented, search the whole touched document set for the
+capability name and its prior status wording. Check status headers, revision histories, capability
+tables, staging/roadmap rows, examples, limitations, and every "remains planned" list. Updating the
+main prose while leaving a staging row or revision entry stale is a blocking synchronization gap.
+
 ### Step 3: Update or Mark Status
 
 If the design is still valid, no document change is required.

@@ -7,7 +7,7 @@ Review encapsulation, separation of concerns, invariants, consistency, fitness f
 ## implementation-integrity
 
 Implement architecture-sensitive changes with invariant mapping, complete variant audits, atomic
-write validation, adversarial tests, and pre-review self-inspection.
+write validation, exact review-fix checklists, adversarial tests, and final-diff self-inspection.
 
 ## code-quality
 
@@ -32,13 +32,15 @@ Review behavioral contracts, invariants, consistency mechanisms, boundaries, and
 
 ## adversarial-test-review
 
-Review test refactors and consolidations by mapping plan criteria to assertions and constructing
-wrong implementations that could still pass before approval.
+Perform strictly read-only diff and test-contract review by mapping plan criteria to assertions and
+constructing wrong implementations that could still pass. Never edit, validate, manage processes,
+or open external terminals in this mode.
 
 ## cost-aware-validation
 
 Design tests, PocketIC fixtures, Rust validation loops, and canbench benchmarks for high signal at
-bounded compile and runtime cost.
+bounded compile and runtime cost. In independent validation mode, obey a strict command allowlist and never
+edit, retry through fallbacks, manage processes, or broaden scope.
 
 ## benchmark
 
