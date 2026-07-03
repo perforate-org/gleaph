@@ -48,7 +48,18 @@ For every scenario, write at least one plausible wrong implementation that would
 - deduplicates or merges inputs so an advertised independent arm is never observed;
 - reports success based only on compilation, `--no-run`, or an unfinished background process.
 
+When a change adds an enum variant intended to share an existing variant's guards or conflict
+semantics, perform a symmetric-variant audit: search every old-variant pattern, accessor, and helper
+(for example `is_inline_scalar()` or `matches!(..., InlineScalar { .. })`). Require each call site to
+include the new variant or document why that boundary is intentionally variant-specific. A test must
+cover both mutation/DDL orders when either order can create conflicting state.
+
 Strengthen observability with exact identities, values, ordering, path shape, call counts, or bounded state postconditions as appropriate. Row counts alone are insufficient when the wrong member can produce the same count.
+
+Tests named for a specific failure mode must assert that exact error/path. Avoid disjunctive
+assertions such as `A | B | C` when they allow an earlier guard to mask the branch named by the test.
+If the targeted branch is mathematically unreachable under current bounds, state that proof and test
+the reachable boundary instead of claiming direct coverage.
 
 ## Approval Gate
 
