@@ -1,11 +1,11 @@
 # Gleaph GQL extension syntax
 
-Last updated: 2026-07-02
-Anchor timestamp: 2026-07-02 00:11:35 UTC +0000
+Last updated: 2026-07-03
+Anchor timestamp: 2026-07-03 01:41:26 UTC +0000
 
 ## Status
 
-**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`), Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), and Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline payload are implemented**; fixed-size `STRUCT` inline slots and vector-index DDL remain planned.** This document
+**Dialect contract with a canonical Rust manifest and implemented pieces. ADR 0034 Slice 6 leading labeled `SEARCH ... WHERE` equality filter through Slice 19 bounded heterogeneous equality/range `OR` disjunctions are implemented; **Slice 20 scalar `INLINE` edge-property schema registration (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`), Slice 21 ordinary read access (`e.property`, `WHERE e.property`, `ORDER BY e.property`), Slice 22 ordinary mutation packing (`INSERT ... {distance: 7}`, `SET e.distance = 9`), Slice 23 ordinary `COST BY e.distance` shortest-path cost of scalar values into the inline payload, and Slice 24 fixed-size inline `STRUCT` schema registration (`CREATE EDGE LABEL ... { <property> STRUCT { ... } INLINE }`) are implemented**; struct field reads, struct mutation packing, `COST BY` over a struct field, generic `CREATE GRAPH TYPE` `INLINE` annotations, and vector-index DDL remain planned.** This document
 is the steady-state public syntax contract for Gleaph-specific GQL extensions.
 
 - [layers.md](layers.md), which defines crate and execution boundaries.
@@ -40,7 +40,7 @@ semantics.
 | ----------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | IC value type                 | `IC.PRINCIPAL`                                                            | Implemented                                                                                                                                                                                                                                                                                          | `gleaph-gql-ic` value extension                                                             |
 | IC runtime function           | `MSG_CALLER()`                                                            | Implemented                                                                                                                                                                                                                                                                                          | Graph execution context                                                                     |
-| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar schema registration, read access, mutation packing, and shortest-path `COST BY e.property` implemented** (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`; ordinary `e.property`, `WHERE e.property`, `ORDER BY e.property`, `INSERT ... {distance: 7}`, `SET e.distance = 9`, `ANY SHORTEST ... COST BY e.distance`); `STRUCT` slots remain planned | Router schema/catalog + Graph edge payload execution                                        |
+| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar `INLINE` schema registration, read access, mutation packing, and shortest-path `COST BY e.property` implemented** (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`; ordinary `e.property`, `WHERE e.property`, `ORDER BY e.property`, `INSERT ... {distance: 7}`, `SET e.distance = 9`, `ANY SHORTEST ... COST BY e.distance`); **fixed-size `STRUCT` schema registration is implemented** (`CREATE EDGE LABEL ... { <property> STRUCT { ... } INLINE }`); struct field reads, struct mutation packing, and `COST BY` over a struct field remain planned | Router schema/catalog + Graph edge payload execution                                        |
 | Shortest-path cost            | `COST BY e.distance`                                                      | **Implemented** for the bounded direct-property shape: one concrete edge label, one declared edge variable, and exactly `e.<inline-property>`; `GLEAPH.COST BY GLEAPH.WEIGHT(e)` compatibility surface preserved; compound expressions and label-expression costs remain planned | Graph query planner/executor                                                                |
 | Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph query executor                                                                        |
 | Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph edge storage/execution                                                                |
@@ -186,7 +186,7 @@ CREATE EDGE LABEL ROAD {
 }
 ```
 
-For each edge label, exactly one scalar inline slot is allowed. The Router owns the canonical schema
+For each edge label, exactly one inline slot is allowed; in Slice 20 it is a scalar. The Router owns the canonical schema
 record `(graph_id, edge_label_id) → { property_id, scalar_type, derived EdgePayloadProfile }` in the
 existing `ROUTER_EDGE_PAYLOAD_PROFILES` stable region. The physical profile is derived from the scalar
 type; Graph receives it on the existing `ResolvedEdgeLabel` wire and stores/executes payload bytes
@@ -210,6 +210,45 @@ of scalar values into the inline payload (`INSERT ... {distance: 7}`, `SET e.dis
 non-finite, and malformed fixed-byte values before any canonical write. This section does not add
 `COST BY e.distance`, fixed-size `STRUCT` inline slots, or `INLINE` inside generic `CREATE GRAPH TYPE`
 definitions. Those remain planned.
+
+### Struct schema registration (Slice 24)
+
+**Status:** Implemented.
+
+The Router now accepts a standalone fixed-size inline STRUCT declaration:
+
+```gql
+CREATE EDGE LABEL AFFINITY {
+  stats STRUCT {
+    score FLOAT32,
+    confidence FLOAT32,
+    updated_at UINT64
+  } INLINE
+}
+```
+
+For each edge label, exactly one inline slot is allowed; it may be a scalar (Slice 20) or a
+fixed-size struct (Slice 24), but not both. The Router owns the canonical schema record
+`(graph_id, edge_label_id) -> { property_id, declaration-ordered logical field specs [name, scalar_type] }`
+in the existing `ROUTER_EDGE_PAYLOAD_PROFILES` stable region. The physical profile sent to Graph is
+`EdgePayloadProfile::opaque_bytes(total_byte_width)`; Graph receives only the existing top-level
+inline property identity and the derived opaque `RawBytes` profile in this slice. Struct fields are
+stored in declaration order with no padding. Bounds are enforced fail-closed: non-empty struct,
+unique field names within the struct, accepted fixed-width scalar field types only, field count
+limit, checked offset/width arithmetic, a conservative execution-safe total byte width limit, and an
+encoded stable-record size limit.
+
+Field specs are comma-separated; missing commas and trailing commas are rejected. The stored record
+persists only the declaration-ordered logical `(field_name, scalar_type)` pairs; byte offsets, widths,
+and total width are deterministically derived by the owner, so the stable record cannot hold inconsistent
+derived state.
+
+Exact replay is idempotent only when the same top-level property name, the same field names in the
+same declaration order, and the same field scalar types are supplied. Any incompatible
+redeclaration, any scalar/struct conflict, any legacy unnamed payload profile, and any property-index
+conflict on the same (label, property) are rejected before any catalog or schema mutation. Struct
+field reads (`e.stats.score`), struct mutation packing, `COST BY` over a struct field, and generic
+`CREATE GRAPH TYPE ... INLINE` annotations remain planned.
 
 ### Relationship to `GLEAPH.WEIGHT`
 

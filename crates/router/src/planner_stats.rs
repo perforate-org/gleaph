@@ -180,7 +180,7 @@ impl GraphStats for RouterGraphStats {
     ) -> bool {
         match label {
             Some(label) => {
-                // Defensive guard: an inline scalar schema is the canonical read source for its
+                // Defensive guard: a named inline schema (scalar or struct) is the canonical read source for its
                 // (label, property) pair. Until inline-index maintenance exists, exclude the pair
                 // from planner stats so a stale sidecar index cannot drive planning.
                 let label_id = RouterStore::new()
@@ -194,7 +194,7 @@ impl GraphStats for RouterGraphStats {
                         store
                             .get_record(self.graph_id, label_id.unwrap())
                             .is_some_and(|record| {
-                                record.is_inline_scalar()
+                                record.is_named_inline()
                                     && record.inline_property_id() == property_id
                             })
                     });
@@ -202,7 +202,7 @@ impl GraphStats for RouterGraphStats {
             }
             None => {
                 // Fail-closed for wildcard / compound label expressions: if any edge label in this
-                // graph has the property as its inline scalar slot, we cannot answer "is this property
+                // graph has the property as its named inline slot, we cannot answer "is this property
                 // indexed?" with a simple yes based only on a sidecar edge index for some other label.
                 // The planner would otherwise fuse a predicate into an EdgeIndexScan that ignores
                 // inline edges carrying the same property id in their payload.
@@ -217,7 +217,7 @@ impl GraphStats for RouterGraphStats {
                             store
                                 .get_record(self.graph_id, label_id)
                                 .is_some_and(|record| {
-                                    record.is_inline_scalar()
+                                    record.is_named_inline()
                                         && record.inline_property_id() == Some(property_id)
                                 })
                         })
@@ -397,6 +397,92 @@ mod tests {
                 gleaph_gql::types::EdgeDirection::AnyDirection,
             ),
             "ROAD.distance inline slot must not be reported as sidecar-indexed"
+        );
+    }
+    #[test]
+    fn edge_property_index_for_inline_struct_fail_closed_concrete_and_wildcard() {
+        // Slice 24: an InlineStruct slot must not be reported as sidecar-indexed for either
+        // concrete or wildcard label queries, even when a real edge index exists on another
+        // label for the same property id.
+        use crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES;
+        use crate::facade::stable::edge_payload_profiles::{InlineScalarType, InlineStructLayout};
+        let store = RouterStore::new();
+        let admin = Principal::from_slice(&[1; 29]);
+        store.init_from_args(&RouterInitArgs {
+            issuing_principal: admin,
+            initial_admins: vec![],
+        });
+        crate::facade::auth::grant_admins(&[admin]);
+        crate::facade::store::catalog_test_support::register_graph(&store, admin, TEST_GRAPH);
+        let graph_id = store.resolve_graph_id(TEST_GRAPH).expect("test graph");
+
+        let affinity_label_id = store
+            .admin_intern_edge_label(admin, TEST_GRAPH, "AFFINITY")
+            .expect("intern AFFINITY");
+        store
+            .admin_intern_edge_label(admin, TEST_GRAPH, "KNOWS")
+            .expect("intern KNOWS");
+        let stats_property_id = store
+            .admin_intern_property(admin, TEST_GRAPH, "stats")
+            .expect("intern stats");
+
+        // KNOWS has a sidecar edge index on stats; AFFINITY has the same property id as an
+        // inline STRUCT slot.
+        futures::executor::block_on(crate::index_catalog::create_admin_compat_property_index(
+            graph_id,
+            crate::index_ddl::IndexTarget {
+                kind: gleaph_graph_kernel::index::IndexedPropertyKind::Edge,
+                label: "KNOWS".into(),
+                property: "stats".into(),
+                edge_direction: Some(gleaph_gql::types::EdgeDirection::AnyDirection),
+            },
+        ))
+        .expect("create edge index on KNOWS.stats");
+
+        let layout = InlineStructLayout::from_fields(vec![
+            ("score".into(), InlineScalarType::F32),
+            ("confidence".into(), InlineScalarType::F32),
+        ])
+        .expect("seed layout");
+        ROUTER_EDGE_PAYLOAD_PROFILES
+            .with_borrow_mut(|s| {
+                s.set_inline_struct_schema(graph_id, affinity_label_id, stats_property_id, layout)
+            })
+            .expect("set inline struct schema on AFFINITY.stats");
+
+        let stats = RouterGraphStats::from_catalog(
+            graph_id,
+            BTreeSet::new(),
+            [stats_property_id].into_iter().collect(),
+            {
+                use crate::facade::stable::indexed_catalog::load_graph_stats;
+                load_graph_stats(graph_id).edge_indexes
+            },
+        );
+
+        assert!(
+            !stats.is_edge_property_indexed_for(
+                None,
+                "stats",
+                gleaph_gql::types::EdgeDirection::AnyDirection,
+            ),
+            "wildcard label query must be fail-closed when any label has an inline struct slot for the property"
+        );
+        assert!(
+            stats.is_edge_property_indexed_for(
+                Some("KNOWS"),
+                "stats",
+                gleaph_gql::types::EdgeDirection::AnyDirection,
+            ),
+            "KNOWS.stats sidecar index must remain visible for a concrete label query"
+        );
+        assert!(
+            !stats.is_edge_property_indexed_for(
+                Some("AFFINITY"),
+                "stats",
+                gleaph_gql::types::EdgeDirection::AnyDirection,
+            ),
+            "AFFINITY.stats inline struct slot must not be reported as sidecar-indexed"
         );
     }
 }

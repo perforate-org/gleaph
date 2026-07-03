@@ -1,7 +1,7 @@
 # Execution pipeline
 
-Last updated: 2026-07-02
-Anchor timestamp: 2026-07-02 00:11:35 UTC +0000
+Last updated: 2026-07-03
+Anchor timestamp: 2026-07-03 01:41:26 UTC +0000
 
 ## Purpose
 
@@ -138,15 +138,16 @@ Edge property evaluation uses one inline-aware read helper (`try_read_inline_edg
 
 1. Resolve the property name through the plan's `ResolvedPropertyTable`.
 2. Use the concrete `EdgeBinding.handle.label_id` to look up the `ResolvedEdgeLabel`.
-3. If `inline_property_id` matches the requested property id, decode the bound `EdgeBinding.payload` with the profile's exact width and encoding, returning the corresponding `Value`.
-4. If the property is not the inline slot, fall back to the sidecar `store.edge_property`.
-5. If the inline slot matches but the payload/schema is malformed, return `PlanQueryError` instead of `NULL` or sidecar rescue.
+3. If `inline_property_id` matches the requested property id and the profile is a scalar encoding, decode the bound `EdgeBinding.payload` with the profile's exact width and encoding, returning the corresponding `Value`.
+4. If `inline_property_id` matches but the profile is `RawBytes` (Slice 24 struct schema), the requested field-level access is not yet implemented; return `PlanQueryError` fail-closed rather than decoding or falling back to sidecar.
+5. If the property is not the inline slot, fall back to the sidecar `store.edge_property`.
+6. If the inline slot matches but the payload/schema is malformed, return `PlanQueryError` instead of `NULL` or sidecar rescue.
 
 Projection, filtering, comparison, aggregate input, `ORDER BY`, and shortest-path hop cost (`COST BY e.property`) all route through this helper, so the precedence and fail-closed rules are enforced uniformly. Weighted shortest-path evaluation receives the plan-scoped `ResolvedLabelTable` and `ResolvedPropertyTable` and resolves the cost property once before search; if it is not the concrete label's inline slot, the search fails closed before scanning adjacency.
 
 ### Inline edge property mutation packing
 
-Ordinary GQL edge mutations for an `InlineScalar` edge label write the named inline property only
+Ordinary GQL edge mutations for an `InlineScalar` edge label write the named inline property only. Slice 24 registers fixed-size `InlineStruct` schemas but does not implement struct field mutation packing; struct payloads must not be written through ordinary scalar mutation paths and should fail closed.
 through the fixed-width payload slot, never through the sidecar `EDGE_PROPERTIES` store or a Property
 Index maintenance queue:
 

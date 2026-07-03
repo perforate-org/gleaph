@@ -3031,3 +3031,288 @@ fn inline_scalar_schema_conflicts_on_second_property() {
         .expect_err("conflict");
     assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
 }
+
+// -----------------------------------------------------------------------------
+// ADR 0034 Slice 24: inline edge STRUCT schema tests
+// -----------------------------------------------------------------------------
+
+use crate::facade::stable::edge_payload_profiles::InlineStructLayout;
+
+#[test]
+fn inline_struct_schema_creates_label_property_and_record() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.struct");
+    let graph_id = lookup_graph_id("tenant.struct").expect("graph");
+
+    store
+        .commit_set_edge_label_inline_struct_schema(
+            graph_id,
+            "AFFINITY",
+            "stats",
+            vec![
+                crate::edge_payload_ddl::InlineEdgeStructField {
+                    name: "score".into(),
+                    scalar_type: InlineScalarType::F32,
+                },
+                crate::edge_payload_ddl::InlineEdgeStructField {
+                    name: "confidence".into(),
+                    scalar_type: InlineScalarType::F32,
+                },
+                crate::edge_payload_ddl::InlineEdgeStructField {
+                    name: "updated_at".into(),
+                    scalar_type: InlineScalarType::U64,
+                },
+            ],
+        )
+        .expect("create inline struct schema");
+
+    let label_id = store
+        .lookup_edge_label_id(graph_id, "AFFINITY")
+        .expect("label");
+    let property_id = store
+        .lookup_property_id(graph_id, "stats")
+        .expect("property");
+    let record = ROUTER_EDGE_PAYLOAD_PROFILES
+        .with_borrow(|s| s.get_record(graph_id, label_id))
+        .expect("schema record");
+    let layout = InlineStructLayout::from_fields(vec![
+        ("score".into(), InlineScalarType::F32),
+        ("confidence".into(), InlineScalarType::F32),
+        ("updated_at".into(), InlineScalarType::U64),
+    ])
+    .expect("layout");
+    assert_eq!(
+        record,
+        EdgePayloadSchemaRecord::InlineStruct {
+            property_id,
+            field_specs: layout.field_specs().to_vec(),
+        }
+    );
+    assert_eq!(
+        ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|s| s.get_profile(graph_id, label_id)),
+        EdgePayloadProfile::opaque_bytes(16)
+    );
+}
+
+#[test]
+fn inline_struct_schema_is_idempotent() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.struct_idem");
+    let graph_id = lookup_graph_id("tenant.struct_idem").expect("graph");
+
+    let fields = vec![
+        crate::edge_payload_ddl::InlineEdgeStructField {
+            name: "score".into(),
+            scalar_type: InlineScalarType::F32,
+        },
+        crate::edge_payload_ddl::InlineEdgeStructField {
+            name: "confidence".into(),
+            scalar_type: InlineScalarType::F32,
+        },
+    ];
+
+    store
+        .commit_set_edge_label_inline_struct_schema(graph_id, "AFFINITY", "stats", fields.clone())
+        .expect("first");
+    store
+        .commit_set_edge_label_inline_struct_schema(graph_id, "AFFINITY", "stats", fields)
+        .expect("idempotent");
+}
+
+#[test]
+fn inline_struct_schema_conflicts_with_scalar() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.struct_scalar_conflict");
+    let graph_id = lookup_graph_id("tenant.struct_scalar_conflict").expect("graph");
+
+    store
+        .commit_set_edge_label_inline_scalar_schema(
+            graph_id,
+            "AFFINITY",
+            "stats",
+            InlineScalarType::F32,
+        )
+        .expect("scalar");
+
+    let err = store
+        .commit_set_edge_label_inline_struct_schema(
+            graph_id,
+            "AFFINITY",
+            "stats",
+            vec![crate::edge_payload_ddl::InlineEdgeStructField {
+                name: "score".into(),
+                scalar_type: InlineScalarType::F32,
+            }],
+        )
+        .expect_err("conflict");
+    assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+}
+
+#[test]
+fn inline_scalar_schema_conflicts_with_struct() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.scalar_struct_conflict");
+    let graph_id = lookup_graph_id("tenant.scalar_struct_conflict").expect("graph");
+
+    store
+        .commit_set_edge_label_inline_struct_schema(
+            graph_id,
+            "AFFINITY",
+            "stats",
+            vec![crate::edge_payload_ddl::InlineEdgeStructField {
+                name: "score".into(),
+                scalar_type: InlineScalarType::F32,
+            }],
+        )
+        .expect("struct");
+
+    let err = store
+        .commit_set_edge_label_inline_scalar_schema(
+            graph_id,
+            "AFFINITY",
+            "stats",
+            InlineScalarType::F32,
+        )
+        .expect_err("conflict");
+    assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+}
+
+#[test]
+fn inline_struct_schema_conflicts_on_reordered_fields() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.struct_reorder");
+    let graph_id = lookup_graph_id("tenant.struct_reorder").expect("graph");
+
+    store
+        .commit_set_edge_label_inline_struct_schema(
+            graph_id,
+            "AFFINITY",
+            "stats",
+            vec![
+                crate::edge_payload_ddl::InlineEdgeStructField {
+                    name: "a".into(),
+                    scalar_type: InlineScalarType::U8,
+                },
+                crate::edge_payload_ddl::InlineEdgeStructField {
+                    name: "b".into(),
+                    scalar_type: InlineScalarType::U16,
+                },
+            ],
+        )
+        .expect("first");
+
+    let err = store
+        .commit_set_edge_label_inline_struct_schema(
+            graph_id,
+            "AFFINITY",
+            "stats",
+            vec![
+                crate::edge_payload_ddl::InlineEdgeStructField {
+                    name: "b".into(),
+                    scalar_type: InlineScalarType::U16,
+                },
+                crate::edge_payload_ddl::InlineEdgeStructField {
+                    name: "a".into(),
+                    scalar_type: InlineScalarType::U8,
+                },
+            ],
+        )
+        .expect_err("conflict");
+    assert!(matches!(err, RouterError::Conflict(_)), "{err:?}");
+}
+
+#[test]
+fn inline_struct_schema_failure_leaves_no_catalog_mutation() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.struct_no_partial");
+    let graph_id = lookup_graph_id("tenant.struct_no_partial").expect("graph");
+
+    let err = store
+        .commit_set_edge_label_inline_struct_schema(graph_id, "AFFINITY", "stats", vec![])
+        .expect_err("empty struct rejected");
+    assert!(
+        matches!(err, RouterError::InvalidArgument(_)),
+        "expected InvalidArgument, got {err:?}"
+    );
+
+    // Neither the edge label nor the property name was interned by the failed commit.
+    assert!(store.lookup_edge_label_id(graph_id, "AFFINITY").is_err());
+    assert!(store.lookup_property_id(graph_id, "stats").is_err());
+}
+
+#[test]
+fn inline_struct_schema_rejects_invalid_field_name() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.struct_bad_field");
+    let graph_id = lookup_graph_id("tenant.struct_bad_field").expect("graph");
+
+    let long_name = "a".repeat(300);
+    let err = store
+        .commit_set_edge_label_inline_struct_schema(
+            graph_id,
+            "AFFINITY",
+            "stats",
+            vec![crate::edge_payload_ddl::InlineEdgeStructField {
+                name: long_name,
+                scalar_type: InlineScalarType::U8,
+            }],
+        )
+        .expect_err("invalid field name");
+    assert!(
+        matches!(err, RouterError::InvalidArgument(_)),
+        "expected InvalidArgument, got {err:?}"
+    );
+    assert!(store.lookup_edge_label_id(graph_id, "AFFINITY").is_err());
+    assert!(store.lookup_property_id(graph_id, "stats").is_err());
+}
+
+#[test]
+fn inline_struct_schema_record_too_large_leaves_no_catalog_mutation() {
+    let store = RouterStore::new();
+    store.init_from_args(&test_init_args());
+    let admin = Principal::from_slice(&[1; 29]);
+    crate::facade::auth::grant_admins(&[admin]);
+    register_test_graph(&store, admin, "tenant.struct_record_too_large");
+    let graph_id = lookup_graph_id("tenant.struct_record_too_large").expect("graph");
+
+    // Build a struct whose encoded stable record exceeds the 1024-byte envelope.
+    let mut fields = Vec::new();
+    for i in 0..64 {
+        fields.push(crate::edge_payload_ddl::InlineEdgeStructField {
+            name: format!("very_long_field_name_to_inflate_record_size_{:03}", i),
+            scalar_type: crate::facade::stable::edge_payload_profiles::InlineScalarType::U8,
+        });
+    }
+    let err = store
+        .commit_set_edge_label_inline_struct_schema(graph_id, "AFFINITY", "stats", fields)
+        .expect_err("record-too-large struct rejected");
+    assert!(
+        matches!(err, RouterError::InvalidArgument(_)),
+        "expected InvalidArgument, got {err:?}"
+    );
+
+    // Catalog preflight must reject before interning the label or property.
+    assert!(store.lookup_edge_label_id(graph_id, "AFFINITY").is_err());
+    assert!(store.lookup_property_id(graph_id, "stats").is_err());
+}

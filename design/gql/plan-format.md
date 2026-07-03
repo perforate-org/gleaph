@@ -1,7 +1,7 @@
 # Physical plan format
 
-Last updated: 2026-07-02
-Anchor timestamp: 2026-07-02 00:11:35 UTC +0000
+Last updated: 2026-07-03
+Anchor timestamp: 2026-07-03 01:41:26 UTC +0000
 
 ## Purpose
 
@@ -157,13 +157,14 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
 
 - `name`, `id` — the canonical edge label identity.
 - `payload_profile` — physical byte width and encoding from Router stable state.
-- `inline_property_id: Option<PropertyId>` — Router-derived projection of the named inline scalar property for `InlineScalar` schemas; `None` for `UnnamedProfile`.
+- `inline_property_id: Option<PropertyId>` — Router-derived projection of the named inline property for `InlineScalar` and `InlineStruct` schemas; `None` for `UnnamedProfile`. Slice 24 projects only the top-level inline identity plus the opaque `RawBytes` profile for structs; ordinary field-level struct reads are not yet implemented and must fail closed.
 
 Graph must treat `inline_property_id` as a read-only plan-scoped projection. It does not own the schema and must not infer or persist the property identity.
 
 For a requested edge property:
 
-- If the concrete label's `inline_property_id` equals the resolved property id, Graph decodes the edge payload bytes strictly and returns the exact GQL scalar value. Malformed, missing, or unsupported payloads fail closed; the sidecar property store is never consulted as fallback.
+- If the concrete label's `inline_property_id` equals the resolved property id and the profile is a scalar encoding, Graph decodes the edge payload bytes strictly and returns the exact GQL scalar value. Malformed, missing, or unsupported payloads fail closed; the sidecar property store is never consulted as fallback.
+- If the profile is `RawBytes` (struct schema in Slice 24), Graph must not attempt scalar decode or sidecar fallback for that property; field-level struct access remains planned and must be rejected fail-closed.
 - Otherwise Graph falls back to the sidecar property store (`GraphStore::edge_property`), preserving existing non-inline behavior.
 
 This rule is shared by expression evaluation, edge-record projection, shortest-path hop cost evaluation (`COST BY e.property`), and any downstream consumer that reads an edge property.

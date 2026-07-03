@@ -112,11 +112,13 @@ impl GqlExecutionContext {
         )
     }
 
-    /// Router-resolved inline scalar property and matching payload profile for an edge label.
+    /// Router-resolved named inline property and matching payload profile for an edge label.
     ///
-    /// Returns `Some((property_id, payload_profile))` only when the Router projected an
-    /// `InlineScalar` schema for this concrete label. Graph must not infer this from the value
-    /// or from any other source.
+    /// Returns `Some((property_id, payload_profile))` when the Router projected a named inline
+    /// schema (`InlineScalar` or `InlineStruct`) for this concrete label. Slice 24 only projects the
+    /// top-level identity and opaque `RawBytes` profile for structs; ordinary field-level struct reads
+    /// are not yet implemented and should fail closed. Graph must not infer this from the value or
+    /// from any other source.
     pub fn resolved_edge_label_inline_property(
         &self,
         label_id: EdgeLabelId,

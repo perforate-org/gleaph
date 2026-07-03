@@ -12,7 +12,7 @@ use crate::facade::stable::constraint_name_catalog::{
     intern_constraint_name, lookup_constraint_name_id,
 };
 use crate::facade::stable::edge_payload_profiles::{
-    EdgePayloadProfileStoreError, InlineScalarType,
+    EdgePayloadProfileStoreError, InlineScalarType, InlineStructLayout,
 };
 use crate::facade::stable::graph_catalog::{
     catalog_error_to_router, list_live_shards_for_graph_id, resolve_registered_graph_id,
@@ -128,6 +128,11 @@ impl RouterStore {
                     "edge label {edge_label_name} already has an inline scalar schema"
                 )));
             }
+            if existing.is_named_inline() {
+                return Err(RouterError::Conflict(format!(
+                    "edge label {edge_label_name} already has an inline struct schema"
+                )));
+            }
             if existing.profile() != EdgePayloadProfile::no_payload() {
                 return Err(RouterError::Conflict(format!(
                     "edge label {edge_label_name} has a legacy unnamed payload profile; inline schema is incompatible"
@@ -135,7 +140,7 @@ impl RouterStore {
             }
         }
 
-        // Inline/index conflict guard (ADR 0034 Slice 21): a sidecar edge Property Index
+        // Inline/index conflict guard (ADR 0034 Slice 21/24): a sidecar edge Property Index
         // for the same (label, property) would be semantically stale because inline payload
         // mutations do not maintain postings. Reject the DDL before any catalog write.
         if let Some(label_id) = existing_label_id
@@ -143,7 +148,7 @@ impl RouterStore {
             && edge_index_uses_property_label(graph_id, property_id, label_id.raw())
         {
             return Err(RouterError::Conflict(format!(
-                "edge label {edge_label_name} already has a property index on {property_name}; drop the index before creating an inline scalar schema"
+                "edge label {edge_label_name} already has a property index on {property_name}; drop the index before creating an inline schema"
             )));
         }
 
@@ -165,6 +170,103 @@ impl RouterStore {
         ROUTER_EDGE_PAYLOAD_PROFILES
             .with_borrow_mut(|store| {
                 store.set_inline_scalar_schema(graph_id, label_id, property_id, scalar_type)
+            })
+            .map_err(map_edge_payload_profile_err)
+    }
+
+    pub(crate) fn commit_set_edge_label_inline_struct_schema(
+        &self,
+        graph_id: GraphId,
+        edge_label_name: &str,
+        property_name: &str,
+        fields: Vec<crate::edge_payload_ddl::InlineEdgeStructField>,
+    ) -> Result<(), RouterError> {
+        use crate::edge_payload_ddl::InlineEdgeStructField;
+        validate_metadata_name(edge_label_name)?;
+        validate_metadata_name(property_name)?;
+
+        for InlineEdgeStructField { name, .. } in &fields {
+            validate_metadata_name(name)?;
+        }
+
+        // Validate the canonical layout before any catalog allocation.
+        let declared: Vec<(String, InlineScalarType)> = fields
+            .into_iter()
+            .map(|InlineEdgeStructField { name, scalar_type }| (name, scalar_type))
+            .collect();
+        let layout = InlineStructLayout::from_fields_with_record_bound(
+            declared,
+            crate::facade::stable::edge_payload_profiles::MAX_INLINE_STRUCT_RECORD_BYTES,
+        )
+        .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
+
+        // --- preflight: every validation and capacity check is read-only ---
+        let existing_label_id = self.lookup_edge_label_id(graph_id, edge_label_name).ok();
+        let existing_property_id = self.lookup_property_id(graph_id, property_name).ok();
+
+        if let Some(label_id) = existing_label_id
+            && let Some(existing) = ROUTER_EDGE_PAYLOAD_PROFILES
+                .with_borrow(|store| store.get_record(graph_id, label_id))
+        {
+            match existing {
+                crate::facade::stable::edge_payload_profiles::EdgePayloadSchemaRecord::InlineStruct {
+                    property_id: existing_pid,
+                    field_specs: ref existing_specs,
+                } if let Some(property_id) = existing_property_id
+                    && existing_pid == property_id
+                    && existing_specs == layout.field_specs() => {
+                    return Ok(());
+                }
+                crate::facade::stable::edge_payload_profiles::EdgePayloadSchemaRecord::InlineStruct { .. } => {
+                    return Err(RouterError::Conflict(format!(
+                        "edge label {edge_label_name} already has an inline struct schema"
+                    )));
+                }
+                crate::facade::stable::edge_payload_profiles::EdgePayloadSchemaRecord::InlineScalar { .. } => {
+                    return Err(RouterError::Conflict(format!(
+                        "edge label {edge_label_name} already has an inline scalar schema"
+                    )));
+                }
+                crate::facade::stable::edge_payload_profiles::EdgePayloadSchemaRecord::UnnamedProfile { profile } => {
+                    if profile != EdgePayloadProfile::no_payload() {
+                        return Err(RouterError::Conflict(format!(
+                            "edge label {edge_label_name} has a legacy unnamed payload profile; inline schema is incompatible"
+                        )));
+                    }
+                }
+            }
+        }
+
+        // Inline/index conflict guard (ADR 0034 Slice 21): a sidecar edge Property Index
+        // for the same (label, property) would be semantically stale because inline payload
+        // mutations do not maintain postings. Reject the DDL before any catalog write.
+        if let Some(label_id) = existing_label_id
+            && let Some(property_id) = existing_property_id
+            && edge_index_uses_property_label(graph_id, property_id, label_id.raw())
+        {
+            return Err(RouterError::Conflict(format!(
+                "edge label {edge_label_name} already has a property index on {property_name}; drop the index before creating an inline struct schema"
+            )));
+        }
+
+        // Capacity preflight: prove id allocation will succeed before any mutation.
+        if existing_label_id.is_none() {
+            ROUTER_EDGE_LABEL_CATALOG
+                .with_borrow(|catalog| catalog.peek_next_id(graph_id, edge_label_name))
+                .map_err(|e| catalog_error_to_router(e, "edge label"))?;
+        }
+        if existing_property_id.is_none() {
+            ROUTER_PROPERTY_CATALOG
+                .with_borrow(|catalog| catalog.peek_next_id(graph_id, property_name))
+                .map_err(|e| catalog_error_to_router(e, "property"))?;
+        }
+
+        // --- commit: idempotent intern + schema record write ---
+        let label_id = Self::commit_intern_edge_label_name(graph_id, edge_label_name)?;
+        let property_id = Self::commit_intern_property_name(graph_id, property_name)?;
+        ROUTER_EDGE_PAYLOAD_PROFILES
+            .with_borrow_mut(|store| {
+                store.set_inline_struct_schema(graph_id, label_id, property_id, layout)
             })
             .map_err(map_edge_payload_profile_err)
     }

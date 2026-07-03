@@ -653,12 +653,24 @@ async fn run_gql(
         let stmt = ddl.map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
         let store = RouterStore::new();
         let graph_id = crate::graph_context::resolve_default_graph_id(&store, caller)?;
-        store.commit_set_edge_label_inline_scalar_schema(
-            graph_id,
-            &stmt.edge_label,
-            &stmt.property,
-            stmt.scalar_type,
-        )?;
+        match stmt.schema {
+            crate::edge_payload_ddl::InlineEdgePropertySchema::Scalar { scalar_type } => {
+                store.commit_set_edge_label_inline_scalar_schema(
+                    graph_id,
+                    &stmt.edge_label,
+                    &stmt.property,
+                    scalar_type,
+                )?;
+            }
+            crate::edge_payload_ddl::InlineEdgePropertySchema::Struct { fields } => {
+                store.commit_set_edge_label_inline_struct_schema(
+                    graph_id,
+                    &stmt.edge_label,
+                    &stmt.property,
+                    fields,
+                )?;
+            }
+        }
         return Ok(GqlQueryResult::row_count_only(0));
     }
 

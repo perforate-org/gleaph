@@ -298,15 +298,20 @@ fn try_eval_gleaph_weight(
     }
 }
 
-/// Reads an inline edge scalar property if `(label_id, property_id) matches the Router-resolved
+/// Reads an inline edge property if `(label_id, property_id)` matches the Router-resolved
 /// inline schema for this concrete edge label. Returns `Ok(None)` when the property is not the
 /// inline slot, allowing the caller to fall back to the sidecar property store. Returns an error
 /// when the inline slot matches but the payload/schema is malformed, missing, or unsupported.
+///
+/// Slice 24: named inline `STRUCT` schemas project only the top-level property identity and an
+/// opaque `RawBytes` physical profile. Ordinary field-level struct reads are not yet implemented,
+/// so a matched struct inline slot fails closed rather than being decoded as a scalar.
 pub(crate) fn try_read_inline_edge_property(
     edge: &EdgeBinding,
     property_id: PropertyId,
     resolved_labels: Option<&ResolvedLabelTable>,
 ) -> Result<Option<Value>, PlanQueryError> {
+    use gleaph_graph_kernel::entry::EdgePayloadEncoding;
     let Some(label) = crate::edge_payload_schema::resolved_edge_label_with(
         resolved_labels,
         EdgeLabelId::from_raw(edge.handle.label_id.raw()),
@@ -326,6 +331,16 @@ pub(crate) fn try_read_inline_edge_property(
         return Err(PlanQueryError::InvalidExpressionValue {
             expression: format!(
                 "inline property read for label {} requires a non-zero payload width",
+                edge.handle.label_id.raw()
+            ),
+        });
+    }
+
+    // Slice 24 fail-closed: struct payloads are opaque RawBytes; field-level reads are planned.
+    if profile.encoding == EdgePayloadEncoding::RawBytes {
+        return Err(PlanQueryError::InvalidExpressionValue {
+            expression: format!(
+                "inline struct property read for label {} is not implemented in this slice",
                 edge.handle.label_id.raw()
             ),
         });
@@ -2516,6 +2531,33 @@ mod tests {
         let err = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
             .expect_err("width mismatch");
         assert!(matches!(err, PlanQueryError::InvalidExpressionValue { .. }));
+    }
+
+    #[test]
+    fn inline_edge_property_read_fails_closed_for_struct_raw_bytes_profile() {
+        // Slice 24: a matched inline struct slot must fail closed instead of being decoded as a
+        // scalar. The profile is the opaque RawBytes physical projection; field-level reads are
+        // planned in a later slice.
+        let binding = inline_edge_binding(&[0u8; 16]);
+        let table = resolved_label_table_with_inline(
+            7,
+            42,
+            EdgePayloadProfile {
+                byte_width: 16,
+                encoding: EdgePayloadEncoding::RawBytes,
+            },
+        );
+        let err = try_read_inline_edge_property(&binding, PropertyId::from_raw(42), Some(&table))
+            .expect_err("struct inline read must fail closed");
+        assert!(
+            matches!(err, PlanQueryError::InvalidExpressionValue { .. }),
+            "unexpected err: {err:?}"
+        );
+        let msg = format!("{err}");
+        assert!(
+            msg.contains("struct property read") || msg.contains("not implemented"),
+            "error message should explain field-level struct reads are not implemented: {msg}"
+        );
     }
 
     #[test]

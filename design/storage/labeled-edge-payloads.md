@@ -1,5 +1,8 @@
 # Labeled edge payload storage
 
+Last updated: 2026-07-03
+Anchor timestamp: 2026-07-03 01:41:26 UTC +0000
+
 ## Overview
 
 Labeled LARA keeps the hot edge row to **4 bytes** (`target` only). Per-label edge payloads (weights, timestamps, numeric payloads) live in a separate **byte-addressed** log-backed CSR (`EdgePayloadStore`).
@@ -50,16 +53,24 @@ does not vary among live slots in one bucket.
 
 **Ownership (implemented):** logical schema `(GraphId, EdgeLabelId) → EdgePayloadSchemaRecord` is
 **router SSOT** (`ROUTER_EDGE_PAYLOAD_PROFILES`, router MemoryId 21). The record is a versioned
-envelope that represents either an admin `UnnamedProfile` or a named scalar inline
-schema (`property_id`, `scalar_type`, derived `EdgePayloadProfile`) per [ADR 0034 Slice
-20](../adr/0034-gleaph-gql-extension-syntax.md). Development stable data must be wiped when this format changes because backward compatibility is not maintained. The physical `EdgePayloadProfile` and the named inline property identity (`inline_property_id`) are both derived from the canonical record and travel on `ResolvedEdgeLabel` per
-[ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md). Graph shards resolve schema from
-execution context and must treat payload bytes as the only read source for the matching inline
-property; sidecar property values are not consulted. This applies to ordinary reads, filters,
-projections, `ORDER BY`, and shortest-path hop cost evaluation (`COST BY e.property`), all of which
-share one inline-aware read helper. Graph stable `EDGE_PAYLOAD_PROFILES` is retired
+envelope that represents either an admin `UnnamedProfile`, a named scalar or struct inline
+schema (`property_id`, scalar type or declaration-ordered logical field specs, derived
+`EdgePayloadProfile`) per [ADR 0034 Slices 20/24](../adr/0034-gleaph-gql-extension-syntax.md). Development stable data must be wiped
+when this format changes because backward compatibility is not maintained. The physical
+`EdgePayloadProfile` (scalar encoding or `opaque_bytes(total_byte_width)` for structs) and the named
+inline property identity (`inline_property_id`) are both derived from the canonical record and travel
+on `ResolvedEdgeLabel` per [ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md). Graph shards
+resolve schema from execution context and must treat payload bytes as the only read source for the
+matching inline property; sidecar property values are not consulted. This applies to scalar reads,
+filters, projections, `ORDER BY`, and shortest-path hop cost evaluation (`COST BY e.property`),
+all of which share one inline-aware read helper. Slice 24 struct payloads fail closed on ordinary
+field-level access. Graph stable `EDGE_PAYLOAD_PROFILES` is retired
 (facade MemoryIds 38–41 repacked to 37–40). Tests may inject profiles via `test_labels` or an
 explicit `ResolvedLabelTable`.
+
+**Struct reads and mutation packing:** in Slice 24, Graph receives only the existing top-level inline
+property identity and the derived opaque `RawBytes` physical profile for a struct. Field-level reads
+(`e.stats.score`), struct mutation packing, and `COST BY` over a struct field remain planned.
 
 ## Mutation write semantics (implemented)
 

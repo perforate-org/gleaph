@@ -78,20 +78,20 @@ async fn create_index(
         ) as u8,
     };
 
-    // Inline/index conflict guard (ADR 0034 Slice 21): an active inline scalar schema for the
-    // same (label, property) owns the only valid read source for that property; a sidecar edge
+    // Inline/index conflict guard (ADR 0034 Slice 21/24): an active named inline schema for
+    // the same (label, property) owns the only valid read source for that property; a sidecar edge
     // index would be semantically stale because payload mutations do not maintain postings.
     if target.kind == IndexedPropertyKind::Edge
         && ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|store| {
             store
                 .get_record(graph_id, EdgeLabelId::from_raw(label_id))
                 .is_some_and(|record| {
-                    record.is_inline_scalar() && record.inline_property_id() == Some(property_id)
+                    record.is_named_inline() && record.inline_property_id() == Some(property_id)
                 })
         })
     {
         return Err(RouterError::Conflict(format!(
-            "edge label {} has an inline scalar schema for property {}; drop the inline schema before creating an edge property index",
+            "edge label {} has an inline schema for property {}; drop the inline schema before creating an edge property index",
             target.label, target.property
         )));
     }
@@ -394,6 +394,98 @@ mod tests {
                 InlineScalarType::F32,
             )
             .expect_err("inline schema on indexed property should fail");
+        assert!(
+            matches!(err, RouterError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn edge_index_create_rejects_existing_inline_struct() {
+        let store = RouterStore::new();
+        let graph_id = register_test_graph(&store, "tenant.inline_struct_index_conflict");
+        store
+            .admin_intern_edge_label(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.inline_struct_index_conflict",
+                "AFFINITY",
+            )
+            .expect("intern edge label");
+        store
+            .admin_intern_property(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.inline_struct_index_conflict",
+                "stats",
+            )
+            .expect("intern property");
+        store
+            .commit_set_edge_label_inline_struct_schema(
+                graph_id,
+                "AFFINITY",
+                "stats",
+                vec![crate::edge_payload_ddl::InlineEdgeStructField {
+                    name: "score".into(),
+                    scalar_type: InlineScalarType::F32,
+                }],
+            )
+            .expect("create inline struct schema");
+
+        let err = futures::executor::block_on(create_admin_compat_property_index(
+            graph_id,
+            IndexTarget {
+                kind: IndexedPropertyKind::Edge,
+                label: "AFFINITY".into(),
+                property: "stats".into(),
+                edge_direction: Some(EdgeDirection::AnyDirection),
+            },
+        ))
+        .expect_err("edge index on inline struct property should fail");
+        assert!(
+            matches!(err, RouterError::Conflict(_)),
+            "expected Conflict, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn inline_struct_create_rejects_existing_edge_index() {
+        let store = RouterStore::new();
+        let graph_id = register_test_graph(&store, "tenant.index_inline_struct_conflict");
+        store
+            .admin_intern_edge_label(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.index_inline_struct_conflict",
+                "AFFINITY",
+            )
+            .expect("intern edge label");
+        store
+            .admin_intern_property(
+                candid::Principal::from_slice(&[1; 29]),
+                "tenant.index_inline_struct_conflict",
+                "stats",
+            )
+            .expect("intern property");
+        futures::executor::block_on(create_admin_compat_property_index(
+            graph_id,
+            IndexTarget {
+                kind: IndexedPropertyKind::Edge,
+                label: "AFFINITY".into(),
+                property: "stats".into(),
+                edge_direction: Some(EdgeDirection::AnyDirection),
+            },
+        ))
+        .expect("create edge index");
+
+        let err = store
+            .commit_set_edge_label_inline_struct_schema(
+                graph_id,
+                "AFFINITY",
+                "stats",
+                vec![crate::edge_payload_ddl::InlineEdgeStructField {
+                    name: "score".into(),
+                    scalar_type: InlineScalarType::F32,
+                }],
+            )
+            .expect_err("inline struct on indexed property should fail");
         assert!(
             matches!(err, RouterError::Conflict(_)),
             "expected Conflict, got {err:?}"

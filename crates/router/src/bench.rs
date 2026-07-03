@@ -330,3 +330,82 @@ fn bench_inline_edge_scalar_schema_commit() -> canbench_rs::BenchResult {
             .expect("commit inline schema");
     })
 }
+
+#[bench(raw)]
+fn bench_inline_edge_struct_schema_commit() -> canbench_rs::BenchResult {
+    use crate::facade::stable::edge_payload_profiles::{
+        EdgePayloadSchemaRecord, InlineScalarType, InlineStructLayout,
+    };
+
+    let graph_id = bench_inline_graph_id();
+    // Commit the label and property once outside the measured closure so the benchmark measures
+    // only the schema-record commit path.
+    let label_id = RouterStore::commit_intern_edge_label_name(graph_id, "AFFINITY").expect("label");
+    let property_id =
+        RouterStore::commit_intern_property_name(graph_id, "stats").expect("property");
+    let layout = InlineStructLayout::from_fields(vec![
+        ("score".into(), InlineScalarType::F32),
+        ("confidence".into(), InlineScalarType::F32),
+        ("updated_at".into(), InlineScalarType::U64),
+    ])
+    .expect("seed layout");
+
+    // Pre-measurement sanity: exercise the real store setter on a separate sanity label and
+    // assert the persisted logical specs plus derived opaque profile. A no-op or broken setter
+    // makes benchmark setup fail rather than measure garbage.
+    let sanity_label_id = RouterStore::commit_intern_edge_label_name(graph_id, "AFFINITY_SANITY")
+        .expect("sanity label");
+    let sanity_property_id = RouterStore::commit_intern_property_name(graph_id, "stats_sanity")
+        .expect("sanity property");
+    crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES
+        .with_borrow_mut(|s| {
+            s.set_inline_struct_schema(
+                graph_id,
+                sanity_label_id,
+                sanity_property_id,
+                layout.clone(),
+            )
+        })
+        .expect("sanity commit inline struct schema");
+    let sanity_record = crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES
+        .with_borrow(|s| s.get_record(graph_id, sanity_label_id))
+        .expect("sanity record exists");
+    assert!(
+        matches!(
+            sanity_record,
+            EdgePayloadSchemaRecord::InlineStruct {
+                property_id,
+                field_specs: _,
+            } if property_id == sanity_property_id
+        ),
+        "sanity record must carry the top-level inline property identity"
+    );
+    assert_eq!(
+        sanity_record.profile(),
+        gleaph_graph_kernel::entry::EdgePayloadProfile::opaque_bytes(16),
+        "sanity profile must be the derived opaque RawBytes projection"
+    );
+
+    // Pre-measurement sanity: canonical logical fields and derived opaque profile match the
+    // intended fixed-size struct contract (16 bytes: 4 + 4 + 8).
+    assert_eq!(layout.total_byte_width(), 16);
+    assert_eq!(layout.fields().len(), 3);
+    assert_eq!(
+        layout.profile(),
+        gleaph_graph_kernel::entry::EdgePayloadProfile::opaque_bytes(16)
+    );
+
+    // SCOPE NOTE: `set_inline_struct_schema` takes ownership of the layout, so the measured
+    // closure clones the seed layout on every iteration. The reported cost therefore includes
+    // both the canonical layout clone and the stable-record write; it is not a pure write-only
+    // measurement. The clone is required by the current API and is representative of the real
+    // commit path.
+    canbench_rs::bench_fn(move || {
+        let _scope = canbench_rs::bench_scope("inline_struct_schema_commit");
+        crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES
+            .with_borrow_mut(|s| {
+                s.set_inline_struct_schema(graph_id, label_id, property_id, layout.clone())
+            })
+            .expect("commit inline struct schema");
+    })
+}

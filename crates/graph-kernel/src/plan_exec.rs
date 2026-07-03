@@ -299,8 +299,10 @@ pub struct ResolvedEdgeLabel {
     pub id: EdgeLabelId,
     /// Router-owned logical schema (ADR 0008). Default `no_payload` when omitted on legacy wire.
     pub payload_profile: EdgePayloadProfile,
-    /// Router-derived named inline property identity for this concrete edge label (ADR 0034 Slice 21).
-    /// `Some(property_id)` only for `EdgePayloadSchemaRecord::InlineScalar`. `UnnamedProfile` emits `None`.
+    /// Router-derived named inline property identity for this concrete edge label (ADR 0034 Slices 21/24).
+    /// `Some(property_id)` for both `InlineScalar` and `InlineStruct` named inline schemas;
+    /// `UnnamedProfile` emits `None`. Slice 24 projects only the top-level inline property identity
+    /// plus the opaque `RawBytes` profile; field-level struct reads and mutation packing remain planned.
     /// Graph receives this as a plan-scoped projection and must not persist or infer it.
     pub inline_property_id: Option<PropertyId>,
 }

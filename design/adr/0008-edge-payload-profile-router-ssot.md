@@ -2,8 +2,8 @@
 
 Date: 2026-06-12  
 Status: accepted  
-Last revised: 2026-07-01
-Anchor timestamp: 2026-07-01 18:02:23 UTC +0000
+Last revised: 2026-07-03
+Anchor timestamp: 2026-07-03 01:41:26 UTC +0000
 
 ## Revision history
 
@@ -13,6 +13,7 @@ Anchor timestamp: 2026-07-01 18:02:23 UTC +0000
 | 2026-06-12 | Accepted; policy frozen pending implementation phases A–E in §6. |
 | 2026-06-12 | Implemented phases A–E; router region 21 live; graph `EDGE_PAYLOAD_PROFILES` retired (41 regions). |
 | 2026-07-01 | ADR 0034 Slice 20 + Slice 21 + Slice 22: store value is a versioned `EdgePayloadSchemaRecord` supporting admin `UnnamedProfile` entries and named scalar inline schemas; `ResolvedEdgeLabel` carries `inline_property_id` as a router-derived projection consumed by both reads and mutations. Graph encodes mutation values into the payload using the same shared scalar codec and never writes the inline property to sidecar state. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
+| 2026-07-03 | ADR 0034 Slice 24: `EdgePayloadSchemaRecord` adds a named fixed-size inline STRUCT variant (`property_id`, declaration-ordered logical field specs `[name, scalar_type]`). Byte offsets, widths, and total width are deterministically derived; the physical profile is `EdgePayloadProfile::opaque_bytes(total_byte_width)`. Graph receives only the top-level inline property identity and the opaque physical profile in this slice; struct reads, mutation packing, and `COST BY` over struct fields remain planned. Development stable data must be wiped because the record format version is bumped and no legacy decode fallback is provided. |
 
 ## Context
 
@@ -80,10 +81,12 @@ The router is the authoritative store for:
 ```
 
 for every catalog edge label in a logical graph. `EdgePayloadSchemaRecord` is a versioned envelope
-that represents either an admin `UnnamedProfile` or a named scalar inline schema
-(`property_id`, `scalar_type`, derived `EdgePayloadProfile`) (ADR 0034 Slice 20). The physical
-`EdgePayloadProfile` sent to Graph is always derived from the canonical record. Development stable
-data must be wiped when this format changes because backward compatibility is not maintained.
+that represents either an admin `UnnamedProfile`, a named scalar inline schema
+(`property_id`, `scalar_type`, derived `EdgePayloadProfile`) (ADR 0034 Slice 20), or a named
+fixed-size inline STRUCT schema (`property_id`, declaration-ordered logical field specs
+`[name, scalar_type]`) (ADR 0034 Slice 24). Byte offsets, widths, total width, and the physical
+`EdgePayloadProfile::opaque_bytes(...)` profile are deterministically derived from the canonical
+record. Development stable data must be wiped when this format changes because backward compatibility is not maintained.
 
 Registration is coupled to edge-label identity:
 
@@ -118,7 +121,7 @@ Rules:
 | Path | Requirement |
 |------|-------------|
 | **Query (`gql_query` / physical plan)** | Router `resolve_plan_labels` (or successor) fills `payload_profile` for every edge label named in the plan **plus** any labels required for wildcard/predicate-fusion enumeration (see §3). |
-| **DML / mutation batch** | Same resolved table attached to the wire. Graph classifies edge assignments, requires and encodes the inline scalar before any canonical write, and never writes the inline property id to sidecar state. |
+| **DML / mutation batch** | Same resolved table attached to the wire. Graph classifies edge assignments, requires and encodes the inline value (scalar or struct) before any canonical write, and never writes the inline property id to sidecar state. |
 | **Standalone graph tests** | May inject a synthetic `ResolvedLabelTable` in memory; graph stable `EDGE_PAYLOAD_PROFILES` is not the production contract. |
 
 Graph query execution reads profiles from `GqlExecutionContext` (heap, plan-scoped) — not from
