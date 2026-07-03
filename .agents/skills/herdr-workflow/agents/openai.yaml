@@ -1,0 +1,4 @@
+interface:
+  display_name: "Herdr Workflow"
+  short_description: "Coordinate Gleaph work across herdr agent panes"
+  default_prompt: "Use $herdr-workflow to delegate a Gleaph slice through implementation, review, validation, and final approval."

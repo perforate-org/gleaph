@@ -1,5 +1,10 @@
 # Skills Index
 
+## herdr-workflow
+
+Coordinate Gleaph planning, implementation, iterative review, validation, final approval, commits,
+pane resets, and skill forward-testing across sibling herdr panes.
+
 ## architecture-integrity
 
 Review encapsulation, separation of concerns, invariants, consistency, fitness for purpose, SSOT, DRY, and module boundaries.

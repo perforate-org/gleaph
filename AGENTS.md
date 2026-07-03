@@ -137,97 +137,10 @@ for PocketIC, full-workspace tests, or canbench.
 
 ### herdr plan / implementation / review workflow
 
-When `HERDR_ENV=1`, keep the primary pane focused on planning and final approval. Use three sibling
-agent panes for implementation, iterative review, and validation/forward-testing. Re-read pane ids
-from `herdr pane list` before every assignment because ids may compact. The default workflow is:
-
-1. The primary pane inspects the repository, chooses the next bounded slice, writes the reviewable
-   implementation plan, and assigns explicit pane roles.
-2. The implementation pane receives the plan, current implementation/reviewer pane ids, and relevant
-   repository instructions. It must use `implementation-integrity` and `code-quality` in addition to
-   domain skills. It owns code, focused tests, design synchronization, and benchmark changes, but
-   never commits.
-3. On completion, the implementation pane notifies the **review pane**, not the primary pane. The
-   review pane reads the plan, base, actual diff, and report; applies architecture, contract,
-   adversarial-test, benchmark, design-sync, and `code-quality` review; and sends concrete findings
-   directly back to the implementation pane.
-4. Implementation and review panes repeat fixes and review without involving the primary pane. Keep
-   the same conversations for the whole slice. The review pane owns the iteration and must not notify
-   the primary while P1/P2 findings remain.
-5. The validation pane runs delegated long PocketIC/canbench/workspace checks or performs skill
-   forward-tests. It reports actual terminal results to the review pane. A background or delegated
-   process is not successful until its result is read.
-6. When the review pane reaches `APPROVE`, it notifies the primary with its final report, remaining
-   P3/non-blocking notes, validation evidence, and skipped checks. The primary independently inspects
-   the final diff and review evidence only to decide the final approval gate; it does not repeat the
-   full iterative review or take over routine fixes.
-7. Only after final primary approval does the primary run lightweight integrity checks and create or
-   amend the commit. Implementation, review, and validation panes must not commit unless the user
-   explicitly changes this workflow.
-8. After commit, reset all three sibling agent conversations before assigning another plan. Use the
-   agent's supported new-session command (for Codex, `/new`); if an agent cannot reset in-session,
-   close and recreate its pane. Verify each fresh startup prompt. Never assign a new plan into a
-   completed slice conversation.
-
-Run long PocketIC suites, workspace tests, and canbench in sibling panes. Use bounded `herdr wait`
-calls or inspect their current output between useful review work; do not block the primary pane for
-tens of minutes. A sibling process is not considered successful until its actual terminal result is
-read and verified.
-
-Every implementation prompt must require completion notification to the current review pane. After
-the implementation pane has finished edits and prepared its report, but immediately before it
-returns its final answer, it must run:
-
-```sh
-herdr pane run <review-pane-id> "Implementation pane <implementation-pane-id> finished. Please read its report and review the actual diff."
-```
-
-The review pane sends findings directly to the implementation pane until approval. Its final approval
-notification to the primary must be explicit because passive `agent_status` changes are not injected
-into the active conversation. Use bounded `herdr wait` calls when necessary and read recent unwrapped
-output rather than assuming status delivery.
-
-Do not keep a reviewer or validation agent turn alive by polling another pane, repeatedly calling
-`herdr wait`, or sleeping until implementation completes. After receiving its role/instructions, the
-reviewer must end that setup turn and remain idle. The implementation's explicit `herdr pane run`
-notification starts the review turn. Likewise, validation starts only when the reviewer explicitly
-assigns it. This prevents idle waiting from consuming model tokens or showing a misleading perpetual
-`working` state.
-
-For opencode panes, the alternate-screen TUI may not preserve the final response in herdr scrollback.
-Every implementation, review, and validation prompt must therefore require the agent to write its
-final report to a unique file under `/private/tmp/` immediately before sending the herdr notification.
-The receiving pane reads that report file and the actual repository diff; it must not rely on TUI
-scrollback alone.
-
-If an opencode pane emits an empty shell command, repeats a tool-schema error, or starts probing the
-tool with unrelated commands such as `echo ok` / `python3 -c 'print(...)'`, interrupt it immediately.
-Do not let it diagnose the tool by repetition. Preserve the working tree, start a fresh opencode
-session, and instruct the replacement turn to inspect and continue the existing diff. Global
-opencode configuration should keep `permission.doom_loop = "deny"` so identical calls are blocked
-instead of asking for repeated approval.
-
-Treat every sibling-pane run as a forward-test of the skills it used. After reading a pane's report
-and terminal behavior, the primary must distinguish a task-specific mistake from a reusable process
-failure. When the failure is reusable—such as editing during read-only review, validation scope
-creep, partial-write ordering, weakened assertions, inaccurate completion claims, tool doom loops,
-or internal contradictions—update the smallest owning skill in the same iteration. Keep the rule
-concise and operational, validate the skill with `quick_validate.py`, and observe the next pane run
-to confirm that behavior improves. Do not encode one-off file names or expected answers into skills.
-
-Apply the same loop to successful behavior: if a pane demonstrates a cheaper, clearer, or more
-reliable implementation/review/validation procedure that generalizes, fold it into the owning skill.
-The primary's final report should mention material skill changes and whether the subsequent
-forward-test passed, partially passed, or exposed another gap.
-
-Every sibling-pane prompt must name each required repository skill with its exact path under
-`.agents/skills/<skill-name>/SKILL.md` and instruct the pane to read that file directly. Do not rely
-on global skill discovery or ask the pane to search `$CODEX_HOME`; repo-local skills are authoritative
-for Gleaph work. This path rule is specific to herdr delegation and belongs only in `AGENTS.md`.
-
-Never assign a new plan to an implementation pane that still contains the previous completed
-implementation conversation. The primary completion report should state that the implementation
-pane was reset, or explain why it had to be recreated.
+When `HERDR_ENV=1`, read and use `.agents/skills/herdr-workflow/SKILL.md` for the repository-specific
+plan → implementation → iterative review → validation → final approval → commit → reset workflow.
+Use the global `herdr` skill for CLI mechanics. Keep detailed herdr coordination policy in that skill,
+not in `AGENTS.md` or unrelated implementation/review/validation skills.
 
 ## Format, Test, and Benchmark
 

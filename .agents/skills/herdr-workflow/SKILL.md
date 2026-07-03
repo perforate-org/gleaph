@@ -1,0 +1,117 @@
+---
+name: herdr-workflow
+description: Coordinate Gleaph plans, implementation, iterative review, validation, final approval, commits, pane resets, and skill forward-testing across sibling herdr panes. Use whenever HERDR_ENV=1 and work is delegated among primary, implementation, review, or validation panes. This skill owns repository-specific collaboration policy; use the global herdr skill separately for CLI mechanics.
+---
+
+# Herdr Workflow
+
+Keep the primary pane focused on planning, user interaction, and final approval. Delegate edits,
+iterative review, and bounded validation to three sibling panes. Use the global `herdr` skill for
+command syntax; do not duplicate its socket or pane-management reference here.
+
+## Start a slice
+
+1. Re-read pane ids with `herdr pane list`; ids may compact.
+2. Verify implementation, review, and validation panes show fresh startup prompts. Reset a completed
+   conversation before reuse.
+3. Have the primary inspect the repository, choose one bounded slice, and create the plan.
+4. Assign explicit pane ids and roles in every prompt.
+5. Name every required repository skill by its exact path:
+   `.agents/skills/<skill-name>/SKILL.md`. Instruct the pane to read it directly. Do not rely on
+   `$CODEX_HOME` or global discovery for Gleaph-specific skills.
+
+## Role ownership
+
+### Primary pane
+
+- Own architecture direction, plan scope, user communication, final approval, and commits.
+- Do not duplicate implementation or routine fix iterations.
+- Inspect the final diff and evidence independently before approval.
+- Use the required safe commit helper; sibling panes do not commit.
+
+### Implementation pane
+
+- Read the plan, `AGENTS.md`, `implementation-integrity`, `code-quality`, and relevant domain skills.
+- Own code, focused tests, design synchronization, and benchmark changes.
+- Preserve unrelated worktree changes and never rewrite history.
+- Keep one conversation for the entire slice, including review fixes.
+- Notify the review pane only after edits, focused validation, and an honest report are complete.
+
+### Review pane
+
+- Use `adversarial-test-review` strict read-only mode plus relevant architecture/design skills.
+- Review the plan, base, actual diff, and evidence; do not approve from the report.
+- Send concrete findings to the implementation pane and re-review fixes.
+- Do not notify the primary while actionable P1/P2 findings or required corrections remain.
+- Notify the primary only after a consistent `APPROVE` verdict.
+
+### Validation pane
+
+- Start only after explicit assignment; do not wait or poll for future work.
+- Use `cost-aware-validation` and an exact ordered command allowlist.
+- Never edit or repair the worktree.
+- Report actual terminal completion; background, `--no-run`, interrupted, and timed-out commands are
+  not runtime passes.
+
+## Notification chain
+
+Implementation completion must notify the current review pane immediately before its final answer:
+
+```sh
+herdr pane run <review-pane-id> "Implementation pane <implementation-pane-id> finished. Please read its report and review the actual diff."
+```
+
+The review pane returns findings directly to implementation until approval. On approval it notifies
+the primary explicitly; passive `agent_status` is not delivered into the active conversation.
+
+If validation is needed, the reviewer or primary assigns it with a bounded command list. Validation
+reports its result to the assigning pane. Read recent unwrapped output and use only bounded waits for
+an expected completion notification.
+
+## Keep panes responsive
+
+- Never keep reviewer or validation turns alive by polling, sleeping, or repeatedly calling
+  `herdr wait` while another pane works. End the setup turn and remain idle until notified.
+- Keep long PocketIC, workspace, and canbench work outside the primary pane, but enforce the
+  repository's five-minute no-output and ten-minute turn budgets.
+- Do not treat an agent-status transition as proof; read the final report and terminal result.
+- Do not use `--test-threads=1` unless the user explicitly requests it.
+
+For an opencode alternate-screen pane, require a unique `/private/tmp/` report before notification
+because scrollback may omit the final response. If opencode emits empty commands, repeats a tool
+schema error, or probes with unrelated `echo`/Python commands, interrupt it immediately. Preserve the
+worktree and start a fresh session; do not let it diagnose the tool through repetition.
+
+## Final approval and commit
+
+1. Require reviewer approval and read its evidence.
+2. Have the primary inspect the actual final diff, active docs, benchmark artifacts, skipped checks,
+   and validation status.
+3. Run only lightweight integrity checks still needed for the commit.
+4. Commit only after primary approval. Separate product and agent-workflow commits when that makes
+   ownership clearer.
+5. Do not amend or rewrite commits outside the authority granted by the user and repository policy.
+
+## Reset after commit
+
+Reset implementation, review, and validation conversations before assigning another plan. For Codex,
+send `/new`; if completion UI remains open, send Enter and verify a fresh startup prompt. If reset is
+unsupported, close and recreate the pane. Old scrollback may remain visible; the fresh prompt/session
+is the required signal.
+
+## Improve skills from pane behavior
+
+Treat each sibling run as a forward-test of the skills it used.
+
+- Distinguish task-specific mistakes from reusable process failures.
+- For reusable failures—editing during review, validation scope creep, partial writes, weakened
+  assertions, false completion claims, tool loops, or contradictory verdicts—update the smallest
+  owning skill in the same iteration.
+- Preserve tool-specific coordination rules in this skill; keep implementation, review, validation,
+  architecture, and design rules tool-independent in their owning skills.
+- Validate changed skills with `quick_validate.py`, then observe the next real pane run.
+- Fold generalizable successful procedures back into the owning skill as well.
+- Do not encode one-off file names, current findings, or expected answers into a skill.
+
+Report material skill changes and whether the next forward-test passed, partially passed, or exposed
+another gap.
