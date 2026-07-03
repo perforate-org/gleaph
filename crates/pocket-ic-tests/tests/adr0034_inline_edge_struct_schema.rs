@@ -17,12 +17,12 @@ const PROPERTY: &str = "stats";
 
 fn inline_struct_ddl() -> String {
     format!(
-        "CREATE EDGE LABEL {EDGE_LABEL} {{ {PROPERTY} STRUCT {{ score FLOAT32, confidence FLOAT32, updated_at UINT64 }} INLINE }}"
+        "CREATE EDGE LABEL {EDGE_LABEL} {{ {PROPERTY} {{ score FLOAT32, confidence FLOAT32, updated_at UINT64 }} INLINE }}"
     )
 }
 
 fn scenario_unauthorized_ddl_is_forbidden_before_creation(env: &FederationEnv) {
-    let query = "CREATE EDGE LABEL AFFINITY { stats STRUCT { score FLOAT32 } INLINE }";
+    let query = "CREATE EDGE LABEL AFFINITY { stats { score FLOAT32 } INLINE }";
     let params: Vec<u8> = Vec::new();
     let mutation_key = "adr0034_inline_struct_schema_unauthorized".to_string();
     let bytes = env
@@ -63,7 +63,7 @@ fn scenario_exact_replay_is_idempotent(env: &FederationEnv) {
 fn scenario_conflicting_ddl_is_rejected(env: &FederationEnv) {
     let err = gql_execute_idempotent_as_admin_expect_err(
         env,
-        "CREATE EDGE LABEL AFFINITY { stats STRUCT { score FLOAT64 } INLINE }",
+        "CREATE EDGE LABEL AFFINITY { stats { score FLOAT64 } INLINE }",
         "adr0034_inline_struct_schema_conflict",
     );
     assert!(

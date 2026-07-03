@@ -25,7 +25,7 @@ const PROPERTY: &str = "stats";
 
 fn inline_struct_ddl() -> String {
     format!(
-        "CREATE EDGE LABEL {EDGE_LABEL} {{ {PROPERTY} STRUCT {{ score FLOAT32, confidence FLOAT32, updated_at UINT64 }} INLINE }}"
+        "CREATE EDGE LABEL {EDGE_LABEL} {{ {PROPERTY} {{ score FLOAT32, confidence FLOAT32, updated_at UINT64 }} INLINE }}"
     )
 }
 

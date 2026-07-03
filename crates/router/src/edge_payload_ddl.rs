@@ -1,5 +1,5 @@
 //! Gleaph extension DDL: `CREATE EDGE LABEL ... { <property> <scalar> INLINE }` (ADR 0034 Slice 20)
-//! and `CREATE EDGE LABEL ... { <property> STRUCT { ... } INLINE }` (ADR 0034 Slice 24).
+//! and `CREATE EDGE LABEL ... { <property> { ... } INLINE }` (ADR 0034 Slice 24).
 //!
 //! A Router-owned parser for the standalone inline edge-property schema statement.
 //! Non-INLINE statements continue through the generic GQL parser unchanged.
@@ -35,9 +35,9 @@ pub(crate) enum EdgePayloadDdlParseError {
     UnrecognisedScalarType(String),
     #[error("CREATE EDGE LABEL ... INLINE accepts exactly one property declaration")]
     MultipleFields,
-    #[error("inline STRUCT must have at least one field")]
+    #[error("inline struct must have at least one field")]
     EmptyStruct,
-    #[error("duplicate inline STRUCT field name `{0}`")]
+    #[error("duplicate inline struct field name `{0}`")]
     DuplicateField(String),
 }
 
@@ -66,7 +66,7 @@ fn parse(query: &str) -> Result<InlineEdgeSchema, EdgePayloadDdlParseError> {
     let property = cur.parse_ident()?;
     cur.skip_ws();
 
-    let schema = if cur.consume_ascii_ci("STRUCT") {
+    let schema = if cur.peek() == Some('{') {
         InlineEdgePropertySchema::Struct {
             fields: parse_struct_body(&mut cur)?,
         }
@@ -346,7 +346,7 @@ mod tests {
     #[test]
     fn struct_inline_parses() {
         let got = parse_ok(
-            "CREATE EDGE LABEL AFFINITY { stats STRUCT { score FLOAT32, confidence FLOAT32, updated_at UINT64 } INLINE }",
+            "CREATE EDGE LABEL AFFINITY { stats { score FLOAT32, confidence FLOAT32, updated_at UINT64 } INLINE }",
         );
         assert_eq!(got.edge_label, "AFFINITY");
         assert_eq!(got.property, "stats");
@@ -375,8 +375,8 @@ mod tests {
 
     #[test]
     fn struct_inline_rejects_trailing_comma() {
-        let err = parse("CREATE EDGE LABEL AFFINITY { stats STRUCT { score FLOAT32, } INLINE }")
-            .unwrap_err();
+        let err =
+            parse("CREATE EDGE LABEL AFFINITY { stats { score FLOAT32, } INLINE }").unwrap_err();
         assert!(
             matches!(err, EdgePayloadDdlParseError::Expected(_)),
             "{err:?}"
@@ -386,7 +386,7 @@ mod tests {
     #[test]
     fn struct_inline_rejects_missing_comma() {
         let err = parse(
-            "CREATE EDGE LABEL AFFINITY { stats STRUCT { score FLOAT32 confidence FLOAT32 } INLINE }",
+            "CREATE EDGE LABEL AFFINITY { stats { score FLOAT32 confidence FLOAT32 } INLINE }",
         )
         .unwrap_err();
         assert!(
@@ -452,15 +452,14 @@ mod tests {
 
     #[test]
     fn empty_struct_rejected() {
-        let err = parse("CREATE EDGE LABEL ROAD { stats STRUCT {} INLINE }").unwrap_err();
+        let err = parse("CREATE EDGE LABEL ROAD { stats {} INLINE }").unwrap_err();
         assert_eq!(err, EdgePayloadDdlParseError::EmptyStruct);
     }
 
     #[test]
     fn duplicate_struct_field_rejected() {
-        let err =
-            parse("CREATE EDGE LABEL ROAD { stats STRUCT { score FLOAT32, score UINT32 } INLINE }")
-                .unwrap_err();
+        let err = parse("CREATE EDGE LABEL ROAD { stats { score FLOAT32, score UINT32 } INLINE }")
+            .unwrap_err();
         assert_eq!(
             err,
             EdgePayloadDdlParseError::DuplicateField("score".into())
@@ -470,20 +469,28 @@ mod tests {
     #[test]
     fn nested_struct_rejected() {
         let err =
-            parse("CREATE EDGE LABEL ROAD { stats STRUCT { nested STRUCT { x UINT8 } } INLINE }")
-                .unwrap_err();
-        assert!(matches!(
-            err,
-            EdgePayloadDdlParseError::UnrecognisedScalarType(_)
-        ));
+            parse("CREATE EDGE LABEL ROAD { stats { nested { x UINT8 } } INLINE }").unwrap_err();
+        assert!(matches!(err, EdgePayloadDdlParseError::Expected(_)));
+    }
+
+    #[test]
+    fn old_struct_keyword_rejected() {
+        for keyword in ["STRUCT", "struct"] {
+            let err = parse(&format!(
+                "CREATE EDGE LABEL AFFINITY {{ stats {keyword} {{ score FLOAT32 }} INLINE }}"
+            ))
+            .unwrap_err();
+            assert_eq!(
+                err,
+                EdgePayloadDdlParseError::UnrecognisedScalarType(keyword.into())
+            );
+        }
     }
 
     #[test]
     fn struct_multiple_top_level_fields_rejected() {
-        let err = parse(
-            "CREATE EDGE LABEL ROAD { a STRUCT { x UINT8 } INLINE, b STRUCT { y UINT8 } INLINE }",
-        )
-        .unwrap_err();
+        let err = parse("CREATE EDGE LABEL ROAD { a { x UINT8 } INLINE, b { y UINT8 } INLINE }")
+            .unwrap_err();
         assert_eq!(err, EdgePayloadDdlParseError::MultipleFields);
     }
 }
