@@ -200,6 +200,13 @@ final report to a unique file under `/private/tmp/` immediately before sending t
 The receiving pane reads that report file and the actual repository diff; it must not rely on TUI
 scrollback alone.
 
+If an opencode pane emits an empty shell command, repeats a tool-schema error, or starts probing the
+tool with unrelated commands such as `echo ok` / `python3 -c 'print(...)'`, interrupt it immediately.
+Do not let it diagnose the tool by repetition. Preserve the working tree, start a fresh opencode
+session, and instruct the replacement turn to inspect and continue the existing diff. Global
+opencode configuration should keep `permission.doom_loop = "deny"` so identical calls are blocked
+instead of asking for repeated approval.
+
 Never assign a new plan to an implementation pane that still contains the previous completed
 implementation conversation. The primary completion report should state that the implementation
 pane was reset, or explain why it had to be recreated.
