@@ -9,7 +9,8 @@ description: Review encapsulation, separation of concerns, invariants, consisten
 
 This skill reviews repository structure, module boundaries, encapsulation, separation of concerns, invariants, consistency, and fitness for purpose.
 
-Its primary goal is not code quality, performance, or style. Its goal is to preserve conceptual integrity over time.
+Its primary goal is conceptual integrity. Apply `code-quality` alongside it when reviewing function,
+API, module, abstraction, or diff complexity.
 
 Use this skill whenever:
 

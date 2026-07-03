@@ -60,8 +60,9 @@ matches are better than wildcard arms when a new variant must force a decision.
 - Deferred functionality must produce a deliberate error before side effects or fallback, not an
   accidental success through an older path.
 
-Use `architecture-integrity`, `gleaph-architecture`, `design-sync`, and `test-contract` for their
-specialized rules; this skill coordinates those rules during implementation.
+Use `architecture-integrity`, `gleaph-architecture`, `code-quality`, `design-sync`, and
+`test-contract` for their specialized rules; this skill coordinates those rules during
+implementation.
 
 ## 5. Make tests prove the advertised path
 
@@ -94,6 +95,8 @@ Review the actual diff as if it came from another agent:
    clippy. Do not launch broad or long suites for reassurance.
 7. Inspect `git status --short` and the full diff for unrelated files, ignored plan status, unfinished
    processes, and inaccurate validation claims.
+8. Apply `code-quality`: review new signatures, flags, visibility, nesting, helper count, obsolete
+   paths, net code growth, and whether a smaller existing abstraction can express the same contract.
 
 Do not mark a TODO complete from `--no-run`, a background process, or an interrupted runtime. Report
 completed, failed, incomplete, and deferred checks separately.
@@ -108,6 +111,7 @@ Before sending work to review, report:
 - design and persistence contracts updated;
 - exact completed validation;
 - skipped checks and remaining risks;
+- complexity introduced, signatures with five or more parameters, and obsolete code removed;
 - confirmation that no commit was made when the primary owns commits.
 
 If a known P1/P2 defect remains, keep implementing rather than presenting the slice as review-ready.

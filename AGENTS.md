@@ -33,6 +33,14 @@ Use the `architecture-integrity` skill for structural changes, boundary changes,
 
 Use the `gleaph-architecture` skill for changes that affect Gleaph-specific boundaries, including Router, Graph, Property Index, Vector Index, Edge Value, Property Store, GQL extensions, or ICP integration.
 
+Use the `code-quality` skill during both implementation and review when a change grows functions,
+APIs, modules, helpers, flags, parameters, or abstractions. Keep responsibilities cohesive, avoid
+invalid public states and excessive argument lists, remove superseded paths, and reject accidental
+complexity or code growth that is disproportionate to the behavior delivered.
+
+Use the `implementation-integrity` skill for architecture-sensitive implementation work so boundary,
+atomicity, variant, test-contract, and code-quality checks happen before handoff to review.
+
 ## Design Documents
 
 The design/ directory contains active design contracts, not archival notes.
@@ -129,51 +137,61 @@ for PocketIC, full-workspace tests, or canbench.
 
 ### herdr plan / implementation / review workflow
 
-When `HERDR_ENV=1`, keep the primary pane focused on architecture ownership and use sibling herdr
-panes for implementation and validation. The default workflow is:
+When `HERDR_ENV=1`, keep the primary pane focused on planning and final approval. Use three sibling
+agent panes for implementation, iterative review, and validation/forward-testing. Re-read pane ids
+from `herdr pane list` before every assignment because ids may compact. The default workflow is:
 
-1. The primary pane inspects the repository, chooses the next bounded slice, and writes the
-   reviewable implementation plan.
-2. The primary pane creates or reuses a sibling herdr pane and gives that pane the plan plus the
-   relevant repository instructions. Record the current primary and implementation pane ids from
-   `herdr pane list` and include both ids in the task prompt. The sibling pane owns code changes,
-   tests, design-document synchronization, and benchmarks for that iteration.
-3. The primary pane does not duplicate the implementation. It remains available for user
-   interaction and reads the sibling pane's completion report and the actual repository diff.
-4. The primary pane performs an independent architecture, contract, test, benchmark, and design-doc
-   review. Findings must be based on the diff, not only on the sibling pane's report.
-5. If findings remain, the primary pane sends the concrete review queue back to an implementation
-   pane. Repeat implementation and independent review until no blocking findings remain.
-6. Only after the primary-pane review approves the change does the primary pane run final lightweight
-   integrity checks and create or amend the commit. Implementation panes must not commit unless the
-   user explicitly changes this workflow.
-7. After the approved implementation is committed, the primary pane resets the implementation
-   agent's conversation before assigning another plan. For Codex panes, send `/new` with
-   `herdr pane run <implementation-pane-id> "/new"`. If the Codex slash-command completion menu
-   remains open, send one additional
-   `herdr pane send-keys <implementation-pane-id> Enter`, then verify the startup banner/fresh prompt.
-   Keep the same conversation during review/fix iterations for one slice; reset only after that slice is
-   approved and committed. If the agent does not support an in-session reset command, close and
-   recreate the implementation pane instead.
+1. The primary pane inspects the repository, chooses the next bounded slice, writes the reviewable
+   implementation plan, and assigns explicit pane roles.
+2. The implementation pane receives the plan, current implementation/reviewer pane ids, and relevant
+   repository instructions. It must use `implementation-integrity` and `code-quality` in addition to
+   domain skills. It owns code, focused tests, design synchronization, and benchmark changes, but
+   never commits.
+3. On completion, the implementation pane notifies the **review pane**, not the primary pane. The
+   review pane reads the plan, base, actual diff, and report; applies architecture, contract,
+   adversarial-test, benchmark, design-sync, and `code-quality` review; and sends concrete findings
+   directly back to the implementation pane.
+4. Implementation and review panes repeat fixes and review without involving the primary pane. Keep
+   the same conversations for the whole slice. The review pane owns the iteration and must not notify
+   the primary while P1/P2 findings remain.
+5. The validation pane runs delegated long PocketIC/canbench/workspace checks or performs skill
+   forward-tests. It reports actual terminal results to the review pane. A background or delegated
+   process is not successful until its result is read.
+6. When the review pane reaches `APPROVE`, it notifies the primary with its final report, remaining
+   P3/non-blocking notes, validation evidence, and skipped checks. The primary independently inspects
+   the final diff and review evidence only to decide the final approval gate; it does not repeat the
+   full iterative review or take over routine fixes.
+7. Only after final primary approval does the primary run lightweight integrity checks and create or
+   amend the commit. Implementation, review, and validation panes must not commit unless the user
+   explicitly changes this workflow.
+8. After commit, reset all three sibling agent conversations before assigning another plan. Use the
+   agent's supported new-session command (for Codex, `/new`); if an agent cannot reset in-session,
+   close and recreate its pane. Verify each fresh startup prompt. Never assign a new plan into a
+   completed slice conversation.
 
 Run long PocketIC suites, workspace tests, and canbench in sibling panes. Use bounded `herdr wait`
 calls or inspect their current output between useful review work; do not block the primary pane for
 tens of minutes. A sibling process is not considered successful until its actual terminal result is
 read and verified.
 
-Every implementation prompt must also require completion notification. After the implementation
-pane has finished edits and validation and prepared its final report, but immediately before it
+Every implementation prompt must require completion notification to the current review pane. After
+the implementation pane has finished edits and prepared its report, but immediately before it
 returns its final answer, it must run:
 
 ```sh
-herdr pane run <primary-pane-id> "Implementation pane <implementation-pane-id> finished. Please read its final report and review the actual diff."
+herdr pane run <review-pane-id> "Implementation pane <implementation-pane-id> finished. Please read its report and review the actual diff."
 ```
 
-The primary pane must not depend on passive `agent_status` delivery: herdr status changes are not
-automatically injected into the active Codex conversation. On receiving the message, use a bounded
-`herdr wait agent-status <implementation-pane-id> --status done` when necessary, then read the pane's
-recent unwrapped output. Re-read pane ids before sending follow-up work because ids may compact after
-tabs or panes are closed.
+The review pane sends findings directly to the implementation pane until approval. Its final approval
+notification to the primary must be explicit because passive `agent_status` changes are not injected
+into the active conversation. Use bounded `herdr wait` calls when necessary and read recent unwrapped
+output rather than assuming status delivery.
+
+For opencode panes, the alternate-screen TUI may not preserve the final response in herdr scrollback.
+Every implementation, review, and validation prompt must therefore require the agent to write its
+final report to a unique file under `/private/tmp/` immediately before sending the herdr notification.
+The receiving pane reads that report file and the actual repository diff; it must not rely on TUI
+scrollback alone.
 
 Never assign a new plan to an implementation pane that still contains the previous completed
 implementation conversation. The primary completion report should state that the implementation

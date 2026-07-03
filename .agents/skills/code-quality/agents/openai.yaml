@@ -1,0 +1,4 @@
+interface:
+  display_name: "Code Quality"
+  short_description: "Control complexity and long-term maintenance cost"
+  default_prompt: "Use $code-quality to keep this implementation simple, cohesive, and maintainable."

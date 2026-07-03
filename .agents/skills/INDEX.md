@@ -9,6 +9,11 @@ Review encapsulation, separation of concerns, invariants, consistency, fitness f
 Implement architecture-sensitive changes with invariant mapping, complete variant audits, atomic
 write validation, adversarial tests, and pre-review self-inspection.
 
+## code-quality
+
+Keep implementations and reviews simple and maintainable by controlling complexity, API parameter
+growth, invalid states, unnecessary abstraction, duplication, bloat, and change amplification.
+
 ## gleaph-architecture
 
 Review Gleaph-specific boundaries with emphasis on encapsulation, invariant ownership, derived-state consistency, and crate fitness for purpose.
