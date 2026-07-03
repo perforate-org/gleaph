@@ -1,0 +1,234 @@
+//! PocketIC: social demo Router prepared-query contract.
+//!
+//! Seeds the canonical social demo graph through Router `gql_execute_idempotent` and proves
+//! that a graph-scoped default-Executor application caller (a graph admin, not a Router admin)
+//! can execute administrator-registered read-only prepared queries, while the same caller
+//! cannot run general ad-hoc `gql_query`.
+//!
+//! This fixture uses one PocketIC bootstrap and asserts three named graph scenarios:
+//!   1. public timeline in reverse chronological order, excluding a private adversary post;
+//!   2. Alice's home feed reached through `FOLLOWS -> POSTED`, excluding public but unfollowed
+//!      authors;
+//!   3. a topic explanation path through a followee's post, with edge and node identities and
+//!      a non-matching topic adversary excluded.
+
+use candid::Principal;
+use gleaph_gql::Value;
+use gleaph_gql_ic::IcWirePlanQueryResult;
+use gleaph_graph_kernel::federation::RouterError;
+use gleaph_pocket_ic_tests::{
+    admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label, gql_query_as,
+    install_single_shard_federation_with_graph_admins, prepared_execute_query_with_params_as,
+    prepared_register_as_admin, seed_social_graph,
+};
+use std::collections::BTreeSet;
+
+const PUBLIC_TIMELINE_QUERY: &str = "\
+MATCH (p:Post) \
+WHERE p.is_public = 1 \
+RETURN p.demo_id AS post_id, p.created_at AS created_at \
+ORDER BY created_at DESC";
+
+const ALICE_HOME_FEED_QUERY: &str = "\
+MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) \
+WHERE u.demo_id = 'alice' AND p.is_public = 1 \
+RETURN p.demo_id AS post_id, p.created_at AS created_at \
+ORDER BY created_at DESC";
+
+const TOPIC_PATH_QUERY: &str = "\
+MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) \
+WHERE t.demo_id = 'topic-graph' \
+MATCH (u:User)-[follows:FOLLOWS]->(author:User)-[posted:POSTED]->(p) \
+WHERE u.demo_id = 'alice' \
+RETURN p.demo_id AS post_id, \
+       follows.demo_edge_id AS follows_edge_id, \
+       posted.demo_edge_id AS posted_edge_id, \
+       t.demo_id AS topic_id, \
+       has_topic.demo_edge_id AS topic_edge_id, \
+       p.created_at AS created_at \
+ORDER BY created_at DESC";
+
+#[test]
+fn social_graph_demo_router_contract() {
+    let graph_scoped_caller = Principal::from_slice(&[0xCD; 29]);
+    let mut graph_admins = BTreeSet::new();
+    graph_admins.insert(graph_scoped_caller);
+    let env = install_single_shard_federation_with_graph_admins(graph_admins);
+
+    intern_social_schema(&env);
+    seed_social_graph(&env);
+
+    prepared_register_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
+    prepared_register_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
+    prepared_register_as_admin(&env, "topic_path_explanation", TOPIC_PATH_QUERY);
+
+    assert_public_timeline(&env, graph_scoped_caller);
+    assert_alice_home_feed(&env, graph_scoped_caller);
+    assert_topic_path_explanation(&env, graph_scoped_caller);
+    assert_ad_hoc_gql_fail_closed(&env, graph_scoped_caller);
+}
+
+fn assert_public_timeline(env: &gleaph_pocket_ic_tests::FederationEnv, caller: Principal) {
+    let result = prepared_execute_query_with_params_as(env, caller, "public_timeline", Vec::new());
+    let rows = decode_rows(&result);
+    assert_eq!(
+        rows.len(),
+        6,
+        "public timeline should return exactly the six public posts"
+    );
+    let ids: Vec<String> = rows.iter().map(|r| text(r, "post_id")).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "post-alice-1",
+            "post-bob-2",
+            "post-carol-1",
+            "post-bob-1",
+            "post-eve-1",
+            "post-dave-1",
+        ],
+        "public posts should be in exact reverse chronological order"
+    );
+    assert!(
+        !ids.contains(&"post-eve-private".to_string()),
+        "private post must be excluded from the public timeline"
+    );
+}
+
+fn assert_alice_home_feed(env: &gleaph_pocket_ic_tests::FederationEnv, caller: Principal) {
+    let result = prepared_execute_query_with_params_as(env, caller, "alice_home_feed", Vec::new());
+    let rows = decode_rows(&result);
+    assert_eq!(
+        rows.len(),
+        3,
+        "Alice's home feed should return exactly the posts by followees (Bob and Carol)"
+    );
+    let ids: Vec<String> = rows.iter().map(|r| text(r, "post_id")).collect();
+    assert_eq!(
+        ids,
+        vec!["post-bob-2", "post-carol-1", "post-bob-1"],
+        "home feed should be in exact reverse chronological order"
+    );
+    for adversary in [
+        "post-dave-1",
+        "post-eve-1",
+        "post-eve-private",
+        "post-alice-1",
+    ] {
+        assert!(
+            !ids.contains(&adversary.to_string()),
+            "home feed must exclude public but unfollowed or non-followee post {adversary}"
+        );
+    }
+}
+
+fn assert_topic_path_explanation(env: &gleaph_pocket_ic_tests::FederationEnv, caller: Principal) {
+    let result =
+        prepared_execute_query_with_params_as(env, caller, "topic_path_explanation", Vec::new());
+    let rows = decode_rows(&result);
+    assert_eq!(
+        rows.len(),
+        1,
+        "topic path explanation should return exactly the one followee post with a topic"
+    );
+    let row = &rows[0];
+    assert_eq!(
+        text(row, "post_id"),
+        "post-bob-1",
+        "path should go through Bob's topic note"
+    );
+    assert_eq!(
+        text(row, "topic_id"),
+        "topic-graph",
+        "path should reach the Graph databases topic"
+    );
+    assert_eq!(
+        text(row, "follows_edge_id"),
+        "alice-follows-bob",
+        "follows edge identity should explain the path"
+    );
+    assert_eq!(
+        text(row, "posted_edge_id"),
+        "bob-posted-1",
+        "posted edge identity should explain the path"
+    );
+    assert_eq!(
+        text(row, "topic_edge_id"),
+        "post-bob-1-topic-graph",
+        "HAS_TOPIC edge identity should explain the path"
+    );
+
+    for row in &rows {
+        assert_ne!(
+            text(row, "topic_id"),
+            "topic-ic",
+            "topic path must not return the unrelated topic-ic topic"
+        );
+    }
+}
+
+fn assert_ad_hoc_gql_fail_closed(env: &gleaph_pocket_ic_tests::FederationEnv, caller: Principal) {
+    let ad_hoc = gql_query_as(
+        env,
+        caller,
+        "MATCH (p:Post) RETURN p.demo_id AS post_id LIMIT 1",
+    );
+    assert!(
+        matches!(ad_hoc, Err(RouterError::Forbidden)),
+        "graph-scoped default-Executor caller must not receive general ad-hoc GQL authority: {ad_hoc:?}"
+    );
+
+    let anon_ad_hoc = gql_query_as(
+        env,
+        Principal::anonymous(),
+        "MATCH (p:Post) RETURN p.demo_id AS post_id LIMIT 1",
+    );
+    assert!(
+        matches!(anon_ad_hoc, Err(RouterError::Forbidden)),
+        "anonymous caller must not receive general ad-hoc GQL authority: {anon_ad_hoc:?}"
+    );
+}
+
+fn intern_social_schema(env: &gleaph_pocket_ic_tests::FederationEnv) {
+    for label in ["User", "Post", "Topic", "Community"] {
+        admin_intern_vertex_label(env, label);
+    }
+    for label in ["FOLLOWS", "POSTED", "HAS_TOPIC", "MEMBER_OF"] {
+        admin_intern_edge_label(env, label);
+    }
+    for prop in [
+        "demo_id",
+        "demo_graph",
+        "demo_edge_id",
+        "demo_kind",
+        "name",
+        "body",
+        "created_at",
+        "is_public",
+    ] {
+        admin_intern_property(env, prop);
+    }
+}
+
+fn decode_rows(
+    result: &gleaph_graph_kernel::plan_exec::GqlQueryResult,
+) -> Vec<std::collections::BTreeMap<String, Value>> {
+    let rows_blob = result
+        .rows_blob
+        .as_ref()
+        .expect("prepared query result should carry rows_blob");
+    IcWirePlanQueryResult::decode_blob(rows_blob)
+        .expect("decode rows_blob")
+        .try_into_value_rows()
+        .expect("convert wire rows to value rows")
+}
+
+fn text(row: &std::collections::BTreeMap<String, Value>, column: &str) -> String {
+    match row
+        .get(column)
+        .unwrap_or_else(|| panic!("missing column {column}"))
+    {
+        Value::Text(value) => value.clone(),
+        other => panic!("expected Text in column {column}, got {other:?}"),
+    }
+}

@@ -1,0 +1,80 @@
+{
+  "seeds": [
+    {
+      "key": "social-seed-node-alice",
+      "gql": "INSERT (n:User {demo_id: 'alice', demo_graph: 'social', name: 'Alice'})"
+    },
+    {
+      "key": "social-seed-node-bob",
+      "gql": "INSERT (n:User {demo_id: 'bob', demo_graph: 'social', name: 'Bob'})"
+    },
+    {
+      "key": "social-seed-node-carol",
+      "gql": "INSERT (n:User {demo_id: 'carol', demo_graph: 'social', name: 'Carol'})"
+    },
+    {
+      "key": "social-seed-node-dave",
+      "gql": "INSERT (n:User {demo_id: 'dave', demo_graph: 'social', name: 'Dave'})"
+    },
+    {
+      "key": "social-seed-node-eve",
+      "gql": "INSERT (n:User {demo_id: 'eve', demo_graph: 'social', name: 'Eve'})"
+    },
+    {
+      "key": "social-seed-node-community-ic",
+      "gql": "INSERT (n:Community {demo_id: 'community-ic', demo_graph: 'social', name: 'IC builders'})"
+    },
+    {
+      "key": "social-seed-node-topic-graph",
+      "gql": "INSERT (n:Topic {demo_id: 'topic-graph', demo_graph: 'social', name: 'Graph databases'})"
+    },
+    {
+      "key": "social-seed-node-topic-ic",
+      "gql": "INSERT (n:Topic {demo_id: 'topic-ic', demo_graph: 'social', name: 'Decentralized identity'})"
+    },
+    {
+      "key": "social-seed-edge-alice-follows-bob",
+      "gql": "MATCH (a:User {demo_id: 'alice', demo_graph: 'social'}), (b:User {demo_id: 'bob', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'alice-follows-bob', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-alice-follows-carol",
+      "gql": "MATCH (a:User {demo_id: 'alice', demo_graph: 'social'}), (b:User {demo_id: 'carol', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:FOLLOWS {demo_edge_id: 'alice-follows-carol', demo_kind: 'follows'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-alice-member-of-ic",
+      "gql": "MATCH (a:User {demo_id: 'alice', demo_graph: 'social'}), (b:Community {demo_id: 'community-ic', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:MEMBER_OF {demo_edge_id: 'alice-member-of-ic', demo_kind: 'member of'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-alice-posted-1",
+      "gql": "MATCH (a:User {demo_id: 'alice', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 'post-alice-1', demo_graph: 'social', body: 'Alice''s public reply', created_at: 202607030600, is_public: 1})"
+    },
+    {
+      "key": "social-seed-edge-bob-posted-2",
+      "gql": "MATCH (a:User {demo_id: 'bob', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 'post-bob-2', demo_graph: 'social', body: 'Bob''s second note', created_at: 202607030500, is_public: 1})"
+    },
+    {
+      "key": "social-seed-edge-carol-posted-1",
+      "gql": "MATCH (a:User {demo_id: 'carol', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'carol-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 'post-carol-1', demo_graph: 'social', body: 'Carol''s public note', created_at: 202607030400, is_public: 1})"
+    },
+    {
+      "key": "social-seed-edge-bob-posted-1",
+      "gql": "MATCH (a:User {demo_id: 'bob', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 'post-bob-1', demo_graph: 'social', body: 'Bob''s topic note', created_at: 202607030300, is_public: 1})"
+    },
+    {
+      "key": "social-seed-edge-eve-posted-1",
+      "gql": "MATCH (a:User {demo_id: 'eve', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 'post-eve-1', demo_graph: 'social', body: 'Eve''s public note', created_at: 202607030200, is_public: 1})"
+    },
+    {
+      "key": "social-seed-edge-dave-posted-1",
+      "gql": "MATCH (a:User {demo_id: 'dave', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'dave-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 'post-dave-1', demo_graph: 'social', body: 'Dave''s public note', created_at: 202607030100, is_public: 1})"
+    },
+    {
+      "key": "social-seed-edge-eve-posted-private",
+      "gql": "MATCH (a:User {demo_id: 'eve', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-private', demo_kind: 'posted'}]->(b:Post {demo_id: 'post-eve-private', demo_graph: 'social', body: 'Eve''s draft', created_at: 202607030000, is_public: 0})"
+    },
+    {
+      "key": "social-seed-edge-post-bob-1-topic-graph",
+      "gql": "MATCH (a:Post {demo_id: 'post-bob-1', demo_graph: 'social'}), (b:Topic {demo_id: 'topic-graph', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:HAS_TOPIC {demo_edge_id: 'post-bob-1-topic-graph', demo_kind: 'has topic'}]->(b)"
+    }
+  ]
+}

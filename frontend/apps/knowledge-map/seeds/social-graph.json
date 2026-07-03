@@ -1,0 +1,231 @@
+{
+  "nodes": [
+    {
+      "id": "alice",
+      "label": "Alice",
+      "kind": "user",
+      "gqlLabel": "User",
+      "layer": 0,
+      "property": "name"
+    },
+    {
+      "id": "bob",
+      "label": "Bob",
+      "kind": "user",
+      "gqlLabel": "User",
+      "layer": 0,
+      "property": "name"
+    },
+    {
+      "id": "carol",
+      "label": "Carol",
+      "kind": "user",
+      "gqlLabel": "User",
+      "layer": 0,
+      "property": "name"
+    },
+    {
+      "id": "dave",
+      "label": "Dave",
+      "kind": "user",
+      "gqlLabel": "User",
+      "layer": 0,
+      "property": "name"
+    },
+    {
+      "id": "eve",
+      "label": "Eve",
+      "kind": "user",
+      "gqlLabel": "User",
+      "layer": 0,
+      "property": "name"
+    },
+    {
+      "id": "community-ic",
+      "label": "IC builders",
+      "kind": "community",
+      "gqlLabel": "Community",
+      "layer": 0,
+      "property": "name"
+    },
+    {
+      "id": "topic-graph",
+      "label": "Graph databases",
+      "kind": "topic",
+      "gqlLabel": "Topic",
+      "layer": 0,
+      "property": "name"
+    },
+    {
+      "id": "topic-ic",
+      "label": "Decentralized identity",
+      "kind": "topic",
+      "gqlLabel": "Topic",
+      "layer": 0,
+      "property": "name"
+    },
+    {
+      "id": "post-alice-1",
+      "label": "Alice's public reply",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "property": "body",
+      "properties": {
+        "created_at": 202607030600,
+        "is_public": 1
+      }
+    },
+    {
+      "id": "post-bob-2",
+      "label": "Bob's second note",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "property": "body",
+      "properties": {
+        "created_at": 202607030500,
+        "is_public": 1
+      }
+    },
+    {
+      "id": "post-carol-1",
+      "label": "Carol's public note",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "property": "body",
+      "properties": {
+        "created_at": 202607030400,
+        "is_public": 1
+      }
+    },
+    {
+      "id": "post-bob-1",
+      "label": "Bob's topic note",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "property": "body",
+      "properties": {
+        "created_at": 202607030300,
+        "is_public": 1
+      }
+    },
+    {
+      "id": "post-eve-1",
+      "label": "Eve's public note",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "property": "body",
+      "properties": {
+        "created_at": 202607030200,
+        "is_public": 1
+      }
+    },
+    {
+      "id": "post-dave-1",
+      "label": "Dave's public note",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "property": "body",
+      "properties": {
+        "created_at": 202607030100,
+        "is_public": 1
+      }
+    },
+    {
+      "id": "post-eve-private",
+      "label": "Eve's draft",
+      "kind": "post",
+      "gqlLabel": "Post",
+      "layer": 1,
+      "property": "body",
+      "properties": {
+        "created_at": 202607030000,
+        "is_public": 0
+      }
+    }
+  ],
+  "edges": [
+    {
+      "id": "alice-follows-bob",
+      "source": "alice",
+      "target": "bob",
+      "gqlLabel": "FOLLOWS",
+      "displayLabel": "follows"
+    },
+    {
+      "id": "alice-follows-carol",
+      "source": "alice",
+      "target": "carol",
+      "gqlLabel": "FOLLOWS",
+      "displayLabel": "follows"
+    },
+    {
+      "id": "alice-member-of-ic",
+      "source": "alice",
+      "target": "community-ic",
+      "gqlLabel": "MEMBER_OF",
+      "displayLabel": "member of"
+    },
+    {
+      "id": "alice-posted-1",
+      "source": "alice",
+      "target": "post-alice-1",
+      "gqlLabel": "POSTED",
+      "displayLabel": "posted"
+    },
+    {
+      "id": "bob-posted-2",
+      "source": "bob",
+      "target": "post-bob-2",
+      "gqlLabel": "POSTED",
+      "displayLabel": "posted"
+    },
+    {
+      "id": "carol-posted-1",
+      "source": "carol",
+      "target": "post-carol-1",
+      "gqlLabel": "POSTED",
+      "displayLabel": "posted"
+    },
+    {
+      "id": "bob-posted-1",
+      "source": "bob",
+      "target": "post-bob-1",
+      "gqlLabel": "POSTED",
+      "displayLabel": "posted"
+    },
+    {
+      "id": "eve-posted-1",
+      "source": "eve",
+      "target": "post-eve-1",
+      "gqlLabel": "POSTED",
+      "displayLabel": "posted"
+    },
+    {
+      "id": "dave-posted-1",
+      "source": "dave",
+      "target": "post-dave-1",
+      "gqlLabel": "POSTED",
+      "displayLabel": "posted"
+    },
+    {
+      "id": "eve-posted-private",
+      "source": "eve",
+      "target": "post-eve-private",
+      "gqlLabel": "POSTED",
+      "displayLabel": "posted"
+    },
+    {
+      "id": "post-bob-1-topic-graph",
+      "source": "post-bob-1",
+      "target": "topic-graph",
+      "gqlLabel": "HAS_TOPIC",
+      "displayLabel": "has topic"
+    }
+  ]
+}

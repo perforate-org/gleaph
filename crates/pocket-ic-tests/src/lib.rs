@@ -7,6 +7,7 @@ use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId};
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::AdminRegisterShardArgs;
 use pocket_ic::{PocketIc, PocketIcBuilder};
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 use std::process::Command;
 
@@ -447,6 +448,16 @@ pub fn install_two_graph_federation() -> FederationEnv {
 
 /// Router + index + one federated graph shard (standalone dispatch policy).
 pub fn install_single_shard_federation() -> FederationEnv {
+    install_single_shard_federation_with_graph_admins(Default::default())
+}
+
+/// Router + index + one federated graph shard, with `graph_scoped_callers` added to
+/// the graph's `admins` set so those default-Executor principals can execute
+/// administrator-registered prepared queries scoped to this graph. The callers are
+/// **not** Router admins/owners, so general ad-hoc `gql_query` remains forbidden for them.
+pub fn install_single_shard_federation_with_graph_admins(
+    graph_admins: BTreeSet<Principal>,
+) -> FederationEnv {
     let pic = new_pocket_ic();
     let admin = Principal::from_slice(&[0xAB; 29]);
 
@@ -474,7 +485,15 @@ pub fn install_single_shard_federation() -> FederationEnv {
     );
 
     let graph_source = create_funded_canister(&pic);
-    register_graph_single_shard(&pic, admin, router, index, graph_source, SOURCE_SHARD);
+    register_graph_single_shard_with_admins(
+        &pic,
+        admin,
+        router,
+        index,
+        graph_source,
+        SOURCE_SHARD,
+        graph_admins,
+    );
 
     pic.install_canister(
         graph_source,
@@ -564,12 +583,32 @@ pub fn register_graph_single_shard(
     graph: Principal,
     shard_id: ShardId,
 ) {
+    register_graph_single_shard_with_admins(
+        pic,
+        admin,
+        router,
+        index,
+        graph,
+        shard_id,
+        Default::default(),
+    );
+}
+
+fn register_graph_single_shard_with_admins(
+    pic: &PocketIc,
+    admin: Principal,
+    router: Principal,
+    index: Principal,
+    graph: Principal,
+    shard_id: ShardId,
+    admins: BTreeSet<Principal>,
+) {
     let entry = GraphRegistryEntry {
         graph_id: GraphId::from_raw(0),
         graph_name: GRAPH_NAME.into(),
         canister_id: graph,
         owner: admin,
-        admins: Default::default(),
+        admins,
         status: GraphStatus::Active,
         version: 1,
         updated_at_ns: 0,
@@ -1563,6 +1602,77 @@ pub fn gql_query_on_router(
     }
 }
 
+/// Register a named prepared query as the bootstrap admin principal.
+pub fn prepared_register_as_admin(env: &FederationEnv, name: &str, query: &str) {
+    use gleaph_graph_kernel::federation::RouterError;
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "prepared_register",
+            Encode!(&name.to_string(), &query.to_string()).expect("encode prepared_register"),
+        )
+        .unwrap_or_else(|e| panic!("prepared_register on router: {e:?}"));
+    match Decode!(&bytes, Result<(), RouterError>) {
+        Ok(Ok(())) => {}
+        Ok(Err(err)) => panic!("prepared_register rejected: {err:?}"),
+        Err(err) => panic!("decode prepared_register: {err}"),
+    }
+}
+
+/// Execute a registered prepared query as `caller` with an explicit parameter blob.
+pub fn prepared_execute_query_with_params_as(
+    env: &FederationEnv,
+    caller: Principal,
+    name: &str,
+    params_blob: Vec<u8>,
+) -> gleaph_graph_kernel::plan_exec::GqlQueryResult {
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            caller,
+            "prepared_execute_query",
+            Encode!(&name.to_string(), &params_blob).expect("encode prepared_execute_query"),
+        )
+        .unwrap_or_else(|e| panic!("prepared_execute_query on router: {e:?}"));
+    match Decode!(&bytes, Result<GqlQueryResult, RouterError>) {
+        Ok(Ok(result)) => result,
+        Ok(Err(err)) => panic!("prepared_execute_query rejected: {err:?}"),
+        Err(err) => panic!("decode prepared_execute_query: {err}"),
+    }
+}
+
+/// Router composite `gql_query` as `caller`, returning the raw `Result` so a test can
+/// assert the exact rejection reason when ad-hoc GQL is forbidden.
+pub fn gql_query_as(
+    env: &FederationEnv,
+    caller: Principal,
+    query: &str,
+) -> Result<
+    gleaph_graph_kernel::plan_exec::GqlQueryResult,
+    gleaph_graph_kernel::federation::RouterError,
+> {
+    use gleaph_graph_kernel::federation::RouterError;
+    use gleaph_graph_kernel::plan_exec::GqlQueryResult;
+
+    let bytes = env
+        .pic
+        .query_call(
+            env.router,
+            caller,
+            "gql_query",
+            Encode!(&query.to_string(), &Vec::<u8>::new()).expect("encode gql_query"),
+        )
+        .unwrap_or_else(|e| panic!("gql_query on router: {e:?}"));
+    Decode!(&bytes, Result<GqlQueryResult, RouterError>).expect("decode gql_query")
+}
+
 /// Router composite `gql_query_with_consistency` (ADR 0029 §5, Phase 3) as admin.
 ///
 /// Returns the raw `Result` so a test can assert both the served (`Ok`) and the retryable
@@ -2162,6 +2272,9 @@ pub fn gql_execute_idempotent_pair_concurrent_as_admin(
 const KNOWLEDGE_MAP_SEEDS_JSON: &str =
     include_str!("../../../frontend/apps/knowledge-map/seeds/knowledge-map-seeds.json");
 
+const SOCIAL_SEEDS_JSON: &str =
+    include_str!("../../../frontend/apps/knowledge-map/seeds/social-seeds.json");
+
 const KNOWLEDGE_MAP_LIVE_QUERY: &str = "\
 MATCH ()-[e]->() WHERE e.demo_edge_id IS NOT NULL \
 RETURN e.demo_edge_id AS edge_id, e.demo_kind AS edge_kind \
@@ -2184,6 +2297,17 @@ pub fn seed_knowledge_map_graph(env: &FederationEnv) {
 
 pub fn knowledge_map_live_query() -> &'static str {
     KNOWLEDGE_MAP_LIVE_QUERY
+}
+/// Seed the social demo graph through Router `gql_execute_idempotent`.
+pub fn seed_social_graph(env: &FederationEnv) {
+    let parsed: serde_json::Value =
+        serde_json::from_str(SOCIAL_SEEDS_JSON).expect("parse social seeds");
+    for seed in parsed["seeds"].as_array().expect("social seed array") {
+        let gql = seed["gql"].as_str().expect("social seed gql");
+        let key = seed["key"].as_str().expect("social seed key");
+        let row_count = gql_execute_idempotent_as_admin(env, gql, key);
+        assert_eq!(row_count, 0, "seed {key} should not return rows");
+    }
 }
 
 #[cfg(test)]

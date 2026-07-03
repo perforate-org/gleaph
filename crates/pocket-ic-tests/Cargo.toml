@@ -68,3 +68,8 @@ serde_json = "1"
 cargo_metadata = "0.23"
 flate2 = "1"
 ureq = { version = "3", default-features = false, features = ["rustls"] }
+
+[[test]]
+name = "social_graph_demo"
+path = "tests/social_graph_demo.rs"
+harness = true

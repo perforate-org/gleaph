@@ -1,15 +1,34 @@
 # Social Graph and GraphRAG Comparison Demo
-
 Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 11:01:17 UTC +0000
+Anchor timestamp: 2026-07-03 16:28:43 UTC +0000
 
 ## Status
 
-**Planned** — this document defines the product story, architecture boundaries, and staged
-implementation contract. No dedicated social-graph demo frontend, seed dataset, or GraphRAG
-orchestration is implemented yet. The underlying graph query, mutation, property-index, prepared
-query, caller-principal, vertex-embedding, and vector-search capabilities are partially or fully
-implemented as described below.
+**Partially Implemented** — Phase 1 backend subset is implemented. A canonical social graph
+manifest and reproducible Router seed operations exist, and the public-timeline, Alice home-feed,
+and topic-path prepared-query contracts are verified end-to-end with a graph-visible
+default-Executor caller (the caller is in the graph `admins` set so it can execute
+administrator-registered prepared queries scoped to that graph, but it remains a default Router
+Executor with no ad-hoc GQL Read role). Internet Identity, vector search, LLM calls, GraphRAG
+orchestration, and authenticated ownership remain explicitly planned and out of scope for this
+slice.
+
+## Phase 1 implementation note
+
+As of 2026-07-03 16:28:43 UTC +0000:
+
+- Canonical manifest: `frontend/apps/knowledge-map/seeds/social-graph.json`.
+- Generated seed artifact: `frontend/apps/knowledge-map/seeds/social-seeds.json`.
+- Seed generator: `frontend/apps/knowledge-map/scripts/generate-seeds.mjs` now accepts arbitrary
+  manifest/output paths while preserving the existing knowledge-map output by default.
+- PocketIC test target: `crates/pocket-ic-tests/tests/social_graph_demo.rs`.
+- Verified contracts:
+  - public posts in exact reverse chronological order, excluding the private adversary post;
+  - Alice home feed through `FOLLOWS -> POSTED`, excluding public but unfollowed authors;
+  - topic explanation path through a followee's post, returning the node and edge identities
+    that explain why the result was selected, with a non-matching topic adversary excluded;
+  - fail-closed RBAC (the graph-visible default-Executor caller and anonymous callers cannot
+    run general ad-hoc `gql_query`).
 
 ## Purpose
 
