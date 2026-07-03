@@ -4,6 +4,11 @@
 
 Review encapsulation, separation of concerns, invariants, consistency, fitness for purpose, SSOT, DRY, and module boundaries.
 
+## implementation-integrity
+
+Implement architecture-sensitive changes with invariant mapping, complete variant audits, atomic
+write validation, adversarial tests, and pre-review self-inspection.
+
 ## gleaph-architecture
 
 Review Gleaph-specific boundaries with emphasis on encapsulation, invariant ownership, derived-state consistency, and crate fitness for purpose.
