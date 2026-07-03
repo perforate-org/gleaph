@@ -1028,8 +1028,20 @@ pub(crate) fn project_row(
             .as_ref()
             .map(Str::to_string)
             .unwrap_or_else(|| expression_name(&column.expr));
-        let value = evaluator.eval_expr(row, &column.expr)?;
-        out.insert(name, PlanBinding::Value(value));
+        // Preserve typed graph bindings when the column is a plain variable
+        // reference.  Converting every projected column to Value would lose
+        // vertex/edge identity, which breaks chained DML statements that reuse
+        // matched elements (e.g. RETURN a NEXT INSERT (a)-[:L]->(b)).
+        let binding = if let ExprKind::Variable(var_name) = &column.expr.kind {
+            row.get(var_name.as_str())
+                .ok_or_else(|| PlanQueryError::MissingBinding {
+                    variable: var_name.clone(),
+                })?
+                .clone()
+        } else {
+            PlanBinding::Value(evaluator.eval_expr(row, &column.expr)?)
+        };
+        out.insert(name, binding);
     }
     Ok(out)
 }

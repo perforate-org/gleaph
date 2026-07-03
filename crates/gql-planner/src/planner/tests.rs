@@ -81,3 +81,76 @@ fn block_plan_with_options_uses_stats_for_next_chain_cost_estimates() {
         "final row estimate should come from the second scan label B (cardinality 200)"
     );
 }
+
+#[test]
+fn next_insert_edge_reuses_matched_vertices() {
+    let block = parse_block(
+        "MATCH (a:BindNextUser {id: 'alice'}), (b:BindNextUser {id: 'bob'}) RETURN a NEXT INSERT (a)-[:BIND_NEXT_FOLLOWS]->(b)",
+    );
+    let plan = build_block_plan(&block, None).expect("plan should build");
+
+    // The edge must reference the matched vertices directly.
+    assert!(
+        plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::InsertEdge { src, dst, .. } if src.as_ref() == "a" && dst.as_ref() == "b"
+        )),
+        "plan must insert an edge between the matched vertices"
+    );
+
+    // Neither endpoint should be recreated as a new vertex.
+    assert!(
+        !plan.ops.iter().any(|op| matches!(
+            op,
+            PlanOp::InsertVertex { variable: Some(v), .. } if v.as_ref() == "a" || v.as_ref() == "b"
+        )),
+        "matched vertex endpoints must not be re-inserted"
+    );
+
+    // The boundary projection must retain the non-returned destination binding.
+    let project = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Project { columns, .. } => Some(columns),
+            _ => None,
+        })
+        .expect("prior statement should end with a Project");
+    assert!(
+        project.iter().any(|col| matches!(
+            &col.expr.kind,
+            gleaph_gql::ast::ExprKind::Variable(v) if v.as_str() == "b"
+        )),
+        "boundary projection must preserve the hidden vertex binding for b"
+    );
+}
+
+#[test]
+fn next_insert_edge_without_yield_preserves_all_typed_bindings() {
+    // Two non-returned matched vertices must both survive as typed bindings so two
+    // separate NEXT INSERT edges can reuse them against a shared source.
+    let block = parse_block(
+        "MATCH (a:BindNextUser {id: 'alice'}), (b:BindNextUser {id: 'bob'}), (c:BindNextUser {id: 'carol'}) RETURN a NEXT INSERT (a)-[:BIND_NEXT_FOLLOWS]->(b)",
+    );
+    let plan = build_block_plan(&block, None).expect("plan should build");
+
+    let project = plan
+        .ops
+        .iter()
+        .find_map(|op| match op {
+            PlanOp::Project { columns, .. } => Some(columns),
+            _ => None,
+        })
+        .expect("prior statement should end with a Project");
+    let hidden_names: std::collections::BTreeSet<&str> = project
+        .iter()
+        .filter_map(|col| match &col.expr.kind {
+            gleaph_gql::ast::ExprKind::Variable(v) => Some(v.as_str()),
+            _ => None,
+        })
+        .collect();
+    assert!(
+        hidden_names.contains("a") && hidden_names.contains("b") && hidden_names.contains("c"),
+        "boundary projection must keep all matched typed bindings, not only RETURN items"
+    );
+}

@@ -1,7 +1,7 @@
 # Execution pipeline
 
 Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 09:35:13 UTC +0000
+Anchor timestamp: 2026-07-03 15:17:43 UTC +0000
 
 ## Purpose
 
@@ -170,6 +170,12 @@ Non-inline properties retain their existing sidecar storage and index-maintenanc
 does not persist a duplicate inline schema; Router stable state remains the source of truth.
 
 ## Materialization
+
+`Project` and `Materialize` keep a column that is a plain variable reference as the
+original typed `PlanBinding` (vertex, edge, path).  An alias only changes the output key;
+it still preserves the typed binding.  Only computed or non-variable expressions are eagerly
+materialized to `Value`.  This preserves graph element identity across operator boundaries,
+which is required for chained DML statements that reuse matched elements.
 
 Internal bindings may stay lazy until output:
 

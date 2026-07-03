@@ -607,7 +607,7 @@ pub(super) fn plan_simple_statement(
             Ok(())
         }
         SimpleQueryStatement::Insert(insert_stmt) => {
-            super::dml::plan_insert(insert_stmt, ops, annotations);
+            super::dml::plan_insert(insert_stmt, binding_kinds, ops, annotations);
             Ok(())
         }
         SimpleQueryStatement::Set(set_stmt) => {

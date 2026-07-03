@@ -5,6 +5,7 @@ use crate::plan::*;
 
 pub(super) fn plan_insert(
     insert_stmt: &InsertStatement,
+    binding_kinds: &std::collections::BTreeMap<String, BindingKind>,
     ops: &mut Vec<PlanOp>,
     _annotations: &mut PlanAnnotations,
 ) {
@@ -30,6 +31,17 @@ pub(super) fn plan_insert(
                     .variable
                     .clone()
                     .unwrap_or_else(|| format!("__insert_n{}", i));
+                // A node variable that is already bound from a prior statement in the
+                // same NEXT chain is an endpoint reference, not a new vertex to create.
+                // Skipping InsertVertex preserves vertex identity for edge endpoints.
+                if binding_kinds
+                    .get(var.as_str())
+                    .copied()
+                    .unwrap_or(BindingKind::Unknown)
+                    == BindingKind::Node
+                {
+                    continue;
+                }
                 let props: Vec<PropertyAssignment> = node
                     .properties
                     .iter()

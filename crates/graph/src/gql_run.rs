@@ -1829,6 +1829,174 @@ mod tests {
         );
     }
 
+    // Helpers for the NEXT edge-endpoint binding regressions below.
+    fn plan_block(gql: &str) -> gleaph_gql_planner::PhysicalPlan {
+        use gleaph_gql::{parser, type_check::NoSchema};
+        use gleaph_gql_planner::build_block_plan_with_schema;
+        let program = parser::parse(gql).expect("parse");
+        let block = program
+            .transaction_activity
+            .as_ref()
+            .expect("transaction")
+            .body
+            .as_ref()
+            .expect("body");
+        build_block_plan_with_schema(block, None, &NoSchema).expect("plan block")
+    }
+
+    fn insert_two_bind_next_users(store: GraphStore, id1: &str, id2: &str) {
+        let params = BTreeMap::new();
+        let gql = format!(
+            "INSERT (:BindNextUser {{id: '{}'}}), (:BindNextUser {{id: '{}'}})",
+            id1, id2
+        );
+        pollster::block_on(run_adhoc_gql(
+            store,
+            &gql,
+            &params,
+            None,
+            GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
+        ))
+        .expect("seed users");
+    }
+
+    fn assert_one_bind_next_edge(store: GraphStore, expected_src: &str, expected_dst: &str) {
+        let params = BTreeMap::new();
+        let result = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH (a:BindNextUser)-[e:BIND_NEXT_FOLLOWS]->(b:BindNextUser) RETURN a.id AS aid, b.id AS bid",
+            &params,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("traverse edge");
+        assert_eq!(
+            result.rows.len(),
+            1,
+            "exactly one directed edge should connect the two matched users"
+        );
+        let row = &result.rows[0];
+        assert_eq!(
+            row.get("aid"),
+            Some(&Value::Text(expected_src.into())),
+            "source endpoint must be the matched vertex"
+        );
+        assert_eq!(
+            row.get("bid"),
+            Some(&Value::Text(expected_dst.into())),
+            "destination endpoint must be the matched vertex"
+        );
+    }
+
+    // Regression (exec defect #2): a MATCH-bound vertex stays bound through RETURN / NEXT
+    // so a following INSERT edge can reference it.  The native Graph execution path is
+    // exercised here by building a full block plan (the same shape Router produces) and
+    // running it through the canonical read-prefix + mutation-tail executor.
+    #[test]
+    fn block_match_next_insert_edge_keeps_endpoints() {
+        let store = GraphStore::new();
+        insert_two_bind_next_users(store, "alice", "bob");
+
+        let plan = plan_block(
+            "MATCH (a:BindNextUser {id: 'alice'}), (b:BindNextUser {id: 'bob'}) RETURN a NEXT INSERT (a)-[:BIND_NEXT_FOLLOWS]->(b)",
+        );
+        let params = BTreeMap::new();
+        pollster::block_on(execute_dml_plan_async(
+            &store,
+            &plan,
+            &params,
+            None,
+            GqlExecutionContext::default(),
+            None,
+        ))
+        .expect("MATCH/RETURN/NEXT INSERT edge must preserve endpoint bindings");
+
+        assert_one_bind_next_edge(store, "alice", "bob");
+    }
+
+    // Wire-equivalent regression: encode the same block plan as the Router would and run it
+    // through the wire replay path.  This proves endpoint identity survives plan encoding,
+    // bundle decoding, and the canonical mutation segment.
+    #[test]
+    fn wire_block_match_next_insert_edge_keeps_endpoints() {
+        let store = GraphStore::new();
+        insert_two_bind_next_users(store, "alice", "bob");
+
+        let plan = plan_block(
+            "MATCH (a:BindNextUser {id: 'alice'}), (b:BindNextUser {id: 'bob'}) RETURN a NEXT INSERT (a)-[:BIND_NEXT_FOLLOWS]->(b)",
+        );
+        let blob = encode_block_plans(&[plan], true).expect("encode plan");
+        let params = BTreeMap::new();
+        pollster::block_on(run_wire_plan_last_read_row_count(
+            store,
+            &blob,
+            &params,
+            GqlCanisterExecutionMode::Update,
+            None,
+            GqlExecutionContext::default(),
+            None,
+            Some(1),
+        ))
+        .expect("wire update must preserve endpoint bindings");
+
+        assert_one_bind_next_edge(store, "alice", "bob");
+    }
+
+    // Shared-source regression: the same previously matched source vertex can be bound in two
+    // separate NEXT INSERT executions without duplicate source creation or endpoint loss.
+    #[test]
+    fn block_match_next_insert_edge_shares_source() {
+        let store = GraphStore::new();
+        // Seed alice, bob, and carol.
+        let params = BTreeMap::new();
+        pollster::block_on(run_adhoc_gql(
+            store,
+            "INSERT (:BindNextUser {id: 'alice'}), (:BindNextUser {id: 'bob'}), (:BindNextUser {id: 'carol'})",
+            &params,
+            None,
+            GqlCanisterExecutionMode::Update,
+            GqlExecutionContext::default(),
+        ))
+        .expect("seed three users");
+
+        let plan_bob = plan_block(
+            "MATCH (a:BindNextUser {id: 'alice'}), (b:BindNextUser {id: 'bob'}) RETURN a NEXT INSERT (a)-[:BIND_NEXT_FOLLOWS]->(b)",
+        );
+        let plan_carol = plan_block(
+            "MATCH (a:BindNextUser {id: 'alice'}), (c:BindNextUser {id: 'carol'}) RETURN a NEXT INSERT (a)-[:BIND_NEXT_FOLLOWS]->(c)",
+        );
+
+        for plan in [&plan_bob, &plan_carol] {
+            pollster::block_on(execute_dml_plan_async(
+                &store,
+                plan,
+                &params,
+                None,
+                GqlExecutionContext::default(),
+                None,
+            ))
+            .expect("shared-source NEXT INSERT must preserve endpoint bindings");
+        }
+
+        let result = pollster::block_on(run_adhoc_gql(
+            store,
+            "MATCH (a:BindNextUser {id: 'alice'})-[e:BIND_NEXT_FOLLOWS]->(b:BindNextUser) RETURN b.id AS bid ORDER BY bid",
+            &params,
+            None,
+            GqlCanisterExecutionMode::CompositeQuery,
+            GqlExecutionContext::default(),
+        ))
+        .expect("traverse shared-source edges");
+        assert_eq!(result.rows.len(), 2, "alice should have two outgoing edges");
+        assert_eq!(result.rows[0].get("bid"), Some(&Value::Text("bob".into())));
+        assert_eq!(
+            result.rows[1].get("bid"),
+            Some(&Value::Text("carol".into()))
+        );
+    }
+
     // Regression (exec defect #1, fixed): a MATCH-bound variable stays bound across a
     // following INSERT clause so a later DELETE can reference it. Before the read-phase
     // seeding fix the segment failed with `MissingVertexBinding { variable: "d" }`.

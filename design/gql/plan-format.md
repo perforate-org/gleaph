@@ -1,7 +1,7 @@
 # Physical plan format
 
 Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 09:35:13 UTC +0000
+Anchor timestamp: 2026-07-03 15:17:43 UTC +0000
 
 ## Purpose
 
@@ -56,6 +56,22 @@ When router supplies `seed_bindings_blob`:
 - Binds listed **local** `VertexId`s on the target shard only.
 
 Plan must be written so remaining ops are valid given seeded rows (planner + router `SeedProbe` agree on property/value).
+
+## NEXT / YIELD binding contract
+
+A `StatementBlock` chains statements with `NEXT`.  Two boundary shapes are supported:
+
+- **Explicit `YIELD`**: the prior statement emits only the yielded columns; downstream statements
+  receive those bindings under their aliases.
+- **No `YIELD`**: every typed graph binding (vertex, edge, path) that survived the previous
+  statement remains in scope for the next statement.  The planner must extend the boundary
+  `Project`/`Materialize` with hidden columns for those bindings, and the executor must keep a
+  plain variable column as the original typed `PlanBinding` rather than materializing it to
+  `Value`.  This is what lets a chained `INSERT (a)-[:L]->(b)` reuse matched vertices `a` and
+  `b` as edge endpoints instead of creating new ones.
+
+Value bindings and computed projections are not silently retained across a no-YIELD boundary; they
+must be explicitly yielded if a downstream statement needs them.
 
 ## Router resolved-search contract
 

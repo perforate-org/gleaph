@@ -154,8 +154,15 @@ fn build_statement_plan_with_binding_kinds_and_options(
             schema,
         ),
         Statement::Insert(insert_stmt) => {
+            let empty_kinds = std::collections::BTreeMap::new();
+            let binding_kinds = binding_kinds.unwrap_or(&empty_kinds);
             let mut plan = PhysicalPlan::default();
-            plan_insert(insert_stmt, &mut plan.ops, &mut plan.annotations);
+            plan_insert(
+                insert_stmt,
+                binding_kinds,
+                &mut plan.ops,
+                &mut plan.annotations,
+            );
             plan.annotations.optimizer.estimated_cost =
                 Some(cost::estimate_cost(&plan.ops, options.stats));
             plan.annotations.optimizer.estimated_rows =
@@ -177,8 +184,15 @@ fn build_statement_plan_with_binding_kinds(
             build_composite_plan_with_binding_kinds(composite, stats, binding_kinds, schema)
         }
         Statement::Insert(insert_stmt) => {
+            let empty_kinds = std::collections::BTreeMap::new();
+            let binding_kinds = binding_kinds.unwrap_or(&empty_kinds);
             let mut plan = PhysicalPlan::default();
-            plan_insert(insert_stmt, &mut plan.ops, &mut plan.annotations);
+            plan_insert(
+                insert_stmt,
+                binding_kinds,
+                &mut plan.ops,
+                &mut plan.annotations,
+            );
             plan.annotations.optimizer.estimated_cost = Some(cost::estimate_cost(&plan.ops, stats));
             plan.annotations.optimizer.estimated_rows = Some(cost::estimate_rows(&plan.ops, stats));
             Ok(plan)
@@ -245,6 +259,17 @@ pub fn build_block_plan_with_schema_and_options(
                 columns,
                 distinct: false,
             });
+        } else {
+            // Without YIELD the NEXT statement inherits every typed binding from the
+            // previous statement, but the prior RETURN/SELECT projection may have
+            // dropped non-returned variables from the physical row.  Re-insert those
+            // graph bindings as hidden columns so the chained statement can still
+            // resolve vertex/edge endpoints without recreating them.
+            let next_index = index_for_next(&block.next, next);
+            if let Some(next_kinds) = binding_kinds.get(next_index) {
+                let hidden = statement_boundary_hidden_variables(next_kinds);
+                extend_boundary_projection_with_hidden_variables(&mut plan.ops, &hidden);
+            }
         }
 
         // Plan the chained statement and merge its ops.
@@ -763,6 +788,62 @@ fn populate_semantic_annotations(
     // Copy narrowing facts.
     if !semantic.narrowing_facts.is_empty() {
         annotations.semantic.narrowing_facts = Some(semantic.narrowing_facts.clone());
+    }
+}
+
+/// Variables that must survive a NEXT boundary without an explicit YIELD so that
+/// chained DML statements can resolve graph element endpoints by identity rather
+/// than by value.
+fn statement_boundary_hidden_variables(
+    next_kinds: &std::collections::BTreeMap<String, BindingKind>,
+) -> std::collections::BTreeSet<String> {
+    next_kinds
+        .iter()
+        .filter(|(_, kind)| {
+            matches!(
+                kind,
+                BindingKind::Node | BindingKind::Edge | BindingKind::Path
+            )
+        })
+        .map(|(name, _)| name.clone())
+        .collect()
+}
+
+/// Patch the last projection-like operator at the end of the accumulated plan so
+/// that typed graph bindings needed by the next statement are not dropped from
+/// the physical row.  This preserves vertex/edge identity across NEXT without
+/// converting the bindings to plain `Value`.
+fn extend_boundary_projection_with_hidden_variables(
+    ops: &mut [PlanOp],
+    hidden: &std::collections::BTreeSet<String>,
+) {
+    if hidden.is_empty() {
+        return;
+    }
+    if let Some(last_op) = ops.last_mut() {
+        let columns = match last_op {
+            PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => columns,
+            _ => return,
+        };
+        let existing: std::collections::BTreeSet<String> = columns
+            .iter()
+            .filter_map(|col| {
+                if let ExprKind::Variable(var) = &col.expr.kind {
+                    Some(var.to_string())
+                } else {
+                    None
+                }
+            })
+            .collect();
+        for var in hidden {
+            if existing.contains(var) {
+                continue;
+            }
+            columns.push(ProjectColumn {
+                expr: Expr::new(ExprKind::Variable(var.clone())),
+                alias: None,
+            });
+        }
     }
 }
 

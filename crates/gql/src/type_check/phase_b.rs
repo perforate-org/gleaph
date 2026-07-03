@@ -109,8 +109,17 @@ pub fn infer_statement_block_binding_kinds_with_schema(
                 env.bind(binding_name.to_string(), ty);
             }
         } else {
-            for (name, ty) in &prev_return_types {
-                env.bind(name.clone(), ty.clone());
+            // Without an explicit YIELD, every typed binding that survived the
+            // previous statement remains in scope for the NEXT chain.  This is
+            // the scoping rule that lets a later INSERT edge statement reuse
+            // matched vertices as source/destination endpoints.
+            let live: Vec<_> = env
+                .bindings
+                .iter()
+                .map(|(name, ty)| (name.clone(), ty.clone()))
+                .collect();
+            for (name, ty) in live {
+                env.bind(name, ty);
             }
         }
 
