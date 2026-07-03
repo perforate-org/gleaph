@@ -15,8 +15,12 @@ command syntax; do not duplicate its socket or pane-management reference here.
 2. Verify implementation, review, and validation panes show fresh startup prompts. Reset a completed
    conversation before reuse.
 3. Have the primary inspect the repository, choose one bounded slice, and create the plan.
-4. Assign explicit pane ids and roles in every prompt.
-5. Name every required repository skill by its exact path:
+4. Prime all three sibling conversations before implementation starts. Give the reviewer the plan
+   path, implementation/primary pane ids, strict read-only skills, and exact finding/approval routes;
+   give validation its role and tell it to remain idle until assigned an allowlist. Each setup turn
+   must acknowledge readiness and end without polling.
+5. Assign explicit pane ids and roles in every prompt.
+6. Name every required repository skill by its exact path:
    `.agents/skills/<skill-name>/SKILL.md`. Instruct the pane to read it directly. Do not rely on
    `$CODEX_HOME` or global discovery for Gleaph-specific skills.
 
@@ -55,18 +59,25 @@ command syntax; do not duplicate its socket or pane-management reference here.
 
 ## Notification chain
 
+Every notification must be self-contained: name the slice/plan, sender and recipient pane ids, the
+next action, and where the recipient must send findings or approval. Do not expect a fresh pane to
+infer its role from "finished" alone.
+
 Implementation completion must notify the current review pane immediately before its final answer:
 
 ```sh
-herdr pane run <review-pane-id> "Implementation pane <implementation-pane-id> finished. Please read its report and review the actual diff."
+herdr pane run <review-pane-id> "Implementation pane <implementation-pane-id> finished <plan-path>. Strictly review the report and actual diff. Send findings to <implementation-pane-id>; notify <primary-pane-id> only if APPROVE."
 ```
 
-The review pane returns findings directly to implementation until approval. On approval it notifies
-the primary explicitly; passive `agent_status` is not delivered into the active conversation.
+The review pane must explicitly run `herdr pane run <implementation-pane-id> "...findings..."` before
+ending a non-approved turn. A report left only in reviewer scrollback is not communicated. After a
+fix notification, re-review the current diff. On approval, explicitly notify the primary instead;
+passive `agent_status` is not delivered into the active conversation.
 
 If validation is needed, the reviewer or primary assigns it with a bounded command list. Validation
-reports its result to the assigning pane. Read recent unwrapped output and use only bounded waits for
-an expected completion notification.
+reports its result to the named assigning pane with completed, failed, incomplete, and not-run
+commands. Read recent unwrapped output and use only bounded waits for an expected completion
+notification.
 
 ## Keep panes responsive
 
