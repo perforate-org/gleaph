@@ -15,7 +15,8 @@ use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
-    LabelStatsDelta, LabelStatsDeltaEventWire, ResolvedLabelTable, ResolvedPropertyTable,
+    LabelStatsDelta, LabelStatsDeltaEventWire, ResolvedInlineSchema, ResolvedLabelTable,
+    ResolvedPropertyTable,
 };
 use std::collections::BTreeSet;
 
@@ -3094,6 +3095,36 @@ fn inline_struct_schema_creates_label_property_and_record() {
     assert_eq!(
         ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|s| s.get_profile(graph_id, label_id)),
         EdgePayloadProfile::opaque_bytes(16)
+    );
+
+    // Slice 25: the resolved wire projection derived from the canonical record must contain the
+    // exact physical field layout; Graph validates it but never persists it.
+    let (wire_profile, wire_schema) = ROUTER_EDGE_PAYLOAD_PROFILES
+        .with_borrow(|s| s.get_profile_and_inline_schema(graph_id, label_id));
+    assert_eq!(wire_profile, EdgePayloadProfile::opaque_bytes(16));
+    let schema = wire_schema.expect("struct schema projected");
+    assert_eq!(schema.property_id(), property_id);
+    let ResolvedInlineSchema::Struct { fields, .. } = schema else {
+        panic!("expected struct schema");
+    };
+    assert_eq!(fields.len(), 3);
+    assert_eq!(fields[0].name, "score");
+    assert_eq!(fields[0].byte_offset, 0);
+    assert_eq!(
+        fields[0].profile,
+        InlineScalarType::F32.edge_payload_profile()
+    );
+    assert_eq!(fields[1].name, "confidence");
+    assert_eq!(fields[1].byte_offset, 4);
+    assert_eq!(
+        fields[1].profile,
+        InlineScalarType::F32.edge_payload_profile()
+    );
+    assert_eq!(fields[2].name, "updated_at");
+    assert_eq!(fields[2].byte_offset, 8);
+    assert_eq!(
+        fields[2].profile,
+        InlineScalarType::U64.edge_payload_profile()
     );
 }
 

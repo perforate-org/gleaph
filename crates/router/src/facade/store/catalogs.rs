@@ -26,8 +26,8 @@ use gleaph_gql::type_check::collect_graph_type_vocabulary;
 use gleaph_gql_planner::{LabelUseIntent, PhysicalPlan, PropertyUseIntent};
 use gleaph_graph_kernel::entry::{EdgePayloadProfile, GraphId};
 use gleaph_graph_kernel::plan_exec::{
-    ResolvedEdgeLabel, ResolvedLabelTable, ResolvedProperty, ResolvedPropertyTable,
-    ResolvedVertexLabel,
+    ResolvedEdgeLabel, ResolvedInlineSchema, ResolvedLabelTable, ResolvedProperty,
+    ResolvedPropertyTable, ResolvedVertexLabel,
 };
 
 use super::{RouterStore, validate_metadata_name};
@@ -271,13 +271,13 @@ impl RouterStore {
             .map_err(map_edge_payload_profile_err)
     }
 
-    fn lookup_edge_payload_profile_and_inline_property(
+    fn lookup_edge_payload_profile_and_inline_schema(
         &self,
         graph_id: GraphId,
         id: EdgeLabelId,
-    ) -> (EdgePayloadProfile, Option<PropertyId>) {
+    ) -> (EdgePayloadProfile, Option<ResolvedInlineSchema>) {
         ROUTER_EDGE_PAYLOAD_PROFILES
-            .with_borrow(|store| store.get_profile_and_inline_property_id(graph_id, id))
+            .with_borrow(|store| store.get_profile_and_inline_schema(graph_id, id))
     }
 
     pub(crate) fn commit_intern_property_name(
@@ -563,13 +563,13 @@ impl RouterStore {
                     }
                 };
                 if !out.edge.iter().any(|entry| entry.name == name.as_ref()) {
-                    let (profile, inline_property_id) =
-                        self.lookup_edge_payload_profile_and_inline_property(graph_id, id);
-                    out.edge.push(ResolvedEdgeLabel::with_inline_property(
+                    let (profile, inline_schema) =
+                        self.lookup_edge_payload_profile_and_inline_schema(graph_id, id);
+                    out.edge.push(ResolvedEdgeLabel::with_inline_schema(
                         name.to_string(),
                         id,
                         profile,
-                        inline_property_id,
+                        inline_schema,
                     ));
                 }
             }
@@ -590,13 +590,13 @@ impl RouterStore {
                 continue;
             }
             let name = self.reverse_edge_label_name(graph_id, id)?;
-            let (profile, inline_property_id) =
-                self.lookup_edge_payload_profile_and_inline_property(graph_id, id);
-            table.edge.push(ResolvedEdgeLabel::with_inline_property(
+            let (profile, inline_schema) =
+                self.lookup_edge_payload_profile_and_inline_schema(graph_id, id);
+            table.edge.push(ResolvedEdgeLabel::with_inline_schema(
                 name,
                 id,
                 profile,
-                inline_property_id,
+                inline_schema,
             ));
         }
         Ok(())

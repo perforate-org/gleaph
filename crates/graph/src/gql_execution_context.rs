@@ -10,8 +10,8 @@ use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, Ve
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::gql_dialect::MSG_CALLER;
 use gleaph_graph_kernel::plan_exec::{
-    ConstrainedPropertyDispatch, ResolvedLabelTable, ResolvedPropertyTable, ResolvedSearchWire,
-    UniqueClaimDispatch,
+    ConstrainedPropertyDispatch, ResolvedInlineSchema, ResolvedLabelTable, ResolvedPropertyTable,
+    ResolvedSearchWire, UniqueClaimDispatch,
 };
 
 /// Carries data that is fixed for one GQL execution (adhoc, prepared, or plan replay).
@@ -114,19 +114,21 @@ impl GqlExecutionContext {
 
     /// Router-resolved named inline property and matching payload profile for an edge label.
     ///
-    /// Returns `Some((property_id, payload_profile))` when the Router projected a named inline
-    /// schema (`InlineScalar` or `InlineStruct`) for this concrete label. Slice 24 only projects the
-    /// top-level identity and opaque `RawBytes` profile for structs; ordinary field-level struct reads
-    /// are not yet implemented and should fail closed. Graph must not infer this from the value or
-    /// from any other source.
+    /// Returns `Some((property_id, payload_profile))` only when the Router projected a scalar inline
+    /// schema for this concrete label. Struct inline schemas are excluded so that struct mutation
+    /// attempts fail closed rather than falling through to scalar encoding / sidecar behavior.
+    /// Graph must not infer this from the value or from any other source.
     pub fn resolved_edge_label_inline_property(
         &self,
         label_id: EdgeLabelId,
     ) -> Option<(PropertyId, EdgePayloadProfile)> {
         if let Some(labels) = &self.resolved_labels {
             let entry = labels.resolved_edge_label(label_id)?;
-            let property_id = entry.inline_property_id()?;
-            return Some((property_id, entry.payload_profile.clone()));
+            let schema = entry.inline_schema()?;
+            if !schema.is_scalar() {
+                return None;
+            }
+            return Some((schema.property_id(), entry.payload_profile.clone()));
         }
         #[cfg(any(test, feature = "canbench"))]
         {
@@ -134,8 +136,39 @@ impl GqlExecutionContext {
             if profile.required_byte_width() == 0 {
                 return None;
             }
+            if crate::test_labels::edge_inline_struct_schema_for_id(label_id).is_some() {
+                // Struct schemas are not exposed as scalar inline properties.
+                return None;
+            }
             let property_id = crate::test_labels::edge_inline_property_for_id(label_id)?;
             Some((property_id, profile))
+        }
+        #[cfg(not(any(test, feature = "canbench")))]
+        {
+            None
+        }
+    }
+
+    /// Router-resolved inline schema for an edge label, including scalar and struct projections.
+    ///
+    /// Returns `None` when the label has no named inline slot. Callers that must fail closed on
+    /// struct mutation attempts use this instead of `resolved_edge_label_inline_property`, which
+    /// intentionally exposes only scalar projections.
+    pub fn resolved_edge_label_inline_schema(
+        &self,
+        label_id: EdgeLabelId,
+    ) -> Option<ResolvedInlineSchema> {
+        if let Some(labels) = &self.resolved_labels {
+            return labels
+                .resolved_edge_label(label_id)
+                .and_then(|entry| entry.inline_schema().cloned());
+        }
+        #[cfg(any(test, feature = "canbench"))]
+        {
+            crate::test_labels::edge_inline_struct_schema_for_id(label_id).or_else(|| {
+                crate::test_labels::edge_inline_property_for_id(label_id)
+                    .map(|property_id| ResolvedInlineSchema::Scalar { property_id })
+            })
         }
         #[cfg(not(any(test, feature = "canbench")))]
         {

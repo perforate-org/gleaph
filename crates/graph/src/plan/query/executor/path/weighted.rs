@@ -45,7 +45,8 @@ use gleaph_graph_kernel::entry::EdgePayload;
 /// Pre-validates `COST BY e.property` for a concrete edge label.
 ///
 /// Resolves the property name once against the Router-projected tables, proves it equals the
-/// concrete label's `inline_property_id`, and returns the resolved `PropertyId` for per-hop reads.
+/// scalar inline property id in the concrete label's `inline_schema`, and returns the resolved
+/// `PropertyId` for per-hop reads. Struct inline schemas are excluded from `COST BY` in Slice 25.
 /// Returns `Ok(None)` when the expression is not a direct inline-property access (e.g.
 /// `GLEAPH.COST BY GLEAPH.WEIGHT(e)`), letting the caller fall back to the generic evaluator.
 fn prepare_inline_property_cost(

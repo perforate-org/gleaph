@@ -3,7 +3,7 @@
 Date: 2026-06-12  
 Status: accepted  
 Last revised: 2026-07-03
-Anchor timestamp: 2026-07-03 01:41:26 UTC +0000
+Anchor timestamp: 2026-07-03 09:35:13 UTC +0000
 
 ## Revision history
 
@@ -14,6 +14,7 @@ Anchor timestamp: 2026-07-03 01:41:26 UTC +0000
 | 2026-06-12 | Implemented phases A–E; router region 21 live; graph `EDGE_PAYLOAD_PROFILES` retired (41 regions). |
 | 2026-07-01 | ADR 0034 Slice 20 + Slice 21 + Slice 22: store value is a versioned `EdgePayloadSchemaRecord` supporting admin `UnnamedProfile` entries and named scalar inline schemas; `ResolvedEdgeLabel` carries `inline_property_id` as a router-derived projection consumed by both reads and mutations. Graph encodes mutation values into the payload using the same shared scalar codec and never writes the inline property to sidecar state. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
 | 2026-07-03 | ADR 0034 Slice 24: `EdgePayloadSchemaRecord` adds a named fixed-size inline STRUCT variant (`property_id`, declaration-ordered logical field specs `[name, scalar_type]`). Byte offsets, widths, and total width are deterministically derived; the physical profile is `EdgePayloadProfile::opaque_bytes(total_byte_width)`. Graph receives only the top-level inline property identity and the opaque physical profile in this slice; struct reads, mutation packing, and `COST BY` over struct fields remain planned. Development stable data must be wiped because the record format version is bumped and no legacy decode fallback is provided. |
+| 2026-07-03 | ADR 0034 Slice 25: `ResolvedEdgeLabel` replaces `inline_property_id` with `inline_schema: Option<ResolvedInlineSchema>` (`None`, `Scalar { property_id }`, or `Struct { property_id, fields }`). Router derives per-field byte offsets and scalar profiles from the canonical `InlineStructLayout` and projects them as a read-only wire shape. Graph consumes this single Router-resolved projection in separate read and mutation paths: the query executor validates and decodes struct payloads into a declaration-ordered `Value::Record`, while the mutation executor rejects any write or removal on a Struct-labeled edge until Slice 26. Development stable data must be wiped when this format changes because backward compatibility is not maintained. |
 
 ## Context
 
@@ -41,7 +42,7 @@ duplicate *ownership* of schema between router (ids) and graph (profiles).
 | Area | Issue |
 |------|--------|
 | **Split SSOT** | Router owns `EdgeLabelId` allocation; graph owns `EdgeLabelId → EdgePayloadProfile`. Federation requires every shard to agree on schema per id without a central registry. |
-| **Wire gap** | `ResolvedEdgeLabel` carries `name`, `id`, `payload_profile`, and `inline_property_id` ([`plan_exec.rs`](../../crates/graph-kernel/src/plan_exec.rs)). Graph execution consumes the router-derived projection and must not re-read graph stable for schema. |
+| **Wire gap** | `ResolvedEdgeLabel` carries `name`, `id`, `payload_profile`, and `inline_schema` ([`plan_exec.rs`](../../crates/graph-kernel/src/plan_exec.rs)). Graph execution consumes the router-derived scalar-or-struct projection and must not re-read graph stable for schema. |
 | **Wildcard / fusion fallback** | When `label_expr` cannot decompose to explicit names, expand uses `GraphStore::edge_catalog_label_ids_with_payload_profiles()` — a **shard-local** enumeration of labels with installed profiles ([`label_expr.rs`](../../crates/graph/src/plan/query/executor/expand/label_expr.rs)). That list can diverge from router’s logical graph schema. |
 | **Admin surface** | Tests and benches call graph-local `install_edge_label_*_at_init`; production path for schema registration is undefined at the router boundary. |
 | **Stable overhead** | One extra graph facade region (ADR [0007](0007-stable-memory-layout.md) baseline: 42 regions) for data that is graph-wide logical metadata, not per-shard adjacency or property values. |
@@ -112,7 +113,22 @@ pub struct ResolvedEdgeLabel {
     pub name: String,
     pub id: EdgeLabelId,
     pub payload_profile: EdgePayloadProfile, // router-filled physical profile
-    pub inline_property_id: Option<PropertyId>, // router-derived named inline identity (Slice 21)
+    pub inline_schema: Option<ResolvedInlineSchema>, // router-derived scalar or struct projection (Slice 25)
+}
+
+// `ResolvedInlineSchema` is an explicit enum with no parallel optional state:
+// - `None`: no named inline slot.
+// - `Scalar { property_id }`: one fixed-width scalar inline property.
+// - `Struct { property_id, fields }`: one fixed-size inline struct with declaration-ordered physical fields.
+pub enum ResolvedInlineSchema {
+    Scalar { property_id: PropertyId },
+    Struct { property_id: PropertyId, fields: Vec<ResolvedInlineStructField> },
+}
+
+pub struct ResolvedInlineStructField {
+    pub name: String,
+    pub byte_offset: u16,
+    pub profile: EdgePayloadProfile,
 }
 ```
 

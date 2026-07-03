@@ -2831,6 +2831,308 @@ fn bench_graph_inline_scalar_filter_1k() -> canbench_rs::BenchResult {
     })
 }
 
+// --- ADR 0034 Slice 25 inline edge STRUCT read access benches ---
+
+fn setup_inline_struct_edges(
+    store: &GraphStore,
+) -> (VertexId, gleaph_graph_kernel::entry::EdgeLabelId) {
+    let label_id = crate::test_labels::edge_label_id_for_name("BenchInlineStructRoad");
+    let total_width: u16 = 16;
+    crate::test_labels::install_test_edge_payload_profile(
+        label_id,
+        EdgePayloadProfile {
+            byte_width: total_width,
+            encoding: EdgePayloadEncoding::RawBytes,
+        },
+    );
+    let property_id = PropertyId::from_raw(2);
+    crate::test_labels::install_test_edge_inline_struct_property(
+        label_id,
+        property_id,
+        vec![
+            (
+                "score".to_string(),
+                0,
+                EdgePayloadProfile {
+                    byte_width: 4,
+                    encoding: EdgePayloadEncoding::F32,
+                },
+            ),
+            (
+                "confidence".to_string(),
+                4,
+                EdgePayloadProfile {
+                    byte_width: 4,
+                    encoding: EdgePayloadEncoding::F32,
+                },
+            ),
+            (
+                "updated_at".to_string(),
+                8,
+                EdgePayloadProfile {
+                    byte_width: 8,
+                    encoding: EdgePayloadEncoding::RawU64,
+                },
+            ),
+        ],
+    );
+    let src = store
+        .insert_vertex_named(["BenchInlineStructSrc"], Vec::<(&str, Value)>::new())
+        .expect("src");
+    for i in 0..INLINE_EDGE_COUNT {
+        let dst = store
+            .insert_vertex_named(["BenchInlineStructDst"], Vec::<(&str, Value)>::new())
+            .expect("dst");
+        let score = ((i % 100) as f32) / 10.0;
+        let mut payload = Vec::with_capacity(usize::from(total_width));
+        payload.extend_from_slice(&score.to_le_bytes());
+        payload.extend_from_slice(&0.5f32.to_le_bytes());
+        payload.extend_from_slice(&((i % 100) as u64).to_le_bytes());
+        store
+            .insert_directed_edge_with_payload_bytes(src, dst, Some(label_id), &payload)
+            .expect("edge");
+    }
+    (src, label_id)
+}
+
+fn inline_struct_read_execution_context(
+    label_id: EdgeLabelId,
+    property_id: PropertyId,
+) -> GqlExecutionContext {
+    use gleaph_graph_kernel::plan_exec::{
+        ResolvedEdgeLabel, ResolvedInlineSchema, ResolvedInlineStructField, ResolvedLabelTable,
+        ResolvedProperty, ResolvedPropertyTable, ResolvedVertexLabel,
+    };
+    let src_label_id = crate::test_labels::vertex_label_id_for_name("BenchInlineStructSrc");
+    let dst_label_id = crate::test_labels::vertex_label_id_for_name("BenchInlineStructDst");
+    let total_width: u16 = 16;
+    let labels = ResolvedLabelTable {
+        vertex: vec![
+            ResolvedVertexLabel {
+                name: "BenchInlineStructSrc".to_string(),
+                id: src_label_id,
+            },
+            ResolvedVertexLabel {
+                name: "BenchInlineStructDst".to_string(),
+                id: dst_label_id,
+            },
+        ],
+        edge: vec![ResolvedEdgeLabel::with_inline_schema(
+            "BenchInlineStructRoad".to_string(),
+            label_id,
+            EdgePayloadProfile {
+                byte_width: total_width,
+                encoding: EdgePayloadEncoding::RawBytes,
+            },
+            Some(ResolvedInlineSchema::Struct {
+                property_id,
+                fields: vec![
+                    ResolvedInlineStructField {
+                        name: "score".to_string(),
+                        byte_offset: 0,
+                        profile: EdgePayloadProfile {
+                            byte_width: 4,
+                            encoding: EdgePayloadEncoding::F32,
+                        },
+                    },
+                    ResolvedInlineStructField {
+                        name: "confidence".to_string(),
+                        byte_offset: 4,
+                        profile: EdgePayloadProfile {
+                            byte_width: 4,
+                            encoding: EdgePayloadEncoding::F32,
+                        },
+                    },
+                    ResolvedInlineStructField {
+                        name: "updated_at".to_string(),
+                        byte_offset: 8,
+                        profile: EdgePayloadProfile {
+                            byte_width: 8,
+                            encoding: EdgePayloadEncoding::RawU64,
+                        },
+                    },
+                ],
+            }),
+        )],
+    };
+    let properties = ResolvedPropertyTable {
+        properties: vec![ResolvedProperty {
+            name: "stats".to_string(),
+            id: property_id,
+        }],
+    };
+    GqlExecutionContext {
+        resolved_labels: Some(labels),
+        resolved_properties: Some(properties),
+        ..GqlExecutionContext::with_host_test_element_id_key()
+    }
+}
+
+fn inline_struct_projection_plan() -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("BenchInlineStructSrc".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "a".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("BenchInlineStructRoad".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_payload_predicate: None,
+            edge_vector_predicate: None,
+            edge_property_projection: Some(vec!["stats".into()].into()),
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
+        },
+        PlanOp::Project {
+            columns: vec![project(
+                Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(var("e")),
+                        property: "stats".into(),
+                    })),
+                    property: "score".into(),
+                }),
+                "s",
+            )],
+            distinct: false,
+        },
+    ])
+}
+
+fn inline_struct_filter_plan() -> PhysicalPlan {
+    plan(vec![
+        PlanOp::NodeScan {
+            variable: "a".into(),
+            label: Some("BenchInlineStructSrc".into()),
+            property_projection: None,
+        },
+        PlanOp::Expand {
+            src: "a".into(),
+            edge: "e".into(),
+            dst: "b".into(),
+            direction: EdgeDirection::PointingRight,
+            label: Some("BenchInlineStructRoad".into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_payload_predicate: None,
+            edge_vector_predicate: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
+        },
+        PlanOp::Filter {
+            condition: Expr::new(ExprKind::Compare {
+                left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(var("e")),
+                        property: "stats".into(),
+                    })),
+                    property: "updated_at".into(),
+                })),
+                op: CmpOp::Eq,
+                right: Box::new(Expr::new(ExprKind::Literal(Value::Uint64(7)))),
+            }),
+        },
+        PlanOp::Project {
+            columns: vec![project(var("b"), "b")],
+            distinct: false,
+        },
+    ])
+}
+
+/// Inline STRUCT edge-property projection over a fixed out-edge set.
+#[bench(raw)]
+fn bench_graph_inline_struct_projection_1k() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let (_src, label_id) = setup_inline_struct_edges(&store);
+    let property_id = PropertyId::from_raw(2);
+    let ctx = inline_struct_read_execution_context(label_id, property_id);
+    let plan = inline_struct_projection_plan();
+
+    let probe = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        None,
+        ctx.clone(),
+    ))
+    .expect("inline struct projection probe");
+    assert_eq!(
+        probe.rows.len(),
+        INLINE_EDGE_COUNT as usize,
+        "struct projection benchmark should emit one row per edge"
+    );
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("inline_struct_projection_1k");
+        let result = pollster::block_on(execute_plan_query(
+            black_box(&store),
+            black_box(&plan),
+            &params(),
+            None,
+            black_box(ctx.clone()),
+        ))
+        .expect("inline struct projection plan");
+        black_box(result.rows.len())
+    })
+}
+
+/// Inline STRUCT edge-property field equality filter over a fixed out-edge set.
+#[bench(raw)]
+fn bench_graph_inline_struct_filter_1k() -> canbench_rs::BenchResult {
+    let store = GraphStore::new();
+    let (_src, label_id) = setup_inline_struct_edges(&store);
+    let property_id = PropertyId::from_raw(2);
+    let ctx = inline_struct_read_execution_context(label_id, property_id);
+    let plan = inline_struct_filter_plan();
+
+    let probe = pollster::block_on(execute_plan_query(
+        &store,
+        &plan,
+        &params(),
+        None,
+        ctx.clone(),
+    ))
+    .expect("inline struct filter probe");
+    // Fixture uses (i % 100) for 0..999 as a u64 field, so 7 appears for i = 7, 107, ..., 907 -> 10 rows.
+    assert_eq!(
+        probe.rows.len(),
+        10,
+        "struct filter benchmark should match exactly 10 rows for updated_at % 100 = 7"
+    );
+
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("inline_struct_filter_1k");
+        let result = pollster::block_on(execute_plan_query(
+            black_box(&store),
+            black_box(&plan),
+            &params(),
+            None,
+            black_box(ctx.clone()),
+        ))
+        .expect("inline struct filter plan");
+        black_box(result.rows.len())
+    })
+}
+
 #[cfg(test)]
 mod bench_setup_tests {
     use super::*;

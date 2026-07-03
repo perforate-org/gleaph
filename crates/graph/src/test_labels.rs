@@ -10,11 +10,14 @@ use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_gql::Value;
 use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::plan_exec::{ResolvedInlineSchema, ResolvedInlineStructField};
 use ic_stable_lara::VertexId;
 
 static EDGE_LABEL_NAMES: Mutex<Option<HashMap<u16, String>>> = Mutex::new(None);
 static EDGE_PAYLOAD_PROFILES: Mutex<Option<HashMap<u16, EdgePayloadProfile>>> = Mutex::new(None);
 static EDGE_INLINE_PROPERTIES: Mutex<Option<HashMap<u16, PropertyId>>> = Mutex::new(None);
+static EDGE_INLINE_STRUCT_SCHEMAS: Mutex<Option<HashMap<u16, ResolvedInlineSchema>>> =
+    Mutex::new(None);
 
 pub(crate) fn install_test_edge_payload_profile(label: EdgeLabelId, profile: EdgePayloadProfile) {
     EDGE_PAYLOAD_PROFILES
@@ -39,6 +42,44 @@ pub(crate) fn install_test_edge_inline_property(label: EdgeLabelId, property_id:
         .unwrap_or_else(|e| e.into_inner())
         .get_or_insert_with(HashMap::new)
         .insert(label.raw(), property_id);
+}
+
+#[cfg(any(test, feature = "canbench"))]
+pub(crate) fn install_test_edge_inline_struct_property(
+    label: EdgeLabelId,
+    property_id: PropertyId,
+    fields: Vec<(String, u16, EdgePayloadProfile)>,
+) {
+    let schema = ResolvedInlineSchema::Struct {
+        property_id,
+        fields: fields
+            .into_iter()
+            .map(|(name, offset, profile)| ResolvedInlineStructField {
+                name,
+                byte_offset: offset,
+                profile,
+            })
+            .collect(),
+    };
+    EDGE_INLINE_STRUCT_SCHEMAS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(label.raw(), schema);
+    EDGE_INLINE_PROPERTIES
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .get_or_insert_with(HashMap::new)
+        .insert(label.raw(), property_id);
+}
+
+pub(crate) fn edge_inline_struct_schema_for_id(label: EdgeLabelId) -> Option<ResolvedInlineSchema> {
+    EDGE_INLINE_STRUCT_SCHEMAS
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .as_ref()?
+        .get(&label.raw())
+        .cloned()
 }
 
 pub(crate) fn edge_inline_property_for_id(label: EdgeLabelId) -> Option<PropertyId> {

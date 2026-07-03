@@ -9,6 +9,7 @@ use std::fmt;
 use gleaph_graph_kernel::entry::{
     EdgeLabelId, EdgePayloadProfile, EdgePayloadProfileError, GraphId, PropertyId,
 };
+use gleaph_graph_kernel::plan_exec::{ResolvedInlineSchema, ResolvedInlineStructField};
 use gleaph_graph_kernel::scoped_name_catalog::GraphScopedIdKey;
 use ic_stable_structures::{Memory, StableBTreeMap};
 
@@ -461,8 +462,7 @@ impl<M: Memory> EdgePayloadProfileStore<M> {
         })
     }
 
-    /// Physical profile accessor kept as a public convenience even though production planning
-    /// paths now prefer `get_profile_and_inline_property_id`.
+    /// Physical profile accessor used by tests and by callers that only need the byte width/encoding.
     #[allow(dead_code)]
     pub fn get_profile(&self, graph_id: GraphId, label: EdgeLabelId) -> EdgePayloadProfile {
         self.get_record(graph_id, label)
@@ -470,15 +470,53 @@ impl<M: Memory> EdgePayloadProfileStore<M> {
             .unwrap_or_else(EdgePayloadProfile::no_payload)
     }
 
-    /// Returns the physical profile and optional inline property id from the canonical record.
-    pub fn get_profile_and_inline_property_id(
+    /// Router-derived projection of the canonical record into the physical wire shape Graph needs.
+    ///
+    /// For `InlineStruct`, this derives per-field byte offsets and scalar profiles from the canonical
+    /// `InlineStructLayout` and returns a struct schema. For `InlineScalar`, it returns the scalar
+    /// schema. For `UnnamedProfile`, it returns `None`. The projection is never persisted.
+    pub fn get_profile_and_inline_schema(
         &self,
         graph_id: GraphId,
         label: EdgeLabelId,
-    ) -> (EdgePayloadProfile, Option<PropertyId>) {
-        self.get_record(graph_id, label)
-            .map(|record| (record.profile(), record.inline_property_id()))
-            .unwrap_or_else(|| (EdgePayloadProfile::no_payload(), None))
+    ) -> (EdgePayloadProfile, Option<ResolvedInlineSchema>) {
+        let record = self.get_record(graph_id, label);
+        let profile = record
+            .as_ref()
+            .map(EdgePayloadSchemaRecord::profile)
+            .unwrap_or_else(EdgePayloadProfile::no_payload);
+        let schema = record.and_then(|record| match record {
+            EdgePayloadSchemaRecord::UnnamedProfile { .. } => None,
+            EdgePayloadSchemaRecord::InlineScalar { property_id, .. } => {
+                Some(ResolvedInlineSchema::Scalar { property_id })
+            }
+            EdgePayloadSchemaRecord::InlineStruct {
+                property_id,
+                field_specs,
+            } => {
+                let layout = InlineStructLayout::from_fields(
+                    field_specs
+                        .iter()
+                        .map(|f| (f.name.clone(), f.scalar_type))
+                        .collect(),
+                )
+                .expect("decoded InlineStruct field_specs must re-derive a valid layout");
+                let fields = layout
+                    .fields()
+                    .iter()
+                    .map(|f| ResolvedInlineStructField {
+                        name: f.name.clone(),
+                        byte_offset: f.byte_offset,
+                        profile: f.scalar_type.edge_payload_profile(),
+                    })
+                    .collect();
+                Some(ResolvedInlineSchema::Struct {
+                    property_id,
+                    fields,
+                })
+            }
+        });
+        (profile, schema)
     }
 
     fn insert_record(
@@ -914,9 +952,12 @@ mod tests {
             .expect("set inline");
         let record = store.get_record(graph, label).expect("record");
         assert_eq!(record.inline_property_id(), Some(property_id));
-        let (profile, inline_id) = store.get_profile_and_inline_property_id(graph, label);
+        let (profile, inline_schema) = store.get_profile_and_inline_schema(graph, label);
         assert_eq!(profile.byte_width, 4);
-        assert_eq!(inline_id, Some(property_id));
+        assert!(matches!(
+            inline_schema,
+            Some(ResolvedInlineSchema::Scalar { property_id: pid }) if pid == property_id
+        ));
     }
 
     #[test]
@@ -938,9 +979,9 @@ mod tests {
             store.get_record(graph, label).unwrap().inline_property_id(),
             None
         );
-        let (profile, inline_id) = store.get_profile_and_inline_property_id(graph, label);
+        let (profile, inline_schema) = store.get_profile_and_inline_schema(graph, label);
         assert_eq!(profile.byte_width, 2);
-        assert_eq!(inline_id, None);
+        assert_eq!(inline_schema, None);
     }
 
     #[test]

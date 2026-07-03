@@ -1,7 +1,7 @@
 # Labeled edge payload storage
 
 Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 01:41:26 UTC +0000
+Anchor timestamp: 2026-07-03 09:35:13 UTC +0000
 
 ## Overview
 
@@ -58,19 +58,22 @@ schema (`property_id`, scalar type or declaration-ordered logical field specs, d
 `EdgePayloadProfile`) per [ADR 0034 Slices 20/24](../adr/0034-gleaph-gql-extension-syntax.md). Development stable data must be wiped
 when this format changes because backward compatibility is not maintained. The physical
 `EdgePayloadProfile` (scalar encoding or `opaque_bytes(total_byte_width)` for structs) and the named
-inline property identity (`inline_property_id`) are both derived from the canonical record and travel
-on `ResolvedEdgeLabel` per [ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md). Graph shards
-resolve schema from execution context and must treat payload bytes as the only read source for the
-matching inline property; sidecar property values are not consulted. This applies to scalar reads,
-filters, projections, `ORDER BY`, and shortest-path hop cost evaluation (`COST BY e.property`),
-all of which share one inline-aware read helper. Slice 24 struct payloads fail closed on ordinary
-field-level access. Graph stable `EDGE_PAYLOAD_PROFILES` is retired
+inline schema (`inline_schema`: `None`, `Scalar { property_id }`, or `Struct { property_id, fields }`)
+are both derived from the canonical record and travel on `ResolvedEdgeLabel` per
+[ADR 0008](../adr/0008-edge-payload-profile-router-ssot.md). Graph shards resolve schema from execution
+context and must treat payload bytes as the only read source for the matching inline property; sidecar
+property values are not consulted. Scalar reads, struct field reads, filters, projections, `ORDER BY`,
+and aggregate inputs all share one inline-aware read helper. Slice 25 validates the physical struct
+projection and decodes the payload into a declaration-ordered GQL `Value::Record`. Graph stable `EDGE_PAYLOAD_PROFILES` is retired
 (facade MemoryIds 38–41 repacked to 37–40). Tests may inject profiles via `test_labels` or an
 explicit `ResolvedLabelTable`.
 
-**Struct reads and mutation packing:** in Slice 24, Graph receives only the existing top-level inline
-property identity and the derived opaque `RawBytes` physical profile for a struct. Field-level reads
-(`e.stats.score`), struct mutation packing, and `COST BY` over a struct field remain planned.
+**Struct reads:** in Slice 25, Graph receives a Router-derived physical field projection (name, byte
+offset, exact scalar profile) for each fixed-size inline struct field. It validates the projection
+against the payload width and decodes the payload into a declaration-ordered GQL `Value::Record`;
+`e.stats.field` works uniformly in projection, filter, comparison, aggregate input, and `ORDER BY`.
+**Struct mutation packing:** remains planned (Slice 26). `COST BY` over a struct field and property
+indexes on inline struct fields also remain planned.
 
 ## Mutation write semantics (implemented)
 

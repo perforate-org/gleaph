@@ -1,7 +1,7 @@
 # Physical plan format
 
 Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 01:41:26 UTC +0000
+Anchor timestamp: 2026-07-03 09:35:13 UTC +0000
 
 ## Purpose
 
@@ -157,28 +157,27 @@ For a leading `NodeScan + Search` or a non-leading `SEARCH` after a bound vertex
 
 - `name`, `id` — the canonical edge label identity.
 - `payload_profile` — physical byte width and encoding from Router stable state.
-- `inline_property_id: Option<PropertyId>` — Router-derived projection of the named inline property for `InlineScalar` and `InlineStruct` schemas; `None` for `UnnamedProfile`. Slice 24 projects only the top-level inline identity plus the opaque `RawBytes` profile for structs; ordinary field-level struct reads are not yet implemented and must fail closed.
+- `inline_schema: Option<ResolvedInlineSchema>` — Router-derived scalar-or-struct projection for this concrete edge label. `None` for `UnnamedProfile`; `Scalar { property_id }` for `InlineScalar`; `Struct { property_id, fields }` for `InlineStruct`, where each field carries its name, declaration-ordered byte offset, and exact scalar `EdgePayloadProfile`. Graph validates this projection but never persists or infers it.
 
-Graph must treat `inline_property_id` as a read-only plan-scoped projection. It does not own the schema and must not infer or persist the property identity.
+Graph must treat `inline_schema` as a read-only plan-scoped projection. It does not own the schema and must not infer or persist the property identity or field layout.
 
 For a requested edge property:
 
-- If the concrete label's `inline_property_id` equals the resolved property id and the profile is a scalar encoding, Graph decodes the edge payload bytes strictly and returns the exact GQL scalar value. Malformed, missing, or unsupported payloads fail closed; the sidecar property store is never consulted as fallback.
-- If the profile is `RawBytes` (struct schema in Slice 24), Graph must not attempt scalar decode or sidecar fallback for that property; field-level struct access remains planned and must be rejected fail-closed.
+- If the concrete label's `inline_schema` is `Scalar { property_id }` and the resolved property id matches, Graph decodes the edge payload bytes strictly and returns the exact GQL scalar value. Malformed, missing, or unsupported payloads fail closed; the sidecar property store is never consulted as fallback.
+- If the concrete label's `inline_schema` is `Struct { property_id, fields }` and the resolved property id matches the top-level struct property, Graph validates the field layout (non-empty, unique names, non-overlapping offsets, field-width sum equals payload width) and decodes the payload into a declaration-ordered GQL `Value::Record`. Accessing an unknown nested field returns `Value::Null`; a malformed projection or payload fails closed before sidecar fallback.
 - Otherwise Graph falls back to the sidecar property store (`GraphStore::edge_property`), preserving existing non-inline behavior.
 
 This rule is shared by expression evaluation, edge-record projection, shortest-path hop cost evaluation (`COST BY e.property`), and any downstream consumer that reads an edge property.
 
 `PlanOp::ShortestPath` with `cost: ShortestPathCost::EdgeCostExpr { expr, .. }` contributes any properties read by `expr` to the plan's property-use metadata, so Router projection includes them for execution.
 
-## Inline scalar mutation contract
+## Inline mutation contract
 
 For `InsertEdge` and edge-target `SetProperties` / `SetProperties::AllProperties` / `RemoveProperties`,
-Graph classifies evaluated assignments using the same `ResolvedEdgeLabel.inline_property_id` projection:
+Graph classifies evaluated assignments using the `ResolvedEdgeLabel.inline_schema` projection:
 
-- Exactly one assignment for the inline property id is required when the concrete edge label has an
-  `InlineScalar` schema. Missing, duplicate, `NULL`, overflowing, signedness-mismatched, non-finite,
-  or malformed fixed-byte values fail closed before any storage write.
+- For an `InlineScalar` schema, exactly one assignment for the property id is required. Missing, duplicate, `NULL`, overflowing, signedness-mismatched, non-finite, or malformed fixed-byte values fail closed before any storage write.
+- For an `InlineStruct` schema, any edge mutation path (insert, `SET e.prop`, all-properties replacement, or `REMOVE e.prop`) is rejected fail-closed until Slice 26. This is a label-wide gate: even sidecar property SET/REMOVE on a Struct-labeled edge cannot fall through, because Slice 25 defines no mutation contract for that label shape. The top-level struct property is never written to sidecar state.
 - The inline value is encoded into the exact fixed-width payload bytes using one Graph-owned scalar
   codec shared with read and predicate paths.
 - `InsertEdge` calls the existing payload-aware edge insert commits (`insert_*_edge_with_payload_bytes`)

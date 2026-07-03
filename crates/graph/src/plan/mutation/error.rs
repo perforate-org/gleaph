@@ -66,6 +66,12 @@ pub enum PlanMutationError {
     CannotRemoveInlineProperty {
         property: String,
     },
+    /// Fixed-size inline STRUCT mutation packing is not implemented in this slice.
+    UnsupportedInlineStructMutation {
+        label: String,
+        property: String,
+    },
+
     /// A sidecar property value cannot be persisted as binary bytes (e.g. extension without a
     /// binary payload). Rejected before any canonical write so a partially initialized edge or a
     /// torn all-properties replacement cannot occur.
@@ -166,6 +172,12 @@ impl fmt::Display for PlanMutationError {
             ),
             Self::CannotRemoveInlineProperty { property } => {
                 write!(f, "inline property '{property}' cannot be removed")
+            }
+            Self::UnsupportedInlineStructMutation { label, property } => {
+                write!(
+                    f,
+                    "inline struct property '{property}' on label '{label}' cannot be mutated in this slice"
+                )
             }
             Self::InvalidSidecarPropertyValue { property, reason } => {
                 write!(

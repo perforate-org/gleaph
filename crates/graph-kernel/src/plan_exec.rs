@@ -293,18 +293,69 @@ pub struct ResolvedVertexLabel {
     pub id: VertexLabelId,
 }
 
+/// Physical field descriptor for one fixed-size inline edge STRUCT slot.
+///
+/// Router derives this from the canonical declaration order; Graph receives it as a plan-scoped
+/// projection and must not persist or infer it. Each descriptor carries only the data Graph needs
+/// to validate and decode the payload slice: field name, byte offset, and exact scalar profile.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct ResolvedInlineStructField {
+    pub name: String,
+    pub byte_offset: u16,
+    pub profile: EdgePayloadProfile,
+}
+
+/// Router-derived resolved schema for the named inline edge property of one concrete label.
+///
+/// Replaces the ambiguous `Option<PropertyId>` parallel wire state with one explicit enum:
+/// - `None`: this label has no named inline property.
+/// - `Scalar { property_id }`: one fixed-width scalar inline property.
+/// - `Struct { property_id, fields }`: one fixed-size inline STRUCT, declaration-ordered.
+///
+/// Graph receives this as a plan-scoped projection and must not persist or infer it.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub enum ResolvedInlineSchema {
+    #[serde(rename = "scalar")]
+    Scalar { property_id: PropertyId },
+    #[serde(rename = "struct")]
+    Struct {
+        property_id: PropertyId,
+        fields: Vec<ResolvedInlineStructField>,
+    },
+}
+
+impl ResolvedInlineSchema {
+    /// The inline property identity for this schema, regardless of scalar or struct shape.
+    #[inline]
+    pub fn property_id(&self) -> PropertyId {
+        match self {
+            Self::Scalar { property_id } | Self::Struct { property_id, .. } => *property_id,
+        }
+    }
+
+    /// True when this resolved schema is a struct projection.
+    #[inline]
+    pub fn is_struct(&self) -> bool {
+        matches!(self, Self::Struct { .. })
+    }
+
+    /// True when this resolved schema is a scalar projection.
+    #[inline]
+    pub fn is_scalar(&self) -> bool {
+        matches!(self, Self::Scalar { .. })
+    }
+}
+
 #[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
 pub struct ResolvedEdgeLabel {
     pub name: String,
     pub id: EdgeLabelId,
     /// Router-owned logical schema (ADR 0008). Default `no_payload` when omitted on legacy wire.
     pub payload_profile: EdgePayloadProfile,
-    /// Router-derived named inline property identity for this concrete edge label (ADR 0034 Slices 21/24).
-    /// `Some(property_id)` for both `InlineScalar` and `InlineStruct` named inline schemas;
-    /// `UnnamedProfile` emits `None`. Slice 24 projects only the top-level inline property identity
-    /// plus the opaque `RawBytes` profile; field-level struct reads and mutation packing remain planned.
+    /// Router-derived named inline property schema for this concrete edge label (ADR 0034 Slices 21/24/25).
+    /// `None` for labels with no named inline slot; otherwise a scalar or struct projection.
     /// Graph receives this as a plan-scoped projection and must not persist or infer it.
-    pub inline_property_id: Option<PropertyId>,
+    pub inline_schema: Option<ResolvedInlineSchema>,
 }
 
 impl ResolvedEdgeLabel {
@@ -313,27 +364,47 @@ impl ResolvedEdgeLabel {
         id: EdgeLabelId,
         payload_profile: EdgePayloadProfile,
     ) -> Self {
-        Self::with_inline_property(name, id, payload_profile, None)
+        Self::with_inline_schema(name, id, payload_profile, None)
     }
 
+    pub fn with_inline_schema(
+        name: impl Into<String>,
+        id: EdgeLabelId,
+        payload_profile: EdgePayloadProfile,
+        inline_schema: Option<ResolvedInlineSchema>,
+    ) -> Self {
+        Self {
+            name: name.into(),
+            id,
+            payload_profile,
+            inline_schema,
+        }
+    }
+
+    /// Scalar convenience constructor: builds a `Scalar { property_id }` resolved inline schema.
     pub fn with_inline_property(
         name: impl Into<String>,
         id: EdgeLabelId,
         payload_profile: EdgePayloadProfile,
         inline_property_id: Option<PropertyId>,
     ) -> Self {
-        Self {
-            name: name.into(),
-            id,
-            payload_profile,
-            inline_property_id,
-        }
+        let inline_schema =
+            inline_property_id.map(|property_id| ResolvedInlineSchema::Scalar { property_id });
+        Self::with_inline_schema(name, id, payload_profile, inline_schema)
     }
 
     /// The inline property identity projected from Router schema, if any.
     #[inline]
     pub fn inline_property_id(&self) -> Option<PropertyId> {
-        self.inline_property_id
+        self.inline_schema
+            .as_ref()
+            .map(ResolvedInlineSchema::property_id)
+    }
+
+    /// The resolved inline schema projection, if any.
+    #[inline]
+    pub fn inline_schema(&self) -> Option<&ResolvedInlineSchema> {
+        self.inline_schema.as_ref()
     }
 }
 
@@ -841,7 +912,59 @@ mod tests {
         let bytes = Encode!(&label).expect("encode ResolvedEdgeLabel with inline property id");
         let decoded: ResolvedEdgeLabel = Decode!(&bytes, ResolvedEdgeLabel).expect("decode");
         assert_eq!(decoded, label);
-        assert_eq!(decoded.inline_property_id, Some(PropertyId::from_raw(42)));
+        assert_eq!(decoded.inline_property_id(), Some(PropertyId::from_raw(42)));
+        assert!(matches!(
+            decoded.inline_schema,
+            Some(ResolvedInlineSchema::Scalar { property_id })
+            if property_id == PropertyId::from_raw(42)
+        ));
+    }
+
+    #[test]
+    fn resolved_edge_label_struct_schema_roundtrip() {
+        let label = ResolvedEdgeLabel::with_inline_schema(
+            "AFFINITY".to_string(),
+            EdgeLabelId::from_raw(7),
+            EdgePayloadProfile::opaque_bytes(16),
+            Some(ResolvedInlineSchema::Struct {
+                property_id: PropertyId::from_raw(42),
+                fields: vec![
+                    ResolvedInlineStructField {
+                        name: "score".to_string(),
+                        byte_offset: 0,
+                        profile: EdgePayloadProfile {
+                            byte_width: 4,
+                            encoding: EdgePayloadEncoding::F32,
+                        },
+                    },
+                    ResolvedInlineStructField {
+                        name: "confidence".to_string(),
+                        byte_offset: 4,
+                        profile: EdgePayloadProfile {
+                            byte_width: 4,
+                            encoding: EdgePayloadEncoding::F32,
+                        },
+                    },
+                    ResolvedInlineStructField {
+                        name: "updated_at".to_string(),
+                        byte_offset: 8,
+                        profile: EdgePayloadProfile {
+                            byte_width: 8,
+                            encoding: EdgePayloadEncoding::RawU64,
+                        },
+                    },
+                ],
+            }),
+        );
+        let bytes = Encode!(&label).expect("encode ResolvedEdgeLabel with struct schema");
+        let decoded: ResolvedEdgeLabel = Decode!(&bytes, ResolvedEdgeLabel).expect("decode");
+        assert_eq!(decoded, label);
+        assert_eq!(decoded.inline_property_id(), Some(PropertyId::from_raw(42)));
+        assert!(
+            decoded
+                .inline_schema()
+                .is_some_and(ResolvedInlineSchema::is_struct)
+        );
     }
 
     #[test]
@@ -861,6 +984,11 @@ mod tests {
         let entry = table
             .resolved_edge_label(EdgeLabelId::from_raw(7))
             .expect("label");
-        assert_eq!(entry.inline_property_id, Some(PropertyId::from_raw(42)));
+        assert_eq!(entry.inline_property_id(), Some(PropertyId::from_raw(42)));
+        assert!(matches!(
+            entry.inline_schema,
+            Some(ResolvedInlineSchema::Scalar { property_id })
+            if property_id == PropertyId::from_raw(42)
+        ));
     }
 }

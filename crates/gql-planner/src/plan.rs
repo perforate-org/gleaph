@@ -926,7 +926,15 @@ fn collect_property_names_from_expr(expr: &Expr, uses: &mut PlanPropertyUses) {
 }
 
 fn collect_read_properties_from_expr(expr: &Expr, uses: &mut PlanPropertyUses) {
-    if let ExprKind::PropertyAccess { property, .. } = &expr.kind {
+    // Only the property whose immediate base is a graph variable is a graph property.
+    // Nested suffixes such as e.stats.score refer to fields of a returned record and
+    // must not be interned as graph properties.
+    if let ExprKind::PropertyAccess {
+        expr: base,
+        property,
+    } = &expr.kind
+        && matches!(base.kind, ExprKind::Variable(_))
+    {
         uses.add_property(
             &Str::from(property.as_str()),
             PropertyUseIntent::ReadExisting,
@@ -1510,6 +1518,60 @@ mod property_uses_tests {
             uses.properties.get("distance" as &str),
             Some(&PropertyUseIntent::ReadExisting),
             "COST BY e.distance must project 'distance' as a read property"
+        );
+    }
+
+    #[test]
+    fn nested_property_access_contributes_only_top_level_property_use() {
+        let plan = PhysicalPlan::from_ops(vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: None,
+                property_projection: None,
+            },
+            PlanOp::Expand {
+                src: "a".into(),
+                edge: "e".into(),
+                dst: "b".into(),
+                direction: gleaph_gql::types::EdgeDirection::PointingRight,
+                label: Some("AFFINITY".into()),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: None,
+                edge_payload_predicate: None,
+                edge_vector_predicate: None,
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+                emit_edge_binding: true,
+                near_group_var: None,
+                far_group_var: None,
+                path_var: None,
+                emit_path_binding: false,
+            },
+            PlanOp::Filter {
+                condition: Expr::new(ExprKind::Compare {
+                    left: Box::new(Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(Expr::new(ExprKind::PropertyAccess {
+                            expr: Box::new(Expr::new(ExprKind::Variable("e".into()))),
+                            property: "stats".into(),
+                        })),
+                        property: "score".into(),
+                    })),
+                    op: CmpOp::Ge,
+                    right: Box::new(Expr::new(ExprKind::Literal(Value::Float64(3.0)))),
+                }),
+            },
+        ]);
+        let uses = plan.property_uses();
+        assert_eq!(
+            uses.properties.get("stats" as &str),
+            Some(&PropertyUseIntent::ReadExisting),
+            "only the top-level graph property 'stats' should be a property use"
+        );
+        assert!(
+            !uses.properties.contains_key("score" as &str),
+            "record field 'score' must not be a graph property use"
         );
     }
 }

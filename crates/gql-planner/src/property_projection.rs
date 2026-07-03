@@ -423,24 +423,21 @@ fn var_used_as_non_property_receiver(expr: &Expr, var: &str) -> bool {
     }
 }
 
-fn chain_root_is_var(expr: &Expr, var: &str) -> bool {
-    match &expr.kind {
-        ExprKind::Variable(v) => v == var,
-        ExprKind::PropertyAccess { expr: base, .. } => chain_root_is_var(base, var),
-        _ => false,
-    }
-}
-
 fn collect_property_names_on_var(expr: &Expr, var: &str, out: &mut BTreeSet<String>) {
     match &expr.kind {
         ExprKind::PropertyAccess {
             expr: base,
             property,
         } => {
-            if chain_root_is_var(base, var) {
+            if matches!(&base.kind, ExprKind::Variable(v) if v == var) {
+                // Only the immediate property on the graph variable is a graph property.
+                // Nested suffixes such as `e.stats.score` resolve against the returned record.
                 out.insert(property.clone());
+            } else {
+                // The property chain is rooted somewhere else; keep walking in case a deeper
+                // base still resolves to the target variable.
+                collect_property_names_on_var(base, var, out);
             }
-            collect_property_names_on_var(base, var, out);
         }
         _ => {
             for_each_immediate_child_expr(expr, |c| {
@@ -660,6 +657,33 @@ mod tests {
     fn whole_node_disables_projection() {
         let q = Expr::new(ExprKind::Variable("n".into()));
         assert!(infer_projection_names(&[&q], "n").is_none());
+    }
+
+    #[test]
+    fn nested_property_chain_collects_only_immediate_graph_property() {
+        let q = Expr::new(ExprKind::PropertyAccess {
+            expr: Box::new(Expr::new(ExprKind::PropertyAccess {
+                expr: Box::new(Expr::new(ExprKind::Variable("e".into()))),
+                property: "stats".into(),
+            })),
+            property: "score".into(),
+        });
+        let names = infer_projection_names(&[&q], "e").expect("subset");
+        assert!(names.contains("stats"));
+        assert!(
+            !names.contains("score"),
+            "record suffix must not be a graph property"
+        );
+    }
+
+    #[test]
+    fn ordinary_scalar_property_still_collected() {
+        let q = Expr::new(ExprKind::PropertyAccess {
+            expr: Box::new(Expr::new(ExprKind::Variable("e".into()))),
+            property: "distance".into(),
+        });
+        let names = infer_projection_names(&[&q], "e").expect("subset");
+        assert!(names.contains("distance"));
     }
 
     #[test]
