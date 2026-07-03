@@ -187,6 +187,13 @@ notification to the primary must be explicit because passive `agent_status` chan
 into the active conversation. Use bounded `herdr wait` calls when necessary and read recent unwrapped
 output rather than assuming status delivery.
 
+Do not keep a reviewer or validation agent turn alive by polling another pane, repeatedly calling
+`herdr wait`, or sleeping until implementation completes. After receiving its role/instructions, the
+reviewer must end that setup turn and remain idle. The implementation's explicit `herdr pane run`
+notification starts the review turn. Likewise, validation starts only when the reviewer explicitly
+assigns it. This prevents idle waiting from consuming model tokens or showing a misleading perpetual
+`working` state.
+
 For opencode panes, the alternate-screen TUI may not preserve the final response in herdr scrollback.
 Every implementation, review, and validation prompt must therefore require the agent to write its
 final report to a unique file under `/private/tmp/` immediately before sending the herdr notification.
