@@ -53,6 +53,10 @@ Architecture and semantics for **Gleaph** (IC graph database) and the **GQL** st
 | [adr/0031-vertex-embedding-store-and-derived-vector-index.md](adr/0031-vertex-embedding-store-and-derived-vector-index.md) | accepted (planned) | Vertex embedding store and derived vector index canister |
 | [adr/0032-vector-index-slab-page-store.md](adr/0032-vector-index-slab-page-store.md) | accepted (planned) | Vector-index physical page store split into metadata directory and raw stable slab |
 | [adr/0034-gleaph-gql-extension-syntax.md](adr/0034-gleaph-gql-extension-syntax.md) | accepted (syntax design) | Dedicated Gleaph GQL extension syntax contract |
+| [adr/0035-provision-canister-and-issuance-protocol.md](adr/0035-provision-canister-and-issuance-protocol.md) | proposed | Provision canister and issuance protocol |
+| [adr/0036-versioned-wasm-artifact-catalog.md](adr/0036-versioned-wasm-artifact-catalog.md) | proposed | Versioned WASM artifact catalog |
+| [adr/0037-provisioned-canister-lifecycle-and-controllers.md](adr/0037-provisioned-canister-lifecycle-and-controllers.md) | proposed | Provisioned canister lifecycle and controllers |
+| [adr/0038-provisioning-authorization-and-cycles-funding.md](adr/0038-provisioning-authorization-and-cycles-funding.md) | proposed | Provisioning authorization and cycles funding |
 
 ## Conventions
 
