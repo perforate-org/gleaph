@@ -181,6 +181,13 @@ pub async fn backfill_vertex_embeddings(
     call_graph_result(graph, "backfill_vertex_embeddings", req).await
 }
 
+pub async fn ingest_vertex_embedding(
+    graph: Principal,
+    args: gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs,
+) -> Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String> {
+    call_graph_result(graph, "admin_ingest_vertex_embedding", args).await
+}
+
 pub async fn finalize_bulk_ingest(
     graph: Principal,
     args: BulkIngestFinalizeArgs,

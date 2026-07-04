@@ -2,7 +2,7 @@
 
 Date: 2026-06-23
 Status: accepted (partially implemented)
-Last revised: 2026-06-25
+Last revised: 2026-07-04 01:39:31 UTC +0000
 
 > **Status note:** The boundary decision is accepted. Slice 1 (the canonical graph-owned
 > vertex embedding store) and Slice 2 (the derived sync path plus a degenerate `ivf_flat`
@@ -65,6 +65,21 @@ Last revised: 2026-06-25
 >   (router orchestration → `graph_client::backfill_vertex_embeddings` → graph endpoint → existing
 >   worker) taking an explicit `(shard_id, start_vertex_id, max_vertices)` resume cursor; it fails
 >   closed while dispatch is not ready.
+>
+> **Plan 0048 (implemented): canonical vertex-embedding ingestion boundary.** Adds the missing
+> application-to-Gleaph write path for externally generated vertex embeddings. The Router admin
+> endpoint `admin_ingest_vertex_embedding` accepts a logical graph name, an opaque encoded vertex id,
+> a registered embedding name, and a finite `Vec<f32>`. Router decodes the vertex id with the graph
+> encoding key, validates the live shard and registered vector definition (dims, metric, encoding),
+> and dispatches a single canonical write to the owning Graph shard. The Graph endpoint
+> `admin_ingest_vertex_embedding` (Router-only caller) verifies vertex existence, installs the
+> supplied ephemeral indexed-embedding catalog, commits canonical bytes via the existing
+> `set_vertex_embedding` path, and attempts the derived vector-index projection. The result reports
+> the canonical `embedding_version` and an explicit `projection_outcome` of `Applied` or
+> `DeferredForRepair`, so callers do not retry a canonical write that has already committed when the
+> derived index is temporarily unreachable. Direct vector-canister seeding remains a test/index-only
+> path; product ingestion must flow through Router. Social-demo semantic retrieval remains a later
+> planned slice.
 >
 > **Slice 5 (implemented): exact `ivf_flat` search MVP (read path).** Slice 5 lands the first
 > production vector-search read path over the already-synced derived index, with **no stable-layout

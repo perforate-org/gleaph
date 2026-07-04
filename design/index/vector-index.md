@@ -1,7 +1,7 @@
 # Vector index
 
-Last updated: 2026-07-01
-Anchor timestamp: 2026-07-01 07:07:02 UTC +0000
+Last updated: 2026-07-04
+Anchor timestamp: 2026-07-04 01:39:31 UTC +0000
 
 ## Status
 
@@ -34,6 +34,13 @@ Slice 4 is implemented: the delete-spanning **incarnation fence** (canonical
 and **activates production dispatch** behind a Router-owned stable activation flag
 (`ROUTER_VECTOR_DISPATCH_ACTIVATION`, MemoryId 43, default off) plus a per-graph readiness gate. See
 *Router catalog, target resolution, and the activation gate (Slice 4, implemented)* below.
+
+Plan 0048 is implemented: the canonical vertex-embedding ingestion boundary adds a
+Router admin write surface (`admin_ingest_vertex_embedding`) that resolves the opaque graph-scoped
+vertex id, validates the registered embedding definition, and dispatches a single canonical write to
+the owning Graph shard. Graph commits the canonical bytes/version and attempts the derived vector
+projection; the result distinguishes `Applied` from `DeferredForRepair` so callers do not retry an
+already-committed canonical write. Social-demo semantic retrieval remains planned.
 
 **Without an installed catalog the graph shard skips vector dispatch entirely** (mirroring
 property-index behavior when no catalog is present); the shard never persists an indexed-embedding

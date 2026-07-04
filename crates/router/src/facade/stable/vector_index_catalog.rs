@@ -391,6 +391,18 @@ pub(crate) fn get_vector_index(graph_id: GraphId, index_id: u32) -> Option<Vecto
     ROUTER_VECTOR_INDEXES.with_borrow(|map| map.get(&VectorIndexKey::new(graph_id, index_id)))
 }
 
+/// Resolve the single vector-index definition that derives from `embedding_name_id`, if any.
+/// Registration enforces one vector index per embedding name per graph, so at most one record
+/// matches.
+pub(crate) fn get_vector_index_by_embedding_name_id(
+    graph_id: GraphId,
+    embedding_name_id: EmbeddingNameId,
+) -> Option<VectorIndexDefRecord> {
+    list_vector_indexes(graph_id)
+        .into_iter()
+        .find(|def| def.embedding_name_id == embedding_name_id)
+}
+
 /// Fail closed unless the dynamic per-graph vector dispatch gate is satisfied for `def`.
 ///
 /// The gate is `global activation flag ON && every live shard of the graph vector-attached`. This

@@ -504,6 +504,17 @@ async fn admin_attach_vector_index_shard(
     canister::admin_attach_vector_index_shard(args).await
 }
 
+/// Admin: ingest one finite F32 vertex embedding through Router into the owning Graph shard
+/// (plan 0048). Resolves the opaque graph-scoped vertex id, validates the registered embedding
+/// definition, and dispatches a single canonical write. The result reports the canonical embedding
+/// version and whether the derived vector projection was applied or deferred for repair.
+#[update]
+async fn admin_ingest_vertex_embedding(
+    args: types::AdminIngestVertexEmbeddingArgs,
+) -> Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, RouterError> {
+    canister::admin_ingest_vertex_embedding(args).await
+}
+
 /// Read-only exact `ivf_flat` vector search: composite query that resolves the activated target and
 /// forwards to the router-guarded vector canister (ADR 0031 Slice 5). Fails closed unless the
 /// Slice 4 activation gate is satisfied.

@@ -213,6 +213,40 @@ impl IndexedEmbeddingCatalog {
     }
 }
 
+/// Router → graph shard: one bounded canonical vertex-embedding ingestion request.
+///
+/// The Router resolves the opaque graph-scoped vertex id and the embedding definition before
+/// dispatching; the graph shard only sees the local vertex id and the authoritative
+/// [`IndexedEmbeddingSpec`]. The canonical byte encoding happens inside the graph-owned write
+/// boundary.
+#[derive(Clone, Debug, PartialEq, CandidType, Serialize, Deserialize)]
+pub struct VertexEmbeddingIngestionArgs {
+    pub local_vertex_id: crate::federation::LocalVertexId,
+    pub spec: IndexedEmbeddingSpec,
+    pub values: Vec<f32>,
+}
+
+/// Outcome of the derived vector-index projection after a canonical embedding commit.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum VertexEmbeddingProjectionOutcome {
+    /// The derived vector canister accepted the upsert in this message.
+    Applied,
+    /// The derived vector canister was unreachable or not yet attached; the full idempotent batch
+    /// was durably journaled for repair and will converge automatically.
+    DeferredForRepair,
+}
+
+/// Result of [`VertexEmbeddingIngestionArgs`].
+///
+/// `embedding_version` is the canonical `StoredEmbedding.version` after the write. The
+/// `projection_outcome` distinguishes a fully applied derived projection from a durable deferred
+/// repair so callers do not blindly retry a canonical write that has already committed.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct VertexEmbeddingIngestionResult {
+    pub embedding_version: u64,
+    pub projection_outcome: VertexEmbeddingProjectionOutcome,
+}
+
 /// Upper bound on `top_k` accepted by a single vector search (ADR 0031 Slice 5). Bounds the
 /// in-heap candidate set and result size so one query stays within the canister instruction budget.
 pub const MAX_VECTOR_SEARCH_TOP_K: u32 = 1024;

@@ -1,7 +1,7 @@
 # Execution pipeline
 
-Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 15:17:43 UTC +0000
+Last updated: 2026-07-04
+Anchor timestamp: 2026-07-04 01:39:31 UTC +0000
 
 ## Purpose
 
@@ -188,6 +188,20 @@ Internal bindings may stay lazy until output:
 | `Value` | Already materialized |
 
 `materialize_plan_rows` / `PlanQueryResult` convert rows for GQL clients.
+
+## Canonical vertex embedding ingestion
+
+Plan 0048 adds a Router-admin write path for externally generated vertex embeddings. The Router
+endpoint `admin_ingest_vertex_embedding` resolves the opaque encoded vertex id with the graph
+encoding key, validates the registered embedding definition, and dispatches a single bounded write
+to the owning Graph shard. The Graph endpoint (`admin_ingest_vertex_embedding`, Router-only caller)
+verifies vertex existence, installs the supplied ephemeral indexed-embedding catalog, commits the
+canonical F32 bytes through the existing `set_vertex_embedding` path, and attempts the derived
+vector-index projection. The returned `VertexEmbeddingIngestionResult` carries the canonical
+`embedding_version` and an explicit `projection_outcome` (`Applied` or `DeferredForRepair`) so callers
+do not mistake a durable deferred repair for a failed write. This path keeps canonical ownership in
+Graph, vector-index ownership derived, and never allows direct application writes to the vector
+canister.
 
 ## Error model
 

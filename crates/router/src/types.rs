@@ -328,6 +328,19 @@ pub struct RouterVectorSearchRequest {
     pub top_k: u32,
 }
 
+/// Admin: ingest one finite F32 vertex embedding through Router into the owning Graph shard
+/// (plan 0048). The caller supplies only the logical graph name, the opaque encoded vertex id,
+/// the registered embedding name, and the vector values; Router resolves ownership and the
+/// definition and dispatches a single canonical write.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq)]
+pub struct AdminIngestVertexEmbeddingArgs {
+    pub logical_graph_name: String,
+    /// Opaque 8-byte graph-scoped vertex id (`ELEMENT_ID(v)`).
+    pub encoded_vertex_id: Vec<u8>,
+    pub embedding_name: String,
+    pub values: Vec<f32>,
+}
+
 /// Progress from one derived vector-index backfill step (ADR 0031 Slice 5).
 #[derive(CandidType, Serialize, Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct AdminVectorIndexBackfillStepResult {

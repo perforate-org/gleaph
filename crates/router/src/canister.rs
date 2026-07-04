@@ -688,6 +688,120 @@ pub(crate) async fn admin_vector_index_backfill_step(
     })
 }
 
+/// Admin (plan 0048): ingest one finite F32 vertex embedding through Router into the owning
+/// Graph shard. Resolves the opaque graph-scoped vertex id, validates the registered embedding
+/// name/dimensions/finiteness, and dispatches a single canonical write. Returns the canonical
+/// embedding version and an explicit projection outcome (`Applied` or `DeferredForRepair`).
+pub(crate) async fn admin_ingest_vertex_embedding(
+    args: crate::types::AdminIngestVertexEmbeddingArgs,
+) -> Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, RouterError> {
+    crate::rbac::authorize_index_ddl(&msg_caller())?;
+
+    let store = RouterStore::new();
+    let (graph_canister, ingestion_args) = resolve_vertex_embedding_ingestion(&args, &store)?;
+
+    crate::graph_client::ingest_vertex_embedding(graph_canister, ingestion_args)
+        .await
+        .map_err(RouterError::Internal)
+}
+
+fn resolve_vertex_embedding_ingestion(
+    args: &crate::types::AdminIngestVertexEmbeddingArgs,
+    store: &RouterStore,
+) -> Result<
+    (
+        candid::Principal,
+        gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs,
+    ),
+    RouterError,
+> {
+    use crate::facade::stable::{embedding_name_catalog, vector_index_catalog};
+    use gleaph_graph_kernel::federation::{EncodedVertexId, decode_global_vertex_id};
+
+    if args.embedding_name.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "embedding_name must not be empty".to_owned(),
+        ));
+    }
+    if args.values.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "values must not be empty".to_owned(),
+        ));
+    }
+    if args.values.iter().copied().any(|v| !v.is_finite()) {
+        return Err(RouterError::InvalidArgument(
+            "values must be finite".to_owned(),
+        ));
+    }
+    if args.encoded_vertex_id.len() != gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES {
+        return Err(RouterError::InvalidArgument(format!(
+            "encoded_vertex_id must be exactly {} bytes",
+            gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES
+        )));
+    }
+
+    let graph_id = store.resolve_graph_id(&args.logical_graph_name)?;
+    let key = store.graph_element_id_encoding_key(graph_id)?;
+    let encoded_bytes: [u8; gleaph_graph_kernel::federation::ENCODED_VERTEX_ID_BYTES] =
+        args.encoded_vertex_id.as_slice().try_into().map_err(|_| {
+            RouterError::InvalidArgument("encoded_vertex_id conversion failed".to_owned())
+        })?;
+    let global_id = decode_global_vertex_id(&key, EncodedVertexId(encoded_bytes));
+
+    let live_shards = store.list_live_shards_for_graph_id(graph_id)?;
+    let shard = live_shards
+        .into_iter()
+        .find(|s| s.shard_id == global_id.shard_id)
+        .ok_or(RouterError::ShardNotRegistered)?;
+
+    let name_id = embedding_name_catalog::lookup_embedding_name_id(graph_id, &args.embedding_name)
+        .ok_or_else(|| {
+            RouterError::NotFound(format!(
+                "embedding name {} is not registered for this graph",
+                args.embedding_name
+            ))
+        })?;
+    let def = vector_index_catalog::get_vector_index_by_embedding_name_id(graph_id, name_id)
+        .ok_or_else(|| {
+            RouterError::NotFound(format!(
+                "no vector index registered for embedding name {}",
+                args.embedding_name
+            ))
+        })?;
+
+    if args.values.len() != def.dims as usize {
+        return Err(RouterError::InvalidArgument(format!(
+            "values length {} does not match vector index dims {}",
+            args.values.len(),
+            def.dims
+        )));
+    }
+    if def.encoding != gleaph_graph_kernel::vector_index::VectorEncoding::F32 {
+        return Err(RouterError::InvalidArgument(format!(
+            "encoding {:?} is not supported for ingestion; only F32 is accepted",
+            def.encoding
+        )));
+    }
+
+    let spec = gleaph_graph_kernel::vector_index::IndexedEmbeddingSpec {
+        embedding_name_id: name_id.raw(),
+        index_id: def.index_id,
+        kind: def.kind,
+        metric: def.metric,
+        encoding: def.encoding,
+        dims: def.dims,
+    };
+
+    Ok((
+        shard.graph_canister,
+        gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs {
+            local_vertex_id: global_id.local_vertex_id,
+            spec,
+            values: args.values.clone(),
+        },
+    ))
+}
+
 /// Admin (ADR 0031 Slice 4): flip the global vector-dispatch activation flag. `false` keeps
 /// production dispatch/backfill fail-closed across all graphs; reversible.
 pub(crate) fn admin_set_vector_dispatch_activation(enabled: bool) -> Result<(), RouterError> {
@@ -1193,4 +1307,223 @@ pub(crate) async fn admin_attach_vector_index_shard(
     RouterStore::new()
         .admin_attach_vector_index_shard(caller, args)
         .await
+}
+
+#[cfg(test)]
+mod vertex_embedding_ingestion_tests {
+    use super::*;
+    use crate::facade::store::RouterStore;
+    use crate::init::RouterInitArgs;
+    use crate::types::{
+        AdminRegisterShardArgs, GraphRegistryEntry, GraphStatus, ProvisioningState,
+    };
+    use candid::Principal;
+    use gleaph_graph_kernel::entry::GraphId;
+    use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId, encode_global_vertex_id};
+    use gleaph_graph_kernel::vector_index::{VectorEncoding, VectorIndexKind, VectorMetric};
+    use std::collections::BTreeSet;
+
+    fn admin() -> Principal {
+        Principal::from_slice(&[1; 29])
+    }
+    fn graph_canister() -> Principal {
+        Principal::self_authenticating([2; 32])
+    }
+    fn index_canister() -> Principal {
+        Principal::self_authenticating([3; 32])
+    }
+
+    fn setup() -> (RouterStore, GraphId) {
+        let store = RouterStore::new();
+        store.init_from_args(&RouterInitArgs {
+            issuing_principal: Principal::anonymous(),
+            initial_admins: vec![],
+        });
+        let a = admin();
+        crate::facade::auth::grant_admins(&[a]);
+        store
+            .admin_register_graph(
+                a,
+                GraphRegistryEntry {
+                    graph_id: GraphId::from_raw(0),
+                    graph_name: "ingest.graph".to_owned(),
+                    canister_id: Principal::management_canister(),
+                    owner: a,
+                    admins: BTreeSet::new(),
+                    status: GraphStatus::Active,
+                    version: 1,
+                    updated_at_ns: 0,
+                    provisioning_state: ProvisioningState::None,
+                    is_home: false,
+                },
+            )
+            .expect("register graph");
+        let graph_id = crate::facade::stable::graph_catalog::lookup_graph_id("ingest.graph")
+            .expect("graph id");
+        futures::executor::block_on(store.admin_register_shard(
+            a,
+            AdminRegisterShardArgs {
+                shard_id: ShardId::new(0),
+                graph_canister: graph_canister(),
+                index_canister: index_canister(),
+                logical_graph_name: "ingest.graph".to_owned(),
+            },
+        ))
+        .expect("register shard");
+        let name_id = crate::facade::stable::embedding_name_catalog::intern_embedding_name(
+            graph_id,
+            "title_vec",
+        )
+        .expect("intern");
+        crate::facade::stable::vector_index_catalog::register_vector_index(
+            graph_id,
+            1,
+            name_id,
+            VectorIndexKind::IvfFlat,
+            VectorMetric::L2Squared,
+            VectorEncoding::F32,
+            4,
+            None,
+            false,
+        )
+        .expect("register vector index");
+        (store, graph_id)
+    }
+
+    fn graph_id() -> GraphId {
+        crate::facade::stable::graph_catalog::lookup_graph_id("ingest.graph").expect("graph id")
+    }
+
+    fn encoded_vertex(local: u32) -> Vec<u8> {
+        let store = RouterStore::new();
+        let key = store
+            .graph_element_id_encoding_key(graph_id())
+            .expect("key");
+        let global = GlobalVertexId::new(ShardId::new(0), local);
+        encode_global_vertex_id(&key, global).0.to_vec()
+    }
+
+    fn encoded_vertex_on_shard(local: u32, shard_id: u32) -> Vec<u8> {
+        let store = RouterStore::new();
+        let key = store
+            .graph_element_id_encoding_key(graph_id())
+            .expect("key");
+        let global = GlobalVertexId::new(ShardId::new(shard_id), local);
+        encode_global_vertex_id(&key, global).0.to_vec()
+    }
+
+    fn args(
+        encoded: Vec<u8>,
+        name: &str,
+        values: Vec<f32>,
+    ) -> crate::types::AdminIngestVertexEmbeddingArgs {
+        crate::types::AdminIngestVertexEmbeddingArgs {
+            logical_graph_name: "ingest.graph".to_string(),
+            encoded_vertex_id: encoded,
+            embedding_name: name.to_string(),
+            values,
+        }
+    }
+
+    #[test]
+    fn resolve_valid_ingestion() {
+        let (store, _graph_id) = setup();
+        let a = args(encoded_vertex(0), "title_vec", vec![1.0, 2.0, 3.0, 4.0]);
+        let (canister, ingestion) =
+            resolve_vertex_embedding_ingestion(&a, &store).expect("resolve");
+        assert_eq!(canister, graph_canister());
+        assert_eq!(ingestion.local_vertex_id, 0);
+        assert_eq!(ingestion.spec.dims, 4);
+        assert_eq!(ingestion.values, vec![1.0, 2.0, 3.0, 4.0]);
+    }
+
+    #[test]
+    fn empty_embedding_name_rejected() {
+        let (store, _graph_id) = setup();
+        let a = args(encoded_vertex(0), "", vec![1.0, 2.0, 3.0, 4.0]);
+        let err = resolve_vertex_embedding_ingestion(&a, &store).expect_err("empty name");
+        assert!(
+            matches!(err, RouterError::InvalidArgument(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn malformed_encoded_id_rejected() {
+        let (store, _graph_id) = setup();
+        let a = crate::types::AdminIngestVertexEmbeddingArgs {
+            logical_graph_name: "ingest.graph".to_string(),
+            encoded_vertex_id: vec![1, 2, 3],
+            embedding_name: "title_vec".to_string(),
+            values: vec![1.0, 2.0, 3.0, 4.0],
+        };
+        let err = resolve_vertex_embedding_ingestion(&a, &store).expect_err("malformed id");
+        assert!(
+            matches!(err, RouterError::InvalidArgument(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn unregistered_shard_rejected() {
+        let (store, _graph_id) = setup();
+        let a = args(
+            encoded_vertex_on_shard(0, 99),
+            "title_vec",
+            vec![1.0, 2.0, 3.0, 4.0],
+        );
+        let err = resolve_vertex_embedding_ingestion(&a, &store).expect_err("unregistered shard");
+        assert!(
+            matches!(err, RouterError::ShardNotRegistered),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn unknown_embedding_name_rejected() {
+        let (store, _graph_id) = setup();
+        let a = args(encoded_vertex(0), "unknown_vec", vec![1.0, 2.0, 3.0, 4.0]);
+        let err = resolve_vertex_embedding_ingestion(&a, &store).expect_err("unknown embedding");
+        assert!(
+            matches!(err, RouterError::NotFound(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn dimension_mismatch_rejected() {
+        let (store, _graph_id) = setup();
+        let a = args(encoded_vertex(0), "title_vec", vec![1.0, 2.0]);
+        let err = resolve_vertex_embedding_ingestion(&a, &store).expect_err("dimension mismatch");
+        assert!(
+            matches!(err, RouterError::InvalidArgument(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn non_finite_value_rejected() {
+        let (store, _graph_id) = setup();
+        let a = args(
+            encoded_vertex(0),
+            "title_vec",
+            vec![1.0, 2.0, f32::NAN, 4.0],
+        );
+        let err = resolve_vertex_embedding_ingestion(&a, &store).expect_err("non-finite");
+        assert!(
+            matches!(err, RouterError::InvalidArgument(_)),
+            "unexpected error: {err:?}"
+        );
+    }
+
+    #[test]
+    fn unauthorized_caller_rejected_by_rbac() {
+        assert!(
+            matches!(
+                crate::rbac::authorize_index_ddl(&Principal::anonymous()),
+                Err(RouterError::Forbidden)
+            ),
+            "anonymous caller must not pass index DDL authorization"
+        );
+    }
 }

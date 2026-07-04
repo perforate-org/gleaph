@@ -163,6 +163,14 @@ fn admin_set_vector_index_canister(vector_index_canister: candid::Principal) -> 
     canister::handlers::admin_set_vector_index_canister(vector_index_canister)
 }
 
+/// Router → graph (plan 0048): bounded canonical vertex-embedding ingestion.
+#[update(guard = "guard_router_canister")]
+async fn admin_ingest_vertex_embedding(
+    args: gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionArgs,
+) -> Result<gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult, String> {
+    canister::handlers::admin_ingest_vertex_embedding(args).await
+}
+
 #[cfg(feature = "pocket-ic-e2e")]
 #[update(guard = "guard_control_plane_admin")]
 async fn e2e_insert_vertex() -> Result<canister::types::E2eInsertVertexResult, String> {

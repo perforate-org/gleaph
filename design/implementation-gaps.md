@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 17:52:45 UTC +0000
+Last updated: 2026-07-04
+Anchor timestamp: 2026-07-04 01:39:31 UTC +0000
 
 ## Status
 
@@ -83,6 +83,35 @@ defect from being rediscovered without its prior reasoning.
   [demo/social-graph-rag.md](demo/social-graph-rag.md)
 
 ## Resolved gaps
+
+### GAP-2026-07-04-003 — No application-facing vertex-embedding ingestion boundary
+
+- **Status:** Resolved by plan 0048 implementation
+- **Severity:** P1 product gap
+- **Owner:** Router authorization/resolution + Graph canonical embedding store
+- **Observed behavior:** before plan 0048, there was no canister API for an application or deployment
+  tool to write a canonical vertex embedding. Vector-index fixtures and demos had to seed the
+  derived `graph-vector-index` canister directly, bypassing Graph canonical ownership and the
+  Router embedding-name catalog.
+- **Expected or needed behavior:** an authorized caller should submit only graph name, opaque encoded
+  vertex id, registered embedding name, and finite F32 values to Router; Router should resolve
+  ownership and dispatch a single canonical write to the Graph shard; Graph should commit the
+  canonical bytes/version and drive derived convergence; the result must distinguish a fully
+  applied projection from a durable deferred repair.
+- **Resolution:** plan 0048 adds the Router admin endpoint `admin_ingest_vertex_embedding` and the
+  Router-only Graph endpoint `admin_ingest_vertex_embedding`. Router validates the encoded id, live
+  shard, and registered vector definition before dispatch; Graph verifies vertex existence, commits
+  canonical bytes through `set_vertex_embedding`, attempts `vector_pending` delivery, and returns
+  `VertexEmbeddingIngestionResult { embedding_version, projection_outcome }`. Invalid inputs fail
+  closed before any Graph call; projection failure defers to the existing repair journal while
+  keeping the canonical write.
+- **Evidence:** `crates/router/src/canister.rs::resolve_vertex_embedding_ingestion` unit tests;
+  `crates/graph/src/canister/handlers.rs::vertex_embedding_ingestion_tests` unit tests;
+  `crates/pocket-ic-tests/tests/adr0031_vertex_embedding_ingestion.rs` PocketIC contract proving
+  canonical ingestion reaches Router vector search without direct vector-canister seeding.
+- **Related contracts:** [ADR 0031](../adr/0031-vertex-embedding-store-and-derived-vector-index.md),
+  [design/index/vector-index.md](../index/vector-index.md),
+  [design/execution/pipeline.md](../execution/pipeline.md)
 
 ### GAP-2026-07-04-002 — `NEXT INSERT` lost edge endpoint identity
 
