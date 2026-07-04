@@ -40,6 +40,34 @@ command syntax; do not duplicate its socket or pane-management reference here.
 - Preserve unrelated worktree changes and never rewrite history.
 - Keep one conversation for the entire slice, including review fixes.
 - Notify the review pane only after edits, focused validation, and an honest report are complete.
+- Prefer the native `apply_patch` tool for manual edits. When the model/provider does not expose that
+  tool, the shell `apply_patch` executable is the only permitted fallback: include the patch text
+  directly in the tool call, do not stage it in `/tmp` or another file, and do not substitute
+  `cat`, `sed -i`, or a Python writer. Inspect the actual diff after every fallback patch. After two
+  failed patch attempts, stop and route editing to a pane whose tool path works instead of probing
+  more writers.
+
+  Use the patch grammar exactly; do not infer or probe it. A shell fallback may use a literal heredoc
+  only as `apply_patch` standard input:
+
+  ```sh
+  apply_patch <<'PATCH'
+  *** Begin Patch
+  *** Add File: path/to/new-file
+  +new contents
+  *** Update File: path/to/existing-file
+  @@
+   unchanged context
+  -old contents
+  +new contents
+  *** Delete File: path/to/obsolete-file
+  *** End Patch
+  PATCH
+  ```
+
+  Every added file-content line starts with `+`. Update hunks contain context (unchanged) lines,
+  removal (`-`) lines, or addition (`+`) lines. Omit operations that are not needed; do not add diff
+  `---`/`+++` headers or a trailing `@@` after hunk content.
 
 ### Review pane
 

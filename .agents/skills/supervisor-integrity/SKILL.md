@@ -33,12 +33,10 @@ discovered path once, and stop with the exact error if it still cannot be read.
 Never infer that a plan, ADR, validation run, or commit exists merely because another pane discussed
 or claimed it. Verify the artifact.
 
-When this environment provides `apply_patch`, require repository edits through the native tool call.
-Do not invoke an executable named `apply_patch`, pipe or redirect a temporary file into it, or stage
-replacement content under `/tmp` first. Do not allow supervised panes to create or rewrite files
-with `cat`, shell redirection, `sed -i`, or ad-hoc Python writers; these bypass the intended patch
-review surface. If the native patch call fails twice, stop and report the exact failure instead of
-switching to another writer.
+Enforce the native-first, reviewable `apply_patch` workflow and its bounded shell fallback from
+`herdr-workflow`. Do not allow supervised panes to switch from a failed patch path to unstructured
+writers or temporary replacement files. Treat two failed patch attempts as a routing decision, not
+an invitation to probe more editing mechanisms.
 
 `.agents/plans/` is intentionally ignored process state in this repository. Inspect it for the active
 handoff and numbering, but do not treat its ignored/untracked status as repository damage or a reason
