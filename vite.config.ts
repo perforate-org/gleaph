@@ -5,29 +5,6 @@ export default defineConfig({
     "*.{js,ts,tsx,json,md}": "vp check --fix",
   },
   run: {
-    tasks: {
-      "sdk:check": {
-        command: "vp run @gleaph/sdk#check",
-      },
-      "sdk:test": {
-        command: "vp run @gleaph/sdk#test",
-        dependsOn: ["sdk:check"],
-      },
-      "sdk:build": {
-        command: "vp run @gleaph/sdk#build",
-        dependsOn: ["sdk:check"],
-      },
-      "sdk:pack": {
-        command: "vp run @gleaph/sdk#pack",
-        dependsOn: ["sdk:test", "sdk:build"],
-      },
-      "dashboard:check": {
-        command: "vp run @gleaph/dashboard#check",
-      },
-      "dashboard:build": {
-        command: "vp run @gleaph/dashboard#build",
-        dependsOn: ["dashboard:check"],
-      },
-    },
+    tasks: {},
   },
 });

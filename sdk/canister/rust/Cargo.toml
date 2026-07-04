@@ -1,0 +1,11 @@
+[package]
+name = "gleaph-cdk"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+description = "Gleaph canister SDK helpers for inter-canister calls to the Gleaph Router"
+
+[dependencies]
+candid.workspace = true
+ic-cdk.workspace = true
+serde.workspace = true

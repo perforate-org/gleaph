@@ -1,5 +1,7 @@
 # @gleaph/sdk
 
+Location: `sdk/client/js` (moved from `sdk/js` during the SDK reorganization).
+
 Workspace package for the JS/TS Gleaph SDK.
 
 Current scope:
