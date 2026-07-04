@@ -23,6 +23,15 @@ canisters:
       configuration:
         package: gleaph-social-demo-gateway
 
+  - name: social-demo
+    recipe:
+      type: "@dfinity/asset-canister@v2.2.1"
+      configuration:
+        dir: frontend/apps/social-demo/dist
+        build:
+          - env HOME="$PWD/.icp/home" COREPACK_HOME="$PWD/.icp/corepack-home" XDG_CACHE_HOME="$PWD/.icp/xdg-cache" XDG_DATA_HOME="$PWD/.icp/xdg-data" CI=1 corepack pnpm install --frozen-lockfile
+          - env HOME="$PWD/.icp/home" COREPACK_HOME="$PWD/.icp/corepack-home" XDG_CACHE_HOME="$PWD/.icp/xdg-cache" XDG_DATA_HOME="$PWD/.icp/xdg-data" CI=1 corepack pnpm social-demo:build
+
   - name: knowledge-map
     recipe:
       type: "@dfinity/asset-canister@v2.2.1"

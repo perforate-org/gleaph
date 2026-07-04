@@ -1,10 +1,10 @@
 # Social Graph and GraphRAG Comparison Demo
-Last updated: 2026-07-03
-Anchor timestamp: 2026-07-03 17:52:45 UTC +0000
+Last updated: 2026-07-04
+Anchor timestamp: 2026-07-04 00:37:29 UTC +0000
 
 ## Status
 
-**Partially Implemented** — Phase 1 backend subset is implemented. A canonical social graph
+**Partially Implemented** — Phase 1 backend subset and dedicated public comparison frontend are implemented. A canonical social graph
 manifest and reproducible Router seed operations exist, and the public-timeline, Alice home-feed,
 and topic-path prepared-query contracts are verified end-to-end through the application-owned
 `gleaph-social-demo-gateway` canister, with anonymous callers invoking the three fixed scenarios
@@ -16,7 +16,7 @@ slice.
 
 ## Phase 1 implementation note
 
-As of 2026-07-03 17:52:45 UTC +0000:
+As of 2026-07-04 00:37:29 UTC +0000:
 
 - Canonical manifest: `frontend/apps/knowledge-map/seeds/social-graph.json`.
 - Generated seed artifact: `frontend/apps/knowledge-map/seeds/social-seeds.json`.
@@ -26,7 +26,24 @@ As of 2026-07-03 17:52:45 UTC +0000:
   optional seeds path, canister name, and method name arguments while preserving its original
   knowledge-map defaults.
 - Gateway canister: `crates/social-demo-gateway`.
+- Committed Gateway Candid: `crates/social-demo-gateway/social_demo_gateway.did`.
+- Candid drift check: `scripts/check-social-demo-gateway-candid.sh` verifies the committed
+  interface matches the Rust-exported WASM `candid:service` metadata.
 - Gateway PocketIC test target: `crates/pocket-ic-tests/tests/social_graph_demo.rs`.
+- Public comparison frontend: `frontend/apps/social-demo`.
+  - Dedicated Solid application, not an extension of knowledge-map.
+  - Browser calls only the Gateway actor; no Router `gql_query`, arbitrary GQL, prepared-query
+    names, graph names, or client-controlled parameters are exposed.
+  - Three fixed scenario selectors matching the Gateway enum.
+  - Fail-closed row decoder validates columns, row counts, and `rows_blob` shape.
+  - Loading, retry, missing-canister-config, Gateway `Err`, and inter-canister failure states.
+  - Microblog-style layout with relational-baseline and graph-value explanation for each
+    scenario; topic path renders the returned edge identities as a relationship trail.
+  - Anonymous read-only notice and no login affordance.
+- Asset canister: `social-demo` in `icp.yaml`, receiving
+  `PUBLIC_CANISTER_ID:gleaph-social-demo-gateway` from deployment.
+- Local deployment script: `scripts/deploy-social-demo-local.sh` creates/deploys the asset
+  canister after backend setup and prints the frontend URL.
 - Verified contracts:
   - public posts in exact reverse chronological order, excluding the private adversary post,
     executed by an anonymous caller through the Gateway;
@@ -39,7 +56,8 @@ As of 2026-07-03 17:52:45 UTC +0000:
     ad-hoc `Read` role; a default-Executor principal and anonymous callers cannot run general
     ad-hoc `gql_query` directly on Router);
   - the Gateway API cannot express arbitrary GQL, prepared-query names, graph names, or
-    client-controlled parameters.
+    client-controlled parameters;
+  - the frontend boundary cannot reach Router directly.
 
 ## Purpose
 
@@ -249,7 +267,7 @@ inspect which posts, people, topics, and citations support the answer.
 
 ## Current implementation assessment
 
-As verified against the repository on 2026-07-03 UTC:
+As verified against the repository on 2026-07-04 UTC:
 
 | Capability | Current state | Demo use |
 |---|---|---|
@@ -260,6 +278,7 @@ As verified against the repository on 2026-07-03 UTC:
 | Prepared queries and `MSG_CALLER()` | Implemented | Narrow public read surface now; caller-aware queries later |
 | Graph-scoped Router roles | Implemented | Protect administration and ad-hoc query access |
 | Application-owned public read Gateway | Implemented | Anonymous callers execute fixed scenarios through the Gateway; no arbitrary GQL/names/params |
+| Dedicated public comparison frontend | Implemented | Browser calls only the Gateway; no Router GQL, arbitrary inputs, auth, vector, or LLM scope |
 | Transparent row-level policy engine | Not implemented | Do not claim RLS parity |
 | Canonical vertex embeddings and derived vector indexes | Implemented | Semantic post retrieval |
 | Vector `SEARCH` joined with graph execution | Implemented for bounded vertex-only shapes | Graph-aware semantic retrieval |
@@ -314,20 +333,19 @@ the application-owned `ic-llm` client, and render:
 
 ```mermaid
 flowchart LR
-    U["Viewer"] --> F["Demo frontend"]
+    U["Viewer"] --> F["Social demo frontend"]
     F --> GW["Social demo Gateway"]
-    F --> R["Gleaph Router"]
-    GW --> R
+    GW --> R["Gleaph Router"]
     R --> P["Property Index"]
     R --> V["Vector Index"]
     R --> G["Graph shard"]
-    F --> O["GraphRAG orchestration service"]
+    F -.planned.> O["GraphRAG orchestration service"]
     O --> R
-    O --> E["Embedding provider"]
+    O -.planned.> E["Embedding provider"]
     O --> L["IC LLM canister via ic-llm"]
 ```
 
-For the first read-only graph comparison, the frontend calls the application-owned Gateway for
+For the first read-only graph comparison, the browser calls only the application-owned Gateway for
 the three fixed scenarios. Router sees the Gateway principal on the delegated composite query; the
 original browser caller remains anonymous and has no graph visibility. GraphRAG, embedding, and
 LLM components remain absent until Phase 3.
@@ -341,20 +359,15 @@ identity-bearing agent; it does not insert Internet Identity inside Gleaph.
 
 ## Frontend and reuse strategy
 
-Reuse the existing knowledge-map demo's deployment, Router-row adaptation, SVG graph, playback, and
-technical-flow patterns where they fit. Begin as a new scenario family or route in the existing demo
-application rather than creating another frontend stack immediately.
+The public comparison is implemented as a dedicated `frontend/apps/social-demo` Solid application.
+It shares the workspace's pnpm/Vite/Tailwind/Solid tooling and the `safeGetCanisterEnv` canister
+environment pattern with knowledge-map, but it does not reuse knowledge-map-specific fixtures,
+Router-row adapters, SVG graph components, or playback machinery. The Gateway owns the scenario
+contract and row shape; the frontend owns presentation, fail-closed decoding, and comparison copy.
 
-The social timeline presentation may introduce dedicated components, but it should share:
-
-- canister environment and Router client setup;
-- graph node/edge view-model primitives;
-- evidence-path rendering;
-- technical execution-flow presentation;
-- deterministic seed generation and Router-owned seed application.
-
-Split into a separate application only if the social timeline and GraphRAG interaction model makes
-the existing application boundary demonstrably incoherent.
+When Phase 2/3 add vector comparison and GraphRAG orchestration, the same dedicated application
+should extend only through new Gateway scenarios and application-owned orchestration calls, not by
+adding arbitrary query controls or Router GQL entrypoints to the public UI.
 
 ## Source-of-truth and security rules
 

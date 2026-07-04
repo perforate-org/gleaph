@@ -92,6 +92,40 @@ importers:
         specifier: ^2.11.6
         version: 2.11.12(solid-js@1.9.13)(vite@6.4.2(@types/node@22.19.19)(jiti@2.7.0)(lightningcss@1.32.0))
 
+  frontend/apps/social-demo:
+    dependencies:
+      '@icp-sdk/core':
+        specifier: ^5.2.0
+        version: 5.2.0
+      solid-js:
+        specifier: ^1.9.5
+        version: 1.9.13
+    devDependencies:
+      '@icp-sdk/bindgen':
+        specifier: ^0.4.0
+        version: 0.4.0
+      '@types/node':
+        specifier: ^22.15.0
+        version: 22.19.19
+      autoprefixer:
+        specifier: ^10.4.21
+        version: 10.5.0(postcss@8.5.8)
+      postcss:
+        specifier: ^8.5.3
+        version: 8.5.8
+      tailwindcss:
+        specifier: ^3.4.17
+        version: 3.4.19
+      typescript:
+        specifier: ^5.8.3
+        version: 5.9.3
+      vite:
+        specifier: ^6.3.5
+        version: 6.4.2(@types/node@22.19.19)(jiti@2.7.0)(lightningcss@1.32.0)
+      vite-plugin-solid:
+        specifier: ^2.11.6
+        version: 2.11.12(solid-js@1.9.13)(vite@6.4.2(@types/node@22.19.19)(jiti@2.7.0)(lightningcss@1.32.0))
+
   sdk/js:
     dependencies:
       '@icp-sdk/core':
@@ -376,6 +410,10 @@ packages:
 
   '@floating-ui/utils@0.2.11':
     resolution: {integrity: sha512-RiB/yIh78pcIxl6lLMG0CgBXAZ2Y0eVHqMPYugu+9U0AeT6YBeiJpf7lbdJNIugFP5SIjwNRgo4DhR1Qxi26Gg==}
+
+  '@icp-sdk/bindgen@0.4.0':
+    resolution: {integrity: sha512-WXJoPIVnqCgFSNcprVpHwPBNWA1prwPh1/ezQYVrCP+Zj8CCJ7zj9L7p5cFcN7ghxoxfbx6tYT8t/HN9fyeYkA==}
+    hasBin: true
 
   '@icp-sdk/core@5.2.0':
     resolution: {integrity: sha512-HIEzaUO3MpQDoVYJ9IqN0rA3Gb9PR28//XOQFBCpSTJc+wv2URKumSslYfnDEaHIvmK92Bn817EuTnBa1XOR6A==}
@@ -1329,6 +1367,10 @@ packages:
     resolution: {integrity: sha512-eYm0QWBtUrBWZWG0d386OGAw16Z995PiOVo2B7bjWSbHedGl5e0ZWaq65kOGgUSNesEIDkB9ISbTg/JK9dhCZA==}
     engines: {node: '>=6'}
 
+  commander@14.0.3:
+    resolution: {integrity: sha512-H+y0Jo/T1RZ9qPP4Eh1pkcQcLRglraJaSLoyOtHxu6AapkjWVCy2Sit1QQ4x3Dng8qDlSsZEet7g5Pq06MvTgw==}
+    engines: {node: '>=20'}
+
   commander@4.1.1:
     resolution: {integrity: sha512-NOKm8xhkzAjzFx8B2v5OAHT+u5pRQc2UCa2Vq9jYL/31o2wi9mxBA7LIFs3sV5VSC49z6pEhfbMULvShKj26WA==}
     engines: {node: '>= 6'}
@@ -2274,6 +2316,10 @@ snapshots:
 
   '@floating-ui/utils@0.2.11': {}
 
+  '@icp-sdk/bindgen@0.4.0':
+    dependencies:
+      commander: 14.0.3
+
   '@icp-sdk/core@5.2.0':
     dependencies:
       '@dfinity/cbor': 0.2.2
@@ -3041,6 +3087,8 @@ snapshots:
       clsx: 2.1.1
 
   clsx@2.1.1: {}
+
+  commander@14.0.3: {}
 
   commander@4.1.1: {}
 

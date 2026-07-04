@@ -1,0 +1,148 @@
+type GatewayInitArgs = record { router_canister : principal };
+// Router read-path result: merged row count and optional materialized rows.
+//
+// `phase` is populated only for idempotent mutations, where Router tracks a federated
+// saga; it is `None` for read queries and for non-idempotent escape-hatch writes that
+// carry no tracked mutation record (ADR 0029).
+type GqlQueryResult = record {
+  // Candid-encoded [`gleaph_gql_ic::IcWirePlanQueryResult`] after federated merge.
+  rows_blob : opt blob;
+  // Read-your-writes token for idempotent mutations (ADR 0029 §5, Phase 2). `None`
+  // for reads and untracked escape-hatch writes.
+  token : opt MutationToken;
+  row_count : nat64;
+  // Federated mutation lifecycle phase for idempotent mutations (ADR 0029).
+  phase : opt MutationLifecyclePhase;
+};
+// Federated mutation lifecycle phase (ADR 0029).
+//
+// Router owns the transitions; this is the wire projection a client receives for an
+// idempotent mutation. It is deliberately distinct from [`MutationJournalState`], which
+// only attests a *shard-local* replayable outcome and never describes cross-canister
+// projection convergence.
+type MutationLifecyclePhase = variant {
+  // Canonical writes are durable; one or more required derived projections still lag.
+  ProjectionPending;
+  // Validation or execution failed before any canonical write committed.
+  Failed;
+  // All required canonical shard writes are durable; no projection has advanced yet.
+  CanonicalCommitted;
+  // Router is resolving and durably recording the immutable dispatch envelope.
+  Routing;
+  // Canonical writes and every projection required by the mutation contract converged.
+  Completed;
+  // At least one required canonical shard outcome is not yet known.
+  CanonicalPending;
+};
+// Read-your-writes token for a federated mutation (ADR 0029 §5, Phase 2).
+//
+// Issued with an idempotent DML result. It names the mutation and the per-shard
+// projection watermarks a later read must reach to observe this mutation's effects.
+// It is deliberately **not** a global snapshot timestamp: graph-index freshness is
+// keyed by the monotonic `mutation_id` (a shard's index work for `mutation_id` is
+// applied once its repair watermark passes it), and label-stats freshness by each
+// shard's delta [`ShardEventSeq`]. Phase 2 *issues* the token; Phase 3 enforces it via
+// [`ReadMode::AtLeast`].
+type MutationToken = record {
+  mutation_id : nat64;
+  shards : vec MutationTokenShard;
+};
+// Per-shard watermarks a read must reach for read-your-writes against one mutation.
+type MutationTokenShard = record {
+  // Highest label-stats delta seq this mutation emitted on the shard. The Router
+  // label-stats projection must reach this seq to satisfy a count-only
+  // read-your-writes. `None` when the mutation emitted no label-stats delta here.
+  label_stats_seq : opt nat64;
+  shard_id : nat32;
+};
+type Result = variant { Ok : GqlQueryResult; Err : SocialDemoGatewayError };
+type RouterError = variant {
+  Internal : text;
+  ShardNotRegistered;
+  // A federated update bundle contained more than one top-level DML statement. Federated
+  // multi-DML bundles have no defined cross-shard partial-application contract yet
+  // (ADR 0029 Phase 5), so the bundle is rejected before any shard dispatch — no canonical
+  // or projection state changed. This is **not** retryable as written: split the bundle into
+  // single-statement mutations, or target a single-shard graph. Resubmitting the same bundle
+  // is rejected identically.
+  UnsupportedMultiDmlBundle : record {
+    dml_statements : nat32;
+    shard_count : nat32;
+  };
+  // Production vector-index dispatch (and backfill) is blocked because the delete-spanning
+  // incarnation/epoch fence required by ADR 0031 Slice 3 is not yet in place. The definition is
+  // stored and inspectable, but the Router never emits a non-empty embedding catalog or executes
+  // backfill while blocked. **Not retryable** until the fencing slice activates dispatch.
+  VectorDispatchActivationBlocked : VectorActivationBlockReason;
+  NotFound : text;
+  GraphUnavailable;
+  NotAuthorized;
+  // GQL program kind (read vs write) does not match the canister entrypoint (query vs update).
+  ExecutionPathMismatch : record {
+    remedy : text;
+    entrypoint : text;
+    program_kind : text;
+    call_kind : text;
+  };
+  // A uniqueness value is claimed by an in-flight or reclaiming mutation (ADR 0030).
+  // **Retryable**: retry after the holding saga resolves (it then either frees the value or this
+  // retry gets `UniquenessViolation`).
+  UniquenessReservationInFlight : text;
+  InvalidArgument : text;
+  GraphContextMismatch : record { resolved_graph : text; api_graph : text };
+  // A recognized operation whose implementation is intentionally inactive (e.g. a feature
+  // landed in slices and not yet end-to-end). Distinct from `InvalidArgument`: the request is
+  // well-formed, but the capability is not yet published. Not retryable.
+  NotImplemented : text;
+  IdExhausted : text;
+  Forbidden;
+  ShardAlreadyRegistered;
+  // A `ReadMode::AtLeast(token)` read could not be served because a shard projection
+  // has not yet reached the token's watermark (ADR 0029 §5, Phase 3). This is
+  // **retryable**: the caller should retry after the projection drains. No stale state
+  // is served.
+  ProjectionLag : record {
+    shard_id : nat32;
+    required : nat64;
+    current : nat64;
+    watermark : text;
+  };
+  // A uniqueness constraint would be violated (ADR 0030). **Not retryable**: the value is already
+  // committed, or the same mutation claims one value twice. Resubmitting is rejected identically.
+  UniquenessViolation : text;
+  Conflict : text;
+};
+// Errors that originate in the Gateway boundary, distinct from errors returned by Router.
+type SocialDemoGatewayError = variant {
+  // Router rejected the prepared query.
+  Router : RouterError;
+  // Inter-canister call failed (rejected, timed out, or could not be decoded).
+  CallFailed : text;
+  // Gateway has not been initialized with a Router principal.
+  NotConfigured;
+};
+// Fixed public scenarios. The Gateway maps each variant to a single prepared-query name
+// registered by the deploy administrator; callers cannot supply GQL, names, or parameters.
+type SocialDemoScenario = variant { TopicPath; PublicTimeline; AliceHomeFeed };
+// Why production vector-index dispatch/backfill is fail-closed (ADR 0031 Slice 3/4).
+type VectorActivationBlockReason = variant {
+  // The global vector-dispatch activation flag is off (ADR 0031 Slice 4). An operator must flip
+  // it via the RBAC-gated admin endpoint. Reversible.
+  DispatchNotActivated;
+  // The global flag is on, but not every live shard of the graph has been vector-attached yet
+  // (ADR 0031 Slice 4): a shard is missing its local `vector_index_canister` routing or its
+  // durable `vector_index_attached` bit.
+  ShardsNotVectorAttached;
+  // No delete-spanning monotonic incarnation/epoch fence exists yet, so the canonical-wins
+  // repair reconcile can still lose to a "reverse-orphan" re-insert race. Dispatch stays off.
+  //
+  // Retained for wire stability; superseded in Slice 4, where the fence is implemented
+  // (graph-owned `embedding_incarnation`) and dispatch is gated by the two reasons below.
+  MissingEmbeddingIncarnationFence;
+};
+service : (GatewayInitArgs) -> {
+  // Public composite query: execute one fixed social-demo scenario through the configured Router.
+  execute_social_demo_scenario : (SocialDemoScenario) -> (
+      Result,
+    ) composite_query;
+}

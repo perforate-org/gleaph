@@ -1,0 +1,9 @@
+dist/
+src/generated/
+node_modules/
+.env
+.env.local
+
+# Generated Gateway bindings are produced from crates/social-demo-gateway/social_demo_gateway.did
+# by the generate-gateway-bindings script (called from check/build after the Candid drift check).
+# They are intentionally untracked; regenerate with pnpm generate-gateway-bindings.

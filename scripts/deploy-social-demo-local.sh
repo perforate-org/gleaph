@@ -134,11 +134,12 @@ main() {
   # The Gateway canister must be created before graph registration so its principal is known when
   # adding graph admins. It is installed after Router, Index, and Graph are registered/wired
   # because its init args need the Router principal.
-  local router_id index_id graph_id gateway_id
+  local router_id index_id graph_id gateway_id frontend_id
   router_id="$(ensure_canister gleaph-router)"
   index_id="$(ensure_canister gleaph-graph-index)"
   graph_id="$(ensure_canister gleaph-graph-shard-0)"
   gateway_id="$(ensure_canister gleaph-social-demo-gateway)"
+  frontend_id="$(ensure_canister social-demo)"
 
   log "Installing gleaph-router"
   icp_cmd canister install -e local -y --mode "$INSTALL_MODE" gleaph-router --args "(
@@ -209,6 +210,9 @@ main() {
     log "Skipping Gateway scenario verification; set GLEAPH_DEMO_VERIFY_QUERY=1 to enable it"
   fi
 
+  log "Deploying social-demo asset canister"
+  icp_cmd deploy -e local -y social-demo
+
   local gateway
   log "Resolving local gateway URL"
   gateway="$(local_gateway_url)"
@@ -218,8 +222,14 @@ main() {
   printf '  Graph index:   %s\n' "$index_id"
   printf '  Graph shard 0: %s\n' "$graph_id"
   printf '  Gateway:       %s\n' "$gateway_id"
+  printf '  Frontend:      %s\n' "$frontend_id"
   if [[ -n "$gateway" ]]; then
     printf '  Gateway URL:   %s\n' "$gateway"
+    printf '  Frontend URL:  %s://%s.%s%s\n' \
+      "$(node -e 'console.log(new URL(process.argv[1]).protocol.slice(0, -1))' "$gateway")" \
+      "$frontend_id" \
+      "$(node -e 'console.log(new URL(process.argv[1]).hostname)' "$gateway")" \
+      "$(node -e 'const u = new URL(process.argv[1]); console.log(u.port ? `:${u.port}` : "")' "$gateway")"
   fi
 }
 
