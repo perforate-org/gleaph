@@ -45,6 +45,13 @@ Do not downgrade an unmet required correction because the test name is broad, th
 or the remaining weakness seems minor. If the report observes that a required fix remains, the verdict cannot
 be `APPROVE`. Make the finding status, non-blocking observations, and final verdict internally consistent.
 
+When the coordinator explicitly requires a regression test for a discovered defect, replay that exact defect
+against the new assertions. If restoring the defective statement or branch would still pass the test, the
+required correction is unresolved and blocking (normally P1/P2), even when the production edit itself appears
+correct. Queue emptiness, absence of an error, or canonical-state success does not prove that pre-existing or
+derived work was delivered; require the observable named by the defect, such as exact calls, operations, values,
+or durable journal entries.
+
 ## Inputs
 
 Read, in this order:
