@@ -24,8 +24,21 @@ Before planning or resuming work:
 4. Read sibling pane output before reassigning work. Reset a completed conversation before reuse.
 5. Distinguish confirmed repository state from conversation-only proposals.
 
+Preserve skill paths exactly as assigned. Gleaph project skills live under
+`.agents/skills/<name>/SKILL.md`; global coordination skills such as `plan` and `herdr` may live under
+`/Users/yota/.agents/skills/<name>/SKILL.md`. Do not silently substitute the repository skill root for
+an absolute global path. If a skill path fails, perform one bounded filesystem discovery, use the
+discovered path once, and stop with the exact error if it still cannot be read.
+
 Never infer that a plan, ADR, validation run, or commit exists merely because another pane discussed
 or claimed it. Verify the artifact.
+
+When this environment provides `apply_patch`, require repository edits through the native tool call.
+Do not invoke an executable named `apply_patch`, pipe or redirect a temporary file into it, or stage
+replacement content under `/tmp` first. Do not allow supervised panes to create or rewrite files
+with `cat`, shell redirection, `sed -i`, or ad-hoc Python writers; these bypass the intended patch
+review surface. If the native patch call fails twice, stop and report the exact failure instead of
+switching to another writer.
 
 `.agents/plans/` is intentionally ignored process state in this repository. Inspect it for the active
 handoff and numbering, but do not treat its ignored/untracked status as repository damage or a reason
@@ -94,6 +107,8 @@ Reviewer approval is necessary but not sufficient. Before final approval, indepe
 5. active design status, gap ledger, dates, and benchmark artifacts;
 6. validation transcript and skipped checks;
 7. worktree scope, untracked files, ignored plans, and background work.
+8. ignored plan frontmatter statuses versus body checklists and the final report; all three must
+   describe the same completion state.
 
 Re-open exact corrected lines after every blocking review cycle. A regression test is unresolved if
 restoring the original defect would still pass its assertions.
@@ -141,6 +156,8 @@ Stop and notify the primary/user rather than improvising when:
 
 Preserve useful context before resetting a malfunctioning pane. Do not allow it to diagnose tool
 failures through repeated empty or speculative commands.
+For a repeated local path/tool error, stop before a third attempt. Do not browse the web for a local
+path typo or keep trying equivalent shell/Python reads after the correct path was already discovered.
 
 ## 7. Continuous supervisory improvement
 

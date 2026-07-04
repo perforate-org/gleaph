@@ -106,6 +106,19 @@ If the problem can be solved without introducing new concepts, prefer that appro
 
 Document why existing solutions are insufficient before proposing new ones.
 
+### Step 2a: Prove state representability
+
+For every proposed status, transition, pointer, receipt, or ownership claim, inspect the current
+wire/stable types and owning catalogs. State explicitly whether the proposal is representable as-is,
+requires a new table/field/variant, or requires a breaking migration. Do not describe a projected
+state on an existing record when the record cannot exist yet or its enum cannot represent that
+state.
+
+For cross-canister flows, mark every irreversible effect and every following `await`/callback. Add
+durable `*Pending`/ack/reconcile states where a remote success can precede local registration or
+notification. A remote side effect followed by a failed callback is not a terminal failure and must
+not be retried as a fresh create/delete.
+
 ---
 
 ### Step 3: Generate Alternatives
@@ -142,6 +155,19 @@ Consider:
 - Future extension cost
 
 Complexity must be treated as an explicit cost.
+
+Verify platform-dependent claims against current authoritative documentation. Prefer existing
+platform primitives over reimplementing them, and record their preconditions (for example,
+controller, subnet, or chunk-store constraints). Avoid remembered numeric limits or lifecycle
+semantics.
+
+Audit accounting decisions algebraically: distinguish total balance, reserved balance, available
+balance, and actual spend so transitions cannot double-subtract or release active work. Time-based
+reservation expiry requires a lease/fence or proof that no external operation remains in flight.
+
+When multiple independently versioned artifacts must interoperate, decide whether activation is per
+artifact or an atomic compatible release set. Independent active pointers are unsafe if they can
+assemble an unsupported mixed deployment.
 
 ---
 
