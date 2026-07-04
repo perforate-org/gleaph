@@ -983,6 +983,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-cdk"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "ic-cdk",
+ "serde",
+]
+
+[[package]]
 name = "gleaph-gql"
 version = "0.0.1"
 dependencies = [
@@ -1202,6 +1211,7 @@ name = "gleaph-social-demo-gateway"
 version = "0.1.0"
 dependencies = [
  "candid",
+ "gleaph-cdk",
  "gleaph-gql",
  "gleaph-gql-ic",
  "gleaph-graph-kernel",

@@ -19,6 +19,7 @@ members = [
     "crates/pocket-ic-tests",
     "crates/social-demo-gateway",
     "crates/gql-extension-integration",
+    "sdk/canister/rust",
 ]
 resolver = "2"
 
@@ -39,6 +40,7 @@ gleaph-graph-kernel = { path = "crates/graph-kernel" }
 gleaph-graph-vector-index = { path = "crates/graph-vector-index" }
 gleaph-router = { path = "crates/router" }
 gleaph-social-demo-gateway = { path = "crates/social-demo-gateway" }
+gleaph-cdk = { path = "sdk/canister/rust" }
 gleaph-graph-prepared = { path = "crates/graph-prepared" }
 gleaph-gql-extension-integration = { path = "crates/gql-extension-integration" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }

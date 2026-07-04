@@ -1,5 +1,5 @@
 packages:
-  - "sdk/*"
+  - "sdk/client/js"
   - "frontend/apps/*"
 
 minimumReleaseAge: 10080 # 1 week

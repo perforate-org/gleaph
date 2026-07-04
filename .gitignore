@@ -23,3 +23,7 @@ escape_crates/
 
 reference/
 crates/gql/reference/
+
+# SDK build artifacts (generated from source)
+sdk/client/js/dist/
+sdk/canister/rust/target/

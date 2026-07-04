@@ -126,7 +126,7 @@ importers:
         specifier: ^2.11.6
         version: 2.11.12(solid-js@1.9.13)(vite@6.4.2(@types/node@22.19.19)(jiti@2.7.0)(lightningcss@1.32.0))
 
-  sdk/js:
+  sdk/client/js:
     dependencies:
       '@icp-sdk/core':
         specifier: ^5.2.0

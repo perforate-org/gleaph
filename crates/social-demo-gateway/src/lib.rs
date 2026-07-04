@@ -10,6 +10,7 @@
 //! copy of stored Post embeddings, and is never exposed to callers.
 
 use candid::{CandidType, Deserialize, Principal};
+use gleaph_cdk::call_prepared_query;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use ic_cdk_macros::{init, post_upgrade, query};
@@ -123,23 +124,11 @@ async fn execute_social_demo_scenario(
     let router = router_canister()?;
     let (name, params) = scenario_to_request(scenario);
 
-    let encoded_args =
-        candid::utils::encode_args((name.to_string(), params)).expect("encode prepared args");
-    let call_result = ic_cdk::call::Call::bounded_wait(router, "prepared_execute_query")
-        .with_raw_args(&encoded_args)
-        .await;
-
-    match call_result {
-        Ok(response) => {
-            let decoded: Result<GqlQueryResult, RouterError> = response.candid().map_err(|e| {
-                SocialDemoGatewayError::CallFailed(format!("decode router response: {e}"))
-            })?;
-            decoded.map_err(SocialDemoGatewayError::Router)
-        }
-        Err(err) => Err(SocialDemoGatewayError::CallFailed(format!(
-            "router call failed: {err}"
-        ))),
-    }
+    let router_result: Result<GqlQueryResult, RouterError> =
+        call_prepared_query(router, name, params)
+            .await
+            .map_err(|e| SocialDemoGatewayError::CallFailed(e.to_string()))?;
+    router_result.map_err(SocialDemoGatewayError::Router)
 }
 
 ic_cdk::export_candid!();

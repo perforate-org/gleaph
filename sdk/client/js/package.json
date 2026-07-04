@@ -18,6 +18,7 @@
     "check": "tsc --noEmit",
     "test": "node --eval \"console.log('sdk/js: no tests yet')\"",
     "build": "tsc --outDir dist",
+    "prepare": "pnpm run build",
     "pack": "pnpm run build"
   },
   "dependencies": {
