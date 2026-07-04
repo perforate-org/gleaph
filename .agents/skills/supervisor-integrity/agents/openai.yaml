@@ -1,0 +1,4 @@
+interface:
+  display_name: "Supervisor Integrity"
+  short_description: "Improve planning, approval, and commit quality"
+  default_prompt: "Use $supervisor-integrity to supervise this Gleaph change from plan through final commit."

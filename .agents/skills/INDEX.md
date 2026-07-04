@@ -1,5 +1,11 @@
 # Skills Index
 
+## supervisor-integrity
+
+Supervise Gleaph work from current-state inspection and bounded planning through delegated
+implementation, independent final approval, safe commits, pane resets, and continuous improvement
+of the smallest owning workflow skill.
+
 ## herdr-workflow
 
 Coordinate Gleaph planning, implementation, iterative review, validation, final approval, commits,

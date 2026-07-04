@@ -139,6 +139,9 @@ for PocketIC, full-workspace tests, or canbench.
 
 When `HERDR_ENV=1`, read and use `.agents/skills/herdr-workflow/SKILL.md` for the repository-specific
 plan → implementation → iterative review → validation → final approval → commit → reset workflow.
+The primary/coordinator or any pane explicitly supervising that role must also use
+`.agents/skills/supervisor-integrity/SKILL.md` for current-state recovery, scope and prerequisite
+decisions, independent final inspection, commit authorization, and cross-stage workflow improvement.
 Use the global `herdr` skill for CLI mechanics. Keep detailed herdr coordination policy in that skill,
 not in `AGENTS.md` or unrelated implementation/review/validation skills.
 
