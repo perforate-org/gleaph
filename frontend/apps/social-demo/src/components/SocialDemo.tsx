@@ -8,6 +8,7 @@ import {
 import {
   decodeWireRows,
   expectDateTimeSeconds,
+  expectFloat64,
   expectText,
   rowToColumnMap,
 } from "~/api/rowDecoder";
@@ -26,6 +27,9 @@ import { ExplanationPanel } from "~/components/ExplanationPanel";
 import { FeedItem } from "~/components/FeedItem";
 import { ScenarioNav } from "~/components/ScenarioNav";
 
+const isSemanticScenario = (definition: ScenarioDefinition): boolean =>
+  definition.id === "SemanticDiscovery" || definition.id === "AliceSemanticFeed";
+
 const decodeFeedResult = (
   definition: ScenarioDefinition,
   rowsBlob: Uint8Array,
@@ -34,13 +38,12 @@ const decodeFeedResult = (
   const rows: FeedRow[] = wire.rows.map((row) => {
     const map = rowToColumnMap(row);
     const postId = expectText(map, "post_id");
-    const createdAt = expectDateTimeSeconds(map, "created_at");
 
     if (definition.id === "TopicPath") {
       return {
         kind: "topicPath",
         postId,
-        createdAt,
+        createdAt: expectDateTimeSeconds(map, "created_at"),
         followsEdgeId: expectText(map, "follows_edge_id"),
         postedEdgeId: expectText(map, "posted_edge_id"),
         topicEdgeId: expectText(map, "topic_edge_id"),
@@ -48,7 +51,15 @@ const decodeFeedResult = (
       };
     }
 
-    return { kind: "post", postId, createdAt };
+    if (isSemanticScenario(definition)) {
+      return {
+        kind: "semanticPost",
+        postId,
+        distance: expectFloat64(map, "distance"),
+      };
+    }
+
+    return { kind: "post", postId, createdAt: expectDateTimeSeconds(map, "created_at") };
   });
 
   return { rows, rowCount: BigInt(rows.length) };

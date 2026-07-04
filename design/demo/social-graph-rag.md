@@ -1,21 +1,10 @@
 # Social Graph and GraphRAG Comparison Demo
 Last updated: 2026-07-04
-Anchor timestamp: 2026-07-04 03:28:04 UTC +0000
+Anchor timestamp: 2026-07-04 04:51:03 UTC +0000
 
 ## Status
 
-**Partially Implemented** — Phase 1 backend subset and the two backend semantic comparison
-scenarios are implemented. A canonical social graph manifest with deterministic Post embeddings,
-reproducible Router seed operations, and the public-timeline, Alice home-feed, topic-path,
-vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts
-are verified end-to-end through the application-owned `gleaph-social-demo-gateway` canister, with
-anonymous callers invoking the five fixed scenarios and the Gateway principal acting as the
-graph-visible default-Executor caller (the Gateway is in the graph `admins` set so Router can
-resolve the prepared plan, but it remains a default Router Executor with no ad-hoc GQL `Read`
-role). The two semantic scenarios carry an internally generated fixed query vector and return
-deliberately different result membership and exact L2-squared distance order. Internet Identity,
-LLM calls, GraphRAG orchestration, local vector-canister deployment wiring, and authenticated
-ownership remain explicitly planned and out of scope for this slice.
+**Partially Implemented** — Phase 1 and Phase 2 are implemented. A canonical social graph manifest with deterministic Post embeddings, reproducible Router seed operations, and the public-timeline, Alice home-feed, topic-path, vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts are verified end-to-end through the application-owned `gleaph-social-demo-gateway` canister, with anonymous callers invoking the five fixed scenarios and the Gateway principal acting as the graph-visible default-Executor caller. The social-demo frontend now renders all five scenarios, including vector distance values and a comparison of vector-only versus graph-constrained results. The local `icp` deployment bootstrap (`scripts/deploy-social-demo-local.sh`) installs and wires the vector canister, ingests Post embeddings, and registers all prepared queries. Internet Identity, LLM calls, GraphRAG orchestration, and authenticated ownership remain explicitly planned and out of scope for this slice.
 
 ## Phase 1 implementation note
 
@@ -289,8 +278,8 @@ As verified against the repository on 2026-07-04 UTC:
 | Application-owned public read Gateway | Implemented | Anonymous callers execute fixed scenarios through the Gateway; no arbitrary GQL/names/params |
 | Dedicated public comparison frontend | Implemented | Browser calls only the Gateway; no Router GQL, arbitrary inputs, auth, vector, or LLM scope |
 | Transparent row-level policy engine | Not implemented | Do not claim RLS parity |
-| Canonical vertex embeddings and derived vector indexes | Implemented | Semantic post retrieval through Router canonical ingestion |
-| Vector `SEARCH` joined with graph execution | Implemented for bounded vertex-only shapes and the two social demo prepared queries | Graph-aware semantic retrieval |
+| Canonical vertex embeddings and derived vector indexes | Implemented | Semantic post retrieval through Router canonical ingestion; vector canister installed, activated, and attached by the local deploy script |
+| Vector `SEARCH` joined with graph execution | Implemented for bounded vertex-only shapes and the two social demo prepared queries | Graph-aware semantic retrieval rendered in the frontend with exact distance values |
 | GQL vector-index DDL | Planned | Bootstrap through current admin API; social demo uses the admin API directly |
 | Full-text and native hybrid provider | Planned | Not required for the first demo |
 | Embedding generation | External to Gleaph | Deterministic seed embeddings in the canonical manifest; live providers remain planned |
@@ -403,10 +392,10 @@ adding arbitrary query controls or Router GQL entrypoints to the public UI.
 
 ### Phase 2: vector comparison
 
-- Add externally generated Post embeddings to the deterministic seed. **(backend implemented; frontend wiring planned)**
-- Register and activate one vector index through the current admin surface. **(backend implemented for the PocketIC fixture; local `icp` deploy wiring planned)**
-- Add vector-only and graph-aware semantic retrieval scenarios. **(backend prepared-query and Gateway scenario contracts implemented; frontend rendering planned)**
-- Make ranking and path explanations independently visible. **(backend ranking visible through exact distance assertions; frontend comparison UI planned)**
+- Add externally generated Post embeddings to the deterministic seed. **(implemented)**
+- Register and activate one vector index through the current admin surface. **(implemented for the PocketIC fixture and the local `icp` deploy wiring)**
+- Add vector-only and graph-aware semantic retrieval scenarios. **(implemented: backend prepared-query and Gateway scenario contracts, plus frontend rendering)**
+- Make ranking and path explanations independently visible. **(implemented; distance values and the adversarial unfollowed-Post comparison are rendered in the frontend)**
 
 ### Phase 3: GraphRAG orchestration
 

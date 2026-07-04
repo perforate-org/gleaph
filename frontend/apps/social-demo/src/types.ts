@@ -10,6 +10,11 @@ export type FeedRow =
       topicEdgeId: string;
       topicId: string;
       createdAt: bigint;
+    }
+  | {
+      kind: "semanticPost";
+      postId: string;
+      distance: number;
     };
 
 export type FeedResult = {

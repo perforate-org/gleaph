@@ -12,11 +12,31 @@ export function FeedItem(props: FeedItemProps) {
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
             <span class="font-semibold text-slate-900">{row.postId}</span>
-            <span class="text-sm text-slate-500">· {formatDate(row.createdAt)}</span>
+            {row.kind === "post" && (
+              <span class="text-sm text-slate-500">· {formatDate(row.createdAt)}</span>
+            )}
+            {row.kind === "topicPath" && (
+              <span class="text-sm text-slate-500">· {formatDate(row.createdAt)}</span>
+            )}
+            {row.kind === "semanticPost" && (
+              <span class="text-sm text-slate-500"> · L2-squared distance</span>
+            )}
           </div>
           <p class="mt-1 text-sm text-slate-600">
             Returned by the <strong>{definition.label}</strong> Gateway scenario.
           </p>
+
+          {row.kind === "semanticPost" && (
+            <div class="mt-3 rounded-lg bg-slate-50 p-3">
+              <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">
+                Vector distance
+              </h3>
+              <p class="mt-1 text-sm text-slate-700">
+                L2-squared distance: {" "}
+                <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">{row.distance}</code>
+              </p>
+            </div>
+          )}
 
           {row.kind === "topicPath" && (
             <div class="mt-3 rounded-lg bg-slate-50 p-3">

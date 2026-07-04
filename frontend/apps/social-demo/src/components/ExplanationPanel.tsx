@@ -21,6 +21,20 @@ export function ExplanationPanel(props: {
         </p>
       </div>
 
+      {(props.definition.id === "SemanticDiscovery" ||
+        props.definition.id === "AliceSemanticFeed") && (
+        <div class="rounded-lg bg-amber-50 p-3">
+          <h3 class="text-sm font-semibold text-amber-900">Why the results differ</h3>
+          <p class="mt-1 text-sm leading-relaxed text-amber-800">
+            The fixed query vector makes{" "}
+            <span class="font-medium">post-dave-1</span> the globally nearest
+            public Post. In the vector-only scenario it appears first. In Alice’s
+            graph-constrained feed it is absent because Alice does not follow Dave,
+            even though it is nearer than every followed-author result.
+          </p>
+        </div>
+      )}
+
       <div class="border-t border-slate-200 pt-4">
         <h3 class="text-xs font-semibold uppercase tracking-wide text-slate-500">
           Scenario subject

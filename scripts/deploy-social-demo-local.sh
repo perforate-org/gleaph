@@ -7,6 +7,9 @@ ORIGINAL_HOME="${HOME:-}"
 GRAPH_NAME="${GLEAPH_DEMO_GRAPH_NAME:-gleaph.pocket_ic}"
 SHARD_ID="${GLEAPH_DEMO_SHARD_ID:-0}"
 INSTALL_MODE="${GLEAPH_DEMO_INSTALL_MODE:-auto}"
+VECTOR_INDEX_ID="${GLEAPH_DEMO_VECTOR_INDEX_ID:-1}"
+EMBEDDING_NAME="${GLEAPH_DEMO_EMBEDDING_NAME:-post_vec}"
+EMBEDDING_DIMS="${GLEAPH_DEMO_EMBEDDING_DIMS:-8}"
 
 ICP_CLI_HOME="${ICP_CLI_HOME:-$ROOT/.icp/home}"
 ICP_COREPACK_HOME="${ICP_COREPACK_HOME:-$ROOT/.icp/corepack-home}"
@@ -104,17 +107,64 @@ seed_social_graph() {
     "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json"
 }
 
+setup_vector_index() {
+  local vector_id="$1"
+
+  log "Registering vector index $EMBEDDING_NAME with target $vector_id"
+  icp_call_expect_ok "Register post_vec vector index" "" -e local gleaph-router admin_register_vector_index \
+    '(record { logical_graph_name = "'"$GRAPH_NAME"'"; embedding_name = "'"$EMBEDDING_NAME"'"; index_id = '"$VECTOR_INDEX_ID"' : nat32; dims = '"$EMBEDDING_DIMS"' : nat16; metric = opt variant { L2Squared }; target = opt principal "'"$vector_id"'"; if_not_exists = true })'
+
+  log "Activating vector dispatch"
+  icp_call_expect_ok "Activate vector dispatch" "" -e local gleaph-router admin_set_vector_dispatch_activation \
+    '(true)'
+
+  log "Attaching vector index shard"
+  icp_call_expect_ok "Attach vector index shard" "" -e local gleaph-router admin_attach_vector_index_shard \
+    '(record { logical_graph_name = "'"$GRAPH_NAME"'"; shard_id = '"$SHARD_ID"' : nat32; vector_index_canister = principal "'"$vector_id"'" })'
+}
+
+ingest_social_embeddings() {
+  log "Ingesting Post embeddings through Router"
+  env \
+    HOME="$ICP_CLI_HOME" \
+    COREPACK_HOME="$ICP_COREPACK_HOME" \
+    XDG_CACHE_HOME="$ICP_XDG_CACHE_HOME" \
+    XDG_DATA_HOME="$ICP_XDG_DATA_HOME" \
+    RUSTUP_HOME="$RUSTUP_HOME" \
+    CARGO_HOME="$CARGO_HOME" \
+    GLEAPH_DEMO_GRAPH_NAME="$GRAPH_NAME" \
+    GLEAPH_DEMO_ROUTER_CANISTER=gleaph-router \
+    GLEAPH_DEMO_EMBEDDING_NAME="$EMBEDDING_NAME" \
+    DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
+    node "$ROOT/frontend/apps/social-demo/scripts/ingest-social-embeddings.mjs" \
+      "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json"
+}
+
 register_social_prepared_queries() {
   log "Registering social demo prepared queries"
 
-  icp_call_expect_ok "Register public timeline prepared query" "" -e local gleaph-router prepared_register \
+  icp_call_expect_ok "Register public timeline prepared query" "Conflict" -e local gleaph-router prepared_register \
     '("public_timeline", "MATCH (p:Post) WHERE p.is_public = 1 RETURN p.demo_id AS post_id, p.created_at AS created_at ORDER BY created_at DESC")'
 
-  icp_call_expect_ok "Register Alice home feed prepared query" "" -e local gleaph-router prepared_register \
-    '("alice_home_feed", "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = '"'"'alice'"'"' AND p.is_public = 1 RETURN p.demo_id AS post_id, p.created_at AS created_at ORDER BY created_at DESC")'
+  icp_call_expect_ok "Register Alice home feed prepared query" "Conflict" -e local gleaph-router prepared_register \
+    '("alice_home_feed", "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = '\''alice'\'' AND p.is_public = 1 RETURN p.demo_id AS post_id, p.created_at AS created_at ORDER BY created_at DESC")'
 
-  icp_call_expect_ok "Register topic path prepared query" "" -e local gleaph-router prepared_register \
-    '("topic_path_explanation", "MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE t.demo_id = '"'"'topic-graph'"'"' MATCH (u:User)-[follows:FOLLOWS]->(author:User)-[posted:POSTED]->(p) WHERE u.demo_id = '"'"'alice'"'"' RETURN p.demo_id AS post_id, follows.demo_edge_id AS follows_edge_id, posted.demo_edge_id AS posted_edge_id, t.demo_id AS topic_id, has_topic.demo_edge_id AS topic_edge_id, p.created_at AS created_at ORDER BY created_at DESC")'
+  icp_call_expect_ok "Register topic path prepared query" "Conflict" -e local gleaph-router prepared_register \
+    '("topic_path_explanation", "MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE t.demo_id = '\''topic-graph'\'' MATCH (u:User)-[follows:FOLLOWS]->(author:User)-[posted:POSTED]->(p) WHERE u.demo_id = '\''alice'\'' RETURN p.demo_id AS post_id, follows.demo_edge_id AS follows_edge_id, posted.demo_edge_id AS posted_edge_id, t.demo_id AS topic_id, has_topic.demo_edge_id AS topic_edge_id, p.created_at AS created_at ORDER BY created_at DESC")'
+
+  icp_call_expect_ok "Register semantic discovery prepared query" "Conflict" -e local gleaph-router prepared_register \
+    '("semantic_discovery", "MATCH (p:Post) WHERE p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, distance ORDER BY distance ASC")'
+
+  icp_call_expect_ok "Register Alice semantic feed prepared query" "Conflict" -e local gleaph-router prepared_register \
+    '("alice_semantic_feed", "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = '\''alice'\'' AND p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, distance ORDER BY distance ASC")'
+}
+
+verify_social_demo_scenarios() {
+  log "Verifying all five Gateway scenarios"
+  for scenario in PublicTimeline AliceHomeFeed TopicPath SemanticDiscovery AliceSemanticFeed; do
+    icp_call_expect_ok "Verify $scenario scenario" "" -e local gleaph-social-demo-gateway execute_social_demo_scenario \
+      "(variant { $scenario })" --query
+  done
 }
 
 main() {
@@ -132,13 +182,14 @@ main() {
   icp_cmd build
 
   # The Gateway canister must be created before graph registration so its principal is known when
-  # adding graph admins. It is installed after Router, Index, and Graph are registered/wired
+  # adding graph admins. It is installed after Router, Index, Graph, and Vector are registered/wired
   # because its init args need the Router principal.
-  local router_id index_id graph_id gateway_id frontend_id
+  local router_id index_id graph_id gateway_id frontend_id vector_id
   router_id="$(ensure_canister gleaph-router)"
   index_id="$(ensure_canister gleaph-graph-index)"
   graph_id="$(ensure_canister gleaph-graph-shard-0)"
   gateway_id="$(ensure_canister gleaph-social-demo-gateway)"
+  vector_id="$(ensure_canister gleaph-vector)"
   frontend_id="$(ensure_canister social-demo)"
 
   log "Installing gleaph-router"
@@ -192,6 +243,13 @@ main() {
     }
   )"
 
+  log "Installing gleaph-vector"
+  icp_cmd canister install -e local -y --mode "$INSTALL_MODE" gleaph-vector --args "(
+    record {
+      router_canister = principal \"$router_id\";
+    }
+  )"
+
   log "Installing gleaph-social-demo-gateway"
   icp_cmd canister install -e local -y --mode "$INSTALL_MODE" gleaph-social-demo-gateway --args "(
     record {
@@ -200,12 +258,12 @@ main() {
   )"
 
   seed_social_graph
+  setup_vector_index "$vector_id"
+  ingest_social_embeddings
   register_social_prepared_queries
 
   if [[ "${GLEAPH_DEMO_VERIFY_QUERY:-0}" == "1" ]]; then
-    log "Verifying public timeline through social demo Gateway"
-    icp_call_expect_ok "Verifying public timeline through Gateway" "" -e local gleaph-social-demo-gateway execute_social_demo_scenario \
-      '(variant { PublicTimeline })' --query
+    verify_social_demo_scenarios
   else
     log "Skipping Gateway scenario verification; set GLEAPH_DEMO_VERIFY_QUERY=1 to enable it"
   fi
@@ -221,6 +279,7 @@ main() {
   printf '  Router:        %s\n' "$router_id"
   printf '  Graph index:   %s\n' "$index_id"
   printf '  Graph shard 0: %s\n' "$graph_id"
+  printf '  Vector index:  %s\n' "$vector_id"
   printf '  Gateway:       %s\n' "$gateway_id"
   printf '  Frontend:      %s\n' "$frontend_id"
   if [[ -n "$gateway" ]]; then

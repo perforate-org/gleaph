@@ -68,6 +68,7 @@ type WireValue =
   | { Text: string }
   | { Int64: bigint }
   | { Uint64: bigint }
+  | { Float64: number }
   | { DateTime: { seconds: bigint; nanos: number } }
   | { Date: number }
   | { Time: bigint }
@@ -103,6 +104,14 @@ export const expectText = (map: Map<string, WireValue>, column: string): string 
     throw new Error(`Missing or non-text column: ${column}`);
   }
   return value.Text;
+};
+
+export const expectFloat64 = (map: Map<string, WireValue>, column: string): number => {
+  const value = map.get(column);
+  if (!value || !("Float64" in value)) {
+    throw new Error(`Missing or non-float64 column: ${column}`);
+  }
+  return value.Float64;
 };
 
 export const expectDateTimeSeconds = (

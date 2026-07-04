@@ -23,6 +23,12 @@ canisters:
       configuration:
         package: gleaph-social-demo-gateway
 
+  - name: gleaph-vector
+    recipe:
+      type: "@dfinity/rust@v3.2.0"
+      configuration:
+        package: gleaph-graph-vector-index
+
   - name: social-demo
     recipe:
       type: "@dfinity/asset-canister@v2.2.1"
