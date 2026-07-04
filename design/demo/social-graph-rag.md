@@ -1,22 +1,25 @@
 # Social Graph and GraphRAG Comparison Demo
 Last updated: 2026-07-04
-Anchor timestamp: 2026-07-04 00:37:29 UTC +0000
+Anchor timestamp: 2026-07-04 03:28:04 UTC +0000
 
 ## Status
 
-**Partially Implemented** — Phase 1 backend subset and dedicated public comparison frontend are implemented. A canonical social graph
-manifest and reproducible Router seed operations exist, and the public-timeline, Alice home-feed,
-and topic-path prepared-query contracts are verified end-to-end through the application-owned
-`gleaph-social-demo-gateway` canister, with anonymous callers invoking the three fixed scenarios
-and the Gateway principal acting as the graph-visible default-Executor caller (the Gateway is in
-the graph `admins` set so Router can resolve the prepared plan, but it remains a default Router
-Executor with no ad-hoc GQL `Read` role). Internet Identity, vector search, LLM calls, GraphRAG
-orchestration, and authenticated ownership remain explicitly planned and out of scope for this
-slice.
+**Partially Implemented** — Phase 1 backend subset and the two backend semantic comparison
+scenarios are implemented. A canonical social graph manifest with deterministic Post embeddings,
+reproducible Router seed operations, and the public-timeline, Alice home-feed, topic-path,
+vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts
+are verified end-to-end through the application-owned `gleaph-social-demo-gateway` canister, with
+anonymous callers invoking the five fixed scenarios and the Gateway principal acting as the
+graph-visible default-Executor caller (the Gateway is in the graph `admins` set so Router can
+resolve the prepared plan, but it remains a default Router Executor with no ad-hoc GQL `Read`
+role). The two semantic scenarios carry an internally generated fixed query vector and return
+deliberately different result membership and exact L2-squared distance order. Internet Identity,
+LLM calls, GraphRAG orchestration, local vector-canister deployment wiring, and authenticated
+ownership remain explicitly planned and out of scope for this slice.
 
 ## Phase 1 implementation note
 
-As of 2026-07-04 00:37:29 UTC +0000:
+As of 2026-07-04 03:28:04 UTC +0000:
 
 - Canonical manifest: `frontend/apps/knowledge-map/seeds/social-graph.json`.
 - Generated seed artifact: `frontend/apps/knowledge-map/seeds/social-seeds.json`.
@@ -47,6 +50,12 @@ As of 2026-07-04 00:37:29 UTC +0000:
 - Verified contracts:
   - public posts in exact reverse chronological order, excluding the private adversary post,
     executed by an anonymous caller through the Gateway;
+  - deterministic Post embeddings written through Router `admin_ingest_vertex_embedding`, with
+    the derived vector index hydrated through Router rather than direct vector-canister seeding;
+  - vector-only semantic discovery over public Posts, returning exact L2-squared distance order
+    and including a deliberately nearer unfollowed post (`post-dave-1`);
+  - Alice graph-constrained semantic feed excluding the nearer unfollowed post and returning
+    followed authors' Posts in semantic order;
   - Alice home feed through `FOLLOWS -> POSTED`, excluding public but unfollowed authors,
     executed by an anonymous caller through the Gateway;
   - topic explanation path through a followee's post, returning the node and edge identities
@@ -280,11 +289,11 @@ As verified against the repository on 2026-07-04 UTC:
 | Application-owned public read Gateway | Implemented | Anonymous callers execute fixed scenarios through the Gateway; no arbitrary GQL/names/params |
 | Dedicated public comparison frontend | Implemented | Browser calls only the Gateway; no Router GQL, arbitrary inputs, auth, vector, or LLM scope |
 | Transparent row-level policy engine | Not implemented | Do not claim RLS parity |
-| Canonical vertex embeddings and derived vector indexes | Implemented | Semantic post retrieval |
-| Vector `SEARCH` joined with graph execution | Implemented for bounded vertex-only shapes | Graph-aware semantic retrieval |
-| GQL vector-index DDL | Planned | Bootstrap through current admin API |
+| Canonical vertex embeddings and derived vector indexes | Implemented | Semantic post retrieval through Router canonical ingestion |
+| Vector `SEARCH` joined with graph execution | Implemented for bounded vertex-only shapes and the two social demo prepared queries | Graph-aware semantic retrieval |
+| GQL vector-index DDL | Planned | Bootstrap through current admin API; social demo uses the admin API directly |
 | Full-text and native hybrid provider | Planned | Not required for the first demo |
-| Embedding generation | External to Gleaph | Application integration or deterministic seed data |
+| Embedding generation | External to Gleaph | Deterministic seed embeddings in the canonical manifest; live providers remain planned |
 | LLM inference | IC LLM canister via application-owned `ic-llm` client | GraphRAG generation |
 | Realtime/changefeed subscriptions | Not implemented | Use static seed data or explicit refresh |
 
@@ -394,10 +403,10 @@ adding arbitrary query controls or Router GQL entrypoints to the public UI.
 
 ### Phase 2: vector comparison
 
-- Add externally generated Post embeddings to the deterministic seed.
-- Register and activate one vector index through the current admin surface.
-- Add vector-only and graph-aware semantic retrieval scenarios.
-- Make ranking and path explanations independently visible.
+- Add externally generated Post embeddings to the deterministic seed. **(backend implemented; frontend wiring planned)**
+- Register and activate one vector index through the current admin surface. **(backend implemented for the PocketIC fixture; local `icp` deploy wiring planned)**
+- Add vector-only and graph-aware semantic retrieval scenarios. **(backend prepared-query and Gateway scenario contracts implemented; frontend rendering planned)**
+- Make ranking and path explanations independently visible. **(backend ranking visible through exact distance assertions; frontend comparison UI planned)**
 
 ### Phase 3: GraphRAG orchestration
 
@@ -454,7 +463,7 @@ Internet Identity application integration by itself does not require a Gleaph AD
 
 1. Which existing knowledge-map components can support a timeline-plus-graph layout without creating
    a second frontend application?
-2. Which deterministic posts and relationships best make each retrieval model visibly different?
+2. Which deterministic posts and relationships best make each retrieval model visibly different? (resolved: the manifest uses integer-valued 8-dimensional `post_vec` embeddings so vector-only results order `post-dave-1`, `post-bob-2`, `post-carol-1`, `post-bob-1`, `post-alice-1`, `post-eve-1`, and Alice's graph-constrained feed excludes the nearer `post-dave-1`).
 3. Should Phase 1 call registered prepared queries directly, or use a narrow Router-owned demo read
    endpoint before the prepared-query frontend wrapper exists?
 4. Which embedding provider should the application demo adapter support first, and which `ic-llm`

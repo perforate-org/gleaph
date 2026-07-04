@@ -76,5 +76,112 @@
       "key": "social-seed-edge-post-bob-1-topic-graph",
       "gql": "MATCH (a:Post {demo_id: 'post-bob-1', demo_graph: 'social'}), (b:Topic {demo_id: 'topic-graph', demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:HAS_TOPIC {demo_edge_id: 'post-bob-1-topic-graph', demo_kind: 'has topic'}]->(b)"
     }
-  ]
+  ],
+  "embeddings": {
+    "post-alice-1": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        4,
+        4,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "post-bob-2": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        7,
+        1,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "post-carol-1": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        6,
+        2,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "post-bob-1": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        5,
+        3,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "post-eve-1": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        0,
+        8,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "post-dave-1": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        8,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    },
+    "post-eve-private": {
+      "name": "post_vec",
+      "dims": 8,
+      "metric": "L2Squared",
+      "values": [
+        0,
+        0,
+        8,
+        0,
+        0,
+        0,
+        0,
+        0
+      ]
+    }
+  }
 }

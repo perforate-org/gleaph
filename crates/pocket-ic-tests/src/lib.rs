@@ -1,11 +1,16 @@
 //! Shared helpers for PocketIC federation tests.
 
 use candid::{CandidType, Decode, Encode, Principal};
+
 use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId};
+use gleaph_graph_kernel::vector_index::{VectorMetric, VertexEmbeddingProjectionOutcome};
 use gleaph_router::RouterInitArgs;
-use gleaph_router::types::AdminRegisterShardArgs;
+use gleaph_router::types::{
+    AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingArgs, AdminRegisterShardArgs,
+    RegisterVectorIndexArgs,
+};
 use gleaph_social_demo_gateway::{GatewayInitArgs, SocialDemoScenario};
 use pocket_ic::{PocketIc, PocketIcBuilder};
 use std::collections::BTreeSet;
@@ -2213,6 +2218,198 @@ pub fn element_id_bytes_from_gql_result(
 /// Per-graph encoding key bytes for a federation env's registered graph name.
 pub fn federation_graph_element_id_encoding_key_bytes(env: &FederationEnv) -> [u8; 16] {
     graph_element_id_encoding_key(&env.pic, env.admin, env.router, GRAPH_NAME).0
+}
+
+/// Register and fully activate a single-shard vector index for the social demo graph.
+///
+/// Registers `embedding_name` with dimension `dims` and `L2Squared` metric, enables global vector
+/// dispatch, wires the graph shard to `vector`, and attaches the shard bidirectionally.
+pub fn admin_fully_activate_social_vector_index(
+    env: &FederationEnv,
+    vector: Principal,
+    index_id: u32,
+    embedding_name: &str,
+    dims: u16,
+) {
+    let register_args = RegisterVectorIndexArgs {
+        logical_graph_name: GRAPH_NAME.to_string(),
+        embedding_name: embedding_name.to_string(),
+        index_id,
+        dims,
+        metric: Some(VectorMetric::L2Squared),
+        target: Some(vector),
+        if_not_exists: false,
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_register_vector_index",
+            Encode!(&register_args).expect("encode admin_register_vector_index"),
+        )
+        .expect("admin_register_vector_index");
+    let registered: Result<bool, gleaph_graph_kernel::federation::RouterError> =
+        Decode!(&bytes, Result<bool, gleaph_graph_kernel::federation::RouterError>)
+            .expect("decode admin_register_vector_index");
+    assert!(
+        registered.expect("admin_register_vector_index succeeds"),
+        "first vector index registration must create the index"
+    );
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_set_vector_dispatch_activation",
+            Encode!(&true).expect("encode admin_set_vector_dispatch_activation"),
+        )
+        .expect("admin_set_vector_dispatch_activation");
+    let _: () = Decode!(&bytes, Result<(), gleaph_graph_kernel::federation::RouterError>)
+        .expect("decode admin_set_vector_dispatch_activation")
+        .expect("dispatch activation succeeds");
+
+    let graph_id = {
+        let bytes = env
+            .pic
+            .query_call(
+                env.router,
+                env.admin,
+                "lookup_graph_id",
+                Encode!(&GRAPH_NAME.to_string()).expect("encode lookup_graph_id"),
+            )
+            .expect("lookup_graph_id");
+        Decode!(
+            &bytes,
+            Result<GraphId, gleaph_graph_kernel::federation::RouterError>
+        )
+        .expect("decode lookup_graph_id")
+        .expect("graph id found")
+    };
+
+    let bytes = env
+        .pic
+        .update_call(
+            env.graph_source,
+            env.router,
+            "admin_set_vector_index_canister",
+            Encode!(&vector).expect("encode admin_set_vector_index_canister"),
+        )
+        .expect("admin_set_vector_index_canister");
+    let _: () = Decode!(&bytes, Result<(), String>)
+        .expect("decode admin_set_vector_index_canister")
+        .expect("graph accepts vector routing");
+
+    let bytes = env
+        .pic
+        .update_call(
+            vector,
+            env.router,
+            "admin_attach_shard_canister",
+            Encode!(&graph_id, &ShardId::new(0), &env.graph_source).expect("encode vector attach"),
+        )
+        .expect("vector admin_attach_shard_canister");
+    let _: () = Decode!(&bytes, Result<(), String>)
+        .expect("decode vector attach")
+        .expect("vector accepts shard");
+
+    let attach_args = AdminAttachVectorIndexShardArgs {
+        logical_graph_name: GRAPH_NAME.to_string(),
+        shard_id: ShardId::new(0),
+        vector_index_canister: vector,
+    };
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.admin,
+            "admin_attach_vector_index_shard",
+            Encode!(&attach_args).expect("encode admin_attach_vector_index_shard"),
+        )
+        .expect("admin_attach_vector_index_shard");
+    let _: () = Decode!(&bytes, Result<(), gleaph_graph_kernel::federation::RouterError>)
+        .expect("decode admin_attach_vector_index_shard")
+        .expect("router attaches shard");
+}
+
+/// Resolve the opaque encoded `ELEMENT_ID` for one seeded Post by its `demo_id`.
+pub fn resolve_social_post_element_id(env: &FederationEnv, demo_id: &str) -> Vec<u8> {
+    let query = format!(
+        "MATCH (p:Post {{demo_id: '{}'}}) RETURN ELEMENT_ID(p) AS element_id",
+        demo_id.replace('\\', "\\\\").replace('\'', "''")
+    );
+    let result =
+        gql_query_with_params_on_router(&env.pic, env.admin, env.router, &query, Vec::new());
+    element_id_bytes_from_gql_result(&result, "element_id")
+}
+
+/// Encode a deterministic `f32` embedding vector into little-endian bytes.
+pub fn encode_f32_embedding(values: &[f32]) -> Vec<u8> {
+    values
+        .iter()
+        .flat_map(|v| v.to_le_bytes().to_vec())
+        .collect()
+}
+
+/// Ingest every Post embedding from the canonical social manifest through Router's canonical
+/// ingestion boundary. `embeddings` is the `embeddings` object from the generated social seeds
+/// artifact, keyed by Post `demo_id`.
+pub fn admin_ingest_social_embeddings(env: &FederationEnv, embeddings: &serde_json::Value) {
+    let embeddings = embeddings
+        .as_object()
+        .expect("social embeddings must be a JSON object");
+    for (demo_id, meta) in embeddings {
+        let encoded = resolve_social_post_element_id(env, demo_id);
+        let values: Vec<f32> = meta["values"]
+            .as_array()
+            .unwrap_or_else(|| panic!("embedding values for {demo_id} must be an array"))
+            .iter()
+            .map(|v| {
+                v.as_f64()
+                    .unwrap_or_else(|| panic!("embedding value for {demo_id} must be a number"))
+                    as f32
+            })
+            .collect();
+        let args = AdminIngestVertexEmbeddingArgs {
+            logical_graph_name: GRAPH_NAME.to_string(),
+            encoded_vertex_id: encoded,
+            embedding_name: "post_vec".to_string(),
+            values,
+        };
+        let bytes = env
+            .pic
+            .update_call(
+                env.router,
+                env.admin,
+                "admin_ingest_vertex_embedding",
+                Encode!(&args).expect("encode admin_ingest_vertex_embedding"),
+            )
+            .expect("admin_ingest_vertex_embedding");
+        let result: Result<
+            gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult,
+            gleaph_graph_kernel::federation::RouterError,
+        > = Decode!(
+            &bytes,
+            Result<
+                gleaph_graph_kernel::vector_index::VertexEmbeddingIngestionResult,
+                gleaph_graph_kernel::federation::RouterError,
+            >
+        )
+        .expect("decode admin_ingest_vertex_embedding");
+        let outcome = result.expect("admin_ingest_vertex_embedding succeeds");
+        assert_eq!(
+            outcome.embedding_version, 1,
+            "first canonical write for {demo_id} must be version 1"
+        );
+        assert!(
+            matches!(
+                outcome.projection_outcome,
+                VertexEmbeddingProjectionOutcome::Applied
+            ),
+            "embedding projection for {demo_id} must be applied on activated index"
+        );
+    }
 }
 
 /// Router composite `gql_query` expected to fail (e.g. after DROP INDEX removes federated anchor).

@@ -1,9 +1,13 @@
 //! PocketIC: social demo public-read Gateway contract.
 //!
 //! Seeds the canonical social demo graph through Router `gql_execute_idempotent` and proves that
-//! an anonymous browser caller can execute only the three fixed social-demo scenarios through the
+//! an anonymous browser caller can execute only the fixed social-demo scenarios through the
 //! application-owned Gateway, while neither arbitrary ad-hoc `gql_query` nor arbitrary prepared
 //! names or parameters are expressible through the Gateway.
+//!
+//! The deterministic Post embeddings enter Graph canonical state through Router
+//! `admin_ingest_vertex_embedding`; the derived vector index is hydrated through that same Router
+//! boundary, not by direct vector-canister seeding.
 //!
 //! The Gateway principal is registered as a graph administrator so Router can resolve the
 //! prepared plan, but it remains a default Router Executor with no ad-hoc `Read` role. Router sees
@@ -15,9 +19,10 @@ use gleaph_gql::Value;
 use gleaph_gql_ic::IcWirePlanQueryResult;
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_pocket_ic_tests::{
+    admin_fully_activate_social_vector_index, admin_ingest_social_embeddings,
     admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
     execute_social_demo_scenario_as, gql_query_as, install_single_shard_federation_with_gateway,
-    prepared_register_as_admin, seed_social_graph,
+    install_vector_canister, prepared_register_as_admin, seed_social_graph,
 };
 use gleaph_social_demo_gateway::SocialDemoScenario;
 
@@ -46,6 +51,17 @@ RETURN p.demo_id AS post_id, \
        p.created_at AS created_at \
 ORDER BY created_at DESC";
 
+const SEMANTIC_EMBEDDING_NAME: &str = "post_vec";
+const SEMANTIC_INDEX_ID: u32 = 1;
+const SEMANTIC_DIMS: u16 = 8;
+
+const SEMANTIC_DISCOVERY_QUERY: &str = "MATCH (p:Post) WHERE p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, distance ORDER BY distance ASC";
+
+const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 'alice' AND p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, distance ORDER BY distance ASC";
+
+const SOCIAL_SEEDS_JSON: &str =
+    include_str!("../../../frontend/apps/knowledge-map/seeds/social-seeds.json");
+
 #[test]
 fn social_graph_demo_gateway_contract() {
     // A default-Executor principal that is NOT graph-visible must remain fail-closed for ad-hoc GQL.
@@ -63,7 +79,40 @@ fn social_graph_demo_gateway_contract() {
     assert_public_timeline_through_gateway(&env, gateway);
     assert_alice_home_feed_through_gateway(&env, gateway);
     assert_topic_path_explanation_through_gateway(&env, gateway);
+
+    ingest_social_embeddings_through_router(
+        &env,
+        SEMANTIC_INDEX_ID,
+        SEMANTIC_EMBEDDING_NAME,
+        SEMANTIC_DIMS,
+    );
+    prepared_register_as_admin(&env, "semantic_discovery", SEMANTIC_DISCOVERY_QUERY);
+    prepared_register_as_admin(&env, "alice_semantic_feed", ALICE_SEMANTIC_FEED_QUERY);
+
+    assert_semantic_discovery_through_gateway(&env, gateway);
+    assert_alice_semantic_feed_through_gateway(&env, gateway);
+
     assert_ad_hoc_gql_fail_closed(&env, default_executor);
+}
+
+fn ingest_social_embeddings_through_router(
+    env: &gleaph_pocket_ic_tests::FederationEnv,
+    index_id: u32,
+    embedding_name: &str,
+    dims: u16,
+) {
+    let manifest: serde_json::Value =
+        serde_json::from_str(SOCIAL_SEEDS_JSON).expect("parse social seeds manifest");
+    let embeddings = &manifest["embeddings"];
+    assert!(
+        embeddings.is_object(),
+        "generated social seeds must carry deterministic Post embeddings"
+    );
+
+    let vector = install_vector_canister(&env.pic, env.router);
+    admin_fully_activate_social_vector_index(env, vector, index_id, embedding_name, dims);
+
+    admin_ingest_social_embeddings(env, embeddings);
 }
 
 fn assert_public_timeline_through_gateway(
@@ -188,6 +237,120 @@ fn assert_topic_path_explanation_through_gateway(
     }
 }
 
+fn assert_semantic_discovery_through_gateway(
+    env: &gleaph_pocket_ic_tests::FederationEnv,
+    gateway: Principal,
+) {
+    let result = execute_social_demo_scenario_as(
+        env,
+        Principal::anonymous(),
+        gateway,
+        SocialDemoScenario::SemanticDiscovery,
+    );
+    let rows = decode_rows(&result);
+    assert_eq!(
+        rows.len(),
+        6,
+        "vector-only semantic discovery should return exactly the six public posts"
+    );
+    let ids: Vec<String> = rows.iter().map(|r| text(r, "post_id")).collect();
+    assert_eq!(
+        ids,
+        vec![
+            "post-dave-1",
+            "post-bob-2",
+            "post-carol-1",
+            "post-bob-1",
+            "post-alice-1",
+            "post-eve-1",
+        ],
+        "vector-only results must be in exact L2-squared distance order"
+    );
+    assert!(
+        !ids.contains(&"post-eve-private".to_string()),
+        "private post must be excluded from vector-only semantic discovery"
+    );
+
+    assert_exact_distances(
+        &rows,
+        &[
+            ("post-dave-1", 0.0),
+            ("post-bob-2", 2.0),
+            ("post-carol-1", 8.0),
+            ("post-bob-1", 18.0),
+            ("post-alice-1", 32.0),
+            ("post-eve-1", 128.0),
+        ],
+    );
+}
+
+fn assert_alice_semantic_feed_through_gateway(
+    env: &gleaph_pocket_ic_tests::FederationEnv,
+    gateway: Principal,
+) {
+    let result = execute_social_demo_scenario_as(
+        env,
+        Principal::anonymous(),
+        gateway,
+        SocialDemoScenario::AliceSemanticFeed,
+    );
+    let rows = decode_rows(&result);
+    assert_eq!(
+        rows.len(),
+        3,
+        "Alice's semantic feed should return exactly the followed-author posts"
+    );
+    let ids: Vec<String> = rows.iter().map(|r| text(r, "post_id")).collect();
+    assert_eq!(
+        ids,
+        vec!["post-bob-2", "post-carol-1", "post-bob-1"],
+        "graph-constrained semantic results must exclude the nearer unfollowed post"
+    );
+    for adversary in [
+        "post-dave-1",
+        "post-eve-1",
+        "post-eve-private",
+        "post-alice-1",
+    ] {
+        assert!(
+            !ids.contains(&adversary.to_string()),
+            "Alice's semantic feed must exclude {adversary}"
+        );
+    }
+
+    assert_exact_distances(
+        &rows,
+        &[
+            ("post-bob-2", 2.0),
+            ("post-carol-1", 8.0),
+            ("post-bob-1", 18.0),
+        ],
+    );
+}
+
+fn assert_exact_distances(
+    rows: &[std::collections::BTreeMap<String, Value>],
+    expected: &[(&str, f64)],
+) {
+    assert_eq!(
+        rows.len(),
+        expected.len(),
+        "distance assertion row count mismatch"
+    );
+    for (row, (post_id, expected_distance)) in rows.iter().zip(expected.iter()) {
+        assert_eq!(
+            &text(row, "post_id"),
+            post_id,
+            "distance order post_id mismatch"
+        );
+        let distance = distance_f64(row, "distance");
+        assert!(
+            (distance - *expected_distance).abs() < 1e-6,
+            "distance for {post_id} expected {expected_distance}, got {distance}"
+        );
+    }
+}
+
 fn assert_ad_hoc_gql_fail_closed(
     env: &gleaph_pocket_ic_tests::FederationEnv,
     default_executor: Principal,
@@ -260,5 +423,15 @@ fn text(row: &std::collections::BTreeMap<String, Value>, column: &str) -> String
     {
         Value::Text(value) => value.clone(),
         other => panic!("expected Text in column {column}, got {other:?}"),
+    }
+}
+
+fn distance_f64(row: &std::collections::BTreeMap<String, Value>, column: &str) -> f64 {
+    match row
+        .get(column)
+        .unwrap_or_else(|| panic!("missing column {column}"))
+    {
+        Value::Float64(value) => *value,
+        other => panic!("expected Float64 in column {column}, got {other:?}"),
     }
 }

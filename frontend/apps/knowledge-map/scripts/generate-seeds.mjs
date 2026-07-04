@@ -51,6 +51,32 @@ const edgeProperties = (edge) =>
 
 const seedPrefix = DEMO_GRAPH === "knowledge-map" ? "km" : DEMO_GRAPH;
 
+
+const validateEmbedding = (node) => {
+  const e = node.embedding;
+  if (!e) {
+    throw new Error(`Post node ${node.id} is missing embedding`);
+  }
+  if (!Number.isFinite(e.dims) || e.dims <= 0 || (e.dims | 0) !== e.dims) {
+    throw new Error(`Invalid embedding dims for ${node.id}: ${e.dims}`);
+  }
+  if (!Array.isArray(e.values) || e.values.length !== e.dims) {
+    throw new Error(`Embedding values length mismatch for ${node.id}: expected ${e.dims}, got ${e.values ? e.values.length : 'none'}`);
+  }
+  for (const v of e.values) {
+    if (!Number.isFinite(v)) {
+      throw new Error(`Non-finite embedding value for ${node.id}: ${v}`);
+    }
+  }
+  if (e.name !== "post_vec") {
+    throw new Error(`Unexpected embedding name for ${node.id}: ${e.name}`);
+  }
+  if (!["L2Squared", "Cosine"].includes(e.metric)) {
+    throw new Error(`Unsupported embedding metric for ${node.id}: ${e.metric}`);
+  }
+  return { name: e.name, dims: e.dims, metric: e.metric, values: e.values };
+};
+
 const seeds = [];
 
 for (const node of graph.nodes.filter((entry) => entry.layer === 0)) {
@@ -88,5 +114,19 @@ for (const edge of graph.edges) {
   created.add(edge.target);
 }
 
-writeFileSync(outputPath, `${JSON.stringify({ seeds }, null, 2)}\n`);
+const hasPostEmbeddings = graph.nodes.some((node) => node.kind === "post" && node.embedding);
+const embeddings = {};
+for (const node of graph.nodes) {
+  if (node.embedding) {
+    if (node.kind !== "post") {
+      throw new Error(`Non-Post node ${node.id} has embedding`);
+    }
+    embeddings[node.id] = validateEmbedding(node);
+  } else if (hasPostEmbeddings && node.kind === "post") {
+    throw new Error(`Post node ${node.id} is missing embedding`);
+  }
+}
+
+writeFileSync(outputPath, `${JSON.stringify({ seeds, embeddings }, null, 2)}
+`);
 console.log(`Wrote ${outputPath} (${seeds.length} seeds)`);

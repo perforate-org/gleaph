@@ -122,8 +122,15 @@ type SocialDemoGatewayError = variant {
   NotConfigured;
 };
 // Fixed public scenarios. The Gateway maps each variant to a single prepared-query name
-// registered by the deploy administrator; callers cannot supply GQL, names, or parameters.
-type SocialDemoScenario = variant { TopicPath; PublicTimeline; AliceHomeFeed };
+// registered by the deploy administrator; callers cannot supply GQL, names, graph names,
+// raw vectors, or parameters.
+type SocialDemoScenario = variant {
+  SemanticDiscovery;
+  TopicPath;
+  PublicTimeline;
+  AliceSemanticFeed;
+  AliceHomeFeed;
+};
 // Why production vector-index dispatch/backfill is fail-closed (ADR 0031 Slice 3/4).
 type VectorActivationBlockReason = variant {
   // The global vector-dispatch activation flag is off (ADR 0031 Slice 4). An operator must flip

@@ -74,6 +74,21 @@
       "properties": {
         "created_at": 202607030600,
         "is_public": 1
+      },
+      "embedding": {
+        "name": "post_vec",
+        "dims": 8,
+        "metric": "L2Squared",
+        "values": [
+          4,
+          4,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
       }
     },
     {
@@ -86,6 +101,21 @@
       "properties": {
         "created_at": 202607030500,
         "is_public": 1
+      },
+      "embedding": {
+        "name": "post_vec",
+        "dims": 8,
+        "metric": "L2Squared",
+        "values": [
+          7,
+          1,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
       }
     },
     {
@@ -98,6 +128,21 @@
       "properties": {
         "created_at": 202607030400,
         "is_public": 1
+      },
+      "embedding": {
+        "name": "post_vec",
+        "dims": 8,
+        "metric": "L2Squared",
+        "values": [
+          6,
+          2,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
       }
     },
     {
@@ -110,6 +155,21 @@
       "properties": {
         "created_at": 202607030300,
         "is_public": 1
+      },
+      "embedding": {
+        "name": "post_vec",
+        "dims": 8,
+        "metric": "L2Squared",
+        "values": [
+          5,
+          3,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
       }
     },
     {
@@ -122,6 +182,21 @@
       "properties": {
         "created_at": 202607030200,
         "is_public": 1
+      },
+      "embedding": {
+        "name": "post_vec",
+        "dims": 8,
+        "metric": "L2Squared",
+        "values": [
+          0,
+          8,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
       }
     },
     {
@@ -134,6 +209,21 @@
       "properties": {
         "created_at": 202607030100,
         "is_public": 1
+      },
+      "embedding": {
+        "name": "post_vec",
+        "dims": 8,
+        "metric": "L2Squared",
+        "values": [
+          8,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
       }
     },
     {
@@ -146,6 +236,21 @@
       "properties": {
         "created_at": 202607030000,
         "is_public": 0
+      },
+      "embedding": {
+        "name": "post_vec",
+        "dims": 8,
+        "metric": "L2Squared",
+        "values": [
+          0,
+          0,
+          8,
+          0,
+          0,
+          0,
+          0,
+          0
+        ]
       }
     }
   ],

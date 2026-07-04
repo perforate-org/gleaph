@@ -24,6 +24,7 @@ use crate::graph_context;
 use crate::index_catalog::graph_stats_for;
 use crate::rbac::{authorize_prepared_catalog_change, authorize_prepared_execute};
 use crate::state::RouterError;
+use crate::vector_sync;
 
 /// Plan a prepared query through the production Router ingress planning seam.
 ///
@@ -237,6 +238,37 @@ async fn prepared_execute(
     let (_, plans) = gleaph_gql_planner::wire::decode_plan_bundle(&v1.plan_blob)
         .map_err(|e| RouterError::InvalidArgument(e.to_string()))?;
     let stats = graph_stats_for(graph_id);
+    // ADR 0034: prepared queries that contain a supported `SEARCH` shape are lowered through the
+    // same Router vector-index path as ad-hoc `gql_query`. The plan is single-graph by the
+    // prepared registration contract.
+    //
+    // Limitation: the SEARCH lowering currently executes at `ReadMode::Eventual`. Passing the
+    // caller-supplied `read_mode` through to `try_execute_gql_search` would require extending the
+    // vector-search branch to honor projection-lag barriers the same way non-search read dispatch
+    // does. That is out of scope for this slice; social-demo semantic scenarios are read-only and
+    // use the default eventual-read consistency.
+    if mode == GqlExecutionMode::Query
+        && let Some(plan) = plans.first()
+        && gleaph_gql_planner::plan_contains_search(plan)
+        && let Some(result) = crate::gql_search::try_execute_gql_search(
+            plan,
+            graph_id,
+            &params,
+            mode,
+            &stats,
+            &store,
+            msg_caller(),
+            |target, req| async move {
+                vector_sync::vector_search(target, req)
+                    .await
+                    .map_err(crate::state::RouterError::Internal)
+            },
+        )
+        .await?
+    {
+        return Ok(result);
+    }
+
     // ADR 0029 Phase 5: federated multi-DML bundles are rejected at registration (the AST is
     // available there), so a prepared plan that reaches dispatch is never a federated multi-DML
     // bundle. The contract 1/2 multi-DML admission (anchored single-shard and roll-forward fan-out)

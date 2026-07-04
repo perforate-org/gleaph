@@ -112,5 +112,6 @@
       "key": "km-seed-edge-ops-index",
       "gql": "MATCH (a:Project {demo_id: 'project-ops', demo_graph: 'knowledge-map'}) RETURN a NEXT INSERT (a)-[:SECURED_BY {demo_edge_id: 'ops-index', demo_kind: 'secured by'}]->(b:Document {demo_id: 'doc-index', demo_graph: 'knowledge-map', name: 'Property index ADR'})"
     }
-  ]
+  ],
+  "embeddings": {}
 }
