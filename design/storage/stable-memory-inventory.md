@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-07-03
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge payload schema record (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 45 regions, 0–44; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14)
-Anchor timestamp: 2026-07-03 01:41:26 UTC +0000
+Last updated: 2026-07-04
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge payload schema record + ADR 0035 Slice 1 provisioning-request catalog (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 48 regions, 0–47; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14)
+Anchor timestamp: 2026-07-04 20:10:18 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -31,7 +31,7 @@ this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same pa
 | Canister | Regions | Id range | Registry constant + test |
 |----------|---------|----------|--------------------------|
 | Graph | 46 | 0–45 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
-| Router | 44 | 0–43 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
+| Router | 48 | 0–47 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
 | Graph-index | 7 | 0–6 | `INDEX_STABLE_LAYOUT` — `index_layout_registry_matches_baseline` |
 | Graph-vector-index | 12 | 0–11 | `VECTOR_INDEX_STABLE_LAYOUT` — `vector_index_layout_registry_matches_baseline` |
 
@@ -217,8 +217,11 @@ Regions **1–2** (canonical), **3–4** (derived indexes), **`ROUTER_GRAPH_RUNT
 | 42 | `ROUTER_VECTOR_INDEXES` | `ROUTER_VECTOR_INDEXES` | `init_vector_indexes` | catalog | derived vector index catalog | **`(GraphId, index_id) → VectorIndexDefStableRecord::V1(VectorIndexDefRecord { index_id, embedding_name_id, kind, metric, encoding, dims, target: Option<VectorIndexTarget { canister }>, activation_state })`** — derived vector-index definitions (ADR 0031 Slice 3). Versioned envelope (ADR 0007). The stored `activation_state` is `Registered`/`DispatchBlocked`; **`DispatchEnabled` is derived at read time** by `graph_vector_dispatch_ready(graph_id)` (Slice 4 two-condition gate: global flag region 43 **AND** every live shard vector-attached to the graph's single target). The Router emits a non-empty ephemeral embedding catalog only when ready (fail-closed otherwise). Registration enforces **one index per embedding name per graph** and **one target per graph**. Purged with the graph on `unregister_graph` |
 | 43 | `ROUTER_VECTOR_DISPATCH_ACTIVATION` | `ROUTER_VECTOR_DISPATCH_ACTIVATION` | `init_vector_dispatch_activation` | canonical | vector dispatch activation flag | **`() → bool`** (single-cell, default `false`) — Router-owned global vector-dispatch activation flag ([ADR 0031](../adr/0031-vertex-embedding-store-and-derived-vector-index.md) Slice 4). Set by `admin_set_vector_dispatch_activation` / read by `vector_dispatch_activation_enabled` (RBAC admin). Replaces the retired `const fn incarnation_fencing_enabled()`. Necessary but not sufficient: per-graph emission is additionally fenced on every live shard's `vector_index_attached` bit. Reversible without a redeploy |
 | 44 | `ROUTER_VECTOR_MAINTENANCE_POLICIES` | `ROUTER_VECTOR_MAINTENANCE_POLICIES` | `init_vector_maintenance_policies` | catalog | vector maintenance policy catalog | **`(GraphId, index_id) → VectorMaintenancePolicyStableRecord::V1(VectorMaintenancePolicyRecord { enabled, policy, target_nlist, sample_limit, scan_max_pages, rebuild_max_subjects, cleanup_max_work })`** — Router-owned SSOT for vector maintenance thresholds + per-step budgets ([ADR 0031](../adr/0031-vertex-embedding-store-and-derived-vector-index.md) Slice 10). Versioned envelope (ADR 0007), **default absent/disabled** (the push step is a no-op until set + enabled). Authorship is `authorize_index_ddl` (validated: `recommended_*_bps <= required_*_bps`, nonzero budgets, def exists); `admin_vector_maintenance_step` snapshots it and forwards one bounded unit to the vector canister (which owns the execution state). Purged with the graph on `unregister_graph` |
+| 45 | `ROUTER_PROVISIONING_REQUESTS` | `ROUTER_PROVISIONING_REQUESTS` | `init_provisioning_requests` | canonical | provisioning request catalog | **`(request_id, deployment_id) → RouterProvisioningRequest`** (ADR 0035 Slice 1). Canonical Router-owned issuance intent before any canister id exists |
+| 46 | `ROUTER_PROVISIONING_BY_GRAPH` | `ROUTER_PROVISIONING_BY_GRAPH` | `init_provisioning_by_graph` | derived | provisioning graph index | **`(deployment_id, graph_name, request_id) → ProvisioningRequestKey`** (ADR 0035 Slice 1). Derived graph-scoped secondary index; commit-synced with the canonical request catalog |
+| 47 | `ROUTER_PROVISIONING_INTENT_LOCK` | `ROUTER_PROVISIONING_INTENT_LOCK` | `init_provisioning_intent_locks` | canonical | provisioning intent lock | **`(deployment_id, resource_kind, logical_resource_key) → IntentLockMarker`** (ADR 0035 Slice 1). Canonical intent lock held while a request targeting this intent is non-terminal |
 
-Router **45 regions** total (0–44).
+Router **48 regions** total (0–47).
 
 ### Router ephemeral
 

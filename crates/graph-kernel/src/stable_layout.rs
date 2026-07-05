@@ -1015,6 +1015,31 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
              maintenance steps; default absent/disabled (fail-closed)",
             RebuildPath::None,
         ),
+        // Provisioning-request catalog: canonical request, derived graph index, canonical intent lock (ADR 0035 Slice 1)
+        region(
+            "ROUTER_PROVISIONING_REQUESTS",
+            45,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "(request_id, deployment_id) → RouterProvisioningRequest: Router-owned canonical issuance intent before any canister id exists",
+            RebuildPath::None,
+        ),
+        region(
+            "ROUTER_PROVISIONING_BY_GRAPH",
+            46,
+            StableMemoryClass::Derived,
+            "provisioning",
+            "(deployment_id, graph_name, request_id) → ProvisioningRequestKey: derived secondary index for listing requests per graph; commit-synced",
+            RebuildPath::SyncCoUpdate,
+        ),
+        region(
+            "ROUTER_PROVISIONING_INTENT_LOCK",
+            47,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "(deployment_id, resource_kind, logical_resource_key) → IntentLockMarker: canonical lock held while a request targeting this intent is non-terminal",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1417,8 +1442,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 45);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(44));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 48);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(47));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].class,
             StableMemoryClass::Telemetry

@@ -1,9 +1,9 @@
 # 0035. Provision canister and issuance protocol
 
 Date: 2026-07-04
-Status: proposed
-Last revised: 2026-07-04
-Anchor timestamp: 2026-07-04 13:05:02 UTC +0000
+Status: Partially Implemented
+Last revised: 2026-07-04 20:10:18 UTC +0000
+Anchor timestamp: 2026-07-04 20:10:18 UTC +0000
 
 ## Context
 
@@ -122,8 +122,12 @@ before this proposal can be accepted.
 
 ## Implementation status
 
-**Proposed.** No Provision canister, Router provisioning-request catalog, envelope, or ack endpoint
-exists yet.
+**Partially Implemented (2026-07-04).** This slice adds the Router-owned provisioning-request
+catalog (three stable-memory regions and the `RouterProvisioningRequestStore` API) and all
+ADR 0035 wire types (`ProvisionRequest`, `ProvisionResult`, `RouterProvisionAck`,
+`ProvisionableResource`, etc.). The Provision canister, cross-canister envelope send/recv,
+ingress endpoints, artifact catalog, lifecycle controller policy, and cycle algebra remain
+proposed and are scheduled for later slices.
 
 ## Cross-links
 

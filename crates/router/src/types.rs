@@ -1,10 +1,11 @@
 //! Candid-shaped router types.
 
-use candid::{CandidType, Principal};
+use candid::{CandidType, Decode, Encode, Principal};
 use serde::{Deserialize, Serialize};
+use std::borrow::Cow;
 
 pub use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, ProvisioningState};
-pub use gleaph_graph_kernel::entry::{EdgeLabelId, PropertyId, VertexLabelId};
+pub use gleaph_graph_kernel::entry::{EdgeLabelId, GraphId, PropertyId, VertexLabelId};
 pub use gleaph_graph_kernel::federation::{
     GlobalVertexId, GraphShardKey, LocalVertexId, ShardId, ShardRegistryEntry,
 };
@@ -13,6 +14,7 @@ use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceFailure, VectorMaintenancePolicy, VectorMaintenanceState,
     VectorMaintenanceStepResult, VectorMetric, VectorPartitionPageHealth, VectorRebuildStatus,
 };
+use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 
 pub use crate::facade::stable::label_stats::{ClientMutationKey, RouterMutationRecord};
 use crate::facade::stable::vector_maintenance_policy::VectorMaintenancePolicyRecord;
@@ -466,6 +468,390 @@ pub struct VectorMaintenanceStatusView {
     pub maintenance_state: Option<VectorMaintenanceStateView>,
     /// Forwarded vector-canister rebuild status; `None` if unreachable.
     pub rebuild_status: Option<VectorRebuildStatus>,
+}
+
+// === ADR 0035 provisioning types ==============================================
+
+/// Stable-memory key for Map 45: RouterProvisioningRequest by (request_id, deployment_id).
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ProvisioningRequestKey {
+    pub request_id: String,
+    pub deployment_id: String,
+}
+
+impl ProvisioningRequestKey {
+    pub(crate) fn new(request_id: &str, deployment_id: &str) -> Self {
+        Self {
+            request_id: request_id.to_owned(),
+            deployment_id: deployment_id.to_owned(),
+        }
+    }
+}
+
+impl Storable for ProvisioningRequestKey {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(self.clone().into_bytes())
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(8 + self.request_id.len() + self.deployment_id.len());
+        out.extend_from_slice(&(self.request_id.len() as u32).to_le_bytes());
+        out.extend_from_slice(self.request_id.as_bytes());
+        out.extend_from_slice(&(self.deployment_id.len() as u32).to_le_bytes());
+        out.extend_from_slice(self.deployment_id.as_bytes());
+        out
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let bytes = bytes.as_ref();
+        let mut offset = 0usize;
+        let request_id_len = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("request_id len"),
+        ) as usize;
+        offset += 4;
+        let request_id = String::from_utf8(bytes[offset..offset + request_id_len].to_vec())
+            .expect("request_id utf8");
+        offset += request_id_len;
+        let deployment_id_len = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("deployment_id len"),
+        ) as usize;
+        offset += 4;
+        let deployment_id = String::from_utf8(bytes[offset..offset + deployment_id_len].to_vec())
+            .expect("deployment_id utf8");
+        Self {
+            request_id,
+            deployment_id,
+        }
+    }
+}
+
+/// Secondary index key for Map 46: (deployment_id, graph_name, request_id) → ProvisioningRequestKey.
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub(crate) struct ProvisioningByGraphKey {
+    pub deployment_id: String,
+    pub graph_name: String,
+    pub request_id: String,
+}
+
+impl ProvisioningByGraphKey {
+    pub(crate) fn new(deployment_id: &str, graph_name: &str, request_id: &str) -> Self {
+        Self {
+            deployment_id: deployment_id.to_owned(),
+            graph_name: graph_name.to_owned(),
+            request_id: request_id.to_owned(),
+        }
+    }
+}
+
+impl Storable for ProvisioningByGraphKey {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(self.clone().into_bytes())
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        let mut out = Vec::with_capacity(
+            12 + self.deployment_id.len() + self.graph_name.len() + self.request_id.len(),
+        );
+        out.extend_from_slice(&(self.deployment_id.len() as u32).to_le_bytes());
+        out.extend_from_slice(self.deployment_id.as_bytes());
+        out.extend_from_slice(&(self.graph_name.len() as u32).to_le_bytes());
+        out.extend_from_slice(self.graph_name.as_bytes());
+        out.extend_from_slice(&(self.request_id.len() as u32).to_le_bytes());
+        out.extend_from_slice(self.request_id.as_bytes());
+        out
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let bytes = bytes.as_ref();
+        let mut offset = 0usize;
+        let deployment_id_len = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("deployment_id len"),
+        ) as usize;
+        offset += 4;
+        let deployment_id = String::from_utf8(bytes[offset..offset + deployment_id_len].to_vec())
+            .expect("deployment_id utf8");
+        offset += deployment_id_len;
+        let graph_name_len = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("graph_name len"),
+        ) as usize;
+        offset += 4;
+        let graph_name = String::from_utf8(bytes[offset..offset + graph_name_len].to_vec())
+            .expect("graph_name utf8");
+        offset += graph_name_len;
+        let request_id_len = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("request_id len"),
+        ) as usize;
+        offset += 4;
+        let request_id = String::from_utf8(bytes[offset..offset + request_id_len].to_vec())
+            .expect("request_id utf8");
+        Self {
+            deployment_id,
+            graph_name,
+            request_id,
+        }
+    }
+}
+
+/// Shared stable+wire resource kind. One-byte ordinal in stable memory.
+#[repr(u8)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
+)]
+pub enum ProvisionableResourceKind {
+    GraphShard,
+    PropertyIndex,
+    VectorIndex,
+}
+
+impl Storable for ProvisionableResourceKind {
+    const BOUND: StorableBound = StorableBound::Bounded {
+        max_size: 1,
+        is_fixed_size: true,
+    };
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(vec![*self as u8])
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        vec![self as u8]
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Self::from_ordinal(bytes.as_ref().first().copied())
+    }
+}
+
+impl ProvisionableResourceKind {
+    /// Decode a one-byte stable ordinal into a [`ProvisionableResourceKind`].
+    ///
+    /// Panics on unknown or missing ordinals with the same messages historically emitted by the
+    /// two `Storable::from_bytes` paths, so existing stable bytes remain fail-closed.
+    fn from_ordinal(ordinal: Option<u8>) -> Self {
+        match ordinal {
+            Some(0) => Self::GraphShard,
+            Some(1) => Self::PropertyIndex,
+            Some(2) => Self::VectorIndex,
+            Some(b) => panic!("unknown ProvisionableResourceKind ordinal {b}"),
+            None => panic!("missing ProvisionableResourceKind ordinal"),
+        }
+    }
+}
+
+/// A logical resource this provisioning request intends to create.
+#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, CandidType)]
+pub struct ProvisionableResource {
+    pub kind: ProvisionableResourceKind,
+    pub logical_resource_key: String,
+}
+
+/// Intent lock key for Map 47: (deployment_id, resource_kind, logical_resource_key) → marker.
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
+)]
+pub struct ProvisioningIntentKey {
+    pub deployment_id: String,
+    pub resource_kind: ProvisionableResourceKind,
+    pub logical_resource_key: String,
+}
+
+impl ProvisioningIntentKey {
+    pub(crate) fn new(
+        deployment_id: &str,
+        resource_kind: ProvisionableResourceKind,
+        logical_resource_key: &str,
+    ) -> Self {
+        Self {
+            deployment_id: deployment_id.to_owned(),
+            resource_kind,
+            logical_resource_key: logical_resource_key.to_owned(),
+        }
+    }
+}
+
+impl Storable for ProvisioningIntentKey {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(self.clone().into_bytes())
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        let mut out =
+            Vec::with_capacity(5 + self.deployment_id.len() + self.logical_resource_key.len());
+        out.extend_from_slice(&(self.deployment_id.len() as u32).to_le_bytes());
+        out.extend_from_slice(self.deployment_id.as_bytes());
+        out.push(self.resource_kind as u8);
+        out.extend_from_slice(&(self.logical_resource_key.len() as u32).to_le_bytes());
+        out.extend_from_slice(self.logical_resource_key.as_bytes());
+        out
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        let bytes = bytes.as_ref();
+        let mut offset = 0usize;
+        let deployment_id_len = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("deployment_id len"),
+        ) as usize;
+        offset += 4;
+        let deployment_id = String::from_utf8(bytes[offset..offset + deployment_id_len].to_vec())
+            .expect("deployment_id utf8");
+        offset += deployment_id_len;
+        let resource_kind = ProvisionableResourceKind::from_ordinal(bytes.get(offset).copied());
+        offset += 1;
+        let logical_resource_key_len = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("resource_key len"),
+        ) as usize;
+        offset += 4;
+        let logical_resource_key =
+            String::from_utf8(bytes[offset..offset + logical_resource_key_len].to_vec())
+                .expect("resource_key utf8");
+        Self {
+            deployment_id,
+            resource_kind,
+            logical_resource_key,
+        }
+    }
+}
+
+/// Intent lock held marker for Map 47 value — unit struct avoids () Storable ambiguity.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct IntentLockMarker;
+
+impl Storable for IntentLockMarker {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Borrowed(&[])
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Vec::new()
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        assert!(bytes.as_ref().is_empty(), "IntentLockMarker is zero bytes");
+        Self
+    }
+}
+
+/// Router-side lifecycle state for a provisioning request.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub(crate) enum RouterProvisioningRequestState {
+    Pending,
+    Submitted,
+    AwaitingAck,
+    Completed,
+    Failed { reason: String },
+}
+
+/// Router canonical record for an issuance intent (ADR 0035 §Router orchestration state).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub(crate) struct RouterProvisioningRequest {
+    pub request_id: String,
+    pub request_fingerprint: String,
+    pub caller: Principal,
+    pub graph_name: String,
+    pub reserved_graph_id: Option<GraphId>,
+    pub requested_resources: Vec<ProvisionableResource>,
+    pub state: RouterProvisioningRequestState,
+    pub provision_receipt: Option<ProvisionResult>,
+    pub created_at_ns: u64,
+}
+
+#[derive(Clone, Debug, CandidType, Serialize, Deserialize)]
+enum RouterProvisioningRequestStableRecord {
+    V1(RouterProvisioningRequest),
+}
+
+impl Storable for RouterProvisioningRequest {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(
+            Encode!(&RouterProvisioningRequestStableRecord::V1(self.clone()))
+                .expect("encode RouterProvisioningRequest"),
+        )
+    }
+
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&RouterProvisioningRequestStableRecord::V1(self))
+            .expect("encode RouterProvisioningRequest")
+    }
+
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        match Decode!(bytes.as_ref(), RouterProvisioningRequestStableRecord)
+            .expect("decode RouterProvisioningRequest")
+        {
+            RouterProvisioningRequestStableRecord::V1(v1) => v1,
+        }
+    }
+}
+
+/// A resource created by the Provision canister, reported back in ProvisionResult.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct CreatedResource {
+    pub kind: ProvisionableResourceKind,
+    pub canister_id: Principal,
+    pub artifact_hash: String,
+}
+
+/// Terminal outcome of one provisioning request from the Provision canister.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ProvisionResultOutcome {
+    Installed,
+    Conflict,
+    Failed { reason: String },
+}
+
+/// Result envelope Provision sends back to Router.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ProvisionResult {
+    pub request_id: String,
+    pub request_fingerprint: String,
+    pub release_id: String,
+    pub created_resources: Vec<CreatedResource>,
+    pub terminal_outcome: ProvisionResultOutcome,
+}
+
+/// Router acknowledgement of a ProvisionResult.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct RouterProvisionAck {
+    pub request_id: String,
+    pub accepted_registry_version: u64,
+}
+
+/// Resolved envelope Router sends to Provision (ADR 0035 §Resolved request).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ProvisionRequest {
+    pub deployment_id: String,
+    pub request_id: String,
+    pub request_fingerprint: String,
+    pub intent_key: ProvisioningIntentKey,
+    pub reserved_graph_id: Option<GraphId>,
+    pub graph_name: String,
+    pub requested_resources: Vec<ProvisionableResource>,
+    pub authorized_caller: Principal,
+    pub release_id: String,
+    pub router_callback_principal: Principal,
 }
 
 #[cfg(test)]

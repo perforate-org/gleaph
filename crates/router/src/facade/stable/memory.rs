@@ -30,6 +30,10 @@ use super::indexed_catalog::{IndexDefRecord, IndexedPropertyKey, NamedIndexKey};
 use super::reservation_catalog::{ReservationRecord, UniqueReservationKey};
 use super::vector_index_catalog::{VectorIndexDefRecord, VectorIndexKey};
 use super::vector_maintenance_policy::VectorMaintenancePolicyRecord;
+use crate::types::{
+    IntentLockMarker, ProvisioningByGraphKey, ProvisioningIntentKey, ProvisioningRequestKey,
+    RouterProvisioningRequest,
+};
 use candid::CandidType;
 use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 use ic_stable_structures::{BTreeMap, BTreeSet, Cell, DefaultMemoryImpl};
@@ -107,6 +111,11 @@ const ROUTER_VECTOR_DISPATCH_ACTIVATION: MemoryId = MemoryId::new(43);
 
 // --- policy: per-(graph, index) vector maintenance policy (ADR 0031 Slice 10) ---
 const ROUTER_VECTOR_MAINTENANCE_POLICIES: MemoryId = MemoryId::new(44);
+
+// --- provisioning: pre-creation issuance intent catalog (ADR 0035 Slice 1) ---
+const ROUTER_PROVISIONING_REQUESTS: MemoryId = MemoryId::new(45);
+const ROUTER_PROVISIONING_BY_GRAPH: MemoryId = MemoryId::new(46);
+const ROUTER_PROVISIONING_INTENT_LOCK: MemoryId = MemoryId::new(47);
 
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
@@ -243,6 +252,14 @@ pub(crate) type StableEmbeddingNameCatalog =
 pub(crate) type StableVectorIndexMap = BTreeMap<VectorIndexKey, VectorIndexDefRecord, Memory>;
 pub(crate) type StableVectorMaintenancePolicyMap =
     BTreeMap<VectorIndexKey, VectorMaintenancePolicyRecord, Memory>;
+
+// --- provisioning (ADR 0035 Slice 1) ---
+pub(crate) type StableProvisioningRequestMap =
+    BTreeMap<ProvisioningRequestKey, RouterProvisioningRequest, Memory>;
+pub(crate) type StableProvisioningByGraphMap =
+    BTreeMap<ProvisioningByGraphKey, ProvisioningRequestKey, Memory>;
+pub(crate) type StableProvisioningIntentLockMap =
+    BTreeMap<ProvisioningIntentKey, IntentLockMarker, Memory>;
 
 // --- telemetry ---
 pub(crate) type StableLabelStatsMap =
@@ -405,6 +422,19 @@ pub(crate) fn init_vector_indexes() -> StableVectorIndexMap {
 
 pub(crate) fn init_vector_maintenance_policies() -> StableVectorMaintenancePolicyMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_VECTOR_MAINTENANCE_POLICIES)))
+}
+
+// --- provisioning (ADR 0035 Slice 1) ---
+pub(crate) fn init_provisioning_requests() -> StableProvisioningRequestMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROVISIONING_REQUESTS)))
+}
+
+pub(crate) fn init_provisioning_by_graph() -> StableProvisioningByGraphMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROVISIONING_BY_GRAPH)))
+}
+
+pub(crate) fn init_provisioning_intent_locks() -> StableProvisioningIntentLockMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROVISIONING_INTENT_LOCK)))
 }
 
 // --- control ---

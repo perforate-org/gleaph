@@ -131,6 +131,22 @@ thread_local! {
         RefCell<memory::StableVectorMaintenancePolicyMap> =
         RefCell::new(memory::init_vector_maintenance_policies());
 
+    /// `(request_id, deployment_id) → RouterProvisioningRequest` (ADR 0035 Slice 1). Canonical
+    /// Router-owned issuance intent before any canister id exists.
+    pub(crate) static ROUTER_PROVISIONING_REQUESTS: RefCell<memory::StableProvisioningRequestMap> =
+        RefCell::new(memory::init_provisioning_requests());
+
+    /// `(deployment_id, graph_name, request_id) → ProvisioningRequestKey` (ADR 0035 Slice 1).
+    /// Derived graph-scoped secondary index; commit-synced with the canonical request catalog.
+    pub(crate) static ROUTER_PROVISIONING_BY_GRAPH: RefCell<memory::StableProvisioningByGraphMap> =
+        RefCell::new(memory::init_provisioning_by_graph());
+
+    /// `(deployment_id, resource_kind, logical_resource_key) → IntentLockMarker` (ADR 0035 Slice 1).
+    /// Canonical intent lock held while a request targeting this intent is non-terminal.
+    pub(crate) static ROUTER_PROVISIONING_INTENT_LOCK:
+        RefCell<memory::StableProvisioningIntentLockMap> =
+        RefCell::new(memory::init_provisioning_intent_locks());
+
     // --- telemetry ---
     pub(crate) static ROUTER_VERTEX_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =
         RefCell::new(memory::init_vertex_label_stats());

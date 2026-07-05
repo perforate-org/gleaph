@@ -3347,3 +3347,353 @@ fn inline_struct_schema_record_too_large_leaves_no_catalog_mutation() {
     assert!(store.lookup_edge_label_id(graph_id, "AFFINITY").is_err());
     assert!(store.lookup_property_id(graph_id, "stats").is_err());
 }
+
+// === ADR 0035 provisioning-request catalog tests =================================
+
+#[cfg(test)]
+mod provisioning_tests {
+    use super::super::provisioning::{ClearError, InsertError, RouterProvisioningRequestStore};
+    use crate::facade::store::RouterStore;
+    use crate::init::RouterInitArgs;
+    use crate::types::{
+        CreatedResource, ProvisionRequest, ProvisionResult, ProvisionResultOutcome,
+        ProvisionableResource, ProvisionableResourceKind, ProvisioningIntentKey,
+        ProvisioningRequestKey, RouterProvisionAck, RouterProvisioningRequest,
+        RouterProvisioningRequestState,
+    };
+    use candid::{Decode, Encode, Principal};
+    use gleaph_graph_kernel::entry::GraphId;
+
+    fn store() -> RouterProvisioningRequestStore {
+        // Reset the broader router store state so provisioning maps are clear.
+        let router = RouterStore::new();
+        router.init_from_args(&RouterInitArgs {
+            issuing_principal: Principal::anonymous(),
+            initial_admins: vec![],
+        });
+        RouterProvisioningRequestStore::new()
+    }
+
+    fn sample_request(request_id: &str, fingerprint: &str) -> RouterProvisioningRequest {
+        RouterProvisioningRequest {
+            request_id: request_id.to_owned(),
+            request_fingerprint: fingerprint.to_owned(),
+            caller: Principal::from_slice(&[1; 29]),
+            graph_name: "tenant.main".to_owned(),
+            reserved_graph_id: Some(GraphId::from_raw(7)),
+            requested_resources: vec![ProvisionableResource {
+                kind: ProvisionableResourceKind::GraphShard,
+                logical_resource_key: "shard-0".to_owned(),
+            }],
+            state: RouterProvisioningRequestState::Pending,
+            provision_receipt: None,
+            created_at_ns: 42,
+        }
+    }
+
+    #[test]
+    fn insert_and_retrieve_by_request_id() {
+        let s = store();
+        let req = sample_request("req-1", "fp-1");
+        s.insert("deploy-a", req.clone()).expect("insert");
+        let key = ProvisioningRequestKey::new("req-1", "deploy-a");
+        let got = s.get_by_request_id(&key).expect("exists");
+        assert_eq!(got, req);
+    }
+
+    #[test]
+    fn idempotent_reinsert_same_fingerprint_returns_existing() {
+        let s = store();
+        let req = sample_request("req-1", "fp-1");
+        let first = s.insert("deploy-a", req.clone()).expect("first");
+        let mut second_req = req.clone();
+        second_req.caller = Principal::from_slice(&[2; 29]);
+        second_req.graph_name = "mutated.graph".to_owned();
+        second_req.reserved_graph_id = Some(GraphId::from_raw(99));
+        second_req.requested_resources = vec![ProvisionableResource {
+            kind: ProvisionableResourceKind::PropertyIndex,
+            logical_resource_key: "mutated".to_owned(),
+        }];
+        let second = s.insert("deploy-a", second_req).expect("second");
+        assert_eq!(second, first);
+        assert_eq!(second.request_id, "req-1");
+        assert_eq!(second.request_fingerprint, "fp-1");
+        // Canonical store and derived index must still contain the first record.
+        let key = ProvisioningRequestKey::new("req-1", "deploy-a");
+        assert_eq!(s.get_by_request_id(&key), Some(first.clone()));
+        let listed = s.list_by_graph("deploy-a", "tenant.main");
+        assert_eq!(listed, vec![first]);
+        // The mutated graph name from the second request was never stored.
+        assert!(s.list_by_graph("deploy-a", "mutated.graph").is_empty());
+    }
+
+    #[test]
+    fn conflict_on_different_fingerprint() {
+        let s = store();
+        let mut req1 = sample_request("req-1", "fp-1");
+        req1.graph_name = "graph-conflict".to_owned();
+        s.insert("deploy-a", req1.clone()).expect("insert");
+        let mut req2 = sample_request("req-1", "fp-2");
+        req2.graph_name = "graph-conflict".to_owned();
+        let err = s.insert("deploy-a", req2.clone()).expect_err("conflict");
+        assert_eq!(err, InsertError::Conflict);
+        // The first canonical record must survive unchanged.
+        let key = ProvisioningRequestKey::new("req-1", "deploy-a");
+        assert_eq!(s.get_by_request_id(&key), Some(req1.clone()));
+        // The graph index entry must still resolve to the first request.
+        let listed = s.list_by_graph("deploy-a", "graph-conflict");
+        assert_eq!(listed, vec![req1.clone()]);
+        // The first request's intent lock must remain held.
+        let intent_key = ProvisioningIntentKey::new(
+            "deploy-a",
+            ProvisionableResourceKind::GraphShard,
+            "shard-0",
+        );
+        assert!(s.intent_locked(&intent_key));
+    }
+
+    #[test]
+    fn list_by_graph_returns_only_matching_graph() {
+        let s = store();
+        let mut req_a = sample_request("req-a", "fp-a");
+        req_a.graph_name = "graph-a".to_owned();
+        req_a.requested_resources[0].logical_resource_key = "res-a".to_owned();
+        let mut req_b = sample_request("req-b", "fp-b");
+        req_b.graph_name = "graph-b".to_owned();
+        req_b.requested_resources[0].logical_resource_key = "res-b".to_owned();
+        s.insert("deploy-a", req_a.clone()).expect("insert a");
+        s.insert("deploy-a", req_b.clone()).expect("insert b");
+        let listed = s.list_by_graph("deploy-a", "graph-a");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0], req_a);
+    }
+
+    #[test]
+    fn intent_lock_acquire() {
+        let s = store();
+        let req = sample_request("req-1", "fp-1");
+        let key = ProvisioningIntentKey::new(
+            "deploy-a",
+            ProvisionableResourceKind::GraphShard,
+            "shard-0",
+        );
+        assert!(!s.intent_locked(&key));
+        s.insert("deploy-a", req).expect("insert");
+        assert!(s.intent_locked(&key));
+    }
+
+    #[test]
+    fn intent_lock_release() {
+        let s = store();
+        let req = sample_request("req-1", "fp-1");
+        let key = ProvisioningIntentKey::new(
+            "deploy-a",
+            ProvisionableResourceKind::GraphShard,
+            "shard-0",
+        );
+        s.insert("deploy-a", req).expect("insert");
+        assert!(s.intent_locked(&key));
+        s.clear_request(&ProvisioningRequestKey::new("req-1", "deploy-a"))
+            .expect("clear");
+        assert!(!s.intent_locked(&key));
+    }
+
+    #[test]
+    fn cross_request_intent_exclusion_does_not_mutate_b() {
+        let s = store();
+        let mut req_a = sample_request("req-a", "fp-a");
+        req_a.graph_name = "graph-x".to_owned();
+        s.insert("deploy-a", req_a.clone()).expect("insert a");
+        let intent_key = ProvisioningIntentKey::new(
+            "deploy-a",
+            ProvisionableResourceKind::GraphShard,
+            "shard-0",
+        );
+        let mut req_b = sample_request("req-b", "fp-b");
+        req_b.graph_name = "graph-x".to_owned();
+        req_b.requested_resources = vec![ProvisionableResource {
+            kind: ProvisionableResourceKind::GraphShard,
+            logical_resource_key: "shard-0".to_owned(),
+        }];
+        let err = s
+            .insert("deploy-a", req_b.clone())
+            .expect_err("intent conflict");
+        assert_eq!(err, InsertError::IntentConflict);
+        // B's canonical record and graph-index entry must not exist.
+        assert!(
+            s.get_by_request_id(&ProvisioningRequestKey::new("req-b", "deploy-a"))
+                .is_none()
+        );
+        let listed = s.list_by_graph("deploy-a", "graph-x");
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].request_id, "req-a");
+        // A's intent lock and canonical record must remain untouched.
+        assert!(s.intent_locked(&intent_key));
+        assert_eq!(
+            s.get_by_request_id(&ProvisioningRequestKey::new("req-a", "deploy-a"))
+                .map(|r| r.request_id),
+            Some("req-a".to_owned())
+        );
+    }
+
+    #[test]
+    fn multi_resource_lock_lifecycle() {
+        let s = store();
+        let mut req = sample_request("req-m", "fp-m");
+        req.requested_resources = vec![
+            ProvisionableResource {
+                kind: ProvisionableResourceKind::GraphShard,
+                logical_resource_key: "shard-0".to_owned(),
+            },
+            ProvisionableResource {
+                kind: ProvisionableResourceKind::PropertyIndex,
+                logical_resource_key: "idx-0".to_owned(),
+            },
+        ];
+        s.insert("deploy-a", req.clone()).expect("insert");
+        let key1 = ProvisioningIntentKey::new(
+            "deploy-a",
+            ProvisionableResourceKind::GraphShard,
+            "shard-0",
+        );
+        let key2 = ProvisioningIntentKey::new(
+            "deploy-a",
+            ProvisionableResourceKind::PropertyIndex,
+            "idx-0",
+        );
+        assert!(s.intent_locked(&key1));
+        assert!(s.intent_locked(&key2));
+        s.clear_request(&ProvisioningRequestKey::new("req-m", "deploy-a"))
+            .expect("clear");
+        assert!(!s.intent_locked(&key1));
+        assert!(!s.intent_locked(&key2));
+    }
+
+    #[test]
+    fn duplicate_intent_in_one_request_rejects_without_mutation() {
+        let s = store();
+        let mut req = sample_request("req-d", "fp-d");
+        req.requested_resources = vec![
+            ProvisionableResource {
+                kind: ProvisionableResourceKind::GraphShard,
+                logical_resource_key: "same".to_owned(),
+            },
+            ProvisionableResource {
+                kind: ProvisionableResourceKind::GraphShard,
+                logical_resource_key: "same".to_owned(),
+            },
+        ];
+        let err = s
+            .insert("deploy-a", req.clone())
+            .expect_err("duplicate intent");
+        assert_eq!(err, InsertError::InvalidDuplicateIntent);
+        assert!(
+            s.get_by_request_id(&ProvisioningRequestKey::new("req-d", "deploy-a"))
+                .is_none()
+        );
+        assert!(s.list_by_graph("deploy-a", "tenant.main").is_empty());
+        let key =
+            ProvisioningIntentKey::new("deploy-a", ProvisionableResourceKind::GraphShard, "same");
+        assert!(!s.intent_locked(&key));
+    }
+
+    #[test]
+    fn provision_request_candid_roundtrip() {
+        let req = ProvisionRequest {
+            deployment_id: "deploy-a".to_owned(),
+            request_id: "req-1".to_owned(),
+            request_fingerprint: "fp-1".to_owned(),
+            intent_key: ProvisioningIntentKey::new(
+                "deploy-a",
+                ProvisionableResourceKind::GraphShard,
+                "shard-0",
+            ),
+            reserved_graph_id: Some(GraphId::from_raw(7)),
+            graph_name: "tenant.main".to_owned(),
+            requested_resources: vec![ProvisionableResource {
+                kind: ProvisionableResourceKind::GraphShard,
+                logical_resource_key: "shard-0".to_owned(),
+            }],
+            authorized_caller: Principal::from_slice(&[2; 29]),
+            release_id: "rel-1".to_owned(),
+            router_callback_principal: Principal::from_slice(&[3; 29]),
+        };
+        let bytes = candid::Encode!(&req).expect("encode");
+        let decoded = candid::Decode!(bytes.as_slice(), ProvisionRequest).expect("decode");
+        assert_eq!(decoded, req);
+    }
+
+    #[test]
+    fn provision_result_candid_roundtrip() {
+        let result = ProvisionResult {
+            request_id: "req-1".to_owned(),
+            request_fingerprint: "fp-1".to_owned(),
+            release_id: "rel-1".to_owned(),
+            created_resources: vec![CreatedResource {
+                kind: ProvisionableResourceKind::GraphShard,
+                canister_id: Principal::from_slice(&[4; 29]),
+                artifact_hash: "deadbeef".to_owned(),
+            }],
+            terminal_outcome: ProvisionResultOutcome::Installed,
+        };
+        let bytes = candid::Encode!(&result).expect("encode");
+        let decoded = candid::Decode!(bytes.as_slice(), ProvisionResult).expect("decode");
+        assert_eq!(decoded, result);
+    }
+
+    #[test]
+    fn router_provision_ack_candid_roundtrip() {
+        let ack = RouterProvisionAck {
+            request_id: "req-1".to_owned(),
+            accepted_registry_version: 17,
+        };
+        let bytes = candid::Encode!(&ack).expect("encode");
+        let decoded = candid::Decode!(bytes.as_slice(), RouterProvisionAck).expect("decode");
+        assert_eq!(decoded, ack);
+    }
+    #[test]
+    fn clear_request_absent_returns_not_found() {
+        let s = store();
+        let absent_key = ProvisioningRequestKey {
+            request_id: "does-not-exist".to_owned(),
+            deployment_id: "deploy-none".to_owned(),
+        };
+        assert_eq!(s.clear_request(&absent_key), Err(ClearError::NotFound));
+    }
+    #[test]
+    fn list_by_graph_handles_max_unicode_request_id() {
+        let s = store();
+        // Request id starting with U+10FFFF followed by suffix — sorts above naive U+10FFFF sentinel.
+        let mut req_sentinel = sample_request("\u{10ffff}req", "fp-sentinel");
+        req_sentinel.graph_name = "graph-sentinel".to_owned();
+        s.insert("deploy-sentinel", req_sentinel.clone())
+            .expect("insert sentinel");
+        // Normal request in the same graph.
+        let mut req_normal = sample_request("normal-req", "fp-normal");
+        req_normal.graph_name = "graph-sentinel".to_owned();
+        req_normal.requested_resources[0].logical_resource_key = "shard-normal".to_owned();
+        s.insert("deploy-sentinel", req_normal.clone())
+            .expect("insert normal");
+        // Same request_id in a different deployment must not leak into the result.
+        let mut req_other_deploy = sample_request("\u{10ffff}req", "fp-other");
+        req_other_deploy.graph_name = "graph-sentinel".to_owned();
+        s.insert("deploy-other", req_other_deploy)
+            .expect("insert other deploy");
+        // Same request_id in a neighboring graph under the same deployment must not leak.
+        let mut req_other_graph = sample_request("\u{10ffff}z", "fp-graph");
+        req_other_graph.graph_name = "graph-sentinelz".to_owned();
+        req_other_graph.requested_resources[0].logical_resource_key = "shard-neighbor".to_owned();
+        s.insert("deploy-sentinel", req_other_graph)
+            .expect("insert other graph");
+        let listed = s.list_by_graph("deploy-sentinel", "graph-sentinel");
+        assert_eq!(
+            listed.len(),
+            2,
+            "U+10FFFF request_id must not be silently omitted"
+        );
+        assert!(listed.iter().any(|r| r.request_id == "\u{10ffff}req"));
+        assert!(listed.iter().any(|r| r.request_id == "normal-req"));
+        assert!(!listed.iter().any(|r| r.request_fingerprint == "fp-other"));
+        assert!(!listed.iter().any(|r| r.request_fingerprint == "fp-graph"));
+    }
+}
