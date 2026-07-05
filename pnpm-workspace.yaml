@@ -2,4 +2,7 @@ packages:
   - "sdk/client/js"
   - "frontend/apps/*"
 
+allowBuilds:
+  esbuild: true
+
 minimumReleaseAge: 10080 # 1 week

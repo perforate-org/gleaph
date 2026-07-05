@@ -5,8 +5,8 @@
   "type": "module",
   "scripts": {
     "generate-gateway-bindings": "icp-bindgen --did-file ../../../crates/social-demo-gateway/social_demo_gateway.did --out-dir ./src/generated --force",
-    "check": "$PWD/../../../scripts/check-social-demo-gateway-candid.sh && pnpm generate-gateway-bindings && tsc --noEmit",
-    "build": "$PWD/../../../scripts/check-social-demo-gateway-candid.sh && pnpm generate-gateway-bindings && vite build",
+    "check": "$PWD/../../../scripts/check-social-demo-gateway-candid.sh && icp-bindgen --did-file ../../../crates/social-demo-gateway/social_demo_gateway.did --out-dir ./src/generated --force && tsc --noEmit",
+    "build": "$PWD/../../../scripts/check-social-demo-gateway-candid.sh && icp-bindgen --did-file ../../../crates/social-demo-gateway/social_demo_gateway.did --out-dir ./src/generated --force && vite build",
     "dev": "vite",
     "preview": "vite preview"
   },

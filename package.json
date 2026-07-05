@@ -1,7 +1,7 @@
 {
   "name": "gleaph-workspace",
   "private": true,
-  "packageManager": "pnpm@10.8.1",
+  "packageManager": "pnpm@11.10.0",
   "scripts": {
     "install:all": "vp install && pnpm sdk:build",
     "check": "vp run -r check",
@@ -23,6 +23,6 @@
     "social-demo:build": "pnpm --filter @gleaph/social-demo build"
   },
   "devDependencies": {
-    "vite-plus": "^0.1.15"
+    "vite-plus": "^0.2.1"
   }
 }

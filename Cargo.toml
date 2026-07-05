@@ -1,25 +1,25 @@
 [workspace]
 members = [
     "crates/auth",
-    "crates/gql-keywords",
     "crates/gql",
+    "crates/gql-extension-integration",
     "crates/gql-ic",
+    "crates/gql-keywords",
     "crates/gql-macros",
     "crates/gql-planner",
     "crates/graph",
     "crates/graph-catalog",
     "crates/graph-index",
     "crates/graph-kernel",
-    "crates/graph-vector-index",
-    "crates/router",
     "crates/graph-prepared",
+    "crates/graph-vector-index",
     "crates/ic-stable-lara",
     "crates/ic-stable-paged-ordered-map",
     "crates/ic-stable-vec-deque",
     "crates/pocket-ic-tests",
     "crates/provision",
+    "crates/router",
     "crates/social-demo-gateway",
-    "crates/gql-extension-integration",
     "sdk/canister/rust",
 ]
 resolver = "2"
@@ -31,19 +31,19 @@ license = "MIT or Apache-2.0"
 
 [workspace.dependencies]
 gleaph-auth = { path = "crates/auth" }
+gleaph-cdk = { path = "sdk/canister/rust" }
 gleaph-gql = { path = "crates/gql" }
+gleaph-gql-extension-integration = { path = "crates/gql-extension-integration" }
 gleaph-gql-keywords = { path = "crates/gql-keywords" }
 gleaph-gql-ic = { path = "crates/gql-ic" }
 gleaph-gql-planner = { path = "crates/gql-planner" }
 gleaph-graph-catalog = { path = "crates/graph-catalog" }
 gleaph-graph-index = { path = "crates/graph-index" }
 gleaph-graph-kernel = { path = "crates/graph-kernel" }
+gleaph-graph-prepared = { path = "crates/graph-prepared" }
 gleaph-graph-vector-index = { path = "crates/graph-vector-index" }
 gleaph-router = { path = "crates/router" }
 gleaph-social-demo-gateway = { path = "crates/social-demo-gateway" }
-gleaph-cdk = { path = "sdk/canister/rust" }
-gleaph-graph-prepared = { path = "crates/graph-prepared" }
-gleaph-gql-extension-integration = { path = "crates/gql-extension-integration" }
 ic-stable-lara = { path = "crates/ic-stable-lara" }
 ic-stable-paged-ordered-map = { path = "crates/ic-stable-paged-ordered-map" }
 ic-stable-vec-deque = { path = "crates/ic-stable-vec-deque" }
@@ -57,16 +57,16 @@ f256 = "0.11"
 futures = "0.3"
 half = "2"
 ic-cdk = "0.20"
-ic-cdk-management-canister = "0.1.1"
 ic-cdk-macros = "0.20"
+ic-cdk-management-canister = "0.1.1"
 ic-cdk-timers = "1.0"
 ic-stable-roaring = { path = "../ic-stable-roaring" }
 ic-stable-structures = "0.7.2"
 nohash-hasher = "0.2"
-num-bigint = "0.4"
+num-bigint = "0.5"
 num-traits = "0.2"
 rapidhash = "4"
-rkyv = "0.8.16"
+rkyv = "0.8.17"
 roaring = "0.11.4"
 rust_decimal = "1.42"
 serde = { version = "1", features = ["derive"] }
