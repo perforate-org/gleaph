@@ -5,17 +5,21 @@ description: Coordinate Gleaph plans, implementation, iterative review, validati
 
 # Herdr Workflow
 
-Keep the primary pane focused on planning, user interaction, and final approval. Delegate edits,
-iterative review, and bounded validation to three sibling panes. Use the global `herdr` skill for
-command syntax; do not duplicate its socket or pane-management reference here.
+Keep the primary pane focused on architecture decisions, user interaction, final approval, and
+commits. A designated supervisor pane normally owns the plan-to-validation chain; implementation,
+review, and validation remain separate sibling roles. Use the global `herdr` skill for command
+syntax; do not duplicate its socket or pane-management reference here.
 
 ## Start a slice
 
 1. Re-read pane ids with `herdr pane list`; ids may compact.
 2. Verify implementation, review, and validation panes show fresh startup prompts. Reset a completed
    conversation before reuse.
-3. Have the primary inspect the repository, choose one bounded slice, and create the plan.
-4. Prime all three sibling conversations before implementation starts. Give the reviewer the plan
+3. Have the primary inspect the repository and choose the architecture boundary. Unless the primary
+   retains coordination explicitly, designate one supervisor to write the bounded plan and drive the
+   remaining cross-pane chain.
+4. Have the supervisor prime implementation, review, and validation conversations before
+   implementation starts. Give the reviewer the plan
    path, implementation/primary pane ids, strict read-only skills, and exact finding/approval routes;
    give validation its role and tell it to remain idle until assigned an allowlist. Each setup turn
    must acknowledge readiness and end without polling.
@@ -28,10 +32,20 @@ command syntax; do not duplicate its socket or pane-management reference here.
 
 ### Primary pane
 
-- Own architecture direction, plan scope, user communication, final approval, and commits.
+- Own architecture direction, slice boundary, user communication, final approval, and commits.
 - Do not duplicate implementation or routine fix iterations.
 - Inspect the final diff and evidence independently before approval.
 - Use the required safe commit helper; sibling panes do not commit.
+
+### Supervisor pane
+
+- Own plan drafting, plan-review iterations, implementation assignment, review/fix routing,
+  validation assignment, and completion-evidence collation for the designated slice.
+- Escalate to the primary only for a material architecture/scope decision, an unresolved blocker, or
+  a final-approval candidate. Do not relay routine stage transitions to the primary.
+- Inspect pane reports and actual repository state before advancing stages. Reviewer approval alone
+  does not authorize validation or final handoff when the diff or plan remains inconsistent.
+- Never commit. The primary retains final inspection and commit authority.
 
 ### Implementation pane
 
@@ -40,6 +54,10 @@ command syntax; do not duplicate its socket or pane-management reference here.
 - Preserve unrelated worktree changes and never rewrite history.
 - Keep one conversation for the entire slice, including review fixes.
 - Notify the review pane only after edits, focused validation, and an honest report are complete.
+- If the task is truncated, blocked, or only partially completed, notify the assigning supervisor
+  explicitly before ending; never ask an unnamed "user" for missing instructions and leave the
+  workflow idle. State exactly what completed, what did not, and which durable queue or prompt
+  portion is missing.
 - Prefer the native `apply_patch` tool for manual edits. When the model/provider does not expose that
   tool, the shell `apply_patch` executable is the only permitted fallback: include the patch text
   directly in the tool call, do not stage it in `/tmp` or another file, and do not substitute
@@ -84,12 +102,34 @@ command syntax; do not duplicate its socket or pane-management reference here.
 - Never edit or repair the worktree.
 - Report actual terminal completion; background, `--no-run`, interrupted, and timed-out commands are
   not runtime passes.
+- Before ending, execute `herdr pane run <assigning-supervisor> "..."` with the aggregate verdict,
+  completed/failed/incomplete/not-run counts, key test totals, and confirmation that no edits were
+  made. Writing the report only in validation scrollback is not delivery. If the notification cannot
+  be verified, state the routing failure instead of silently ending.
 
 ## Notification chain
 
 Every notification must be self-contained: name the slice/plan, sender and recipient pane ids, the
 next action, and where the recipient must send findings or approval. Do not expect a fresh pane to
 infer its role from "finished" alone.
+
+Do not report a task as dispatched merely because the prompt was drafted or described in prose.
+Run the actual `herdr pane run`, then perform one bounded verification that the recipient pane shows
+the delivered prompt or has entered `working` state. If delivery is not observable, retry the
+notification once or report the routing failure; never leave the chain silently idle.
+
+Keep pane messages short enough to survive terminal and input limits. Do not embed long review
+reports, large code blocks, or multi-page fix queues in `herdr pane run`. Write detailed instructions
+to a unique durable file under `/private/tmp/`, then send a concise message naming that path, scope,
+sender, recipient, and return route. As a default, keep the inline handoff below 1,500 characters.
+After delivery, inspect the recipient's visible prompt once when truncation would be costly.
+
+When the user requires uninterrupted multi-stage chaining, do not rely solely on the delegated
+agent's final self-notification. Arm one event-driven fallback in a plain shell pane with
+`herdr wait agent-status <recipient> --status done --timeout <budget>`; on completion it wakes the
+supervisor with `herdr pane run`, and on timeout it sends an explicit recovery alert. Use one watcher
+per active handoff, within the repository's time budget. This is a status-event fallback, not a
+polling loop, and it does not make an unverified result a pass.
 
 Implementation completion must notify the current review pane immediately before its final answer:
 
@@ -99,8 +139,10 @@ herdr pane run <review-pane-id> "Implementation pane <implementation-pane-id> fi
 
 The review pane must explicitly run `herdr pane run <implementation-pane-id> "...findings..."` before
 ending a non-approved turn. A report left only in reviewer scrollback is not communicated. After a
-fix notification, re-review the current diff. On approval, explicitly notify the primary instead;
-passive `agent_status` is not delivered into the active conversation.
+fix notification, re-review the current diff. On approval, explicitly notify the designated
+supervisor. The supervisor assigns validation, inspects its result, and notifies the primary only
+when the slice is a final-approval candidate. Passive `agent_status` is not delivered into the active
+conversation.
 
 If validation is needed, the reviewer or primary assigns it with a bounded command list. Validation
 reports its result to the named assigning pane with completed, failed, incomplete, and not-run
@@ -115,6 +157,17 @@ notification.
   repository's five-minute no-output and ten-minute turn budgets.
 - Do not treat an agent-status transition as proof; read the final report and terminal result.
 - Do not use `--test-threads=1` unless the user explicitly requests it.
+- Keep supervisor turns checkpointed and bounded: write the plan or durable review queue before a
+  long synthesis, then send concise stage prompts instead of accumulating several stages in one
+  streamed response.
+- On repeated `stream disconnected before completion`, `unexpected EOF`, or missing
+  `response.completed`, inspect the provider/proxy log once and preserve the current on-disk
+  checkpoint. Do not keep sending `continue` to the same conversation. Restart the pane with a
+  user-approved alternative provider/model, then resume from the artifact and sibling reports. Do
+  not silently consume a constrained premium model or downgrade an architecture/review role to a
+  lightweight local model. Prefer shorter checkpointed turns on the designated capable cloud model
+  when no equivalent direct provider is configured. Retry or idle-timeout tuning is only a secondary
+  mitigation when the upstream repeatedly closes HTTP 200 streams.
 
 For an opencode alternate-screen pane, require a unique `/private/tmp/` report before notification
 because scrollback may omit the final response. If opencode emits empty commands, repeats a tool
@@ -140,6 +193,11 @@ Reset implementation, review, and validation conversations before assigning anot
 send `/new`; if completion UI remains open, send Enter and verify a fresh startup prompt. If reset is
 unsupported, close and recreate the pane. Old scrollback may remain visible; the fresh prompt/session
 is the required signal.
+
+A startup banner alone is not proof that `/new` created a new conversation. Verify the new session
+with `/status` or equivalent evidence: a new session id and near-zero token usage. If the prior
+session id, continuation command, or accumulated token count remains, run `/exit` and launch a new
+Codex process in the same pane (or recreate the pane), then verify again before dispatching work.
 
 ## Improve skills from pane behavior
 

@@ -96,6 +96,11 @@ For each completion criterion, construct one plausible wrong implementation and 
 - accept an earlier error that masks the intended branch;
 - make a store setter a no-op while benchmark/test setup still passes.
 
+For idempotent stores, retry with the same idempotency identity but deliberately different
+non-identity payload fields; assert that the original canonical and derived state is returned and
+preserved. For prefix scans, do not invent a maximum user-value sentinel unless the domain proves a
+true maximum/successor; test the highest valid adversarial key and an adjacent prefix.
+
 Tests named for an exact failure mode must invoke that path and assert the exact observable error or
 postcondition. Avoid disjunctive assertions that allow the wrong guard to satisfy the test. Test both
 orders for symmetric conflicts. Keep combinatorial cases at unit level and one real boundary path in

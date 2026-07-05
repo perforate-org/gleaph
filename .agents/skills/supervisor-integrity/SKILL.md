@@ -88,6 +88,18 @@ Use `herdr-workflow` for pane roles, prompts, notifications, validation allowlis
 mechanics. This skill only adds the supervisor's cross-stage decisions: scope, prerequisite handling,
 final evidence inspection, approval, and commit authority.
 
+When the primary designates this pane as the active slice supervisor, drive the chain continuously:
+write the plan, obtain independent plan approval, assign implementation, route review fixes, assign
+bounded validation, and inspect the resulting evidence and diff. Notify the primary only for a true
+architecture/scope blocker or a final-approval candidate. The supervisor does not commit; primary
+final inspection and commit authority remain separate.
+
+The supervisor also does not repair product code or tests directly, including after an implementation
+pane fails, truncates a prompt, or exits early. Preserve and inspect partial state, then reset/recreate
+an implementation pane and reassign a concise durable queue. If no safe implementation pane is
+available, escalate to the primary instead of switching to ad hoc `cat`, `head`/`tail`, `sed`, or
+Python writers. Supervisory recovery must not create a second unreviewed implementation path.
+
 Declare which pane is the active supervisor for the slice. Two supervisors must not independently
 create plans, approve, or commit against the same worktree. A non-primary supervisor must notify the
 designated primary before ending a supervisory turn, using a direct `herdr pane run <primary> "..."`

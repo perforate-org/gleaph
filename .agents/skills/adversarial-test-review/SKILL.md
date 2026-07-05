@@ -95,6 +95,11 @@ For every scenario, write at least one plausible wrong implementation that would
 - exercises only one of several properties, sources, arms, labels, shards, or traversal directions;
 - lets earlier fixture state mask a later scenario;
 - uses identical/idempotent follow-up input that hides an unauthorized or partial write;
+- claims an idempotent retry returns the stored first result, but retries with a byte-for-byte
+  identical object; vary non-identity fields while preserving the idempotency key/fingerprint and
+  require the first stored object and derived state to survive unchanged;
+- bounds a prefix/range scan with a convenient maximum sentinel that is not a true successor of the
+  prefix; include a valid key beyond the sentinel and a neighboring prefix in the counterexample;
 - deduplicates or merges inputs so an advertised independent arm is never observed;
 - reports success based only on compilation, `--no-run`, or an unfinished background process.
 
