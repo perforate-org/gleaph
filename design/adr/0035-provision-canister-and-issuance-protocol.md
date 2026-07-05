@@ -2,8 +2,8 @@
 
 Date: 2026-07-04
 Status: Partially Implemented
-Last revised: 2026-07-04 20:10:18 UTC +0000
-Anchor timestamp: 2026-07-04 20:10:18 UTC +0000
+Last revised: 2026-07-05 06:28:26 UTC +0000
+Anchor timestamp: 2026-07-05 06:28:26 UTC +0000
 
 ## Context
 
@@ -122,12 +122,24 @@ before this proposal can be accepted.
 
 ## Implementation status
 
-**Partially Implemented (2026-07-04).** This slice adds the Router-owned provisioning-request
+**Partially Implemented (2026-07-05).** This slice adds the Router-owned provisioning-request
 catalog (three stable-memory regions and the `RouterProvisioningRequestStore` API) and all
 ADR 0035 wire types (`ProvisionRequest`, `ProvisionResult`, `RouterProvisionAck`,
-`ProvisionableResource`, etc.). The Provision canister, cross-canister envelope send/recv,
-ingress endpoints, artifact catalog, lifecycle controller policy, and cycle algebra remain
-proposed and are scheduled for later slices.
+`ProvisionableResource`, etc.).
+
+Slice 2 (2026-07-05) scaffolds the Provision canister: the `gleaph-provision` crate, the
+deployment trust binding (`DeploymentBinding`), durable job/receipt state
+(`ProvisionJobRecord`, `JobState`, `ResourceJobEntry`), Provision stable-memory regions 0–3
+with the `PROVISION_STABLE_LAYOUT` registry, the `DeploymentTrustStore` and
+`ProvisionJobStore` facades, and unit tests for idempotent insert, conflict detection,
+state-machine transitions, intent locks, and governance authorization.
+`ProvisionableResourceKind` and `ProvisioningIntentKey` are single-sourced in
+`gleaph_graph_kernel::provisioning` and re-exported by `gleaph-router` for use by Provision
+Maps 2/3 and Router Map 47; `ProvisioningIntentKey::new` is public so both canisters can
+construct the shared key. The `completed_effect_count` increment rule is provisional pending
+ADR 0035 implementation notes.
+Cross-canister envelope send/recv, public ingress endpoints, artifact catalog, lifecycle
+controller policy, and cycle algebra remain proposed and are scheduled for later slices.
 
 ## Cross-links
 

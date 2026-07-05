@@ -1043,6 +1043,45 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     ],
 };
 
+/// Provision canister. ADR 0035 Slice 2: deployment trust binding + durable job/receipt state.
+pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
+    canister: "provision",
+    regions: &[
+        region(
+            "PROVISION_DEPLOYMENT_TRUST",
+            0,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "deployment_id → DeploymentBinding: bootstrap trust binding (auth config, not topology)",
+            RebuildPath::None,
+        ),
+        region(
+            "PROVISION_JOB_BY_REQUEST",
+            1,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "(request_id, deployment_id) → ProvisionJobRecord: canonical durable job/receipt state",
+            RebuildPath::None,
+        ),
+        region(
+            "PROVISION_JOB_BY_DEPLOYMENT",
+            2,
+            StableMemoryClass::Derived,
+            "provisioning",
+            "ProvisioningIntentKey → ProvisionJobRequestKey: derived secondary index from intent to owning job; commit-synced with PROVISION_JOB_BY_REQUEST",
+            RebuildPath::SyncCoUpdate,
+        ),
+        region(
+            "PROVISION_JOB_INTENT_LOCK",
+            3,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "ProvisioningIntentKey → ProvisionIntentLockMarker: canonical lock held while a request targeting this intent is non-terminal",
+            RebuildPath::None,
+        ),
+    ],
+};
+
 /// Graph-index canister. Baseline: ADR 0007 §2.
 pub static INDEX_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
     canister: "graph-index",
@@ -1488,6 +1527,7 @@ mod tests {
         for layout in [
             &GRAPH_STABLE_LAYOUT,
             &ROUTER_STABLE_LAYOUT,
+            &PROVISION_STABLE_LAYOUT,
             &INDEX_STABLE_LAYOUT,
             &VECTOR_INDEX_STABLE_LAYOUT,
         ] {
@@ -1554,6 +1594,21 @@ mod tests {
         assert_layout(&INDEX_STABLE_LAYOUT);
         assert_eq!(INDEX_STABLE_LAYOUT.region_count(), 7);
         assert_eq!(INDEX_STABLE_LAYOUT.max_memory_id(), Some(6));
+    }
+
+    #[test]
+    fn provision_layout_registry_matches_baseline() {
+        assert_layout(&PROVISION_STABLE_LAYOUT);
+        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 4);
+        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(3));
+        assert_eq!(
+            PROVISION_STABLE_LAYOUT.regions[2].class,
+            StableMemoryClass::Derived
+        );
+        assert_eq!(
+            PROVISION_STABLE_LAYOUT.regions[2].rebuild,
+            RebuildPath::SyncCoUpdate
+        );
     }
 
     #[test]

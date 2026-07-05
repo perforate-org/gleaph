@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-07-04
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge payload schema record + ADR 0035 Slice 1 provisioning-request catalog (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 48 regions, 0–47; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14)
-Anchor timestamp: 2026-07-04 20:10:18 UTC +0000
+Last updated: 2026-07-05
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge payload schema record + ADR 0035 Slice 1 provisioning-request catalog (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 48 regions, 0–47; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 = 4 regions, 0–3)
+Anchor timestamp: 2026-07-05 06:28:26 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -330,6 +330,20 @@ deferred.
 | 14 | `VECTOR_MAINTENANCE_STATE` | `VECTOR_MAINTENANCE_STATE` | `init_maintenance_state` | maintenance | `index_id → VectorMaintenanceState` page-health scan progress cursor + merged counters (`Failed` carries a bounded message) for Router-forwarded maintenance orchestration (**Slice 10**); operational bookkeeping discarded/restarted, not reconstructed; persists across upgrade, cleared only on init/reset | — |
 
 ---
+
+## Provision canister — stable regions
+
+New in ADR 0035 Slice 2. **4 regions (MemoryId 0–3).** Code source of truth for runtime `MemoryId`
+constants: `crates/provision/src/stable/memory.rs`. Typed registry and rebuild path:
+`PROVISION_STABLE_LAYOUT` in `crates/graph-kernel/src/stable_layout.rs`. Region 2 is a derived
+secondary index and is commit-synced with Region 1 (`PROVISION_JOB_BY_REQUEST`).
+
+| MemoryId | Symbol | Thread-local | Init fn | Class | Owner domain | Rebuild |
+|--------|--------|--------------|---------|-------|--------------|---------|
+| 0 | `PROVISION_DEPLOYMENT_TRUST` | `DEPLOYMENT_TRUST` | `init_deployment_trust` | canonical | deployment trust binding (`deployment_id → DeploymentBinding`) | — |
+| 1 | `PROVISION_JOB_BY_REQUEST` | `JOB_BY_REQUEST` | `init_job_by_request` | canonical | durable job/receipt state (`(request_id, deployment_id) → ProvisionJobRecord`) | — |
+| 2 | `PROVISION_JOB_BY_DEPLOYMENT` | `JOB_BY_DEPLOYMENT` | `init_job_by_deployment` | derived | intent → job secondary index (`ProvisioningIntentKey → ProvisionJobRequestKey`) | commit-synced with `PROVISION_JOB_BY_REQUEST` |
+| 3 | `PROVISION_JOB_INTENT_LOCK` | `JOB_INTENT_LOCK` | `init_job_intent_lock` | canonical | intent lock held while a request targeting this intent is non-terminal (`ProvisioningIntentKey → ProvisionIntentLockMarker`) | — |
 
 ## Related documents
 

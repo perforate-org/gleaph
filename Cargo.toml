@@ -17,6 +17,7 @@ members = [
     "crates/ic-stable-paged-ordered-map",
     "crates/ic-stable-vec-deque",
     "crates/pocket-ic-tests",
+    "crates/provision",
     "crates/social-demo-gateway",
     "crates/gql-extension-integration",
     "sdk/canister/rust",

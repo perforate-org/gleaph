@@ -1180,6 +1180,18 @@ dependencies = [
 ]
 
 [[package]]
+name = "gleaph-provision"
+version = "0.1.0"
+dependencies = [
+ "candid",
+ "gleaph-graph-kernel",
+ "ic-cdk",
+ "ic-stable-structures",
+ "serde",
+ "thiserror 2.0.18",
+]
+
+[[package]]
 name = "gleaph-router"
 version = "0.1.0"
 dependencies = [

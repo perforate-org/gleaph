@@ -1,0 +1,16 @@
+[package]
+name = "gleaph-provision"
+edition.workspace = true
+license.workspace = true
+version.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+candid = { workspace = true }
+ic-cdk = { workspace = true }
+ic-stable-structures = { workspace = true }
+serde = { workspace = true }
+thiserror = { workspace = true }
+gleaph-graph-kernel = { workspace = true }

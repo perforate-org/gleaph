@@ -2,13 +2,14 @@
 
 Date: 2026-06-12
 Status: accepted
-Last revised: 2026-06-25
-Anchor timestamp: 2026-06-15 11:41:23 UTC +0000
+Last revised: 2026-07-05
+Anchor timestamp: 2026-07-05 06:28:26 UTC +0000
 
 ## Revision history
 
 | Date       | Change                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-05 | ADR 0035 Slice 2: new Provision canister with `PROVISION_DEPLOYMENT_TRUST` (0), `PROVISION_JOB_BY_REQUEST` (1), `PROVISION_JOB_BY_DEPLOYMENT` (2), `PROVISION_JOB_INTENT_LOCK` (3); Provision **4 regions (0–3)**. |
 | 2026-07-04 | ADR 0035 Slice 1: added Router `ROUTER_PROVISIONING_REQUESTS` (45), `ROUTER_PROVISIONING_BY_GRAPH` (46), `ROUTER_PROVISIONING_INTENT_LOCK` (47); Router **48 regions (0–47)**. |
 | 2026-06-12 | Proposed; baseline layout, separation rules, benchmark-gated consolidation candidates.                                                                                                                                                                                                                                                                                                                                    |
 | 2026-06-12 | Accepted; policy frozen at §2 pending §6 benchmarks and registry follow-up.                                                                                                                                                                                                                                                                                                                                               |
@@ -116,6 +117,7 @@ Code source of truth:
 | Router              | 48           | 0–47     | Grouped auth → registry → runtime config → idempotency → catalog → telemetry → maintenance → constraint catalog/reservations (ADR 0030, 34–39) → embedding-name catalog + vector-index defs (ADR 0031 Slice 3, 40–42) → vector dispatch activation flag (ADR 0031 Slice 4, 43) → vector maintenance policy catalog (ADR 0031 Slice 10, 44) → provisioning-request catalog (ADR 0035 Slice 1, 45–47); `ROUTER_GRAPH_RUNTIME_CONFIG` at MemoryId 5 |
 | Graph-index         | 7            | 0–6      | Router auth, shard catalog, ownership config, then derived postings                                                                                                                                                                                                                                                                                                                     |
 | Graph-vector-index  | 15           | 0–14     | Router auth, shard catalog, ownership config, index defs + allocators, centroid meta, reserved centroids, subject clock, id→slot, partition heads, page meta (ADR 0031 Slice 2 / ADR 0032), id→subject reverse locator (ADR 0031 Slice 6), rebuild lifecycle state (ADR 0031 Slice 7), row slab (ADR 0032), maintenance scan state (ADR 0031 Slice 10)                                  |
+| Provision           | 4            | 0–3      | Deployment trust binding, canonical job-by-request, derived job-by-deployment intent index, canonical intent locks (ADR 0035 Slice 2).                                                                                                                                                                                                                                             |
 
 Ephemeral heap state (pending posting queues on graph canisters) is **not**
 part of this layout; see inventory § ephemeral. Router prepared plans are **stable**
