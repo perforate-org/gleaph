@@ -177,6 +177,37 @@ Prefer extending existing concepts over introducing new ones.
 
 ---
 
+
+## Bootstrap and authority
+
+### Durable authority
+
+Any principal or binding that authorizes later writes must be persisted in stable
+memory, not in a thread-local cell. A heap-only `RefCell` or `Cell` that survives only
+the current execution is not a canonical authority root; after an upgrade clears the heap,
+the canonical state is lost and the authorized path becomes unusable.
+
+Bootstrap bindings are seeded via init args. The `init` handler accepts a typed
+`bootstrap_bindings: Vec<DeploymentBinding>` and writes each binding to the durable trust
+store directly. The init-time seed is durable (init runs on every install / upgrade) and
+the bindings become the source of truth for later authorization.
+
+A separate durable bootstrap authority region is its own prerequisite slice. If a slice
+needs a durable bootstrap authority stored in a separate stable-memory region, that
+requires a stable-layout decision (ADR 0007 + inventory), a dedicated plan, and a separate
+review. Do not smuggle a heap-only authority into a slice and document it as deferred.
+
+### Pure-reject public API
+
+A public ingress method whose entire reachable behavior is rejection (no path to success)
+is a code smell. Either remove/defer the method from the public surface or implement a
+meaningful operation authorized by a canonical durable authority. A pure-reject API is
+not a foundation; it is a placeholder that lies about the surface.
+
+Add an adversarial test that walks the public ingress surface and asserts at least one
+path to success for each handler (or records that the method is explicitly deferred and
+absent from the public surface).
+
 ## Expected Output
 
 Report:

@@ -149,6 +149,95 @@ link to the authoritative document instead.
 Do not mark a TODO complete from `--no-run`, a background process, or an interrupted runtime. Report
 completed, failed, incomplete, and deferred checks separately.
 
+
+## Implementation rules
+
+### Fail-closed result types
+
+A public ingress handler must not return a terminal result envelope for a
+non-terminal canonical state. A terminal callback type such as `ProvisionResult`
+is reserved for terminal outcomes; a first admission or an idempotent replay is
+non-terminal and must return a distinct typed ingress response (for example,
+`ProvisionAcceptResponse` with `Accepted` / `Replay` variants).
+
+Distinguish ingress responses from terminal callbacks. Do not overload a terminal
+callback type with non-terminal ingress data, and never synthesize a `Failed`
+reason to fit a non-terminal state into a terminal callback.
+
+Add a wrong-impl test for every typed ingress response: assert that a wrong
+implementation returning a terminal `Failed` for a successful admission would fail.
+
+### Preflight-then-co-write
+
+A store facade that mutates multiple regions must preflight all lock, index, and
+foreign-key conflicts **before** any write, then co-write in a single block. The
+preflight must cover every derived row and lock the co-write will touch. If the
+preflight fails, the function returns the typed error and the worktree is unchanged.
+
+A `store.remove` call inside an error-recovery branch of a public ingress handler is a
+code smell. The canonical pattern is a single facade method that performs preflight
+plus co-write atomically (for example, `insert_with_intent_locks`).
+
+Add a wrong-impl test for every multi-region write: seed an existing state with a
+canonical record, derived rows, and held locks; attempt a conflicting insert; assert
+that the existing canonical record, locks, and exact derived mapping all survive and
+that the conflicting request leaves no state.
+
+### Canonical key drives lookup
+
+A handler that resolves a canonical record must use the exact canonical key fields,
+not a scan-and-pick. If the canonical key is composite (for example,
+`(request_id, deployment_id)`), the wire shape must carry all composite-key fields,
+and the store facade must expose `get(key1, key2, ...)` — not a partial-key scan.
+
+A `request_id`-only lookup is forbidden when the canonical key includes more fields,
+even if the implementation documents a uniqueness assumption. Uniqueness is not a
+substitute for exact-key addressing.
+
+Document any wire-shape change that diverges from a prior slice's shape as a primary-final
+boundary exception driven by a durable protocol reason.
+
+### Dormant helper
+
+A helper that returns a typed result must not return a wrong-shape result for
+non-applicable inputs. Non-applicable inputs return `Err`. A wrong-shape result for a
+non-applicable input is a dormant defect that will reappear when the next caller invokes
+the helper. Fix the **helper itself**, not the call site.
+
+Add a wrong-impl test asserting that a wrong implementation returning `Ok(...)` for a
+non-applicable input would fail.
+
+### Post-commit error
+
+A handler that performs a durable state mutation (advance + lock release + version
+persist) must not return a recoverable `Err` after the mutation. A real count-mismatch
+postcondition is corruption, not a recoverable flow. Either remove the post-commit error
+contract, or trap/assert and roll back the whole message.
+
+Add a wrong-impl test asserting that a wrong implementation returning a recoverable
+`Err` after the durable state mutation would fail. Remove `cfg(test)` seams that
+fabricate a post-commit error to make a test pass.
+
+### Comment vs assertion
+
+A comment that says an invariant is asserted must point to the actual assertion call.
+Comments are not assertions. A comment that claims an invariant is held but the test body
+does not actually check the invariant is a false-positive.
+
+In review, flag every comment-asserted invariant without a corresponding assertion call
+as a P2 finding: the test does not test what the comment says it tests.
+
+### Review-incident comment
+
+Product code must not carry review-incident wording. Comments such as
+`// REV6 P1-3 boundary exception` or `// primary final finding #N` are review process
+artifacts, not durable protocol reasons. Rewrite them to state the durable protocol reason
+(for example, `// RouterProvisionAck carries deployment_id so the canonical key can be
+formed without ambiguity across deployment bindings.`) or remove them.
+
+Plan files may carry review-process documentation because they are the durable record of
+the review process; product code does not.
+
 ## Handoff gate
 
 Before sending work to review, report:
