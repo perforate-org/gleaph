@@ -2,8 +2,8 @@
 
 Date: 2026-06-12
 Status: accepted
-Last revised: 2026-07-05
-Anchor timestamp: 2026-07-05 10:55:00 UTC +0000
+Last revised: 2026-07-06
+Anchor timestamp: 2026-07-06 03:52:04 UTC +0000
 
 ## Revision history
 
@@ -11,6 +11,7 @@ Anchor timestamp: 2026-07-05 10:55:00 UTC +0000
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-07-05 | ADR 0035 Slice 3: `ProvisionJobRecord` schema growth (`accepted_registry_version: Option<u64>`) inside the existing `PROVISION_JOB_BY_REQUEST` region; no new stable-memory regions. |
 | 2026-07-05 | ADR 0035 Slice 2: new Provision canister with `PROVISION_DEPLOYMENT_TRUST` (0), `PROVISION_JOB_BY_REQUEST` (1), `PROVISION_JOB_BY_DEPLOYMENT` (2), `PROVISION_JOB_INTENT_LOCK` (3); Provision **4 regions (0–3)**. |
+| 2026-07-06 | ADR 0035 Slice 4: callable Provision canister endpoints (`#[init]`/`#[post_upgrade]`/`#[update]`/`#[query]`); no new stable-memory regions (same Provision 4 regions 0–3). |
 | 2026-07-04 | ADR 0035 Slice 1: added Router `ROUTER_PROVISIONING_REQUESTS` (45), `ROUTER_PROVISIONING_BY_GRAPH` (46), `ROUTER_PROVISIONING_INTENT_LOCK` (47); Router **48 regions (0–47)**. |
 | 2026-06-12 | Proposed; baseline layout, separation rules, benchmark-gated consolidation candidates.                                                                                                                                                                                                                                                                                                                                    |
 | 2026-06-12 | Accepted; policy frozen at §2 pending §6 benchmarks and registry follow-up.                                                                                                                                                                                                                                                                                                                                               |

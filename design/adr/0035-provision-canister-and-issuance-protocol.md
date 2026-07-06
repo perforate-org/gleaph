@@ -2,8 +2,8 @@
 
 Date: 2026-07-04
 Status: Partially Implemented
-Last revised: 2026-07-05 10:55:00 UTC +0000
-Anchor timestamp: 2026-07-05 10:55:00 UTC +0000
+Last revised: 2026-07-06 03:52:04 UTC +0000
+Anchor timestamp: 2026-07-06 03:52:04 UTC +0000
 
 ## Context
 
@@ -138,7 +138,16 @@ Slice 3 (2026-07-05) moves the six ADR 0035 Candid wire types into the neutral
 `gleaph_graph_kernel::provisioning::wire` owner, adds the Provision ingress/query/ack handler
 **foundation** (`accept_envelope_with_caller`, `query_job_with_caller`,
 `router_ack_with_caller`) and a hand-written `provision.did` that defines the service surface.
-Callable canister endpoints (`#[init]`/`#[query]`/`#[update]` exports) remain a follow-up slice.
+
+Slice 4 (2026-07-06) implements the callable canister endpoints by adding `#[init]`,
+`#[post_upgrade]`, `#[update]`, and `#[query]` annotations to
+`crates/provision/src/lib.rs`; a thin `msg_caller()` shim in
+`crates/provision/src/canister/handlers.rs`; `ic-cdk-macros` and `ic_cdk::export_candid!()`;
+and a rewritten `provision.did` that declares `ProvisionIngressError`, `ProvisionInitArgs`,
+and the named `ProvisionIngressResult` / `RouterAckResult` variant types. Durable bootstrap
+persists across upgrades via the stable-memory-backed `DeploymentTrustStore` (StableBTreeMap
+region 0); the durable bootstrap authority region for post-init installs is explicitly deferred
+to a separate durable-authority slice.
 `ProvisionJobRecord` gains `accepted_registry_version: Option<u64>` (round-trips inside the
 existing `ProvisionJobStableRecord::V1` Candid body, no wrapper bump required for development
 data). `ProvisionJobStore` extends `put`, `remove`, `intent_lock_count_for_record`,

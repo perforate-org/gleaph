@@ -203,6 +203,8 @@ fn build_wasm(manifest_dir: &Path) {
         "gleaph-graph-vector-index",
         "-p",
         "gleaph-social-demo-gateway",
+        "-p",
+        "gleaph-provision",
         "--target",
         wasm_target,
         "--features",
@@ -223,6 +225,10 @@ fn build_wasm(manifest_dir: &Path) {
     println!(
         "cargo:rerun-if-changed={}",
         manifest_dir.join("../social-demo-gateway/src").display()
+    );
+    println!(
+        "cargo:rerun-if-changed={}",
+        manifest_dir.join("../provision/src").display()
     );
     let status = Command::new("cargo")
         .current_dir(&root)
@@ -256,6 +262,10 @@ fn build_wasm(manifest_dir: &Path) {
         wasm_dir
             .join("gleaph_social_demo_gateway.wasm")
             .into_std_path_buf(),
+    );
+    set_wasm_env(
+        "PROVISION_WASM",
+        wasm_dir.join("gleaph_provision.wasm").into_std_path_buf(),
     );
 }
 

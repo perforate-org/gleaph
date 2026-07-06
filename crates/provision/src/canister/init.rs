@@ -2,10 +2,11 @@
 
 use crate::stable::store::DeploymentTrustStore;
 use crate::types::DeploymentBinding;
-use candid::Principal;
+use candid::{CandidType, Principal};
+use serde::{Deserialize, Serialize};
 
 /// Bootstrap arguments for `init`.
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct ProvisionInitArgs {
     pub bootstrap_bindings: Vec<DeploymentBinding>,
 }

@@ -35,17 +35,19 @@ type ProvisionRequest = record {
     deployment_id: text;
     request_id: text;
     request_fingerprint: text;
-    intent_key: record {
-        deployment_id: text;
-        resource_kind: ProvisionableResourceKind;
-        logical_resource_key: text;
-    };
+    intent_key: ProvisioningIntentKey;
     reserved_graph_id: opt nat32;
     graph_name: text;
     requested_resources: vec ProvisionableResource;
     authorized_caller: principal;
     release_id: text;
     router_callback_principal: principal;
+};
+
+type ProvisioningIntentKey = record {
+    resource_kind: ProvisionableResourceKind;
+    logical_resource_key: text;
+    deployment_id: text;
 };
 
 type DeploymentBinding = record {
@@ -96,8 +98,33 @@ type ProvisionRouterAckResult = record {
     accepted_registry_version: nat64;
 };
 
-service : {
-    accept_envelope: (ProvisionRequest) -> (ProvisionAcceptResponse);
+type ProvisionIngressError = variant {
+    NotAuthorized;
+    UnknownDeployment;
+    Conflict;
+    NotFound;
+    InvalidState;
+    StateAdvanceFailed;
+    ResultMappingError;
+    AckConflict: record { stored: nat64 };
+    IntentLockHeld;
+    InvalidResources: record { reason: text };
+};
+
+type ProvisionInitArgs = record { bootstrap_bindings: vec DeploymentBinding };
+
+type ProvisionIngressResult = variant {
+    Ok: ProvisionAcceptResponse;
+    Err: ProvisionIngressError;
+};
+
+type RouterAckResult = variant {
+    Ok: ProvisionRouterAckResult;
+    Err: ProvisionIngressError;
+};
+
+service : (ProvisionInitArgs) -> {
+    accept_envelope: (ProvisionRequest) -> (ProvisionIngressResult);
     query_job: (text, text) -> (opt ProvisionJobView) query;
-    router_ack: (RouterProvisionAck) -> (ProvisionRouterAckResult);
+    router_ack: (RouterProvisionAck) -> (RouterAckResult);
 };

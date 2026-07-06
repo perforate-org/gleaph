@@ -15,11 +15,12 @@ use crate::types::{
     ResourceJobEntry, RouterProvisionAck, state_name,
 };
 
+pub mod handlers;
 pub mod init;
 
 // === Errors ==================================================================
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub enum ProvisionIngressError {
     NotAuthorized,
     UnknownDeployment,
@@ -31,6 +32,20 @@ pub enum ProvisionIngressError {
     AckConflict { stored: u64 },
     IntentLockHeld,
     InvalidResources { reason: String },
+}
+
+/// Candid wire Result for `accept_envelope`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ProvisionIngressResult {
+    Ok(ProvisionAcceptResponse),
+    Err(ProvisionIngressError),
+}
+
+/// Candid wire Result for `router_ack`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum RouterAckResult {
+    Ok(ProvisionRouterAckResult),
+    Err(ProvisionIngressError),
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

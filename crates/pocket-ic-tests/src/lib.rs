@@ -6,6 +6,8 @@ use gleaph_gql_ic::graph_registry::{GraphRegistryEntry, GraphStatus, Provisionin
 use gleaph_graph_kernel::entry::GraphId;
 use gleaph_graph_kernel::federation::{GlobalVertexId, ShardId};
 use gleaph_graph_kernel::vector_index::{VectorMetric, VertexEmbeddingProjectionOutcome};
+use gleaph_provision::canister::init::ProvisionInitArgs;
+use gleaph_provision::types::DeploymentBinding;
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{
     AdminAttachVectorIndexShardArgs, AdminIngestVertexEmbeddingArgs, AdminRegisterShardArgs,
@@ -265,6 +267,24 @@ pub fn install_vector_canister(pic: &PocketIc, router: Principal) -> Principal {
         None,
     );
     vector
+}
+
+/// Install the Provision canister with a single bootstrap binding.
+pub fn install_provision_canister(
+    pic: &PocketIc,
+    bootstrap_binding: DeploymentBinding,
+) -> Principal {
+    let provision = create_funded_canister(pic);
+    pic.install_canister(
+        provision,
+        wasm_bytes("PROVISION_WASM"),
+        Encode!(&ProvisionInitArgs {
+            bootstrap_bindings: vec![bootstrap_binding],
+        })
+        .expect("encode provision init"),
+        None,
+    );
+    provision
 }
 
 /// Router + index only (no graph WASM). Used for placement smoke tests.

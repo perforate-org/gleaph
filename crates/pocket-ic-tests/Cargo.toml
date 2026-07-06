@@ -61,6 +61,7 @@ gleaph-gql-ic.workspace = true
 gleaph-graph-kernel.workspace = true
 gleaph-router = { path = "../router" }
 gleaph-social-demo-gateway = { path = "../social-demo-gateway" }
+gleaph-provision = { path = "../provision" }
 pocket-ic = "15.0.0"
 serde.workspace = true
 serde_json = "1"
@@ -73,4 +74,9 @@ ureq = { version = "3", default-features = false, features = ["rustls"] }
 [[test]]
 name = "social_graph_demo"
 path = "tests/social_graph_demo.rs"
+harness = true
+
+[[test]]
+name = "adr0035_provision_callable_endpoints"
+path = "tests/adr0035_provision_callable_endpoints.rs"
 harness = true

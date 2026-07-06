@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-07-05
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge payload schema record + ADR 0035 Slice 1 provisioning-request catalog (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 48 regions, 0–47; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 = 4 regions, 0–3)
-Anchor timestamp: 2026-07-05 10:55:00 UTC +0000
+Last updated: 2026-07-06
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge payload schema record + ADR 0035 Slice 1 provisioning-request catalog (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 48 regions, 0–47; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints = 4 regions, 0–3)
+Anchor timestamp: 2026-07-06 03:52:04 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
