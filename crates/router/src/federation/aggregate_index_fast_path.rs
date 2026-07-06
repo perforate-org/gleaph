@@ -677,6 +677,7 @@ mod tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: admin,
             initial_admins: vec![admin],
+            provision_canister: None,
         });
         crate::facade::auth::grant_admins(&[admin]);
         crate::facade::store::catalog_test_support::register_graph(

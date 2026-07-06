@@ -88,6 +88,21 @@ pub enum RouterError {
     /// backfill while blocked. **Not retryable** until the fencing slice activates dispatch.
     #[error("vector dispatch activation blocked: {0}")]
     VectorDispatchActivationBlocked(VectorActivationBlockReason),
+    /// A Router -> Provision cross-canister call failed at the IC transport layer.
+    #[error("provision call failed: {0}")]
+    ProvisionCallFailed(String),
+    /// Candid encoding/decoding failed for a Router -> Provision call.
+    #[error("provision encoding failed: {0}")]
+    ProvisionEncodingFailed(String),
+    /// The Provision canister rejected the envelope because of a conflict.
+    #[error("provision conflict: {0}")]
+    ProvisionConflict(String),
+    /// The Provision canister rejected the envelope with a structured ingress error.
+    #[error("provision rejected: {0}")]
+    ProvisionRejected(String),
+    /// The requested deployment is not bound in the Provision canister.
+    #[error("unknown deployment: {0}")]
+    UnknownDeployment(String),
     #[error("internal: {0}")]
     Internal(String),
 }

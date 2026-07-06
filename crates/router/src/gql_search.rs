@@ -2455,6 +2455,7 @@ mod tests {
         store.init_from_args(&crate::init::RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::NodeScan {
@@ -2508,6 +2509,7 @@ mod tests {
         store.init_from_args(&crate::init::RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::NodeScan {
@@ -3037,6 +3039,7 @@ mod tests {
         store.init_from_args(&crate::init::RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         let plan = search_plan_with_distance();
         let position =
@@ -3050,6 +3053,7 @@ mod tests {
         store.init_from_args(&crate::init::RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         let plan = non_leading_search_plan_with_distance();
         let position =
@@ -3063,6 +3067,7 @@ mod tests {
         store.init_from_args(&crate::init::RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         // Search is the only op.
         let plan = PhysicalPlan::from_ops(vec![PlanOp::Search {
@@ -3093,6 +3098,7 @@ mod tests {
         store.init_from_args(&crate::init::RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::Search {
@@ -3136,6 +3142,7 @@ mod tests {
         store.init_from_args(&crate::init::RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         let inner = PhysicalPlan::from_ops(vec![PlanOp::Search {
             binding: "d".into(),
@@ -3362,6 +3369,7 @@ mod tests {
         store.init_from_args(&crate::init::RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         let mut plan = non_leading_search_plan_with_distance();
         plan.ops.push(PlanOp::InsertVertex {
@@ -3730,6 +3738,7 @@ mod tests {
         store.init_from_args(&crate::init::RouterInitArgs {
             issuing_principal: candid::Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         let plan = PhysicalPlan::from_ops(vec![
             PlanOp::NodeScan {

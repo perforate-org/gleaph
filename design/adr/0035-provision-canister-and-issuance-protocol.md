@@ -2,8 +2,8 @@
 
 Date: 2026-07-04
 Status: Partially Implemented
-Last revised: 2026-07-06 03:52:04 UTC +0000
-Anchor timestamp: 2026-07-06 03:52:04 UTC +0000
+Last revised: 2026-07-06 13:04:26 UTC +0000
+Anchor timestamp: 2026-07-06 13:04:26 UTC +0000
 
 ## Context
 
@@ -164,8 +164,7 @@ idempotent replay (`Completed` + matching version returns the ack; differing ver
 `gleaph-provision`; `ProvisioningIntentKey::new` is public so both canisters can construct
 the shared key. The `completed_effect_count` increment rule is provisional pending ADR 0035
 implementation notes.
-Cross-canister envelope send/recv, artifact catalog, lifecycle controller policy, and cycle
-algebra remain proposed and are scheduled for later slices.
+Slice 5 (2026-07-06) adds the Router outbound accept_envelope send (Router -> Provision cross-canister call), moving ProvisionAcceptResponse, ProvisionJobSummary, ProvisionIngressError, and ProvisionIngressResult into the shared gleaph_graph_kernel::provisioning::wire module and adding a Router-side provision_graph ingress endpoint with durable ROUTER_PROVISION_CONFIG stable rehydration. The symmetric Provision -> Router ack callback and Router-side catalog commit are Slice 6+; artifact catalog, lifecycle controller policy, and cycle algebra remain proposed.
 
 ## Cross-links
 

@@ -56,3 +56,56 @@ pub struct ProvisionRequest {
     pub release_id: String,
     pub router_callback_principal: Principal,
 }
+
+// === Moved from gleaph-provision canister/mod.rs (Plan 0058 P1-1) =============
+// These types are the Candid-visible ingress/response surface of the Provision
+// canister. They are single-sourced here so gleaph-router can decode the
+// `accept_envelope` response without depending on the sibling gleaph-provision crate.
+
+/// Failure modes returned by the Provision canister `accept_envelope` ingress path.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ProvisionIngressError {
+    NotAuthorized,
+    UnknownDeployment,
+    Conflict,
+    NotFound,
+    InvalidState,
+    StateAdvanceFailed,
+    ResultMappingError,
+    AckConflict { stored: u64 },
+    IntentLockHeld,
+    InvalidResources { reason: String },
+}
+
+/// Candid wire Result for `accept_envelope`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ProvisionIngressResult {
+    Ok(ProvisionAcceptResponse),
+    Err(ProvisionIngressError),
+}
+
+/// Redacted job summary for admission responses.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ProvisionJobSummary {
+    pub request_id: String,
+    pub deployment_id: String,
+    pub state: String,
+    pub active_resource_index: u32,
+    pub completed_effect_count: u32,
+    pub accepted_registry_version: Option<u64>,
+}
+
+/// Admission response returned by `accept_envelope`. Distinct from the
+/// terminal `ProvisionResult` envelope so a successful first admission is never
+/// reported as `Failed`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ProvisionAcceptResponse {
+    Accepted {
+        job_view: ProvisionJobSummary,
+        intent_lock_count: u32,
+    },
+    Replay {
+        job_view: ProvisionJobSummary,
+        intent_lock_count: u32,
+    },
+}

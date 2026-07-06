@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
 Last updated: 2026-07-06
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge payload schema record + ADR 0035 Slice 1 provisioning-request catalog (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 48 regions, 0–47; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints = 4 regions, 0–3)
-Anchor timestamp: 2026-07-06 03:52:04 UTC +0000
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge payload schema record + ADR 0035 Slice 1 provisioning-request catalog + Slice 5 Router outbound accept_envelope send (ROUTER_PROVISION_CONFIG durable binding) (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 49 regions, 0–48; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints = 4 regions, 0–3)
+Anchor timestamp: 2026-07-06 13:04:26 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -31,7 +31,7 @@ this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same pa
 | Canister | Regions | Id range | Registry constant + test |
 |----------|---------|----------|--------------------------|
 | Graph | 46 | 0–45 | `GRAPH_STABLE_LAYOUT` — `graph_layout_registry_matches_baseline` |
-| Router | 48 | 0–47 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
+| Router | 49 | 0–48 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
 | Graph-index | 7 | 0–6 | `INDEX_STABLE_LAYOUT` — `index_layout_registry_matches_baseline` |
 | Graph-vector-index | 12 | 0–11 | `VECTOR_INDEX_STABLE_LAYOUT` — `vector_index_layout_registry_matches_baseline` |
 
@@ -220,8 +220,9 @@ Regions **1–2** (canonical), **3–4** (derived indexes), **`ROUTER_GRAPH_RUNT
 | 45 | `ROUTER_PROVISIONING_REQUESTS` | `ROUTER_PROVISIONING_REQUESTS` | `init_provisioning_requests` | canonical | provisioning request catalog | **`(request_id, deployment_id) → RouterProvisioningRequest`** (ADR 0035 Slice 1). Canonical Router-owned issuance intent before any canister id exists |
 | 46 | `ROUTER_PROVISIONING_BY_GRAPH` | `ROUTER_PROVISIONING_BY_GRAPH` | `init_provisioning_by_graph` | derived | provisioning graph index | **`(deployment_id, graph_name, request_id) → ProvisioningRequestKey`** (ADR 0035 Slice 1). Derived graph-scoped secondary index; commit-synced with the canonical request catalog |
 | 47 | `ROUTER_PROVISIONING_INTENT_LOCK` | `ROUTER_PROVISIONING_INTENT_LOCK` | `init_provisioning_intent_locks` | canonical | provisioning intent lock | **`(deployment_id, resource_kind, logical_resource_key) → IntentLockMarker`** (ADR 0035 Slice 1). Canonical intent lock held while a request targeting this intent is non-terminal |
+| 48 | `ROUTER_PROVISION_CONFIG` | `ROUTER_PROVISION_CONFIG` | `init_provision_config` | canonical | provisioning runtime config | **`() → ProvisionRuntimeConfig`** (ADR 0035 Slice 5). Durable Router provision-canister bootstrap binding; re-seeds the heap `PROVISION_CANISTER` threadlocal in `post_upgrade` |
 
-Router **48 regions** total (0–47).
+Router **49 regions** total (0–48).
 
 ### Router ephemeral
 

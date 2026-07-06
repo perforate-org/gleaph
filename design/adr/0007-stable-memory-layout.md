@@ -3,7 +3,7 @@
 Date: 2026-06-12
 Status: accepted
 Last revised: 2026-07-06
-Anchor timestamp: 2026-07-06 03:52:04 UTC +0000
+Anchor timestamp: 2026-07-06 13:04:26 UTC +0000
 
 ## Revision history
 
@@ -11,6 +11,7 @@ Anchor timestamp: 2026-07-06 03:52:04 UTC +0000
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-07-05 | ADR 0035 Slice 3: `ProvisionJobRecord` schema growth (`accepted_registry_version: Option<u64>`) inside the existing `PROVISION_JOB_BY_REQUEST` region; no new stable-memory regions. |
 | 2026-07-05 | ADR 0035 Slice 2: new Provision canister with `PROVISION_DEPLOYMENT_TRUST` (0), `PROVISION_JOB_BY_REQUEST` (1), `PROVISION_JOB_BY_DEPLOYMENT` (2), `PROVISION_JOB_INTENT_LOCK` (3); Provision **4 regions (0–3)**. |
+| 2026-07-06 | ADR 0035 Slice 5: added Router `ROUTER_PROVISION_CONFIG` (48); Router **49 regions (0–48)**; no Provision-side changes. |
 | 2026-07-06 | ADR 0035 Slice 4: callable Provision canister endpoints (`#[init]`/`#[post_upgrade]`/`#[update]`/`#[query]`); no new stable-memory regions (same Provision 4 regions 0–3). |
 | 2026-07-04 | ADR 0035 Slice 1: added Router `ROUTER_PROVISIONING_REQUESTS` (45), `ROUTER_PROVISIONING_BY_GRAPH` (46), `ROUTER_PROVISIONING_INTENT_LOCK` (47); Router **48 regions (0–47)**. |
 | 2026-06-12 | Proposed; baseline layout, separation rules, benchmark-gated consolidation candidates.                                                                                                                                                                                                                                                                                                                                    |
@@ -116,7 +117,7 @@ Code source of truth:
 | ------------------- | ------------ | -------- | --------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Graph — LARA bundle | 32           | 0–31     | Forward canonical + reverse derived + maintenance; wired into one `DeferredBidirectionalLabeledLaraGraph`                                                                                                                                                                                                                                                                               |
 | Graph — facade      | 8            | 32–39    | Properties, labels, aliases, label stats delta log, mutation journal                                                                                                                                                                                                                                                                                                                    |
-| Router              | 48           | 0–47     | Grouped auth → registry → runtime config → idempotency → catalog → telemetry → maintenance → constraint catalog/reservations (ADR 0030, 34–39) → embedding-name catalog + vector-index defs (ADR 0031 Slice 3, 40–42) → vector dispatch activation flag (ADR 0031 Slice 4, 43) → vector maintenance policy catalog (ADR 0031 Slice 10, 44) → provisioning-request catalog (ADR 0035 Slice 1, 45–47); `ROUTER_GRAPH_RUNTIME_CONFIG` at MemoryId 5 |
+| Router              | 49           | 0–48     | Grouped auth → registry → runtime config → idempotency → catalog → telemetry → maintenance → constraint catalog/reservations (ADR 0030, 34–39) → embedding-name catalog + vector-index defs (ADR 0031 Slice 3, 40–42) → vector dispatch activation flag (ADR 0031 Slice 4, 43) → vector maintenance policy catalog (ADR 0031 Slice 10, 44) → provisioning-request catalog (ADR 0035 Slice 1, 45–47); `ROUTER_GRAPH_RUNTIME_CONFIG` at MemoryId 5 |
 | Graph-index         | 7            | 0–6      | Router auth, shard catalog, ownership config, then derived postings                                                                                                                                                                                                                                                                                                                     |
 | Graph-vector-index  | 15           | 0–14     | Router auth, shard catalog, ownership config, index defs + allocators, centroid meta, reserved centroids, subject clock, id→slot, partition heads, page meta (ADR 0031 Slice 2 / ADR 0032), id→subject reverse locator (ADR 0031 Slice 6), rebuild lifecycle state (ADR 0031 Slice 7), row slab (ADR 0032), maintenance scan state (ADR 0031 Slice 10)                                  |
 | Provision           | 4            | 0–3      | Deployment trust binding, canonical job-by-request, derived job-by-deployment intent index, canonical intent locks (ADR 0035 Slice 2).                                                                                                                                                                                                                                             |
@@ -224,6 +225,13 @@ Decisions from §6 canbench (wasm32). Grouped-catalog prototype was not pursued;
 
 **Phase 8 close (8d): Closed 2026-06-15.** 8a complete (grouped-catalog prototype N/A). 8c consolidation
 **not required**. Future layout changes require a new ADR per §2.
+
+### Slice 5 revision (2026-07-06)
+
+Router canister gains one new stable region, `ROUTER_PROVISION_CONFIG` (MemoryId 48), for the
+ADR 0035 Slice 5 provision-canister bootstrap binding. Total router regions: 49 (0–48). No
+provision-side or graph-side layout changes. Registry test `router_layout_registry_matches_baseline`
+updated to assert the new count and region symbol.
 
 ### 7. Memory layout registry (Phase 8 deliverable)
 

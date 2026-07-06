@@ -307,6 +307,7 @@ mod tests {
         RouterInitArgs {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         }
     }
 

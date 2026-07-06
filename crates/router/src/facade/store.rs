@@ -181,6 +181,7 @@ pub(crate) mod catalog_test_support {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         let admin = Principal::from_slice(&[1; 29]);
         auth::grant_admins(&[admin]);

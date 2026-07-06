@@ -15,6 +15,7 @@ pub(crate) mod label_stats;
 pub(crate) mod layout;
 pub(crate) mod memory;
 pub(crate) mod prepared_catalog;
+pub(crate) mod provision_config;
 pub(crate) mod reservation_catalog;
 pub(crate) mod unique_effect_pending;
 pub(crate) mod vector_activation;
@@ -146,6 +147,11 @@ thread_local! {
     pub(crate) static ROUTER_PROVISIONING_INTENT_LOCK:
         RefCell<memory::StableProvisioningIntentLockMap> =
         RefCell::new(memory::init_provisioning_intent_locks());
+
+    /// `() → ProvisionRuntimeConfig` durable bootstrap config (ADR 0035 Slice 5).
+    /// Mirrors the in-heap `PROVISION_CANISTER` thread_local and re-seeds it on `post_upgrade`.
+    pub(crate) static ROUTER_PROVISION_CONFIG: RefCell<memory::StableProvisionConfigMap> =
+        RefCell::new(memory::init_provision_config());
 
     // --- telemetry ---
     pub(crate) static ROUTER_VERTEX_LABEL_STATS: RefCell<memory::StableLabelStatsMap> =

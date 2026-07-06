@@ -31,6 +31,7 @@ fn test_init_args() -> RouterInitArgs {
     RouterInitArgs {
         issuing_principal: Principal::anonymous(),
         initial_admins: vec![],
+        provision_canister: None,
     }
 }
 
@@ -3370,6 +3371,7 @@ mod provisioning_tests {
         router.init_from_args(&RouterInitArgs {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         RouterProvisioningRequestStore::new()
     }

@@ -44,6 +44,7 @@ mod label_stats_projection;
 mod peer_sync;
 mod planner_stats;
 mod prepared;
+mod provisioning;
 mod rbac;
 mod reclaim;
 mod recovery;
@@ -71,9 +72,7 @@ fn init(args: RouterInitArgs) {
 
 #[post_upgrade]
 fn post_upgrade() {
-    // Timers do not survive an upgrade; re-arm the recovery driver so non-terminal sagas
-    // persisted across the upgrade still converge (ADR 0029 Phase 4).
-    recovery::arm_if_needed();
+    canister::post_upgrade();
 }
 
 #[query]
@@ -817,6 +816,89 @@ async fn admin_label_stats_projection_step(
     args: types::AdminLabelStatsProjectionStepArgs,
 ) -> Result<types::AdminLabelStatsProjectionStepResult, RouterError> {
     canister::admin_label_stats_projection_step(args).await
+}
+
+/// Admin-only: send a resolved provisioning envelope to the configured Provision canister.
+#[update]
+async fn provision_graph(
+    args: types::ProvisionGraphArgs,
+) -> Result<types::ProvisionGraphResponse, RouterError> {
+    use crate::facade::auth;
+    use crate::provisioning::sender::send_accept_envelope;
+    use crate::types::ProvisionGraphResponse;
+    use crate::types::RouterOutboundError;
+    use gleaph_graph_kernel::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
+
+    let caller = ic_cdk::api::msg_caller();
+    auth::require_admin(&caller)?;
+
+    let provision_canister = crate::provisioning::config::get().ok_or_else(|| {
+        RouterError::NotImplemented("provision_canister not configured".to_owned())
+    })?;
+
+    // Validate requested_resources non-empty and canonical intent present.
+    if args.requested_resources.is_empty() {
+        return Err(RouterError::InvalidArgument(
+            "requested_resources is empty".to_owned(),
+        ));
+    }
+    let canonical = args
+        .requested_resources
+        .iter()
+        .find(|r| r.kind == ProvisionableResourceKind::GraphShard)
+        .ok_or_else(|| {
+            RouterError::InvalidArgument(
+                "requested_resources must contain at least one GraphShard resource".to_owned(),
+            )
+        })?;
+    let intent_key = ProvisioningIntentKey::new(
+        &args.deployment_id,
+        canonical.kind,
+        &canonical.logical_resource_key,
+    );
+
+    let request = gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
+        deployment_id: args.deployment_id,
+        request_id: format!("{}-{}", args.graph_name, args.request_fingerprint),
+        request_fingerprint: args.request_fingerprint,
+        intent_key,
+        reserved_graph_id: None,
+        graph_name: args.graph_name,
+        requested_resources: args.requested_resources,
+        authorized_caller: args.authorized_caller,
+        release_id: args.release_id,
+        // Sender will overwrite this with ic_cdk::api::canister_self() before encoding.
+        router_callback_principal: candid::Principal::anonymous(),
+    };
+
+    let accept_response = send_accept_envelope(provision_canister, request)
+        .await
+        .map_err(|e| match e {
+            RouterOutboundError::CallFailed(s) => RouterError::ProvisionCallFailed(s),
+            RouterOutboundError::UnknownDeployment => {
+                RouterError::UnknownDeployment("deployment not bound".to_owned())
+            }
+            RouterOutboundError::Conflict => RouterError::ProvisionConflict("conflict".to_owned()),
+            RouterOutboundError::IngressRejected(s) => RouterError::ProvisionRejected(s),
+            RouterOutboundError::EncodingFailed(s) => RouterError::ProvisionEncodingFailed(s),
+        })?;
+
+    Ok(match accept_response {
+        gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse::Accepted {
+            job_view,
+            intent_lock_count,
+        } => ProvisionGraphResponse::Accepted {
+            job_view,
+            intent_lock_count,
+        },
+        gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse::Replay {
+            job_view,
+            intent_lock_count,
+        } => ProvisionGraphResponse::Replay {
+            job_view,
+            intent_lock_count,
+        },
+    })
 }
 
 ic_cdk::export_candid!();

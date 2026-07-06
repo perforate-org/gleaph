@@ -18,28 +18,12 @@ use crate::types::{
 pub mod handlers;
 pub mod init;
 
-// === Errors ==================================================================
-
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum ProvisionIngressError {
-    NotAuthorized,
-    UnknownDeployment,
-    Conflict,
-    NotFound,
-    InvalidState,
-    StateAdvanceFailed,
-    ResultMappingError,
-    AckConflict { stored: u64 },
-    IntentLockHeld,
-    InvalidResources { reason: String },
-}
-
-/// Candid wire Result for `accept_envelope`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum ProvisionIngressResult {
-    Ok(ProvisionAcceptResponse),
-    Err(ProvisionIngressError),
-}
+// Re-export the shared Candid wire surface from the neutral graph-kernel crate.
+// These types are single-sourced in `gleaph_graph_kernel::provisioning::wire` so the
+// Router canister can decode `accept_envelope` responses without depending on this crate.
+pub use gleaph_graph_kernel::provisioning::wire::{
+    ProvisionAcceptResponse, ProvisionIngressError, ProvisionIngressResult, ProvisionJobSummary,
+};
 
 /// Candid wire Result for `router_ack`.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
@@ -85,32 +69,6 @@ pub struct ResourceJobView {
 pub struct ProvisionRouterAckResult {
     pub completed: bool,
     pub accepted_registry_version: u64,
-}
-
-/// Admission response returned by `accept_envelope_with_caller`. Distinct from the
-/// terminal `ProvisionResult` envelope so a successful first admission is never
-/// reported as `Failed`.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum ProvisionAcceptResponse {
-    Accepted {
-        job_view: ProvisionJobSummary,
-        intent_lock_count: u32,
-    },
-    Replay {
-        job_view: ProvisionJobSummary,
-        intent_lock_count: u32,
-    },
-}
-
-/// Redacted job summary for admission responses.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ProvisionJobSummary {
-    pub request_id: String,
-    pub deployment_id: String,
-    pub state: String,
-    pub active_resource_index: u32,
-    pub completed_effect_count: u32,
-    pub accepted_registry_version: Option<u64>,
 }
 
 // === Helpers =================================================================

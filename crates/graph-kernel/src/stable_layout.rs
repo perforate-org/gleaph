@@ -1040,6 +1040,15 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "(deployment_id, resource_kind, logical_resource_key) → IntentLockMarker: canonical lock held while a request targeting this intent is non-terminal",
             RebuildPath::None,
         ),
+        // Provisioning runtime config: durable provision-canister binding (ADR 0035 Slice 5)
+        region(
+            "ROUTER_PROVISION_CONFIG",
+            48,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "() → ProvisionRuntimeConfig: durable Router provision-canister binding (bootstrap config); re-seeds the heap threadlocal in post_upgrade",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1481,8 +1490,8 @@ mod tests {
     #[test]
     fn router_layout_registry_matches_baseline() {
         assert_layout(&ROUTER_STABLE_LAYOUT);
-        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 48);
-        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(47));
+        assert_eq!(ROUTER_STABLE_LAYOUT.region_count(), 49);
+        assert_eq!(ROUTER_STABLE_LAYOUT.max_memory_id(), Some(48));
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].class,
             StableMemoryClass::Telemetry
@@ -1490,6 +1499,14 @@ mod tests {
         assert_eq!(
             ROUTER_STABLE_LAYOUT.regions[30].symbol,
             "ROUTER_LABEL_STATS_PROJECTION"
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[48].symbol,
+            "ROUTER_PROVISION_CONFIG"
+        );
+        assert_eq!(
+            ROUTER_STABLE_LAYOUT.regions[48].class,
+            StableMemoryClass::Canonical
         );
     }
 

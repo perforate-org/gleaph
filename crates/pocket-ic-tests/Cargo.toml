@@ -80,3 +80,8 @@ harness = true
 name = "adr0035_provision_callable_endpoints"
 path = "tests/adr0035_provision_callable_endpoints.rs"
 harness = true
+
+[[test]]
+name = "adr0035_router_outbound_accept_envelope"
+path = "tests/adr0035_router_outbound_accept_envelope.rs"
+harness = true

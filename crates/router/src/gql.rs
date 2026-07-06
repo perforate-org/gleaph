@@ -2438,6 +2438,7 @@ mod tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         let admin = Principal::from_slice(&[1; 29]);
         crate::facade::auth::grant_admins(&[admin]);
@@ -3596,6 +3597,7 @@ mod tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         let shard_id = ShardId::new(0);
         let graph = graph_principal(1);

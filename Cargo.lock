@@ -1379,6 +1379,7 @@ version = "0.1.0"
 dependencies = [
  "canbench-rs",
  "candid",
+ "candid_parser",
  "futures",
  "gleaph-auth",
  "gleaph-gql",

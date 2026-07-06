@@ -117,6 +117,9 @@ const ROUTER_PROVISIONING_REQUESTS: MemoryId = MemoryId::new(45);
 const ROUTER_PROVISIONING_BY_GRAPH: MemoryId = MemoryId::new(46);
 const ROUTER_PROVISIONING_INTENT_LOCK: MemoryId = MemoryId::new(47);
 
+// --- provisioning runtime config (ADR 0035 Slice 5) ---
+const ROUTER_PROVISION_CONFIG: MemoryId = MemoryId::new(48);
+
 #[derive(CandidType, Serialize, Deserialize, Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GraphShardList {
     pub shard_ids: Vec<ShardId>,
@@ -260,6 +263,9 @@ pub(crate) type StableProvisioningByGraphMap =
     BTreeMap<ProvisioningByGraphKey, ProvisioningRequestKey, Memory>;
 pub(crate) type StableProvisioningIntentLockMap =
     BTreeMap<ProvisioningIntentKey, IntentLockMarker, Memory>;
+
+pub(crate) type StableProvisionConfigMap =
+    BTreeMap<(), crate::provisioning::config::ProvisionRuntimeConfig, Memory>;
 
 // --- telemetry ---
 pub(crate) type StableLabelStatsMap =
@@ -435,6 +441,10 @@ pub(crate) fn init_provisioning_by_graph() -> StableProvisioningByGraphMap {
 
 pub(crate) fn init_provisioning_intent_locks() -> StableProvisioningIntentLockMap {
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROVISIONING_INTENT_LOCK)))
+}
+
+pub(crate) fn init_provision_config() -> StableProvisionConfigMap {
+    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROVISION_CONFIG)))
 }
 
 // --- control ---

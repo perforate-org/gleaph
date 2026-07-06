@@ -18,6 +18,7 @@ use crate::types::{
     VectorIndexInfo, VectorMaintenancePolicyView, VectorMaintenanceStatusView,
     VectorMaintenanceStepOutcome, VertexLabelId, VertexPropertyBackfillShardStatus,
 };
+use candid::Decode;
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
 use gleaph_graph_kernel::vector_index::{
@@ -38,6 +39,56 @@ pub(crate) fn init(args: RouterInitArgs) {
     RouterStore::new().init_from_args(&args);
     if let Err(e) = auth::bootstrap_canister_auth(args.issuing_principal, &args.initial_admins) {
         ic_cdk::trap(e.to_string());
+    }
+    if let Err(e) = crate::init::validate_provision_principal(&args.provision_canister) {
+        ic_cdk::trap(format!("init: {e}"));
+    }
+    crate::provisioning::config::set(args.provision_canister);
+    crate::facade::stable::provision_config::save_provision_runtime_config(
+        &crate::provisioning::config::ProvisionRuntimeConfig {
+            provision_canister: args.provision_canister,
+        },
+    );
+}
+
+pub(crate) fn post_upgrade() {
+    let args: RouterInitArgs = match candid::Decode!(&ic_cdk::api::msg_arg_data(), RouterInitArgs) {
+        Ok(args) => args,
+        Err(_) => ic_cdk::trap("post_upgrade: invalid init args"),
+    };
+
+    let durable = crate::facade::stable::provision_config::load_provision_runtime_config();
+    let provision_canister =
+        match resolve_provision_canister_for_upgrade(args.provision_canister, durable.as_ref()) {
+            Ok(p) => p,
+            Err(e) => ic_cdk::trap(format!("post_upgrade: {e}")),
+        };
+    crate::provisioning::config::set(provision_canister);
+
+    // Timers do not survive an upgrade; re-arm the recovery driver so non-terminal sagas
+    // persisted across the upgrade still converge (ADR 0029 Phase 4).
+    crate::recovery::arm_if_needed();
+}
+
+pub(crate) fn resolve_provision_canister_for_upgrade(
+    override_arg: Option<Principal>,
+    durable: Option<&crate::provisioning::config::ProvisionRuntimeConfig>,
+) -> Result<Option<Principal>, &'static str> {
+    // The durable ROUTER_PROVISION_CONFIG stable region is the SSOT for the provision-canister
+    // binding. Upgrade args with `provision_canister: Some(p)` are an explicit operator override;
+    // `None` means "preserve the durable binding". An invalid override is rejected with an
+    // error and the durable binding is preserved.
+    match override_arg {
+        Some(p) => {
+            crate::init::validate_provision_principal(&Some(p))?;
+            crate::facade::stable::provision_config::save_provision_runtime_config(
+                &crate::provisioning::config::ProvisionRuntimeConfig {
+                    provision_canister: Some(p),
+                },
+            );
+            Ok(Some(p))
+        }
+        None => Ok(durable.map(|c| c.provision_canister).unwrap_or(None)),
     }
 }
 
@@ -1338,6 +1389,7 @@ mod vertex_embedding_ingestion_tests {
         store.init_from_args(&RouterInitArgs {
             issuing_principal: Principal::anonymous(),
             initial_admins: vec![],
+            provision_canister: None,
         });
         let a = admin();
         crate::facade::auth::grant_admins(&[a]);
@@ -1525,5 +1577,85 @@ mod vertex_embedding_ingestion_tests {
             ),
             "anonymous caller must not pass index DDL authorization"
         );
+    }
+}
+
+#[cfg(test)]
+mod provision_config_upgrade_tests {
+    use super::*;
+    use crate::facade::stable::provision_config::{
+        load_provision_runtime_config, save_provision_runtime_config,
+    };
+    use crate::init::validate_provision_principal;
+    use crate::provisioning::config::ProvisionRuntimeConfig;
+    use candid::Principal;
+
+    fn canonical_principal() -> Principal {
+        Principal::self_authenticating([1; 32])
+    }
+
+    #[test]
+    fn test_validate_provision_principal_accepts_none_and_non_anonymous() {
+        assert!(validate_provision_principal(&None).is_ok());
+        assert!(
+            validate_provision_principal(&Some(Principal::self_authenticating([2; 32]))).is_ok()
+        );
+        assert_eq!(
+            validate_provision_principal(&Some(Principal::anonymous())),
+            Err("provision_canister cannot be anonymous")
+        );
+    }
+
+    #[test]
+    fn test_post_upgrade_anonymous_override_rejected_preserves_canonical() {
+        // Seed a canonical durable binding.
+        let canonical = canonical_principal();
+        let canonical_config = ProvisionRuntimeConfig {
+            provision_canister: Some(canonical),
+        };
+        save_provision_runtime_config(&canonical_config);
+        let durable = load_provision_runtime_config();
+
+        // An anonymous override must be rejected: the resolver returns Err, the durable
+        // record is preserved, and post_upgrade would trap.
+        let result =
+            resolve_provision_canister_for_upgrade(Some(Principal::anonymous()), durable.as_ref());
+        assert_eq!(result, Err("provision_canister cannot be anonymous"));
+        assert_eq!(
+            load_provision_runtime_config(),
+            durable,
+            "durable record must not be overwritten by an invalid override"
+        );
+    }
+
+    #[test]
+    fn test_post_upgrade_valid_override_updates_canonical() {
+        let canonical = canonical_principal();
+        let replacement = Principal::self_authenticating([7; 32]);
+        save_provision_runtime_config(&ProvisionRuntimeConfig {
+            provision_canister: Some(canonical),
+        });
+
+        let result = resolve_provision_canister_for_upgrade(Some(replacement), None).unwrap();
+        assert_eq!(result, Some(replacement));
+        assert_eq!(
+            load_provision_runtime_config(),
+            Some(ProvisionRuntimeConfig {
+                provision_canister: Some(replacement),
+            })
+        );
+    }
+
+    #[test]
+    fn test_post_upgrade_none_override_uses_durable() {
+        let canonical = canonical_principal();
+        save_provision_runtime_config(&ProvisionRuntimeConfig {
+            provision_canister: Some(canonical),
+        });
+
+        let result =
+            resolve_provision_canister_for_upgrade(None, load_provision_runtime_config().as_ref())
+                .unwrap();
+        assert_eq!(result, Some(canonical));
     }
 }

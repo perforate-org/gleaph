@@ -11,8 +11,8 @@ pub use gleaph_graph_kernel::federation::{
 };
 use gleaph_graph_kernel::plan_exec::{MutationId, MutationLifecyclePhase};
 pub use gleaph_graph_kernel::provisioning::wire::{
-    CreatedResource, ProvisionRequest, ProvisionResult, ProvisionResultOutcome,
-    ProvisionableResource, RouterProvisionAck,
+    CreatedResource, ProvisionAcceptResponse, ProvisionRequest, ProvisionResult,
+    ProvisionResultOutcome, ProvisionableResource, RouterProvisionAck,
 };
 pub use gleaph_graph_kernel::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
 use gleaph_graph_kernel::vector_index::{
@@ -731,5 +731,104 @@ mod tests {
         assert_eq!(status.phase, MutationLifecyclePhase::Completed);
         assert_eq!(status.target_shard, None);
         assert_eq!(status.next_action, "none");
+    }
+}
+
+// === ADR 0035 Slice 5: Router outbound accept_envelope send ==================
+
+/// Router-side ingress error enum for the outbound Provision call.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum RouterOutboundError {
+    CallFailed(String),
+    UnknownDeployment,
+    Conflict,
+    IngressRejected(String),
+    EncodingFailed(String),
+}
+
+/// Router ingress arguments for `provision_graph`.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub struct ProvisionGraphArgs {
+    pub deployment_id: String,
+    pub request_fingerprint: String,
+    pub graph_name: String,
+    pub requested_resources: Vec<ProvisionableResource>,
+    pub authorized_caller: Principal,
+    pub release_id: String,
+}
+
+/// Router ingress response for `provision_graph`: a mirror of `ProvisionAcceptResponse`.
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+pub enum ProvisionGraphResponse {
+    Accepted {
+        job_view: gleaph_graph_kernel::provisioning::wire::ProvisionJobSummary,
+        intent_lock_count: u32,
+    },
+    Replay {
+        job_view: gleaph_graph_kernel::provisioning::wire::ProvisionJobSummary,
+        intent_lock_count: u32,
+    },
+}
+
+#[cfg(test)]
+mod outbound_tests {
+    use super::*;
+
+    // === ADR 0035 Slice 5 Candid roundtrip tests =================================
+
+    use candid::{Decode, Encode};
+
+    #[test]
+    fn test_router_outbound_error_variants_are_candid_representable() {
+        for variant in [
+            RouterOutboundError::CallFailed("x".to_owned()),
+            RouterOutboundError::UnknownDeployment,
+            RouterOutboundError::Conflict,
+            RouterOutboundError::IngressRejected("x".to_owned()),
+            RouterOutboundError::EncodingFailed("x".to_owned()),
+        ] {
+            let bytes = Encode!(&variant)
+                .unwrap_or_else(|e| panic!("encode RouterOutboundError variant {variant:?}: {e}"));
+            let decoded: RouterOutboundError = Decode!(&bytes, RouterOutboundError)
+                .unwrap_or_else(|e| panic!("decode RouterOutboundError variant {variant:?}: {e}"));
+            assert_eq!(decoded, variant);
+        }
+    }
+
+    #[test]
+    fn test_provision_graph_args_roundtrip() {
+        let args = ProvisionGraphArgs {
+            deployment_id: "deploy-1".to_owned(),
+            request_fingerprint: "fp-1".to_owned(),
+            graph_name: "g".to_owned(),
+            requested_resources: vec![],
+            authorized_caller: Principal::from_slice(&[0xAB; 29]),
+            release_id: "rel-1".to_owned(),
+        };
+        let bytes = Encode!(&args).expect("encode ProvisionGraphArgs");
+        let decoded: ProvisionGraphArgs =
+            Decode!(&bytes, ProvisionGraphArgs).expect("decode ProvisionGraphArgs");
+        assert_eq!(decoded, args);
+    }
+
+    #[test]
+    fn test_provision_graph_response_roundtrip() {
+        use gleaph_graph_kernel::provisioning::wire::ProvisionJobSummary;
+        let summary = ProvisionJobSummary {
+            request_id: "req-1".to_owned(),
+            deployment_id: "deploy-1".to_owned(),
+            state: "Submitted".to_owned(),
+            active_resource_index: 0,
+            completed_effect_count: 0,
+            accepted_registry_version: None,
+        };
+        let response = ProvisionGraphResponse::Accepted {
+            job_view: summary.clone(),
+            intent_lock_count: 1,
+        };
+        let bytes = Encode!(&response).expect("encode ProvisionGraphResponse");
+        let decoded: ProvisionGraphResponse =
+            Decode!(&bytes, ProvisionGraphResponse).expect("decode ProvisionGraphResponse");
+        assert_eq!(decoded, response);
     }
 }
