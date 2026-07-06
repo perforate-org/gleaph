@@ -143,6 +143,16 @@ Do not approve when:
 - docs claim implemented behavior that remains planned;
 - unexpected commits or unrelated files have not been reviewed.
 
+## 4b. Tooling and skill ownership references
+
+- Notification delivery and pane submit protocol: follow `herdr-workflow` (Notify protocol section).
+- Plan-completion gating (every TODO has `status: completed`, every `## Completion Criteria` entry
+  is `[x]`, and exact scoped paths are listed and compared) is owned by the `plan` skill's
+  plan-completion schema. Run the final-phase validator before returning a final-approval candidate;
+  do not gate on per-slice grep dialects or raw file counts.
+- When a reusable defect is discovered during a slice, update the smallest owning skill in the
+  same reviewed patch. Do not duplicate guidance in this skill if a more specific owner exists.
+
 ## 5. Commit as a controlled state transition
 
 Commit only after final review and validation evidence satisfy the plan **and** the user or designated

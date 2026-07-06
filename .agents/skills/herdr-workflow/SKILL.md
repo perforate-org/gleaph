@@ -133,9 +133,17 @@ next action, and where the recipient must send findings or approval. Do not expe
 infer its role from "finished" alone.
 
 Do not report a task as dispatched merely because the prompt was drafted or described in prose.
-Run the actual `herdr pane run`, then perform one bounded verification that the recipient pane shows
-the delivered prompt or has entered `working` state. If delivery is not observable, retry the
-notification once or report the routing failure; never leave the chain silently idle.
+Use `herdr pane run <target> <text>` as the atomic text-plus-Enter path, then perform one bounded
+verification that the recipient shows the delivered prompt or has entered `working` or `done`.
+`idle` alone proves neither delivery nor corruption. If delivery is not observable, retry the same
+`pane run` once, then report routing failure; do not keep submitting keys or leave the chain silently
+idle. Never declare delivery from a command exit code alone.
+
+Do not auto-reset a target with Escape, Ctrl+C, or `/new` merely because it remains `idle`; a short
+task may already have completed. Reset only under the post-commit policy or after positive evidence
+of a corrupted conversation. When `pane run` is unavailable and a literal-text path is required,
+use `herdr agent send` followed by `herdr pane send-keys <target> Return`, apply the same bounded
+verification and single retry, then report failure.
 
 Keep pane messages short enough to survive terminal and input limits. Do not embed long review
 reports, large code blocks, or multi-page fix queues in `herdr pane run`. Write detailed instructions
