@@ -48,6 +48,10 @@ command allowlist and non-mutation rules in `cost-aware-validation`.
 When `cargo check` or `cargo clippy` reports errors or warnings:
 
 1. Read the diagnostic and identify the root cause.
+   Run the command with its full diagnostic output. Do not pipe compiler/test output through
+   `head`, `tail`, or another truncating filter while diagnosing or reporting a gate; truncation can
+   hide the primary error, help text, test summary, or a later independent failure. If output is too
+   large, save the complete transcript and inspect targeted ranges without discarding it.
 2. Apply the smallest correct fix.
 3. Prefer manual fixes when ownership, lifetimes, APIs, architecture, error handling, or domain logic are involved.
 4. Use automated fixes only for mechanical changes:

@@ -94,6 +94,17 @@ bounded validation, and inspect the resulting evidence and diff. Notify the prim
 architecture/scope blocker or a final-approval candidate. The supervisor does not commit; primary
 final inspection and commit authority remain separate.
 
+All routine stage traffic is supervisor-directed. Implementation sends completion to review;
+review sends findings to implementation and approval to supervisor; validation sends its verdict to
+supervisor; watchers wake supervisor. Do not copy the primary on plan approval, implementation
+start, review rounds, validation dispatch, or healthy checkpoints. The primary is not a pane router.
+
+Do not create a self-referential stop after validation. If this pane is the designated supervisor
+and reviewer approval plus required validation are complete, it must immediately notify the primary
+that the slice is a final-approval candidate. Never end with "awaiting supervisor decision" or "if
+the supervisor chooses" when referring to this same pane; the only remaining decision owner is the
+primary commit gate.
+
 The supervisor also does not repair product code or tests directly, including after an implementation
 pane fails, truncates a prompt, or exits early. Preserve and inspect partial state, then reset/recreate
 an implementation pane and reassign a concise durable queue. If no safe implementation pane is
@@ -185,8 +196,35 @@ After completion:
 5. Validate changed skills with `quick_validate.py` and forward-test them on the next real slice.
 6. Report whether the forward-test passed, partially passed, or exposed another gap.
 
+The supervisor, not the primary, owns this learning loop. It reads actual pane behavior and updates
+the smallest relevant implementation, review, validation, coordination, or supervisory skill. Skill
+changes receive independent review and validation without interrupting the product chain unless the
+workflow defect is itself blocking.
+
 Do not encode one-off file names, current expected findings, or a single incident's answer into a
 skill. Improve general decision rules.
+
+## 8. Earn broader delegation
+
+Track supervisory quality in each completion report. Count a slice as a **clean supervisory run**
+only when all of the following hold:
+
+- the plan was bounded and independently approved before product implementation;
+- no primary final inspection found a P1 or P2 defect;
+- reviewer approval and validation evidence were truthful and terminal;
+- scope, dates, active docs, staged files, and commit contents were exact;
+- no routine stage required the primary to reconnect panes or recover a stalled chain;
+- reusable failures were folded into the smallest owning skill and forward-tested.
+
+After at least three consecutive clean supervisory runs, report eligibility for broader delegation
+to the user. The user may then explicitly authorize the supervisor to own final approval and safe
+commits. Any false approval, missed P1/P2, unsafe commit scope, history rewrite, or silent workflow
+stall resets the clean-run streak. P3 findings do not automatically reset it, but repeated P3s that
+show a systemic review gap do.
+
+Even after full delegation, escalate irreversible architecture changes, ambiguous product intent,
+authorization expansion, history rewriting, or user-policy changes. Delegation removes routine
+primary involvement; it does not remove independent review, validation, or user authority.
 
 ## Completion report
 

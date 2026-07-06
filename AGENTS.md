@@ -142,6 +142,10 @@ plan → implementation → iterative review → validation → final approval �
 The primary/coordinator or any pane explicitly supervising that role must also use
 `.agents/skills/supervisor-integrity/SKILL.md` for current-state recovery, scope and prerequisite
 decisions, independent final inspection, commit authorization, and cross-stage workflow improvement.
+Routine pane routing, checkpoints, plan/review iterations, validation dispatch, and skill learning
+belong to the designated supervisor and related panes directly; the primary must not be used as a
+message relay. Until the user explicitly grants mature-supervisor authority, the primary retains only
+the final independent approval and safe-commit gate plus genuine architecture/scope escalations.
 Use the global `herdr` skill for CLI mechanics. Keep detailed herdr coordination policy in that skill,
 not in `AGENTS.md` or unrelated implementation/review/validation skills.
 

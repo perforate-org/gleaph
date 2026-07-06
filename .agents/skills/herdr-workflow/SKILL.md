@@ -5,19 +5,22 @@ description: Coordinate Gleaph plans, implementation, iterative review, validati
 
 # Herdr Workflow
 
-Keep the primary pane focused on architecture decisions, user interaction, final approval, and
-commits. A designated supervisor pane normally owns the plan-to-validation chain; implementation,
-review, and validation remain separate sibling roles. Use the global `herdr` skill for command
-syntax; do not duplicate its socket or pane-management reference here.
+Keep the primary pane focused on unresolved architecture decisions and the final approval/commit
+gate while supervisory delegation is still being proven. A designated supervisor owns routine
+pane connection and the complete plan-to-validation chain; implementation, review, and validation
+communicate directly with the supervisor or with each other as defined below. Do not use the primary
+as a message relay. Use the global `herdr` skill for command syntax; do not duplicate its socket or
+pane-management reference here.
 
 ## Start a slice
 
 1. Re-read pane ids with `herdr pane list`; ids may compact.
 2. Verify implementation, review, and validation panes show fresh startup prompts. Reset a completed
    conversation before reuse.
-3. Have the primary inspect the repository and choose the architecture boundary. Unless the primary
-   retains coordination explicitly, designate one supervisor to write the bounded plan and drive the
-   remaining cross-pane chain.
+3. Have the primary or user establish only unresolved architecture/product direction. Designate one
+   supervisor to inspect the repository, choose the bounded slice within accepted contracts, write
+   the plan, and drive the remaining cross-pane chain. Once delegation maturity is explicitly
+   granted, the supervisor may choose routine next slices without a primary turn.
 4. Have the supervisor prime implementation, review, and validation conversations before
    implementation starts. Give the reviewer the plan
    path, implementation/primary pane ids, strict read-only skills, and exact finding/approval routes;
@@ -32,8 +35,10 @@ syntax; do not duplicate its socket or pane-management reference here.
 
 ### Primary pane
 
-- Own architecture direction, slice boundary, user communication, final approval, and commits.
-- Do not duplicate implementation or routine fix iterations.
+- Own only architecture/scope decisions escalated by the supervisor, user communication that cannot
+  be delegated, independent final inspection, and commits while the delegation gate remains active.
+- Do not connect routine panes, relay plan approvals, duplicate implementation/review iterations,
+  or arm handoff watchers; those are supervisor responsibilities.
 - Inspect the final diff and evidence independently before approval.
 - Use the required safe commit helper; sibling panes do not commit.
 
@@ -46,6 +51,15 @@ syntax; do not duplicate its socket or pane-management reference here.
 - Inspect pane reports and actual repository state before advancing stages. Reviewer approval alone
   does not authorize validation or final handoff when the diff or plan remains inconsistent.
 - Never commit. The primary retains final inspection and commit authority.
+- Receive routine notifications directly from implementation, review, validation, and watchers.
+  Notify the primary only for a real architecture/scope blocker or a complete final-approval
+  candidate. A plan APPROVE, implementation start, review round, checkpoint, or validation start is
+  not a primary notification.
+- The supervisor owns plan decisions and acceptance of plan revisions, but may delegate mechanical
+  plan-file editing to a fresh implementation/plan-editor pane when its provider is unreliable for
+  patch-heavy turns. The handoff must say `PLAN ONLY`, forbid product-code edits, point to the durable
+  review queue, and return the revised plan to the supervisor and reviewer. This is not authorization
+  to begin implementation; product work starts only after explicit plan APPROVE.
 
 ### Implementation pane
 
@@ -91,9 +105,14 @@ syntax; do not duplicate its socket or pane-management reference here.
 
 - Use `adversarial-test-review` strict read-only mode plus relevant architecture/design skills.
 - Review the plan, base, actual diff, and evidence; do not approve from the report.
-- Send concrete findings to the implementation pane and re-review fixes.
+- Send plan-review findings to the designated supervisor, which owns plan revisions. Send
+  implementation-diff findings to the implementation pane and re-review its fixes. Never route a
+  rejected plan to implementation as authorization to start product work.
 - Do not notify the primary while actionable P1/P2 findings or required corrections remain.
 - Notify the primary only after a consistent `APPROVE` verdict.
+- When `HERDR_ENV=1`, use only the `herdr` CLI for pane discovery and delivery. Never probe for or
+  fall back to tmux. If a long findings report would exceed the handoff limit, save it under
+  `/private/tmp/` and send the supervisor a short `herdr pane run` message pointing to the report.
 
 ### Validation pane
 
@@ -123,12 +142,19 @@ reports, large code blocks, or multi-page fix queues in `herdr pane run`. Write 
 to a unique durable file under `/private/tmp/`, then send a concise message naming that path, scope,
 sender, recipient, and return route. As a default, keep the inline handoff below 1,500 characters.
 After delivery, inspect the recipient's visible prompt once when truncation would be costly.
+Never expand the durable file back into the command with `$(cat ...)`, backticks, or equivalent, and
+never use a temporary prompt file merely to inject its full contents. The recipient reads the named
+file itself.
 
 When the user requires uninterrupted multi-stage chaining, do not rely solely on the delegated
 agent's final self-notification. Arm one event-driven fallback in a plain shell pane with
 `herdr wait agent-status <recipient> --status done --timeout <budget>`; on completion it wakes the
-supervisor with `herdr pane run`, and on timeout it sends an explicit recovery alert. Use one watcher
-per active handoff, within the repository's time budget. This is a status-event fallback, not a
+supervisor with `herdr pane run`, and on timeout it sends a **checkpoint alert**, not an automatic
+stop instruction. At that checkpoint, inspect the pane's recent unwrapped output and repository
+state once. If the agent is making coherent progress, leave it running and arm the next bounded
+checkpoint. Interrupt or restart only for a real stop condition such as repeated no-progress,
+malfunctioning tool loops, contradictory scope, an exceeded command-specific runtime budget, or
+orphaned background work. Use one watcher per active handoff. This is a status-event fallback, not a
 polling loop, and it does not make an unverified result a pass.
 
 Implementation completion must notify the current review pane immediately before its final answer:
@@ -159,7 +185,8 @@ notification.
 - Do not use `--test-threads=1` unless the user explicitly requests it.
 - Keep supervisor turns checkpointed and bounded: write the plan or durable review queue before a
   long synthesis, then send concise stage prompts instead of accumulating several stages in one
-  streamed response.
+  streamed response. Reaching a ten-minute supervisory checkpoint is not by itself a reason to
+  interrupt a healthy turn; inspect progress and continue it when useful work is still advancing.
 - On repeated `stream disconnected before completion`, `unexpected EOF`, or missing
   `response.completed`, inspect the provider/proxy log once and preserve the current on-disk
   checkpoint. Do not keep sending `continue` to the same conversation. Restart the pane with a
@@ -186,6 +213,11 @@ worktree and start a fresh session; do not let it diagnose the tool through repe
 5. Commit only after primary approval. Separate product and agent-workflow commits when that makes
    ownership clearer.
 6. Do not amend or rewrite commits outside the authority granted by the user and repository policy.
+
+During the delegation-proving period, the primary performs steps 3-5. After the user explicitly
+grants mature-supervisor authority, the supervisor may perform final inspection and the safe commit
+itself, and the primary becomes an on-demand escalation pane. Do not infer that authority from a
+streak alone; the streak only makes the supervisor eligible for the user's decision.
 
 ## Reset after commit
 
