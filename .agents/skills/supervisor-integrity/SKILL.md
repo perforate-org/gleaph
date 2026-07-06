@@ -201,6 +201,11 @@ the smallest relevant implementation, review, validation, coordination, or super
 changes receive independent review and validation without interrupting the product chain unless the
 workflow defect is itself blocking.
 
+When primary inspection finds a reusable P1/P2 defect, or a repeated P3 pattern, recovery is not a
+new final-approval candidate until the smallest owning skill has been strengthened, independently
+reviewed and validated, and forward-tested against the corrected slice. Do not postpone that learning
+step until after the product commit or merely mention it in the completion report.
+
 Do not encode one-off file names, current expected findings, or a single incident's answer into a
 skill. Improve general decision rules.
 

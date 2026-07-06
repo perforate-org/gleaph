@@ -45,9 +45,16 @@ layer. Do not duplicate the same predicate matrix at every layer.
 Before adding a test, inventory its expensive setup calls and ask whether an existing fixture family
 can express the contract safely.
 
+Record the actual expensive-constructor and install-call count before and after the change. Test
+function count is not a substitute: one E2E test containing several named scenarios still has the
+fixture budget of the constructors and installs it executes. Count Rust tests, PocketIC constructors,
+and canister/federation installation helpers separately.
+
 For PocketIC:
 
 - Treat every `install_federation()` or `install_single_shard_federation()` as a large fixed cost.
+- Treat direct `PocketIc` construction and lower-level canister installation helpers as the same
+  class of fixed cost; do not hide one-bootstrap-per-scenario behind a shared wrapper or one test.
 - Group compatible contracts into one lifecycle test with named scenario helpers.
 - Keep separate `#[test]` fixtures when metric, schema, topology, failure injection, upgrade state, or
   irreversible mutation would contaminate another scenario.

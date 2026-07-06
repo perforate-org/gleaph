@@ -61,6 +61,10 @@ Read, in this order:
 3. The current diff and resulting test file.
 4. The implementation report and validation evidence.
 
+Before approving completion, compare the plan frontmatter status, every TODO/body checkbox, and the
+final report. They must describe the same state. Also verify every cleanup claimed by the report is
+actually absent from the current diff; a claimed cleanup that remains on disk is a finding.
+
 Keep read-only reviews read-only. Do not rerun long tests, clippy, builds, or benchmarks unless explicitly assigned.
 
 Timebox a focused test-only review to about three minutes. Make one plan/base/diff/report pass, then
@@ -79,6 +83,10 @@ Map every removed or changed contract to a current named scenario and assertion.
 - assertion that would fail if the criterion were broken.
 
 Missing traceability for a required criterion is a finding.
+
+For PocketIC consolidation or additions, count test functions, `PocketIc` constructors, and
+federation/canister installation calls independently. Reject one-bootstrap-per-compatible-scenario
+even when the scenarios have been wrapped inside one test function.
 
 ## Mandatory Counterexample Pass
 

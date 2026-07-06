@@ -39,6 +39,10 @@ Use the command appropriate for the active shell:
 
 Use UTC for time notation in repository documents. Date-only fields may omit a time zone when the calendar date is unambiguous, but any timestamp, anchor timestamp, schedule time, deadline time, or verification time must use UTC.
 
+Preserve each document field's established granularity unless the document contract explicitly
+changes it: a date-only `Last updated` or `Last revised` stays date-only, while an `Anchor timestamp`
+stays a full UTC timestamp. Synchronizing an event does not authorize converting field formats.
+
 Prefer:
 
 - `2026-06-10 13:32:49 UTC +0000`
