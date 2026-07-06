@@ -1,4 +1,5 @@
 # Social Graph and GraphRAG Comparison Demo
+
 Last updated: 2026-07-04
 Anchor timestamp: 2026-07-04 04:51:03 UTC +0000
 
@@ -267,24 +268,24 @@ inspect which posts, people, topics, and citations support the answer.
 
 As verified against the repository on 2026-07-04 UTC:
 
-| Capability | Current state | Demo use |
-|---|---|---|
-| Vertex and edge mutation through Router GQL | Implemented | Seed users, posts, and relationships |
-| Graph traversal, filtering, ordering, limits, aggregation | Implemented for the required bounded shapes | Timelines and relationship queries |
-| Variable-length and shortest-path execution | Implemented for supported shapes | Explainable connection paths |
-| Property equality/range indexes | Implemented with documented consistency semantics | Candidate filtering |
-| Prepared queries and `MSG_CALLER()` | Implemented | Narrow public read surface now; caller-aware queries later |
-| Graph-scoped Router roles | Implemented | Protect administration and ad-hoc query access |
-| Application-owned public read Gateway | Implemented | Anonymous callers execute fixed scenarios through the Gateway; no arbitrary GQL/names/params |
-| Dedicated public comparison frontend | Implemented | Browser calls only the Gateway; no Router GQL, arbitrary inputs, auth, vector, or LLM scope |
-| Transparent row-level policy engine | Not implemented | Do not claim RLS parity |
-| Canonical vertex embeddings and derived vector indexes | Implemented | Semantic post retrieval through Router canonical ingestion; vector canister installed, activated, and attached by the local deploy script |
-| Vector `SEARCH` joined with graph execution | Implemented for bounded vertex-only shapes and the two social demo prepared queries | Graph-aware semantic retrieval rendered in the frontend with exact distance values |
-| GQL vector-index DDL | Planned | Bootstrap through current admin API; social demo uses the admin API directly |
-| Full-text and native hybrid provider | Planned | Not required for the first demo |
-| Embedding generation | External to Gleaph | Deterministic seed embeddings in the canonical manifest; live providers remain planned |
-| LLM inference | IC LLM canister via application-owned `ic-llm` client | GraphRAG generation |
-| Realtime/changefeed subscriptions | Not implemented | Use static seed data or explicit refresh |
+| Capability                                                | Current state                                                                       | Demo use                                                                                                                                  |
+| --------------------------------------------------------- | ----------------------------------------------------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------- |
+| Vertex and edge mutation through Router GQL               | Implemented                                                                         | Seed users, posts, and relationships                                                                                                      |
+| Graph traversal, filtering, ordering, limits, aggregation | Implemented for the required bounded shapes                                         | Timelines and relationship queries                                                                                                        |
+| Variable-length and shortest-path execution               | Implemented for supported shapes                                                    | Explainable connection paths                                                                                                              |
+| Property equality/range indexes                           | Implemented with documented consistency semantics                                   | Candidate filtering                                                                                                                       |
+| Prepared queries and `MSG_CALLER()`                       | Implemented                                                                         | Narrow public read surface now; caller-aware queries later                                                                                |
+| Graph-scoped Router roles                                 | Implemented                                                                         | Protect administration and ad-hoc query access                                                                                            |
+| Application-owned public read Gateway                     | Implemented                                                                         | Anonymous callers execute fixed scenarios through the Gateway; no arbitrary GQL/names/params                                              |
+| Dedicated public comparison frontend                      | Implemented                                                                         | Browser calls only the Gateway; no Router GQL, arbitrary inputs, auth, vector, or LLM scope                                               |
+| Transparent row-level policy engine                       | Not implemented                                                                     | Do not claim RLS parity                                                                                                                   |
+| Canonical vertex embeddings and derived vector indexes    | Implemented                                                                         | Semantic post retrieval through Router canonical ingestion; vector canister installed, activated, and attached by the local deploy script |
+| Vector `SEARCH` joined with graph execution               | Implemented for bounded vertex-only shapes and the two social demo prepared queries | Graph-aware semantic retrieval rendered in the frontend with exact distance values                                                        |
+| GQL vector-index DDL                                      | Planned                                                                             | Bootstrap through current admin API; social demo uses the admin API directly                                                              |
+| Full-text and native hybrid provider                      | Planned                                                                             | Not required for the first demo                                                                                                           |
+| Embedding generation                                      | External to Gleaph                                                                  | Deterministic seed embeddings in the canonical manifest; live providers remain planned                                                    |
+| LLM inference                                             | IC LLM canister via application-owned `ic-llm` client                               | GraphRAG generation                                                                                                                       |
+| Realtime/changefeed subscriptions                         | Not implemented                                                                     | Use static seed data or explicit refresh                                                                                                  |
 
 This table is a dated repository assessment, not a permanent product support matrix. Implementation
 work must update the relevant active design contracts when a status changes.

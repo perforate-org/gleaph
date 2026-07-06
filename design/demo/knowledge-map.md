@@ -83,12 +83,12 @@ The frontend calls only the Router-facing demo/query API. It must not call graph
 
 This preserves the existing architecture:
 
-| Domain | Demo responsibility |
-|--------|---------------------|
-| Frontend asset canister | Render the animated map and story panels. |
-| Router | Own authentication, query entry, label/property resolution, index lookup, shard dispatch, and result merge. |
-| graph-index | Own posting lookup and intersection. |
-| Graph shard | Own local graph storage and local plan execution. |
+| Domain                  | Demo responsibility                                                                                         |
+| ----------------------- | ----------------------------------------------------------------------------------------------------------- |
+| Frontend asset canister | Render the animated map and story panels.                                                                   |
+| Router                  | Own authentication, query entry, label/property resolution, index lookup, shard dispatch, and result merge. |
+| graph-index             | Own posting lookup and intersection.                                                                        |
+| Graph shard             | Own local graph storage and local plan execution.                                                           |
 
 ### ICP CLI manifest
 
@@ -161,12 +161,12 @@ Node `demo_id` projection on multi-label traversals is omitted because the curre
 
 The seed dataset should be small, memorable, and relationship-heavy:
 
-| Kind | Examples |
-|------|----------|
-| Person | Alice, Bob, Chandra |
-| Post | "Graph storage notes", "Query routing note" |
-| Topic | Storage, Routing, Access Control |
-| Project | Gleaph |
+| Kind     | Examples                                                             |
+| -------- | -------------------------------------------------------------------- |
+| Person   | Alice, Bob, Chandra                                                  |
+| Post     | "Graph storage notes", "Query routing note"                          |
+| Topic    | Storage, Routing, Access Control                                     |
+| Project  | Gleaph                                                               |
 | Document | LARA overview, Federation query semantics, RBAC and prepared queries |
 
 Representative path:
@@ -289,14 +289,14 @@ frontend/apps/knowledge-map/src/
 
 ### Component responsibilities
 
-| Component | Responsibility |
-|-----------|----------------|
+| Component          | Responsibility                                                          |
+| ------------------ | ----------------------------------------------------------------------- |
 | `KnowledgeMapDemo` | Own selected scenario, playback state, active step, and technical mode. |
-| `QuestionPanel` | Show natural-language demo questions. |
-| `GraphStage` | Render the responsive SVG graph and relationship trail. |
-| `StorySteps` | Show plain-language traversal narration. |
-| `ResultCards` | Show found items and why they were found. |
-| `TechnicalFlow` | Reveal Router / index / shard execution steps when enabled. |
+| `QuestionPanel`    | Show natural-language demo questions.                                   |
+| `GraphStage`       | Render the responsive SVG graph and relationship trail.                 |
+| `StorySteps`       | Show plain-language traversal narration.                                |
+| `ResultCards`      | Show found items and why they were found.                               |
+| `TechnicalFlow`    | Reveal Router / index / shard execution steps when enabled.             |
 
 ### Visualization rule
 
