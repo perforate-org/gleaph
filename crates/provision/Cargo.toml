@@ -14,3 +14,6 @@ ic-stable-structures = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
 gleaph-graph-kernel = { workspace = true }
+
+[dev-dependencies]
+candid_parser = "0.4.0"

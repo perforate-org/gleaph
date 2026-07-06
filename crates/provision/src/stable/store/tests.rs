@@ -62,6 +62,7 @@ fn test_record_with_resources(
         current_state: JobState::Submitted,
         active_resource_index: 0,
         completed_effect_count: 0,
+        accepted_registry_version: None,
         created_at_ns: 1_700_000_000_000_000_000,
         last_transition_ns: 0,
     }
@@ -557,4 +558,55 @@ fn test_job_by_deployment_derived_index_has_no_cross_leakage() {
         assert_eq!(map.get(&wrong_deployment), None);
         assert_eq!(map.get(&wrong_intent), None);
     });
+}
+
+#[test]
+fn test_insert_with_intent_locks_preserves_existing_derived_index_on_conflict() {
+    super::reset_all_maps();
+    let store = ProvisionJobStore::new();
+
+    // Job A seeds the canonical record, derived index, and intent lock.
+    let record_a = test_record_with_resources(
+        "req-a",
+        "dep-a",
+        "fp-a",
+        &[("shard-a", ProvisionableResourceKind::GraphShard)],
+    );
+    let key_a = ProvisionJobRequestKey::new("req-a", "dep-a");
+    store.insert_with_intent_locks(record_a, 1).unwrap();
+    assert_eq!(
+        store.assert_intent_to_request_for_test(
+            "dep-a",
+            ProvisionableResourceKind::GraphShard,
+            "shard-a"
+        ),
+        Some(key_a.clone()),
+        "derived index must map R1.intent to A.key after seeding"
+    );
+
+    // Job B conflicts on the held intent; the store boundary must leave A's derived row intact.
+    let record_b = test_record_with_resources(
+        "req-b",
+        "dep-a",
+        "fp-b",
+        &[("shard-a", ProvisionableResourceKind::GraphShard)],
+    );
+    assert!(matches!(
+        store.insert_with_intent_locks(record_b, 2),
+        Err(super::InsertWithLocksError::IntentLockHeld)
+    ));
+    assert_eq!(
+        store.assert_intent_to_request_for_test(
+            "dep-a",
+            ProvisionableResourceKind::GraphShard,
+            "shard-a"
+        ),
+        Some(key_a),
+        "derived index must still map R1.intent to A.key after B is rejected"
+    );
+    assert_eq!(
+        store.get_by_request("req-b", "dep-a"),
+        None,
+        "B must not leave a canonical row"
+    );
 }

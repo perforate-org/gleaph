@@ -2,8 +2,8 @@
 
 Date: 2026-07-04
 Status: Partially Implemented
-Last revised: 2026-07-05 06:28:26 UTC +0000
-Anchor timestamp: 2026-07-05 06:28:26 UTC +0000
+Last revised: 2026-07-05 10:55:00 UTC +0000
+Anchor timestamp: 2026-07-05 10:55:00 UTC +0000
 
 ## Context
 
@@ -72,7 +72,7 @@ ProvisionResult = {
   created_resources[{kind, canister_id, artifact_hash}],
   terminal_outcome
 }
-RouterProvisionAck = { request_id, accepted_registry_version }
+RouterProvisionAck = { deployment_id, request_id, accepted_registry_version }  (P1-3: the only Slice 1 wire-shape change; makes ACK addressing unambiguous across deployments)
 ```
 
 Router verifies the fingerprint and intent lock, atomically commits the affected Router catalogs,
@@ -133,13 +133,30 @@ deployment trust binding (`DeploymentBinding`), durable job/receipt state
 with the `PROVISION_STABLE_LAYOUT` registry, the `DeploymentTrustStore` and
 `ProvisionJobStore` facades, and unit tests for idempotent insert, conflict detection,
 state-machine transitions, intent locks, and governance authorization.
+
+Slice 3 (2026-07-05) moves the six ADR 0035 Candid wire types into the neutral
+`gleaph_graph_kernel::provisioning::wire` owner, adds the Provision ingress/query/ack handler
+**foundation** (`accept_envelope_with_caller`, `query_job_with_caller`,
+`router_ack_with_caller`) and a hand-written `provision.did` that defines the service surface.
+Callable canister endpoints (`#[init]`/`#[query]`/`#[update]` exports) remain a follow-up slice.
+`ProvisionJobRecord` gains `accepted_registry_version: Option<u64>` (round-trips inside the
+existing `ProvisionJobStableRecord::V1` Candid body, no wrapper bump required for development
+data). `ProvisionJobStore` extends `put`, `remove`, `intent_lock_count_for_record`,
+`has_live_job_for_deployment`, and `insert_with_intent_locks`; the stale `get_by_request_id`
+request-id-only scan is removed. Admin binding mutation via a public ingress surface is planned
+for a separate durable-authority slice and is not implemented in this slice. Initial bindings are
+seeded through `init(ProvisionInitArgs)` (durable-bootstrap model). `router_ack` uses the
+exact canonical key `get_by_request(request_id, deployment_id)` and implements durable,
+idempotent replay (`Completed` + matching version returns the ack; differing version returns
+`AckConflict`; wrong state returns `InvalidState`).
+
 `ProvisionableResourceKind` and `ProvisioningIntentKey` are single-sourced in
-`gleaph_graph_kernel::provisioning` and re-exported by `gleaph-router` for use by Provision
-Maps 2/3 and Router Map 47; `ProvisioningIntentKey::new` is public so both canisters can
-construct the shared key. The `completed_effect_count` increment rule is provisional pending
-ADR 0035 implementation notes.
-Cross-canister envelope send/recv, public ingress endpoints, artifact catalog, lifecycle
-controller policy, and cycle algebra remain proposed and are scheduled for later slices.
+`gleaph_graph_kernel::provisioning` and re-exported by both `gleaph-router` and
+`gleaph-provision`; `ProvisioningIntentKey::new` is public so both canisters can construct
+the shared key. The `completed_effect_count` increment rule is provisional pending ADR 0035
+implementation notes.
+Cross-canister envelope send/recv, artifact catalog, lifecycle controller policy, and cycle
+algebra remain proposed and are scheduled for later slices.
 
 ## Cross-links
 

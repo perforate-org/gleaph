@@ -8,6 +8,11 @@
 pub mod stable;
 pub mod types;
 
+pub mod canister;
+
+#[cfg(test)]
+mod candid;
+
 /// IC NNS timestamp in nanoseconds.
 ///
 /// Mirrors `crates/router/src/facade/store.rs:121-128`: returns `ic_cdk::api::time()` on

@@ -1,0 +1,103 @@
+type ProvisionableResourceKind = variant { GraphShard; PropertyIndex; VectorIndex };
+
+type ProvisionableResource = record {
+    kind: ProvisionableResourceKind;
+    logical_resource_key: text;
+};
+
+type CreatedResource = record {
+    kind: ProvisionableResourceKind;
+    canister_id: principal;
+    artifact_hash: text;
+};
+
+type ProvisionResultOutcome = variant {
+    Installed;
+    Conflict;
+    Failed: record { reason: text };
+};
+
+type ProvisionResult = record {
+    request_id: text;
+    request_fingerprint: text;
+    release_id: text;
+    created_resources: vec CreatedResource;
+    terminal_outcome: ProvisionResultOutcome;
+};
+
+type RouterProvisionAck = record {
+    deployment_id: text;
+    request_id: text;
+    accepted_registry_version: nat64;
+};
+
+type ProvisionRequest = record {
+    deployment_id: text;
+    request_id: text;
+    request_fingerprint: text;
+    intent_key: record {
+        deployment_id: text;
+        resource_kind: ProvisionableResourceKind;
+        logical_resource_key: text;
+    };
+    reserved_graph_id: opt nat32;
+    graph_name: text;
+    requested_resources: vec ProvisionableResource;
+    authorized_caller: principal;
+    release_id: text;
+    router_callback_principal: principal;
+};
+
+type DeploymentBinding = record {
+    deployment_id: text;
+    router_principal: principal;
+    governance_principal: principal;
+    binding_version: nat64;
+};
+
+type ResourceJobView = record {
+    resource_kind: ProvisionableResourceKind;
+    logical_resource_key: text;
+    canister_id: opt principal;
+    artifact_hash: opt text;
+};
+
+type ProvisionJobView = record {
+    request_id: text;
+    deployment_id: text;
+    request_fingerprint: text;
+    reserved_graph_id: opt nat32;
+    graph_name: text;
+    state_name: text;
+    active_resource_index: nat32;
+    completed_effect_count: nat32;
+    accepted_registry_version: opt nat64;
+    resources: vec ResourceJobView;
+    is_authorized_caller: bool;
+    has_router_callback: bool;
+};
+
+type ProvisionJobSummary = record {
+    request_id: text;
+    deployment_id: text;
+    state: text;
+    active_resource_index: nat32;
+    completed_effect_count: nat32;
+    accepted_registry_version: opt nat64;
+};
+
+type ProvisionAcceptResponse = variant {
+    Accepted: record { job_view: ProvisionJobSummary; intent_lock_count: nat32 };
+    Replay: record { job_view: ProvisionJobSummary; intent_lock_count: nat32 };
+};
+
+type ProvisionRouterAckResult = record {
+    completed: bool;
+    accepted_registry_version: nat64;
+};
+
+service : {
+    accept_envelope: (ProvisionRequest) -> (ProvisionAcceptResponse);
+    query_job: (text, text) -> (opt ProvisionJobView) query;
+    router_ack: (RouterProvisionAck) -> (ProvisionRouterAckResult);
+};

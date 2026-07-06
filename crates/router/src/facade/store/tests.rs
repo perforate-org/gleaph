@@ -3644,6 +3644,7 @@ mod provisioning_tests {
     #[test]
     fn router_provision_ack_candid_roundtrip() {
         let ack = RouterProvisionAck {
+            deployment_id: "deploy-1".to_owned(),
             request_id: "req-1".to_owned(),
             accepted_registry_version: 17,
         };

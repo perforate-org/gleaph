@@ -10,6 +10,10 @@ pub use gleaph_graph_kernel::federation::{
     GlobalVertexId, GraphShardKey, LocalVertexId, ShardId, ShardRegistryEntry,
 };
 use gleaph_graph_kernel::plan_exec::{MutationId, MutationLifecyclePhase};
+pub use gleaph_graph_kernel::provisioning::wire::{
+    CreatedResource, ProvisionRequest, ProvisionResult, ProvisionResultOutcome,
+    ProvisionableResource, RouterProvisionAck,
+};
 pub use gleaph_graph_kernel::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
 use gleaph_graph_kernel::vector_index::{
     VectorMaintenanceFailure, VectorMaintenancePolicy, VectorMaintenanceState,
@@ -607,13 +611,6 @@ impl Storable for ProvisioningByGraphKey {
     }
 }
 
-/// A logical resource this provisioning request intends to create.
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, CandidType)]
-pub struct ProvisionableResource {
-    pub kind: ProvisionableResourceKind,
-    pub logical_resource_key: String,
-}
-
 /// Intent lock held marker for Map 47 value — unit struct avoids () Storable ambiguity.
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct IntentLockMarker;
@@ -686,54 +683,6 @@ impl Storable for RouterProvisioningRequest {
             RouterProvisioningRequestStableRecord::V1(v1) => v1,
         }
     }
-}
-
-/// A resource created by the Provision canister, reported back in ProvisionResult.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct CreatedResource {
-    pub kind: ProvisionableResourceKind,
-    pub canister_id: Principal,
-    pub artifact_hash: String,
-}
-
-/// Terminal outcome of one provisioning request from the Provision canister.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub enum ProvisionResultOutcome {
-    Installed,
-    Conflict,
-    Failed { reason: String },
-}
-
-/// Result envelope Provision sends back to Router.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ProvisionResult {
-    pub request_id: String,
-    pub request_fingerprint: String,
-    pub release_id: String,
-    pub created_resources: Vec<CreatedResource>,
-    pub terminal_outcome: ProvisionResultOutcome,
-}
-
-/// Router acknowledgement of a ProvisionResult.
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct RouterProvisionAck {
-    pub request_id: String,
-    pub accepted_registry_version: u64,
-}
-
-/// Resolved envelope Router sends to Provision (ADR 0035 §Resolved request).
-#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
-pub struct ProvisionRequest {
-    pub deployment_id: String,
-    pub request_id: String,
-    pub request_fingerprint: String,
-    pub intent_key: ProvisioningIntentKey,
-    pub reserved_graph_id: Option<GraphId>,
-    pub graph_name: String,
-    pub requested_resources: Vec<ProvisionableResource>,
-    pub authorized_caller: Principal,
-    pub release_id: String,
-    pub router_callback_principal: Principal,
 }
 
 #[cfg(test)]

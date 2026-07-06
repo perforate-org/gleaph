@@ -11,6 +11,11 @@ use std::borrow::Cow;
 // Use the provision-local marker defined below.
 pub use gleaph_graph_kernel::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
 
+pub use gleaph_graph_kernel::provisioning::wire::{
+    CreatedResource, ProvisionRequest, ProvisionResult, ProvisionResultOutcome,
+    ProvisionableResource, RouterProvisionAck,
+};
+
 // === Provision-local intent lock marker (P1-A) ===
 //
 // Mirrors the router's `IntentLockMarker` (zero bytes, Unbounded) but is
@@ -122,6 +127,8 @@ pub struct ProvisionJobRecord {
     pub active_resource_index: usize,
     /// Number of management-canister calls already completed for this job.
     pub completed_effect_count: u32,
+    /// Registry version accepted by the Router ack; None until the ack arrives.
+    pub accepted_registry_version: Option<u64>,
     /// Timestamp (IC NNS timestamp) when the job was created.
     pub created_at_ns: u64,
     /// Timestamp when the job last transitioned state.
@@ -166,6 +173,25 @@ pub enum JobState {
     RouterAckPending,
     Completed,
     Failed { reason: String },
+}
+
+pub(crate) fn state_name(state: &JobState) -> &'static str {
+    match state {
+        JobState::Submitted => "Submitted",
+        JobState::Reserved => "Reserved",
+        JobState::CreatePending => "CreatePending",
+        JobState::CanisterCreated => "CanisterCreated",
+        JobState::InstallPending => "InstallPending",
+        JobState::Installed => "Installed",
+        JobState::RouterRegistrationPending => "RouterRegistrationPending",
+        JobState::RouterAckPending => "RouterAckPending",
+        JobState::Completed => "Completed",
+        JobState::Failed { .. } => "Failed",
+    }
+}
+
+pub(crate) fn is_terminal_state(state: &JobState) -> bool {
+    matches!(state, JobState::Completed | JobState::Failed { .. })
 }
 
 // === Legal `JobState` transition table (P2-E) ===
