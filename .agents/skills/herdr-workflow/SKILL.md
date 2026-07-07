@@ -245,6 +245,65 @@ explicitly delegates the whole draft with a `PLAN ONLY` instruction. If the
 implementation pane returns a plan draft unprompted, treat it as a routing
 violation and reset/recreate the pane; do not adopt the draft as the canonical plan.
 
+# herdr-workflow patch: Oracle approval gate for plan review iterations
+
+## Oracle approval as a hard gate for plan-approval candidates
+
+A plan that has cleared strict read-only plan review (w1:p9) is **not** yet a
+final-approval candidate. Before the supervisor routes the plan to
+implementation, the plan must also clear an independent oracle consult via the
+`oracle` skill (GPT-5.5 browser mode by default). The oracle verdict is recorded
+in `/private/tmp/oracle-<slug>-<YYYYMMDD>.md` and cited in the eventual commit
+scope or final candidate.
+
+Required oracle consults before plan -> implementation:
+
+1. **post plan-review APPROVE** (mandatory). The oracle reads the plan file plus
+   the latest review verdict and confirms that the plan text is faithful to the
+   review findings. Verdict shape: `APPROVE` / `APPROVE with corrections` /
+   `NOT APPROVE`. P1/P2/P3 corrections from the oracle are returned to the
+   supervisor for plan revision; the supervisor writes the next revision and
+   re-runs the review + oracle loop.
+2. **post implementation-review APPROVE** (mandatory). The oracle cross-checks
+   the actual diff against the approved plan and the implementation review
+   verdict, and reports any drift (uncommitted files, unrelated modifications,
+   missing items).
+3. **post validation run** (recommended, mandatory for final-approval
+   candidates). The oracle cross-checks the commit scope against the plan
+   completion criteria and the validation output. The oracle verdict is the
+   final gate before the supervisor (or primary, per the active delegation
+   model) commits the slice.
+
+If the oracle consult cannot start (sandbox `EPERM` on
+`/Users/yota/.oracle/sessions/`, OpenAI API `insufficient_quota`, etc.), the
+supervisor cites the most recent completed oracle session for the slice and
+documents the failure in the slice's primary-findings-queue file. The oracle
+verdict becomes advisory-only; the slice still requires w1:p9 approval +
+bounded validation + primary inspection. The oracle failure is a forward-test
+input for the next session: try a non-conflicting slug, switch to API mode, or
+re-run from a shell with an unsandboxed home directory.
+
+## Routing for oracle consults
+
+- The supervisor (w1:pE) is the only pane that starts an oracle consult.
+- The oracle result is a `verdict + findings + caveats` block. The supervisor
+  uses this block to decide whether to advance the slice, revise the plan, or
+  escalate to the primary.
+- The supervisor **does not** echo the oracle transcript into the next
+  notification verbatim; instead, the supervisor cites the recording
+  (`/private/tmp/oracle-<slug>-<YYYYMMDD>.md`) and the verdict line. The
+  receiving pane reads the recording if it needs the full text.
+
+## Reusable rule
+
+Plan-text review alone is not enough. The supervisor's chain is:
+
+plan -> w1:p9 strict read-only review -> oracle consult -> w1:p3 implementation
+   -> w1:p9 implementation review -> oracle consult (diff cross-check) ->
+   bounded validation -> oracle consult (commit scope) -> commit.
+
+If any oracle consult is missing, the slice is not a final-approval candidate
+even if w1:p9 approved it.
 ## Why the supervisor owns plan drafting
 
 - The supervisor is the single decision owner for scope, prerequisite, and
