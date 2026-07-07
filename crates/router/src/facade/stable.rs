@@ -148,9 +148,9 @@ thread_local! {
         RefCell<memory::StableProvisioningIntentLockMap> =
         RefCell::new(memory::init_provisioning_intent_locks());
 
-    /// `() → ProvisionRuntimeConfig` durable bootstrap config (ADR 0035 Slice 5).
+    /// `ProvisionRuntimeConfig` durable bootstrap config (ADR 0035 Slice 5).
     /// Mirrors the in-heap `PROVISION_CANISTER` thread_local and re-seeds it on `post_upgrade`.
-    pub(crate) static ROUTER_PROVISION_CONFIG: RefCell<memory::StableProvisionConfigMap> =
+    pub(crate) static ROUTER_PROVISION_CONFIG: RefCell<memory::StableProvisionConfig> =
         RefCell::new(memory::init_provision_config());
 
     // --- telemetry ---

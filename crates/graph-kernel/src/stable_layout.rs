@@ -1046,7 +1046,7 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             48,
             StableMemoryClass::Canonical,
             "provisioning",
-            "() → ProvisionRuntimeConfig: durable Router provision-canister binding (bootstrap config); re-seeds the heap threadlocal in post_upgrade",
+            "ProvisionRuntimeConfig: durable Router provision-canister binding (bootstrap config); re-seeds the heap threadlocal in post_upgrade",
             RebuildPath::None,
         ),
     ],

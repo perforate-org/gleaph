@@ -10,7 +10,7 @@ use std::borrow::Cow;
 use std::cell::RefCell;
 
 /// Durable bootstrap config stored in `ROUTER_PROVISION_CONFIG` (MemoryId 48).
-#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize)]
+#[derive(Clone, Debug, PartialEq, Eq, CandidType, Serialize, Deserialize, Default)]
 pub(crate) struct ProvisionRuntimeConfig {
     pub provision_canister: Option<Principal>,
 }

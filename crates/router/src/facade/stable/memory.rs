@@ -30,6 +30,7 @@ use super::indexed_catalog::{IndexDefRecord, IndexedPropertyKey, NamedIndexKey};
 use super::reservation_catalog::{ReservationRecord, UniqueReservationKey};
 use super::vector_index_catalog::{VectorIndexDefRecord, VectorIndexKey};
 use super::vector_maintenance_policy::VectorMaintenancePolicyRecord;
+use crate::provisioning::config::ProvisionRuntimeConfig;
 use crate::types::{
     IntentLockOwner, ProvisioningByGraphKey, ProvisioningIntentKey, ProvisioningRequestKey,
     RouterProvisioningRequest,
@@ -264,8 +265,7 @@ pub(crate) type StableProvisioningByGraphMap =
 pub(crate) type StableProvisioningIntentLockMap =
     BTreeMap<ProvisioningIntentKey, IntentLockOwner, Memory>;
 
-pub(crate) type StableProvisionConfigMap =
-    BTreeMap<(), crate::provisioning::config::ProvisionRuntimeConfig, Memory>;
+pub(crate) type StableProvisionConfig = Cell<ProvisionRuntimeConfig, Memory>;
 
 // --- telemetry ---
 pub(crate) type StableLabelStatsMap =
@@ -443,8 +443,11 @@ pub(crate) fn init_provisioning_intent_locks() -> StableProvisioningIntentLockMa
     BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROVISIONING_INTENT_LOCK)))
 }
 
-pub(crate) fn init_provision_config() -> StableProvisionConfigMap {
-    BTreeMap::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROVISION_CONFIG)))
+pub(crate) fn init_provision_config() -> StableProvisionConfig {
+    Cell::init(
+        MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_PROVISION_CONFIG)),
+        ProvisionRuntimeConfig::default(),
+    )
 }
 
 // --- control ---

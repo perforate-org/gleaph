@@ -59,7 +59,7 @@ pub(crate) fn post_upgrade() {
 
     let durable = crate::facade::stable::provision_config::load_provision_runtime_config();
     let provision_canister =
-        match resolve_provision_canister_for_upgrade(args.provision_canister, durable.as_ref()) {
+        match resolve_provision_canister_for_upgrade(args.provision_canister, &durable) {
             Ok(p) => p,
             Err(e) => ic_cdk::trap(format!("post_upgrade: {e}")),
         };
@@ -72,7 +72,7 @@ pub(crate) fn post_upgrade() {
 
 pub(crate) fn resolve_provision_canister_for_upgrade(
     override_arg: Option<Principal>,
-    durable: Option<&crate::provisioning::config::ProvisionRuntimeConfig>,
+    durable: &crate::provisioning::config::ProvisionRuntimeConfig,
 ) -> Result<Option<Principal>, &'static str> {
     // The durable ROUTER_PROVISION_CONFIG stable region is the SSOT for the provision-canister
     // binding. Upgrade args with `provision_canister: Some(p)` are an explicit operator override;
@@ -88,7 +88,7 @@ pub(crate) fn resolve_provision_canister_for_upgrade(
             );
             Ok(Some(p))
         }
-        None => Ok(durable.map(|c| c.provision_canister).unwrap_or(None)),
+        None => Ok(durable.provision_canister),
     }
 }
 
@@ -1618,8 +1618,7 @@ mod provision_config_upgrade_tests {
 
         // An anonymous override must be rejected: the resolver returns Err, the durable
         // record is preserved, and post_upgrade would trap.
-        let result =
-            resolve_provision_canister_for_upgrade(Some(Principal::anonymous()), durable.as_ref());
+        let result = resolve_provision_canister_for_upgrade(Some(Principal::anonymous()), &durable);
         assert_eq!(result, Err("provision_canister cannot be anonymous"));
         assert_eq!(
             load_provision_runtime_config(),
@@ -1636,13 +1635,14 @@ mod provision_config_upgrade_tests {
             provision_canister: Some(canonical),
         });
 
-        let result = resolve_provision_canister_for_upgrade(Some(replacement), None).unwrap();
+        let durable = load_provision_runtime_config();
+        let result = resolve_provision_canister_for_upgrade(Some(replacement), &durable).unwrap();
         assert_eq!(result, Some(replacement));
         assert_eq!(
             load_provision_runtime_config(),
-            Some(ProvisionRuntimeConfig {
+            ProvisionRuntimeConfig {
                 provision_canister: Some(replacement),
-            })
+            }
         );
     }
 
@@ -1654,8 +1654,7 @@ mod provision_config_upgrade_tests {
         });
 
         let result =
-            resolve_provision_canister_for_upgrade(None, load_provision_runtime_config().as_ref())
-                .unwrap();
+            resolve_provision_canister_for_upgrade(None, &load_provision_runtime_config()).unwrap();
         assert_eq!(result, Some(canonical));
     }
 }
