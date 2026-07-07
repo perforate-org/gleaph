@@ -63,6 +63,9 @@ pub use state::RouterError;
 use candid::Principal;
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
+use crate::provisioning::sender::send_accept_envelope;
+use crate::types::RouterOutboundError;
+
 #[init]
 fn init(args: RouterInitArgs) {
     canister::init(args);
@@ -824,10 +827,11 @@ async fn provision_graph(
     args: types::ProvisionGraphArgs,
 ) -> Result<types::ProvisionGraphResponse, RouterError> {
     use crate::facade::auth;
-    use crate::provisioning::sender::send_accept_envelope;
-    use crate::types::ProvisionGraphResponse;
-    use crate::types::RouterOutboundError;
-    use gleaph_graph_kernel::provisioning::{ProvisionableResourceKind, ProvisioningIntentKey};
+    use crate::facade::store::provisioning::{InsertError, RouterProvisioningRequestStore};
+    use crate::types::{
+        ProvisionableResourceKind, ProvisioningIntentKey, ProvisioningRequestKey,
+        RouterProvisioningRequest, RouterProvisioningRequestState,
+    };
 
     let caller = ic_cdk::api::msg_caller();
     auth::require_admin(&caller)?;
@@ -857,9 +861,42 @@ async fn provision_graph(
         &canonical.logical_resource_key,
     );
 
+    // Seed the Router-side provisioning-request catalog before the outbound send so the
+    // ack callback has a canonical record to advance. We need deployment_id for the key, so
+    // clone it before moving fields into the ProvisionRequest wire struct.
+    let deployment_id = args.deployment_id.clone();
+    let request_id = format!("{}-{}", args.graph_name, args.request_fingerprint);
+    let request_key = ProvisioningRequestKey::new(&request_id, &deployment_id);
+    let store = RouterProvisioningRequestStore::new();
+    let seed_record = RouterProvisioningRequest {
+        request_id: request_id.clone(),
+        request_fingerprint: args.request_fingerprint.clone(),
+        caller: ic_cdk::api::msg_caller(),
+        graph_name: args.graph_name.clone(),
+        reserved_graph_id: None,
+        requested_resources: args.requested_resources.clone(),
+        state: RouterProvisioningRequestState::AwaitingAck,
+        provision_receipt: None,
+        accepted_registry_version: None,
+        created_at_ns: ic_cdk::api::time(),
+    };
+    let outcome = store
+        .insert(&deployment_id, seed_record)
+        .map_err(|err| match err {
+            InsertError::Conflict => {
+                RouterError::Conflict("provisioning request fingerprint conflict".to_owned())
+            }
+            InsertError::IntentConflict => {
+                RouterError::Conflict("provisioning intent already locked".to_owned())
+            }
+            InsertError::InvalidDuplicateIntent => {
+                RouterError::InvalidArgument("duplicate requested resources".to_owned())
+            }
+        })?;
+
     let request = gleaph_graph_kernel::provisioning::wire::ProvisionRequest {
-        deployment_id: args.deployment_id,
-        request_id: format!("{}-{}", args.graph_name, args.request_fingerprint),
+        deployment_id,
+        request_id,
         request_fingerprint: args.request_fingerprint,
         intent_key,
         reserved_graph_id: None,
@@ -871,34 +908,381 @@ async fn provision_graph(
         router_callback_principal: candid::Principal::anonymous(),
     };
 
-    let accept_response = send_accept_envelope(provision_canister, request)
-        .await
-        .map_err(|e| match e {
-            RouterOutboundError::CallFailed(s) => RouterError::ProvisionCallFailed(s),
-            RouterOutboundError::UnknownDeployment => {
-                RouterError::UnknownDeployment("deployment not bound".to_owned())
-            }
-            RouterOutboundError::Conflict => RouterError::ProvisionConflict("conflict".to_owned()),
-            RouterOutboundError::IngressRejected(s) => RouterError::ProvisionRejected(s),
-            RouterOutboundError::EncodingFailed(s) => RouterError::ProvisionEncodingFailed(s),
-        })?;
+    dispatch_provision_send(request_key, outcome, store, || {
+        send_accept_envelope(provision_canister, request)
+    })
+    .await
+}
 
-    Ok(match accept_response {
+/// Maps a Provision outbound error to the Router ingress error returned by `provision_graph`.
+fn map_provision_outbound_error(err: RouterOutboundError) -> RouterError {
+    match err {
+        RouterOutboundError::CallFailed(s) => RouterError::ProvisionCallFailed(s),
+        RouterOutboundError::UnknownDeployment => {
+            RouterError::UnknownDeployment("deployment not bound".to_owned())
+        }
+        RouterOutboundError::Conflict => RouterError::ProvisionConflict("conflict".to_owned()),
+        RouterOutboundError::IngressRejected(s) => RouterError::ProvisionRejected(s),
+        RouterOutboundError::EncodingFailed(s) => RouterError::ProvisionEncodingFailed(s),
+    }
+}
+
+/// Maps a successful `accept_envelope` response to the Router ingress response.
+fn build_provision_graph_response(
+    accept_response: gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse,
+) -> types::ProvisionGraphResponse {
+    match accept_response {
         gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse::Accepted {
             job_view,
             intent_lock_count,
-        } => ProvisionGraphResponse::Accepted {
+        } => types::ProvisionGraphResponse::Accepted {
             job_view,
             intent_lock_count,
         },
         gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse::Replay {
             job_view,
             intent_lock_count,
-        } => ProvisionGraphResponse::Replay {
+        } => types::ProvisionGraphResponse::Replay {
             job_view,
             intent_lock_count,
         },
-    })
+    }
+}
+
+/// Dispatches the outbound `accept_envelope` send according to the `InsertionOutcome`.
+///
+/// Four branches:
+/// 1. `Inserted(AwaitingAck)` or `Existing(AwaitingAck)` → call `send`. On failure,
+///    rollback ONLY if the current operation inserted the record.
+/// 2. `Existing(Completed)` → do not resend; return the durable accepted version.
+/// 3. `Existing(Pending | Submitted | Failed)` → reject as `InvalidState`.
+async fn dispatch_provision_send<F, Fut>(
+    request_key: types::ProvisioningRequestKey,
+    outcome: crate::facade::store::provisioning::InsertionOutcome,
+    store: crate::facade::store::provisioning::RouterProvisioningRequestStore,
+    send: F,
+) -> Result<types::ProvisionGraphResponse, RouterError>
+where
+    F: FnOnce() -> Fut,
+    Fut: std::future::Future<
+            Output = Result<
+                gleaph_graph_kernel::provisioning::wire::ProvisionAcceptResponse,
+                RouterOutboundError,
+            >,
+        >,
+{
+    use crate::facade::store::provisioning::InsertionOutcome;
+    use types::RouterProvisioningRequestState;
+
+    let is_inserted = matches!(outcome, InsertionOutcome::Inserted(_));
+
+    match &outcome {
+        InsertionOutcome::Inserted(record) | InsertionOutcome::Existing(record)
+            if matches!(record.state, RouterProvisioningRequestState::AwaitingAck) =>
+        {
+            let accept_response = match send().await {
+                Ok(response) => response,
+                Err(e) => {
+                    if is_inserted {
+                        // Invocation-owned rollback: only remove the record if the current
+                        // operation inserted it AND it is still in AwaitingAck. Pre-existing
+                        // records from any prior invocation must survive a transient send
+                        // failure on a retry.
+                        store.rollback_if_inserted_and_awaiting(&request_key, &outcome);
+                    }
+                    return Err(map_provision_outbound_error(e));
+                }
+            };
+            Ok(build_provision_graph_response(accept_response))
+        }
+        InsertionOutcome::Existing(record)
+            if matches!(record.state, RouterProvisioningRequestState::Completed) =>
+        {
+            let version = record.accepted_registry_version.ok_or_else(|| {
+                RouterError::InvalidState(
+                    "completed record missing accepted_registry_version".to_owned(),
+                )
+            })?;
+            Ok(types::ProvisionGraphResponse::Completed {
+                accepted_registry_version: version,
+            })
+        }
+        InsertionOutcome::Existing(record) => Err(RouterError::InvalidState(format!(
+            "request in non-terminal state {:?}",
+            record.state
+        ))),
+        // `Inserted` for a non-AwaitingAck state is impossible because `insert` always seeds
+        // `AwaitingAck`; kept as a defensive match arm.
+        InsertionOutcome::Inserted(record) => Err(RouterError::InvalidState(format!(
+            "freshly inserted request in unexpected state {:?}",
+            record.state
+        ))),
+    }
+}
+
+/// Internal callback: the configured Provision canister acknowledges a completed
+/// provisioning job and asks the Router to commit the terminal catalog state.
+#[update]
+fn router_ack(
+    ack: gleaph_graph_kernel::provisioning::wire::RouterProvisionAck,
+) -> Result<gleaph_graph_kernel::provisioning::wire::RouterAckResponse, RouterError> {
+    use crate::provisioning::ack_handler::handle_router_ack;
+    handle_router_ack(ic_cdk::api::msg_caller(), ack)
 }
 
 ic_cdk::export_candid!();
+
+#[cfg(test)]
+mod provision_graph_tests {
+    use candid::Principal;
+    use gleaph_graph_kernel::provisioning::wire::{ProvisionAcceptResponse, ProvisionJobSummary};
+
+    use crate::facade::store::provisioning::{InsertionOutcome, RouterProvisioningRequestStore};
+    use crate::types::{
+        ProvisionGraphResponse, ProvisionableResource, ProvisionableResourceKind,
+        ProvisioningRequestKey, RouterOutboundError, RouterProvisioningRequest,
+        RouterProvisioningRequestState,
+    };
+
+    fn sample_record(
+        request_id: &str,
+        _deployment_id: &str,
+        fingerprint: &str,
+        state: RouterProvisioningRequestState,
+        version: Option<u64>,
+    ) -> RouterProvisioningRequest {
+        RouterProvisioningRequest {
+            request_id: request_id.to_owned(),
+            request_fingerprint: fingerprint.to_owned(),
+            caller: Principal::anonymous(),
+            graph_name: "tenant.main".to_owned(),
+            reserved_graph_id: None,
+            requested_resources: vec![ProvisionableResource {
+                kind: ProvisionableResourceKind::GraphShard,
+                logical_resource_key: "shard-0".to_owned(),
+            }],
+            state,
+            provision_receipt: None,
+            accepted_registry_version: version,
+            created_at_ns: 0,
+        }
+    }
+
+    fn job_view() -> ProvisionJobSummary {
+        ProvisionJobSummary {
+            request_id: "req".to_owned(),
+            deployment_id: "deploy".to_owned(),
+            state: "AwaitingAck".to_owned(),
+            active_resource_index: 0,
+            completed_effect_count: 0,
+            accepted_registry_version: None,
+        }
+    }
+
+    fn store() -> RouterProvisioningRequestStore {
+        RouterProvisioningRequestStore::new()
+    }
+
+    #[test]
+    fn existing_completed_does_not_resend_and_returns_version() {
+        futures::executor::block_on(async {
+            let deployment_id = "deploy-completed";
+            let request_id = "req-completed";
+            let s = store();
+            let record = sample_record(
+                request_id,
+                deployment_id,
+                "fp-completed",
+                RouterProvisioningRequestState::Completed,
+                Some(7),
+            );
+            s.insert(deployment_id, record.clone())
+                .expect("insert completed");
+
+            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
+            let outcome = InsertionOutcome::Existing(record);
+
+            let result = super::dispatch_provision_send(
+                request_key.clone(),
+                outcome,
+                s,
+                // Sender must not be called for a Completed record.
+                || async { panic!("send must not be called for Completed record") },
+            )
+            .await
+            .expect("completed returns ok");
+
+            assert_eq!(
+                result,
+                ProvisionGraphResponse::Completed {
+                    accepted_registry_version: 7
+                }
+            );
+            let stored = store()
+                .get_by_request_id(&request_key)
+                .expect("record survives");
+            assert_eq!(stored.state, RouterProvisioningRequestState::Completed);
+        });
+    }
+
+    #[test]
+    fn existing_awaiting_ack_keeps_record_on_send_failure() {
+        futures::executor::block_on(async {
+            let deployment_id = "deploy-existing-awaiting";
+            let request_id = "req-existing-awaiting";
+            let s = store();
+            let record = sample_record(
+                request_id,
+                deployment_id,
+                "fp-existing-awaiting",
+                RouterProvisioningRequestState::AwaitingAck,
+                None,
+            );
+            s.insert(deployment_id, record.clone())
+                .expect("insert awaiting");
+
+            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
+            let outcome = InsertionOutcome::Existing(record);
+
+            let result =
+                super::dispatch_provision_send(request_key.clone(), outcome, s, || async {
+                    Err(RouterOutboundError::CallFailed("simulated".to_owned()))
+                })
+                .await;
+
+            assert!(
+                matches!(result, Err(super::RouterError::ProvisionCallFailed(_))),
+                "expected ProvisionCallFailed, got {result:?}"
+            );
+            let stored = store()
+                .get_by_request_id(&request_key)
+                .expect("record survives");
+            assert_eq!(stored.state, RouterProvisioningRequestState::AwaitingAck);
+        });
+    }
+
+    #[test]
+    fn existing_pending_returns_invalid_state() {
+        futures::executor::block_on(async {
+            let deployment_id = "deploy-pending";
+            let request_id = "req-pending";
+            let s = store();
+            let record = sample_record(
+                request_id,
+                deployment_id,
+                "fp-pending",
+                RouterProvisioningRequestState::Pending,
+                None,
+            );
+            s.insert(deployment_id, record).expect("insert pending");
+
+            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
+            let outcome = InsertionOutcome::Existing(s.get_by_request_id(&request_key).unwrap());
+
+            let result = super::dispatch_provision_send(request_key, outcome, s, || async {
+                panic!("send must not be called for non-terminal record")
+            })
+            .await;
+
+            assert!(
+                matches!(result, Err(super::RouterError::InvalidState(_))),
+                "expected InvalidState, got {result:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn existing_failed_returns_invalid_state() {
+        futures::executor::block_on(async {
+            let deployment_id = "deploy-failed";
+            let request_id = "req-failed";
+            let s = store();
+            let record = sample_record(
+                request_id,
+                deployment_id,
+                "fp-failed",
+                RouterProvisioningRequestState::Failed {
+                    reason: "boom".to_owned(),
+                },
+                None,
+            );
+            s.insert(deployment_id, record.clone())
+                .expect("insert failed");
+
+            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
+            let outcome = InsertionOutcome::Existing(record);
+
+            let result = super::dispatch_provision_send(request_key, outcome, s, || async {
+                panic!("send must not be called for non-terminal record")
+            })
+            .await;
+
+            assert!(
+                matches!(result, Err(super::RouterError::InvalidState(_))),
+                "expected InvalidState, got {result:?}"
+            );
+        });
+    }
+
+    #[test]
+    fn inserted_awaiting_ack_rolls_back_on_send_failure() {
+        futures::executor::block_on(async {
+            let deployment_id = "deploy-fresh-awaiting";
+            let request_id = "req-fresh-awaiting";
+            let s = store();
+            let record = sample_record(
+                request_id,
+                deployment_id,
+                "fp-fresh-awaiting",
+                RouterProvisioningRequestState::AwaitingAck,
+                None,
+            );
+            let outcome = InsertionOutcome::Inserted(record);
+            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
+
+            let result =
+                super::dispatch_provision_send(request_key.clone(), outcome, s, || async {
+                    Err(RouterOutboundError::CallFailed("simulated".to_owned()))
+                })
+                .await;
+
+            assert!(
+                matches!(result, Err(super::RouterError::ProvisionCallFailed(_))),
+                "expected ProvisionCallFailed, got {result:?}"
+            );
+            assert!(store().get_by_request_id(&request_key).is_none());
+        });
+    }
+
+    #[test]
+    fn inserted_awaiting_ack_returns_accepted_on_send_success() {
+        futures::executor::block_on(async {
+            let deployment_id = "deploy-fresh-success";
+            let request_id = "req-fresh-success";
+            let s = store();
+            let record = sample_record(
+                request_id,
+                deployment_id,
+                "fp-fresh-success",
+                RouterProvisioningRequestState::AwaitingAck,
+                None,
+            );
+            let outcome = InsertionOutcome::Inserted(record);
+            let request_key = ProvisioningRequestKey::new(request_id, deployment_id);
+
+            let result = super::dispatch_provision_send(request_key, outcome, s, || async {
+                Ok(ProvisionAcceptResponse::Accepted {
+                    job_view: job_view(),
+                    intent_lock_count: 1,
+                })
+            })
+            .await
+            .expect("fresh send succeeds");
+
+            assert!(
+                matches!(result, ProvisionGraphResponse::Accepted { .. }),
+                "expected Accepted, got {result:?}"
+            );
+        });
+    }
+}

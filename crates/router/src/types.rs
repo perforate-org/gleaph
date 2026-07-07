@@ -611,24 +611,68 @@ impl Storable for ProvisioningByGraphKey {
     }
 }
 
-/// Intent lock held marker for Map 47 value — unit struct avoids () Storable ambiguity.
+/// Identity of the provisioning request that holds an intent lock in Map 47.
+///
+/// Each lock is owner-bound to a specific `(request_id, deployment_id)` and fingerprint,
+/// so a lock held by one request cannot satisfy the preflight of another request, and a
+/// release can only remove locks owned by the request being advanced or rolled back.
 #[derive(Clone, Debug, PartialEq, Eq)]
-pub(crate) struct IntentLockMarker;
+pub(crate) struct IntentLockOwner {
+    pub request_key: ProvisioningRequestKey,
+    pub request_fingerprint: String,
+}
 
-impl Storable for IntentLockMarker {
+impl IntentLockOwner {
+    pub(crate) fn new(request_key: ProvisioningRequestKey, request_fingerprint: String) -> Self {
+        Self {
+            request_key,
+            request_fingerprint,
+        }
+    }
+}
+
+impl Storable for IntentLockOwner {
     const BOUND: StorableBound = StorableBound::Unbounded;
 
     fn to_bytes(&self) -> Cow<'_, [u8]> {
-        Cow::Borrowed(&[])
+        let mut out = self.request_key.to_bytes().into_owned();
+        out.extend_from_slice(&((self.request_fingerprint.len() as u32).to_le_bytes()));
+        out.extend_from_slice(self.request_fingerprint.as_bytes());
+        Cow::Owned(out)
     }
 
     fn into_bytes(self) -> Vec<u8> {
-        Vec::new()
+        self.to_bytes().into_owned()
     }
 
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
-        assert!(bytes.as_ref().is_empty(), "IntentLockMarker is zero bytes");
-        Self
+        let bytes = bytes.as_ref();
+        // request_key uses two u32 length prefixes plus the string bytes.
+        let request_id_len =
+            u32::from_le_bytes(bytes[0..4].try_into().expect("request_id len")) as usize;
+        let deployment_id_offset = 4 + request_id_len;
+        let deployment_id_len = u32::from_le_bytes(
+            bytes[deployment_id_offset..deployment_id_offset + 4]
+                .try_into()
+                .expect("deployment_id len"),
+        ) as usize;
+        let key_bytes_end = deployment_id_offset + 4 + deployment_id_len;
+        let request_key =
+            ProvisioningRequestKey::from_bytes(Cow::Borrowed(&bytes[..key_bytes_end]));
+        let mut offset = key_bytes_end;
+        let fingerprint_len = u32::from_le_bytes(
+            bytes[offset..offset + 4]
+                .try_into()
+                .expect("fingerprint len"),
+        ) as usize;
+        offset += 4;
+        let request_fingerprint =
+            String::from_utf8(bytes[offset..offset + fingerprint_len].to_vec())
+                .expect("fingerprint utf8");
+        Self {
+            request_key,
+            request_fingerprint,
+        }
     }
 }
 
@@ -653,6 +697,11 @@ pub(crate) struct RouterProvisioningRequest {
     pub requested_resources: Vec<ProvisionableResource>,
     pub state: RouterProvisioningRequestState,
     pub provision_receipt: Option<ProvisionResult>,
+    /// Registry version accepted from the Provision canister via `router_ack`.
+    /// `#[serde(default)]` preserves serde-only paths; Candid optional-field backward
+    /// compatibility handles the stable V1 wrapper round-trip for existing development data.
+    #[serde(default)]
+    pub accepted_registry_version: Option<u64>,
     pub created_at_ns: u64,
 }
 
@@ -768,6 +817,10 @@ pub enum ProvisionGraphResponse {
         job_view: gleaph_graph_kernel::provisioning::wire::ProvisionJobSummary,
         intent_lock_count: u32,
     },
+    /// The request already reached durable `Completed` state on a prior call.
+    /// Re-sending the accept envelope is not performed; the stored accepted registry
+    /// version is returned as an idempotent success.
+    Completed { accepted_registry_version: u64 },
 }
 
 #[cfg(test)]
@@ -830,5 +883,13 @@ mod outbound_tests {
         let decoded: ProvisionGraphResponse =
             Decode!(&bytes, ProvisionGraphResponse).expect("decode ProvisionGraphResponse");
         assert_eq!(decoded, response);
+
+        let completed_response = ProvisionGraphResponse::Completed {
+            accepted_registry_version: 7,
+        };
+        let bytes = Encode!(&completed_response).expect("encode ProvisionGraphResponse Completed");
+        let decoded: ProvisionGraphResponse = Decode!(&bytes, ProvisionGraphResponse)
+            .expect("decode ProvisionGraphResponse Completed");
+        assert_eq!(decoded, completed_response);
     }
 }

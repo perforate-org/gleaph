@@ -1,8 +1,9 @@
-//! Router provisioning outbound boundary (ADR 0035 Slice 5).
+//! Router provisioning outbound boundary and ack callback (ADR 0035 Slices 5 and 6).
 //!
-//! This module owns the Router -> Provision cross-canister send path and the
-//! runtime provision-canister binding. It intentionally does NOT own deployment
-//! trust bindings; those live in the Provision canister in this slice.
+//! - `config`: runtime provision-canister binding.
+//! - `sender`: Router -> Provision cross-canister send.
+//! - `ack_handler`: Provision -> Router `router_ack` callback handler.
 
+pub mod ack_handler;
 pub mod config;
 pub mod sender;

@@ -31,7 +31,7 @@ use super::reservation_catalog::{ReservationRecord, UniqueReservationKey};
 use super::vector_index_catalog::{VectorIndexDefRecord, VectorIndexKey};
 use super::vector_maintenance_policy::VectorMaintenancePolicyRecord;
 use crate::types::{
-    IntentLockMarker, ProvisioningByGraphKey, ProvisioningIntentKey, ProvisioningRequestKey,
+    IntentLockOwner, ProvisioningByGraphKey, ProvisioningIntentKey, ProvisioningRequestKey,
     RouterProvisioningRequest,
 };
 use candid::CandidType;
@@ -262,7 +262,7 @@ pub(crate) type StableProvisioningRequestMap =
 pub(crate) type StableProvisioningByGraphMap =
     BTreeMap<ProvisioningByGraphKey, ProvisioningRequestKey, Memory>;
 pub(crate) type StableProvisioningIntentLockMap =
-    BTreeMap<ProvisioningIntentKey, IntentLockMarker, Memory>;
+    BTreeMap<ProvisioningIntentKey, IntentLockOwner, Memory>;
 
 pub(crate) type StableProvisionConfigMap =
     BTreeMap<(), crate::provisioning::config::ProvisionRuntimeConfig, Memory>;

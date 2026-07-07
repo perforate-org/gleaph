@@ -3,7 +3,7 @@
 Date: 2026-06-12
 Status: accepted
 Last revised: 2026-07-06
-Anchor timestamp: 2026-07-06 13:04:26 UTC +0000
+Anchor timestamp: 2026-07-07 04:52:11 UTC +0000
 
 ## Revision history
 
@@ -11,6 +11,7 @@ Anchor timestamp: 2026-07-06 13:04:26 UTC +0000
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | 2026-07-05 | ADR 0035 Slice 3: `ProvisionJobRecord` schema growth (`accepted_registry_version: Option<u64>`) inside the existing `PROVISION_JOB_BY_REQUEST` region; no new stable-memory regions. |
 | 2026-07-05 | ADR 0035 Slice 2: new Provision canister with `PROVISION_DEPLOYMENT_TRUST` (0), `PROVISION_JOB_BY_REQUEST` (1), `PROVISION_JOB_BY_DEPLOYMENT` (2), `PROVISION_JOB_INTENT_LOCK` (3); Provision **4 regions (0–3)**. |
+| 2026-07-06 | ADR 0035 Slice 6: Router `router_ack` callback and catalog commit; no new stable-memory regions (Router remains 49 regions 0–48; no Provision-side changes). |
 | 2026-07-06 | ADR 0035 Slice 5: added Router `ROUTER_PROVISION_CONFIG` (48); Router **49 regions (0–48)**; no Provision-side changes. |
 | 2026-07-06 | ADR 0035 Slice 4: callable Provision canister endpoints (`#[init]`/`#[post_upgrade]`/`#[update]`/`#[query]`); no new stable-memory regions (same Provision 4 regions 0–3). |
 | 2026-07-04 | ADR 0035 Slice 1: added Router `ROUTER_PROVISIONING_REQUESTS` (45), `ROUTER_PROVISIONING_BY_GRAPH` (46), `ROUTER_PROVISIONING_INTENT_LOCK` (47); Router **48 regions (0–47)**. |

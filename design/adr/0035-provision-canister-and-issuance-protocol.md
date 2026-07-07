@@ -2,8 +2,8 @@
 
 Date: 2026-07-04
 Status: Partially Implemented
-Last revised: 2026-07-06 13:04:26 UTC +0000
-Anchor timestamp: 2026-07-06 13:04:26 UTC +0000
+Last revised: 2026-07-07 04:52:11 UTC +0000
+Anchor timestamp: 2026-07-07 04:52:11 UTC +0000
 
 ## Context
 
@@ -164,7 +164,7 @@ idempotent replay (`Completed` + matching version returns the ack; differing ver
 `gleaph-provision`; `ProvisioningIntentKey::new` is public so both canisters can construct
 the shared key. The `completed_effect_count` increment rule is provisional pending ADR 0035
 implementation notes.
-Slice 5 (2026-07-06) adds the Router outbound accept_envelope send (Router -> Provision cross-canister call), moving ProvisionAcceptResponse, ProvisionJobSummary, ProvisionIngressError, and ProvisionIngressResult into the shared gleaph_graph_kernel::provisioning::wire module and adding a Router-side provision_graph ingress endpoint with durable ROUTER_PROVISION_CONFIG stable rehydration. The symmetric Provision -> Router ack callback and Router-side catalog commit are Slice 6+; artifact catalog, lifecycle controller policy, and cycle algebra remain proposed.
+Slice 5 (2026-07-06) adds the Router outbound accept_envelope send (Router -> Provision cross-canister call), moving ProvisionAcceptResponse, ProvisionJobSummary, ProvisionIngressError, and ProvisionIngressResult into the shared gleaph_graph_kernel::provisioning::wire module and adding a Router-side provision_graph ingress endpoint with durable ROUTER_PROVISION_CONFIG stable rehydration. Slice 6 (2026-07-07) implements the Router-side receiver for the Provision -> Router `router_ack` callback, adds the `RouterAckResponse` wire type, extends `RouterError` with `AckConflict` and `InvalidState`, advances the Router-side `RouterProvisioningRequest` catalog from `AwaitingAck` to `Completed` with durable `accepted_registry_version`, replaces the zero-byte intent-lock marker with owner-identity-bound `IntentLockOwner` so preflight and release are owner-scoped, releases Router-side intent locks symmetrically with the Provision side, and adds four-branch invocation-owned rollback of the `AwaitingAck` record when `provision_graph`'s outbound `send_accept_envelope` fails (rollback only if the current operation inserted the record AND it is still in `AwaitingAck`; pre-existing `AwaitingAck`, `Completed`, and all other states are preserved). The Provision canister outbound cross-canister `router_ack` call remains deferred to Slice 6+; artifact catalog, lifecycle controller policy, and cycle algebra remain proposed.
 
 ## Cross-links
 

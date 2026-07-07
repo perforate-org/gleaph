@@ -103,6 +103,16 @@ pub enum RouterError {
     /// The requested deployment is not bound in the Provision canister.
     #[error("unknown deployment: {0}")]
     UnknownDeployment(String),
+    /// The Provision canister sent an ack with a registry version that differs from the
+    /// version already committed by a previous `Completed` Router record. **Not retryable as
+    /// written**: investigate the version mismatch before re-issuing.
+    #[error("ack conflict: stored {stored}")]
+    AckConflict { stored: u64 },
+    /// A provisioning request is in a state that does not allow the requested operation.
+    /// Distinct from `InvalidArgument`: the request is well-formed but the target record is not
+    /// in the expected lifecycle phase.
+    #[error("invalid state: {0}")]
+    InvalidState(String),
     #[error("internal: {0}")]
     Internal(String),
 }

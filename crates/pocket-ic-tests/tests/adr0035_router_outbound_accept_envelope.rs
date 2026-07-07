@@ -1,16 +1,24 @@
-//! PocketIC E2E for ADR 0035 Slice 5: Router outbound accept_envelope send.
+//! PocketIC E2E for ADR 0035 Slices 5 and 6: Router outbound accept_envelope send and
+//! symmetric Provision -> Router `router_ack` callback.
 //!
-//! One fresh PocketIC instance, three named scenarios:
+//! One fresh PocketIC instance, six named scenarios:
 //!   1. install + bootstrap: install Router + Provision with a bootstrap binding that
 //!      authorizes the Router principal.
 //!   2. router outbound fresh admission: call `provision_graph` as the Router admin and
 //!      assert an `Accepted` response, then a second identical call asserts `Replay`.
 //!   3. post-upgrade durable binding: upgrade the Router with `provision_canister: None`
 //!      and assert the durable stable binding still routes the next outbound call.
+//!   4. provision -> router ack: call `router_ack` as the Provision canister principal with
+//!      `accepted_registry_version=7` and assert `Ok(RouterAckResponse { accepted_registry_version: 7 })`.
+//!   5. router ack idempotent replay: repeat the same ack and assert `Ok` with the same version.
+//!   6. router ack version conflict: call `router_ack` with `accepted_registry_version=8` and
+//!      assert `Err(AckConflict { stored: 7 })`.
 
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::provisioning::ProvisionableResourceKind;
-use gleaph_graph_kernel::provisioning::wire::{ProvisionJobSummary, ProvisionableResource};
+use gleaph_graph_kernel::provisioning::wire::{
+    ProvisionJobSummary, ProvisionableResource, RouterAckResponse, RouterProvisionAck,
+};
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
 use gleaph_provision::types::DeploymentBinding;
 use gleaph_router::RouterInitArgs;
@@ -80,6 +88,27 @@ fn call_provision_graph(
     .expect("decode provision_graph response")
 }
 
+fn call_router_ack(
+    env: &Env,
+    ack: &RouterProvisionAck,
+) -> Result<RouterAckResponse, gleaph_graph_kernel::federation::RouterError> {
+    let bytes = env
+        .pic
+        .update_call(
+            env.router,
+            env.provision,
+            "router_ack",
+            Encode!(ack).expect("encode router_ack"),
+        )
+        .unwrap_or_else(|e| panic!("router_ack on router: {e:?}"));
+
+    Decode!(
+        &bytes,
+        Result<RouterAckResponse, gleaph_graph_kernel::federation::RouterError>
+    )
+    .expect("decode router_ack response")
+}
+
 #[test]
 fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability() {
     let env = install_router_and_provision();
@@ -105,6 +134,7 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
             intent_lock_count,
         } => (state, intent_lock_count),
         ProvisionGraphResponse::Replay { .. } => panic!("first call must be Accepted"),
+        ProvisionGraphResponse::Completed { .. } => panic!("first call must not be Completed"),
     };
     assert_eq!(
         state, "Reserved",
@@ -117,6 +147,39 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
     assert!(
         matches!(second, ProvisionGraphResponse::Replay { .. }),
         "second call must be Replay"
+    );
+
+    // Scenario 4: Provision -> Router ack with accepted_registry_version=7.
+    let ack = RouterProvisionAck {
+        deployment_id: "deploy-p0058".to_owned(),
+        request_id: "p0058.graph-fp-fresh-1".to_owned(),
+        accepted_registry_version: 7,
+    };
+    let ack_response = call_router_ack(&env, &ack).expect("router_ack accepted");
+    assert_eq!(
+        ack_response.accepted_registry_version, 7,
+        "router_ack returns the accepted registry version"
+    );
+
+    // Scenario 5: idempotent replay returns the same version.
+    let ack_replay = call_router_ack(&env, &ack).expect("router_ack replay accepted");
+    assert_eq!(
+        ack_replay.accepted_registry_version, 7,
+        "router_ack replay returns the stored registry version"
+    );
+
+    // Scenario 6: differing registry version returns AckConflict.
+    let bad_ack = RouterProvisionAck {
+        deployment_id: "deploy-p0058".to_owned(),
+        request_id: "p0058.graph-fp-fresh-1".to_owned(),
+        accepted_registry_version: 8,
+    };
+    let conflict =
+        call_router_ack(&env, &bad_ack).expect_err("router_ack must conflict on version mismatch");
+    assert_eq!(
+        conflict,
+        gleaph_graph_kernel::federation::RouterError::AckConflict { stored: 7 },
+        "router_ack conflict must report the stored version"
     );
 
     // Scenario 3: upgrade the Router with `provision_canister: None`; the durable stable

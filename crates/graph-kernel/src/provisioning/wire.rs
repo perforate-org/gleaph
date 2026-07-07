@@ -33,6 +33,25 @@ pub struct ProvisionResult {
     pub terminal_outcome: ProvisionResultOutcome,
 }
 
+/// Response returned by the Router canister `router_ack` callback.
+///
+/// A successful response denotes that the Router catalog is durably in `Completed` for this
+/// request and version. The ack cannot be lost: subsequent `router_ack` calls with the same
+/// `(request_id, deployment_id, accepted_registry_version)` return the same response, while
+/// a different version returns `AckConflict { stored }`.
+///
+/// `completed` is implied `true` on the Router side: the callback only succeeds after the
+/// Router has durably committed the ack version. The Provision canister receives this value
+/// back and uses `accepted_registry_version` as the authoritative registry watermark.
+///
+/// Protocol invariant: registry versions start at 1; version 0 is reserved as "unset" and
+/// must not appear in ack payloads. The Router rejects any ack with
+/// `accepted_registry_version == 0` as `InvalidState`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct RouterAckResponse {
+    pub accepted_registry_version: u64,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
 pub struct RouterProvisionAck {
     // `deployment_id` is required so the canonical ProvisionJobRequestKey

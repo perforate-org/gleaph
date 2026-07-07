@@ -12,6 +12,7 @@ node_modules/
 .icp/home/
 .icp/xdg-cache/
 .icp/xdg-data/
+.playwright-cli
 
 .canbench/
 .canbench-compare/
