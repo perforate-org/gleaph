@@ -238,6 +238,34 @@ formed without ambiguity across deployment bindings.`) or remove them.
 Plan files may carry review-process documentation because they are the durable record of
 the review process; product code does not.
 
+### Compensating rollback ownership
+
+A rollback or compensating write may undo ONLY effects that are PROVEN to have been created by the
+current operation. Lifecycle state alone (e.g., "still in AwaitingAck") is NOT ownership evidence — a
+pre-existing record in that state belongs to a prior invocation and must be preserved.
+
+Establish synchronous ownership at the boundary that creates the effect. For example, a
+create-or-return API must return an `Inserted` vs `Existing` signal, and the rollback gate must
+require `Inserted` (or an equivalent ownership proof) in addition to any lifecycle state check.
+
+Add a wrong-impl test that seeds a pre-existing record in the same lifecycle state, retries the
+operation so the create-or-return API returns `Existing`, fails the downstream send, and asserts
+that the pre-existing record and its derived state survive unchanged. See also
+`adversarial-test-review` for the review-side framing of the same rule.
+
+### Owner-identity locks
+
+A lock, lease, or reservation that gates access to a shared resource must be bound to the identity
+of the request that created it. The mere presence of a lock is not enough: a pre-existing lock held
+by a different request must be treated as a conflict, not as satisfaction of a preflight.
+
+Store the owner identity in the lock value (for example, the canonical request key plus an
+operation fingerprint). Preflight checks must require both presence and owner equality. Release
+and compensating rollback must only remove locks owned by the operation performing the release.
+
+Add a wrong-impl test that seeds a lock held by a different owner and asserts that the new
+operation is rejected or, for release, that the foreign lock survives.
+
 ## Handoff gate
 
 Before sending work to review, report:

@@ -124,6 +124,35 @@ assertions such as `A | B | C` when they allow an earlier guard to mask the bran
 If the targeted branch is mathematically unreachable under current bounds, state that proof and test
 the reachable boundary instead of claiming direct coverage.
 
+### Compensating rollback ownership
+
+A compensating rollback must undo ONLY effects that are PROVEN to have been created by the current
+operation. State checks such as "still AwaitingAck" are necessary but not sufficient: a prior
+invocation may have left a record in exactly that state.
+
+Require the diff to show an ownership signal returned from the create-or-return boundary (for
+example, `InsertionOutcome::Inserted` vs `Existing`). The rollback gate must require the ownership
+signal in addition to the lifecycle-state check. Review the test suite for at least one adversarial
+scenario that:
+
+- seeds a pre-existing record in the same lifecycle state from a prior invocation;
+- retries the operation so the boundary returns `Existing` (not `Inserted`);
+- triggers the compensating rollback;
+- asserts that the pre-existing canonical record, derived rows, and held locks all survive.
+
+See also `implementation-integrity` for the implementation-side contract.
+
+### Owner-identity locks
+
+Require the lock value to carry an owner identity, not just a marker. Review the preflight and
+release paths for owner equality checks, not mere presence checks.
+
+Require a test that seeds a lock held by a different request/operation and asserts the exact
+outcome: either the new operation is rejected or, for a release, the foreign lock remains held.
+Presence-only lock logic is a P1/P2 correctness gap.
+
+See also `implementation-integrity` for the implementation-side contract.
+
 ## Approval Gate
 
 Connect every counterexample back to the plan:
