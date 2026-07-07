@@ -153,6 +153,34 @@ Do not approve when:
 - When a reusable defect is discovered during a slice, update the smallest owning skill in the
   same reviewed patch. Do not duplicate guidance in this skill if a more specific owner exists.
 
+
+## 4c. Plan authoring belongs to the supervisor
+
+By default the supervisor drafts the plan. The supervisor reads the slice context,
+chooses the bounded scope, writes the plan, runs the global plan validator, and
+only then routes the plan to the review pane. This matches the policy in
+`herdr-workflow` (Plan drafting and editing) and the on-disk evidence: plan-text
+drift across rounds is easier to catch when one author writes the file end-to-end
+with the validator and the on-disk worktree visible.
+
+The supervisor may delegate mechanical plan editing to a fresh implementation or
+plan-editor pane when the supervisor's own tool path is denied. The delegation is
+the exception, not the default, and must carry an explicit `PLAN ONLY` instruction
+that forbids product-code edits and points to the durable review queue. When the
+delegated pane returns the plan, the supervisor must:
+
+1. Re-read the full plan file from disk (do not trust the delegated pane's report).
+2. Re-run the global plan validator against the canonical path.
+3. Inspect the file for the same kinds of drift the reviewer would flag: wrong
+   predecessor commit hash, helper name drift, lock-owner tuple wording, scope
+   expansion, missing or out-of-scope `## Later Slices` table.
+4. Decide whether to adopt the draft as-is, ask for a fix, or rewrite the
+   affected sections before routing to review.
+
+If the implementation pane returns a plan draft unprompted, treat it as a routing
+violation: reset or recreate the pane, do not adopt the draft as the canonical
+plan. The supervisor's plan ownership is one of the durable boundaries the
+workflow depends on; eroding it once tends to erode it repeatedly.
 ## 5. Commit as a controlled state transition
 
 Commit only after final review and validation evidence satisfy the plan **and** the user or designated
