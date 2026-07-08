@@ -610,3 +610,95 @@ fn test_insert_with_intent_locks_preserves_existing_derived_index_on_conflict() 
         "B must not leave a canonical row"
     );
 }
+
+// === admin_upsert + BootstrapAuth facade (ADR 0035 Slice 7) ================
+
+use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
+use crate::types::{BootstrapAuthAction, BootstrapAuthorityRecord};
+
+fn admin_binding(
+    deployment_id: &str,
+    router_id: u8,
+    gov_id: u8,
+    version: u64,
+) -> DeploymentBinding {
+    DeploymentBinding {
+        deployment_id: deployment_id.to_owned(),
+        router_principal: test_principal(router_id),
+        governance_principal: test_principal(gov_id),
+        binding_version: version,
+    }
+}
+
+#[test]
+fn admin_upsert_overwrites_existing_binding_without_panic() {
+    super::reset_all_maps();
+    let store = DeploymentTrustStore::new();
+    let first = admin_binding("d1", 10, 20, 1);
+    let second = admin_binding("d1", 11, 21, 2);
+    assert_eq!(store.admin_upsert(first), admin_binding("d1", 10, 20, 1));
+    assert_eq!(store.admin_upsert(second), admin_binding("d1", 11, 21, 2));
+    let persisted = store.get("d1").unwrap();
+    assert_eq!(persisted.router_principal, test_principal(11));
+    assert_eq!(persisted.governance_principal, test_principal(21));
+    assert_eq!(persisted.binding_version, 2);
+}
+
+#[test]
+fn bootstrap_auth_facade_uses_separate_memory_ids() {
+    super::reset_all_maps();
+    let auth_store = ProvisionBootstrapAuthStore::new();
+    let gov = test_principal(42);
+    let record = BootstrapAuthorityRecord {
+        governance_principal: gov,
+        binding_version_at_seed: 7,
+        seeded_at_ns: 100,
+    };
+    auth_store.set_authority(record.clone());
+    auth_store.put_record(
+        gov,
+        crate::types::BootstrapAuthEntry {
+            caller: gov,
+            deployment_id: Some("dep-a".to_owned()),
+            action: BootstrapAuthAction::InitialSeed,
+            timestamp_ns: 100,
+            registry_version: Some(7),
+        },
+    );
+
+    assert_eq!(auth_store.get_authority(), Some(record));
+    let history = auth_store.history(gov);
+    assert_eq!(history.len(), 1);
+    assert_eq!(history[0].action, BootstrapAuthAction::InitialSeed);
+    // A bug that placed both structures on one MemoryId would likely corrupt one of these reads.
+    assert_eq!(
+        auth_store.get_authority().unwrap().binding_version_at_seed,
+        7
+    );
+}
+
+#[test]
+fn stable_cell_singleton_writes_overwrite_previous_value() {
+    super::reset_all_maps();
+    let auth_store = ProvisionBootstrapAuthStore::new();
+    let first = BootstrapAuthorityRecord {
+        governance_principal: test_principal(1),
+        binding_version_at_seed: 1,
+        seeded_at_ns: 1,
+    };
+    let second = BootstrapAuthorityRecord {
+        governance_principal: test_principal(2),
+        binding_version_at_seed: 2,
+        seeded_at_ns: 2,
+    };
+    auth_store.set_authority(first);
+    assert_eq!(
+        auth_store.get_authority().unwrap().governance_principal,
+        test_principal(1)
+    );
+    auth_store.set_authority(second);
+    assert_eq!(
+        auth_store.get_authority().unwrap().governance_principal,
+        test_principal(2)
+    );
+}

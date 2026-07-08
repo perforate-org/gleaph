@@ -8,9 +8,11 @@ use candid::{CandidType, Principal};
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+use crate::canister::init::binding_from_admin_args;
 use crate::stable::store::{DeploymentTrustStore, ProvisionJobStore};
 use crate::types::{
-    CreatedResource, JobState, ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest,
+    AdminInstallDeploymentBindingArgs, BootstrapAuthAction, BootstrapAuthEntry, CreatedResource,
+    JobState, ProvisionAdminError, ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest,
     ProvisionResult, ProvisionResultOutcome, ProvisionableResourceKind, ProvisioningIntentKey,
     ResourceJobEntry, RouterProvisionAck, state_name,
 };
@@ -343,6 +345,94 @@ pub(crate) fn router_ack_with_caller(
         completed: true,
         accepted_registry_version: ack.accepted_registry_version,
     })
+}
+
+// === admin_install_deployment_binding (ADR 0035 Slice 7) =========
+
+pub(crate) fn admin_install_deployment_binding_with_caller(
+    caller: Principal,
+    args: AdminInstallDeploymentBindingArgs,
+    now_ns: u64,
+) -> Result<BootstrapAuthEntry, ProvisionAdminError> {
+    use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
+    use crate::stable::store::DeploymentTrustStore;
+
+    let auth_store = ProvisionBootstrapAuthStore::new();
+    let deployment_store = DeploymentTrustStore::new();
+
+    // (1) Read the durable bootstrap authority singleton. If it has not been seeded,
+    //     every install attempt is an InvalidState and must still leave a Reject audit row.
+    let authority = match auth_store.get_authority() {
+        Some(record) => record,
+        None => {
+            let entry = BootstrapAuthEntry {
+                caller,
+                deployment_id: Some(args.deployment_id.clone()),
+                action: BootstrapAuthAction::RejectInvalidState,
+                timestamp_ns: now_ns,
+                registry_version: Some(args.binding_version),
+            };
+            auth_store.put_record(caller, entry);
+            return Err(ProvisionAdminError::InvalidState(
+                "bootstrap authority not seeded".to_owned(),
+            ));
+        }
+    };
+
+    let deployment_id = args.deployment_id.clone();
+    let new_binding = binding_from_admin_args(args);
+
+    if let Some(existing) = deployment_store.get(&deployment_id) {
+        // (2) Existing deployment: authorize either the bootstrap authority or the stored
+        //     governance principal. Anyone else is rejected with AlreadyExists.
+        if caller == authority.governance_principal || caller == existing.governance_principal {
+            let entry = BootstrapAuthEntry {
+                caller,
+                deployment_id: Some(deployment_id),
+                action: BootstrapAuthAction::AdminInstall,
+                timestamp_ns: now_ns,
+                registry_version: Some(new_binding.binding_version),
+            };
+            auth_store.put_record(caller, entry.clone());
+            deployment_store.admin_upsert(new_binding);
+            Ok(entry)
+        } else {
+            let entry = BootstrapAuthEntry {
+                caller,
+                deployment_id: Some(deployment_id.clone()),
+                action: BootstrapAuthAction::RejectAlreadyExists,
+                timestamp_ns: now_ns,
+                registry_version: Some(new_binding.binding_version),
+            };
+            auth_store.put_record(caller, entry);
+            Err(ProvisionAdminError::AlreadyExists {
+                deployment_id,
+                existing_governance: existing.governance_principal,
+            })
+        }
+    } else if caller == authority.governance_principal {
+        // (3) New deployment: only the bootstrap authority may install.
+        let entry = BootstrapAuthEntry {
+            caller,
+            deployment_id: Some(deployment_id),
+            action: BootstrapAuthAction::AdminInstall,
+            timestamp_ns: now_ns,
+            registry_version: Some(new_binding.binding_version),
+        };
+        auth_store.put_record(caller, entry.clone());
+        deployment_store.admin_upsert(new_binding);
+        Ok(entry)
+    } else {
+        let entry = BootstrapAuthEntry {
+            caller,
+            deployment_id: Some(deployment_id.clone()),
+            action: BootstrapAuthAction::RejectUnknownDeployment,
+            timestamp_ns: now_ns,
+            registry_version: Some(new_binding.binding_version),
+        };
+        auth_store.put_record(caller, entry);
+        Err(ProvisionAdminError::UnknownDeployment(deployment_id))
+    }
 }
 
 #[cfg(test)]

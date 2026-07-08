@@ -14,7 +14,10 @@ pub mod canister;
 mod candid;
 
 use crate::canister::{ProvisionIngressResult, ProvisionJobView, RouterAckResult, handlers};
-use crate::types::{ProvisionRequest, RouterProvisionAck};
+use crate::types::AdminInstallError;
+use crate::types::{
+    AdminInstallDeploymentBindingArgs, BootstrapAuthEntry, ProvisionRequest, RouterProvisionAck,
+};
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
 #[init]
@@ -40,6 +43,13 @@ fn query_job(request_id: String, deployment_id: String) -> Option<ProvisionJobVi
 #[update]
 fn router_ack(ack: RouterProvisionAck) -> RouterAckResult {
     handlers::router_ack_handler(ack)
+}
+
+#[update]
+fn admin_install_deployment_binding(
+    args: AdminInstallDeploymentBindingArgs,
+) -> Result<BootstrapAuthEntry, AdminInstallError> {
+    handlers::admin_install_deployment_binding_handler(args)
 }
 
 #[cfg(test)]

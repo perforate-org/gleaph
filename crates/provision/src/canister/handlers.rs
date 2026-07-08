@@ -1,4 +1,4 @@
-//! Provision canister IC-runtime entry-point shims (ADR 0035 Slice 4).
+//! Provision canister IC-runtime entry-point shims (ADR 0035 Slice 4 + Slice 7).
 //!
 //! This is the only module that reads `ic_cdk::api::msg_caller()`. The thin
 //! wrappers forward to the existing `*_with_caller(...)` functions, which remain
@@ -6,10 +6,10 @@
 
 use crate::canister::{
     ProvisionIngressResult, ProvisionJobView, RouterAckResult, accept_envelope_with_caller,
-    query_job_with_caller, router_ack_with_caller,
+    admin_install_deployment_binding_with_caller, query_job_with_caller, router_ack_with_caller,
 };
 use crate::stable::store::{DeploymentTrustStore, ProvisionJobStore};
-use crate::types::{ProvisionRequest, RouterProvisionAck};
+use crate::types::{AdminInstallDeploymentBindingArgs, ProvisionRequest, RouterProvisionAck};
 
 /// Bootstrap the deployment trust store from init args.
 pub fn init_handler(args: crate::canister::init::ProvisionInitArgs) {
@@ -51,4 +51,12 @@ pub fn router_ack_handler(ack: RouterProvisionAck) -> RouterAckResult {
         Ok(v) => RouterAckResult::Ok(v),
         Err(e) => RouterAckResult::Err(e),
     }
+}
+
+/// Authorize `admin_install_deployment_binding` from the IC runtime and forward to the handler.
+pub fn admin_install_deployment_binding_handler(
+    args: AdminInstallDeploymentBindingArgs,
+) -> Result<crate::types::BootstrapAuthEntry, crate::types::ProvisionAdminError> {
+    let caller = ic_cdk::api::msg_caller();
+    admin_install_deployment_binding_with_caller(caller, args, crate::ic_time_ns())
 }

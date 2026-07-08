@@ -2,8 +2,8 @@
 
 Date: 2026-07-04
 Status: Partially Implemented
-Last revised: 2026-07-07 04:52:11 UTC +0000
-Anchor timestamp: 2026-07-07 04:52:11 UTC +0000
+Last revised: 2026-07-07 16:55:03 UTC +0000
+Anchor timestamp: 2026-07-07 16:55:03 UTC +0000
 
 ## Context
 
@@ -165,6 +165,8 @@ idempotent replay (`Completed` + matching version returns the ack; differing ver
 the shared key. The `completed_effect_count` increment rule is provisional pending ADR 0035
 implementation notes.
 Slice 5 (2026-07-06) adds the Router outbound accept_envelope send (Router -> Provision cross-canister call), moving ProvisionAcceptResponse, ProvisionJobSummary, ProvisionIngressError, and ProvisionIngressResult into the shared gleaph_graph_kernel::provisioning::wire module and adding a Router-side provision_graph ingress endpoint with durable ROUTER_PROVISION_CONFIG stable rehydration. Slice 6 (2026-07-07) implements the Router-side receiver for the Provision -> Router `router_ack` callback, adds the `RouterAckResponse` wire type, extends `RouterError` with `AckConflict` and `InvalidState`, advances the Router-side `RouterProvisioningRequest` catalog from `AwaitingAck` to `Completed` with durable `accepted_registry_version`, replaces the zero-byte intent-lock marker with owner-identity-bound `IntentLockOwner` so preflight and release are owner-scoped, releases Router-side intent locks symmetrically with the Provision side, and adds four-branch invocation-owned rollback of the `AwaitingAck` record when `provision_graph`'s outbound `send_accept_envelope` fails (rollback only if the current operation inserted the record AND it is still in `AwaitingAck`; pre-existing `AwaitingAck`, `Completed`, and all other states are preserved). The Provision canister outbound cross-canister `router_ack` call remains deferred to Slice 6+; artifact catalog, lifecycle controller policy, and cycle algebra remain proposed.
+
+Slice 7 (2026-07-07) implements the durable bootstrap authority region (`PROVISION_BOOTSTRAP_AUTH`, MemoryId 4) as a true `StableCell<Option<BootstrapAuthorityRecord>>` singleton and a separate per-governance audit log (`PROVISION_BOOTSTRAP_AUDIT_LOG`, MemoryId 5) as a `StableBTreeMap<Principal, BootstrapAuthHistory>`, adds the `ProvisionBootstrapAuthStore` facade, the `DeploymentTrustStore::admin_upsert` governance-agnostic overwrite method, the `admin_install_deployment_binding` #[update] ingress endpoint with the bootstrap-or-stored-governance decision tree, and the 10 unit tests plus 2 PocketIC scenarios that prove audit-before-return and upgrade durability. The deferred durable-authority slice from Slice 4 is now implemented.
 
 ## Cross-links
 

@@ -307,3 +307,100 @@ impl Storable for ProvisionJobRequestKey {
 
 // P2-5: `JobIntentLockKey` was removed. The stable region 3 lock key is the re-exported
 // `gleaph_graph_kernel::provisioning::ProvisioningIntentKey`, matching Router Map 47.
+// === Bootstrap authority + audit types (ADR 0035 Slice 7) ===
+
+/// Durable bootstrap authority singleton stored in PROVISION_BOOTSTRAP_AUTH (MemoryId 4).
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BootstrapAuthorityRecord {
+    pub governance_principal: Principal,
+    pub binding_version_at_seed: u64,
+    pub seeded_at_ns: u64,
+}
+
+impl Storable for BootstrapAuthorityRecord {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode BootstrapAuthorityRecord"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode BootstrapAuthorityRecord")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode BootstrapAuthorityRecord")
+    }
+}
+
+/// Action recorded for every bootstrap-authority decision.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum BootstrapAuthAction {
+    InitialSeed,
+    AdminInstall,
+    RejectUnknownDeployment,
+    RejectAlreadyExists,
+    RejectInvalidState,
+}
+
+/// One durable audit row in PROVISION_BOOTSTRAP_AUDIT_LOG (MemoryId 5).
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BootstrapAuthEntry {
+    pub caller: Principal,
+    pub deployment_id: Option<String>,
+    pub action: BootstrapAuthAction,
+    pub timestamp_ns: u64,
+    pub registry_version: Option<u64>,
+}
+
+impl Storable for BootstrapAuthEntry {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode BootstrapAuthEntry"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode BootstrapAuthEntry")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode BootstrapAuthEntry")
+    }
+}
+
+/// Per-governance audit history wrapper persisted in the audit BTreeMap value.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct BootstrapAuthHistory {
+    pub entries: Vec<BootstrapAuthEntry>,
+}
+
+impl Storable for BootstrapAuthHistory {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode BootstrapAuthHistory"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode BootstrapAuthHistory")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode BootstrapAuthHistory")
+    }
+}
+
+/// Arguments for `admin_install_deployment_binding`.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub struct AdminInstallDeploymentBindingArgs {
+    pub deployment_id: String,
+    pub router_principal: Principal,
+    pub governance_principal: Principal,
+    pub binding_version: u64,
+}
+
+/// Error returned by `admin_install_deployment_binding`.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum AdminInstallError {
+    UnknownDeployment(String),
+    AlreadyExists {
+        deployment_id: String,
+        existing_governance: Principal,
+    },
+    InvalidState(String),
+}
+
+/// Internal alias used by handler code and unit tests.
+pub type ProvisionAdminError = AdminInstallError;

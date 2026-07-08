@@ -4,7 +4,7 @@ mod tests {
     use std::collections::BTreeSet;
 
     #[test]
-    fn provision_did_parses_and_exposes_three_methods() {
+    fn provision_did_parses_and_exposes_admin_method() {
         let did = include_str!("../provision.did");
         let ast: IDLProg = did
             .parse()
@@ -18,8 +18,9 @@ mod tests {
             .expect("actor must be a Candid service");
         let names: Vec<&str> = methods.iter().map(|(n, _)| n.as_str()).collect();
         assert!(
-            !names.contains(&"admin_install_deployment_binding"),
-            "admin_install_deployment_binding must not be in the public ingress surface in this slice"
+            names.contains(&"admin_install_deployment_binding"),
+            "admin_install_deployment_binding must be in the public ingress surface in this slice; got {:?}",
+            names
         );
         for required in ["accept_envelope", "query_job", "router_ack"] {
             assert!(
@@ -29,6 +30,43 @@ mod tests {
                 names
             );
         }
+
+        // Regression guard: the method must return Result<BootstrapAuthEntry, AdminInstallError>,
+        // not the earlier Result<Null, AdminInstallError> stub.
+        let admin_method = methods
+            .iter()
+            .find(|(n, _)| n == "admin_install_deployment_binding")
+            .map(|(_, ty)| ty.clone())
+            .expect("admin_install_deployment_binding method type");
+        let admin_rets = match admin_method.as_ref() {
+            candid::types::TypeInner::Func(func) => &func.rets,
+            _ => panic!("admin_install_deployment_binding must be a function"),
+        };
+        assert_eq!(
+            admin_rets.len(),
+            1,
+            "admin_install_deployment_binding must return exactly one result variant"
+        );
+        let admin_ret = &admin_rets[0];
+        let is_null_result = matches!(admin_ret.as_ref(), candid::types::TypeInner::Var(name) if {
+            env.0.get(name).is_some_and(|ty| {
+                if let candid::types::TypeInner::Variant(fields) = ty.as_ref() {
+                    fields.iter().any(|f| {
+                        f.id.to_string() == "Ok"
+                            && matches!(f.ty.as_ref(), candid::types::TypeInner::Var(inner) if env
+                                .0
+                                .get(inner.as_str())
+                                .is_some_and(|t| matches!(t.as_ref(), candid::types::TypeInner::Null)))
+                    })
+                } else {
+                    false
+                }
+            })
+        });
+        assert!(
+            !is_null_result,
+            "admin_install_deployment_binding must not return Result<Null, AdminInstallError>"
+        );
 
         let declared_types: Vec<&str> = env.0.keys().map(|name| name.as_str()).collect();
         for required_type in [
@@ -40,6 +78,12 @@ mod tests {
             "ProvisionInitArgs",
             "ProvisionIngressResult",
             "RouterAckResult",
+            "BootstrapAuthEntry",
+            "BootstrapAuthAction",
+            "BootstrapAuthorityRecord",
+            "BootstrapAuthHistory",
+            "AdminInstallDeploymentBindingArgs",
+            "AdminInstallError",
         ] {
             assert!(
                 declared_types.contains(&required_type),

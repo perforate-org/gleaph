@@ -1,5 +1,7 @@
 //! Provision canister stable-memory store facades.
 
+#[cfg(test)]
+use super::bootstrap_auth::reset_bootstrap_auth_maps;
 use super::memory::{
     StableDeploymentTrustMap, StableJobByDeploymentMap, StableJobByRequestMap,
     StableJobIntentLockMap, init_deployment_trust, init_job_by_deployment, init_job_by_request,
@@ -34,6 +36,7 @@ pub(crate) fn reset_all_maps() {
     JOB_BY_REQUEST.with_borrow_mut(|map| map.clear_new());
     JOB_BY_DEPLOYMENT.with_borrow_mut(|map| map.clear_new());
     INTENT_LOCK.with_borrow_mut(|map| map.clear_new());
+    reset_bootstrap_auth_maps();
     set_force_advance_error(false);
 }
 
@@ -48,6 +51,15 @@ impl DeploymentTrustStore {
 
     pub fn get(&self, deployment_id: &str) -> Option<DeploymentBinding> {
         DEPLOYMENT_TRUST.with_borrow(|map| map.get(&deployment_id.to_owned()))
+    }
+
+    /// Governance-agnostic install or overwrite. Used by the admin_install handler after
+    /// it has already authorized the caller. Never panics and never checks governance.
+    pub fn admin_upsert(&self, binding: DeploymentBinding) -> DeploymentBinding {
+        DEPLOYMENT_TRUST.with_borrow_mut(|map| {
+            map.insert(binding.deployment_id.clone(), binding.clone());
+        });
+        binding
     }
 
     /// Idempotent bootstrap install. Panics on mismatching binding for the same deployment_id.

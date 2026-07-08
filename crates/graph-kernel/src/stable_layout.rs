@@ -1088,6 +1088,24 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             "ProvisioningIntentKey → ProvisionIntentLockMarker: canonical lock held while a request targeting this intent is non-terminal",
             RebuildPath::None,
         ),
+        // ADR 0035 Slice 7: durable bootstrap authority singleton.
+        region(
+            "PROVISION_BOOTSTRAP_AUTH",
+            4,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "StableCell<Option<BootstrapAuthorityRecord>>: durable bootstrap governance authority (NOT a BTreeMap<(), T> singleton)",
+            RebuildPath::None,
+        ),
+        // ADR 0035 Slice 7: per-governance audit log for admin-install decisions.
+        region(
+            "PROVISION_BOOTSTRAP_AUDIT_LOG",
+            5,
+            StableMemoryClass::Telemetry,
+            "provisioning",
+            "Principal → BootstrapAuthHistory: durable audit trail of every admin-install attempt (success or reject)",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1616,8 +1634,8 @@ mod tests {
     #[test]
     fn provision_layout_registry_matches_baseline() {
         assert_layout(&PROVISION_STABLE_LAYOUT);
-        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 4);
-        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(3));
+        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 6);
+        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(5));
         assert_eq!(
             PROVISION_STABLE_LAYOUT.regions[2].class,
             StableMemoryClass::Derived

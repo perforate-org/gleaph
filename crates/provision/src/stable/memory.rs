@@ -10,7 +10,7 @@ use ic_stable_structures::{
 };
 use std::cell::RefCell;
 
-type Memory = VirtualMemory<DefaultMemoryImpl>;
+pub(crate) type Memory = VirtualMemory<DefaultMemoryImpl>;
 
 thread_local! {
     pub(crate) static MEMORY_MANAGER: RefCell<MemoryManager<DefaultMemoryImpl>> =
@@ -21,6 +21,10 @@ pub(crate) const DEPLOYMENT_TRUST: MemoryId = MemoryId::new(0);
 pub(crate) const JOB_BY_REQUEST: MemoryId = MemoryId::new(1);
 pub(crate) const JOB_BY_DEPLOYMENT: MemoryId = MemoryId::new(2);
 pub(crate) const JOB_INTENT_LOCK: MemoryId = MemoryId::new(3);
+// ADR 0035 Slice 7: PROVISION_BOOTSTRAP_AUTH = MemoryId::new(4) (StableCell singleton).
+pub(crate) const PROVISION_BOOTSTRAP_AUTH: MemoryId = MemoryId::new(4);
+// ADR 0035 Slice 7: PROVISION_BOOTSTRAP_AUDIT_LOG = MemoryId::new(5) (per-governance audit log).
+pub(crate) const PROVISION_BOOTSTRAP_AUDIT_LOG: MemoryId = MemoryId::new(5);
 
 pub(crate) type StableDeploymentTrustMap = StableBTreeMap<String, DeploymentBinding, Memory>;
 pub(crate) type StableJobByRequestMap =

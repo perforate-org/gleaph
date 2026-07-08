@@ -20,7 +20,10 @@ use gleaph_graph_kernel::provisioning::wire::{
     ProvisionJobSummary, ProvisionableResource, RouterAckResponse, RouterProvisionAck,
 };
 use gleaph_pocket_ic_tests::{install_provision_canister, new_pocket_ic, wasm_bytes};
-use gleaph_provision::types::DeploymentBinding;
+use gleaph_provision::types::{
+    AdminInstallDeploymentBindingArgs, AdminInstallError, BootstrapAuthAction, BootstrapAuthEntry,
+    DeploymentBinding,
+};
 use gleaph_router::RouterInitArgs;
 use gleaph_router::types::{ProvisionGraphArgs, ProvisionGraphResponse};
 
@@ -109,6 +112,28 @@ fn call_router_ack(
     .expect("decode router_ack response")
 }
 
+fn call_admin_install(
+    env: &Env,
+    caller: Principal,
+    args: &AdminInstallDeploymentBindingArgs,
+) -> Result<BootstrapAuthEntry, AdminInstallError> {
+    let bytes = env
+        .pic
+        .update_call(
+            env.provision,
+            caller,
+            "admin_install_deployment_binding",
+            Encode!(args).expect("encode admin_install_deployment_binding"),
+        )
+        .unwrap_or_else(|e| panic!("admin_install_deployment_binding on provision: {e:?}"));
+
+    Decode!(
+        &bytes,
+        Result<BootstrapAuthEntry, AdminInstallError>
+    )
+    .expect("decode admin_install_deployment_binding response")
+}
+
 #[test]
 fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability() {
     let env = install_router_and_provision();
@@ -180,6 +205,78 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
         conflict,
         gleaph_graph_kernel::federation::RouterError::AckConflict { stored: 7 },
         "router_ack conflict must report the stored version"
+    );
+
+    // Scenario 7: admin_install_deployment_binding succeeds when called as the bootstrap
+    // governance principal seeded at init; a follow-up Router outbound call for the new
+    // deployment is no longer rejected with UnknownDeployment.
+    let admin_install_args = AdminInstallDeploymentBindingArgs {
+        deployment_id: "deploy-admin-1".to_owned(),
+        router_principal: env.router,
+        governance_principal: env.admin,
+        binding_version: 2,
+    };
+    let admin_install_result = call_admin_install(&env, env.admin, &admin_install_args)
+        .expect("bootstrap governance admin_install must succeed");
+    assert_eq!(
+        admin_install_result.action,
+        BootstrapAuthAction::AdminInstall
+    );
+    assert_eq!(admin_install_result.caller, env.admin);
+
+    let admin_installed_args = ProvisionGraphArgs {
+        deployment_id: "deploy-admin-1".to_owned(),
+        request_fingerprint: "fp-admin-1".to_owned(),
+        graph_name: "admin1.graph".to_owned(),
+        requested_resources: vec![ProvisionableResource {
+            kind: ProvisionableResourceKind::GraphShard,
+            logical_resource_key: "shard-admin-1".to_owned(),
+        }],
+        authorized_caller: env.admin,
+        release_id: "rel-admin-1".to_owned(),
+    };
+    let admin_installed = call_provision_graph(&env, &admin_installed_args)
+        .expect("outbound call for admin-installed deployment must be accepted");
+    assert!(
+        matches!(admin_installed, ProvisionGraphResponse::Accepted { .. }),
+        "admin-installed deployment must accept fresh admission"
+    );
+
+    // Scenario 8: admin_install as a non-bootstrap, non-stored principal against a missing
+    // deployment returns UnknownDeployment and does not install a binding.
+    let wrong_principal = Principal::from_slice(&[0xCD; 29]);
+    let missing_install_args = AdminInstallDeploymentBindingArgs {
+        deployment_id: "deploy-admin-missing".to_owned(),
+        router_principal: env.router,
+        governance_principal: wrong_principal,
+        binding_version: 3,
+    };
+    let reject = call_admin_install(&env, wrong_principal, &missing_install_args)
+        .expect_err("unauthorized admin_install must be rejected");
+    assert_eq!(
+        reject,
+        AdminInstallError::UnknownDeployment("deploy-admin-missing".to_owned())
+    );
+
+    let missing_args = ProvisionGraphArgs {
+        deployment_id: "deploy-admin-missing".to_owned(),
+        request_fingerprint: "fp-missing-1".to_owned(),
+        graph_name: "missing.graph".to_owned(),
+        requested_resources: vec![ProvisionableResource {
+            kind: ProvisionableResourceKind::GraphShard,
+            logical_resource_key: "shard-missing-1".to_owned(),
+        }],
+        authorized_caller: env.admin,
+        release_id: "rel-missing-1".to_owned(),
+    };
+    let missing_result = call_provision_graph(&env, &missing_args)
+        .expect_err("outbound call for rejected deployment must still be rejected");
+    assert!(
+        matches!(
+            missing_result,
+            gleaph_graph_kernel::federation::RouterError::UnknownDeployment(_)
+        ),
+        "expected UnknownDeployment, got {missing_result:?}"
     );
 
     // Scenario 3: upgrade the Router with `provision_canister: None`; the durable stable

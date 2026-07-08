@@ -123,8 +123,48 @@ type RouterAckResult = variant {
     Err: ProvisionIngressError;
 };
 
+type BootstrapAuthAction = variant {
+    InitialSeed;
+    AdminInstall;
+    RejectUnknownDeployment;
+    RejectAlreadyExists;
+    RejectInvalidState;
+};
+
+type BootstrapAuthEntry = record {
+    caller: principal;
+    deployment_id: opt text;
+    action: BootstrapAuthAction;
+    timestamp_ns: nat64;
+    registry_version: opt nat64;
+};
+
+type BootstrapAuthorityRecord = record {
+    governance_principal: principal;
+    binding_version_at_seed: nat64;
+    seeded_at_ns: nat64;
+};
+
+type BootstrapAuthHistory = record { entries: vec BootstrapAuthEntry };
+
+type AdminInstallDeploymentBindingArgs = record {
+    deployment_id: text;
+    router_principal: principal;
+    governance_principal: principal;
+    binding_version: nat64;
+};
+
+type AdminInstallError = variant {
+    UnknownDeployment: text;
+    AlreadyExists: record { deployment_id: text; existing_governance: principal };
+    InvalidState: text;
+};
+
+type Result = variant { Ok: BootstrapAuthEntry; Err: AdminInstallError };
+
 service : (ProvisionInitArgs) -> {
     accept_envelope: (ProvisionRequest) -> (ProvisionIngressResult);
     query_job: (text, text) -> (opt ProvisionJobView) query;
     router_ack: (RouterProvisionAck) -> (RouterAckResult);
+    admin_install_deployment_binding: (AdminInstallDeploymentBindingArgs) -> (Result);
 };

@@ -2,15 +2,18 @@
 
 use super::{
     ProvisionAcceptResponse, ProvisionIngressError, ProvisionQueryError, ProvisionResult,
-    ProvisionResultOutcome, accept_envelope_with_caller, build_record_from_request,
-    query_job_with_caller, record_to_result, router_ack_with_caller,
+    ProvisionResultOutcome, accept_envelope_with_caller,
+    admin_install_deployment_binding_with_caller, build_record_from_request, query_job_with_caller,
+    record_to_result, router_ack_with_caller,
 };
 use crate::canister::init;
+use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
 use crate::stable::store::{
     DeploymentTrustStore, ProvisionJobStore, reset_all_maps, set_force_advance_error,
 };
 use crate::types::{
-    DeploymentBinding, JobState, ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource,
+    AdminInstallDeploymentBindingArgs, BootstrapAuthAction, DeploymentBinding, JobState,
+    ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource,
     ProvisionableResourceKind, ProvisioningIntentKey, RouterProvisionAck,
 };
 use candid::Principal;
@@ -1257,4 +1260,187 @@ fn test_provision_query_not_found() {
         "dep-a".to_owned(),
     );
     assert_eq!(result, Err(ProvisionQueryError::NotFound));
+}
+
+// === admin_install_deployment_binding (ADR 0035 Slice 7) =====================
+
+fn admin_args(
+    deployment_id: &str,
+    router_id: u8,
+    gov_id: u8,
+    binding_version: u64,
+) -> AdminInstallDeploymentBindingArgs {
+    AdminInstallDeploymentBindingArgs {
+        deployment_id: deployment_id.to_owned(),
+        router_principal: pid(router_id),
+        governance_principal: pid(gov_id),
+        binding_version,
+    }
+}
+
+#[test]
+fn admin_install_with_bootstrap_authority_overwrites_existing_binding() {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        bootstrap_bindings: vec![test_binding("dep-a")],
+    });
+    let bootstrap = gov_principal();
+    let deployment_store = DeploymentTrustStore::new();
+
+    let first =
+        admin_install_deployment_binding_with_caller(bootstrap, admin_args("dep-a", 10, 100, 1), 1)
+            .unwrap();
+    assert_eq!(first.action, BootstrapAuthAction::AdminInstall);
+    assert_eq!(first.caller, bootstrap);
+
+    let second =
+        admin_install_deployment_binding_with_caller(bootstrap, admin_args("dep-a", 11, 100, 2), 2)
+            .unwrap();
+    assert_eq!(second.action, BootstrapAuthAction::AdminInstall);
+    assert_eq!(second.caller, bootstrap);
+    assert_eq!(
+        deployment_store.get("dep-a").unwrap().router_principal,
+        pid(11)
+    );
+}
+
+#[test]
+fn admin_install_with_stored_governance_records_audit_and_overwrites_existing_binding() {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        bootstrap_bindings: vec![test_binding("dep-a")],
+    });
+    let stored_governance = gov_principal();
+    let deployment_store = DeploymentTrustStore::new();
+
+    admin_install_deployment_binding_with_caller(
+        gov_principal(),
+        admin_args("dep-a", 10, 100, 1),
+        1,
+    )
+    .unwrap();
+
+    let entry = admin_install_deployment_binding_with_caller(
+        stored_governance,
+        admin_args("dep-a", 12, 100, 2),
+        2,
+    )
+    .unwrap();
+    assert_eq!(entry.action, BootstrapAuthAction::AdminInstall);
+    assert_eq!(entry.caller, stored_governance);
+    assert_eq!(
+        deployment_store.get("dep-a").unwrap().router_principal,
+        pid(12)
+    );
+}
+
+#[test]
+fn admin_install_with_existing_deployment_and_unauthorized_caller_returns_already_exists_with_reject_audit()
+ {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        bootstrap_bindings: vec![test_binding("dep-a")],
+    });
+    let bootstrap = gov_principal();
+    let auth_store = ProvisionBootstrapAuthStore::new();
+
+    admin_install_deployment_binding_with_caller(bootstrap, admin_args("dep-a", 10, 100, 1), 1)
+        .unwrap();
+
+    let err = admin_install_deployment_binding_with_caller(
+        other_principal(),
+        admin_args("dep-a", 11, 20, 2),
+        2,
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        ProvisionAdminError::AlreadyExists {
+            deployment_id: "dep-a".to_owned(),
+            existing_governance: bootstrap,
+        }
+    );
+    let latest = auth_store.latest(other_principal()).unwrap();
+    assert_eq!(latest.action, BootstrapAuthAction::RejectAlreadyExists);
+    assert_eq!(latest.deployment_id, Some("dep-a".to_owned()));
+}
+
+#[test]
+fn admin_install_with_missing_deployment_and_unauthorized_caller_returns_unknown_deployment_with_reject_audit()
+ {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        bootstrap_bindings: vec![test_binding("dep-a")],
+    });
+    let auth_store = ProvisionBootstrapAuthStore::new();
+
+    let err = admin_install_deployment_binding_with_caller(
+        other_principal(),
+        admin_args("dep-b", 10, 20, 1),
+        1,
+    )
+    .unwrap_err();
+    assert_eq!(
+        err,
+        ProvisionAdminError::UnknownDeployment("dep-b".to_owned())
+    );
+    let latest = auth_store.latest(other_principal()).unwrap();
+    assert_eq!(latest.action, BootstrapAuthAction::RejectUnknownDeployment);
+    assert_eq!(latest.deployment_id, Some("dep-b".to_owned()));
+}
+
+#[test]
+fn admin_install_with_no_bootstrap_authority_returns_invalid_state_with_reject_audit() {
+    reset_all_maps();
+    let auth_store = ProvisionBootstrapAuthStore::new();
+
+    let err = admin_install_deployment_binding_with_caller(
+        other_principal(),
+        admin_args("dep-a", 10, 20, 1),
+        1,
+    )
+    .unwrap_err();
+    assert!(matches!(err, ProvisionAdminError::InvalidState(_)));
+    let latest = auth_store.latest(other_principal()).unwrap();
+    assert_eq!(latest.action, BootstrapAuthAction::RejectInvalidState);
+    assert_eq!(latest.deployment_id, Some("dep-a".to_owned()));
+}
+
+#[test]
+fn admin_install_audit_log_survives_handler_return_path() {
+    reset_all_maps();
+    init::init(init::ProvisionInitArgs {
+        bootstrap_bindings: vec![test_binding("dep-a")],
+    });
+    let bootstrap = gov_principal();
+    let auth_store = ProvisionBootstrapAuthStore::new();
+
+    let entry =
+        admin_install_deployment_binding_with_caller(bootstrap, admin_args("dep-a", 10, 100, 1), 1)
+            .unwrap();
+    assert_eq!(entry.action, BootstrapAuthAction::AdminInstall);
+
+    let history = auth_store.history(bootstrap);
+    assert!(
+        history
+            .iter()
+            .any(|e| e.action == BootstrapAuthAction::AdminInstall)
+    );
+    assert_eq!(auth_store.latest(bootstrap), Some(entry));
+}
+
+#[test]
+fn bootstrap_authority_singleton_survives_upgrade() {
+    reset_all_maps();
+    let args = init::ProvisionInitArgs {
+        bootstrap_bindings: vec![test_binding("dep-a")],
+    };
+    init::init(args.clone());
+    let auth_store = ProvisionBootstrapAuthStore::new();
+    let first = auth_store.get_authority().unwrap();
+
+    // Simulate a canister upgrade/re-init: stable memory persists; init re-runs with the same args.
+    init::init(args);
+    let second = auth_store.get_authority().unwrap();
+    assert_eq!(first, second);
 }
