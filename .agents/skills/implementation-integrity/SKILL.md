@@ -266,6 +266,25 @@ and compensating rollback must only remove locks owned by the operation performi
 Add a wrong-impl test that seeds a lock held by a different owner and asserts that the new
 operation is rejected or, for release, that the foreign lock survives.
 
+### Audit-before-return-on-failure
+
+A handler that emits an audit or telemetry row for an authorization decision
+must persist the audit row BEFORE returning the error to the caller. An audit
+row written after the error return is either never written (early-return path)
+or written but not observable to the caller, which breaks the audit trail's
+durability contract.
+
+For each error branch (InvalidState, AlreadyExists, UnknownDeployment,
+NotAuthorized, Conflict, etc.), call the audit facade (for example
+`BootstrapAuthStore::put_record`) to write the corresponding `Reject*` audit
+row first, then return the typed error. A preflight that returns Err before any
+audit write leaves the audit log silent for that decision, which is
+non-recoverable for an after-the-fact investigator.
+
+Add a wrong-impl test asserting that a wrong implementation that returns the
+error BEFORE writing the audit row would fail (e.g. by checking the audit log
+contains the expected Reject* entry after the error return).
+
 ## Handoff gate
 
 Before sending work to review, report:

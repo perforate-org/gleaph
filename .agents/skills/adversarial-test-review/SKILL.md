@@ -153,6 +153,44 @@ Presence-only lock logic is a P1/P2 correctness gap.
 
 See also `implementation-integrity` for the implementation-side contract.
 
+## Stable-storage regression tests
+
+When a slice introduces a new stable-memory region, a new `StableBTreeMap`, or
+a new `StableCell` singleton, the slice's adversarial test suite must include
+explicit regression tests for the stable-storage layout. These tests are
+non-substitutable by request-path or PocketIC E2E tests; the latter cover
+ingress behavior, not durable storage correctness.
+
+Required tests for any new stable region:
+
+1. **Per-MemoryId separation.** A test that places two collections on distinct
+   `MemoryId`s (one `StableCell` and one `StableBTreeMap`, or two
+   `StableBTreeMap`s) and asserts each is independently readable. The wrong
+   implementation that places both on the same `MemoryId` MUST fail this test
+   (offset-0 corruption: one collection's bytes overwrite the other's header).
+
+2. **StableCell singleton write-over-write.** A test that calls `set_authority`
+   twice with different records and asserts the second call's value is what
+   `get_authority` returns. The wrong implementation that ignores the second
+   write MUST fail this test.
+
+3. **Upgrade persistence.** A test that seeds the singleton via `init`, then
+   re-initializes with the same args (simulating an upgrade) and asserts the
+   singleton value is unchanged. The test must exercise the real stable-memory
+   lifecycle of the facade, not a freshly constructed in-memory mock. A
+   PocketIC E2E that performs an upgrade and re-queries the singleton is an
+   acceptable forward-test in addition to the unit test.
+
+4. **Storable value type and wrapper.** When a `StableBTreeMap<_, V>` value is
+   a wrapper such as `Vec<T>` or `BootstrapAuthHistory(Vec<T>)`, a test that
+   inserts, reads back, and asserts the wrapper round-trips with the same
+   length and content. A wrong implementation that uses `Vec<T>` directly
+   without `Storable` MUST fail to compile or fail this test at runtime.
+
+Flag the absence of any of these tests as a P2 finding when reviewing a slice
+that introduces new stable regions, even if the request-path tests are
+comprehensive.
+
 ## Approval Gate
 
 Connect every counterexample back to the plan:

@@ -208,6 +208,32 @@ Add an adversarial test that walks the public ingress surface and asserts at lea
 path to success for each handler (or records that the method is explicitly deferred and
 absent from the public surface).
 
+## Stable collection layout
+
+A single `ic_stable_structures` collection owns exactly one `MemoryId`. Two
+collections (a `StableCell` and a `StableBTreeMap`, two `StableBTreeMap`s, etc.)
+placed on the same `MemoryId` write at the same offset 0 and silently corrupt
+each other at runtime. Per-MemoryId allocation is mandatory, not stylistic.
+
+Use a true `StableCell<Option<T>>` (or the existing `StableGraphMetadata` pattern
+at `crates/graph/src/facade/stable/metadata.rs:14-46`) for per-canister
+singletons such as durable bootstrap authority. Do not substitute a
+`StableBTreeMap<(), T>` with a single key as a singleton — that is a workaround
+that loses StableCell's first-write semantics and explicit init/get separation.
+
+For every `StableBTreeMap<_, V>` in a plan, specify the `V` type, the `Storable`
+implementation (typically Candid-encoded with `StorableBound::Unbounded`), and
+whether the value is a per-key scalar or a wrapper. A `Vec<T>` value requires an
+explicit persisted wrapper with `Storable` (e.g. `BootstrapAuthHistory(Vec<T>)`).
+State whether the design is "read-modify-write the wrapper" (acceptable for
+bounded/small histories) or append-oriented keys (`(principal, seq)`) before
+implementation, not after.
+
+When authority is derived from initialization ordering (for example, "the first
+bootstrap binding's governance principal is the durable authority"), persist
+the selected authority as a first-class durable datum. Do not reconstruct it
+from append-only audit logs, map iteration, or incidental collection order.
+
 ## Expected Output
 
 Report:
