@@ -234,6 +234,39 @@ bootstrap binding's governance principal is the durable authority"), persist
 the selected authority as a first-class durable datum. Do not reconstruct it
 from append-only audit logs, map iteration, or incidental collection order.
 
+## Append-heavy stable logs
+
+A `StableBTreeMap<Principal, History<Entry>>` log that grows under multi-principal
+ingress pressure is a different shape from a per-key scalar or a small bounded
+collection. It needs a bounded append behavior, a per-principal history limit or
+compaction strategy, and an upgrade-stable entry encoding **before** the log
+becomes production-critical. The default "read history, append entry, rewrite
+history" pattern is acceptable for bounded/small histories and unacceptable for
+unbounded ones.
+
+Define in the plan, before the first handler write:
+
+1. **Entry size bound**: a maximum byte width per entry; reject or compact when
+   exceeded.
+2. **Per-principal cap**: an upper bound on the number of entries per principal
+   key, plus the eviction policy (LRU, FIFO, hash-bucketed summary).
+3. **Compaction or summary policy**: how the log sheds entries (rotation, summary
+   rows, archival) and how the summary is itself stored.
+4. **Append path ownership**: which handler writes the entry, and whether the
+   write precedes or follows the durable state mutation it records.
+5. **Upgrade-stable encoding**: the entry's Candid or byte encoding must remain
+   stable across canister upgrades; an entry added today must decode correctly
+   after a future schema revision.
+
+Use append-oriented keys (`(principal, sequence)`) when the log is truly
+unbounded and compaction is not yet designed. Use a wrapper read-modify-write
+(`History(Vec<Entry>)` with `Storable`) when the per-principal count is known
+to stay small (for example, a governance audit log with a small principal set).
+
+Adopt this rule for any audit log, telemetry log, or per-key event stream in
+stable memory. Flag the absence of a bounded-append specification as a P2
+finding when reviewing a slice that introduces a new log-shaped collection.
+
 ## Expected Output
 
 Report:
