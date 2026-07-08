@@ -3822,7 +3822,7 @@ mod tests {
         assert!(
             matches!(
                 err,
-                PlanMutationError::UnsupportedInlineStructMutation { .. }
+                PlanMutationError::CannotRemoveInlineProperty { ref property } if property == "distance"
             ),
             "got {err:?}"
         );
