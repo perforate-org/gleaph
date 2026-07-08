@@ -163,21 +163,21 @@ pub trait CsrEdge: Clone {
         self.neighbor_vid().is_edge_tombstone_sentinel()
     }
 
-    /// Physical byte width of the in-memory edge payload (0 when absent).
+    /// Physical byte width of the in-memory edge inline value (0 when absent).
     #[inline]
-    fn edge_payload_byte_width(&self) -> u16 {
+    fn edge_inline_value_byte_width(&self) -> u16 {
         0
     }
 
-    /// In-memory edge payload bytes; length must match [`Self::edge_payload_byte_width`].
+    /// In-memory edge inline value bytes; length must match [`Self::edge_inline_value_byte_width`].
     #[inline]
-    fn edge_payload_bytes(&self) -> &[u8] {
+    fn edge_inline_value_bytes(&self) -> &[u8] {
         &[]
     }
 
     /// Returns a copy with in-memory payload bytes attached (wire row unchanged).
     #[inline]
-    fn with_stored_payload_bytes(self, _width: u16, _bytes: &[u8]) -> Self {
+    fn with_stored_inline_value_bytes(self, _width: u16, _bytes: &[u8]) -> Self {
         self
     }
 
@@ -195,7 +195,7 @@ pub trait CsrEdge: Clone {
 /// bound preserve the same liveness contract. Older test edges may still use
 /// [`VertexId::EDGE_TOMBSTONE_SENTINEL`] as their sentinel.
 pub trait CsrEdgeTombstone: CsrEdge {
-    /// Encoded edge payload for a tombstoned slab slot (must satisfy [`Self::is_tombstone_edge`]).
+    /// Encoded edge inline value for a tombstoned slab slot (must satisfy [`Self::is_tombstone_edge`]).
     fn tombstone_edge() -> Self;
     /// Returns `true` when this slot holds a logical tombstone.
     #[inline]

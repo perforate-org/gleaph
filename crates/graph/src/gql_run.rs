@@ -835,7 +835,9 @@ async fn run_wire_plans(
     materialize: TransactionReadMaterialize,
     mutation_id: Option<MutationId>,
 ) -> Result<TransactionBlockRun, GqlRunError> {
-    crate::edge_payload_schema::set_execution_resolved_labels(execution.resolved_labels.clone());
+    crate::edge_inline_value_schema::set_execution_resolved_labels(
+        execution.resolved_labels.clone(),
+    );
     // The element-id encoding key is threaded as owned data (evaluator / materialization / canonical
     // segment), never parked in ambient thread-local state across the `await`s below.
     let run_result = run_wire_plans_inner(
@@ -851,7 +853,7 @@ async fn run_wire_plans(
         mutation_id,
     )
     .await;
-    crate::edge_payload_schema::clear_execution_resolved_labels();
+    crate::edge_inline_value_schema::clear_execution_resolved_labels();
     run_result
 }
 
@@ -3084,20 +3086,25 @@ mod tests {
             .insert_vertex_named(["WgtGqlC"], Vec::<(&str, Value)>::new())
             .expect("c");
         let label_id = crate::test_labels::edge_label_id_for_name("WgtGqlRoad");
-        crate::test_labels::install_test_edge_payload_profile(
+        crate::test_labels::install_test_edge_inline_value_profile(
             label_id,
-            gleaph_graph_kernel::entry::EdgePayloadProfile::from(EdgeWeightProfile {
+            gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(EdgeWeightProfile {
                 encoding: WeightEncoding::RawU16,
             }),
         );
         store
-            .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &1u16.to_le_bytes())
+            .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &1u16.to_le_bytes())
             .expect("a->b");
         store
-            .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &1u16.to_le_bytes())
+            .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), &1u16.to_le_bytes())
             .expect("b->c");
         store
-            .insert_directed_edge_with_payload_bytes(a, c, Some(label_id), &100u16.to_le_bytes())
+            .insert_directed_edge_with_inline_value_bytes(
+                a,
+                c,
+                Some(label_id),
+                &100u16.to_le_bytes(),
+            )
             .expect("a->c");
     }
 

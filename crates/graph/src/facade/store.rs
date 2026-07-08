@@ -10,7 +10,7 @@
 //! - **properties** — `properties` (write commit), `vertex_properties`, `edge_properties`, `catalogs`
 //! - **labels** — `labels` (write commit), `vertex_labels`
 //! - **vertex delete** — `vertex_delete` (sidecar clear and detach delete commit)
-//! - **edge profiles** — `edge_profiles` (profile install/update commits), `edge_payload` (public update API)
+//! - **edge profiles** — `edge_profiles` (profile install/update commits), `edge_inline_value` (public update API)
 //! - **local indexes** — `local_indexes` (alias and equality posting commits), `edge_alias` (lookup)
 //! - **label stats projection** — `label_stats_delta`
 //! - **sidecars** — `sidecar` (coordinates property and local-index derived state)
@@ -20,8 +20,8 @@ mod adjacency;
 mod catalogs;
 mod delete;
 mod edge_alias;
+mod edge_inline_value;
 mod edge_insert;
-mod edge_payload;
 mod edge_profiles;
 mod edge_properties;
 mod edge_scan;

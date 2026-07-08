@@ -4,7 +4,7 @@
 //! MemoryIds are grouped by [`StableMemoryClass`] / inventory domain:
 //! auth → registry → runtime config → idempotency → catalog → telemetry → maintenance.
 
-use super::edge_payload_profiles::EdgePayloadProfileStore;
+use super::edge_inline_value_profiles::EdgeInlineValueProfileStore;
 use candid::{Decode, Encode, Principal};
 use gleaph_graph_kernel::bidirectional_catalog::DenseIndexNamePolicy;
 use gleaph_graph_kernel::bidirectional_catalog::{
@@ -73,7 +73,7 @@ const ROUTER_GRAPH_BY_ID: MemoryId = MemoryId::new(16);
 const ROUTER_INDEX_NAME_BY_NAME: MemoryId = MemoryId::new(17);
 const ROUTER_INDEX_NAME_BY_ID: MemoryId = MemoryId::new(18);
 
-// --- catalog: index planner + edge payload + graph type ---
+// --- catalog: index planner + edge inline value + graph type ---
 const ROUTER_NAMED_INDEXES: MemoryId = MemoryId::new(19);
 const ROUTER_INDEXED_PROPERTY_SET: MemoryId = MemoryId::new(20);
 const ROUTER_EDGE_PAYLOAD_PROFILES: MemoryId = MemoryId::new(21);
@@ -231,7 +231,7 @@ pub(crate) type StableIndexNameCatalog =
     GraphScopedNameCatalog<IndexNameId, Memory, Memory, DenseIndexNamePolicy>;
 pub(crate) type StableNamedIndexMap = BTreeMap<NamedIndexKey, IndexDefRecord, Memory>;
 pub(crate) type StableIndexedPropertySet = BTreeSet<IndexedPropertyKey, Memory>;
-pub(crate) type StableEdgePayloadProfileStore = EdgePayloadProfileStore<Memory>;
+pub(crate) type StableEdgeInlineValueProfileStore = EdgeInlineValueProfileStore<Memory>;
 pub(crate) type StableGqlGraphCatalog = GraphCatalog<Memory, Memory>;
 pub(crate) type StableGraphTypeNameCatalog =
     BidirectionalCatalog<GraphTypeId, Memory, Memory, SparseFromOnePolicy>;
@@ -372,8 +372,8 @@ pub(crate) fn init_indexed_property_set() -> StableIndexedPropertySet {
     BTreeSet::init(MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_INDEXED_PROPERTY_SET)))
 }
 
-pub(crate) fn init_edge_payload_profiles() -> StableEdgePayloadProfileStore {
-    EdgePayloadProfileStore::init(
+pub(crate) fn init_edge_inline_value_profiles() -> StableEdgeInlineValueProfileStore {
+    EdgeInlineValueProfileStore::init(
         MEMORY_MANAGER.with(|m| m.borrow().get(ROUTER_EDGE_PAYLOAD_PROFILES)),
     )
 }

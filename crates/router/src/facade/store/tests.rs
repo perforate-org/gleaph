@@ -12,7 +12,7 @@ use candid::Principal;
 use gleaph_gql::types::EdgeDirection;
 use gleaph_gql_planner::{NodeLabelRef, PhysicalPlan, PlanOp};
 use gleaph_graph_kernel::entry::GraphId;
-use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
 use gleaph_graph_kernel::federation::ShardId;
 use gleaph_graph_kernel::plan_exec::{
     LabelStatsDelta, LabelStatsDeltaEventWire, ResolvedInlineSchema, ResolvedLabelTable,
@@ -377,13 +377,13 @@ fn unregister_graph_cascades_vocabulary_partitions() {
         .admin_intern_property(admin, "tenant.main", "age")
         .expect("property");
     store
-        .admin_set_edge_label_payload_profile(
+        .admin_set_edge_label_inline_value_profile(
             admin,
             "tenant.main",
             "KNOWS",
-            EdgePayloadProfile {
+            EdgeInlineValueProfile {
                 byte_width: 2,
-                encoding: EdgePayloadEncoding::WeightRawU16,
+                encoding: EdgeInlineValueEncoding::WeightRawU16,
             },
         )
         .expect("payload profile");
@@ -1132,7 +1132,7 @@ fn dml_plan_creates_only_requested_label_namespaces() {
 }
 
 #[test]
-fn resolve_plan_attaches_edge_payload_profile() {
+fn resolve_plan_attaches_edge_inline_value_profile() {
     let store = RouterStore::new();
     store.init_from_args(&test_init_args());
     let admin = Principal::from_slice(&[1; 29]);
@@ -1140,15 +1140,15 @@ fn resolve_plan_attaches_edge_payload_profile() {
 
     register_test_graph(&store, admin, "tenant.main");
 
-    let profile = EdgePayloadProfile {
+    let profile = EdgeInlineValueProfile {
         byte_width: 2,
-        encoding: EdgePayloadEncoding::WeightRawU16,
+        encoding: EdgeInlineValueEncoding::WeightRawU16,
     };
     store
         .admin_intern_edge_label(admin, "tenant.main", "KNOWS")
         .expect("intern edge");
     store
-        .admin_set_edge_label_payload_profile(admin, "tenant.main", "KNOWS", profile.clone())
+        .admin_set_edge_label_inline_value_profile(admin, "tenant.main", "KNOWS", profile.clone())
         .expect("set profile");
 
     let edge_only = PhysicalPlan::from_ops(vec![PlanOp::InsertEdge {
@@ -1165,7 +1165,7 @@ fn resolve_plan_attaches_edge_payload_profile() {
         .expect("resolve edge DML labels");
     assert_eq!(resolved.edge.len(), 1);
     assert_eq!(resolved.edge[0].name, "KNOWS");
-    assert_eq!(resolved.edge[0].payload_profile, profile);
+    assert_eq!(resolved.edge[0].inline_value_profile, profile);
 }
 
 #[test]
@@ -2850,7 +2850,9 @@ mod uniqueness_constraints {
 // ADR 0034 Slice 20: inline edge scalar schema tests
 // -----------------------------------------------------------------------------
 
-use crate::facade::stable::edge_payload_profiles::{EdgePayloadSchemaRecord, InlineScalarType};
+use crate::facade::stable::edge_inline_value_profiles::{
+    EdgeInlineValueSchemaRecord, InlineScalarType,
+};
 
 #[test]
 fn inline_scalar_schema_creates_label_property_and_record() {
@@ -2879,14 +2881,14 @@ fn inline_scalar_schema_creates_label_property_and_record() {
         .expect("schema record");
     assert_eq!(
         record,
-        EdgePayloadSchemaRecord::InlineScalar {
+        EdgeInlineValueSchemaRecord::InlineScalar {
             property_id,
             scalar_type: InlineScalarType::F32,
         }
     );
     assert_eq!(
         ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|s| s.get_profile(graph_id, label_id)),
-        InlineScalarType::F32.edge_payload_profile()
+        InlineScalarType::F32.edge_inline_value_profile()
     );
 }
 
@@ -2929,13 +2931,13 @@ fn inline_scalar_schema_conflicts_with_legacy_profile() {
         .admin_intern_edge_label(admin, "tenant.main", "ROAD")
         .expect("edge label");
     store
-        .admin_set_edge_label_payload_profile(
+        .admin_set_edge_label_inline_value_profile(
             admin,
             "tenant.main",
             "ROAD",
-            EdgePayloadProfile {
+            EdgeInlineValueProfile {
                 byte_width: 2,
-                encoding: EdgePayloadEncoding::WeightRawU16,
+                encoding: EdgeInlineValueEncoding::WeightRawU16,
             },
         )
         .expect("legacy profile");
@@ -2969,13 +2971,13 @@ fn legacy_profile_setter_conflicts_with_inline_scalar() {
         .expect("inline scalar");
 
     let err = store
-        .admin_set_edge_label_payload_profile(
+        .admin_set_edge_label_inline_value_profile(
             admin,
             "tenant.main",
             "ROAD",
-            EdgePayloadProfile {
+            EdgeInlineValueProfile {
                 byte_width: 2,
-                encoding: EdgePayloadEncoding::WeightRawU16,
+                encoding: EdgeInlineValueEncoding::WeightRawU16,
             },
         )
         .expect_err("conflict");
@@ -3038,7 +3040,7 @@ fn inline_scalar_schema_conflicts_on_second_property() {
 // ADR 0034 Slice 24: inline edge STRUCT schema tests
 // -----------------------------------------------------------------------------
 
-use crate::facade::stable::edge_payload_profiles::InlineStructLayout;
+use crate::facade::stable::edge_inline_value_profiles::InlineStructLayout;
 
 #[test]
 fn inline_struct_schema_creates_label_property_and_record() {
@@ -3055,15 +3057,15 @@ fn inline_struct_schema_creates_label_property_and_record() {
             "AFFINITY",
             "stats",
             vec![
-                crate::edge_payload_ddl::InlineEdgeStructField {
+                crate::edge_inline_value_ddl::InlineEdgeStructField {
                     name: "score".into(),
                     scalar_type: InlineScalarType::F32,
                 },
-                crate::edge_payload_ddl::InlineEdgeStructField {
+                crate::edge_inline_value_ddl::InlineEdgeStructField {
                     name: "confidence".into(),
                     scalar_type: InlineScalarType::F32,
                 },
-                crate::edge_payload_ddl::InlineEdgeStructField {
+                crate::edge_inline_value_ddl::InlineEdgeStructField {
                     name: "updated_at".into(),
                     scalar_type: InlineScalarType::U64,
                 },
@@ -3088,21 +3090,21 @@ fn inline_struct_schema_creates_label_property_and_record() {
     .expect("layout");
     assert_eq!(
         record,
-        EdgePayloadSchemaRecord::InlineStruct {
+        EdgeInlineValueSchemaRecord::InlineStruct {
             property_id,
             field_specs: layout.field_specs().to_vec(),
         }
     );
     assert_eq!(
         ROUTER_EDGE_PAYLOAD_PROFILES.with_borrow(|s| s.get_profile(graph_id, label_id)),
-        EdgePayloadProfile::opaque_bytes(16)
+        EdgeInlineValueProfile::opaque_bytes(16)
     );
 
     // Slice 25: the resolved wire projection derived from the canonical record must contain the
     // exact physical field layout; Graph validates it but never persists it.
     let (wire_profile, wire_schema) = ROUTER_EDGE_PAYLOAD_PROFILES
         .with_borrow(|s| s.get_profile_and_inline_schema(graph_id, label_id));
-    assert_eq!(wire_profile, EdgePayloadProfile::opaque_bytes(16));
+    assert_eq!(wire_profile, EdgeInlineValueProfile::opaque_bytes(16));
     let schema = wire_schema.expect("struct schema projected");
     assert_eq!(schema.property_id(), property_id);
     let ResolvedInlineSchema::Struct { fields, .. } = schema else {
@@ -3113,19 +3115,19 @@ fn inline_struct_schema_creates_label_property_and_record() {
     assert_eq!(fields[0].byte_offset, 0);
     assert_eq!(
         fields[0].profile,
-        InlineScalarType::F32.edge_payload_profile()
+        InlineScalarType::F32.edge_inline_value_profile()
     );
     assert_eq!(fields[1].name, "confidence");
     assert_eq!(fields[1].byte_offset, 4);
     assert_eq!(
         fields[1].profile,
-        InlineScalarType::F32.edge_payload_profile()
+        InlineScalarType::F32.edge_inline_value_profile()
     );
     assert_eq!(fields[2].name, "updated_at");
     assert_eq!(fields[2].byte_offset, 8);
     assert_eq!(
         fields[2].profile,
-        InlineScalarType::U64.edge_payload_profile()
+        InlineScalarType::U64.edge_inline_value_profile()
     );
 }
 
@@ -3139,11 +3141,11 @@ fn inline_struct_schema_is_idempotent() {
     let graph_id = lookup_graph_id("tenant.struct_idem").expect("graph");
 
     let fields = vec![
-        crate::edge_payload_ddl::InlineEdgeStructField {
+        crate::edge_inline_value_ddl::InlineEdgeStructField {
             name: "score".into(),
             scalar_type: InlineScalarType::F32,
         },
-        crate::edge_payload_ddl::InlineEdgeStructField {
+        crate::edge_inline_value_ddl::InlineEdgeStructField {
             name: "confidence".into(),
             scalar_type: InlineScalarType::F32,
         },
@@ -3180,7 +3182,7 @@ fn inline_struct_schema_conflicts_with_scalar() {
             graph_id,
             "AFFINITY",
             "stats",
-            vec![crate::edge_payload_ddl::InlineEdgeStructField {
+            vec![crate::edge_inline_value_ddl::InlineEdgeStructField {
                 name: "score".into(),
                 scalar_type: InlineScalarType::F32,
             }],
@@ -3203,7 +3205,7 @@ fn inline_scalar_schema_conflicts_with_struct() {
             graph_id,
             "AFFINITY",
             "stats",
-            vec![crate::edge_payload_ddl::InlineEdgeStructField {
+            vec![crate::edge_inline_value_ddl::InlineEdgeStructField {
                 name: "score".into(),
                 scalar_type: InlineScalarType::F32,
             }],
@@ -3236,11 +3238,11 @@ fn inline_struct_schema_conflicts_on_reordered_fields() {
             "AFFINITY",
             "stats",
             vec![
-                crate::edge_payload_ddl::InlineEdgeStructField {
+                crate::edge_inline_value_ddl::InlineEdgeStructField {
                     name: "a".into(),
                     scalar_type: InlineScalarType::U8,
                 },
-                crate::edge_payload_ddl::InlineEdgeStructField {
+                crate::edge_inline_value_ddl::InlineEdgeStructField {
                     name: "b".into(),
                     scalar_type: InlineScalarType::U16,
                 },
@@ -3254,11 +3256,11 @@ fn inline_struct_schema_conflicts_on_reordered_fields() {
             "AFFINITY",
             "stats",
             vec![
-                crate::edge_payload_ddl::InlineEdgeStructField {
+                crate::edge_inline_value_ddl::InlineEdgeStructField {
                     name: "b".into(),
                     scalar_type: InlineScalarType::U16,
                 },
-                crate::edge_payload_ddl::InlineEdgeStructField {
+                crate::edge_inline_value_ddl::InlineEdgeStructField {
                     name: "a".into(),
                     scalar_type: InlineScalarType::U8,
                 },
@@ -3305,7 +3307,7 @@ fn inline_struct_schema_rejects_invalid_field_name() {
             graph_id,
             "AFFINITY",
             "stats",
-            vec![crate::edge_payload_ddl::InlineEdgeStructField {
+            vec![crate::edge_inline_value_ddl::InlineEdgeStructField {
                 name: long_name,
                 scalar_type: InlineScalarType::U8,
             }],
@@ -3331,9 +3333,9 @@ fn inline_struct_schema_record_too_large_leaves_no_catalog_mutation() {
     // Build a struct whose encoded stable record exceeds the 1024-byte envelope.
     let mut fields = Vec::new();
     for i in 0..64 {
-        fields.push(crate::edge_payload_ddl::InlineEdgeStructField {
+        fields.push(crate::edge_inline_value_ddl::InlineEdgeStructField {
             name: format!("very_long_field_name_to_inflate_record_size_{:03}", i),
-            scalar_type: crate::facade::stable::edge_payload_profiles::InlineScalarType::U8,
+            scalar_type: crate::facade::stable::edge_inline_value_profiles::InlineScalarType::U8,
         });
     }
     let err = store

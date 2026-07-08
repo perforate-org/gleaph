@@ -5,7 +5,8 @@ use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId};
 use ic_stable_lara::{
     BucketLabelKey as LaraLabelId, DeferredBidirectionalLabeledError, VertexId,
     labeled::{
-        BucketDirectedness, LabeledEdgePayloadBatch, LabeledEdgePayloadBatchScratch, OutEdgeOrder,
+        BucketDirectedness, LabeledEdgeInlineValueBatch, LabeledEdgeInlineValueBatchScratch,
+        OutEdgeOrder,
     },
 };
 
@@ -65,7 +66,7 @@ impl GraphStore {
         })
     }
 
-    pub(crate) fn visit_out_payload_value_batches_for_label<Visit>(
+    pub(crate) fn visit_out_inline_value_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
@@ -77,49 +78,51 @@ impl GraphStore {
         Visit: for<'b> FnMut(ic_stable_lara::labeled::LabeledPayloadValueBatch<'b>),
     {
         GRAPH.with_borrow(|graph| {
-            graph.visit_out_payload_value_batches_for_label(vertex_id, label, order, scratch, visit)
+            graph.visit_out_inline_value_batches_for_label(vertex_id, label, order, scratch, visit)
         })
     }
 
-    pub(crate) fn out_label_bucket_dense_payload_batch_eligible(
-        &self,
-        vertex_id: VertexId,
-        label: LaraLabelId,
-    ) -> Result<bool, GraphStoreError> {
-        Ok(GRAPH
-            .with_borrow(|graph| graph.out_bucket_dense_payload_batch_eligible(vertex_id, label))?)
-    }
-
-    pub(crate) fn in_label_bucket_dense_payload_batch_eligible(
-        &self,
-        vertex_id: VertexId,
-        label: LaraLabelId,
-    ) -> Result<bool, GraphStoreError> {
-        Ok(GRAPH
-            .with_borrow(|graph| graph.in_bucket_dense_payload_batch_eligible(vertex_id, label))?)
-    }
-
-    pub(crate) fn out_label_bucket_payload_first_predicate_eligible(
+    pub(crate) fn out_label_bucket_dense_inline_value_batch_eligible(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
     ) -> Result<bool, GraphStoreError> {
         Ok(GRAPH.with_borrow(|graph| {
-            graph.out_bucket_payload_first_predicate_eligible(vertex_id, label)
+            graph.out_bucket_dense_inline_value_batch_eligible(vertex_id, label)
         })?)
     }
 
-    pub(crate) fn in_label_bucket_payload_first_predicate_eligible(
+    pub(crate) fn in_label_bucket_dense_inline_value_batch_eligible(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
     ) -> Result<bool, GraphStoreError> {
         Ok(GRAPH.with_borrow(|graph| {
-            graph.in_bucket_payload_first_predicate_eligible(vertex_id, label)
+            graph.in_bucket_dense_inline_value_batch_eligible(vertex_id, label)
         })?)
     }
 
-    pub(crate) fn visit_in_payload_value_batches_for_label<Visit>(
+    pub(crate) fn out_label_bucket_inline_value_first_predicate_eligible(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+    ) -> Result<bool, GraphStoreError> {
+        Ok(GRAPH.with_borrow(|graph| {
+            graph.out_bucket_inline_value_first_predicate_eligible(vertex_id, label)
+        })?)
+    }
+
+    pub(crate) fn in_label_bucket_inline_value_first_predicate_eligible(
+        &self,
+        vertex_id: VertexId,
+        label: LaraLabelId,
+    ) -> Result<bool, GraphStoreError> {
+        Ok(GRAPH.with_borrow(|graph| {
+            graph.in_bucket_inline_value_first_predicate_eligible(vertex_id, label)
+        })?)
+    }
+
+    pub(crate) fn visit_in_inline_value_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
@@ -131,7 +134,7 @@ impl GraphStore {
         Visit: for<'b> FnMut(ic_stable_lara::labeled::LabeledPayloadValueBatch<'b>),
     {
         GRAPH.with_borrow(|graph| {
-            graph.visit_in_payload_value_batches_for_label(vertex_id, label, order, scratch, visit)
+            graph.visit_in_inline_value_batches_for_label(vertex_id, label, order, scratch, visit)
         })
     }
 
@@ -151,7 +154,7 @@ impl GraphStore {
         })
     }
 
-    pub(crate) fn read_out_edge_slots_for_label_reusing_payload_scratch<Visit>(
+    pub(crate) fn read_out_edge_slots_for_label_reusing_inline_value_scratch<Visit>(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
@@ -190,7 +193,7 @@ impl GraphStore {
         })
     }
 
-    pub(crate) fn read_in_edge_slots_for_label_reusing_payload_scratch<Visit>(
+    pub(crate) fn read_in_edge_slots_for_label_reusing_inline_value_scratch<Visit>(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
@@ -214,7 +217,7 @@ impl GraphStore {
     }
 
     #[cfg(any(test, feature = "canbench"))]
-    pub(crate) fn visit_directed_out_payload_value_batches_for_label<Visit>(
+    pub(crate) fn visit_directed_out_inline_value_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
@@ -225,7 +228,7 @@ impl GraphStore {
     where
         Visit: for<'b> FnMut(ic_stable_lara::labeled::LabeledPayloadValueBatch<'b>),
     {
-        self.visit_out_payload_value_batches_for_label(
+        self.visit_out_inline_value_batches_for_label(
             vertex_id,
             LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw()),
             order,
@@ -258,18 +261,18 @@ impl GraphStore {
     }
 
     #[cfg(any(test, feature = "canbench"))]
-    pub(crate) fn visit_directed_out_edge_payload_batches_for_label<Visit>(
+    pub(crate) fn visit_directed_out_edge_inline_value_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
-        Visit: for<'b> FnMut(LabeledEdgePayloadBatch<'b, Edge>),
+        Visit: for<'b> FnMut(LabeledEdgeInlineValueBatch<'b, Edge>),
     {
-        self.visit_out_edge_payload_batches_for_label(
+        self.visit_out_edge_inline_value_batches_for_label(
             vertex_id,
             LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw()),
             order,
@@ -279,39 +282,43 @@ impl GraphStore {
         .map_err(GraphStoreError::from)
     }
 
-    pub(crate) fn visit_out_edge_payload_batches_for_label<Visit>(
+    pub(crate) fn visit_out_edge_inline_value_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
-        Visit: for<'b> FnMut(LabeledEdgePayloadBatch<'b, Edge>),
+        Visit: for<'b> FnMut(LabeledEdgeInlineValueBatch<'b, Edge>),
     {
         GRAPH.with_borrow(|graph| {
-            graph.visit_out_edge_payload_batches_for_label(vertex_id, label, order, scratch, visit)
+            graph.visit_out_edge_inline_value_batches_for_label(
+                vertex_id, label, order, scratch, visit,
+            )
         })
     }
 
-    pub(crate) fn visit_in_edge_payload_batches_for_label<Visit>(
+    pub(crate) fn visit_in_edge_inline_value_batches_for_label<Visit>(
         &self,
         vertex_id: VertexId,
         label: LaraLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
         visit: Visit,
     ) -> Result<(), DeferredBidirectionalLabeledError>
     where
-        Visit: for<'b> FnMut(LabeledEdgePayloadBatch<'b, Edge>),
+        Visit: for<'b> FnMut(LabeledEdgeInlineValueBatch<'b, Edge>),
     {
         GRAPH.with_borrow(|graph| {
-            graph.visit_in_edge_payload_batches_for_label(vertex_id, label, order, scratch, visit)
+            graph.visit_in_edge_inline_value_batches_for_label(
+                vertex_id, label, order, scratch, visit,
+            )
         })
     }
 
-    pub(crate) fn for_each_directed_out_edges_for_label_with_payloads<Visit>(
+    pub(crate) fn for_each_directed_out_edges_for_label_with_inline_values<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
@@ -321,8 +328,8 @@ impl GraphStore {
     where
         Visit: FnMut(Edge),
     {
-        let mut scratch = LabeledEdgePayloadBatchScratch::default();
-        self.for_each_directed_out_edges_for_label_with_payloads_reusing(
+        let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
+        self.for_each_directed_out_edges_for_label_with_inline_values_reusing(
             vertex_id,
             label,
             order,
@@ -331,34 +338,34 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn for_each_directed_out_edges_for_label_with_payload_slices_reusing<Visit>(
+    pub(crate) fn for_each_directed_out_edges_for_label_with_inline_value_slices_reusing<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
         mut visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
         Visit: FnMut(&Edge, &[u8]),
     {
         if self
-            .edge_label_payload_profile(label)
+            .edge_label_inline_value_profile(label)
             .is_some_and(|profile| profile.required_byte_width() > 0)
         {
             let storage_label = LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
-            self.visit_out_edge_payload_batches_for_label(
+            self.visit_out_edge_inline_value_batches_for_label(
                 vertex_id,
                 storage_label,
                 order,
                 scratch,
                 |batch| {
                     let width = usize::from(batch.byte_width);
-                    debug_assert_eq!(batch.payload_bytes.len(), batch.edges.len() * width);
+                    debug_assert_eq!(batch.inline_value_bytes.len(), batch.edges.len() * width);
                     for (edge, value) in batch
                         .edges
                         .iter()
-                        .zip(batch.payload_bytes.chunks_exact(width))
+                        .zip(batch.inline_value_bytes.chunks_exact(width))
                     {
                         visit(edge, value);
                     }
@@ -367,29 +374,29 @@ impl GraphStore {
             .map_err(GraphStoreError::from)
         } else {
             self.for_each_directed_out_edges_for_label(vertex_id, label, order, |edge| {
-                visit(&edge, edge.payload_bytes());
+                visit(&edge, edge.inline_value_bytes());
             })
         }
     }
 
-    pub(crate) fn for_each_directed_out_edges_for_label_with_payloads_reusing<Visit>(
+    pub(crate) fn for_each_directed_out_edges_for_label_with_inline_values_reusing<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
         Visit: FnMut(Edge),
     {
         let mut visit = visit;
-        self.for_each_directed_out_edges_for_label_with_payload_slices_reusing(
+        self.for_each_directed_out_edges_for_label_with_inline_value_slices_reusing(
             vertex_id,
             label,
             order,
             scratch,
-            |edge, value| visit(edge.with_payload_bytes(value)),
+            |edge, value| visit(edge.with_inline_value_bytes(value)),
         )
     }
 
@@ -437,7 +444,7 @@ impl GraphStore {
             .map_err(GraphStoreError::from)
     }
 
-    pub(crate) fn for_each_directed_in_edges_for_label_with_payloads<Visit>(
+    pub(crate) fn for_each_directed_in_edges_for_label_with_inline_values<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
@@ -447,8 +454,8 @@ impl GraphStore {
     where
         Visit: FnMut(Edge),
     {
-        let mut scratch = LabeledEdgePayloadBatchScratch::default();
-        self.for_each_directed_in_edges_for_label_with_payloads_reusing(
+        let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
+        self.for_each_directed_in_edges_for_label_with_inline_values_reusing(
             vertex_id,
             label,
             order,
@@ -457,34 +464,34 @@ impl GraphStore {
         )
     }
 
-    pub(crate) fn for_each_directed_in_edges_for_label_with_payload_slices_reusing<Visit>(
+    pub(crate) fn for_each_directed_in_edges_for_label_with_inline_value_slices_reusing<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
         mut visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
         Visit: FnMut(&Edge, &[u8]),
     {
         if self
-            .edge_label_payload_profile(label)
+            .edge_label_inline_value_profile(label)
             .is_some_and(|profile| profile.required_byte_width() > 0)
         {
             let storage_label = LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
-            self.visit_in_edge_payload_batches_for_label(
+            self.visit_in_edge_inline_value_batches_for_label(
                 vertex_id,
                 storage_label,
                 order,
                 scratch,
                 |batch| {
                     let width = usize::from(batch.byte_width);
-                    debug_assert_eq!(batch.payload_bytes.len(), batch.edges.len() * width);
+                    debug_assert_eq!(batch.inline_value_bytes.len(), batch.edges.len() * width);
                     for (edge, value) in batch
                         .edges
                         .iter()
-                        .zip(batch.payload_bytes.chunks_exact(width))
+                        .zip(batch.inline_value_bytes.chunks_exact(width))
                     {
                         visit(edge, value);
                     }
@@ -493,29 +500,29 @@ impl GraphStore {
             .map_err(GraphStoreError::from)
         } else {
             self.for_each_directed_in_edges_for_label(vertex_id, label, order, |edge| {
-                visit(&edge, edge.payload_bytes());
+                visit(&edge, edge.inline_value_bytes());
             })
         }
     }
 
-    pub(crate) fn for_each_directed_in_edges_for_label_with_payloads_reusing<Visit>(
+    pub(crate) fn for_each_directed_in_edges_for_label_with_inline_values_reusing<Visit>(
         &self,
         vertex_id: VertexId,
         label: EdgeLabelId,
         order: OutEdgeOrder,
-        scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
         visit: Visit,
     ) -> Result<(), GraphStoreError>
     where
         Visit: FnMut(Edge),
     {
         let mut visit = visit;
-        self.for_each_directed_in_edges_for_label_with_payload_slices_reusing(
+        self.for_each_directed_in_edges_for_label_with_inline_value_slices_reusing(
             vertex_id,
             label,
             order,
             scratch,
-            |edge, value| visit(edge.with_payload_bytes(value)),
+            |edge, value| visit(edge.with_inline_value_bytes(value)),
         )
     }
 

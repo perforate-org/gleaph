@@ -9,17 +9,21 @@ use std::sync::Mutex;
 use crate::facade::mutation_executor::GraphMutationExecutor;
 use crate::facade::{EdgeHandle, GraphStore, GraphStoreError};
 use gleaph_gql::Value;
-use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::entry::{EdgeInlineValueProfile, EdgeLabelId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::plan_exec::{ResolvedInlineSchema, ResolvedInlineStructField};
 use ic_stable_lara::VertexId;
 
 static EDGE_LABEL_NAMES: Mutex<Option<HashMap<u16, String>>> = Mutex::new(None);
-static EDGE_PAYLOAD_PROFILES: Mutex<Option<HashMap<u16, EdgePayloadProfile>>> = Mutex::new(None);
+static EDGE_PAYLOAD_PROFILES: Mutex<Option<HashMap<u16, EdgeInlineValueProfile>>> =
+    Mutex::new(None);
 static EDGE_INLINE_PROPERTIES: Mutex<Option<HashMap<u16, PropertyId>>> = Mutex::new(None);
 static EDGE_INLINE_STRUCT_SCHEMAS: Mutex<Option<HashMap<u16, ResolvedInlineSchema>>> =
     Mutex::new(None);
 
-pub(crate) fn install_test_edge_payload_profile(label: EdgeLabelId, profile: EdgePayloadProfile) {
+pub(crate) fn install_test_edge_inline_value_profile(
+    label: EdgeLabelId,
+    profile: EdgeInlineValueProfile,
+) {
     EDGE_PAYLOAD_PROFILES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -27,7 +31,9 @@ pub(crate) fn install_test_edge_payload_profile(label: EdgeLabelId, profile: Edg
         .insert(label.raw(), profile);
 }
 
-pub(crate) fn edge_payload_profile_for_id(label: EdgeLabelId) -> Option<EdgePayloadProfile> {
+pub(crate) fn edge_inline_value_profile_for_id(
+    label: EdgeLabelId,
+) -> Option<EdgeInlineValueProfile> {
     EDGE_PAYLOAD_PROFILES
         .lock()
         .unwrap_or_else(|e| e.into_inner())
@@ -48,7 +54,7 @@ pub(crate) fn install_test_edge_inline_property(label: EdgeLabelId, property_id:
 pub(crate) fn install_test_edge_inline_struct_property(
     label: EdgeLabelId,
     property_id: PropertyId,
-    fields: Vec<(String, u16, EdgePayloadProfile)>,
+    fields: Vec<(String, u16, EdgeInlineValueProfile)>,
 ) {
     let schema = ResolvedInlineSchema::Struct {
         property_id,
@@ -91,7 +97,7 @@ pub(crate) fn edge_inline_property_for_id(label: EdgeLabelId) -> Option<Property
         .copied()
 }
 
-pub(crate) fn edge_label_ids_with_payload_profiles() -> Vec<EdgeLabelId> {
+pub(crate) fn edge_label_ids_with_inline_value_profiles() -> Vec<EdgeLabelId> {
     EDGE_PAYLOAD_PROFILES
         .lock()
         .unwrap_or_else(|e| e.into_inner())

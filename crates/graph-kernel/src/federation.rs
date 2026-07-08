@@ -38,7 +38,7 @@ pub use encoded::{
 };
 pub use expand::{
     FederatedExpandArgs, FederatedExpandDirection, FederatedExpandNeighbor,
-    MAX_FEDERATED_EXPAND_PAYLOAD_BYTE_WIDTH,
+    MAX_FEDERATED_EXPAND_INLINE_VALUE_BYTE_WIDTH,
 };
 pub use global_edge_id::GlobalEdgeId;
 pub use graph_shard_key::GraphShardKey;

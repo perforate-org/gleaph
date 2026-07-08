@@ -73,8 +73,8 @@ fn large_feed_page_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -175,8 +175,8 @@ fn large_friends_of_friends_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -195,8 +195,8 @@ fn large_friends_of_friends_plan() -> PhysicalPlan {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -232,9 +232,9 @@ fn bench_graph_large_friends_of_friends_256x64() -> canbench_rs::BenchResult {
 
 fn setup_large_road_grid_graph(store: &GraphStore) {
     let label_id = crate::test_labels::edge_label_id_for_name("BenchLargeRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgePayloadProfile::from(EdgeWeightProfile {
+        gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(EdgeWeightProfile {
             encoding: WeightEncoding::RawU16,
         }),
     );
@@ -264,7 +264,7 @@ fn setup_large_road_grid_graph(store: &GraphStore) {
             let from = vertices[idx(x, y)];
             if x + 1 < ROAD_GRID_SIDE {
                 store
-                    .insert_directed_edge_with_payload_bytes(
+                    .insert_directed_edge_with_inline_value_bytes(
                         from,
                         vertices[idx(x + 1, y)],
                         Some(road),
@@ -274,7 +274,7 @@ fn setup_large_road_grid_graph(store: &GraphStore) {
             }
             if y + 1 < ROAD_GRID_SIDE {
                 store
-                    .insert_directed_edge_with_payload_bytes(
+                    .insert_directed_edge_with_inline_value_bytes(
                         from,
                         vertices[idx(x, y + 1)],
                         Some(road),
@@ -382,7 +382,7 @@ fn large_expand_vector_bindings_bench(
     })
 }
 
-/// Fixed-label vector edge payloads over a medium fanout; L2 threshold selects 16 rows.
+/// Fixed-label vector edge inline values over a medium fanout; L2 threshold selects 16 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_l2_128scan_16match() -> canbench_rs::BenchResult {
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
@@ -399,7 +399,7 @@ fn bench_graph_large_expand_vector_l2_128scan_16match() -> canbench_rs::BenchRes
     )
 }
 
-/// Fixed-label vector edge payloads over a medium fanout; DOT threshold selects 16 rows.
+/// Fixed-label vector edge inline values over a medium fanout; DOT threshold selects 16 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_dot_128scan_16match() -> canbench_rs::BenchResult {
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];
@@ -417,7 +417,7 @@ fn bench_graph_large_expand_vector_dot_128scan_16match() -> canbench_rs::BenchRe
     )
 }
 
-/// Fixed-label vector edge payloads over a larger fanout; L2 threshold selects 64 rows.
+/// Fixed-label vector edge inline values over a larger fanout; L2 threshold selects 64 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_l2_512scan_64match() -> canbench_rs::BenchResult {
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
@@ -434,7 +434,7 @@ fn bench_graph_large_expand_vector_l2_512scan_64match() -> canbench_rs::BenchRes
     )
 }
 
-/// Fixed-label vector edge payloads over a larger fanout; DOT threshold selects 64 rows.
+/// Fixed-label vector edge inline values over a larger fanout; DOT threshold selects 64 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_dot_512scan_64match() -> canbench_rs::BenchResult {
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];
@@ -452,7 +452,7 @@ fn bench_graph_large_expand_vector_dot_512scan_64match() -> canbench_rs::BenchRe
     )
 }
 
-/// Fixed-label vector edge payloads over an xlarge logical scan; L2 threshold selects 512 rows.
+/// Fixed-label vector edge inline values over an xlarge logical scan; L2 threshold selects 512 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_l2_4096scan_512match() -> canbench_rs::BenchResult {
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
@@ -469,7 +469,7 @@ fn bench_graph_large_expand_vector_l2_4096scan_512match() -> canbench_rs::BenchR
     )
 }
 
-/// Fixed-label vector edge payloads over an xlarge logical scan; DOT threshold selects 512 rows.
+/// Fixed-label vector edge inline values over an xlarge logical scan; DOT threshold selects 512 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_dot_4096scan_512match() -> canbench_rs::BenchResult {
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];
@@ -487,7 +487,7 @@ fn bench_graph_large_expand_vector_dot_4096scan_512match() -> canbench_rs::Bench
     )
 }
 
-/// Fixed-label vector edge payloads over an xxlarge logical scan; L2 threshold selects 2,048 rows.
+/// Fixed-label vector edge inline values over an xxlarge logical scan; L2 threshold selects 2,048 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_l2_16384scan_2048match() -> canbench_rs::BenchResult {
     let query = vec![1.0; EXPAND_VECTOR_DIMS];
@@ -504,7 +504,7 @@ fn bench_graph_large_expand_vector_l2_16384scan_2048match() -> canbench_rs::Benc
     )
 }
 
-/// Fixed-label vector edge payloads over an xxlarge logical scan; DOT threshold selects 2,048 rows.
+/// Fixed-label vector edge inline values over an xxlarge logical scan; DOT threshold selects 2,048 rows.
 #[bench(raw)]
 fn bench_graph_large_expand_vector_dot_16384scan_2048match() -> canbench_rs::BenchResult {
     let query = vec![-1.0; EXPAND_VECTOR_DIMS];
@@ -573,23 +573,23 @@ fn bench_graph_large_expand_vector_bindings_l2_16384scan_2048match() -> canbench
     )
 }
 
-/// 9_500 noise + 500 matching payload edges; edge payload `Eq` predicate expand.
+/// 9_500 noise + 500 matching inline value edges; edge inline value `Eq` predicate expand.
 #[bench(raw)]
-fn bench_graph_large_expand_payload_skewed_10k_a_500b() -> canbench_rs::BenchResult {
-    bench_expand_payload_skewed(
+fn bench_graph_large_expand_inline_value_skewed_10k_a_500b() -> canbench_rs::BenchResult {
+    bench_expand_inline_value_skewed(
         EXPAND_SKEW_NOISE_L,
         EXPAND_HUB_OUT_L,
-        "large_expand_payload_skewed_10k_a_500b",
+        "large_expand_inline_value_skewed_10k_a_500b",
     )
 }
 
-/// 49_000 noise + 1_000 matching payload edges; edge payload `Eq` predicate expand.
+/// 49_000 noise + 1_000 matching inline value edges; edge inline value `Eq` predicate expand.
 #[bench(raw)]
-fn bench_graph_large_expand_payload_skewed_50k_a_1k_b() -> canbench_rs::BenchResult {
-    bench_expand_payload_skewed(
+fn bench_graph_large_expand_inline_value_skewed_50k_a_1k_b() -> canbench_rs::BenchResult {
+    bench_expand_inline_value_skewed(
         EXPAND_SKEW_NOISE_XL,
         EXPAND_HUB_OUT_XL,
-        "large_expand_payload_skewed_50k_a_1k_b",
+        "large_expand_inline_value_skewed_50k_a_1k_b",
     )
 }
 

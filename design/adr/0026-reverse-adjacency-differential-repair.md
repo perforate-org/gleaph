@@ -89,7 +89,7 @@ checked by `check_reverse_adjacency` is always restored regardless.
 `crates/graph/src/facade/derived_state/reverse_adjacency.rs`:
 `repairs_forward_only_edge_into_reverse`,
 `repairs_reverse_orphan_by_removal`,
-`rebuild_preserves_edge_payload`,
+`rebuild_preserves_edge_inline_value`,
 `rebuild_is_noop_when_consistent`,
 `rebuild_leaves_unrelated_reverse_slots_untouched`.
 

@@ -42,7 +42,7 @@ forms are query/DML-only; see §1).
 
 - ADR 0009 Phases A–E (edge postings on graph-index, router seeds, extension DDL)
 - GQL pattern parser ([`pattern.rs`](../../crates/gql/src/parser/pattern.rs)) — direction resolution from bracket / slash tokens
-- LARA labeled CSR wire keys ([`BucketLabelKey`](../../crates/ic-stable-lara/src/labeled/bucket_label_key.rs); ADR [0008](0008-edge-payload-profile-router-ssot.md) catalog SSOT)
+- LARA labeled CSR wire keys ([`BucketLabelKey`](../../crates/ic-stable-lara/src/labeled/bucket_label_key.rs); ADR [0008](0008-edge-inline-value-profile-router-ssot.md) catalog SSOT)
 
 ### Non-goals (this ADR)
 
@@ -286,6 +286,6 @@ recreate indexes with explicit `FOR` patterns.
 ## References
 
 - [ADR 0009](0009-edge-property-index-and-index-ddl.md) — edge postings, extension DDL (amended §1 key field)
-- [ADR 0008](0008-edge-payload-profile-router-ssot.md) — catalog SSOT (orthogonal to index wire keys)
+- [ADR 0008](0008-edge-inline-value-profile-router-ssot.md) — catalog SSOT (orthogonal to index wire keys)
 - [property-index.md](../index/property-index.md) — derived index semantics
 - GQL §16 edge directions — [`crates/gql/tests/section_tests/s16/`](../../crates/gql/tests/section_tests/s16/)

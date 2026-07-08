@@ -37,7 +37,7 @@ pub mod edge;
     dead_code,
     reason = "payload log helpers are used by targeted edge-value maintenance paths"
 )]
-pub mod edge_payload;
+pub mod edge_inline_value;
 pub mod maintenance;
 pub mod operation_error;
 pub mod vertex;

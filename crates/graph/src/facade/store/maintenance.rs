@@ -167,19 +167,19 @@ fn dedup_vertex_ids(vertices: &[VertexId]) -> Vec<VertexId> {
 
 #[cfg(test)]
 mod tests {
-    use gleaph_graph_kernel::entry::{EdgePayloadProfile, EdgeWeightProfile, WeightEncoding};
-    use ic_stable_lara::{OutEdgeOrder, labeled::LabeledEdgePayloadBatchScratch};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueProfile, EdgeWeightProfile, WeightEncoding};
+    use ic_stable_lara::{OutEdgeOrder, labeled::LabeledEdgeInlineValueBatchScratch};
 
     use super::*;
-    use crate::test_labels::install_test_edge_payload_profile;
+    use crate::test_labels::install_test_edge_inline_value_profile;
 
     fn setup_converging_hub_without_tombstones(store: &GraphStore) -> VertexId {
         let src = store.insert_vertex().expect("src");
         let hub = store.insert_vertex().expect("hub");
         let label = crate::test_labels::edge_label_id_for_name("BulkFinalizeRoad");
-        install_test_edge_payload_profile(
+        install_test_edge_inline_value_profile(
             label,
-            EdgePayloadProfile::from(EdgeWeightProfile {
+            EdgeInlineValueProfile::from(EdgeWeightProfile {
                 encoding: WeightEncoding::RawU16,
             }),
         );
@@ -190,7 +190,7 @@ mod tests {
         }
         for &prefix in &prefixes {
             store
-                .insert_directed_edge_with_payload_bytes(
+                .insert_directed_edge_with_inline_value_bytes(
                     prefix,
                     hub,
                     Some(label),
@@ -200,7 +200,7 @@ mod tests {
         }
         for (i, &prefix) in prefixes.iter().enumerate() {
             store
-                .insert_directed_edge_with_payload_bytes(
+                .insert_directed_edge_with_inline_value_bytes(
                     src,
                     prefix,
                     Some(label),
@@ -226,10 +226,10 @@ mod tests {
         assert_eq!(report.queued_forward, 1);
         assert_eq!(report.queued_reverse, 0);
 
-        let mut scratch = LabeledEdgePayloadBatchScratch::default();
+        let mut scratch = LabeledEdgeInlineValueBatchScratch::default();
         let mut dense = None;
         store
-            .visit_directed_out_edge_payload_batches_for_label(
+            .visit_directed_out_edge_inline_value_batches_for_label(
                 src,
                 road,
                 OutEdgeOrder::Descending,

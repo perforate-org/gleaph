@@ -127,10 +127,10 @@ impl GraphStore {
                     if !catalog_context::is_edge_property_indexed(pid) {
                         return;
                     }
-                    let Some(payload_bytes) = sortable_index_key(&value) else {
+                    let Some(inline_value_bytes) = sortable_index_key(&value) else {
                         return;
                     };
-                    f(pid, payload_bytes);
+                    f(pid, inline_value_bytes);
                 },
             );
         });

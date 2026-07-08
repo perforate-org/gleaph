@@ -671,7 +671,7 @@ where
             .overflow_log_chain_asc_indices(leaf, bucket.overflow_log_head());
         let payload_chain = self
             .values
-            .payload_log_chain_asc_indices(leaf, bucket.payload_log_head());
+            .payload_log_chain_asc_indices(leaf, bucket.inline_value_log_head());
         (edge_chain, payload_chain)
     }
 }
@@ -684,11 +684,11 @@ mod tests {
 
     #[test]
     fn visit_out_edges_with_raw_still_applies_matches_on_log_backed_bucket() {
-        let graph = payload_test_graph();
+        let graph = inline_value_test_graph();
         graph.push_vertex(LabeledVertex::default()).unwrap();
         let road = BucketLabelKey::from_raw(2);
         graph
-            .ensure_label_bucket_payload_byte_width(VertexId::from(0), road, 2u16)
+            .ensure_label_bucket_inline_value_byte_width(VertexId::from(0), road, 2u16)
             .unwrap();
         for target in 1..=33u32 {
             let weight = u16::try_from(target).expect("weight fits u16");
@@ -723,8 +723,8 @@ mod tests {
             vec![32, 30]
         );
         for edge in &visited {
-            assert_eq!(edge.payload_len, 2);
-            let b = edge.edge_payload_bytes();
+            assert_eq!(edge.inline_value_len, 2);
+            let b = edge.edge_inline_value_bytes();
             assert_eq!(
                 u16::from_le_bytes([b[0], b[1]]),
                 u16::try_from(edge.target).unwrap()

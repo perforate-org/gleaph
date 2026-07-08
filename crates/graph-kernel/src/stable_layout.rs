@@ -334,7 +334,7 @@ pub static GRAPH_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             10,
             StableMemoryClass::Canonical,
             "lara/payload",
-            "Dense labeled edge payload bytes",
+            "Dense labeled edge inline value bytes",
             RebuildPath::None,
         ),
         region(
@@ -815,8 +815,8 @@ pub static ROUTER_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout {
             "ROUTER_EDGE_PAYLOAD_PROFILES",
             21,
             StableMemoryClass::Catalog,
-            "edge payload schema",
-            "(GraphId, EdgeLabelId) → EdgePayloadSchemaRecord (ADR 0008, ADR 0018, ADR 0034 Slice 20)",
+            "edge inline value schema",
+            "(GraphId, EdgeLabelId) → EdgeInlineValueSchemaRecord (ADR 0008, ADR 0018, ADR 0034 Slice 20)",
             RebuildPath::None,
         ),
         region(

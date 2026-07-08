@@ -312,7 +312,7 @@ mod tests {
             EdgeDirection::PointingRight
         ));
     }
-    use crate::facade::stable::edge_payload_profiles::InlineScalarType;
+    use crate::facade::stable::edge_inline_value_profiles::InlineScalarType;
 
     #[test]
     fn edge_index_create_rejects_inline_scalar_property() {
@@ -423,7 +423,7 @@ mod tests {
                 graph_id,
                 "AFFINITY",
                 "stats",
-                vec![crate::edge_payload_ddl::InlineEdgeStructField {
+                vec![crate::edge_inline_value_ddl::InlineEdgeStructField {
                     name: "score".into(),
                     scalar_type: InlineScalarType::F32,
                 }],
@@ -480,7 +480,7 @@ mod tests {
                 graph_id,
                 "AFFINITY",
                 "stats",
-                vec![crate::edge_payload_ddl::InlineEdgeStructField {
+                vec![crate::edge_inline_value_ddl::InlineEdgeStructField {
                     name: "score".into(),
                     scalar_type: InlineScalarType::F32,
                 }],

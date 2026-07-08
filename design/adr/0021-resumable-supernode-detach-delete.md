@@ -264,7 +264,7 @@ than the "single LARA traverse chokepoint" this ADR first assumed:
 
 - **No single LARA yield point.** `labeled/graph/traverse.rs` (~3250 lines)
   yields edges from ~10 sites across dense-prefix, hybrid/overflow-replay, point
-  lookup, and descending paths, *including batched payload-first paths* that do
+  lookup, and descending paths, *including batched inline-value-first paths* that do
   not pass through a per-edge `next()`. Filtering inside LARA core would touch all
   of them and the batch builders — high regression risk in the storage core.
 - **~12 graph-facade entry points.** `facade/store/edge_scan.rs` exposes
@@ -297,7 +297,7 @@ into LARA:
   property-projecting traversals slower. The wrapper adds only ~1 inlined,
   gated branch per edge in steady state (off when `has_pending_vertex_purges()`).
 - **One predicate, few wrappers.** Visit shapes that carry the edge —
-  `FnMut(Edge)`, `FnMut(&Edge, &[u8])`, `FnMut(LabeledEdgePayloadBatch<Edge>)` —
+  `FnMut(Edge)`, `FnMut(&Edge, &[u8])`, `FnMut(LabeledEdgeInlineValueBatch<Edge>)` —
   all expose `edge.neighbor_vid()` (always the counterpart relative to the queried
   vertex), so one direction-agnostic predicate
   `edge_hidden_by_purge(counterpart)` serves all of them.

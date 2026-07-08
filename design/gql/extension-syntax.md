@@ -40,11 +40,11 @@ semantics.
 | ----------------------------- | ------------------------------------------------------------------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------- |
 | IC value type                 | `IC.PRINCIPAL`                                                            | Implemented                                                                                                                                                                                                                                                                                          | `gleaph-gql-ic` value extension                                                             |
 | IC runtime function           | `MSG_CALLER()`                                                            | Implemented                                                                                                                                                                                                                                                                                          | Graph execution context                                                                     |
-| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar `INLINE` schema registration, read access, mutation packing, and shortest-path `COST BY e.property` implemented** (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`; ordinary `e.property`, `WHERE e.property`, `ORDER BY e.property`, `INSERT ... {distance: 7}`, `SET e.distance = 9`, `ANY SHORTEST ... COST BY e.distance`); **fixed-size struct schema registration and ordinary struct field reads are implemented** (`CREATE EDGE LABEL ... { <property> { ... } INLINE }`; `e.stats` returns a record, `e.stats.field` works in projection, filter, `ORDER BY`, aggregate input, and sidecar precedence); struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, and nested structs remain planned | Router schema/catalog + Graph edge payload execution                                        |
+| Edge inline value             | `e.distance`, `e.stats.score` with `INLINE` schema modifier               | **Scalar `INLINE` schema registration, read access, mutation packing, and shortest-path `COST BY e.property` implemented** (`CREATE EDGE LABEL ... { <property> <scalar> INLINE }`; ordinary `e.property`, `WHERE e.property`, `ORDER BY e.property`, `INSERT ... {distance: 7}`, `SET e.distance = 9`, `ANY SHORTEST ... COST BY e.distance`); **fixed-size struct schema registration and ordinary struct field reads are implemented** (`CREATE EDGE LABEL ... { <property> { ... } INLINE }`; `e.stats` returns a record, `e.stats.field` works in projection, filter, `ORDER BY`, aggregate input, and sidecar precedence); struct mutation packing, `COST BY` over a struct field, property indexes on inline struct fields, and nested structs remain planned | Router schema/catalog + Graph edge inline value execution                                        |
 | Shortest-path cost            | `COST BY e.distance`                                                      | **Implemented** for the bounded direct-property shape: one concrete edge label, one declared edge variable, and exactly `e.<inline-property>`; `GLEAPH.COST BY GLEAPH.WEIGHT(e)` compatibility surface preserved; compound expressions and label-expression costs remain planned | Graph query planner/executor                                                                |
 | Current edge weight function  | `GLEAPH.WEIGHT(e)`                                                        | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph query executor                                                                        |
 | Edge insertion-order sequence | `GLEAPH.SEQUENCE(e)`                                                      | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Graph edge storage/execution                                                                |
-| Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Planner fusion + Graph edge payload executor                                                |
+| Edge-payload vector predicate | `GLEAPH.VECTOR.L2_SQUARED(e, $q) <= threshold`                            | Implemented compatibility surface                                                                                                                                                                                                                                                                    | Planner fusion + Graph edge inline value executor                                                |
 | Vertex vector search          | `MATCH ... SEARCH d IN (VECTOR INDEX ... FOR ... LIMIT ...) SCORE AS ...` | Implemented for one top-level `SEARCH`: leading `DISTANCE AS` / `SCORE AS` on exact-scan cosine, leading `SEARCH ... WHERE` with one to eight `AND`-connected same-binding equality predicates on distinct properties backed by active vertex property indexes, one or two same-binding numeric range predicates on the same property (one lower `>`/`>=` and one upper `<`/`<=`, intersected into one encoded interval), one to eight equality predicates plus one one- or two-sided numeric range predicate on a distinct property, two to eight `OR`-connected same-binding same-property equality predicates backed by one active vertex property index (union of `lookup_equal_page` streams with global deduplication and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property pure equality predicates backed by active vertex property indexes (one `lookup_equal_page` stream per distinct `(property_id, encoded_value)` source, with the same union, deduplication, label filtering, and candidate bound), two to eight `OR`-connected same-binding same-property numeric range predicates (one one-sided range per arm, union of `lookup_range_page` streams with interval merge within the property, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding cross-property numeric range predicates (one one-sided range per arm, per-property interval merge, union of `lookup_range_page` streams across distinct property ids, global deduplication, and the 4096 candidate bound), two to eight `OR`-connected same-binding heterogeneous equality/range predicates (each leaf independently equality or one-sided numeric range, per-property range interval merge, union of `lookup_equal_page` and `lookup_range_page` streams with global deduplication and the 4096 candidate bound), and non-leading `SEARCH` inner-joined on a bound vertex with the same filtered shapes; `SCORE AS` rejected for distance-only metrics; `WHERE` is fail-closed and index-owned; edge subjects, nested/multiple search, correlated `FOR`/`LIMIT`, text/bytes/temporal/boolean/collection/path range predicates, mixed OR/AND remain planned, and nine-or-more disjunctive arms are rejected fail-closed | Router vector-index catalog + vector canister + Graph seed hydration / resolved-search join |
 | Operational procedures        | `CALL GLEAPH.FINALIZE_*`, `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()`      | Implemented                                                                                                                                                                                                                                                                                          | Graph mutation executor / Router orchestration                                              |
 
@@ -187,13 +187,13 @@ CREATE EDGE LABEL ROAD {
 ```
 
 For each edge label, exactly one inline slot is allowed; in Slice 20 it is a scalar. The Router owns the canonical schema
-record `(graph_id, edge_label_id) → { property_id, scalar_type, derived EdgePayloadProfile }` in the
+record `(graph_id, edge_label_id) → { property_id, scalar_type, derived EdgeInlineValueProfile }` in the
 existing `ROUTER_EDGE_PAYLOAD_PROFILES` stable region. The physical profile is derived from the scalar
 type; Graph receives it on the existing `ResolvedEdgeLabel` wire and stores/executes payload bytes
 with that width and encoding.
 
 Accepted scalar types are the fixed-width forms that map losslessly to an existing
-`EdgePayloadProfile`: `UINT8`, `UINT16`, `UINT32`, `UINT64`, `INT8`, `INT16`, `INT32`, `INT64`,
+`EdgeInlineValueProfile`: `UINT8`, `UINT16`, `UINT32`, `UINT64`, `INT8`, `INT16`, `INT32`, `INT64`,
 `UINT128`, `INT128`, `FLOAT16`, `FLOAT32`, `FLOAT64`, `FIXED32`, and `FIXED64`. Every other type
 (including fixed-size structs, strings, variable-width blobs, arrays, embeddings, and weight encodings) is
 rejected fail-closed in this slice.
@@ -231,7 +231,7 @@ For each edge label, exactly one inline slot is allowed; it may be a scalar (Sli
 fixed-size struct (Slice 24), but not both. The Router owns the canonical schema record
 `(graph_id, edge_label_id) -> { property_id, declaration-ordered logical field specs [name, scalar_type] }`
 in the existing `ROUTER_EDGE_PAYLOAD_PROFILES` stable region. The physical profile sent to Graph is
-`EdgePayloadProfile::opaque_bytes(total_byte_width)`; Graph receives only the existing top-level
+`EdgeInlineValueProfile::opaque_bytes(total_byte_width)`; Graph receives only the existing top-level
 inline property identity and the derived opaque `RawBytes` profile in this slice. Struct fields are
 stored in declaration order with no padding. Bounds are enforced fail-closed: non-empty struct,
 unique field names within the struct, accepted fixed-width scalar field types only, field count
@@ -252,9 +252,9 @@ field reads (`e.stats.score`), struct mutation packing, `COST BY` over a struct 
 
 ### Relationship to `GLEAPH.WEIGHT`
 
-`GLEAPH.WEIGHT(e)` is the implemented compatibility surface for fixed-width edge payload weights.
-Ordinary inline property access (`e.distance`) and the existing edge-payload predicate surface
-(`GLEAPH.WEIGHT(e) = ...`) share the same Router-resolved `EdgePayloadProfile` and the same
+`GLEAPH.WEIGHT(e)` is the implemented compatibility surface for fixed-width edge inline value weights.
+Ordinary inline property access (`e.distance`) and the existing edge-inline-value predicate surface
+(`GLEAPH.WEIGHT(e) = ...`) share the same Router-resolved `EdgeInlineValueProfile` and the same
 Graph inline-aware read helper. The target dialect
 replaces it with ordinary property access:
 
@@ -280,7 +280,7 @@ RETURN b
 
 `GLEAPH.SEQUENCE(e)` exposes Gleaph's edge insertion-order compensation for a bound edge variable.
 The ordering value is owned by Graph edge storage and execution. It is keyed by the edge identity and
-edge-label-local insertion sequence; it is not decoded from edge payload bytes and is not a property
+edge-label-local insertion sequence; it is not decoded from edge inline value bytes and is not a property
 store lookup.
 
 Use it when a query needs deterministic ascending or descending edge order:
@@ -300,14 +300,14 @@ ORDER BY GLEAPH.SEQUENCE(e) DESC
 ```
 
 This function must be classified separately from `GLEAPH.WEIGHT(e)` and `GLEAPH.VECTOR.*` in the Rust
-manifest. Those helpers read or score fixed-width edge payload bytes; `GLEAPH.SEQUENCE(e)` reads
+manifest. Those helpers read or score fixed-width edge inline value bytes; `GLEAPH.SEQUENCE(e)` reads
 Graph-owned edge ordering metadata.
 
 ## Edge-payload vector predicates
 
 **Status:** Implemented compatibility surface.
 
-`GLEAPH.VECTOR.*` is implemented as SIMD scoring over fixed-width **edge payload** bytes, not vertex
+`GLEAPH.VECTOR.*` is implemented as SIMD scoring over fixed-width **edge inline value** bytes, not vertex
 embedding ANN search:
 
 ```gql

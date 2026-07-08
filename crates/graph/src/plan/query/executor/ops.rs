@@ -642,8 +642,8 @@ pub(crate) fn execute_ops_from<'a>(
                     label_expr,
                     var_len,
                     indexed_edge_equality,
-                    edge_payload_predicate,
-                    edge_vector_predicate,
+                    edge_inline_value_predicate,
+                    edge_inline_vector_predicate,
                     edge_property_projection,
                     dst_property_projection,
                     hop_aux_binding,
@@ -674,8 +674,8 @@ pub(crate) fn execute_ops_from<'a>(
                             path_var.as_ref(),
                             *emit_path_binding,
                             indexed_edge_equality.as_ref(),
-                            edge_payload_predicate.as_ref(),
-                            edge_vector_predicate.as_ref(),
+                            edge_inline_value_predicate.as_ref(),
+                            edge_inline_vector_predicate.as_ref(),
                             edge_property_projection.as_deref(),
                             dst_property_projection.as_deref(),
                         )
@@ -703,8 +703,8 @@ pub(crate) fn execute_ops_from<'a>(
                             *emit_edge_binding,
                             hop_aux_binding.as_ref(),
                             indexed_edge_equality.as_ref(),
-                            edge_payload_predicate.as_ref(),
-                            edge_vector_predicate.as_ref(),
+                            edge_inline_value_predicate.as_ref(),
+                            edge_inline_vector_predicate.as_ref(),
                             edge_property_projection.as_deref(),
                             dst_property_projection.as_deref(),
                         )
@@ -720,8 +720,8 @@ pub(crate) fn execute_ops_from<'a>(
                     label_expr,
                     var_len,
                     indexed_edge_equality,
-                    edge_payload_predicate,
-                    edge_vector_predicate,
+                    edge_inline_value_predicate,
+                    edge_inline_vector_predicate,
                     dst_filter,
                     edge_property_projection,
                     dst_property_projection,
@@ -753,8 +753,8 @@ pub(crate) fn execute_ops_from<'a>(
                             path_var.as_ref(),
                             *emit_path_binding,
                             indexed_edge_equality.as_ref(),
-                            edge_payload_predicate.as_ref(),
-                            edge_vector_predicate.as_ref(),
+                            edge_inline_value_predicate.as_ref(),
+                            edge_inline_vector_predicate.as_ref(),
                             edge_property_projection.as_deref(),
                             dst_property_projection.as_deref(),
                         )
@@ -782,8 +782,8 @@ pub(crate) fn execute_ops_from<'a>(
                             *emit_edge_binding,
                             hop_aux_binding.as_ref(),
                             indexed_edge_equality.as_ref(),
-                            edge_payload_predicate.as_ref(),
-                            edge_vector_predicate.as_ref(),
+                            edge_inline_value_predicate.as_ref(),
+                            edge_inline_vector_predicate.as_ref(),
                             edge_property_projection.as_deref(),
                             dst_property_projection.as_deref(),
                         )
@@ -1334,8 +1334,8 @@ mod tests {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -1376,9 +1376,9 @@ mod tests {
     fn optional_match_gleaph_weight_on_null_edge_returns_null() {
         let store = GraphStore::new();
         crate::test_labels::edge_label_id_for_name("NullWgtRel");
-        crate::test_labels::install_test_edge_payload_profile(
+        crate::test_labels::install_test_edge_inline_value_profile(
             crate::test_labels::edge_label_id_for_name("NullWgtRel"),
-            gleaph_graph_kernel::entry::EdgePayloadProfile::from(
+            gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(
                 gleaph_graph_kernel::entry::EdgeWeightProfile {
                     encoding: gleaph_graph_kernel::entry::WeightEncoding::RawU16,
                 },

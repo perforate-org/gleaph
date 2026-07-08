@@ -322,7 +322,7 @@ mod tests {
     #[test]
     fn edge_property_index_for_none_fail_closed_when_any_label_is_inline() {
         use crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES;
-        use crate::facade::stable::edge_payload_profiles::InlineScalarType;
+        use crate::facade::stable::edge_inline_value_profiles::InlineScalarType;
         let store = RouterStore::new();
         let admin = Principal::from_slice(&[1; 29]);
         store.init_from_args(&RouterInitArgs {
@@ -408,7 +408,9 @@ mod tests {
         // concrete or wildcard label queries, even when a real edge index exists on another
         // label for the same property id.
         use crate::facade::stable::ROUTER_EDGE_PAYLOAD_PROFILES;
-        use crate::facade::stable::edge_payload_profiles::{InlineScalarType, InlineStructLayout};
+        use crate::facade::stable::edge_inline_value_profiles::{
+            InlineScalarType, InlineStructLayout,
+        };
         let store = RouterStore::new();
         let admin = Principal::from_slice(&[1; 29]);
         store.init_from_args(&RouterInitArgs {

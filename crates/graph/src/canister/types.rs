@@ -98,7 +98,7 @@ pub struct E2eInsertDirectedEdgeWithPayloadArgs {
     pub target_local_vertex_id: gleaph_graph_kernel::federation::LocalVertexId,
     pub edge_label_id: u16,
     pub payload: Vec<u8>,
-    pub payload_profile: gleaph_graph_kernel::entry::EdgePayloadProfile,
+    pub inline_value_profile: gleaph_graph_kernel::entry::EdgeInlineValueProfile,
 }
 
 /// Arguments for [`super::handlers::e2e_enqueue_forward_compaction`] (PocketIC E2E only).

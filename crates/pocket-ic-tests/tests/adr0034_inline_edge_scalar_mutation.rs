@@ -1,4 +1,4 @@
-//! PocketIC coverage for ADR 0034 Slice 22: ordinary GQL mutation packing into an inline scalar edge payload.
+//! PocketIC coverage for ADR 0034 Slice 22: ordinary GQL mutation packing into an inline scalar edge inline value.
 //!
 //! Router-resolved schema identifies the named inline property. Graph evaluates and validates the
 //! mutation value before writing, encodes it into the fixed-width payload, updates every physical
@@ -66,7 +66,7 @@ fn scenario_assert_distance(env: &FederationEnv, expected: u64) {
     );
 }
 
-fn scenario_set_updates_payload_value(env: &FederationEnv, value: u64, mutation_key: &str) {
+fn scenario_set_updates_inline_value(env: &FederationEnv, value: u64, mutation_key: &str) {
     gql_execute_idempotent_as_admin(
         env,
         &format!(
@@ -166,7 +166,7 @@ fn scenario_insert_mixed_with_sidecar(env: &FederationEnv) {
 // Fixture family 1: full successful mutation lifecycle over a single edge.
 // Former contracts preserved:
 //   - inline_scalar_insert_round_trips_through_payload
-//   - inline_scalar_set_updates_payload_value
+//   - inline_scalar_set_updates_inline_value
 //   - inline_scalar_remove_rejects
 // ---------------------------------------------------------------------------
 
@@ -177,7 +177,7 @@ fn inline_scalar_mutation_lifecycle() {
     scenario_insert_round_trips_through_payload(&env, 7, "adr0034_inline_scalar_mutation_insert");
     scenario_assert_distance(&env, 7);
 
-    scenario_set_updates_payload_value(&env, 9, "adr0034_inline_scalar_mutation_set");
+    scenario_set_updates_inline_value(&env, 9, "adr0034_inline_scalar_mutation_set");
     scenario_assert_distance(&env, 9);
 
     scenario_remove_rejects_and_payload_unchanged(&env, 9, "adr0034_inline_scalar_mutation_remove");

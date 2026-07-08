@@ -1,6 +1,6 @@
 //! PocketIC coverage for ADR 0034 Slice 25: ordinary read access to fixed-size inline edge STRUCTs.
 //!
-//! Router-resolved schema identifies the named inline STRUCT slot; Graph decodes the edge payload
+//! Router-resolved schema identifies the named inline STRUCT slot; Graph decodes the edge inline value
 //! into a GQL record so `e.stats.field` works in projection, filtering, aggregate input, and
 //! ordering. The inline slot is the only read source for its `(label, property)` pair; a sidecar
 //! value cannot override it.
@@ -13,7 +13,7 @@ use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
     FederationEnv, admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
-    e2e_insert_directed_edge_with_payload, e2e_insert_vertex, e2e_insert_vertex_with_label,
+    e2e_insert_directed_edge_with_inline_value, e2e_insert_vertex, e2e_insert_vertex_with_label,
     e2e_set_edge_property, gql_execute_idempotent_as_admin,
     gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin,
     install_single_shard_federation,
@@ -29,10 +29,10 @@ fn inline_struct_ddl() -> String {
     )
 }
 
-fn affinity_profile() -> gleaph_graph_kernel::entry::EdgePayloadProfile {
-    gleaph_graph_kernel::entry::EdgePayloadProfile {
+fn affinity_profile() -> gleaph_graph_kernel::entry::EdgeInlineValueProfile {
+    gleaph_graph_kernel::entry::EdgeInlineValueProfile {
         byte_width: 16,
-        encoding: gleaph_graph_kernel::entry::EdgePayloadEncoding::RawBytes,
+        encoding: gleaph_graph_kernel::entry::EdgeInlineValueEncoding::RawBytes,
     }
 }
 
@@ -72,7 +72,7 @@ fn insert_affinity(
     confidence: f32,
     updated_at: u64,
 ) {
-    e2e_insert_directed_edge_with_payload(
+    e2e_insert_directed_edge_with_inline_value(
         env,
         env.graph_source,
         source,
@@ -208,7 +208,7 @@ fn scenario_payload_wins_over_sidecar(env: &FederationEnv, label_id: u16) {
     let target = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
     insert_affinity(env, source, target, label_id, 3.5, 0.75, 1_700_000_000);
 
-    // Write a sidecar value with the same property id; the inline payload must still win.
+    // Write a sidecar value with the same property id; the inline inline value must still win.
     let property_id = admin_intern_property(env, PROPERTY).raw();
     e2e_set_edge_property(env, env.graph_source, source, target, property_id, 99);
 
@@ -225,7 +225,7 @@ fn scenario_payload_wins_over_sidecar(env: &FederationEnv, label_id: u16) {
     assert_eq!(
         rows[0].get("s"),
         Some(&IcWireValue::Float64(3.5)),
-        "precedence scenario: payload must win over sidecar value"
+        "precedence scenario: inline value must win over sidecar value"
     );
 }
 

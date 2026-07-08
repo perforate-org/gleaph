@@ -9,7 +9,7 @@ use crate::{
     },
     lara::{
         edge::{EdgeStore, counts::SegmentEdgeCounts, segment_tree_leaf_count},
-        edge_payload::EdgePayloadStore,
+        edge_inline_value::EdgeInlineValueStore,
         operation_error::LaraOperationError,
         vertex::VertexStore,
     },
@@ -40,17 +40,17 @@ where
             if candidate.edge_slot_index_raw() != needle.edge_slot_index_raw() {
                 return false;
             }
-            let width = needle.edge_payload_byte_width();
+            let width = needle.edge_inline_value_byte_width();
             if width != 0 {
-                return candidate.edge_payload_byte_width() == width
-                    && candidate.edge_payload_bytes() == needle.edge_payload_bytes();
+                return candidate.edge_inline_value_byte_width() == width
+                    && candidate.edge_inline_value_bytes() == needle.edge_inline_value_bytes();
             }
             return true;
         }
-        let width = needle.edge_payload_byte_width();
+        let width = needle.edge_inline_value_byte_width();
         if width != 0 {
-            return candidate.edge_payload_byte_width() == width
-                && candidate.edge_payload_bytes() == needle.edge_payload_bytes();
+            return candidate.edge_inline_value_byte_width() == width
+                && candidate.edge_inline_value_bytes() == needle.edge_inline_value_bytes();
         }
         candidate == needle
     }
@@ -67,7 +67,7 @@ where
         edge_span_meta: M,
         edge_free_spans: M,
         edge_free_span_by_start: M,
-        payload_slab: M,
+        inline_value_slab: M,
         value_free_spans: M,
         value_free_span_by_start: M,
         payload_log: M,
@@ -97,8 +97,8 @@ where
                 DEFAULT_SEGMENT_SIZE,
                 DEFAULT_SEGMENT_SIZE,
             )?,
-            values: EdgePayloadStore::new(
-                payload_slab,
+            values: EdgeInlineValueStore::new(
+                inline_value_slab,
                 payload_log,
                 value_blobs,
                 value_free_spans,
@@ -125,7 +125,7 @@ where
         edge_span_meta: M,
         edge_free_spans: M,
         edge_free_span_by_start: M,
-        payload_slab: M,
+        inline_value_slab: M,
         value_free_spans: M,
         value_free_span_by_start: M,
         payload_log: M,
@@ -137,7 +137,7 @@ where
         // graph-owned composite that must be created or reopened together.
         // `value_blobs` is excluded: it may legitimately stay empty on reopen
         // (no wide payloads), and its Fresh-vs-Reopen asymmetry is enforced
-        // inside `EdgePayloadStore::init`.
+        // inside `EdgeInlineValueStore::init`.
         match crate::classify_composite_init([
             vertices.size(),
             buckets.size(),
@@ -149,7 +149,7 @@ where
             edge_span_meta.size(),
             edge_free_spans.size(),
             edge_free_span_by_start.size(),
-            payload_slab.size(),
+            inline_value_slab.size(),
             value_free_spans.size(),
             value_free_span_by_start.size(),
             payload_log.size(),
@@ -181,8 +181,8 @@ where
             )
             .map_err(InitError::Buckets)?,
             edges,
-            values: EdgePayloadStore::init(
-                payload_slab,
+            values: EdgeInlineValueStore::init(
+                inline_value_slab,
                 payload_log,
                 value_blobs,
                 value_free_spans,
@@ -212,8 +212,8 @@ where
         &self.edges
     }
 
-    /// Returns the stable edge-payload store.
-    pub fn values(&self) -> &EdgePayloadStore<M> {
+    /// Returns the stable edge-inline-value store.
+    pub fn values(&self) -> &EdgeInlineValueStore<M> {
         &self.values
     }
 

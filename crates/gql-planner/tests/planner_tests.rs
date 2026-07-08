@@ -1417,24 +1417,24 @@ fn test_indexed_edge_equality_disabled_without_stats_entry() {
 }
 
 #[test]
-fn test_gleaph_weight_equality_fuses_to_edge_payload_predicate() {
+fn test_gleaph_weight_equality_fuses_to_edge_inline_value_predicate() {
     let plan =
         plan_query("MATCH (a:Person)-[e:REL]->(b:Person) WHERE GLEAPH.WEIGHT(e) = 7 RETURN a, b");
 
     let value_eq = plan.ops.iter().find_map(|op| match op {
         PlanOp::Expand {
-            edge_payload_predicate,
+            edge_inline_value_predicate,
             ..
         }
         | PlanOp::ExpandFilter {
-            edge_payload_predicate,
+            edge_inline_value_predicate,
             ..
-        } => edge_payload_predicate.as_ref(),
+        } => edge_inline_value_predicate.as_ref(),
         _ => None,
     });
     let Some(pred) = value_eq else {
         panic!(
-            "expected edge payload predicate on Expand, got ops={:?}",
+            "expected edge inline value predicate on Expand, got ops={:?}",
             plan.ops
         );
     };
@@ -1446,24 +1446,24 @@ fn test_gleaph_weight_equality_fuses_to_edge_payload_predicate() {
 }
 
 #[test]
-fn test_gleaph_weight_gt_fuses_to_edge_payload_predicate() {
+fn test_gleaph_weight_gt_fuses_to_edge_inline_value_predicate() {
     let plan =
         plan_query("MATCH (a:Person)-[e:REL]->(b:Person) WHERE GLEAPH.WEIGHT(e) > 7 RETURN a, b");
 
     let value_pred = plan.ops.iter().find_map(|op| match op {
         PlanOp::Expand {
-            edge_payload_predicate,
+            edge_inline_value_predicate,
             ..
         }
         | PlanOp::ExpandFilter {
-            edge_payload_predicate,
+            edge_inline_value_predicate,
             ..
-        } => edge_payload_predicate.as_ref(),
+        } => edge_inline_value_predicate.as_ref(),
         _ => None,
     });
     let Some(pred) = value_pred else {
         panic!(
-            "expected edge payload predicate on Expand, got ops={:?}",
+            "expected edge inline value predicate on Expand, got ops={:?}",
             plan.ops
         );
     };
@@ -1475,7 +1475,7 @@ fn test_gleaph_weight_gt_fuses_to_edge_payload_predicate() {
 }
 
 #[test]
-fn test_gleaph_vector_l2_fuses_to_edge_vector_predicate() {
+fn test_gleaph_vector_l2_fuses_to_edge_inline_vector_predicate() {
     let plan = plan_query(
         "MATCH (a:Person)-[e:REL]->(b:Person) \
          WHERE GLEAPH.VECTOR.L2_SQUARED(e, $q) <= 4.0 RETURN a, b",
@@ -1483,18 +1483,18 @@ fn test_gleaph_vector_l2_fuses_to_edge_vector_predicate() {
 
     let value_pred = plan.ops.iter().find_map(|op| match op {
         PlanOp::Expand {
-            edge_vector_predicate,
+            edge_inline_vector_predicate,
             ..
         }
         | PlanOp::ExpandFilter {
-            edge_vector_predicate,
+            edge_inline_vector_predicate,
             ..
-        } => edge_vector_predicate.as_ref(),
+        } => edge_inline_vector_predicate.as_ref(),
         _ => None,
     });
     let Some(pred) = value_pred else {
         panic!(
-            "expected edge vector predicate on Expand, got ops={:?}",
+            "expected edge inline vector predicate on Expand, got ops={:?}",
             plan.ops
         );
     };
@@ -1508,7 +1508,7 @@ fn test_gleaph_vector_l2_fuses_to_edge_vector_predicate() {
 }
 
 #[test]
-fn test_gleaph_vector_dot_fuses_to_edge_vector_predicate() {
+fn test_gleaph_vector_dot_fuses_to_edge_inline_vector_predicate() {
     let plan = plan_query(
         "MATCH (a:Person)-[e:REL]->(b:Person) \
          WHERE GLEAPH.VECTOR.DOT(e, $q) >= 0.8 RETURN a, b",
@@ -1516,18 +1516,18 @@ fn test_gleaph_vector_dot_fuses_to_edge_vector_predicate() {
 
     let value_pred = plan.ops.iter().find_map(|op| match op {
         PlanOp::Expand {
-            edge_vector_predicate,
+            edge_inline_vector_predicate,
             ..
         }
         | PlanOp::ExpandFilter {
-            edge_vector_predicate,
+            edge_inline_vector_predicate,
             ..
-        } => edge_vector_predicate.as_ref(),
+        } => edge_inline_vector_predicate.as_ref(),
         _ => None,
     });
     let Some(pred) = value_pred else {
         panic!(
-            "expected edge vector predicate on Expand, got ops={:?}",
+            "expected edge inline vector predicate on Expand, got ops={:?}",
             plan.ops
         );
     };
@@ -1541,7 +1541,7 @@ fn test_gleaph_vector_dot_fuses_to_edge_vector_predicate() {
 }
 
 #[test]
-fn test_gleaph_vector_flipped_l2_fuses_to_edge_vector_predicate() {
+fn test_gleaph_vector_flipped_l2_fuses_to_edge_inline_vector_predicate() {
     let plan = plan_query(
         "MATCH (a:Person)-[e:REL]->(b:Person) \
          WHERE 4.0 >= GLEAPH.VECTOR.L2_SQUARED(e, $q) RETURN a, b",
@@ -1549,18 +1549,18 @@ fn test_gleaph_vector_flipped_l2_fuses_to_edge_vector_predicate() {
 
     let value_pred = plan.ops.iter().find_map(|op| match op {
         PlanOp::Expand {
-            edge_vector_predicate,
+            edge_inline_vector_predicate,
             ..
         }
         | PlanOp::ExpandFilter {
-            edge_vector_predicate,
+            edge_inline_vector_predicate,
             ..
-        } => edge_vector_predicate.as_ref(),
+        } => edge_inline_vector_predicate.as_ref(),
         _ => None,
     });
     let Some(pred) = value_pred else {
         panic!(
-            "expected edge vector predicate on Expand, got ops={:?}",
+            "expected edge inline vector predicate on Expand, got ops={:?}",
             plan.ops
         );
     };

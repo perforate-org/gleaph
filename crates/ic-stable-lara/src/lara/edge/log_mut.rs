@@ -419,7 +419,7 @@ mod tests {
         edges
     }
 
-    fn edge_payload(value: u32) -> Vec<u8> {
+    fn edge_inline_value(value: u32) -> Vec<u8> {
         let mut buf = vec![0u8; TestEdge::BYTES];
         TestEdge(value).write_to(&mut buf);
         buf
@@ -432,7 +432,7 @@ mod tests {
         let edges = fresh_edges();
         let leaf = 0u32;
         let h = edges.log.header();
-        let payload = edge_payload(7);
+        let payload = edge_inline_value(7);
         edges
             .log
             .write_entry_with_header(&h, leaf, 0, 2, &payload)
@@ -462,7 +462,7 @@ mod tests {
         let edges = fresh_edges();
         let leaf = 0u32;
         let h = edges.log.header();
-        let payload = edge_payload(7);
+        let payload = edge_inline_value(7);
         edges
             .log
             .write_entry_with_header(&h, leaf, 0, -1, &payload)

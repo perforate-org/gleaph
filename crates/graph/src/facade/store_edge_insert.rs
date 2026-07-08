@@ -26,7 +26,7 @@ pub(crate) struct InsertEdgeSpec<'a> {
     pub topology: InsertEdgeTopology,
     pub target: InsertEdgeTarget,
     pub catalog_label: Option<EdgeLabelId>,
-    pub payload_bytes: Option<&'a [u8]>,
+    pub inline_value_bytes: Option<&'a [u8]>,
 }
 
 impl GraphStore {
@@ -35,15 +35,15 @@ impl GraphStore {
         source_vertex_id: VertexId,
         spec: InsertEdgeSpec<'_>,
     ) -> Result<EdgeHandle, GraphStoreError> {
-        let valued = spec.payload_bytes.is_some_and(|b| !b.is_empty());
-        let value = spec.payload_bytes.unwrap_or(&[]);
+        let valued = spec.inline_value_bytes.is_some_and(|b| !b.is_empty());
+        let value = spec.inline_value_bytes.unwrap_or(&[]);
 
         match (spec.target, spec.topology, valued) {
             (InsertEdgeTarget::Local(target), InsertEdgeTopology::Directed, false) => {
                 self.insert_directed_edge(source_vertex_id, target, spec.catalog_label)
             }
             (InsertEdgeTarget::Local(target), InsertEdgeTopology::Directed, true) => self
-                .insert_directed_edge_with_payload_bytes(
+                .insert_directed_edge_with_inline_value_bytes(
                     source_vertex_id,
                     target,
                     spec.catalog_label,
@@ -53,7 +53,7 @@ impl GraphStore {
                 self.insert_undirected_edge(source_vertex_id, target, spec.catalog_label)
             }
             (InsertEdgeTarget::Local(target), InsertEdgeTopology::Undirected, true) => self
-                .insert_undirected_edge_with_payload_bytes(
+                .insert_undirected_edge_with_inline_value_bytes(
                     source_vertex_id,
                     target,
                     spec.catalog_label,

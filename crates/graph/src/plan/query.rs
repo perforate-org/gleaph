@@ -1,6 +1,6 @@
 mod aggregate;
 mod arena;
-mod edge_payload_batch_kernel;
+mod edge_inline_value_batch_kernel;
 mod edge_vector_kernel;
 mod error;
 mod executor;

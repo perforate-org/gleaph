@@ -450,10 +450,10 @@ pub enum PlanOp {
         /// When set, expand by probing an indexed edge-property equality first (then
         /// binding the far endpoint), instead of scanning all incident edges.
         indexed_edge_equality: Option<(Str, ScanValue)>,
-        /// When set, fixed-label expand filters by the label's inline edge-payload bytes.
-        edge_payload_predicate: Option<EdgePayloadPredicate>,
-        /// When set, fixed-label expand filters by SIMD vector scoring over inline edge payloads.
-        edge_vector_predicate: Option<EdgeVectorPredicate>,
+        /// When set, fixed-label expand filters by the label's edge inline value bytes.
+        edge_inline_value_predicate: Option<EdgeInlineValuePredicate>,
+        /// When set, fixed-label expand filters by SIMD vector scoring over edge inline values.
+        edge_inline_vector_predicate: Option<EdgeInlineVectorPredicate>,
         edge_property_projection: Option<Rc<[Str]>>,
         dst_property_projection: Option<Rc<[Str]>>,
         /// Optional variable bound to a **per-hop auxiliary scalar** after each expansion row
@@ -486,10 +486,10 @@ pub enum PlanOp {
         var_len: Option<VarLenSpec>,
         /// When set, same indexed edge-property path as [`PlanOp::Expand`].
         indexed_edge_equality: Option<(Str, ScanValue)>,
-        /// When set, same inline edge-payload predicate path as [`PlanOp::Expand`].
-        edge_payload_predicate: Option<EdgePayloadPredicate>,
-        /// When set, same inline edge-vector predicate path as [`PlanOp::Expand`].
-        edge_vector_predicate: Option<EdgeVectorPredicate>,
+        /// When set, same edge inline value predicate path as [`PlanOp::Expand`].
+        edge_inline_value_predicate: Option<EdgeInlineValuePredicate>,
+        /// When set, same edge inline vector predicate path as [`PlanOp::Expand`].
+        edge_inline_vector_predicate: Option<EdgeInlineVectorPredicate>,
         /// Predicates evaluated on the destination node during expansion.
         dst_filter: Vec<Expr>,
         edge_property_projection: Option<Rc<[Str]>>,
@@ -1145,14 +1145,14 @@ pub enum ScanValue {
 
 // CmpOp is re-exported from gleaph_gql::ast::CmpOp.
 
-/// A comparison that can be evaluated directly against fixed-width edge-payload bytes.
+/// A comparison that can be evaluated directly against fixed-width edge inline value bytes.
 #[derive(Clone, Debug, PartialEq)]
-pub struct EdgePayloadPredicate {
+pub struct EdgeInlineValuePredicate {
     pub op: CmpOp,
     pub value: ScanValue,
 }
 
-/// Vector metric evaluated directly against fixed-width `VectorF32` edge-payload bytes.
+/// Vector metric evaluated directly against fixed-width `VectorF32` edge inline value bytes.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum EdgeVectorMetric {
     Dot,
@@ -1160,9 +1160,9 @@ pub enum EdgeVectorMetric {
     CosineDistance,
 }
 
-/// A vector score comparison that can be evaluated directly against edge-payload bytes.
+/// A vector score comparison that can be evaluated directly against edge inline value bytes.
 #[derive(Clone, Debug, PartialEq)]
-pub struct EdgeVectorPredicate {
+pub struct EdgeInlineVectorPredicate {
     pub metric: EdgeVectorMetric,
     pub query: ScanValue,
     pub op: CmpOp,
@@ -1538,8 +1538,8 @@ mod property_uses_tests {
                 label_expr: None,
                 var_len: None,
                 indexed_edge_equality: None,
-                edge_payload_predicate: None,
-                edge_vector_predicate: None,
+                edge_inline_value_predicate: None,
+                edge_inline_vector_predicate: None,
                 edge_property_projection: None,
                 dst_property_projection: None,
                 hop_aux_binding: None,

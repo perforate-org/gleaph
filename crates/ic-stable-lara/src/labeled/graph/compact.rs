@@ -1184,13 +1184,13 @@ where
         self.edges
             .write_slot(from, E::tombstone_edge())
             .map_err(LabeledOperationError::from)?;
-        let width = bucket.payload_byte_width();
+        let width = bucket.inline_value_byte_width();
         if bucket.is_payload_allocated() {
-            let from_off = super::super::invariants::payload_byte_offset_at_slot(
+            let from_off = super::super::invariants::inline_value_byte_offset_at_slot(
                 bucket,
                 moved.old_slot_index,
             )?;
-            let to_off = super::super::invariants::payload_byte_offset_at_slot(
+            let to_off = super::super::invariants::inline_value_byte_offset_at_slot(
                 bucket,
                 moved.new_slot_index,
             )?;
@@ -1699,13 +1699,13 @@ where
             self.edges
                 .write_slots_contiguous(bucket.edge_start(), &buf[..run])?;
         }
-        let had_payload_log = bucket.payload_log_head() >= 0;
+        let had_payload_log = bucket.inline_value_log_head() >= 0;
         if had_payload_log {
             let leaf = self.payload_log_leaf(src);
             let (_, payload_chain) = self.bucket_log_chains(src, &bucket);
             self.values.sweep_payload_log_chain(leaf, &payload_chain);
         }
-        let saved = if bucket.is_payload_allocated() && bucket.payload_byte_width() > 0 {
+        let saved = if bucket.is_payload_allocated() && bucket.inline_value_byte_width() > 0 {
             if had_payload_log {
                 Some(self.collect_bucket_payloads_asc_order(src, vertex, bucket_index, &bucket)?)
             } else {
@@ -1720,11 +1720,11 @@ where
             .with_degree_field(degree);
         if had_payload_log {
             bucket = bucket
-                .try_with_payload_log_head(-1)
+                .try_with_inline_value_log_head(-1)
                 .map_err(LabeledOperationError::from)?;
         }
         if let Some(saved) = saved {
-            let width = bucket.payload_byte_width();
+            let width = bucket.inline_value_byte_width();
             let flat_len = saved
                 .len()
                 .checked_mul(usize::from(width))
@@ -1734,7 +1734,7 @@ where
                 flat.extend_from_slice(bytes);
             }
             self.values
-                .write_bytes(bucket.payload_offset(), &flat)
+                .write_bytes(bucket.inline_value_offset(), &flat)
                 .map_err(LabeledOperationError::from)?;
         }
         Ok(bucket)
@@ -1851,7 +1851,7 @@ where
         bucket_slot: u64,
         bucket: LabelBucket,
     ) -> Result<LabelBucket, LabeledOperationError> {
-        if bucket.payload_log_head() < 0 || !bucket.is_payload_allocated() {
+        if bucket.inline_value_log_head() < 0 || !bucket.is_payload_allocated() {
             return Ok(bucket);
         }
         let leaf = self.payload_log_leaf(src);
@@ -1860,13 +1860,13 @@ where
             self.collect_bucket_payload_slots_asc_order(src, vertex, bucket_index, &bucket)?;
         let old_payload_slots = self.bucket_resident_payload_slots_for(src, &bucket);
         let mut bucket = bucket
-            .try_with_payload_log_head(-1)
+            .try_with_inline_value_log_head(-1)
             .map_err(LabeledOperationError::from)?;
         bucket = self.ensure_bucket_payload_span(src, bucket_slot, bucket, old_payload_slots)?;
-        let width = bucket.payload_byte_width();
+        let width = bucket.inline_value_byte_width();
         for (slot_index, bytes) in &saved {
             let offset =
-                super::super::invariants::payload_byte_offset_at_slot(&bucket, *slot_index)?;
+                super::super::invariants::inline_value_byte_offset_at_slot(&bucket, *slot_index)?;
             self.values
                 .write_payload_slot(offset, width, bytes)
                 .map_err(LabeledOperationError::from)?;
@@ -1902,7 +1902,7 @@ where
                         break;
                     }
                 }
-            } else if bucket.payload_log_head() >= 0 {
+            } else if bucket.inline_value_log_head() >= 0 {
                 self.fold_label_bucket_payload_log_to_slab(
                     vid,
                     &vertex,
@@ -2084,7 +2084,7 @@ where
             }
             let buckets = self.read_vertex_label_buckets(&vertex)?;
             for (bucket_index, bucket) in buckets.iter().enumerate() {
-                if bucket.payload_log_head() < 0 {
+                if bucket.inline_value_log_head() < 0 {
                     continue;
                 }
                 let bucket_index = bucket_index as u32;

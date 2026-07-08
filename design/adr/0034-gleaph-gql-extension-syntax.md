@@ -19,15 +19,15 @@ Gleaph already has several GQL-adjacent extensions:
 
 - `IC.PRINCIPAL` values in `gleaph-gql-ic`.
 - `MSG_CALLER()` as an IC runtime function in graph execution.
-- `GLEAPH.WEIGHT(e)` and `GLEAPH.COST BY ...` for edge payload weights and shortest-path costs.
+- `GLEAPH.WEIGHT(e)` and `GLEAPH.COST BY ...` for edge inline value weights and shortest-path costs.
 - `GLEAPH.SEQUENCE(e)` for Graph-owned edge insertion-order compensation in `ORDER BY`.
-- `GLEAPH.VECTOR.*` fused edge-payload vector predicates.
+- `GLEAPH.VECTOR.*` fused edge-inline-value vector predicates.
 - `CALL GLEAPH.FINALIZE_*` / `CALL GLEAPH.DRAIN_DEFERRED_MAINTENANCE()` for operational mutation
   procedures.
 - ADR 0031 direct Router/vector-canister `vector_search`, not exposed through GQL syntax.
 
 These decisions landed incrementally. Without a single dialect contract, future syntax could drift:
-vertex embedding search might be exposed as a procedure, edge payload bytes might keep leaking through
+vertex embedding search might be exposed as a procedure, edge inline value bytes might keep leaking through
 `GLEAPH.WEIGHT`, and IC-specific concepts might enter the generic `gleaph-gql` crates.
 
 External syntax direction has also moved. Grafeo-style examples present vector similarity as part of
@@ -58,7 +58,7 @@ The existing crate boundaries are still the right foundation:
   GraphStore, stable memory, vector canisters, shard ids, and IC canister assumptions.
 - `gleaph-router` owns graph context, catalog/index definition resolution, authorization, query
   orchestration, and vector-index target resolution.
-- `gleaph-graph` owns shard-local graph execution, inline edge payload decoding, and runtime functions
+- `gleaph-graph` owns shard-local graph execution, inline edge inline value decoding, and runtime functions
   that need caller/execution context.
 - `graph-vector-index` owns ANN search, vector maintenance, rebuilds, and ranking internals.
 
@@ -70,7 +70,7 @@ enter the parser; backend-specific meaning must be attached later by the owning 
 
 ### A. Keep extending feature ADRs only
 
-Document vector search in ADR 0031, edge payload syntax in ADR 0008, IC values in `gql-ic`, and
+Document vector search in ADR 0031, edge inline value syntax in ADR 0008, IC values in `gql-ic`, and
 operational procedures near bulk-ingest code.
 
 - Benefits: no new document.
@@ -109,7 +109,7 @@ This ADR records why that contract exists and the top-level policy:
    should prefer `e.distance`, `e.score`, or `e.stats.confidence` over `GLEAPH.WEIGHT(e)` /
    `GLEAPH.PAYLOAD(e)`.
 3. **Embeddings are not inline properties.** Vertex embeddings belong to the canonical embedding store
-   and derived vector-index model, not to edge payload storage and not to ordinary variable-size
+   and derived vector-index model, not to edge inline value storage and not to ordinary variable-size
    property payloads.
 4. **Operational procedures stay under `GLEAPH.*`.** Maintenance, finalize, backfill, and internal
    imperative operations remain explicit procedures.
@@ -147,7 +147,7 @@ This ADR records why that contract exists and the top-level policy:
   status explicitly.
 - Existing and planned extension names should be centralized in a pure Rust manifest before adding
   more syntax. The manifest should be dependency-light and contain descriptors/recognizers such as
-  value types, runtime functions, path extensions, edge-payload vector predicates, search clauses,
+  value types, runtime functions, path extensions, edge-inline-value vector predicates, search clauses,
   schema modifiers, and operational procedures. It must not call the Router, Graph, stable-memory
   stores, or vector-index canisters.
 
@@ -194,9 +194,9 @@ Planned migration path:
 18. Add bounded cross-property numeric range disjunctions (2..=8 OR-connected arms) for leading and non-leading `SEARCH ... WHERE` (ADR 0034 Slice 18, done). The Planner accepts any number of `OR`-connected range predicates on the searched binding as long as every arm is a pure numeric range comparison (`<`, `<=`, `>`, `>=`) between a property of that binding and a literal or parameter, with no equality and no nested logical operator; arms may reference the same property or different properties. The provider-neutral contract is therefore "arbitrary-length pure same-binding numeric range disjunction". The Router resolves every arm to its own property id, proves an active vertex property index **per property**, derives a finite half-open encoded interval per arm, drops empty or contradictory intervals, merges overlapping/touching intervals **within each property id**, enforces the 2..=8 syntactic arm bound, and executes the union through the shared `lookup_range_page` candidate collector. Intervals are not merged across property ids because encoded numeric keys are property-specific.
 19. Add bounded heterogeneous equality/range disjunctions (2..=8 OR-connected arms) for leading and non-leading `SEARCH ... WHERE` (ADR 0034 Slice 19, done). The Planner accepts any number of `OR`-connected comparison predicates on the searched binding as long as every arm is independently either an equality comparison (`=`) or a one-sided numeric range comparison (`<`, `<=`, `>`, `>=`) between a property of that binding and a literal or parameter, with no nested logical operator, no two-sided range disjunct, and no non-comparison leaf. Properties may repeat or differ across arms and across comparison kinds. The provider-neutral contract is therefore "arbitrary-length same-binding comparison disjunction". The Router enforces one 2..=8 syntactic arm bound, resolves every arm to its own property id, proves an active vertex property index **per arm**, encodes equality values, derives finite half-open encoded intervals for range arms, validates all encoded key sizes, deduplicates exact `(property_id, encoded_value)` equality sources, groups range intervals by property id and merges overlapping/touching intervals **within each property id**, and executes the union of normalized equality and range sources through the shared bounded candidate collector. Equality and range sources may target the same property; they are not merged with each other because they are semantically distinct postings lookups. Intervals are not merged across property ids.
 
-20. Add scalar `INLINE` edge-property schema registration as a Router-owned DDL path (ADR 0034 Slice 20, implemented). The standalone statement `CREATE EDGE LABEL <label> { <property> <fixed_scalar_type> INLINE }` is parsed at the Router dialect boundary, interned through the existing label/property catalogs, and persisted as a versioned `EdgePayloadSchemaRecord` in `ROUTER_EDGE_PAYLOAD_PROFILES`. The physical `EdgePayloadProfile` is derived from the scalar type and travels on the existing `ResolvedEdgeLabel` wire to Graph, so payload DML/execution consumes the declared width/encoding without any Graph-side schema ownership change. Exactly one inline slot per edge label is enforced; exact replay is idempotent; conflicting declarations return `Conflict` with no partial catalog mutation; the `UnnamedProfile` variant remains for admin-installed profiles and cannot be silently overridden by the admin setter.
+20. Add scalar `INLINE` edge-property schema registration as a Router-owned DDL path (ADR 0034 Slice 20, implemented). The standalone statement `CREATE EDGE LABEL <label> { <property> <fixed_scalar_type> INLINE }` is parsed at the Router dialect boundary, interned through the existing label/property catalogs, and persisted as a versioned `EdgeInlineValueSchemaRecord` in `ROUTER_EDGE_PAYLOAD_PROFILES`. The physical `EdgeInlineValueProfile` is derived from the scalar type and travels on the existing `ResolvedEdgeLabel` wire to Graph, so payload DML/execution consumes the declared width/encoding without any Graph-side schema ownership change. Exactly one inline slot per edge label is enforced; exact replay is idempotent; conflicting declarations return `Conflict` with no partial catalog mutation; the `UnnamedProfile` variant remains for admin-installed profiles and cannot be silently overridden by the admin setter.
 
-21. Add ordinary read access to a Slice 20 scalar inline property through standard `e.property` syntax (ADR 0034 Slice 21, implemented). Router projects the scalar inline schema (`ResolvedInlineSchema::Scalar { property_id }`) onto `ResolvedEdgeLabel.inline_schema`; Graph resolves the named property through `ResolvedPropertyTable`, matches it against the concrete edge label's inline slot, and strictly decodes the bound edge payload bytes into the exact GQL scalar value. For the matching inline property, payload bytes are the only read source; malformed or missing payloads fail closed and a sidecar property value cannot override or rescue the read. Projection, `WHERE`, comparisons, aggregate inputs, and `ORDER BY` reuse one shared inline-aware read helper. Until an explicit inline-index maintenance slice exists, creating or activating an edge Property Index for the same `(label_id, property_id)` is rejected in both DDL orders.
+21. Add ordinary read access to a Slice 20 scalar inline property through standard `e.property` syntax (ADR 0034 Slice 21, implemented). Router projects the scalar inline schema (`ResolvedInlineSchema::Scalar { property_id }`) onto `ResolvedEdgeLabel.inline_schema`; Graph resolves the named property through `ResolvedPropertyTable`, matches it against the concrete edge label's inline slot, and strictly decodes the bound edge inline value bytes into the exact GQL scalar value. For the matching inline property, payload bytes are the only read source; malformed or missing payloads fail closed and a sidecar property value cannot override or rescue the read. Projection, `WHERE`, comparisons, aggregate inputs, and `ORDER BY` reuse one shared inline-aware read helper. Until an explicit inline-index maintenance slice exists, creating or activating an edge Property Index for the same `(label_id, property_id)` is rejected in both DDL orders.
 
 22. Add ordinary mutation packing of scalar values into a Slice 20 inline payload through standard GQL edge mutations (ADR 0034 Slice 22, implemented). For a concrete Router-resolved edge label with an `InlineScalar` schema, `INSERT` requires exactly one assignment for the named inline property, evaluates and validates it before creating any adjacency record, encodes it into the fixed-width payload bytes, and inserts the edge through the existing directed/undirected payload-aware path. `SET e.inline_property = <expr>` and `SET e = { ... }` re-resolve the concrete label, require and encode the inline value exactly once, and update the payload through the existing mirrored forward/reverse/undirected commit. `REMOVE e.inline_property` is rejected because this slice has no absence representation. Non-inline properties on the same edge retain existing sidecar storage and index-maintenance behavior. Graph uses one shared scalar codec for encoding (mutation), decoding (read), and raw predicate-byte preparation; no second schema table or sidecar fallback is introduced. Invalid, missing, duplicate, or `NULL` inline values fail closed before any canonical write.
 

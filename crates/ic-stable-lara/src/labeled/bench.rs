@@ -55,20 +55,20 @@ struct PayloadBenchEdge {
     target: u32,
     slot_index: u32,
     payload: [u8; 8],
-    payload_len: u16,
+    inline_value_len: u16,
 }
 
 impl PayloadBenchEdge {
-    fn with_payload(target: u32, payload_len: u16, bytes: &[u8]) -> Self {
+    fn with_payload(target: u32, inline_value_len: u16, bytes: &[u8]) -> Self {
         let len = u16::try_from(bytes.len()).expect("bench payload fits u16");
-        debug_assert_eq!(len, payload_len);
+        debug_assert_eq!(len, inline_value_len);
         let mut payload = [0u8; 8];
         payload[..bytes.len()].copy_from_slice(bytes);
         Self {
             target,
             slot_index: 0,
             payload,
-            payload_len,
+            inline_value_len,
         }
     }
 }
@@ -81,7 +81,7 @@ impl CsrEdge for PayloadBenchEdge {
             target: u32::from_le_bytes(bytes[0..4].try_into().unwrap()),
             slot_index: 0,
             payload: [0u8; 8],
-            payload_len: 0,
+            inline_value_len: 0,
         }
     }
 
@@ -108,19 +108,19 @@ impl CsrEdge for PayloadBenchEdge {
         self.slot_index
     }
 
-    fn edge_payload_byte_width(&self) -> u16 {
-        self.payload_len
+    fn edge_inline_value_byte_width(&self) -> u16 {
+        self.inline_value_len
     }
 
-    fn edge_payload_bytes(&self) -> &[u8] {
-        &self.payload[..usize::from(self.payload_len)]
+    fn edge_inline_value_bytes(&self) -> &[u8] {
+        &self.payload[..usize::from(self.inline_value_len)]
     }
 
-    fn with_stored_payload_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
+    fn with_stored_inline_value_bytes(mut self, width: u16, bytes: &[u8]) -> Self {
         let len = usize::from(width).min(bytes.len()).min(8);
         self.payload = [0u8; 8];
         self.payload[..len].copy_from_slice(&bytes[..len]);
-        self.payload_len = u16::try_from(len).expect("bench payload width fits u16");
+        self.inline_value_len = u16::try_from(len).expect("bench payload width fits u16");
         self
     }
 }
@@ -131,7 +131,7 @@ impl CsrEdgeTombstone for PayloadBenchEdge {
             target: u32::from(VertexId::EDGE_TOMBSTONE_SENTINEL),
             slot_index: 0,
             payload: [0u8; 8],
-            payload_len: 0,
+            inline_value_len: 0,
         }
     }
 }
@@ -148,7 +148,7 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
-        payload_slab,
+        inline_value_slab,
         value_free_spans,
         value_free_span_by_start,
         payload_log,
@@ -165,7 +165,7 @@ fn bench_graph(elem_capacity: u64) -> LabeledLaraGraph<BenchEdge, crate::VectorM
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
-        payload_slab,
+        inline_value_slab,
         value_free_spans,
         value_free_span_by_start,
         payload_log,
@@ -190,7 +190,7 @@ fn payload_bench_graph(
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
-        payload_slab,
+        inline_value_slab,
         value_free_spans,
         value_free_span_by_start,
         payload_log,
@@ -207,7 +207,7 @@ fn payload_bench_graph(
         edge_span_meta,
         edge_free_spans,
         edge_free_span_by_start,
-        payload_slab,
+        inline_value_slab,
         value_free_spans,
         value_free_span_by_start,
         payload_log,
@@ -244,7 +244,7 @@ fn seed_overflow_payload_hub(
     let vid = VertexId::from(0);
     let label = BucketLabelKey::from_raw(2);
     graph
-        .ensure_label_bucket_payload_byte_width(vid, label, payload_width)
+        .ensure_label_bucket_inline_value_byte_width(vid, label, payload_width)
         .expect("payload width");
     for target in 1..=edge_count {
         let mut payload = [0u8; 8];
@@ -717,7 +717,7 @@ fn bench_labeled_payload_log_scan_8b_inline_overflow() -> canbench_rs::BenchResu
         for _ in 0..CONVERGING_HUB_EXPAND_CALLS {
             let mut byte_count = 0usize;
             graph
-                .visit_out_payload_value_batches_for_label(
+                .visit_out_inline_value_batches_for_label(
                     vid,
                     label,
                     OutEdgeOrder::Descending,
@@ -748,7 +748,7 @@ fn bench_labeled_tombstone_log_delete_then_scan() -> canbench_rs::BenchResult {
             let mut count = 0usize;
             graph
                 .for_each_edges_for_label(vid, label, |edge| {
-                    count += usize::from(edge.payload_len > 0);
+                    count += usize::from(edge.inline_value_len > 0);
                 })
                 .expect("for_each");
             black_box(count);

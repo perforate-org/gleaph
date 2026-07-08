@@ -11,8 +11,8 @@ use gleaph_gql_planner::plan::{PlanOp, ShortestMode, ShortestPathCost, Str, VarL
 use gleaph_graph_kernel::entry::{Edge, EdgeDirectedness, EdgeLabelId, PreparedWeightDecoder};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
 use ic_stable_lara::VertexId;
-use ic_stable_lara::labeled::LabeledEdgePayloadBatch;
-use ic_stable_lara::labeled::{LabeledEdgePayloadBatchScratch, OutEdgeOrder};
+use ic_stable_lara::labeled::LabeledEdgeInlineValueBatch;
+use ic_stable_lara::labeled::{LabeledEdgeInlineValueBatchScratch, OutEdgeOrder};
 
 #[cfg(all(feature = "canbench", target_family = "wasm"))]
 use canbench_rs::bench_scope;
@@ -277,10 +277,10 @@ pub(crate) async fn execute_shortest_path(
     Ok(out)
 }
 
-/// Controls whether shortest-path expansion hydrates edge payloads and reuses batch scratch.
+/// Controls whether shortest-path expansion hydrates edge inline values and reuses batch scratch.
 pub(crate) struct ShortestExpandOptions<'a> {
     pub load_payloads: bool,
-    pub payload_scratch: Option<&'a mut LabeledEdgePayloadBatchScratch<Edge>>,
+    pub payload_scratch: Option<&'a mut LabeledEdgeInlineValueBatchScratch<Edge>>,
 }
 
 /// Holds a catalog [`EdgeLabelId`] per shortest-path search; expansion uses directed/undirected
@@ -335,7 +335,7 @@ impl ShortestFixedLabelExpand {
                 };
                 if options.load_payloads {
                     if let Some(scratch) = options.payload_scratch {
-                        store.for_each_directed_out_edges_for_label_with_payloads_reusing(
+                        store.for_each_directed_out_edges_for_label_with_inline_values_reusing(
                             current,
                             label,
                             OutEdgeOrder::Descending,
@@ -343,7 +343,7 @@ impl ShortestFixedLabelExpand {
                             &mut visit_edge,
                         )?;
                     } else {
-                        store.for_each_directed_out_edges_for_label_with_payloads(
+                        store.for_each_directed_out_edges_for_label_with_inline_values(
                             current,
                             label,
                             OutEdgeOrder::Descending,
@@ -384,7 +384,7 @@ impl ShortestFixedLabelExpand {
                 };
                 if options.load_payloads {
                     if let Some(scratch) = options.payload_scratch {
-                        store.for_each_directed_in_edges_for_label_with_payloads_reusing(
+                        store.for_each_directed_in_edges_for_label_with_inline_values_reusing(
                             current,
                             label,
                             OutEdgeOrder::Descending,
@@ -392,7 +392,7 @@ impl ShortestFixedLabelExpand {
                             &mut visit_edge,
                         )?;
                     } else {
-                        store.for_each_directed_in_edges_for_label_with_payloads(
+                        store.for_each_directed_in_edges_for_label_with_inline_values(
                             current,
                             label,
                             OutEdgeOrder::Descending,
@@ -444,7 +444,7 @@ impl ShortestFixedLabelExpand {
         self,
         store: &GraphStore,
         current: VertexId,
-        scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
         mut visit: Visit,
     ) -> Result<(), PlanQueryError>
     where
@@ -465,7 +465,7 @@ impl ShortestFixedLabelExpand {
                     }
                 };
                 store
-                    .for_each_directed_out_edges_for_label_with_payload_slices_reusing(
+                    .for_each_directed_out_edges_for_label_with_inline_value_slices_reusing(
                         current,
                         label,
                         OutEdgeOrder::Descending,
@@ -491,7 +491,7 @@ impl ShortestFixedLabelExpand {
                     }
                 };
                 store
-                    .for_each_directed_in_edges_for_label_with_payload_slices_reusing(
+                    .for_each_directed_in_edges_for_label_with_inline_value_slices_reusing(
                         current,
                         label,
                         OutEdgeOrder::Descending,
@@ -513,15 +513,16 @@ impl ShortestFixedLabelExpand {
     }
 
     /// Expands fixed-label edges in LARA payload batches (dense slab bulk-read groups).
-    pub(crate) fn expand_payload_batches<Visit>(
+    pub(crate) fn expand_inline_value_batches<Visit>(
         self,
         store: &GraphStore,
         current: VertexId,
-        scratch: &mut LabeledEdgePayloadBatchScratch<Edge>,
+        scratch: &mut LabeledEdgeInlineValueBatchScratch<Edge>,
         mut visit: Visit,
     ) -> Result<(), PlanQueryError>
     where
-        Visit: for<'b> FnMut(&'b LabeledEdgePayloadBatch<'b, Edge>) -> Result<(), PlanQueryError>,
+        Visit:
+            for<'b> FnMut(&'b LabeledEdgeInlineValueBatch<'b, Edge>) -> Result<(), PlanQueryError>,
     {
         match self {
             Self::Forward { label } => {
@@ -531,7 +532,7 @@ impl ShortestFixedLabelExpand {
                     LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
                 let mut expand_err = None;
                 store
-                    .visit_out_edge_payload_batches_for_label(
+                    .visit_out_edge_inline_value_batches_for_label(
                         current,
                         storage_label,
                         OutEdgeOrder::Descending,
@@ -559,7 +560,7 @@ impl ShortestFixedLabelExpand {
                     LaraLabelId::from_raw(label.pack(EdgeDirectedness::Directed).raw());
                 let mut expand_err = None;
                 store
-                    .visit_in_edge_payload_batches_for_label(
+                    .visit_in_edge_inline_value_batches_for_label(
                         current,
                         storage_label,
                         OutEdgeOrder::Descending,

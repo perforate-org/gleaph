@@ -1,8 +1,10 @@
 use super::super::test_support::*;
 use super::execute_var_len_expand;
-use super::predicates::{PreparedEdgePayloadPredicate, PreparedEdgeVectorThreshold};
+use super::predicates::{PreparedEdgeInlineValuePredicate, PreparedEdgeInlineVectorThreshold};
 use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
-use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorMetric, EdgeVectorPredicate};
+use gleaph_gql_planner::plan::{
+    EdgeInlineValuePredicate, EdgeInlineVectorPredicate, EdgeVectorMetric,
+};
 use gleaph_graph_kernel::federation::{ElementIdEncodingKey, GlobalVertexId, ShardId};
 use pollster;
 
@@ -216,9 +218,9 @@ fn executes_planner_union_label_expr_expand() {
 }
 
 #[test]
-fn union_label_expr_edge_payload_predicate_fuses_per_label() {
+fn union_label_expr_edge_inline_value_predicate_fuses_per_label() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     use gleaph_graph_kernel::plan_exec::{
         ResolvedEdgeLabel, ResolvedLabelTable, ResolvedVertexLabel,
     };
@@ -252,15 +254,15 @@ fn union_label_expr_edge_payload_predicate_fuses_per_label() {
         .expect("likes skip");
     let knows_label = crate::test_labels::edge_label_id_for_name("UnionPayloadFusionKnows");
     let likes_label = crate::test_labels::edge_label_id_for_name("UnionPayloadFusionLikes");
-    let profile = EdgePayloadProfile {
+    let profile = EdgeInlineValueProfile {
         byte_width: 2,
-        encoding: EdgePayloadEncoding::WeightRawU16,
+        encoding: EdgeInlineValueEncoding::WeightRawU16,
     };
     for label_id in [knows_label, likes_label] {
-        crate::test_labels::install_test_edge_payload_profile(label_id, profile.clone());
+        crate::test_labels::install_test_edge_inline_value_profile(label_id, profile.clone());
     }
     store
-        .insert_directed_edge_with_payload_bytes(
+        .insert_directed_edge_with_inline_value_bytes(
             a,
             knows_match,
             Some(knows_label),
@@ -268,7 +270,7 @@ fn union_label_expr_edge_payload_predicate_fuses_per_label() {
         )
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(
+        .insert_directed_edge_with_inline_value_bytes(
             a,
             knows_skip,
             Some(knows_label),
@@ -276,7 +278,7 @@ fn union_label_expr_edge_payload_predicate_fuses_per_label() {
         )
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(
+        .insert_directed_edge_with_inline_value_bytes(
             a,
             likes_match,
             Some(likes_label),
@@ -284,7 +286,7 @@ fn union_label_expr_edge_payload_predicate_fuses_per_label() {
         )
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(
+        .insert_directed_edge_with_inline_value_bytes(
             a,
             likes_skip,
             Some(likes_label),
@@ -338,11 +340,11 @@ fn union_label_expr_edge_payload_predicate_fuses_per_label() {
             label_expr: Some(label_expr),
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: Some(EdgePayloadPredicate {
+            edge_inline_value_predicate: Some(EdgeInlineValuePredicate {
                 op: CmpOp::Eq,
                 value: ScanValue::Literal(Value::Int64(7)),
             }),
-            edge_vector_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -366,9 +368,9 @@ fn union_label_expr_edge_payload_predicate_fuses_per_label() {
 }
 
 #[test]
-fn wildcard_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
+fn wildcard_label_expr_edge_inline_value_predicate_fuses_via_catalog_fallback() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["WcPayloadA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -381,19 +383,19 @@ fn wildcard_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
     let road = crate::test_labels::edge_label_id_for_name("WcPayloadRoad");
     let alt = crate::test_labels::edge_label_id_for_name("WcPayloadAlt");
     for label_id in [road, alt] {
-        crate::test_labels::install_test_edge_payload_profile(
+        crate::test_labels::install_test_edge_inline_value_profile(
             label_id,
-            EdgePayloadProfile {
+            EdgeInlineValueProfile {
                 byte_width: 2,
-                encoding: EdgePayloadEncoding::WeightRawU16,
+                encoding: EdgeInlineValueEncoding::WeightRawU16,
             },
         );
     }
     store
-        .insert_directed_edge_with_payload_bytes(a, match_b, Some(road), &5u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, match_b, Some(road), &5u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, skip_b, Some(alt), &9u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, skip_b, Some(alt), &9u16.to_le_bytes())
         .unwrap();
 
     let plan = plan(vec![
@@ -411,11 +413,11 @@ fn wildcard_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
             label_expr: Some(LabelExpr::Wildcard),
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: Some(EdgePayloadPredicate {
+            edge_inline_value_predicate: Some(EdgeInlineValuePredicate {
                 op: CmpOp::Eq,
                 value: ScanValue::Literal(Value::Int64(5)),
             }),
-            edge_vector_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -430,9 +432,9 @@ fn wildcard_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
             distinct: false,
         },
     ]);
-    let profile = EdgePayloadProfile {
+    let profile = EdgeInlineValueProfile {
         byte_width: 2,
-        encoding: EdgePayloadEncoding::WeightRawU16,
+        encoding: EdgeInlineValueEncoding::WeightRawU16,
     };
     let resolved_labels = gleaph_graph_kernel::plan_exec::ResolvedLabelTable {
         vertex: vec![gleaph_graph_kernel::plan_exec::ResolvedVertexLabel {
@@ -463,9 +465,9 @@ fn wildcard_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
 }
 
 #[test]
-fn not_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
+fn not_label_expr_edge_inline_value_predicate_fuses_via_catalog_fallback() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["NotPayloadA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -478,19 +480,24 @@ fn not_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
     let road = crate::test_labels::edge_label_id_for_name("NotPayloadRoad");
     let alt = crate::test_labels::edge_label_id_for_name("NotPayloadAlt");
     for label_id in [road, alt] {
-        crate::test_labels::install_test_edge_payload_profile(
+        crate::test_labels::install_test_edge_inline_value_profile(
             label_id,
-            EdgePayloadProfile {
+            EdgeInlineValueProfile {
                 byte_width: 2,
-                encoding: EdgePayloadEncoding::WeightRawU16,
+                encoding: EdgeInlineValueEncoding::WeightRawU16,
             },
         );
     }
     store
-        .insert_directed_edge_with_payload_bytes(a, road_target, Some(road), &5u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(
+            a,
+            road_target,
+            Some(road),
+            &5u16.to_le_bytes(),
+        )
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, alt_target, Some(alt), &5u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, alt_target, Some(alt), &5u16.to_le_bytes())
         .unwrap();
 
     let plan = plan(vec![
@@ -510,11 +517,11 @@ fn not_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
             )))),
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: Some(EdgePayloadPredicate {
+            edge_inline_value_predicate: Some(EdgeInlineValuePredicate {
                 op: CmpOp::Eq,
                 value: ScanValue::Literal(Value::Int64(5)),
             }),
-            edge_vector_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -529,9 +536,9 @@ fn not_label_expr_edge_payload_predicate_fuses_via_catalog_fallback() {
             distinct: false,
         },
     ]);
-    let profile = EdgePayloadProfile {
+    let profile = EdgeInlineValueProfile {
         byte_width: 2,
-        encoding: EdgePayloadEncoding::WeightRawU16,
+        encoding: EdgeInlineValueEncoding::WeightRawU16,
     };
     let resolved_labels = gleaph_graph_kernel::plan_exec::ResolvedLabelTable {
         vertex: vec![gleaph_graph_kernel::plan_exec::ResolvedVertexLabel {
@@ -660,9 +667,9 @@ fn var_len_edge_property_projection_returns_projected_properties() {
 }
 
 #[test]
-fn expand_hop_aux_binding_returns_edge_payload_bytes() {
+fn expand_hop_aux_binding_returns_edge_inline_value_bytes() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["HopAuxA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -670,16 +677,16 @@ fn expand_hop_aux_binding_returns_edge_payload_bytes() {
         .insert_vertex_named(["HopAuxB"], Vec::<(&str, Value)>::new())
         .expect("b");
     let label_id = crate::test_labels::edge_label_id_for_name("HopAuxRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     let payload = 7u16.to_le_bytes();
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &payload)
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &payload)
         .unwrap();
 
     let plan = plan_gql("MATCH (a:HopAuxA)-[e:HopAuxRoad]->(b:HopAuxB) RETURN e__hop_aux AS aux");
@@ -706,9 +713,9 @@ fn expand_hop_aux_binding_returns_edge_payload_bytes() {
 }
 
 #[test]
-fn var_len_hop_aux_binding_returns_payload_bytes_list() {
+fn var_len_hop_aux_binding_returns_inline_value_bytes_list() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["HopAuxVarA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -719,20 +726,20 @@ fn var_len_hop_aux_binding_returns_payload_bytes_list() {
         .insert_vertex_named(["HopAuxVarC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("HopAuxVarRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     let hop1 = 3u16.to_le_bytes();
     let hop2 = 7u16.to_le_bytes();
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &hop1)
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &hop1)
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &hop2)
+        .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), &hop2)
         .unwrap();
 
     let plan = plan_gql(
@@ -865,8 +872,8 @@ fn directed_expand_projects_endpoint_and_edge_properties() {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -935,8 +942,8 @@ fn reverse_expand_resolves_edge_properties_through_alias() {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -993,8 +1000,8 @@ fn undirected_expand_from_noncanonical_endpoint_resolves_edge_properties_through
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -1196,8 +1203,8 @@ fn expand_filter_applies_destination_predicate() {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             dst_filter: vec![Expr::new(ExprKind::Compare {
                 left: Box::new(prop("b", "age")),
                 op: CmpOp::Gt,
@@ -1260,8 +1267,8 @@ fn expand_indexed_edge_equality_filters_candidates() {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: Some(("weight".into(), ScanValue::Literal(Value::Int64(5)))),
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -1286,7 +1293,7 @@ fn expand_indexed_edge_equality_filters_candidates() {
 fn indexed_edge_equality_expand_return_gleaph_weight() {
     let store = GraphStore::new();
     let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["IdxEqWgtA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1297,22 +1304,32 @@ fn indexed_edge_equality_expand_return_gleaph_weight() {
         .insert_vertex_named(["IdxEqWgtB"], Vec::<(&str, Value)>::new())
         .expect("b miss");
     let label_id = crate::test_labels::edge_label_id_for_name("IdxEqWgtRel");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     let weight_prop = crate::test_labels::property_id_for_name("weight");
     let match_edge = store
-        .insert_directed_edge_with_payload_bytes(a, b_match, Some(label_id), &5u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(
+            a,
+            b_match,
+            Some(label_id),
+            &5u16.to_le_bytes(),
+        )
         .expect("match edge");
     store
         .set_edge_property(match_edge, weight_prop, Value::Int64(5))
         .expect("match edge property");
     let miss_edge = store
-        .insert_directed_edge_with_payload_bytes(a, b_miss, Some(label_id), &9u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(
+            a,
+            b_miss,
+            Some(label_id),
+            &9u16.to_le_bytes(),
+        )
         .expect("miss edge");
     store
         .set_edge_property(miss_edge, weight_prop, Value::Int64(9))
@@ -1338,8 +1355,8 @@ fn indexed_edge_equality_expand_return_gleaph_weight() {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: Some(("weight".into(), ScanValue::Literal(Value::Int64(5)))),
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -1389,8 +1406,8 @@ fn expand_applies_dst_property_projection_for_property_return() {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: Some(Rc::from([])),
             dst_property_projection: Some(Rc::from([Str::from("uid")])),
             hop_aux_binding: None,
@@ -1454,8 +1471,8 @@ fn return_star_projects_vertex_and_edge_records() {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -1492,14 +1509,14 @@ fn return_abs_gleaph_weight_does_not_break_decoder_prep() {
         .insert_vertex_named(["AbsWgtB"], Vec::<(&str, Value)>::new())
         .expect("b");
     let label_id = crate::test_labels::edge_label_id_for_name("AbsWgtRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        gleaph_graph_kernel::entry::EdgePayloadProfile::from(EdgeWeightProfile {
+        gleaph_graph_kernel::entry::EdgeInlineValueProfile::from(EdgeWeightProfile {
             encoding: WeightEncoding::RawU16,
         }),
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
         .expect("edge");
     let gql = "MATCH (a:AbsWgtA)-[e:AbsWgtRoad]->(b:AbsWgtB) RETURN ABS(GLEAPH.WEIGHT(e)) AS w";
     let plan = plan_gql(gql);
@@ -1511,9 +1528,9 @@ fn return_abs_gleaph_weight_does_not_break_decoder_prep() {
 }
 
 #[test]
-fn gleaph_weight_accepts_edge_payload_profile_without_legacy_weight_profile() {
+fn gleaph_weight_accepts_edge_inline_value_profile_without_legacy_weight_profile() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["PayloadProfileWgtA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1521,15 +1538,15 @@ fn gleaph_weight_accepts_edge_payload_profile_without_legacy_weight_profile() {
         .insert_vertex_named(["PayloadProfileWgtB"], Vec::<(&str, Value)>::new())
         .expect("b");
     let label_id = crate::test_labels::edge_label_id_for_name("PayloadProfileWgtRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &[9, 0])
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &[9, 0])
         .expect("edge");
 
     let gql = "MATCH (a:PayloadProfileWgtA)-[e:PayloadProfileWgtRoad]->(b:PayloadProfileWgtB) RETURN GLEAPH.WEIGHT(e) AS w";
@@ -1543,7 +1560,7 @@ fn gleaph_weight_accepts_edge_payload_profile_without_legacy_weight_profile() {
 #[test]
 fn gql_union_label_expr_return_gleaph_weight_decodes_per_edge_label() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["ExpandUnionWgtA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1556,19 +1573,19 @@ fn gql_union_label_expr_return_gleaph_weight_decodes_per_edge_label() {
     let knows = crate::test_labels::edge_label_id_for_name("ExpandUnionWgtKnows");
     let likes = crate::test_labels::edge_label_id_for_name("ExpandUnionWgtLikes");
     for label_id in [knows, likes] {
-        crate::test_labels::install_test_edge_payload_profile(
+        crate::test_labels::install_test_edge_inline_value_profile(
             label_id,
-            EdgePayloadProfile {
+            EdgeInlineValueProfile {
                 byte_width: 2,
-                encoding: EdgePayloadEncoding::WeightRawU16,
+                encoding: EdgeInlineValueEncoding::WeightRawU16,
             },
         );
     }
     store
-        .insert_directed_edge_with_payload_bytes(a, b1, Some(knows), &5u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b1, Some(knows), &5u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, b2, Some(likes), &9u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b2, Some(likes), &9u16.to_le_bytes())
         .unwrap();
 
     let plan = plan_gql(
@@ -1587,7 +1604,7 @@ fn gql_union_label_expr_return_gleaph_weight_decodes_per_edge_label() {
 #[test]
 fn gql_union_label_expr_where_gleaph_weight_equality_fuses_and_filters() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["ExpandUnionWgtEqA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1600,19 +1617,19 @@ fn gql_union_label_expr_where_gleaph_weight_equality_fuses_and_filters() {
     let knows = crate::test_labels::edge_label_id_for_name("ExpandUnionWgtEqKnows");
     let likes = crate::test_labels::edge_label_id_for_name("ExpandUnionWgtEqLikes");
     for label_id in [knows, likes] {
-        crate::test_labels::install_test_edge_payload_profile(
+        crate::test_labels::install_test_edge_inline_value_profile(
             label_id,
-            EdgePayloadProfile {
+            EdgeInlineValueProfile {
                 byte_width: 2,
-                encoding: EdgePayloadEncoding::WeightRawU16,
+                encoding: EdgeInlineValueEncoding::WeightRawU16,
             },
         );
     }
     store
-        .insert_directed_edge_with_payload_bytes(a, match_b, Some(knows), &7u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, match_b, Some(knows), &7u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, skip_b, Some(likes), &9u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, skip_b, Some(likes), &9u16.to_le_bytes())
         .unwrap();
 
     let plan = plan_gql(
@@ -1629,7 +1646,7 @@ fn gql_union_label_expr_where_gleaph_weight_equality_fuses_and_filters() {
 #[test]
 fn gql_var_len_scalar_gleaph_weight_is_rejected() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["VarLenWgtA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1640,18 +1657,18 @@ fn gql_var_len_scalar_gleaph_weight_is_rejected() {
         .insert_vertex_named(["VarLenWgtC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("VarLenWgtRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
         .unwrap();
 
     let plan = plan_gql(
@@ -1671,7 +1688,7 @@ fn gql_var_len_scalar_gleaph_weight_is_rejected() {
 #[test]
 fn gql_var_len_return_gleaph_weight_decodes_indexed_last_hop_edge() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["VarLenWgtA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1682,18 +1699,18 @@ fn gql_var_len_return_gleaph_weight_decodes_indexed_last_hop_edge() {
         .insert_vertex_named(["VarLenWgtC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("VarLenWgtRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
         .unwrap();
 
     let plan = plan_gql(
@@ -1710,7 +1727,7 @@ fn gql_var_len_return_gleaph_weight_decodes_indexed_last_hop_edge() {
 #[test]
 fn gql_var_len_return_sum_gleaph_weight_over_edge_group_via_let() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["VarLenSumA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1721,18 +1738,18 @@ fn gql_var_len_return_sum_gleaph_weight_over_edge_group_via_let() {
         .insert_vertex_named(["VarLenSumC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("VarLenSumRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
         .unwrap();
 
     let plan = plan_gql(
@@ -1751,7 +1768,7 @@ fn gql_var_len_return_sum_gleaph_weight_over_edge_group_via_let() {
 #[test]
 fn gql_var_len_return_sum_gleaph_weight_implicit_aggregate() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["VarLenSumRetA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1762,18 +1779,18 @@ fn gql_var_len_return_sum_gleaph_weight_implicit_aggregate() {
         .insert_vertex_named(["VarLenSumRetC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("VarLenSumRetRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), &7u16.to_le_bytes())
         .unwrap();
 
     let plan = plan_gql(
@@ -1922,7 +1939,7 @@ fn gql_var_len_path_var_binds_traversed_path() {
 #[test]
 fn gql_var_len_where_gleaph_weight_filters_on_last_hop_edge() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["VarLenWgtEqA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1933,21 +1950,21 @@ fn gql_var_len_where_gleaph_weight_filters_on_last_hop_edge() {
         .insert_vertex_named(["VarLenWgtEqC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("VarLenWgtEqRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &3u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &9u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), &9u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, c, Some(label_id), &5u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, c, Some(label_id), &5u16.to_le_bytes())
         .unwrap();
 
     let plan = plan_gql(
@@ -1963,9 +1980,9 @@ fn gql_var_len_where_gleaph_weight_filters_on_last_hop_edge() {
 }
 
 #[test]
-fn var_len_edge_payload_predicate_fuses_at_each_hop() {
+fn var_len_edge_inline_value_predicate_fuses_at_each_hop() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["VarLenFusA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1976,18 +1993,18 @@ fn var_len_edge_payload_predicate_fuses_at_each_hop() {
         .insert_vertex_named(["VarLenFusC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("VarLenFusRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &5u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), &5u16.to_le_bytes())
         .unwrap();
 
     let plan = plan(vec![
@@ -2008,11 +2025,11 @@ fn var_len_edge_payload_predicate_fuses_at_each_hop() {
                 max: Some(2),
             }),
             indexed_edge_equality: None,
-            edge_payload_predicate: Some(EdgePayloadPredicate {
+            edge_inline_value_predicate: Some(EdgeInlineValuePredicate {
                 op: CmpOp::Eq,
                 value: ScanValue::Literal(Value::Int64(5)),
             }),
-            edge_vector_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -2039,9 +2056,9 @@ fn var_len_edge_payload_predicate_fuses_at_each_hop() {
 }
 
 #[test]
-fn gql_var_len_where_gleaph_weight_fuses_payload_predicate_per_hop() {
+fn gql_var_len_where_gleaph_weight_fuses_inline_value_predicate_per_hop() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["VarLenFusGqlA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -2052,18 +2069,18 @@ fn gql_var_len_where_gleaph_weight_fuses_payload_predicate_per_hop() {
         .insert_vertex_named(["VarLenFusGqlC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("VarLenFusGqlRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &5u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &5u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &5u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), &5u16.to_le_bytes())
         .unwrap();
 
     let plan = plan_gql(
@@ -2074,11 +2091,11 @@ fn gql_var_len_where_gleaph_weight_fuses_payload_predicate_per_hop() {
         matches!(
             op,
             PlanOp::Expand {
-                edge_payload_predicate: Some(_),
+                edge_inline_value_predicate: Some(_),
                 var_len: Some(_),
                 ..
             } | PlanOp::ExpandFilter {
-                edge_payload_predicate: Some(_),
+                edge_inline_value_predicate: Some(_),
                 var_len: Some(_),
                 ..
             }
@@ -2098,9 +2115,9 @@ fn gql_var_len_where_gleaph_weight_fuses_payload_predicate_per_hop() {
 }
 
 #[test]
-fn gql_gleaph_weight_equality_uses_edge_payload_predicate_expand() {
+fn gql_gleaph_weight_equality_uses_edge_inline_value_predicate_expand() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["GqlBatchEqualA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -2111,18 +2128,18 @@ fn gql_gleaph_weight_equality_uses_edge_payload_predicate_expand() {
         .insert_vertex_named(["GqlBatchEqualC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("GqlBatchEqualRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, c, Some(label_id), &9u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, c, Some(label_id), &9u16.to_le_bytes())
         .unwrap();
 
     let plan = plan_gql(
@@ -2137,9 +2154,9 @@ fn gql_gleaph_weight_equality_uses_edge_payload_predicate_expand() {
 }
 
 #[test]
-fn gql_gleaph_weight_gt_uses_edge_payload_predicate_expand() {
+fn gql_gleaph_weight_gt_uses_edge_inline_value_predicate_expand() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["GqlBatchGtA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -2150,18 +2167,18 @@ fn gql_gleaph_weight_gt_uses_edge_payload_predicate_expand() {
         .insert_vertex_named(["GqlBatchGtC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("GqlBatchGtRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, c, Some(label_id), &9u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, c, Some(label_id), &9u16.to_le_bytes())
         .unwrap();
 
     let plan = plan_gql(
@@ -2176,9 +2193,9 @@ fn gql_gleaph_weight_gt_uses_edge_payload_predicate_expand() {
 }
 
 #[test]
-fn gql_gleaph_vector_l2_uses_edge_vector_predicate_expand() {
+fn gql_gleaph_vector_l2_uses_edge_inline_vector_predicate_expand() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["GqlVectorA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -2189,20 +2206,20 @@ fn gql_gleaph_vector_l2_uses_edge_vector_predicate_expand() {
         .insert_vertex_named(["GqlVectorB"], [("name", Value::Text("far".into()))])
         .expect("far");
     let label_id = crate::test_labels::edge_label_id_for_name("GqlVectorRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 16,
-            encoding: EdgePayloadEncoding::VectorF32 { dims: 4 },
+            encoding: EdgeInlineValueEncoding::VectorF32 { dims: 4 },
         },
     );
     let near_bytes = f32_vector_bytes(&[1.0, 1.0, 1.0, 1.0]);
     let far_bytes = f32_vector_bytes(&[9.0, 9.0, 9.0, 9.0]);
     store
-        .insert_directed_edge_with_payload_bytes(a, near, Some(label_id), &near_bytes)
+        .insert_directed_edge_with_inline_value_bytes(a, near, Some(label_id), &near_bytes)
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, far, Some(label_id), &far_bytes)
+        .insert_directed_edge_with_inline_value_bytes(a, far, Some(label_id), &far_bytes)
         .unwrap();
 
     let mut parameters = params();
@@ -2231,9 +2248,9 @@ fn gql_gleaph_vector_l2_uses_edge_vector_predicate_expand() {
 }
 
 #[test]
-fn gql_gleaph_vector_dot_uses_edge_vector_predicate_expand() {
+fn gql_gleaph_vector_dot_uses_edge_inline_vector_predicate_expand() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["GqlVectorDotA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -2244,20 +2261,20 @@ fn gql_gleaph_vector_dot_uses_edge_vector_predicate_expand() {
         .insert_vertex_named(["GqlVectorDotB"], [("name", Value::Text("low".into()))])
         .expect("low");
     let label_id = crate::test_labels::edge_label_id_for_name("GqlVectorDotRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 16,
-            encoding: EdgePayloadEncoding::VectorF32 { dims: 4 },
+            encoding: EdgeInlineValueEncoding::VectorF32 { dims: 4 },
         },
     );
     let high_bytes = f32_vector_bytes(&[2.0, 2.0, 2.0, 2.0]);
     let low_bytes = f32_vector_bytes(&[0.1, 0.1, 0.1, 0.1]);
     store
-        .insert_directed_edge_with_payload_bytes(a, high, Some(label_id), &high_bytes)
+        .insert_directed_edge_with_inline_value_bytes(a, high, Some(label_id), &high_bytes)
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, low, Some(label_id), &low_bytes)
+        .insert_directed_edge_with_inline_value_bytes(a, low, Some(label_id), &low_bytes)
         .unwrap();
 
     let mut parameters = params();
@@ -2288,7 +2305,7 @@ fn gql_gleaph_vector_dot_uses_edge_vector_predicate_expand() {
 #[test]
 fn vector_dst_only_expand_filter_keeps_projection_fast_path_semantics() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["VectorDstOnlyFilterA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -2311,19 +2328,19 @@ fn vector_dst_only_expand_filter_keeps_projection_fast_path_semantics() {
         )
         .expect("drop");
     let label_id = crate::test_labels::edge_label_id_for_name("VectorDstOnlyFilterRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 16,
-            encoding: EdgePayloadEncoding::VectorF32 { dims: 4 },
+            encoding: EdgeInlineValueEncoding::VectorF32 { dims: 4 },
         },
     );
     let near_bytes = f32_vector_bytes(&[1.0, 1.0, 1.0, 1.0]);
     store
-        .insert_directed_edge_with_payload_bytes(a, keep, Some(label_id), &near_bytes)
+        .insert_directed_edge_with_inline_value_bytes(a, keep, Some(label_id), &near_bytes)
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, drop, Some(label_id), &near_bytes)
+        .insert_directed_edge_with_inline_value_bytes(a, drop, Some(label_id), &near_bytes)
         .unwrap();
 
     let plan = plan(vec![
@@ -2341,8 +2358,8 @@ fn vector_dst_only_expand_filter_keeps_projection_fast_path_semantics() {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: None,
-            edge_vector_predicate: Some(EdgeVectorPredicate {
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: Some(EdgeInlineVectorPredicate {
                 metric: EdgeVectorMetric::L2Squared,
                 query: ScanValue::Literal(Value::List(vec![
                     Value::Float32(1.0),
@@ -2385,9 +2402,9 @@ fn vector_dst_only_expand_filter_keeps_projection_fast_path_semantics() {
 }
 
 #[test]
-fn ascending_forward_fixed_label_candidates_use_batched_edge_payloads() {
+fn ascending_forward_fixed_label_candidates_use_batched_edge_inline_values() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["BatchExpandA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -2398,18 +2415,18 @@ fn ascending_forward_fixed_label_candidates_use_batched_edge_payloads() {
         .insert_vertex_named(["BatchExpandC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("BatchExpandRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::RawU16,
+            encoding: EdgeInlineValueEncoding::RawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &[1, 0])
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, c, Some(label_id), &[2, 0])
+        .insert_directed_edge_with_inline_value_bytes(a, c, Some(label_id), &[2, 0])
         .unwrap();
 
     let mut out = Vec::new();
@@ -2429,14 +2446,14 @@ fn ascending_forward_fixed_label_candidates_use_batched_edge_payloads() {
     .expect("expand candidates");
 
     assert_eq!(out.len(), 2);
-    assert_eq!(out[0].1.payload_bytes_slice(), &[1, 0]);
-    assert_eq!(out[1].1.payload_bytes_slice(), &[2, 0]);
+    assert_eq!(out[0].1.inline_value_bytes_slice(), &[1, 0]);
+    assert_eq!(out[1].1.inline_value_bytes_slice(), &[2, 0]);
 }
 
 #[test]
-fn ascending_reverse_fixed_label_candidates_use_batched_edge_payloads() {
+fn ascending_reverse_fixed_label_candidates_use_batched_edge_inline_values() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["BatchReverseExpandA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -2447,18 +2464,18 @@ fn ascending_reverse_fixed_label_candidates_use_batched_edge_payloads() {
         .insert_vertex_named(["BatchReverseExpandC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("BatchReverseExpandRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::RawU16,
+            encoding: EdgeInlineValueEncoding::RawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, c, Some(label_id), &[1, 0])
+        .insert_directed_edge_with_inline_value_bytes(a, c, Some(label_id), &[1, 0])
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &[2, 0])
+        .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), &[2, 0])
         .unwrap();
 
     let mut out = Vec::new();
@@ -2480,16 +2497,16 @@ fn ascending_reverse_fixed_label_candidates_use_batched_edge_payloads() {
     assert_eq!(out.len(), 2);
     let mut values = out
         .iter()
-        .map(|(_, binding)| binding.payload_bytes_slice().to_vec())
+        .map(|(_, binding)| binding.inline_value_bytes_slice().to_vec())
         .collect::<Vec<_>>();
     values.sort();
     assert_eq!(values, vec![vec![1, 0], vec![2, 0]]);
 }
 
 #[test]
-fn forward_fixed_label_edge_payload_predicate_uses_batch_kernel() {
+fn forward_fixed_label_edge_inline_value_predicate_uses_batch_kernel() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["BatchEqualA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -2500,24 +2517,24 @@ fn forward_fixed_label_edge_payload_predicate_uses_batch_kernel() {
         .insert_vertex_named(["BatchEqualC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("BatchEqualRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::RawU16,
+            encoding: EdgeInlineValueEncoding::RawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, c, Some(label_id), &9u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, c, Some(label_id), &9u16.to_le_bytes())
         .unwrap();
 
-    let equality = PreparedEdgePayloadPredicate::prepare(
+    let equality = PreparedEdgeInlineValuePredicate::prepare(
         None,
         label_id,
-        &EdgePayloadPredicate {
+        &EdgeInlineValuePredicate {
             op: CmpOp::Eq,
             value: ScanValue::Literal(Value::Uint16(7)),
         },
@@ -2526,7 +2543,7 @@ fn forward_fixed_label_edge_payload_predicate_uses_batch_kernel() {
     .expect("prepare")
     .expect("equality");
     let mut out = Vec::new();
-    super::candidates::expand_candidates_matching_edge_payload_into(
+    super::candidates::expand_candidates_matching_edge_inline_value_into(
         &store,
         a,
         EdgeDirection::PointingRight,
@@ -2539,13 +2556,13 @@ fn forward_fixed_label_edge_payload_predicate_uses_batch_kernel() {
 
     assert_eq!(out.len(), 1);
     assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == b));
-    assert_eq!(out[0].1.payload_bytes_slice(), &7u16.to_le_bytes());
+    assert_eq!(out[0].1.inline_value_bytes_slice(), &7u16.to_le_bytes());
 }
 
 #[test]
-fn expand_plan_edge_payload_predicate_filters_candidates() {
+fn expand_plan_edge_inline_value_predicate_filters_candidates() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["PlanBatchEqualA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -2556,18 +2573,18 @@ fn expand_plan_edge_payload_predicate_filters_candidates() {
         .insert_vertex_named(["PlanBatchEqualC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("PlanBatchEqualRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::RawU16,
+            encoding: EdgeInlineValueEncoding::RawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &7u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, c, Some(label_id), &9u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, c, Some(label_id), &9u16.to_le_bytes())
         .unwrap();
 
     let plan = plan(vec![
@@ -2585,11 +2602,11 @@ fn expand_plan_edge_payload_predicate_filters_candidates() {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: None,
-            edge_payload_predicate: Some(EdgePayloadPredicate {
+            edge_inline_value_predicate: Some(EdgeInlineValuePredicate {
                 op: CmpOp::Eq,
                 value: ScanValue::Literal(Value::Uint16(7)),
             }),
-            edge_vector_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -2614,9 +2631,9 @@ fn expand_plan_edge_payload_predicate_filters_candidates() {
 }
 
 #[test]
-fn reverse_fixed_label_edge_payload_predicate_uses_batch_kernel() {
+fn reverse_fixed_label_edge_inline_value_predicate_uses_batch_kernel() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["BatchReverseEqualA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -2627,24 +2644,24 @@ fn reverse_fixed_label_edge_payload_predicate_uses_batch_kernel() {
         .insert_vertex_named(["BatchReverseEqualC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("BatchReverseEqualRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::RawU16,
+            encoding: EdgeInlineValueEncoding::RawU16,
         },
     );
     store
-        .insert_directed_edge_with_payload_bytes(a, c, Some(label_id), &7u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(a, c, Some(label_id), &7u16.to_le_bytes())
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(b, c, Some(label_id), &9u16.to_le_bytes())
+        .insert_directed_edge_with_inline_value_bytes(b, c, Some(label_id), &9u16.to_le_bytes())
         .unwrap();
 
-    let equality = PreparedEdgePayloadPredicate::prepare(
+    let equality = PreparedEdgeInlineValuePredicate::prepare(
         None,
         label_id,
-        &EdgePayloadPredicate {
+        &EdgeInlineValuePredicate {
             op: CmpOp::Eq,
             value: ScanValue::Literal(Value::Uint16(7)),
         },
@@ -2653,7 +2670,7 @@ fn reverse_fixed_label_edge_payload_predicate_uses_batch_kernel() {
     .expect("prepare")
     .expect("equality");
     let mut out = Vec::new();
-    super::candidates::expand_candidates_matching_edge_payload_into(
+    super::candidates::expand_candidates_matching_edge_inline_value_into(
         &store,
         c,
         EdgeDirection::PointingLeft,
@@ -2666,13 +2683,15 @@ fn reverse_fixed_label_edge_payload_predicate_uses_batch_kernel() {
 
     assert_eq!(out.len(), 1);
     assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == a));
-    assert_eq!(out[0].1.payload_bytes_slice(), &7u16.to_le_bytes());
+    assert_eq!(out[0].1.inline_value_bytes_slice(), &7u16.to_le_bytes());
 }
 
 #[test]
-fn overflow_hub_edge_payload_predicate_skips_dense_payload_probe() {
+fn overflow_hub_edge_inline_value_predicate_skips_dense_inline_value_probe() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{
+        EdgeDirectedness, EdgeInlineValueEncoding, EdgeInlineValueProfile,
+    };
     let hub = store
         .insert_vertex_named(["OverflowProbeHub"], Vec::<(&str, Value)>::new())
         .expect("hub");
@@ -2683,18 +2702,18 @@ fn overflow_hub_edge_payload_predicate_skips_dense_payload_probe() {
         .insert_vertex_named(["OverflowProbeMatchDst"], Vec::<(&str, Value)>::new())
         .expect("match dst");
     let label_id = crate::test_labels::edge_label_id_for_name("OverflowProbeRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     let storage_label =
         ic_stable_lara::BucketLabelKey::from_raw(label_id.pack(EdgeDirectedness::Directed).raw());
     for _ in 0..33 {
         store
-            .insert_directed_edge_with_payload_bytes(
+            .insert_directed_edge_with_inline_value_bytes(
                 hub,
                 noise_dst,
                 Some(label_id),
@@ -2704,7 +2723,7 @@ fn overflow_hub_edge_payload_predicate_skips_dense_payload_probe() {
     }
     for _ in 0..3 {
         store
-            .insert_directed_edge_with_payload_bytes(
+            .insert_directed_edge_with_inline_value_bytes(
                 hub,
                 match_dst,
                 Some(label_id),
@@ -2714,19 +2733,19 @@ fn overflow_hub_edge_payload_predicate_skips_dense_payload_probe() {
     }
     assert!(
         !store
-            .out_label_bucket_dense_payload_batch_eligible(hub, storage_label)
+            .out_label_bucket_dense_inline_value_batch_eligible(hub, storage_label)
             .expect("dense eligibility")
     );
     assert!(
         store
-            .out_label_bucket_payload_first_predicate_eligible(hub, storage_label)
+            .out_label_bucket_inline_value_first_predicate_eligible(hub, storage_label)
             .expect("payload-first eligibility")
     );
 
-    let equality = PreparedEdgePayloadPredicate::prepare(
+    let equality = PreparedEdgeInlineValuePredicate::prepare(
         None,
         label_id,
-        &EdgePayloadPredicate {
+        &EdgeInlineValuePredicate {
             op: CmpOp::Eq,
             value: ScanValue::Literal(Value::Uint16(7)),
         },
@@ -2735,7 +2754,7 @@ fn overflow_hub_edge_payload_predicate_skips_dense_payload_probe() {
     .expect("prepare")
     .expect("equality");
     let mut out = Vec::new();
-    super::candidates::expand_candidates_matching_edge_payload_into(
+    super::candidates::expand_candidates_matching_edge_inline_value_into(
         &store,
         hub,
         EdgeDirection::PointingRight,
@@ -2753,16 +2772,18 @@ fn overflow_hub_edge_payload_predicate_skips_dense_payload_probe() {
     );
 }
 
-/// Incoming mirror of `overflow_hub_edge_payload_predicate_skips_dense_payload_probe`: many edges
+/// Incoming mirror of `overflow_hub_edge_inline_value_predicate_skips_dense_inline_value_probe`: many edges
 /// point **into** an overflow-log hub, so `PointingLeft` payload-first expand routes through the
 /// reverse phase-1 replay reuse path. Asserts end-to-end correctness parity with phase-1 selection.
 /// The replay-reuse itself (phase 2 not rebuilding the overflow chain) is proven at the LARA
 /// boundary by `read_in_edge_slots_for_label_with_replay_reuses_reverse_replay` in `ic-stable-lara`,
 /// because the reuse counter is `#[cfg(test)]`-internal to that crate.
 #[test]
-fn incoming_overflow_hub_edge_payload_predicate_reuses_reverse_replay() {
+fn incoming_overflow_hub_edge_inline_value_predicate_reuses_reverse_replay() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgeDirectedness, EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{
+        EdgeDirectedness, EdgeInlineValueEncoding, EdgeInlineValueProfile,
+    };
     let hub = store
         .insert_vertex_named(["IncomingOverflowHub"], Vec::<(&str, Value)>::new())
         .expect("hub");
@@ -2773,18 +2794,18 @@ fn incoming_overflow_hub_edge_payload_predicate_reuses_reverse_replay() {
         .insert_vertex_named(["IncomingOverflowMatchSrc"], Vec::<(&str, Value)>::new())
         .expect("match src");
     let label_id = crate::test_labels::edge_label_id_for_name("IncomingOverflowRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     let storage_label =
         ic_stable_lara::BucketLabelKey::from_raw(label_id.pack(EdgeDirectedness::Directed).raw());
     for _ in 0..33 {
         store
-            .insert_directed_edge_with_payload_bytes(
+            .insert_directed_edge_with_inline_value_bytes(
                 noise_src,
                 hub,
                 Some(label_id),
@@ -2794,7 +2815,7 @@ fn incoming_overflow_hub_edge_payload_predicate_reuses_reverse_replay() {
     }
     for _ in 0..3 {
         store
-            .insert_directed_edge_with_payload_bytes(
+            .insert_directed_edge_with_inline_value_bytes(
                 match_src,
                 hub,
                 Some(label_id),
@@ -2805,19 +2826,19 @@ fn incoming_overflow_hub_edge_payload_predicate_reuses_reverse_replay() {
     // Reverse adjacency of the hub must be an overflow-log hybrid bucket on the payload-first path.
     assert!(
         !store
-            .in_label_bucket_dense_payload_batch_eligible(hub, storage_label)
+            .in_label_bucket_dense_inline_value_batch_eligible(hub, storage_label)
             .expect("dense eligibility")
     );
     assert!(
         store
-            .in_label_bucket_payload_first_predicate_eligible(hub, storage_label)
+            .in_label_bucket_inline_value_first_predicate_eligible(hub, storage_label)
             .expect("payload-first eligibility")
     );
 
-    let equality = PreparedEdgePayloadPredicate::prepare(
+    let equality = PreparedEdgeInlineValuePredicate::prepare(
         None,
         label_id,
-        &EdgePayloadPredicate {
+        &EdgeInlineValuePredicate {
             op: CmpOp::Eq,
             value: ScanValue::Literal(Value::Uint16(7)),
         },
@@ -2826,7 +2847,7 @@ fn incoming_overflow_hub_edge_payload_predicate_reuses_reverse_replay() {
     .expect("prepare")
     .expect("equality");
     let mut out = Vec::new();
-    super::candidates::expand_candidates_matching_edge_payload_into(
+    super::candidates::expand_candidates_matching_edge_inline_value_into(
         &store,
         hub,
         EdgeDirection::PointingLeft,
@@ -2844,7 +2865,7 @@ fn incoming_overflow_hub_edge_payload_predicate_reuses_reverse_replay() {
     );
     assert!(
         out.iter()
-            .all(|(_, binding)| binding.payload_bytes_slice() == 7u16.to_le_bytes())
+            .all(|(_, binding)| binding.inline_value_bytes_slice() == 7u16.to_le_bytes())
     );
 }
 
@@ -2859,7 +2880,7 @@ fn f32_vector_bytes(values: &[f32]) -> Vec<u8> {
 #[test]
 fn forward_fixed_label_edge_vector_threshold_uses_batch_kernel() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["BatchVectorA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -2870,26 +2891,26 @@ fn forward_fixed_label_edge_vector_threshold_uses_batch_kernel() {
         .insert_vertex_named(["BatchVectorFar"], Vec::<(&str, Value)>::new())
         .expect("far");
     let label_id = crate::test_labels::edge_label_id_for_name("BatchVectorRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 16,
-            encoding: EdgePayloadEncoding::VectorF32 { dims: 4 },
+            encoding: EdgeInlineValueEncoding::VectorF32 { dims: 4 },
         },
     );
     let near_bytes = f32_vector_bytes(&[1.0, 1.0, 1.0, 1.0]);
     let far_bytes = f32_vector_bytes(&[9.0, 9.0, 9.0, 9.0]);
     store
-        .insert_directed_edge_with_payload_bytes(a, near, Some(label_id), &near_bytes)
+        .insert_directed_edge_with_inline_value_bytes(a, near, Some(label_id), &near_bytes)
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(a, far, Some(label_id), &far_bytes)
+        .insert_directed_edge_with_inline_value_bytes(a, far, Some(label_id), &far_bytes)
         .unwrap();
 
-    let predicate = PreparedEdgeVectorThreshold::prepare(
+    let predicate = PreparedEdgeInlineVectorThreshold::prepare(
         None,
         label_id,
-        &EdgeVectorPredicate {
+        &EdgeInlineVectorPredicate {
             metric: EdgeVectorMetric::L2Squared,
             query: ScanValue::Literal(Value::List(vec![
                 Value::Float32(1.0),
@@ -2919,13 +2940,13 @@ fn forward_fixed_label_edge_vector_threshold_uses_batch_kernel() {
     assert_eq!(out.len(), 1);
     assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == near));
     assert_eq!(out[0].1.handle.owner_vertex_id, a);
-    assert_eq!(out[0].1.payload_bytes_slice(), near_bytes.as_slice());
+    assert_eq!(out[0].1.inline_value_bytes_slice(), near_bytes.as_slice());
 }
 
 #[test]
 fn reverse_fixed_label_edge_vector_threshold_uses_batch_kernel() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let near = store
         .insert_vertex_named(["BatchVectorReverseNear"], Vec::<(&str, Value)>::new())
         .expect("near");
@@ -2936,26 +2957,26 @@ fn reverse_fixed_label_edge_vector_threshold_uses_batch_kernel() {
         .insert_vertex_named(["BatchVectorReverseC"], Vec::<(&str, Value)>::new())
         .expect("c");
     let label_id = crate::test_labels::edge_label_id_for_name("BatchVectorReverseRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 16,
-            encoding: EdgePayloadEncoding::VectorF32 { dims: 4 },
+            encoding: EdgeInlineValueEncoding::VectorF32 { dims: 4 },
         },
     );
     let near_bytes = f32_vector_bytes(&[1.0, 1.0, 1.0, 1.0]);
     let far_bytes = f32_vector_bytes(&[9.0, 9.0, 9.0, 9.0]);
     store
-        .insert_directed_edge_with_payload_bytes(near, c, Some(label_id), &near_bytes)
+        .insert_directed_edge_with_inline_value_bytes(near, c, Some(label_id), &near_bytes)
         .unwrap();
     store
-        .insert_directed_edge_with_payload_bytes(far, c, Some(label_id), &far_bytes)
+        .insert_directed_edge_with_inline_value_bytes(far, c, Some(label_id), &far_bytes)
         .unwrap();
 
-    let predicate = PreparedEdgeVectorThreshold::prepare(
+    let predicate = PreparedEdgeInlineVectorThreshold::prepare(
         None,
         label_id,
-        &EdgeVectorPredicate {
+        &EdgeInlineVectorPredicate {
             metric: EdgeVectorMetric::L2Squared,
             query: ScanValue::Literal(Value::List(vec![
                 Value::Float32(1.0),
@@ -2985,11 +3006,11 @@ fn reverse_fixed_label_edge_vector_threshold_uses_batch_kernel() {
     assert_eq!(out.len(), 1);
     assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == near));
     assert_eq!(out[0].1.handle.owner_vertex_id, near);
-    assert_eq!(out[0].1.payload_bytes_slice(), near_bytes.as_slice());
+    assert_eq!(out[0].1.inline_value_bytes_slice(), near_bytes.as_slice());
 }
 
 #[test]
-fn ascending_forward_fixed_label_without_edge_payloads_keeps_scalar_scan() {
+fn ascending_forward_fixed_label_without_edge_inline_values_keeps_scalar_scan() {
     let store = GraphStore::new();
     let a = store
         .insert_vertex_named(["ScalarExpandA"], Vec::<(&str, Value)>::new())
@@ -2999,7 +3020,7 @@ fn ascending_forward_fixed_label_without_edge_payloads_keeps_scalar_scan() {
         .expect("b");
     let label_id = crate::test_labels::edge_label_id_for_name("ScalarExpandRoad");
     store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &[])
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &[])
         .unwrap();
 
     let mut out = Vec::new();
@@ -3020,13 +3041,13 @@ fn ascending_forward_fixed_label_without_edge_payloads_keeps_scalar_scan() {
 
     assert_eq!(out.len(), 1);
     assert!(matches!(out[0].0, ExpandDst::Local(dst) if dst == b));
-    assert!(out[0].1.payload_bytes_slice().is_empty());
+    assert!(out[0].1.inline_value_bytes_slice().is_empty());
 }
 
 #[test]
-fn gleaph_weight_rejects_edge_payload_width_mismatch() {
+fn gleaph_weight_rejects_edge_inline_value_width_mismatch() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["MissingValueWgtA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -3034,11 +3055,11 @@ fn gleaph_weight_rejects_edge_payload_width_mismatch() {
         .insert_vertex_named(["MissingValueWgtB"], Vec::<(&str, Value)>::new())
         .expect("b");
     let label_id = crate::test_labels::edge_label_id_for_name("MissingValueWgtRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     let err = store
@@ -3051,7 +3072,7 @@ fn gleaph_weight_rejects_edge_payload_width_mismatch() {
 }
 
 #[test]
-fn federated_neighbor_hit_preserves_remote_payload_bytes() {
+fn federated_neighbor_hit_preserves_remote_inline_value_bytes() {
     let hit = FederatedExpandNeighbor {
         shard_id: ShardId::new(99),
         neighbor_vertex_id: GlobalVertexId::new(ShardId::new(0), 1),
@@ -3059,11 +3080,11 @@ fn federated_neighbor_hit_preserves_remote_payload_bytes() {
         anchor_local_vertex_id: 3,
         label_id_raw: 0,
         slot_index: 4,
-        payload_bytes: vec![42, 0],
+        inline_value_bytes: vec![42, 0],
     };
     let binding = EdgeBinding::from_federated_neighbor_hit(&hit);
-    assert_eq!(binding.payload_len(), 2);
-    assert_eq!(binding.payload_bytes_slice(), &[42, 0]);
+    assert_eq!(binding.inline_value_len(), 2);
+    assert_eq!(binding.inline_value_bytes_slice(), &[42, 0]);
 }
 
 // --- ADR 0021 Stage 2c: pending-purge read gate ---

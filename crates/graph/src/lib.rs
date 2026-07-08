@@ -2,8 +2,8 @@
 
 #[cfg(feature = "canbench")]
 mod bench;
-mod edge_payload_scalar_codec;
-mod edge_payload_schema;
+mod edge_inline_value_scalar_codec;
+mod edge_inline_value_schema;
 mod element_id_encoding;
 #[expect(
     dead_code,

@@ -760,15 +760,15 @@ pub async fn e2e_insert_directed_edge_with_payload(
         edge: vec![ResolvedEdgeLabel::new(
             "ROAD",
             label,
-            args.payload_profile.clone(),
+            args.inline_value_profile.clone(),
         )],
         ..ResolvedLabelTable::default()
     };
-    crate::edge_payload_schema::set_execution_resolved_labels(Some(resolved));
+    crate::edge_inline_value_schema::set_execution_resolved_labels(Some(resolved));
     let result = store
-        .insert_directed_edge_with_payload_bytes(source, target, Some(label), &args.payload)
+        .insert_directed_edge_with_inline_value_bytes(source, target, Some(label), &args.payload)
         .map_err(|e| e.to_string());
-    crate::edge_payload_schema::set_execution_resolved_labels(None);
+    crate::edge_inline_value_schema::set_execution_resolved_labels(None);
     result?;
 
     let index = wasm_index_client_holder().ok_or("federation not configured")?;

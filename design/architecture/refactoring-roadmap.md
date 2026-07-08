@@ -195,7 +195,7 @@ Consider consolidation only after the owner API is explicit and benchmarks show 
 Good candidates:
 
 - Small bidirectional catalog maps updated together.
-- Edge weight profile and edge payload profile state if weight becomes a compatibility view over payload profiles.
+- Edge weight profile and edge inline value profile state if weight becomes a compatibility view over payload profiles.
 - Tiny metadata cells that share identical lifecycle and upgrade behavior.
 - Maintenance metadata that is always read and written as one unit.
 
@@ -294,7 +294,7 @@ Deliverables:
 - Move router label catalogs and property catalogs onto the shared implementation where the semantics match. **Done** (vertex/edge dense, property dense; graph property sparse).
 - Preserve router ownership of federated label and property resolution. **Done** (router `catalogs` domain unchanged at API boundary).
 - Evaluate graph property catalog migration separately from router catalogs. **Done** (graph re-exports shared catalog with `SparseFromOnePolicy`).
-- Convert edge weight profiles into a compatibility layer over edge payload profiles, if the compatibility surface is still required. **Done** (`EdgePayloadProfile::to_weight_profile`; weight install writes payload only). Legacy stable region **retired** in Phase 8 P1 (2026-06-12).
+- Convert edge weight profiles into a compatibility layer over edge inline value profiles, if the compatibility surface is still required. **Done** (`EdgeInlineValueProfile::to_weight_profile`; weight install writes payload only). Legacy stable region **retired** in Phase 8 P1 (2026-06-12).
 
 Exit criteria:
 
@@ -451,12 +451,12 @@ retain decision stands on §6 canbench evidence.
 - Upgrade and reopen tests cover any layout change.
 - Failure isolation impact is documented for any merge.
 
-### Follow-up: edge payload schema (ADR 0008, implemented 2026-06-12)
+### Follow-up: edge inline value schema (ADR 0008, implemented 2026-06-12)
 
-`EdgeLabelId → EdgePayloadProfile` is **router SSOT** (`ROUTER_EDGE_PAYLOAD_PROFILES`); plan/DML
+`EdgeLabelId → EdgeInlineValueProfile` is **router SSOT** (`ROUTER_EDGE_PAYLOAD_PROFILES`); plan/DML
 wire carries `payload_profile` on `ResolvedEdgeLabel`; graph stable `EDGE_PAYLOAD_PROFILES` is
 retired (MemoryId repack 42 → 41 regions). Unlabeled edges remain 0-byte without catalog lookup.
-See [0008](../adr/0008-edge-payload-profile-router-ssot.md).
+See [0008](../adr/0008-edge-inline-value-profile-router-ssot.md).
 
 ### Phase 9: Validation and release gates (ongoing)
 
@@ -499,7 +499,7 @@ Phases 0–8 are **complete**.
 | **Ongoing** | Phase 9 | Tests + canbench on every boundary PR |
 | **Optional** | Phase 8c follow-ups | P2 grouped-catalog prototype only if product revisits merge |
 | **Deferred** | Federation ADR | ADR 0006 step 6+ (`RemoteVertexId`, `GROUP_SIZE`, peer expand) — blocked on product |
-| **Independent** | Feature epics | bulk-ingest finalize (P0–P3 done), payload-first traversal, executor gaps — not Phase numbers |
+| **Independent** | Feature epics | bulk-ingest finalize (P0–P3 done), inline-value-first traversal, executor gaps — not Phase numbers |
 
 Phase 8 closed with **retain** on P2/P4 and executed repacks on P1/P3; that is the recorded outcome.
 
@@ -509,7 +509,7 @@ Phase 8 closed with **retain** on P2/P4 and executed repacks on P1/P3; that is t
 - [System overview](overview.md)
 - [LARA and graph facade](../storage/lara-and-facade.md)
 - [LARA](../storage/lara.md)
-- [Labeled edge payload storage](../storage/labeled-edge-payloads.md)
+- [Labeled edge inline value storage](../storage/labeled-edge-inline-values.md)
 - [Property index](../index/property-index.md)
 - [Label index](../index/label-index.md)
 - [Federation target](../sharding/federation-target.md)

@@ -1,11 +1,11 @@
-//! Stable identity for edge payloads stored outside the 8-byte payload overflow log cell.
+//! Stable identity for edge inline values stored outside the 8-byte payload overflow log cell.
 
-/// Opaque key for a large edge payload tied to one payload overflow log slot.
+/// Opaque key for a large edge inline value tied to one payload overflow log slot.
 #[repr(transparent)]
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
-pub struct EdgePayloadBlobId(u64);
+pub struct EdgeInlineValueBlobId(u64);
 
-impl EdgePayloadBlobId {
+impl EdgeInlineValueBlobId {
     /// Builds the canonical id for `(leaf_segment, entry_idx)`.
     #[inline]
     pub const fn from_log_site(leaf: u32, entry_idx: u32) -> Self {

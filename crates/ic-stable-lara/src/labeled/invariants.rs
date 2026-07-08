@@ -19,17 +19,17 @@ use ic_stable_structures::Memory;
 #[inline]
 pub(crate) fn bucket_dense_slab_payload_readable(bucket: &LabelBucket) -> bool {
     bucket.is_payload_allocated()
-        && bucket.payload_byte_width() > 0
-        && bucket.payload_log_len() == 0
+        && bucket.inline_value_byte_width() > 0
+        && bucket.inline_value_log_len() == 0
         && bucket.stored_slots == bucket.degree()
 }
 
 /// Dense payload batch traversal: no edge/payload logs and full slab residency.
 #[inline]
-pub(crate) fn bucket_dense_payload_batch_eligible(bucket: &LabelBucket) -> bool {
+pub(crate) fn bucket_dense_inline_value_batch_eligible(bucket: &LabelBucket) -> bool {
     bucket.degree() > 0
-        && bucket.payload_byte_width() > 0
-        && bucket.payload_log_head() < 0
+        && bucket.inline_value_byte_width() > 0
+        && bucket.inline_value_log_head() < 0
         && bucket.overflow_log_head() < 0
         && bucket.stored_slots == bucket.degree()
 }
@@ -57,13 +57,13 @@ pub(crate) fn ascending_contiguous_u32_runs(slots: &[u32]) -> Vec<(u32, u32)> {
 
 /// Byte offset of one fixed-width payload slot inside a bucket's dense slab span.
 #[inline]
-pub(crate) fn payload_byte_offset_at_slot(
+pub(crate) fn inline_value_byte_offset_at_slot(
     bucket: &LabelBucket,
     slot_index: u32,
 ) -> Result<u64, LaraOperationError> {
     bucket
-        .payload_offset()
-        .checked_add(u64::from(slot_index) * u64::from(bucket.payload_byte_width()))
+        .inline_value_offset()
+        .checked_add(u64::from(slot_index) * u64::from(bucket.inline_value_byte_width()))
         .ok_or(LaraOperationError::CollectAllocationOverflow)
 }
 
@@ -74,17 +74,17 @@ pub(crate) fn bucket_resident_payload_bytes(bucket: &LabelBucket) -> u64 {
         return 0;
     }
     u64::from(bucket_resident_payload_slots(bucket))
-        .saturating_mul(u64::from(bucket.payload_byte_width()))
+        .saturating_mul(u64::from(bucket.inline_value_byte_width()))
 }
 
 #[inline]
 pub(crate) fn bucket_resident_payload_slots(bucket: &LabelBucket) -> u32 {
-    if !bucket.is_payload_allocated() || bucket.payload_byte_width() == 0 {
+    if !bucket.is_payload_allocated() || bucket.inline_value_byte_width() == 0 {
         return 0;
     }
-    let payload_log_len = u32::from(bucket.payload_log_len());
-    if payload_log_len > 0 {
-        bucket.stored_slots.saturating_sub(payload_log_len)
+    let inline_value_log_len = u32::from(bucket.inline_value_log_len());
+    if inline_value_log_len > 0 {
+        bucket.stored_slots.saturating_sub(inline_value_log_len)
     } else {
         bucket.stored_slots.max(bucket.degree)
     }
@@ -224,7 +224,7 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
             }
             if bucket.is_payload_allocated() {
                 assert!(
-                    bucket.payload_byte_width() > 0,
+                    bucket.inline_value_byte_width() > 0,
                     "vertex {vidx} bucket {slot}: value_allocated bucket must have non-zero width"
                 );
             }
@@ -243,9 +243,9 @@ pub(crate) fn assert_labeled_layout_invariants<E, M>(
                 resident_payload_bytes.saturating_add(bucket_resident_payload_bytes(&bucket));
         }
         assert_eq!(
-            vertex.payload_allocated_bytes(),
+            vertex.inline_value_allocated_bytes(),
             resident_payload_bytes,
-            "vertex {vidx}: payload_allocated_bytes must equal sum of resident bucket value spans"
+            "vertex {vidx}: inline_value_allocated_bytes must equal sum of resident bucket value spans"
         );
     }
 }
@@ -355,11 +355,11 @@ mod tests {
     }
 
     #[test]
-    fn payload_byte_offset_at_slot_scales_by_width() {
+    fn inline_value_byte_offset_at_slot_scales_by_width() {
         let bucket = LabelBucket::default()
-            .with_payload_offset(128)
-            .with_payload_byte_width(4);
-        assert_eq!(payload_byte_offset_at_slot(&bucket, 0).unwrap(), 128);
-        assert_eq!(payload_byte_offset_at_slot(&bucket, 3).unwrap(), 140);
+            .with_inline_value_offset(128)
+            .with_inline_value_byte_width(4);
+        assert_eq!(inline_value_byte_offset_at_slot(&bucket, 0).unwrap(), 128);
+        assert_eq!(inline_value_byte_offset_at_slot(&bucket, 3).unwrap(), 140);
     }
 }

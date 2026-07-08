@@ -30,17 +30,17 @@ pub enum GraphStoreError {
     },
     /// Edge label id is outside the inline edge band `0x0001..=0x3FFF`.
     InvalidEdgeLabelId(EdgeLabelId),
-    /// Edge payload byte width is not supported by labeled edge-payload storage.
-    InvalidEdgePayloadWidth(usize),
-    /// Stored edge-payload bytes do not match the catalog label's configured width.
-    EdgePayloadWidthMismatch {
+    /// Edge inline value byte width is not supported by labeled edge-inline-value storage.
+    InvalidEdgeInlineValueWidth(usize),
+    /// Stored edge-inline-value bytes do not match the catalog label's configured width.
+    EdgeInlineValueWidthMismatch {
         label: Option<EdgeLabelId>,
         expected: usize,
         actual: usize,
     },
     /// Remote CSR edge endpoints are not supported without federation stable.
     RemoteEdgeNotSupported,
-    /// Federated expand returned or attempted to send invalid edge-payload bytes.
+    /// Federated expand returned or attempted to send invalid edge-inline-value bytes.
     FederatedExpandPayload {
         detail: String,
     },
@@ -77,10 +77,10 @@ impl fmt::Display for GraphStoreError {
                 "edge label id {} is not a catalog edge label (MSB clear, non-zero)",
                 id.raw()
             ),
-            Self::InvalidEdgePayloadWidth(width) => {
-                write!(f, "edge payload byte width {width} is not supported")
+            Self::InvalidEdgeInlineValueWidth(width) => {
+                write!(f, "edge inline value byte width {width} is not supported")
             }
-            Self::EdgePayloadWidthMismatch {
+            Self::EdgeInlineValueWidthMismatch {
                 label,
                 expected,
                 actual,
@@ -99,7 +99,7 @@ impl fmt::Display for GraphStoreError {
                 write!(f, "remote CSR edge endpoints are not supported")
             }
             Self::FederatedExpandPayload { detail } => {
-                write!(f, "invalid federated expand edge payload: {detail}")
+                write!(f, "invalid federated expand edge inline value: {detail}")
             }
             Self::VertexTombstoned => write!(f, "vertex row is tombstoned on this shard"),
             Self::PendingPurgeTracking(err) => {
@@ -121,8 +121,8 @@ impl std::error::Error for GraphStoreError {
             Self::VertexNotDetached { .. }
             | Self::EdgeNotFound { .. }
             | Self::InvalidEdgeLabelId(_)
-            | Self::InvalidEdgePayloadWidth(_)
-            | Self::EdgePayloadWidthMismatch { .. }
+            | Self::InvalidEdgeInlineValueWidth(_)
+            | Self::EdgeInlineValueWidthMismatch { .. }
             | Self::RemoteEdgeNotSupported
             | Self::FederatedExpandPayload { .. }
             | Self::VertexTombstoned => None,

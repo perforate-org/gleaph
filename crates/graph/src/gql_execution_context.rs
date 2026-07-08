@@ -6,7 +6,7 @@ use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::ObjectName;
 use gleaph_gql_ic::principal_to_value;
-use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
+use gleaph_graph_kernel::entry::{EdgeInlineValueProfile, EdgeLabelId, PropertyId, VertexLabelId};
 use gleaph_graph_kernel::federation::ElementIdEncodingKey;
 use gleaph_graph_kernel::gql_dialect::MSG_CALLER;
 use gleaph_graph_kernel::plan_exec::{
@@ -105,8 +105,8 @@ impl GqlExecutionContext {
         self.resolved_labels.is_some()
     }
 
-    pub fn resolved_edge_payload_profile(&self, id: EdgeLabelId) -> EdgePayloadProfile {
-        crate::edge_payload_schema::lookup_edge_payload_profile_with(
+    pub fn resolved_edge_inline_value_profile(&self, id: EdgeLabelId) -> EdgeInlineValueProfile {
+        crate::edge_inline_value_schema::lookup_edge_inline_value_profile_with(
             self.resolved_labels.as_ref(),
             id,
         )
@@ -114,25 +114,26 @@ impl GqlExecutionContext {
 
     /// Router-resolved named inline property and matching payload profile for an edge label.
     ///
-    /// Returns `Some((property_id, payload_profile))` only when the Router projected a scalar inline
+    /// Returns `Some((property_id, inline_value_profile))` only when the Router projected a scalar inline
     /// schema for this concrete label. Struct inline schemas are excluded so that struct mutation
     /// attempts fail closed rather than falling through to scalar encoding / sidecar behavior.
     /// Graph must not infer this from the value or from any other source.
     pub fn resolved_edge_label_inline_property(
         &self,
         label_id: EdgeLabelId,
-    ) -> Option<(PropertyId, EdgePayloadProfile)> {
+    ) -> Option<(PropertyId, EdgeInlineValueProfile)> {
         if let Some(labels) = &self.resolved_labels {
             let entry = labels.resolved_edge_label(label_id)?;
             let schema = entry.inline_schema()?;
             if !schema.is_scalar() {
                 return None;
             }
-            return Some((schema.property_id(), entry.payload_profile.clone()));
+            return Some((schema.property_id(), entry.inline_value_profile.clone()));
         }
         #[cfg(any(test, feature = "canbench"))]
         {
-            let profile = crate::edge_payload_schema::lookup_edge_payload_profile(label_id);
+            let profile =
+                crate::edge_inline_value_schema::lookup_edge_inline_value_profile(label_id);
             if profile.required_byte_width() == 0 {
                 return None;
             }

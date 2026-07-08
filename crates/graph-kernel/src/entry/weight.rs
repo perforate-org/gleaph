@@ -2,13 +2,13 @@
 //!
 //! [`EdgeWeightProfile`] is catalog metadata attached to an edge-capable label. At query preparation
 //! time it is compiled into a [`PreparedWeightDecoder`] so the traversal hot path only reads
-//! stored edge payload bytes (typically 2-byte u16) and applies the decoder.
+//! stored edge inline value bytes (typically 2-byte u16) and applies the decoder.
 
 use ic_stable_structures::storable::{Bound, Storable};
 use std::borrow::Cow;
 use thiserror::Error;
 
-/// Label-level configuration for interpreting stored edge-payload bytes as a traversal weight.
+/// Label-level configuration for interpreting stored edge-inline-value bytes as a traversal weight.
 #[derive(Clone, Debug, PartialEq, candid::CandidType, serde::Serialize, serde::Deserialize)]
 pub struct EdgeWeightProfile {
     pub encoding: WeightEncoding,
@@ -117,7 +117,7 @@ impl PreparedWeightDecoder {
         }
     }
 
-    /// Decodes stored edge-payload bytes into a validated non-negative finite `f32` weight.
+    /// Decodes stored edge-inline-value bytes into a validated non-negative finite `f32` weight.
     pub fn decode(&self, bytes: &[u8]) -> Result<f32, WeightDecodeError> {
         use half::f16;
         let v = match self {
@@ -160,12 +160,12 @@ impl Storable for EdgeWeightProfile {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entry::edge_payload::{EdgePayloadProfile, decode_edge_weight};
+    use crate::entry::edge_inline_value::{EdgeInlineValueProfile, decode_edge_weight};
     use half::f16;
 
     fn decode_weight_bytes(profile: &EdgeWeightProfile, bytes: &[u8]) -> f32 {
-        let payload_profile = EdgePayloadProfile::from(profile.clone());
-        let decoder = payload_profile.prepare().expect("prepare");
+        let inline_value_profile = EdgeInlineValueProfile::from(profile.clone());
+        let decoder = inline_value_profile.prepare().expect("prepare");
         decode_edge_weight(&decoder, bytes).expect("decode")
     }
 

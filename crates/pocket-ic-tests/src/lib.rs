@@ -152,7 +152,7 @@ pub struct E2eInsertDirectedEdgeWithPayloadArgs {
     pub target_local_vertex_id: u32,
     pub edge_label_id: u16,
     pub payload: Vec<u8>,
-    pub payload_profile: gleaph_graph_kernel::entry::EdgePayloadProfile,
+    pub inline_value_profile: gleaph_graph_kernel::entry::EdgeInlineValueProfile,
 }
 
 #[derive(CandidType, Clone, Debug)]
@@ -1454,25 +1454,25 @@ pub fn e2e_insert_edge_with_label(
     );
 }
 
-pub fn e2e_insert_directed_edge_with_payload(
+pub fn e2e_insert_directed_edge_with_inline_value(
     env: &FederationEnv,
     graph: Principal,
     source_local: u32,
     target_local: u32,
     edge_label_id: u16,
     payload: Vec<u8>,
-    payload_profile: gleaph_graph_kernel::entry::EdgePayloadProfile,
+    inline_value_profile: gleaph_graph_kernel::entry::EdgeInlineValueProfile,
 ) {
     let _: () = update_as_router(
         env,
         graph,
-        "e2e_insert_directed_edge_with_payload",
+        "e2e_insert_directed_edge_with_inline_value",
         E2eInsertDirectedEdgeWithPayloadArgs {
             source_local_vertex_id: source_local,
             target_local_vertex_id: target_local,
             edge_label_id,
             payload,
-            payload_profile,
+            inline_value_profile,
         },
     );
 }

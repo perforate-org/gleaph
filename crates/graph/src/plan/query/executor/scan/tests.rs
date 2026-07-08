@@ -1486,8 +1486,8 @@ fn indexed_expand_limit_offset_skips_only_matching_edges() {
             label_expr: None,
             var_len: None,
             indexed_edge_equality: Some(("weight".into(), ScanValue::Literal(Value::Int64(5)))),
-            edge_payload_predicate: None,
-            edge_vector_predicate: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
             edge_property_projection: None,
             dst_property_projection: None,
             hop_aux_binding: None,
@@ -1608,7 +1608,7 @@ fn leading_edge_index_scan_binds_matching_edges_and_endpoints() {
 #[test]
 fn leading_edge_bind_endpoints_hop_aux_returns_payload_bytes() {
     let store = GraphStore::new();
-    use gleaph_graph_kernel::entry::{EdgePayloadEncoding, EdgePayloadProfile};
+    use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile};
     let a = store
         .insert_vertex_named(["LeadHopA"], Vec::<(&str, Value)>::new())
         .expect("a");
@@ -1616,18 +1616,18 @@ fn leading_edge_bind_endpoints_hop_aux_returns_payload_bytes() {
         .insert_vertex_named(["LeadHopB"], Vec::<(&str, Value)>::new())
         .expect("b");
     let label_id = crate::test_labels::edge_label_id_for_name("LeadHopRoad");
-    crate::test_labels::install_test_edge_payload_profile(
+    crate::test_labels::install_test_edge_inline_value_profile(
         label_id,
-        EdgePayloadProfile {
+        EdgeInlineValueProfile {
             byte_width: 2,
-            encoding: EdgePayloadEncoding::WeightRawU16,
+            encoding: EdgeInlineValueEncoding::WeightRawU16,
         },
     );
     let weight_prop = crate::test_labels::property_id_for_name("weight");
     let _weight_index = crate::test_labels::enter_indexed_edge_property_named("weight");
     let payload = 7u16.to_le_bytes();
     let edge = store
-        .insert_directed_edge_with_payload_bytes(a, b, Some(label_id), &payload)
+        .insert_directed_edge_with_inline_value_bytes(a, b, Some(label_id), &payload)
         .expect("edge");
     store
         .set_edge_property(edge, weight_prop, Value::Int64(7))

@@ -37,7 +37,7 @@ denote unrelated semantics.
 | Edge labels | 10–11 | `(GraphId, name) ↔ (GraphId, EdgeLabelId)` | **Per graph** |
 | Properties | 12–13 | `(GraphId, name) ↔ (GraphId, PropertyId)` | **Per graph** |
 | Index names | 16–17 | `(GraphId, String) → IndexNameId` | Per graph ([0011](0011-gql-graph-resolution-and-catalog-scoping.md)) |
-| Edge payload profiles | 20 | `(GraphId, EdgeLabelId) → EdgePayloadProfile` | **Per graph** ([0008](0008-edge-payload-profile-router-ssot.md)) |
+| Edge payload profiles | 20 | `(GraphId, EdgeLabelId) → EdgeInlineValueProfile` | **Per graph** ([0008](0008-edge-inline-value-profile-router-ssot.md)) |
 | Label stats aggregates | 25–28 | `(GraphId, label_id)` / `(GraphId, ShardId, label_id)` | **Per graph** ([0015](0015-label-stats-projection-log.md)) |
 
 GQL **graph type** metadata is already per federation graph via `GraphCatalog.binding_map`
@@ -185,7 +185,7 @@ Extend graph catalog DDL / federation unregister to drop **vocabulary partition*
 `graph_id`:
 
 1. Remove all `(graph_id, *)` rows from vertex / edge / property scoped catalogs
-2. Remove `(graph_id, *)` from edge payload profiles
+2. Remove `(graph_id, *)` from edge inline value profiles
 3. Remove `(graph_id, *)` label stats rows, including graph-partitioned shard-live rows
 4. Existing index catalog + `GraphCatalog` binding removal ([0011](0011-gql-graph-resolution-and-catalog-scoping.md), [0013](0013-gql-graph-type-catalog-on-router.md))
 
@@ -322,7 +322,7 @@ vocabulary per graph.
 ## Related ADRs
 
 - [0006](0006-pre-federation-foundation.md) — router catalog SSOT (scope amended here)
-- [0008](0008-edge-payload-profile-router-ssot.md) — edge payload profiles move to `(GraphId, EdgeLabelId)`
+- [0008](0008-edge-inline-value-profile-router-ssot.md) — edge inline value profiles move to `(GraphId, EdgeLabelId)`
 - [0010](0010-index-sharding-extensibility.md) — posting keys unchanged
 - [0011](0011-gql-graph-resolution-and-catalog-scoping.md) — graph-scoped index names; global vocabulary policy superseded
 - [0013](0013-gql-graph-type-catalog-on-router.md) — optional auto-intern follow-up

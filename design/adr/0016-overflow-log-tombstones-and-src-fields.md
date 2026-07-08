@@ -11,14 +11,14 @@ LARA edge storage has two physical locations for a labeled edge row:
 
 | Location | Owner | Delete representation (implemented) |
 |----------|-------|-------------------------------------|
-| Edge slab | `EdgeStore` / labeled bucket span | In-place tombstone edge payload |
-| Edge overflow log | `LogStore` (`LLG`) | In-place tombstone edge payload; `prev` chain unchanged |
+| Edge slab | `EdgeStore` / labeled bucket span | In-place tombstone edge inline value |
+| Edge overflow log | `LogStore` (`LLG`) | In-place tombstone edge inline value; `prev` chain unchanged |
 
 Payload bytes mirror the edge row order:
 
 | Location | Owner | Current layout |
 |----------|-------|----------------|
-| Payload slab | `EdgePayloadStore` (`payload_slab`) | Byte CSR, indexed by the same logical edge slot |
+| Payload slab | `EdgeInlineValueStore` (`payload_slab`) | Byte CSR, indexed by the same logical edge slot |
 | Payload overflow log | `PayloadLogStore` (`LVL`) | `prev: i32`, `payload_cell: [u8; 8]` |
 | Payload blobs | `payload_blobs` | Wide overflow payload body keyed by `(leaf_segment, entry_idx)` |
 
@@ -26,14 +26,14 @@ Current implementation facts:
 
 - Edge overflow log entries store `prev` (4 B) and edge bytes only
   ([`edge/log.rs`](../../crates/ic-stable-lara/src/lara/edge/log.rs)). Liveness is encoded in the
-  edge payload tombstone contract; there is no per-entry `src` word on `LLG`.
-- **Implemented (2026-06-15):** log-backed delete rewrites the target entry's edge payload to the
+  edge inline value tombstone contract; there is no per-entry `src` word on `LLG`.
+- **Implemented (2026-06-15):** log-backed delete rewrites the target entry's edge inline value to the
   tombstone contract and keeps the entry in the chain. Foreground delete no longer appends separate
   delete-target log entries. Scans skip tombstone edge rows in both slab and log locations.
 - **Implemented (2026-06-16):** payload overflow log entries are 12 B (`LVL`, layout version 1):
   `prev` (4 B) and an untagged 8 B inline cell
-  ([`edge_payload/log.rs`](../../crates/ic-stable-lara/src/lara/edge_payload/log.rs),
-  [`edge_payload/cell.rs`](../../crates/ic-stable-lara/src/lara/edge_payload/cell.rs)).
+  ([`edge_inline_value/log.rs`](../../crates/ic-stable-lara/src/lara/edge_inline_value/log.rs),
+  [`edge_inline_value/cell.rs`](../../crates/ic-stable-lara/src/lara/edge_inline_value/cell.rs)).
   Inline vs blob on the log is derived from `LabelBucket::payload_byte_width`; wide bodies live in
   `payload_blobs` at `(leaf_segment, entry_idx)`. Log-backed payload liveness mirrors the slab
   contract: the paired edge row tombstone is the only delete signal; there is no per-entry `src`
@@ -61,7 +61,7 @@ edge slot payload tombstone
 delete/dead metadata in log `src`
 ```
 
-Scan, replay, payload-first traversal, and maintenance must then interpret both sources in the same
+Scan, replay, inline-value-first traversal, and maintenance must then interpret both sources in the same
 order. This widens the invariant surface and makes replay bugs easier to introduce.
 
 ### 2. `src` carries several concepts
@@ -110,7 +110,7 @@ Deleting an edge must not change the slot index of any surviving edge.
 ```
 
 Slot identity is observed outside the physical log by edge handles, reverse aliases, local edge
-postings, payload-first phase-two lookups, and traversal cursors. Rewiring log chains to remove a
+postings, inline-value-first phase-two lookups, and traversal cursors. Rewiring log chains to remove a
 middle entry would change the ordinal of later log-backed edges unless slot identity were redefined
 around physical log entry ids. This ADR does not choose that larger redesign.
 
@@ -122,8 +122,8 @@ Adopt the following target policy for future implementation.
 
 Delete state belongs to the deleted edge row itself.
 
-- If the edge body is on the slab, write the tombstone edge payload in that slab slot.
-- If the edge body is in the overflow log, rewrite that log entry's edge payload to the tombstone
+- If the edge body is on the slab, write the tombstone edge inline value in that slab slot.
+- If the edge body is in the overflow log, rewrite that log entry's edge inline value to the tombstone
   value and keep the log entry in the chain.
 - Do not rewire `prev` links merely to hide a deleted entry from traversal.
 - Do not compact payload slab bytes as part of the foreground delete path.
@@ -149,7 +149,7 @@ delete contract on both slab and log.
 
 ### 3. Review the necessity of edge log `src`
 
-After delete state moves into the edge payload tombstone contract, the edge log `src` word should be
+After delete state moves into the edge inline value tombstone contract, the edge log `src` word should be
 re-evaluated before keeping it as permanent layout.
 
 The review must answer:
@@ -164,7 +164,7 @@ The review must answer:
 Until that review lands, the safer implementation path is:
 
 ```text
-first: move log-backed delete state to tombstone edge payloads
+first: move log-backed delete state to tombstone edge inline values
 then: benchmark and review whether `src` can be removed or repurposed
 ```
 
@@ -173,7 +173,7 @@ then: benchmark and review whether `src` can be removed or repurposed
 Do not store inline vs blob storage class in the payload slab or payload log cell.
 
 **Schema source of truth:** `LabelBucket::payload_byte_width`, plus (when added) the label's
-`EdgePayloadProfile.encoding` for variable-length payloads.
+`EdgeInlineValueProfile.encoding` for variable-length payloads.
 
 **Location-specific resolution:**
 
@@ -195,7 +195,7 @@ Notes:
 - The payload **log** uses the blob map only when the fixed width exceeds the 8 B inline cell.
 - Blob identity remains `(leaf_segment, entry_idx)`; blob body width comes from the bucket, not the
   cell.
-- Foreground insert already rejects `edge_payload_byte_width != bucket.payload_byte_width`, so
+- Foreground insert already rejects `edge_inline_value_byte_width != bucket.payload_byte_width`, so
   storage class does not vary per slot within one bucket.
 
 Per-cell inline/blob tags and duplicated blob widths are not stored on the wire.
@@ -226,7 +226,7 @@ profile flag; when present, log-backed payloads always use the blob map regardle
 
 ## Benchmark Gate
 
-Changes to log entry layout and scan replay affect storage, traversal, and payload-first execution.
+Changes to log entry layout and scan replay affect storage, traversal, and inline-value-first execution.
 Before accepting implementation of `src` removal or payload log 12 B compression, run focused
 benchmarks that separate setup, mutation, scan, and payload attach costs.
 
@@ -237,7 +237,7 @@ Required benchmark coverage:
 | Same-label overflow insert | Whether smaller entries improve append-heavy log pressure |
 | Same-label scan | Whether tombstone skipping and tag decoding affect hot traversal |
 | Payload attach scan | Whether 12 B payload entries improve stable-memory IO enough to matter |
-| Payload-first phase 1/2 | Whether cached replay and slot-to-log lookup stay neutral or faster |
+| Inline-value-first phase 1/2 | Whether cached replay and slot-to-log lookup stay neutral or faster |
 | Tombstone-heavy delete/rewrite | Whether foreground delete stays cheap and maintenance cost remains bounded |
 
 Existing candidate benches:
@@ -246,7 +246,7 @@ Existing candidate benches:
 - `bench_labeled_mixed_label_hub_scan_33x50`
 - `bench_labeled_mixed_label_hub_asc_iter_33x50`
 - `bench_labeled_for_each_edges_for_label_48_x51`
-- payload-first benches listed in `design/storage/payload-first-traversal.md`
+- inline-value-first benches listed in `design/storage/inline-value-first-traversal.md`
 
 Likely new focused benches (added 2026-06-16):
 
@@ -269,7 +269,7 @@ Benchmark gate complete. Code review of prior `LLG` `src` word usage:
 | Question | Finding |
 | -------- | ------- |
 | Required for core scan without labeled context? | **No for neighbor emission.** Scans anchor on the owning vertex row (`log_head`) and walk `prev`. `src` was decoded only for entry kind (`Live` / `Dead` / legacy `Delete`). |
-| Required for validation or reopen? | **No after tombstone-only delete.** Tombstone edge payloads subsume `LOG_SRC_DEAD` and legacy `DeleteTarget` replay on the edge log. |
+| Required for validation or reopen? | **No after tombstone-only delete.** Tombstone edge inline values subsume `LOG_SRC_DEAD` and legacy `DeleteTarget` replay on the edge log. |
 | Is live owner vertex id in `src` read on hot paths? | **No.** Live inserts wrote `log_owner` into `src`, but replay/scan never validated or used that id. |
 | Can labeled derive owner without per-entry `src`? | **Yes:** `log_owner = vertices.log_leaf_vertex(vid)` at insert time; leaf segment is derived from the vertex row. |
 
@@ -277,7 +277,7 @@ Benchmark gate complete. Code review of prior `LLG` `src` word usage:
 
 - `LLG` stride is `4 + edge_stride` (`prev` + edge bytes). Layout version stays **1**; development
   stores are recreated rather than migrated.
-- Replay and scan skip tombstone edge payloads only; no `decode_log_entry_kind` on the edge log.
+- Replay and scan skip tombstone edge inline values only; no `decode_log_entry_kind` on the edge log.
 
 ## Payload log `src` review (2026-06-16)
 
@@ -305,7 +305,7 @@ Benchmark gate and edge-log `src` removal are complete. Payload log review:
 ### A. Keep separate delete log entries
 
 Rejected as the long-term model. It preserves the current implementation shape, but leaves delete
-state split across edge payloads and log metadata. Replay and payload-first traversal must keep
+state split across edge inline values and log metadata. Replay and inline-value-first traversal must keep
 interpreting historical delete entries correctly.
 
 ### B. Remove deleted log entries by rewiring `prev`
@@ -318,7 +318,7 @@ and payload slot resolution.
 
 Deferred. This could make chain rewiring possible, but it is a larger identity redesign. It would
 need a separate ADR covering edge handles, reverse aliases, index postings, traversal order,
-payload-first phase two, and maintenance rewrite semantics.
+inline-value-first phase two, and maintenance rewrite semantics.
 
 ### D. Move only payload log tags to `prev`
 
@@ -362,7 +362,7 @@ Trade-offs:
 
 Phase 1 (implemented 2026-06-15):
 
-1. Log-backed delete rewrites the target log entry as a tombstone edge payload (`rewrite_overflow_log_entry_tombstone`).
+1. Log-backed delete rewrites the target log entry as a tombstone edge inline value (`rewrite_overflow_log_entry_tombstone`).
 2. Slab-backed delete on log rows writes the slab tombstone directly (no delete-target append).
 3. Scan/replay paths skip tombstone log entries; legacy delete-target replay remains for old chains.
 4. Payload log chains stay aligned with edge log chains; payload bodies are cleared without rewiring.
@@ -403,7 +403,7 @@ Tests should cover:
 - payload-in-log delete,
 - payload-in-slab delete,
 - payload blob cleanup,
-- payload-first traversal after log-backed delete,
+- inline-value-first traversal after log-backed delete,
 - alias/posting stability when a middle log-backed edge is deleted.
 
 ## Design Documentation Impact
@@ -412,9 +412,9 @@ Documents to update when this ADR is implemented:
 
 | Document | Required update |
 |----------|-----------------|
-| `design/storage/labeled-edge-payloads.md` | **Updated 2026-06-16:** `LVL` 12 B entry; edge-tombstone payload liveness on log |
+| `design/storage/labeled-edge-inline-values.md` | **Updated 2026-06-16:** `LVL` 12 B entry; edge-tombstone payload liveness on log |
 | `design/storage/lara-dgap-contract.md` | Record log tombstone policy and DGAP divergence |
-| `design/storage/payload-first-traversal.md` | **Updated 2026-06-16:** bucket-derived log attach; edge replay filters dead log ordinals |
+| `design/storage/inline-value-first-traversal.md` | **Updated 2026-06-16:** bucket-derived log attach; edge replay filters dead log ordinals |
 | `design/storage/stable-memory-inventory.md` | Note `LVL` layout version 1 when revisiting region docs |
 
 ## Amendments
@@ -431,7 +431,7 @@ Documents to update when this ADR is implemented:
 - [ADR 0022: Labeled overflow-log read-window fix](0022-degree-driven-hub-edge-storage.md)
 - [ADR 0001: Labeled edge physical layer uses PMA leaf segment slide](0001-labeled-segment-slide.md)
 - [ADR 0007: Stable-memory layout policy and measured consolidation](0007-stable-memory-layout.md)
-- [ADR 0008: Edge payload profile schema: router SSOT](0008-edge-payload-profile-router-ssot.md)
-- [Labeled edge payload storage](../storage/labeled-edge-payloads.md)
+- [ADR 0008: Edge payload profile schema: router SSOT](0008-edge-inline-value-profile-router-ssot.md)
+- [Labeled edge inline value storage](../storage/labeled-edge-inline-values.md)
 - [LARA storage contract (DGAP alignment)](../storage/lara-dgap-contract.md)
-- [Payload-first traversal](../storage/payload-first-traversal.md)
+- [Inline-value-first traversal](../storage/inline-value-first-traversal.md)

@@ -9,7 +9,9 @@
 use candid::CandidType;
 use serde::{Deserialize, Serialize};
 
-use crate::entry::{ConstraintNameId, EdgeLabelId, EdgePayloadProfile, PropertyId, VertexLabelId};
+use crate::entry::{
+    ConstraintNameId, EdgeInlineValueProfile, EdgeLabelId, PropertyId, VertexLabelId,
+};
 use crate::federation::ShardId;
 
 /// Router-issued mutation id. `0` is reserved; ids are never reused.
@@ -302,7 +304,7 @@ pub struct ResolvedVertexLabel {
 pub struct ResolvedInlineStructField {
     pub name: String,
     pub byte_offset: u16,
-    pub profile: EdgePayloadProfile,
+    pub profile: EdgeInlineValueProfile,
 }
 
 /// Router-derived resolved schema for the named inline edge property of one concrete label.
@@ -350,8 +352,8 @@ impl ResolvedInlineSchema {
 pub struct ResolvedEdgeLabel {
     pub name: String,
     pub id: EdgeLabelId,
-    /// Router-owned logical schema (ADR 0008). Default `no_payload` when omitted on legacy wire.
-    pub payload_profile: EdgePayloadProfile,
+    /// Router-owned logical schema (ADR 0008). Default `no_inline_value` when omitted on legacy wire.
+    pub inline_value_profile: EdgeInlineValueProfile,
     /// Router-derived named inline property schema for this concrete edge label (ADR 0034 Slices 21/24/25).
     /// `None` for labels with no named inline slot; otherwise a scalar or struct projection.
     /// Graph receives this as a plan-scoped projection and must not persist or infer it.
@@ -362,21 +364,21 @@ impl ResolvedEdgeLabel {
     pub fn new(
         name: impl Into<String>,
         id: EdgeLabelId,
-        payload_profile: EdgePayloadProfile,
+        inline_value_profile: EdgeInlineValueProfile,
     ) -> Self {
-        Self::with_inline_schema(name, id, payload_profile, None)
+        Self::with_inline_schema(name, id, inline_value_profile, None)
     }
 
     pub fn with_inline_schema(
         name: impl Into<String>,
         id: EdgeLabelId,
-        payload_profile: EdgePayloadProfile,
+        inline_value_profile: EdgeInlineValueProfile,
         inline_schema: Option<ResolvedInlineSchema>,
     ) -> Self {
         Self {
             name: name.into(),
             id,
-            payload_profile,
+            inline_value_profile,
             inline_schema,
         }
     }
@@ -385,12 +387,12 @@ impl ResolvedEdgeLabel {
     pub fn with_inline_property(
         name: impl Into<String>,
         id: EdgeLabelId,
-        payload_profile: EdgePayloadProfile,
+        inline_value_profile: EdgeInlineValueProfile,
         inline_property_id: Option<PropertyId>,
     ) -> Self {
         let inline_schema =
             inline_property_id.map(|property_id| ResolvedInlineSchema::Scalar { property_id });
-        Self::with_inline_schema(name, id, payload_profile, inline_schema)
+        Self::with_inline_schema(name, id, inline_value_profile, inline_schema)
     }
 
     /// The inline property identity projected from Router schema, if any.
@@ -409,11 +411,11 @@ impl ResolvedEdgeLabel {
 }
 
 impl ResolvedLabelTable {
-    pub fn edge_payload_profile(&self, id: EdgeLabelId) -> Option<&EdgePayloadProfile> {
+    pub fn edge_inline_value_profile(&self, id: EdgeLabelId) -> Option<&EdgeInlineValueProfile> {
         self.edge
             .iter()
             .find(|entry| entry.id == id)
-            .map(|entry| &entry.payload_profile)
+            .map(|entry| &entry.inline_value_profile)
     }
 
     pub fn resolved_edge_label(&self, id: EdgeLabelId) -> Option<&ResolvedEdgeLabel> {
@@ -423,7 +425,7 @@ impl ResolvedLabelTable {
     pub fn edge_label_ids_with_nonzero_payload(&self) -> Vec<EdgeLabelId> {
         self.edge
             .iter()
-            .filter(|entry| entry.payload_profile.required_byte_width() > 0)
+            .filter(|entry| entry.inline_value_profile.required_byte_width() > 0)
             .map(|entry| entry.id)
             .collect()
     }
@@ -519,7 +521,7 @@ pub struct ResolvedSearchWire {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::entry::EdgePayloadEncoding;
+    use crate::entry::EdgeInlineValueEncoding;
     use crate::federation::ElementIdEncodingKey;
     use candid::{Decode, Encode};
 
@@ -654,7 +656,7 @@ mod tests {
                 edge: vec![ResolvedEdgeLabel::with_inline_property(
                     "KNOWS",
                     EdgeLabelId::from_raw(1),
-                    EdgePayloadProfile::no_payload(),
+                    EdgeInlineValueProfile::no_inline_value(),
                     None,
                 )],
             }),
@@ -903,9 +905,9 @@ mod tests {
         let label = ResolvedEdgeLabel::with_inline_property(
             "ROAD".to_string(),
             EdgeLabelId::from_raw(7),
-            EdgePayloadProfile {
+            EdgeInlineValueProfile {
                 byte_width: 4,
-                encoding: EdgePayloadEncoding::F32,
+                encoding: EdgeInlineValueEncoding::F32,
             },
             Some(PropertyId::from_raw(42)),
         );
@@ -925,32 +927,32 @@ mod tests {
         let label = ResolvedEdgeLabel::with_inline_schema(
             "AFFINITY".to_string(),
             EdgeLabelId::from_raw(7),
-            EdgePayloadProfile::opaque_bytes(16),
+            EdgeInlineValueProfile::opaque_bytes(16),
             Some(ResolvedInlineSchema::Struct {
                 property_id: PropertyId::from_raw(42),
                 fields: vec![
                     ResolvedInlineStructField {
                         name: "score".to_string(),
                         byte_offset: 0,
-                        profile: EdgePayloadProfile {
+                        profile: EdgeInlineValueProfile {
                             byte_width: 4,
-                            encoding: EdgePayloadEncoding::F32,
+                            encoding: EdgeInlineValueEncoding::F32,
                         },
                     },
                     ResolvedInlineStructField {
                         name: "confidence".to_string(),
                         byte_offset: 4,
-                        profile: EdgePayloadProfile {
+                        profile: EdgeInlineValueProfile {
                             byte_width: 4,
-                            encoding: EdgePayloadEncoding::F32,
+                            encoding: EdgeInlineValueEncoding::F32,
                         },
                     },
                     ResolvedInlineStructField {
                         name: "updated_at".to_string(),
                         byte_offset: 8,
-                        profile: EdgePayloadProfile {
+                        profile: EdgeInlineValueProfile {
                             byte_width: 8,
-                            encoding: EdgePayloadEncoding::RawU64,
+                            encoding: EdgeInlineValueEncoding::RawU64,
                         },
                     },
                 ],
@@ -974,9 +976,9 @@ mod tests {
             edge: vec![ResolvedEdgeLabel::with_inline_property(
                 "ROAD".to_string(),
                 EdgeLabelId::from_raw(7),
-                EdgePayloadProfile {
+                EdgeInlineValueProfile {
                     byte_width: 4,
-                    encoding: EdgePayloadEncoding::F32,
+                    encoding: EdgeInlineValueEncoding::F32,
                 },
                 Some(PropertyId::from_raw(42)),
             )],

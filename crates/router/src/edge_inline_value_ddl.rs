@@ -4,7 +4,7 @@
 //! A Router-owned parser for the standalone inline edge-property schema statement.
 //! Non-INLINE statements continue through the generic GQL parser unchanged.
 
-use crate::facade::stable::edge_payload_profiles::InlineScalarType;
+use crate::facade::stable::edge_inline_value_profiles::InlineScalarType;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) struct InlineEdgeStructField {
@@ -26,7 +26,7 @@ pub(crate) struct InlineEdgeSchema {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, thiserror::Error)]
-pub(crate) enum EdgePayloadDdlParseError {
+pub(crate) enum EdgeInlineValueDdlParseError {
     #[error("expected {0}")]
     Expected(String),
     #[error("unexpected trailing input")]
@@ -42,7 +42,9 @@ pub(crate) enum EdgePayloadDdlParseError {
 }
 
 /// Returns `None` when the query is not the inline edge-label DDL shape.
-pub(crate) fn try_parse(query: &str) -> Option<Result<InlineEdgeSchema, EdgePayloadDdlParseError>> {
+pub(crate) fn try_parse(
+    query: &str,
+) -> Option<Result<InlineEdgeSchema, EdgeInlineValueDdlParseError>> {
     let trimmed = query.trim();
     let upper = trimmed.to_ascii_uppercase();
     if upper.starts_with("CREATE EDGE LABEL") {
@@ -52,7 +54,7 @@ pub(crate) fn try_parse(query: &str) -> Option<Result<InlineEdgeSchema, EdgePayl
     }
 }
 
-fn parse(query: &str) -> Result<InlineEdgeSchema, EdgePayloadDdlParseError> {
+fn parse(query: &str) -> Result<InlineEdgeSchema, EdgeInlineValueDdlParseError> {
     let mut cur = Cursor::new(query);
     cur.skip_ws();
     cur.expect_ascii_ci("CREATE")?;
@@ -73,7 +75,7 @@ fn parse(query: &str) -> Result<InlineEdgeSchema, EdgePayloadDdlParseError> {
     } else {
         let scalar_name = cur.parse_ident()?;
         let scalar_type = InlineScalarType::from_ddl_name(&scalar_name).ok_or(
-            EdgePayloadDdlParseError::UnrecognisedScalarType(scalar_name),
+            EdgeInlineValueDdlParseError::UnrecognisedScalarType(scalar_name),
         )?;
         InlineEdgePropertySchema::Scalar { scalar_type }
     };
@@ -83,14 +85,14 @@ fn parse(query: &str) -> Result<InlineEdgeSchema, EdgePayloadDdlParseError> {
 
     // Reject a second field / comma.
     if cur.try_consume(',') {
-        return Err(EdgePayloadDdlParseError::MultipleFields);
+        return Err(EdgeInlineValueDdlParseError::MultipleFields);
     }
     if cur
         .peek()
         .is_some_and(|ch| ch.is_ascii_alphabetic() || ch == '_')
     {
         // A second identifier means a second field declaration.
-        return Err(EdgePayloadDdlParseError::MultipleFields);
+        return Err(EdgeInlineValueDdlParseError::MultipleFields);
     }
 
     cur.skip_ws();
@@ -99,7 +101,7 @@ fn parse(query: &str) -> Result<InlineEdgeSchema, EdgePayloadDdlParseError> {
     cur.try_consume(';');
     cur.skip_ws();
     if !cur.is_eof() {
-        return Err(EdgePayloadDdlParseError::TrailingInput);
+        return Err(EdgeInlineValueDdlParseError::TrailingInput);
     }
 
     Ok(InlineEdgeSchema {
@@ -111,17 +113,17 @@ fn parse(query: &str) -> Result<InlineEdgeSchema, EdgePayloadDdlParseError> {
 
 fn parse_struct_body(
     cur: &mut Cursor<'_>,
-) -> Result<Vec<InlineEdgeStructField>, EdgePayloadDdlParseError> {
+) -> Result<Vec<InlineEdgeStructField>, EdgeInlineValueDdlParseError> {
     cur.skip_ws();
     cur.expect('{')?;
     cur.skip_ws();
 
     let first = cur.peek();
     if first == Some('}') {
-        return Err(EdgePayloadDdlParseError::EmptyStruct);
+        return Err(EdgeInlineValueDdlParseError::EmptyStruct);
     }
     if first.is_none() {
-        return Err(EdgePayloadDdlParseError::Expected("}".into()));
+        return Err(EdgeInlineValueDdlParseError::Expected("}".into()));
     }
 
     let mut fields = Vec::new();
@@ -136,11 +138,11 @@ fn parse_struct_body(
         cur.skip_ws();
         let scalar_name = cur.parse_ident()?;
         let scalar_type = InlineScalarType::from_ddl_name(&scalar_name).ok_or(
-            EdgePayloadDdlParseError::UnrecognisedScalarType(scalar_name),
+            EdgeInlineValueDdlParseError::UnrecognisedScalarType(scalar_name),
         )?;
 
         if !seen.insert(name.clone()) {
-            return Err(EdgePayloadDdlParseError::DuplicateField(name));
+            return Err(EdgeInlineValueDdlParseError::DuplicateField(name));
         }
         fields.push(InlineEdgeStructField { name, scalar_type });
 
@@ -149,7 +151,7 @@ fn parse_struct_body(
             // A comma must be followed by another field; trailing comma is rejected.
             cur.skip_ws();
             if cur.peek() == Some('}') {
-                return Err(EdgePayloadDdlParseError::Expected(
+                return Err(EdgeInlineValueDdlParseError::Expected(
                     "field after comma".into(),
                 ));
             }
@@ -159,7 +161,7 @@ fn parse_struct_body(
             break;
         }
         // Two adjacent field specs without a comma.
-        return Err(EdgePayloadDdlParseError::Expected(",".into()));
+        return Err(EdgeInlineValueDdlParseError::Expected(",".into()));
     }
 
     cur.expect('}')?;
@@ -223,11 +225,11 @@ impl<'a> Cursor<'a> {
         true
     }
 
-    fn expect_ascii_ci(&mut self, word: &str) -> Result<(), EdgePayloadDdlParseError> {
+    fn expect_ascii_ci(&mut self, word: &str) -> Result<(), EdgeInlineValueDdlParseError> {
         if self.consume_ascii_ci(word) {
             Ok(())
         } else {
-            Err(EdgePayloadDdlParseError::Expected(word.to_string()))
+            Err(EdgeInlineValueDdlParseError::Expected(word.to_string()))
         }
     }
 
@@ -241,24 +243,24 @@ impl<'a> Cursor<'a> {
         }
     }
 
-    fn expect(&mut self, ch: char) -> Result<(), EdgePayloadDdlParseError> {
+    fn expect(&mut self, ch: char) -> Result<(), EdgeInlineValueDdlParseError> {
         self.skip_ws();
         if self.peek() == Some(ch) {
             self.pos += 1;
             Ok(())
         } else {
-            Err(EdgePayloadDdlParseError::Expected(ch.to_string()))
+            Err(EdgeInlineValueDdlParseError::Expected(ch.to_string()))
         }
     }
 
-    fn parse_ident(&mut self) -> Result<String, EdgePayloadDdlParseError> {
+    fn parse_ident(&mut self) -> Result<String, EdgeInlineValueDdlParseError> {
         self.skip_ws();
         let start = self.pos;
         let first = self
             .peek()
-            .ok_or_else(|| EdgePayloadDdlParseError::Expected("identifier".into()))?;
+            .ok_or_else(|| EdgeInlineValueDdlParseError::Expected("identifier".into()))?;
         if !(first.is_ascii_alphabetic() || first == '_') {
-            return Err(EdgePayloadDdlParseError::Expected("identifier".into()));
+            return Err(EdgeInlineValueDdlParseError::Expected("identifier".into()));
         }
         self.pos += 1;
         while let Some(ch) = self.peek() {
@@ -269,7 +271,7 @@ impl<'a> Cursor<'a> {
             }
         }
         let s = std::str::from_utf8(&self.bytes[start..self.pos])
-            .map_err(|_| EdgePayloadDdlParseError::Expected("identifier".into()))?;
+            .map_err(|_| EdgeInlineValueDdlParseError::Expected("identifier".into()))?;
         Ok(s.to_string())
     }
 }
@@ -378,7 +380,7 @@ mod tests {
         let err =
             parse("CREATE EDGE LABEL AFFINITY { stats { score FLOAT32, } INLINE }").unwrap_err();
         assert!(
-            matches!(err, EdgePayloadDdlParseError::Expected(_)),
+            matches!(err, EdgeInlineValueDdlParseError::Expected(_)),
             "{err:?}"
         );
     }
@@ -390,7 +392,7 @@ mod tests {
         )
         .unwrap_err();
         assert!(
-            matches!(err, EdgePayloadDdlParseError::Expected(_)),
+            matches!(err, EdgeInlineValueDdlParseError::Expected(_)),
             "{err:?}"
         );
     }
@@ -401,7 +403,7 @@ mod tests {
     }
 
     #[test]
-    fn non_edge_payload_ddl_returns_none() {
+    fn non_edge_inline_value_ddl_returns_none() {
         assert!(try_parse("MATCH (n) RETURN n").is_none());
         assert!(try_parse("CREATE INDEX x FOR (n:N) ON (n.p)").is_none());
         assert!(try_parse("CREATE CONSTRAINT c FOR (n:N) REQUIRE n.p IS UNIQUE").is_none());
@@ -410,14 +412,14 @@ mod tests {
     #[test]
     fn missing_inline_rejected() {
         let err = parse("CREATE EDGE LABEL ROAD { distance FLOAT32 }").unwrap_err();
-        assert!(matches!(err, EdgePayloadDdlParseError::Expected(_)));
+        assert!(matches!(err, EdgeInlineValueDdlParseError::Expected(_)));
     }
 
     #[test]
     fn multiple_fields_rejected() {
         let err = parse("CREATE EDGE LABEL ROAD { distance FLOAT32 INLINE, time UINT32 INLINE }")
             .unwrap_err();
-        assert_eq!(err, EdgePayloadDdlParseError::MultipleFields);
+        assert_eq!(err, EdgeInlineValueDdlParseError::MultipleFields);
     }
 
     #[test]
@@ -425,7 +427,7 @@ mod tests {
         let err = parse("CREATE EDGE LABEL ROAD { distance FOO INLINE }").unwrap_err();
         assert_eq!(
             err,
-            EdgePayloadDdlParseError::UnrecognisedScalarType("FOO".into())
+            EdgeInlineValueDdlParseError::UnrecognisedScalarType("FOO".into())
         );
     }
 
@@ -435,25 +437,25 @@ mod tests {
             "CREATE EDGE LABEL ROAD { distance FLOAT32 INLINE } CREATE EDGE LABEL X { y UINT8 INLINE }"
         )
         .unwrap_err();
-        assert_eq!(err, EdgePayloadDdlParseError::TrailingInput);
+        assert_eq!(err, EdgeInlineValueDdlParseError::TrailingInput);
     }
 
     #[test]
     fn missing_braces_rejected() {
         let err = parse("CREATE EDGE LABEL ROAD distance FLOAT32 INLINE").unwrap_err();
-        assert!(matches!(err, EdgePayloadDdlParseError::Expected(_)));
+        assert!(matches!(err, EdgeInlineValueDdlParseError::Expected(_)));
     }
 
     #[test]
     fn empty_body_rejected() {
         let err = parse("CREATE EDGE LABEL ROAD {}").unwrap_err();
-        assert!(matches!(err, EdgePayloadDdlParseError::Expected(_)));
+        assert!(matches!(err, EdgeInlineValueDdlParseError::Expected(_)));
     }
 
     #[test]
     fn empty_struct_rejected() {
         let err = parse("CREATE EDGE LABEL ROAD { stats {} INLINE }").unwrap_err();
-        assert_eq!(err, EdgePayloadDdlParseError::EmptyStruct);
+        assert_eq!(err, EdgeInlineValueDdlParseError::EmptyStruct);
     }
 
     #[test]
@@ -462,7 +464,7 @@ mod tests {
             .unwrap_err();
         assert_eq!(
             err,
-            EdgePayloadDdlParseError::DuplicateField("score".into())
+            EdgeInlineValueDdlParseError::DuplicateField("score".into())
         );
     }
 
@@ -470,7 +472,7 @@ mod tests {
     fn nested_struct_rejected() {
         let err =
             parse("CREATE EDGE LABEL ROAD { stats { nested { x UINT8 } } INLINE }").unwrap_err();
-        assert!(matches!(err, EdgePayloadDdlParseError::Expected(_)));
+        assert!(matches!(err, EdgeInlineValueDdlParseError::Expected(_)));
     }
 
     #[test]
@@ -482,7 +484,7 @@ mod tests {
             .unwrap_err();
             assert_eq!(
                 err,
-                EdgePayloadDdlParseError::UnrecognisedScalarType(keyword.into())
+                EdgeInlineValueDdlParseError::UnrecognisedScalarType(keyword.into())
             );
         }
     }
@@ -491,6 +493,6 @@ mod tests {
     fn struct_multiple_top_level_fields_rejected() {
         let err = parse("CREATE EDGE LABEL ROAD { a { x UINT8 } INLINE, b { y UINT8 } INLINE }")
             .unwrap_err();
-        assert_eq!(err, EdgePayloadDdlParseError::MultipleFields);
+        assert_eq!(err, EdgeInlineValueDdlParseError::MultipleFields);
     }
 }

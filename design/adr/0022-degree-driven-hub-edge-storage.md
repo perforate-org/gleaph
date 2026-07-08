@@ -239,7 +239,7 @@ B-tree tier (high degree, Terrace-style).
      B-tree" is *logical*, realized by the `(VertexId, BucketLabelKey)` key prefix
      over a single map. Candidates: `ic-stable-structures::StableBTreeMap` or the
      in-repo `ic-stable-paged-ordered-map`.
-   - **Value reuses the existing edge-payload representation / `EdgePayloadStore`
+   - **Value reuses the existing edge-inline-value representation / `EdgeInlineValueStore`
      indirection** (single source of truth for payload schema), not a new
      variable-length value format; large blobs stay referenced by handle.
 
@@ -304,7 +304,7 @@ necessity and the thresholds of *each* tier (the dedicated span included).
    - **Value-layout experiment landed** (`bench_labeled_stage2b_narrow_*` and
      `..._scan_descending_keyonly_*`), testing whether the read regression is a
      value-width problem. The persisted edge row is 4 bytes (`Edge::BYTES`; payloads
-     already externalized to `EdgePayloadStore`/`EdgePropertyStore`), so the value is
+     already externalized to `EdgeInlineValueStore`/`EdgePropertyStore`), so the value is
      never variable-length. Results: shrinking the B-tree value 10B → 4B changes
      nothing (scan 104.40M → 104.96M; delete 45.56M → 44.70M; lookup 103.51M →
      104.12M, all within noise). Reading **only the key** (value never deserialized,
@@ -374,7 +374,7 @@ necessity and the thresholds of *each* tier (the dedicated span included).
    **Value-layout experiment verdict (2026-06-19):** the read regression is **not** a
    value-width problem and is **not fixable by value layout**. Shrinking the value to
    4 bytes (the real `Edge` width) or splitting target/payload into separate trees
-   gives no scan benefit, because production edge payloads are already external (the
+   gives no scan benefit, because production edge inline values are already external (the
    slab row is target-only). Moving `target` into the key (value-free scan) is the
    only layout change that helps, and only by ~31% (to ~4.3× the slab); B-tree node
    traversal + key deserialization dominate. Therefore do **not** pursue the
@@ -492,7 +492,7 @@ necessity and the thresholds of *each* tier (the dedicated span included).
   neighbour (degree × ~8.7K instr/slot). That extreme is the supernode regime already
   bounded by ADR 0021's resumable detach, with the residual caveat that one mirror step
   is an indivisible O(neighbour-degree) scan. Two cheaper, benchmark-gated levers are
-  recorded if that regime ever bites: (a) skip `attach_edge_payload` in
+  recorded if that regime ever bites: (a) skip `attach_edge_inline_value` in
   neighbour-only predicate scans (the predicate reads only `neighbor_vid`), cutting the
   ~8.7K/slot constant; (b) the source-keyed reverse mirror index (algorithmic, heavier).
   Consistent with the 2a/2b verdicts: measure first, build only when a benchmark breaches.

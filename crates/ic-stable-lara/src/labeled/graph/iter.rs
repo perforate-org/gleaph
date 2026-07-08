@@ -17,35 +17,35 @@ use std::{iter::FusedIterator, num::NonZero};
 
 use super::{LabeledLaraGraph, LabeledOperationError, OutEdgeOrder};
 
-/// Reusable buffers for labeled edge-payload batch traversal.
+/// Reusable buffers for labeled edge-inline-value batch traversal.
 #[derive(Clone, Debug)]
-pub struct LabeledEdgePayloadBatchScratch<E> {
+pub struct LabeledEdgeInlineValueBatchScratch<E> {
     /// Edge rows in the same order as the parallel value byte chunks.
     pub edges: Vec<E>,
     /// Flattened value bytes: `edges.len() * batch.byte_width.byte_width()` bytes.
-    pub payload_bytes: Vec<u8>,
+    pub inline_value_bytes: Vec<u8>,
     /// Reusable bulk-read buffer for contiguous edge slab IO.
     pub(super) io_edge_bytes: Vec<u8>,
     /// Reusable bulk-read buffer for contiguous payload slab IO.
-    pub(super) io_payload_bytes: Vec<u8>,
+    pub(super) io_inline_value_bytes: Vec<u8>,
 }
 
-impl<E> Default for LabeledEdgePayloadBatchScratch<E> {
+impl<E> Default for LabeledEdgeInlineValueBatchScratch<E> {
     fn default() -> Self {
         Self {
             edges: Vec::new(),
-            payload_bytes: Vec::new(),
+            inline_value_bytes: Vec::new(),
             io_edge_bytes: Vec::new(),
-            io_payload_bytes: Vec::new(),
+            io_inline_value_bytes: Vec::new(),
         }
     }
 }
 
-impl<E> LabeledEdgePayloadBatchScratch<E> {
+impl<E> LabeledEdgeInlineValueBatchScratch<E> {
     /// Clears both reusable buffers while preserving allocation capacity.
     pub fn clear(&mut self) {
         self.edges.clear();
-        self.payload_bytes.clear();
+        self.inline_value_bytes.clear();
     }
 
     pub(super) fn io_edge_slice_mut(&mut self, len: usize) -> &mut [u8] {
@@ -60,14 +60,14 @@ impl<E> LabeledEdgePayloadBatchScratch<E> {
     }
 
     pub(super) fn io_payload_slice_mut(&mut self, len: usize) -> &mut [u8] {
-        if self.io_payload_bytes.len() < len {
-            self.io_payload_bytes.resize(len, 0);
+        if self.io_inline_value_bytes.len() < len {
+            self.io_inline_value_bytes.resize(len, 0);
         }
-        &mut self.io_payload_bytes[..len]
+        &mut self.io_inline_value_bytes[..len]
     }
 
     pub(super) fn io_payload_slice(&self, len: usize) -> &[u8] {
-        &self.io_payload_bytes[..len]
+        &self.io_inline_value_bytes[..len]
     }
 }
 
@@ -161,17 +161,17 @@ pub struct LabeledPayloadValueBatch<'a> {
 }
 
 /// One batch of edges and their parallel value bytes for a single label bucket.
-pub struct LabeledEdgePayloadBatch<'a, E> {
+pub struct LabeledEdgeInlineValueBatch<'a, E> {
     /// Label bucket visited by this batch.
     pub label_id: BucketLabelKey,
-    /// Physical byte width of each edge payload in this batch.
+    /// Physical byte width of each edge inline value in this batch.
     pub byte_width: u16,
     /// Scan order used for both `edges` and `payload_bytes`.
     pub order: OutEdgeOrder,
     /// Edge rows in scan order.
     pub edges: &'a [E],
-    /// Flattened edge-payload bytes in the same order as `edges`.
-    pub payload_bytes: &'a [u8],
+    /// Flattened edge-inline-value bytes in the same order as `edges`.
+    pub inline_value_bytes: &'a [u8],
     /// `true` when the batch was read from contiguous resident edge/payload slab spans.
     pub dense: bool,
 }
@@ -435,7 +435,7 @@ where
         let slot = edge.edge_slot_index_raw();
         let edge = edge.with_label_id(self.label_id.raw());
         if self.attach_payload {
-            Some(self.graph.attach_edge_payload(
+            Some(self.graph.attach_edge_inline_value(
                 self.src,
                 &self.vertex,
                 self.bucket_index,

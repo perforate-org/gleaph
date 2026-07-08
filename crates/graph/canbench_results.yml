@@ -591,14 +591,14 @@ benches:
         instructions: 714
         heap_increase: 0
         stable_memory_increase: 0
-  bench_graph_expand_payload_skewed_200a_24b:
+  bench_graph_expand_inline_value_skewed_200a_24b:
     total:
       calls: 1
       instructions: 662121
       heap_increase: 0
       stable_memory_increase: 256
     scopes:
-      expand_payload_skewed_200a_24b:
+      expand_inline_value_skewed_200a_24b:
         calls: 1
         instructions: 660578
         heap_increase: 0
@@ -623,14 +623,14 @@ benches:
         instructions: 714
         heap_increase: 0
         stable_memory_increase: 0
-  bench_graph_expand_payload_skewed_2k_a_100b:
+  bench_graph_expand_inline_value_skewed_2k_a_100b:
     total:
       calls: 1
       instructions: 2630552
       heap_increase: 1
       stable_memory_increase: 256
     scopes:
-      expand_payload_skewed_2k_a_100b:
+      expand_inline_value_skewed_2k_a_100b:
         calls: 1
         instructions: 2629009
         heap_increase: 1
@@ -1176,14 +1176,14 @@ benches:
         instructions: 144276
         heap_increase: 0
         stable_memory_increase: 0
-  bench_graph_payload_first_incoming_log_backed_selective_match:
+  bench_graph_inline_value_first_incoming_log_backed_selective_match:
     total:
       calls: 1
       instructions: 705899
       heap_increase: 0
       stable_memory_increase: 256
     scopes:
-      payload_first_incoming_log_backed_selective_match:
+      inline_value_first_incoming_log_backed_selective_match:
         calls: 1
         instructions: 704330
         heap_increase: 0
@@ -1208,14 +1208,14 @@ benches:
         instructions: 714
         heap_increase: 0
         stable_memory_increase: 0
-  bench_graph_payload_first_log_backed_selective_match:
+  bench_graph_inline_value_first_log_backed_selective_match:
     total:
       calls: 1
       instructions: 696776
       heap_increase: 0
       stable_memory_increase: 256
     scopes:
-      payload_first_log_backed_selective_match:
+      inline_value_first_log_backed_selective_match:
         calls: 1
         instructions: 695207
         heap_increase: 0
@@ -1662,14 +1662,14 @@ benches:
         instructions: 128438
         heap_increase: 0
         stable_memory_increase: 0
-  bench_inline_scalar_set_payload_fixed_edges:
+  bench_inline_scalar_set_inline_value_fixed_edges:
     total:
       calls: 1
       instructions: 8857410
       heap_increase: 0
       stable_memory_increase: 0
     scopes:
-      inline_scalar_set_payload_fixed_edges:
+      inline_scalar_set_inline_value_fixed_edges:
         calls: 1
         instructions: 8856411
         heap_increase: 0

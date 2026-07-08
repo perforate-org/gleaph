@@ -17,7 +17,7 @@ use crate::{
         bucket_store::LabelBucketStore,
         record::{LabelBucket, LabeledVertex},
     },
-    lara::{edge::EdgeStore, edge_payload::EdgePayloadStore, vertex::VertexStore},
+    lara::{edge::EdgeStore, edge_inline_value::EdgeInlineValueStore, vertex::VertexStore},
     traits::CsrEdge,
 };
 use ic_stable_structures::Memory;
@@ -64,7 +64,7 @@ pub use error::{InitError, LabeledOperationError, OutEdgeOrder};
 pub use iter::LabeledOutEdgesIter;
 pub use iter::LabeledSpanIter;
 pub use iter::{
-    HybridOverflowEdgeReplay, LabeledEdgePayloadBatch, LabeledEdgePayloadBatchScratch,
+    HybridOverflowEdgeReplay, LabeledEdgeInlineValueBatch, LabeledEdgeInlineValueBatchScratch,
     LabeledPayloadValueBatch, LabeledPayloadValueBatchScratch,
 };
 
@@ -77,7 +77,7 @@ where
     vertices: VertexStore<LabeledVertex, M>,
     buckets: LabelBucketStore<M>,
     edges: EdgeStore<E, M>,
-    values: EdgePayloadStore<M>,
+    values: EdgeInlineValueStore<M>,
     default_label: BucketLabelKey,
     last_bucket_lookup: Cell<Option<BucketLookupCache>>,
     bucket_lookup_cache: [Cell<Option<BucketLookupCache>>; BUCKET_LOOKUP_CACHE_ENTRIES],

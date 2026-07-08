@@ -27,14 +27,14 @@ impl PreparedEdgeVectorKernel {
 
     pub(crate) fn score(
         &self,
-        edge_payload_bytes: &[u8],
+        edge_inline_value_bytes: &[u8],
         query: &[f32],
         metric: EdgeVectorMetric,
     ) -> Option<f32> {
-        if query.len() != self.dims || edge_payload_bytes.len() < self.byte_width() {
+        if query.len() != self.dims || edge_inline_value_bytes.len() < self.byte_width() {
             return None;
         }
-        let bytes = &edge_payload_bytes[..self.byte_width()];
+        let bytes = &edge_inline_value_bytes[..self.byte_width()];
         match metric {
             EdgeVectorMetric::Dot => Some(dot_f32_bytes(bytes, query)),
             EdgeVectorMetric::L2Squared => Some(l2_squared_f32_bytes(bytes, query)),

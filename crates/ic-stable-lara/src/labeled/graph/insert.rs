@@ -100,16 +100,16 @@ where
     {
         self.ensure_vertex(src)?;
         let mut vertex = self.vertices.get(src);
-        let edge_payload_width = edge.edge_payload_byte_width();
-        let has_edge_payload = edge_payload_width != 0;
+        let edge_inline_value_width = edge.edge_inline_value_byte_width();
+        let has_edge_inline_value = edge_inline_value_width != 0;
         if vertex.is_default_edge_labeled() {
-            if !has_edge_payload && label_id == self.bypass_storage_label_for(&vertex) {
+            if !has_edge_inline_value && label_id == self.bypass_storage_label_for(&vertex) {
                 return self.insert_homogeneous_bypass_edge(src, label_id, edge);
             }
-            if has_edge_payload {
+            if has_edge_inline_value {
                 return Err(LabeledOperationError::PayloadByteWidthMismatch {
                     bucket_width: 0,
-                    edge_payload_width,
+                    edge_inline_value_width,
                 });
             }
             self.promote_bypass_to_bucket_mode(src)?;
@@ -117,24 +117,25 @@ where
         } else if vertex.degree() == 0
             && self.is_homogeneous_bypass_label(label_id)
             && self.may_use_homogeneous_bypass(src)
-            && !has_edge_payload
+            && !has_edge_inline_value
         {
             return self.insert_homogeneous_bypass(src, label_id, edge);
         }
 
-        if edge_payload_width != 0
+        if edge_inline_value_width != 0
             && let BucketSearch::Missing { .. } = self.find_bucket(src, &vertex, label_id)?
         {
             return Err(LabeledOperationError::PayloadByteWidthMismatch {
                 bucket_width: 0,
-                edge_payload_width,
+                edge_inline_value_width,
             });
         }
 
         let (bucket_slot, mut bucket) = self.find_or_create_bucket(src, &vertex, label_id)?;
         let vertex = self.vertices.get(src);
-        if edge_payload_width != bucket.payload_byte_width() {
-            bucket = self.ensure_bucket_payload_schema_for_insert(bucket, edge_payload_width)?;
+        if edge_inline_value_width != bucket.inline_value_byte_width() {
+            bucket =
+                self.ensure_bucket_payload_schema_for_insert(bucket, edge_inline_value_width)?;
             self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
         }
         self.ensure_bucket_slack_insert_when_peers_have_values(src, &vertex)?;
@@ -143,8 +144,8 @@ where
         for _attempt in 0..64u32 {
             let attempt_edge = edge.clone();
             let vertex = self.vertices.get(src);
-            if has_edge_payload
-                && bucket.payload_log_len() > 0
+            if has_edge_inline_value
+                && bucket.inline_value_log_len() > 0
                 && self
                     .values
                     .payload_log_segment_is_full(self.payload_log_leaf(src))
@@ -170,7 +171,7 @@ where
                 let prev_stored_slots = bucket.stored_slots;
                 let bucket = bucket.grow_packed_slab_by_one();
                 let slot_index = bucket.stored_slots.saturating_sub(1);
-                let bucket = self.write_edge_payload_after_insert(
+                let bucket = self.write_edge_inline_value_after_insert(
                     src,
                     bucket_slot,
                     bucket,
@@ -196,7 +197,7 @@ where
                 .edges
                 .insert_edge(&access, VertexId::from(0), attempt_edge.clone())
             {
-                Ok(InsertLocation::Slab(_)) if !has_edge_payload => return Ok(()),
+                Ok(InsertLocation::Slab(_)) if !has_edge_inline_value => return Ok(()),
                 Ok(InsertLocation::Slab(written_slot)) => {
                     bucket = self
                         .buckets
@@ -207,7 +208,7 @@ where
                     if new_stored != bucket.stored_slots {
                         bucket = bucket.with_stored_slots(new_stored);
                     }
-                    let bucket = self.write_edge_payload_after_insert(
+                    let bucket = self.write_edge_inline_value_after_insert(
                         src,
                         bucket_slot,
                         bucket,
@@ -219,7 +220,7 @@ where
                     self.buckets.write_label_bucket_slot(bucket_slot, bucket)?;
                     return Ok(());
                 }
-                Ok(InsertLocation::Log) if !has_edge_payload => return Ok(()),
+                Ok(InsertLocation::Log) if !has_edge_inline_value => return Ok(()),
                 Ok(InsertLocation::Log) => {
                     bucket = self
                         .buckets
@@ -227,7 +228,7 @@ where
                         .ok_or(LaraOperationError::CollectAllocationOverflow)?;
                     let prev_payload_slots = self.bucket_resident_payload_slots_for(src, &bucket);
                     let slot_index = bucket.degree().saturating_sub(1);
-                    let bucket = self.write_edge_payload_after_insert(
+                    let bucket = self.write_edge_inline_value_after_insert(
                         src,
                         bucket_slot,
                         bucket,
@@ -242,7 +243,7 @@ where
                 Err(LaraOperationError::SegmentLogFull) => {
                     let vertex = self.vertices.get(src);
                     if vertex.is_default_edge_labeled()
-                        && !has_edge_payload
+                        && !has_edge_inline_value
                         && label_id == self.bypass_storage_label_for(&vertex)
                     {
                         return self.insert_homogeneous_bypass_edge(src, label_id, attempt_edge);

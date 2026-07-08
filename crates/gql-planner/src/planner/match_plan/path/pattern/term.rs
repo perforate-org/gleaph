@@ -303,8 +303,10 @@ pub(super) fn plan_path_term(
                             )
                         };
                         let indexed_edge_equality = edge_fusion.indexed_equality.clone();
-                        let edge_payload_predicate = edge_fusion.edge_payload_predicate.clone();
-                        let edge_vector_predicate = edge_fusion.edge_vector_predicate.clone();
+                        let edge_inline_value_predicate =
+                            edge_fusion.edge_inline_value_predicate.clone();
+                        let edge_inline_vector_predicate =
+                            edge_fusion.edge_inline_vector_predicate.clone();
 
                         if let Some(mode) = shortest_mode {
                             if let Some(dst_node) = dst_node.as_ref() {
@@ -367,8 +369,8 @@ pub(super) fn plan_path_term(
                                 label_expr,
                                 var_len,
                                 indexed_edge_equality,
-                                edge_payload_predicate,
-                                edge_vector_predicate,
+                                edge_inline_value_predicate,
+                                edge_inline_vector_predicate,
                                 dst_filter: dst_filters,
                                 edge_property_projection: None,
                                 dst_property_projection: None,
@@ -397,8 +399,8 @@ pub(super) fn plan_path_term(
                                 label_expr,
                                 var_len,
                                 indexed_edge_equality,
-                                edge_payload_predicate,
-                                edge_vector_predicate,
+                                edge_inline_value_predicate,
+                                edge_inline_vector_predicate,
                                 edge_property_projection: None,
                                 dst_property_projection: None,
                                 hop_aux_binding: hop_aux_binding_for_edge_if_referenced(
@@ -465,8 +467,10 @@ pub(super) fn plan_path_term(
                         )
                     };
                     let indexed_edge_equality = edge_fusion.indexed_equality.clone();
-                    let edge_payload_predicate = edge_fusion.edge_payload_predicate.clone();
-                    let edge_vector_predicate = edge_fusion.edge_vector_predicate.clone();
+                    let edge_inline_value_predicate =
+                        edge_fusion.edge_inline_value_predicate.clone();
+                    let edge_inline_vector_predicate =
+                        edge_fusion.edge_inline_vector_predicate.clone();
                     let hop_var_len = Some(&hop.var_len);
                     let (path_var_binding, emit_path_binding) =
                         var_len_path_var_fields(path_var, hop_var_len);
@@ -481,8 +485,8 @@ pub(super) fn plan_path_term(
                             label_expr,
                             var_len: Some(hop.var_len),
                             indexed_edge_equality,
-                            edge_payload_predicate,
-                            edge_vector_predicate,
+                            edge_inline_value_predicate,
+                            edge_inline_vector_predicate,
                             dst_filter: dst_filters,
                             edge_property_projection: None,
                             dst_property_projection: None,
@@ -507,8 +511,8 @@ pub(super) fn plan_path_term(
                             label_expr,
                             var_len: Some(hop.var_len),
                             indexed_edge_equality,
-                            edge_payload_predicate,
-                            edge_vector_predicate,
+                            edge_inline_value_predicate,
+                            edge_inline_vector_predicate,
                             edge_property_projection: None,
                             dst_property_projection: None,
                             hop_aux_binding: hop_aux_binding_for_edge_if_referenced(

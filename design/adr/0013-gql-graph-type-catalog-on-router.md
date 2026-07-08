@@ -79,7 +79,7 @@ already exist in `ROUTER_GRAPH_CATALOG` (see §2).
 |-------|--------|
 | **Schema not persisted** | `CREATE GRAPH TYPE` / `CREATE GRAPH` in `gql_execute*` have no effect across calls |
 | **Planning blind** | `NoSchema` — no graph-type-aware binding inference or constraint checks at plan time |
-| **Split ownership risk** | Without a router SSOT, future per-shard schema would diverge (same class of problem as pre-[0008](0008-edge-payload-profile-router-ssot.md) edge payload profiles) |
+| **Split ownership risk** | Without a router SSOT, future per-shard schema would diverge (same class of problem as pre-[0008](0008-edge-inline-value-profile-router-ssot.md) edge inline value profiles) |
 | **String keys in binding map** | Inconsistent with ADR 0011 `GraphId` partition for indexes, prepared plans, idempotency |
 | **Dead crate** | `gleaph-graph-catalog` only unit tests + canbench; product path undefined |
 

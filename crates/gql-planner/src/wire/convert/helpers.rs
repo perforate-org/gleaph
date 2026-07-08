@@ -4,15 +4,15 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::CmpOp;
 
 use crate::plan::{
-    ConditionalScanCandidate, EdgeLabelRef, EdgePayloadPredicate, EdgeVectorMetric,
-    EdgeVectorPredicate, IndexScanSpec, NodeLabelRef, RemovePlanItem, ScanValue, ShortestMode, Str,
+    ConditionalScanCandidate, EdgeInlineValuePredicate, EdgeInlineVectorPredicate, EdgeLabelRef,
+    EdgeVectorMetric, IndexScanSpec, NodeLabelRef, RemovePlanItem, ScanValue, ShortestMode, Str,
     VarLenSpec, YieldColumn,
 };
 
 use rkyv::rancor;
 
 use super::types::{
-    ConditionalScanCandidateWire, EdgePayloadPredicateWire, EdgeVectorPredicateWire,
+    ConditionalScanCandidateWire, EdgeInlineValuePredicateWire, EdgeInlineVectorPredicateWire,
     IndexScanSpecWire, RemovePlanItemWire, ScanValueWire, ShortestModeWire, VarLenSpecWire,
     YieldColumnWire,
 };
@@ -98,12 +98,12 @@ pub(super) fn decode_scan_value(v: &ScanValueWire) -> Result<ScanValue, String> 
     })
 }
 
-pub(super) fn encode_edge_payload_predicate(
-    v: &Option<EdgePayloadPredicate>,
-) -> Result<Option<EdgePayloadPredicateWire>, String> {
+pub(super) fn encode_edge_inline_value_predicate(
+    v: &Option<EdgeInlineValuePredicate>,
+) -> Result<Option<EdgeInlineValuePredicateWire>, String> {
     v.as_ref()
         .map(|pred| {
-            Ok(EdgePayloadPredicateWire {
+            Ok(EdgeInlineValuePredicateWire {
                 op: cmp_op_to_wire(pred.op),
                 value: encode_scan_value(&pred.value)?,
             })
@@ -111,12 +111,12 @@ pub(super) fn encode_edge_payload_predicate(
         .transpose()
 }
 
-pub(super) fn decode_edge_payload_predicate(
-    v: &Option<EdgePayloadPredicateWire>,
-) -> Result<Option<EdgePayloadPredicate>, String> {
+pub(super) fn decode_edge_inline_value_predicate(
+    v: &Option<EdgeInlineValuePredicateWire>,
+) -> Result<Option<EdgeInlineValuePredicate>, String> {
     v.as_ref()
         .map(|pred| {
-            Ok(EdgePayloadPredicate {
+            Ok(EdgeInlineValuePredicate {
                 op: cmp_op_from_wire(pred.op)?,
                 value: decode_scan_value(&pred.value)?,
             })
@@ -124,12 +124,12 @@ pub(super) fn decode_edge_payload_predicate(
         .transpose()
 }
 
-pub(super) fn encode_edge_vector_predicate(
-    v: &Option<EdgeVectorPredicate>,
-) -> Result<Option<EdgeVectorPredicateWire>, String> {
+pub(super) fn encode_edge_inline_vector_predicate(
+    v: &Option<EdgeInlineVectorPredicate>,
+) -> Result<Option<EdgeInlineVectorPredicateWire>, String> {
     v.as_ref()
         .map(|pred| {
-            Ok(EdgeVectorPredicateWire {
+            Ok(EdgeInlineVectorPredicateWire {
                 metric: edge_vector_metric_to_wire(pred.metric),
                 query: encode_scan_value(&pred.query)?,
                 op: cmp_op_to_wire(pred.op),
@@ -139,12 +139,12 @@ pub(super) fn encode_edge_vector_predicate(
         .transpose()
 }
 
-pub(super) fn decode_edge_vector_predicate(
-    v: &Option<EdgeVectorPredicateWire>,
-) -> Result<Option<EdgeVectorPredicate>, String> {
+pub(super) fn decode_edge_inline_vector_predicate(
+    v: &Option<EdgeInlineVectorPredicateWire>,
+) -> Result<Option<EdgeInlineVectorPredicate>, String> {
     v.as_ref()
         .map(|pred| {
-            Ok(EdgeVectorPredicate {
+            Ok(EdgeInlineVectorPredicate {
                 metric: edge_vector_metric_from_wire(pred.metric)?,
                 query: decode_scan_value(&pred.query)?,
                 op: cmp_op_from_wire(pred.op)?,
@@ -167,7 +167,7 @@ pub(super) fn edge_vector_metric_from_wire(metric: u8) -> Result<EdgeVectorMetri
         0 => Ok(EdgeVectorMetric::Dot),
         1 => Ok(EdgeVectorMetric::L2Squared),
         2 => Ok(EdgeVectorMetric::CosineDistance),
-        other => Err(format!("invalid edge vector metric tag {other}")),
+        other => Err(format!("invalid edge inline vector metric tag {other}")),
     }
 }
 
@@ -190,7 +190,9 @@ pub(super) fn cmp_op_from_wire(op: u8) -> Result<CmpOp, String> {
         3 => Ok(CmpOp::Le),
         4 => Ok(CmpOp::Gt),
         5 => Ok(CmpOp::Ge),
-        _ => Err(format!("invalid edge payload predicate comparison op {op}")),
+        _ => Err(format!(
+            "invalid edge inline value predicate comparison op {op}"
+        )),
     }
 }
 

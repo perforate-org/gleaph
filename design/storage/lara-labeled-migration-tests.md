@@ -231,4 +231,4 @@ Add to `crates/ic-stable-lara/src/test_support.rs` (or `labeled/test_support.rs`
 - [lara.md](./lara.md)
 - [lara-dgap-contract.md](./lara-dgap-contract.md)
 - [adr/0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md)
-- [labeled-edge-payloads.md](./labeled-edge-payloads.md)
+- [labeled-edge-inline-values.md](./labeled-edge-inline-values.md)

@@ -10,7 +10,7 @@ use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
     FederationEnv, admin_intern_edge_label, admin_intern_vertex_label,
-    e2e_insert_directed_edge_with_payload, e2e_insert_vertex_with_label,
+    e2e_insert_directed_edge_with_inline_value, e2e_insert_vertex_with_label,
     gql_execute_idempotent_as_admin, gql_query_as_admin, gql_query_as_admin_expect_err,
     install_single_shard_federation,
 };
@@ -24,10 +24,10 @@ const DST_LABEL: &str = "CityDst";
 
 const COST_BY_QUERY: &str = "MATCH p = ANY SHORTEST (a:CitySrc)-[e:ROAD]->{1,5}(c) COST BY e.distance RETURN p, ELEMENT_ID(c) AS cid";
 
-fn road_profile() -> gleaph_graph_kernel::entry::EdgePayloadProfile {
-    gleaph_graph_kernel::entry::EdgePayloadProfile {
+fn road_profile() -> gleaph_graph_kernel::entry::EdgeInlineValueProfile {
+    gleaph_graph_kernel::entry::EdgeInlineValueProfile {
         byte_width: 2,
-        encoding: gleaph_graph_kernel::entry::EdgePayloadEncoding::RawU16,
+        encoding: gleaph_graph_kernel::entry::EdgeInlineValueEncoding::RawU16,
     }
 }
 
@@ -77,7 +77,7 @@ fn build_cost_triangle(env: &FederationEnv) -> IcWireValue {
     let c = e2e_insert_vertex_with_label(env, env.graph_source, dst_label_id.raw());
 
     // a->b costs 1, b->c costs 1: total 2.
-    e2e_insert_directed_edge_with_payload(
+    e2e_insert_directed_edge_with_inline_value(
         env,
         env.graph_source,
         a.local_vertex_id,
@@ -86,7 +86,7 @@ fn build_cost_triangle(env: &FederationEnv) -> IcWireValue {
         1u16.to_le_bytes().to_vec(),
         road_profile(),
     );
-    e2e_insert_directed_edge_with_payload(
+    e2e_insert_directed_edge_with_inline_value(
         env,
         env.graph_source,
         b.local_vertex_id,
@@ -96,7 +96,7 @@ fn build_cost_triangle(env: &FederationEnv) -> IcWireValue {
         road_profile(),
     );
     // Direct a->c costs 100.
-    e2e_insert_directed_edge_with_payload(
+    e2e_insert_directed_edge_with_inline_value(
         env,
         env.graph_source,
         a.local_vertex_id,
@@ -189,15 +189,15 @@ fn inline_cost_by_lifecycle() {
 }
 
 // ---------------------------------------------------------------------------
-// Fixture family 2: symmetric directed pair proves payload is read in both
+// Fixture family 2: symmetric directed pair proves inline value is read in both
 // traversal directions.
 //
 // Two opposite directed edges (CitySrc->CityMid and CityMid->CitySrc) share the
-// same inline payload.  We run two explicit directed COST BY queries so each
+// same inline value.  We run two explicit directed COST BY queries so each
 // traversal direction is independently observable; an undirected query would
 // allow either edge to satisfy the path and would not test both directions.
 // Former contract preserved:
-//   - inline_cost_by_symmetric_directed_reads_same_payload_value
+//   - inline_cost_by_symmetric_directed_reads_same_inline_value
 // ---------------------------------------------------------------------------
 
 fn assert_directed_cost_by_path(
@@ -225,7 +225,7 @@ fn assert_directed_cost_by_path(
 }
 
 #[test]
-fn inline_cost_by_symmetric_directed_reads_same_payload_value() {
+fn inline_cost_by_symmetric_directed_reads_same_inline_value() {
     let env = setup();
     let edge_label_id = admin_intern_edge_label(&env, EDGE_LABEL);
     let src_label_id = admin_intern_vertex_label(&env, SRC_LABEL);
@@ -234,14 +234,14 @@ fn inline_cost_by_symmetric_directed_reads_same_payload_value() {
     let a = e2e_insert_vertex_with_label(&env, env.graph_source, src_label_id.raw());
     let b = e2e_insert_vertex_with_label(&env, env.graph_source, mid_label_id.raw());
 
-    // Model a symmetric edge pair (both directions) sharing the same inline payload.
+    // Model a symmetric edge pair (both directions) sharing the same inline value.
     // A true single undirected inline-payload edge is covered by a Graph unit test;
     // this E2E test proves the cost value is read from the payload in each
     // traversal direction independently.  Only the start vertex is labeled in each
     // query so the router seed-anchor prefix binds a single variable; the exact
     // destination is asserted via the returned ELEMENT_ID.
     let payload = 5u16.to_le_bytes().to_vec();
-    e2e_insert_directed_edge_with_payload(
+    e2e_insert_directed_edge_with_inline_value(
         &env,
         env.graph_source,
         a.local_vertex_id,
@@ -250,7 +250,7 @@ fn inline_cost_by_symmetric_directed_reads_same_payload_value() {
         payload.clone(),
         road_profile(),
     );
-    e2e_insert_directed_edge_with_payload(
+    e2e_insert_directed_edge_with_inline_value(
         &env,
         env.graph_source,
         b.local_vertex_id,

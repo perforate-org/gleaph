@@ -92,12 +92,12 @@ impl std::error::Error for InitError {}
 
 /// Stable per-segment overflow log for values that did not fit on the byte slab.
 #[derive(Clone, Debug)]
-pub struct PayloadLogStore<M: Memory> {
+pub struct InlineValueLogStore<M: Memory> {
     memory: M,
     header_mirror: Cell<HeaderV1>,
 }
 
-impl<M: Memory> PayloadLogStore<M> {
+impl<M: Memory> InlineValueLogStore<M> {
     /// Creates a new payload overflow log with `header`.
     pub fn new(memory: M, header: HeaderV1) -> Result<Self, GrowFailed> {
         let store = Self {
@@ -307,11 +307,11 @@ mod tests {
     fn init_rejects_backing_smaller_than_declared_layout() {
         // Corrupt the declared segment_count so the layout the header describes far exceeds the
         // backing memory; init must fail fast instead of trapping on a later offset read.
-        let store = PayloadLogStore::new(vector_memory(), HeaderV1::new(2)).expect("store");
+        let store = InlineValueLogStore::new(vector_memory(), HeaderV1::new(2)).expect("store");
         let mem = store.into_memory();
         crate::write_u32(&mem, Address::from(4), u32::MAX);
         assert!(matches!(
-            PayloadLogStore::init(mem),
+            InlineValueLogStore::init(mem),
             Err(InitError::OutOfMemory)
         ));
     }

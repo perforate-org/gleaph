@@ -26,7 +26,7 @@ fn router_stable_reopen_round() {
     black_box(memory::init_index_name_catalog());
     black_box(memory::init_named_indexes());
     black_box(memory::init_indexed_property_set());
-    black_box(memory::init_edge_payload_profiles());
+    black_box(memory::init_edge_inline_value_profiles());
     black_box(memory::init_gql_graph_catalog());
     black_box(memory::init_graph_type_name_catalog());
     // telemetry
@@ -272,7 +272,7 @@ fn bench_inline_graph_id() -> gleaph_graph_kernel::entry::GraphId {
 fn bench_inline_edge_scalar_ddl_parse() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {
         let _scope = canbench_rs::bench_scope("inline_scalar_ddl_parse");
-        let stmt = crate::edge_payload_ddl::try_parse(
+        let stmt = crate::edge_inline_value_ddl::try_parse(
             "CREATE EDGE LABEL ROAD { distance FLOAT32 INLINE }",
         )
         .expect("recognised")
@@ -294,7 +294,7 @@ fn bench_inline_edge_scalar_schema_lookup() -> canbench_rs::BenchResult {
                 graph_id,
                 label_id,
                 property_id,
-                crate::facade::stable::edge_payload_profiles::InlineScalarType::F32,
+                crate::facade::stable::edge_inline_value_profiles::InlineScalarType::F32,
             )
         })
         .expect("seed inline schema");
@@ -324,7 +324,7 @@ fn bench_inline_edge_scalar_schema_commit() -> canbench_rs::BenchResult {
                     graph_id,
                     label_id,
                     property_id,
-                    crate::facade::stable::edge_payload_profiles::InlineScalarType::F32,
+                    crate::facade::stable::edge_inline_value_profiles::InlineScalarType::F32,
                 )
             })
             .expect("commit inline schema");
@@ -333,8 +333,8 @@ fn bench_inline_edge_scalar_schema_commit() -> canbench_rs::BenchResult {
 
 #[bench(raw)]
 fn bench_inline_edge_struct_schema_commit() -> canbench_rs::BenchResult {
-    use crate::facade::stable::edge_payload_profiles::{
-        EdgePayloadSchemaRecord, InlineScalarType, InlineStructLayout,
+    use crate::facade::stable::edge_inline_value_profiles::{
+        EdgeInlineValueSchemaRecord, InlineScalarType, InlineStructLayout,
     };
 
     let graph_id = bench_inline_graph_id();
@@ -373,7 +373,7 @@ fn bench_inline_edge_struct_schema_commit() -> canbench_rs::BenchResult {
     assert!(
         matches!(
             sanity_record,
-            EdgePayloadSchemaRecord::InlineStruct {
+            EdgeInlineValueSchemaRecord::InlineStruct {
                 property_id,
                 field_specs: _,
             } if property_id == sanity_property_id
@@ -382,7 +382,7 @@ fn bench_inline_edge_struct_schema_commit() -> canbench_rs::BenchResult {
     );
     assert_eq!(
         sanity_record.profile(),
-        gleaph_graph_kernel::entry::EdgePayloadProfile::opaque_bytes(16),
+        gleaph_graph_kernel::entry::EdgeInlineValueProfile::opaque_bytes(16),
         "sanity profile must be the derived opaque RawBytes projection"
     );
 
@@ -392,7 +392,7 @@ fn bench_inline_edge_struct_schema_commit() -> canbench_rs::BenchResult {
     assert_eq!(layout.fields().len(), 3);
     assert_eq!(
         layout.profile(),
-        gleaph_graph_kernel::entry::EdgePayloadProfile::opaque_bytes(16)
+        gleaph_graph_kernel::entry::EdgeInlineValueProfile::opaque_bytes(16)
     );
 
     // SCOPE NOTE: `set_inline_struct_schema` takes ownership of the layout, so the measured

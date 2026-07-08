@@ -5,7 +5,9 @@ use crate::{
     labeled::record::LabeledVertexFieldError,
     lara::{
         edge::InitError as EdgeInitError,
-        edge_payload::{InitError as ValueInitError, PayloadLogReadError, PayloadLogWriteError},
+        edge_inline_value::{
+            InitError as ValueInitError, InlineValueLogReadError, InlineValueLogWriteError,
+        },
         operation_error::LaraOperationError,
         vertex::InitError as VertexInitError,
     },
@@ -24,18 +26,18 @@ pub enum LabeledOperationError {
     },
     /// Underlying LARA store operation failed.
     Store(LaraOperationError),
-    /// Reading an edge-payload overflow-log entry failed.
-    PayloadLogRead(PayloadLogReadError),
-    /// Writing an edge-payload overflow-log entry failed.
-    PayloadLogWrite(PayloadLogWriteError),
+    /// Reading an edge-inline-value overflow-log entry failed.
+    PayloadLogRead(InlineValueLogReadError),
+    /// Writing an edge-inline-value overflow-log entry failed.
+    PayloadLogWrite(InlineValueLogWriteError),
     /// A default-label bypass was requested for a row that cannot use it.
     InvalidDefaultBypass,
-    /// An edge payload byte width did not match the label bucket payload schema.
+    /// An edge inline value byte width did not match the label bucket payload schema.
     PayloadByteWidthMismatch {
         /// Payload byte width declared by the label bucket.
         bucket_width: u16,
         /// Payload byte width carried by the edge.
-        edge_payload_width: u16,
+        edge_inline_value_width: u16,
     },
     /// Vertex row fields are inconsistent with labeled bucket-mode limits.
     InvalidVertexRow(LabeledVertexFieldError),
@@ -56,10 +58,10 @@ impl fmt::Display for LabeledOperationError {
             ),
             Self::PayloadByteWidthMismatch {
                 bucket_width,
-                edge_payload_width,
+                edge_inline_value_width,
             } => write!(
                 f,
-                "edge payload byte width {edge_payload_width} does not match label bucket payload byte width {bucket_width}"
+                "edge inline value byte width {edge_inline_value_width} does not match label bucket payload byte width {bucket_width}"
             ),
             Self::InvalidVertexRow(err) => write!(f, "invalid labeled vertex row: {err:?}"),
         }
@@ -137,14 +139,14 @@ impl From<crate::GrowFailed> for LabeledOperationError {
     }
 }
 
-impl From<PayloadLogReadError> for LabeledOperationError {
-    fn from(value: PayloadLogReadError) -> Self {
+impl From<InlineValueLogReadError> for LabeledOperationError {
+    fn from(value: InlineValueLogReadError) -> Self {
         Self::PayloadLogRead(value)
     }
 }
 
-impl From<PayloadLogWriteError> for LabeledOperationError {
-    fn from(value: PayloadLogWriteError) -> Self {
+impl From<InlineValueLogWriteError> for LabeledOperationError {
+    fn from(value: InlineValueLogWriteError) -> Self {
         Self::PayloadLogWrite(value)
     }
 }
@@ -158,7 +160,7 @@ pub enum InitError {
     Buckets(crate::labeled::LabelBucketStoreInitError),
     /// The edge subsystem could not be reopened.
     Edges(EdgeInitError),
-    /// The edge-payload byte slab could not be reopened.
+    /// The edge-inline-value byte slab could not be reopened.
     Payloads(ValueInitError),
     /// The graph-owned memories are partially initialized (some regions are empty
     /// while others are populated), so the graph must not be reopened or recreated.

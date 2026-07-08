@@ -174,6 +174,6 @@ Ordered steps; each should keep `mixed_label_hub_*` regressions green:
 - [0001-labeled-segment-slide.md](../adr/0001-labeled-segment-slide.md) — decision record
 - [0016-overflow-log-tombstones-and-src-fields.md](../adr/0016-overflow-log-tombstones-and-src-fields.md) — log tombstone policy (phase 1); bucket-derived inline/blob (phase 2); `LLG`/`LVL` `src` removed; edge tombstone gates payload log reads
 - [lara-and-facade.md](./lara-and-facade.md) — Gleaph layering
-- [labeled-edge-payloads.md](./labeled-edge-payloads.md) — payload slab (parallel contract)
+- [labeled-edge-inline-values.md](./labeled-edge-inline-values.md) — payload slab (parallel contract)
 - `crates/ic-stable-lara/README.md` — crate-level overview
 - `reference/DGAP/dgap/src/graph.h` — reference implementation (~1500 LOC)

@@ -12,15 +12,15 @@ pub fn payload_log_uses_blob(width: u16) -> bool {
 
 /// Inline payload bytes for one overflow-log entry (always 8 bytes on wire).
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct PayloadLogCell([u8; PAYLOAD_LOG_CELL_BYTES]);
+pub struct InlineValueLogCell([u8; PAYLOAD_LOG_CELL_BYTES]);
 
-impl Default for PayloadLogCell {
+impl Default for InlineValueLogCell {
     fn default() -> Self {
         Self([0u8; PAYLOAD_LOG_CELL_BYTES])
     }
 }
 
-impl PayloadLogCell {
+impl InlineValueLogCell {
     /// Empty payload-log cell.
     pub const EMPTY: Self = Self([0u8; PAYLOAD_LOG_CELL_BYTES]);
 
@@ -80,7 +80,7 @@ mod tests {
     #[test]
     fn inline_cell_round_trips_with_bucket_width() {
         let payload = [1u8, 2, 3, 4, 5, 6, 7, 8];
-        let cell = PayloadLogCell::inline(8, &payload);
+        let cell = InlineValueLogCell::inline(8, &payload);
         assert_eq!(cell.as_bytes()[0], 1);
         assert_eq!(cell.as_bytes()[1], 2);
         let mut out = [0u8; 8];

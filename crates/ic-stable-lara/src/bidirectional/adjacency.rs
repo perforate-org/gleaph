@@ -66,7 +66,7 @@ where
     Ok(())
 }
 
-/// Iterator over one unlabeled store row, filtered by edge-payload directedness.
+/// Iterator over one unlabeled store row, filtered by edge-inline-value directedness.
 pub enum FilteredOutEdgesIter<'a, E: CsrEdge, M: Memory> {
     /// Ascending slot-order iterator with a directedness filter.
     Ascending(AscOutEdgesIter<'a, E, M>, OutEdgeDirectednessFilter),

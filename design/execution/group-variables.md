@@ -60,7 +60,7 @@ Triangle / cycle patterns fused to [`PlanOp::WorstCaseOptimalJoin`] carry `hop_a
 | `RETURN SUM(GLEAPH.WEIGHT(e))` (implicit `PlanOp::Aggregate`) | OK (same horizontal fold per input row) |
 | `GLEAPH.WEIGHT(e)` | **Error** at evaluation (group, not singleton) |
 | `e.prop`, `u.prop` | **Error** (use indexed element first) |
-| `WHERE GLEAPH.WEIGHT(e) = …` on var_len | Planner may still **fuse** to per-hop `edge_payload_predicate` (search semantics unchanged) |
+| `WHERE GLEAPH.WEIGHT(e) = …` on var_len | Planner may still **fuse** to per-hop `edge_inline_value_predicate` (search semantics unchanged) |
 
 `SHORTEST … GLEAPH.COST(GLEAPH.WEIGHT(e))` uses singleton `e` inside the cost expression during path search; unrelated to post-match group bindings.
 

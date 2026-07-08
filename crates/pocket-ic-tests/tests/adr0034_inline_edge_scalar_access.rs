@@ -1,6 +1,6 @@
 //! PocketIC coverage for ADR 0034 Slice 21: ordinary read access to a scalar inline edge property.
 //!
-//! Router-resolved schema identifies the named inline property; Graph decodes the bound edge payload
+//! Router-resolved schema identifies the named inline property; Graph decodes the bound edge inline value
 //! into the exact GQL scalar value for projection, filtering, and ordering. The inline slot is the
 //! only read source for its `(label, property)` pair; a sidecar value with the same property id
 //! cannot override or rescue the read.
@@ -14,7 +14,7 @@ use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
     FederationEnv, admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
-    e2e_insert_directed_edge_with_payload, e2e_insert_vertex, e2e_insert_vertex_with_label,
+    e2e_insert_directed_edge_with_inline_value, e2e_insert_vertex, e2e_insert_vertex_with_label,
     e2e_set_edge_property, gql_execute_idempotent_as_admin,
     gql_execute_idempotent_as_admin_expect_err, gql_query_as_admin,
     install_single_shard_federation,
@@ -24,10 +24,10 @@ use std::collections::BTreeMap;
 const EDGE_LABEL: &str = "ROAD";
 const PROPERTY: &str = "distance";
 
-fn road_profile() -> gleaph_graph_kernel::entry::EdgePayloadProfile {
-    gleaph_graph_kernel::entry::EdgePayloadProfile {
+fn road_profile() -> gleaph_graph_kernel::entry::EdgeInlineValueProfile {
+    gleaph_graph_kernel::entry::EdgeInlineValueProfile {
         byte_width: 2,
-        encoding: gleaph_graph_kernel::entry::EdgePayloadEncoding::WeightRawU16,
+        encoding: gleaph_graph_kernel::entry::EdgeInlineValueEncoding::WeightRawU16,
     }
 }
 
@@ -51,7 +51,7 @@ fn extract_rows(result: GqlQueryResult) -> Vec<BTreeMap<String, IcWireValue>> {
 }
 
 fn insert_road(env: &FederationEnv, source: u32, target: u32, road_label_id: u16, distance: u16) {
-    e2e_insert_directed_edge_with_payload(
+    e2e_insert_directed_edge_with_inline_value(
         env,
         env.graph_source,
         source,
@@ -62,7 +62,7 @@ fn insert_road(env: &FederationEnv, source: u32, target: u32, road_label_id: u16
     );
 }
 
-fn scenario_projection_returns_payload_value(env: &FederationEnv, road_label_id: u16) {
+fn scenario_projection_returns_inline_value(env: &FederationEnv, road_label_id: u16) {
     let source_label = admin_intern_vertex_label(env, "ProjectionSource").raw();
     let source = e2e_insert_vertex_with_label(env, env.graph_source, source_label).local_vertex_id;
     let target = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
@@ -81,11 +81,11 @@ fn scenario_projection_returns_payload_value(env: &FederationEnv, road_label_id:
     assert_eq!(
         rows[0].get("d"),
         Some(&IcWireValue::Uint64(7)),
-        "projection scenario: payload value must be returned"
+        "projection scenario: inline value must be returned"
     );
 }
 
-fn scenario_filter_matches_payload_value(env: &FederationEnv, road_label_id: u16) {
+fn scenario_filter_matches_inline_value(env: &FederationEnv, road_label_id: u16) {
     let source_label = admin_intern_vertex_label(env, "FilterSource").raw();
     let source = e2e_insert_vertex_with_label(env, env.graph_source, source_label).local_vertex_id;
     let match_target = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
@@ -106,11 +106,11 @@ fn scenario_filter_matches_payload_value(env: &FederationEnv, road_label_id: u16
     assert_eq!(
         rows[0].get("d"),
         Some(&IcWireValue::Uint64(7)),
-        "filter scenario: must not select the edge with payload value 9"
+        "filter scenario: must not select the edge with inline value 9"
     );
 }
 
-fn scenario_order_by_sorts_by_payload_value(env: &FederationEnv, road_label_id: u16) {
+fn scenario_order_by_sorts_by_inline_value(env: &FederationEnv, road_label_id: u16) {
     let source_label = admin_intern_vertex_label(env, "OrderSource").raw();
     let source = e2e_insert_vertex_with_label(env, env.graph_source, source_label).local_vertex_id;
     let first = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
@@ -132,12 +132,12 @@ fn scenario_order_by_sorts_by_payload_value(env: &FederationEnv, road_label_id: 
     assert_eq!(
         rows[0].get("d"),
         Some(&IcWireValue::Uint64(7)),
-        "order scenario: first row must be the smaller payload value"
+        "order scenario: first row must be the smaller inline value"
     );
     assert_eq!(
         rows[1].get("d"),
         Some(&IcWireValue::Uint64(9)),
-        "order scenario: second row must be the larger payload value"
+        "order scenario: second row must be the larger inline value"
     );
 }
 
@@ -147,7 +147,7 @@ fn scenario_payload_wins_over_sidecar(env: &FederationEnv, road_label_id: u16) {
     let target = e2e_insert_vertex(env, env.graph_source).local_vertex_id;
     insert_road(env, source, target, road_label_id, 7);
 
-    // Write a sidecar value with the same property id; the inline payload must still win.
+    // Write a sidecar value with the same property id; the inline inline value must still win.
     let property_id = admin_intern_property(env, PROPERTY).raw();
     e2e_set_edge_property(env, env.graph_source, source, target, property_id, 99);
 
@@ -164,7 +164,7 @@ fn scenario_payload_wins_over_sidecar(env: &FederationEnv, road_label_id: u16) {
     assert_eq!(
         rows[0].get("d"),
         Some(&IcWireValue::Uint64(7)),
-        "precedence scenario: payload must win over sidecar value 99"
+        "precedence scenario: inline value must win over sidecar value 99"
     );
 }
 
@@ -185,9 +185,9 @@ fn inline_scalar_access_suite() {
     let env = setup();
     let road_label_id = admin_intern_edge_label(&env, EDGE_LABEL).raw();
 
-    scenario_projection_returns_payload_value(&env, road_label_id);
-    scenario_filter_matches_payload_value(&env, road_label_id);
-    scenario_order_by_sorts_by_payload_value(&env, road_label_id);
+    scenario_projection_returns_inline_value(&env, road_label_id);
+    scenario_filter_matches_inline_value(&env, road_label_id);
+    scenario_order_by_sorts_by_inline_value(&env, road_label_id);
     scenario_payload_wins_over_sidecar(&env, road_label_id);
     scenario_edge_index_create_rejects_inline_property(&env);
 }

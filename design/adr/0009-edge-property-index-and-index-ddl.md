@@ -49,7 +49,7 @@ on each graph shard as derived stable `EDGE_EQUALITY_POSTINGS`
 - graph-index property postings + `lookup_intersection` ([lookup-intersection.md](../index/lookup-intersection.md))
 - Router `ROUTER_INDEXED_PROPERTIES` / `RouterGraphStats` ([planner_stats.rs](../../crates/router/src/planner_stats.rs))
 - `GlobalEdgeId` / forward CSR owner convention ([0005](0005-vertex-identity.md))
-- ADR [0008](0008-edge-payload-profile-router-ssot.md) — router catalog SSOT for label/property **ids** (orthogonal to index policy)
+- ADR [0008](0008-edge-inline-value-profile-router-ssot.md) — router catalog SSOT for label/property **ids** (orthogonal to index policy)
 
 ### Non-goals (this ADR)
 
@@ -269,7 +269,7 @@ entry as `CREATE INDEX … ON (n.prop)` or is removed after DDL lands.
 |--------------|---------------------------|
 | `IndexScan` / `IndexIntersection` (vertex) | graph-index vertex postings; **registered properties only** |
 | `indexed_edge_equality` / `EdgeIndexScan` | graph-index edge postings; router seeds or federated lookup |
-| `edge_payload_predicate` (GLEAPH.WEIGHT bytes) | Unchanged — LARA inline payload path (ADR 0008), **not** property index |
+| `edge_inline_value_predicate` (GLEAPH.WEIGHT bytes) | Unchanged — LARA inline payload path (ADR 0008), **not** property index |
 
 ---
 

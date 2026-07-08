@@ -3,14 +3,16 @@ use std::collections::BTreeMap;
 use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
-use gleaph_gql_planner::plan::{EdgePayloadPredicate, EdgeVectorPredicate, ScanValue, Str};
+use gleaph_gql_planner::plan::{
+    EdgeInlineValuePredicate, EdgeInlineVectorPredicate, ScanValue, Str,
+};
 use gleaph_graph_kernel::entry::{Edge, EdgeLabelId};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
-use ic_stable_lara::labeled::LabeledEdgePayloadBatchScratch;
+use ic_stable_lara::labeled::LabeledEdgeInlineValueBatchScratch;
 
 use super::candidates::{expand_candidates_for_expand_op_into, expand_vector_dst_only_rows_into};
 use super::label_expr::{edge_binding_matches_label_expr, edge_matches_label_expr};
-use super::predicates::PreparedEdgeVectorThreshold;
+use super::predicates::PreparedEdgeInlineVectorThreshold;
 use super::{
     EdgeEqualityStreamFilter, ExpandDst, build_expanded_row, csr_offset_fast_path_for_expand,
     edge_binding_for_scanned_expand, edge_equality_stream_filter, edge_matches_stream_filter,
@@ -41,8 +43,8 @@ pub(crate) async fn execute_expand(
     emit_edge_binding: bool,
     hop_aux_binding: Option<&Str>,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_payload_predicate: Option<&EdgePayloadPredicate>,
-    edge_vector_predicate: Option<&EdgeVectorPredicate>,
+    edge_inline_value_predicate: Option<&EdgeInlineValuePredicate>,
+    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
@@ -66,8 +68,8 @@ pub(crate) async fn execute_expand(
     let edge_key = emit_edge_binding.then(|| edge.to_string());
     let hop_aux_key = hop_aux_binding.map(|name| name.as_ref());
     let dst_key = dst.to_string();
-    let csr_expand_fast_path = (edge_payload_predicate.is_none()
-        && edge_vector_predicate.is_none())
+    let csr_expand_fast_path = (edge_inline_value_predicate.is_none()
+        && edge_inline_vector_predicate.is_none())
     .then(|| csr_offset_fast_path_for_expand(direction, label_id, sequence_order))
     .flatten();
     let prepared_vector_dst_only_predicate = prepare_vector_dst_only_expand_predicate(
@@ -77,8 +79,8 @@ pub(crate) async fn execute_expand(
         emit_edge_binding,
         hop_aux_binding,
         indexed_edge_equality,
-        edge_payload_predicate,
-        edge_vector_predicate,
+        edge_inline_value_predicate,
+        edge_inline_vector_predicate,
         edge_property_projection,
         parameters,
     )?;
@@ -99,7 +101,7 @@ pub(crate) async fn execute_expand(
     };
     let mut out = Vec::with_capacity(rows.len());
     let mut candidates = Vec::new();
-    let mut vector_batch_scratch = LabeledEdgePayloadBatchScratch::default();
+    let mut vector_batch_scratch = LabeledEdgeInlineValueBatchScratch::default();
     let mut vector_matches = Vec::new();
     for row in rows {
         match resolve_traversal_expand_source(store, row.get(src.as_ref()), direction).await? {
@@ -229,8 +231,8 @@ pub(crate) async fn execute_expand(
                     label_expr,
                     sequence_order,
                     indexed_edge_equality,
-                    edge_payload_predicate,
-                    edge_vector_predicate,
+                    edge_inline_value_predicate,
+                    edge_inline_vector_predicate,
                     parameters,
                     &mut candidates,
                 )?;
@@ -297,16 +299,16 @@ fn prepare_vector_dst_only_expand_predicate(
     emit_edge_binding: bool,
     hop_aux_binding: Option<&Str>,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_payload_predicate: Option<&EdgePayloadPredicate>,
-    edge_vector_predicate: Option<&EdgeVectorPredicate>,
+    edge_inline_value_predicate: Option<&EdgeInlineValuePredicate>,
+    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     parameters: &BTreeMap<String, Value>,
-) -> Result<Option<(EdgeLabelId, PreparedEdgeVectorThreshold)>, PlanQueryError> {
+) -> Result<Option<(EdgeLabelId, PreparedEdgeInlineVectorThreshold)>, PlanQueryError> {
     if emit_edge_binding
         || hop_aux_binding.is_some()
         || indexed_edge_equality.is_some()
-        || edge_payload_predicate.is_some()
-        || edge_vector_predicate.is_none()
+        || edge_inline_value_predicate.is_some()
+        || edge_inline_vector_predicate.is_none()
         || edge_property_projection.is_some_and(|props| !props.is_empty())
         || !matches!(
             direction,
@@ -318,10 +320,10 @@ fn prepare_vector_dst_only_expand_predicate(
     let Some(edge_label_id) = label_id else {
         return Ok(None);
     };
-    let Some(predicate) = PreparedEdgeVectorThreshold::prepare(
+    let Some(predicate) = PreparedEdgeInlineVectorThreshold::prepare(
         resolved_labels,
         edge_label_id,
-        edge_vector_predicate.expect("checked above"),
+        edge_inline_vector_predicate.expect("checked above"),
         parameters,
     )?
     else {

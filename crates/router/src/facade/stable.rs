@@ -4,7 +4,7 @@ use std::cell::RefCell;
 
 pub(crate) mod constraint_catalog;
 pub(crate) mod constraint_name_catalog;
-pub(crate) mod edge_payload_profiles;
+pub(crate) mod edge_inline_value_profiles;
 pub(crate) mod embedding_name_catalog;
 pub(crate) mod graph_catalog;
 pub(crate) mod graph_type_catalog;
@@ -77,8 +77,8 @@ thread_local! {
     pub(crate) static ROUTER_INDEXED_PROPERTY_SET: RefCell<memory::StableIndexedPropertySet> =
         RefCell::new(memory::init_indexed_property_set());
 
-    pub(crate) static ROUTER_EDGE_PAYLOAD_PROFILES: RefCell<memory::StableEdgePayloadProfileStore> =
-        RefCell::new(memory::init_edge_payload_profiles());
+    pub(crate) static ROUTER_EDGE_PAYLOAD_PROFILES: RefCell<memory::StableEdgeInlineValueProfileStore> =
+        RefCell::new(memory::init_edge_inline_value_profiles());
 
     pub(crate) static ROUTER_GQL_GRAPH_CATALOG: RefCell<memory::StableGqlGraphCatalog> =
         RefCell::new(memory::init_gql_graph_catalog());

@@ -63,7 +63,7 @@ pub(crate) fn fusion_edge_label_ids_for_expr(
 pub(crate) fn catalog_edge_label_ids_for_predicate_fusion(
     execution: &GqlExecutionContext,
 ) -> Vec<EdgeLabelId> {
-    crate::edge_payload_schema::edge_label_ids_for_predicate_fusion(
+    crate::edge_inline_value_schema::edge_label_ids_for_predicate_fusion(
         execution.resolved_labels.as_ref(),
     )
 }

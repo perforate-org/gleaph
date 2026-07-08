@@ -5,7 +5,7 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{
-    AggregateSpec, EdgePayloadPredicate, EdgeVectorPredicate, PlanOp, ScanValue, Str,
+    AggregateSpec, EdgeInlineValuePredicate, EdgeInlineVectorPredicate, PlanOp, ScanValue, Str,
 };
 use gleaph_graph_kernel::entry::{Edge, PreparedWeightDecoder};
 use ic_stable_lara::BucketLabelKey as LaraLabelId;
@@ -300,8 +300,8 @@ fn stream_row_through_ops(
             label_expr,
             var_len,
             indexed_edge_equality,
-            edge_payload_predicate,
-            edge_vector_predicate,
+            edge_inline_value_predicate,
+            edge_inline_vector_predicate,
             edge_property_projection,
             dst_property_projection,
             hop_aux_binding,
@@ -335,8 +335,8 @@ fn stream_row_through_ops(
                     path_var.as_ref(),
                     *emit_path_binding,
                     indexed_edge_equality.as_ref(),
-                    edge_payload_predicate.as_ref(),
-                    edge_vector_predicate.as_ref(),
+                    edge_inline_value_predicate.as_ref(),
+                    edge_inline_vector_predicate.as_ref(),
                     edge_property_projection.as_deref(),
                     dst_property_projection.as_deref(),
                     caller,
@@ -365,8 +365,8 @@ fn stream_row_through_ops(
                     *emit_edge_binding,
                     hop_aux_binding.as_ref(),
                     indexed_edge_equality.as_ref(),
-                    edge_payload_predicate.as_ref(),
-                    edge_vector_predicate.as_ref(),
+                    edge_inline_value_predicate.as_ref(),
+                    edge_inline_vector_predicate.as_ref(),
                     edge_property_projection.as_deref(),
                     dst_property_projection.as_deref(),
                     caller,
@@ -386,8 +386,8 @@ fn stream_row_through_ops(
             label_expr,
             var_len,
             indexed_edge_equality,
-            edge_payload_predicate,
-            edge_vector_predicate,
+            edge_inline_value_predicate,
+            edge_inline_vector_predicate,
             dst_filter,
             edge_property_projection,
             dst_property_projection,
@@ -422,8 +422,8 @@ fn stream_row_through_ops(
                     path_var.as_ref(),
                     *emit_path_binding,
                     indexed_edge_equality.as_ref(),
-                    edge_payload_predicate.as_ref(),
-                    edge_vector_predicate.as_ref(),
+                    edge_inline_value_predicate.as_ref(),
+                    edge_inline_vector_predicate.as_ref(),
                     edge_property_projection.as_deref(),
                     dst_property_projection.as_deref(),
                     caller,
@@ -452,8 +452,8 @@ fn stream_row_through_ops(
                     *emit_edge_binding,
                     hop_aux_binding.as_ref(),
                     indexed_edge_equality.as_ref(),
-                    edge_payload_predicate.as_ref(),
-                    edge_vector_predicate.as_ref(),
+                    edge_inline_value_predicate.as_ref(),
+                    edge_inline_vector_predicate.as_ref(),
                     edge_property_projection.as_deref(),
                     dst_property_projection.as_deref(),
                     caller,
@@ -569,8 +569,8 @@ fn stream_var_len_expand(
     path_var: Option<&Str>,
     emit_path_binding: bool,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_payload_predicate: Option<&EdgePayloadPredicate>,
-    edge_vector_predicate: Option<&EdgeVectorPredicate>,
+    edge_inline_value_predicate: Option<&EdgeInlineValuePredicate>,
+    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
     caller: Option<Principal>,
@@ -620,8 +620,8 @@ fn stream_var_len_expand(
         emit_path_binding,
         parameters,
         indexed_edge_equality,
-        edge_payload_predicate,
-        edge_vector_predicate,
+        edge_inline_value_predicate,
+        edge_inline_vector_predicate,
         edge_property_projection,
         dst_property_projection,
         evaluator,
@@ -667,8 +667,8 @@ fn stream_expand(
     emit_edge_binding: bool,
     hop_aux_binding: Option<&Str>,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_payload_predicate: Option<&EdgePayloadPredicate>,
-    edge_vector_predicate: Option<&EdgeVectorPredicate>,
+    edge_inline_value_predicate: Option<&EdgeInlineValuePredicate>,
+    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
     caller: Option<Principal>,
@@ -696,14 +696,14 @@ fn stream_expand(
     let edge_key = emit_edge_binding.then(|| edge.to_string());
     let hop_aux_key = hop_aux_binding.map(|name| name.as_ref());
     let dst_key = dst.to_string();
-    let csr_expand_fast_path = (edge_payload_predicate.is_none()
-        && edge_vector_predicate.is_none())
+    let csr_expand_fast_path = (edge_inline_value_predicate.is_none()
+        && edge_inline_vector_predicate.is_none())
     .then(|| csr_offset_fast_path_for_expand(direction, label_id, sequence_order))
     .flatten();
 
     let csr_offset_fast_path = (indexed_edge_equality.is_none()
-        && edge_payload_predicate.is_none()
-        && edge_vector_predicate.is_none()
+        && edge_inline_value_predicate.is_none()
+        && edge_inline_vector_predicate.is_none()
         && dst_filter.is_empty()
         && !matches!(
             row.get(dst.as_ref()),
@@ -881,8 +881,8 @@ fn stream_expand(
         label_expr,
         EdgeSequenceOrder::Descending,
         indexed_edge_equality,
-        edge_payload_predicate,
-        edge_vector_predicate,
+        edge_inline_value_predicate,
+        edge_inline_vector_predicate,
         parameters,
         &mut candidates,
     )?;

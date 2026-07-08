@@ -30,7 +30,7 @@ payload_log_head < 0
 && stored_slots == degree
 ```
 
-See [payload-first-traversal.md](./payload-first-traversal.md).
+See [inline-value-first-traversal.md](./inline-value-first-traversal.md).
 
 ### What is implemented today
 
@@ -287,7 +287,7 @@ because that path is not weighted payload-batch hot.
 
 ## Related documents
 
-- [payload-first-traversal.md](./payload-first-traversal.md) — dense eligibility, M6 sparse path
+- [inline-value-first-traversal.md](./inline-value-first-traversal.md) — dense eligibility, M6 sparse path
 - [lara-and-facade.md](./lara-and-facade.md) — `GraphStore` vs LARA maintenance
 - [gql/layers.md](../gql/layers.md) — Gleaph extensions stay out of portable GQL crates
 - [execution/operators.md](../execution/operators.md) — `CallProcedure` planner vs executor status

@@ -10,11 +10,11 @@
 //! proving the canonical schema stays fail-closed.
 
 use candid::{Decode, Encode, Principal};
-use gleaph_graph_kernel::entry::{EdgeLabelId, EdgePayloadEncoding, EdgePayloadProfile};
+use gleaph_graph_kernel::entry::{EdgeInlineValueEncoding, EdgeInlineValueProfile, EdgeLabelId};
 use gleaph_graph_kernel::federation::RouterError;
 use gleaph_graph_kernel::plan_exec::GqlQueryResult;
 use gleaph_pocket_ic_tests::{
-    FederationEnv, admin_intern_edge_label, e2e_insert_directed_edge_with_payload,
+    FederationEnv, admin_intern_edge_label, e2e_insert_directed_edge_with_inline_value,
     e2e_insert_vertex, gql_execute_idempotent_as_admin, gql_execute_idempotent_as_admin_expect_err,
     gql_query_as_admin, install_single_shard_federation,
 };
@@ -30,10 +30,10 @@ fn road_payload(value: u16) -> Vec<u8> {
     value.to_le_bytes().to_vec()
 }
 
-fn road_profile() -> EdgePayloadProfile {
-    EdgePayloadProfile {
+fn road_profile() -> EdgeInlineValueProfile {
+    EdgeInlineValueProfile {
         byte_width: 2,
-        encoding: EdgePayloadEncoding::WeightRawU16,
+        encoding: EdgeInlineValueEncoding::WeightRawU16,
     }
 }
 
@@ -89,11 +89,11 @@ fn scenario_conflicting_ddl_is_rejected(env: &FederationEnv) {
     );
 }
 
-fn scenario_derived_profile_feeds_payload_predicate(env: &FederationEnv) {
+fn scenario_derived_profile_feeds_inline_value_predicate(env: &FederationEnv) {
     let label_id = admin_intern_edge_label(env, EDGE_LABEL);
     let source = e2e_insert_vertex(env, env.graph_source);
     let target = e2e_insert_vertex(env, env.graph_source);
-    e2e_insert_directed_edge_with_payload(
+    e2e_insert_directed_edge_with_inline_value(
         env,
         env.graph_source,
         source.local_vertex_id,
@@ -110,7 +110,7 @@ fn scenario_derived_profile_feeds_payload_predicate(env: &FederationEnv) {
     );
     assert_eq!(
         result.row_count, 1,
-        "predicate scenario: edge-payload predicate should see the 2-byte weight payload as 3"
+        "predicate scenario: edge-inline-value predicate should see the 2-byte weight payload as 3"
     );
 }
 
@@ -124,22 +124,22 @@ fn scenario_width_mismatch_rejects_insert(env: &FederationEnv) {
         target_local_vertex_id: target.local_vertex_id,
         edge_label_id: label_id.raw(),
         payload: vec![0u8, 0, 0, 0], // 4 bytes, does not match UINT16 profile
-        payload_profile: road_profile(),
+        inline_value_profile: road_profile(),
     };
     let bytes = env
         .pic
         .update_call(
             env.graph_source,
             env.router,
-            "e2e_insert_directed_edge_with_payload",
-            Encode!(&args).expect("encode e2e_insert_directed_edge_with_payload"),
+            "e2e_insert_directed_edge_with_inline_value",
+            Encode!(&args).expect("encode e2e_insert_directed_edge_with_inline_value"),
         )
         .expect("graph update call");
     let result = Decode!(&bytes, Result<(), String>)
-        .expect("decode e2e_insert_directed_edge_with_payload result");
+        .expect("decode e2e_insert_directed_edge_with_inline_value result");
     assert!(
         result.is_err(),
-        "width scenario: 4-byte payload must be rejected against a 2-byte UINT16/WeightRawU16 profile, got {result:?}"
+        "width scenario: 4-byte inline value must be rejected against a 2-byte UINT16/WeightRawU16 profile, got {result:?}"
     );
 }
 
@@ -158,6 +158,6 @@ fn inline_scalar_schema_lifecycle() {
     scenario_conflicting_ddl_is_rejected(&env);
 
     // Prove the canonical schema survived the adversarial attempts.
-    scenario_derived_profile_feeds_payload_predicate(&env);
+    scenario_derived_profile_feeds_inline_value_predicate(&env);
     scenario_width_mismatch_rejects_insert(&env);
 }

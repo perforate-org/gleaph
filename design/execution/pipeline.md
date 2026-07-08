@@ -160,7 +160,7 @@ overflowing, unpersistable, or otherwise invalid values fail closed before stora
 4. Directed and undirected `INSERT` creates the edge with the prepared payload bytes; non-inline
 assignments are applied as ordinary sidecar properties afterward.
 5. `SET e.inline_property = ...` and `SET e = { ... }` update the payload through the existing
-mirrored `update_edge_payload_at_handle` commit, which synchronizes the forward, reverse, and
+mirrored `update_edge_inline_value_at_handle` commit, which synchronizes the forward, reverse, and
 undirected physical mirrors so reads are direction-independent. All-properties replacement first
 materializes the complete new record, rejects it if the inline property is missing or invalid, then
 replaces only the sidecar properties and updates the payload once.

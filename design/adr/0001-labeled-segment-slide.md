@@ -24,7 +24,7 @@ This is an **interim** layout documented in `labeled.rs` and [lara-dgap-contract
 
 A reference implementation lives at `reference/DGAP/dgap/src/graph.h`. DGAP keeps slack **inside** each leaf segment's assigned `[from, to)` interval and slides data with `rebalance_weighted`; it does not peel per-vertex footprints on every growth event.
 
-Payload storage ([labeled-edge-payloads.md](../storage/labeled-edge-payloads.md)) already assumes edge compaction follows a **single logical order** across the edge slab. Divergent physical units (per-vertex span vs leaf segment) increase compaction risk and maintenance surface.
+Payload storage ([labeled-edge-inline-values.md](../storage/labeled-edge-inline-values.md)) already assumes edge compaction follows a **single logical order** across the edge slab. Divergent physical units (per-vertex span vs leaf segment) increase compaction risk and maintenance surface.
 
 ## Decision
 

@@ -165,7 +165,7 @@ mod tests {
     /// purge previously matched the neighbor's forward edge by slot and spun forever
     /// (ADR 0021).
     #[test]
-    fn detach_delete_hub_with_no_payload_in_edges_drains_every_back_edge() {
+    fn detach_delete_hub_with_no_inline_value_in_edges_drains_every_back_edge() {
         let store = GraphStore::new();
         let hub = store.insert_vertex().expect("hub");
         let neighbors: Vec<VertexId> = (0..8)

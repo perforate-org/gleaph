@@ -2,7 +2,7 @@
 mod bench;
 
 pub mod bidirectional_catalog;
-pub mod edge_payload_profile_store;
+pub mod edge_inline_value_profile_store;
 pub mod entry;
 pub mod federation;
 pub mod gql_dialect;

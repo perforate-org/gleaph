@@ -82,8 +82,8 @@ Vertex liveness is checked on the graph shard (`GraphStore::is_vertex_live`, CSR
 ## Related documents
 
 - [lara-dgap-contract.md](./lara-dgap-contract.md)
-- [labeled-edge-payloads.md](./labeled-edge-payloads.md)
-- [payload-first-traversal.md](./payload-first-traversal.md)
+- [labeled-edge-inline-values.md](./labeled-edge-inline-values.md)
+- [inline-value-first-traversal.md](./inline-value-first-traversal.md)
 - [federation/model.md](../federation/model.md)
 - [index/property-index.md](../index/property-index.md)
 - [execution/pipeline.md](../execution/pipeline.md)

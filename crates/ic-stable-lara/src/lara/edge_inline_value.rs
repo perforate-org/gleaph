@@ -1,4 +1,4 @@
-//! Log-backed byte CSR for per-label edge payloads (separate from target rows).
+//! Log-backed byte CSR for per-label edge inline values (separate from target rows).
 
 mod blob_id;
 mod blob_store;
@@ -7,20 +7,20 @@ mod cell;
 mod log;
 
 use crate::lara::edge::free_span::FreeSpanStore;
-use crate::lara::edge_payload::blobs::EdgePayloadBlobMap;
-use crate::lara::edge_payload::cell::payload_log_uses_blob;
-use crate::lara::edge_payload::log::{
-    HeaderV1 as PayloadLogHeaderV1, PAYLOAD_BYTES, PayloadLogStore,
+use crate::lara::edge_inline_value::blobs::EdgeInlineValueBlobMap;
+use crate::lara::edge_inline_value::cell::payload_log_uses_blob;
+use crate::lara::edge_inline_value::log::{
+    HeaderV1 as InlineValueLogHeaderV1, InlineValueLogStore, PAYLOAD_BYTES,
 };
 use crate::slab_index::{byte_exclusive_end_fits, byte_offset_fits, checked_add_byte_offset};
 use crate::{GrowFailed, read_u64, safe_write, types::Address, write_u64};
 use ic_stable_structures::Memory;
 use std::{cell::Cell, fmt};
 
-pub use blob_id::EdgePayloadBlobId;
-pub use blob_store::{BlobStoreError, EdgePayloadBlobStore, NoopEdgePayloadBlobStore};
-pub use cell::PayloadLogCell;
-pub use log::{InitError as PayloadLogInitError, PayloadLogStore as ValueOverflowLogStore};
+pub use blob_id::EdgeInlineValueBlobId;
+pub use blob_store::{BlobStoreError, EdgeInlineValueBlobStore, NoopEdgeInlineValueBlobStore};
+pub use cell::InlineValueLogCell;
+pub use log::{InitError as InlineValueLogInitError, InlineValueLogStore as ValueOverflowLogStore};
 
 /// Magic bytes for the value byte slab.
 pub const MAGIC: [u8; 3] = *b"LVG";
@@ -112,7 +112,7 @@ impl std::error::Error for InitError {}
 
 /// Errors returned while writing one payload overflow-log entry.
 #[derive(Debug, PartialEq, Eq)]
-pub enum PayloadLogWriteError {
+pub enum InlineValueLogWriteError {
     /// Stable memory could not grow or write the value-log entry.
     Grow(GrowFailed),
     /// External blob storage rejected the payload.
@@ -121,7 +121,7 @@ pub enum PayloadLogWriteError {
     SegmentLogFull,
 }
 
-impl fmt::Display for PayloadLogWriteError {
+impl fmt::Display for InlineValueLogWriteError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::Grow(err) => write!(f, "payload log write failed: {err}"),
@@ -131,7 +131,7 @@ impl fmt::Display for PayloadLogWriteError {
     }
 }
 
-impl std::error::Error for PayloadLogWriteError {
+impl std::error::Error for InlineValueLogWriteError {
     fn source(&self) -> Option<&(dyn std::error::Error + 'static)> {
         match self {
             Self::Grow(err) => Some(err),
@@ -141,13 +141,13 @@ impl std::error::Error for PayloadLogWriteError {
     }
 }
 
-impl From<GrowFailed> for PayloadLogWriteError {
+impl From<GrowFailed> for InlineValueLogWriteError {
     fn from(value: GrowFailed) -> Self {
         Self::Grow(value)
     }
 }
 
-impl From<BlobStoreError> for PayloadLogWriteError {
+impl From<BlobStoreError> for InlineValueLogWriteError {
     fn from(value: BlobStoreError) -> Self {
         Self::Blob(value)
     }
@@ -155,17 +155,17 @@ impl From<BlobStoreError> for PayloadLogWriteError {
 
 /// Errors returned while reading one payload overflow-log entry.
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum PayloadLogReadError {
-    /// Caller-provided output buffer is smaller than the expected edge-payload width.
+pub enum InlineValueLogReadError {
+    /// Caller-provided output buffer is smaller than the expected edge-inline-value width.
     OutputTooSmall {
-        /// Expected edge-payload byte width.
+        /// Expected edge-inline-value byte width.
         width: u16,
         /// Actual output buffer length.
         out_len: usize,
     },
     /// Inline cell tag/payload cannot represent the expected width.
     InvalidInlineCell {
-        /// Expected edge-payload byte width.
+        /// Expected edge-inline-value byte width.
         width: u16,
     },
     /// Blob-tagged value-log entry has no corresponding blob payload.
@@ -175,9 +175,9 @@ pub enum PayloadLogReadError {
         /// Value-log entry index inside the segment.
         entry_idx: u32,
     },
-    /// Blob payload length does not match the expected edge-payload width.
+    /// Blob payload length does not match the expected edge-inline-value width.
     BlobWidthMismatch {
-        /// Expected edge-payload byte width.
+        /// Expected edge-inline-value byte width.
         expected: u16,
         /// Actual blob payload length.
         actual: usize,
@@ -189,7 +189,7 @@ pub enum PayloadLogReadError {
     },
 }
 
-impl fmt::Display for PayloadLogReadError {
+impl fmt::Display for InlineValueLogReadError {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             Self::OutputTooSmall { width, out_len } => write!(
@@ -217,9 +217,9 @@ impl fmt::Display for PayloadLogReadError {
     }
 }
 
-impl std::error::Error for PayloadLogReadError {}
+impl std::error::Error for InlineValueLogReadError {}
 
-/// Stable byte slab for edge payloads.
+/// Stable byte slab for edge inline values.
 #[derive(Clone, Debug)]
 pub struct PayloadByteSlabStore<M: Memory> {
     memory: M,
@@ -334,17 +334,17 @@ impl<M: Memory> PayloadByteSlabStore<M> {
     }
 }
 
-/// Combined stable edge-payload storage for labeled graphs.
-pub struct EdgePayloadStore<M: Memory> {
+/// Combined stable edge-inline-value storage for labeled graphs.
+pub struct EdgeInlineValueStore<M: Memory> {
     slab: PayloadByteSlabStore<M>,
-    log: PayloadLogStore<M>,
-    blobs: EdgePayloadBlobMap<M>,
+    log: InlineValueLogStore<M>,
+    blobs: EdgeInlineValueBlobMap<M>,
     free_spans: FreeSpanStore<M>,
     header: Cell<HeaderV1>,
 }
 
-impl<M: Memory> EdgePayloadStore<M> {
-    /// Creates a new edge-payload store over empty stable memories.
+impl<M: Memory> EdgeInlineValueStore<M> {
+    /// Creates a new edge-inline-value store over empty stable memories.
     pub fn new(
         slab_memory: M,
         payload_log: M,
@@ -362,8 +362,9 @@ impl<M: Memory> EdgePayloadStore<M> {
         }
         let header = HeaderV1::new(byte_capacity);
         let slab = PayloadByteSlabStore::new(slab_memory, header)?;
-        let log = PayloadLogStore::new(payload_log, PayloadLogHeaderV1::new(segment_count))?;
-        let blobs = EdgePayloadBlobMap::init(value_blobs);
+        let log =
+            InlineValueLogStore::new(payload_log, InlineValueLogHeaderV1::new(segment_count))?;
+        let blobs = EdgeInlineValueBlobMap::init(value_blobs);
         let free_spans = FreeSpanStore::new(free_spans, free_span_by_start)?;
         Ok(Self {
             slab,
@@ -374,7 +375,7 @@ impl<M: Memory> EdgePayloadStore<M> {
         })
     }
 
-    /// Reopens an edge-payload store, initializing empty payload memories when needed.
+    /// Reopens an edge-inline-value store, initializing empty payload memories when needed.
     pub fn init(
         slab_memory: M,
         payload_log: M,
@@ -410,10 +411,10 @@ impl<M: Memory> EdgePayloadStore<M> {
             PayloadByteSlabStore::init(slab_memory)?
         };
         let log = if payload_log.size() == 0 {
-            PayloadLogStore::new(payload_log, PayloadLogHeaderV1::new(edge_segment_count))
+            InlineValueLogStore::new(payload_log, InlineValueLogHeaderV1::new(edge_segment_count))
                 .map_err(|_| InitError::InvalidLayout)?
         } else {
-            PayloadLogStore::init(payload_log).map_err(InitError::PayloadLog)?
+            InlineValueLogStore::init(payload_log).map_err(InitError::PayloadLog)?
         };
         if log.header().segment_count != edge_segment_count {
             return Err(InitError::PayloadLogLayoutMismatch);
@@ -425,7 +426,7 @@ impl<M: Memory> EdgePayloadStore<M> {
             FreeSpanStore::init(free_spans, free_span_by_start)
                 .map_err(|_| InitError::FreeSpansInvalid)?
         };
-        let blobs = EdgePayloadBlobMap::init(value_blobs);
+        let blobs = EdgeInlineValueBlobMap::init(value_blobs);
         let header = slab.header()?;
         Ok(Self {
             slab,
@@ -463,12 +464,12 @@ impl<M: Memory> EdgePayloadStore<M> {
         }
     }
 
-    fn read_payload_log_cell(&self, leaf_segment: u32, entry_idx: u32) -> PayloadLogCell {
+    fn read_payload_log_cell(&self, leaf_segment: u32, entry_idx: u32) -> InlineValueLogCell {
         let mut payload = [0u8; PAYLOAD_BYTES];
         let h = self.log.header();
         self.log
             .read_entry_with_header(&h, leaf_segment, entry_idx, &mut payload);
-        PayloadLogCell::from_bytes(payload)
+        InlineValueLogCell::from_bytes(payload)
     }
 
     pub(crate) fn clear_payload_log_cell(&self, leaf_segment: u32, entry_idx: u32) {
@@ -490,16 +491,16 @@ impl<M: Memory> EdgePayloadStore<M> {
         prev_head: i32,
         width: u16,
         payload_bytes: &[u8],
-    ) -> Result<(), PayloadLogWriteError> {
+    ) -> Result<(), InlineValueLogWriteError> {
         self.blobs.drop_log_site(leaf_segment, entry_idx);
         let cell = if payload_log_uses_blob(width) {
-            let id = EdgePayloadBlobId::from_log_site(leaf_segment, entry_idx);
+            let id = EdgeInlineValueBlobId::from_log_site(leaf_segment, entry_idx);
             self.blobs.put_blob(id, payload_bytes)?;
-            PayloadLogCell::EMPTY
+            InlineValueLogCell::EMPTY
         } else {
             let w = usize::from(width);
             debug_assert_eq!(payload_bytes.len(), w);
-            PayloadLogCell::inline(width, payload_bytes)
+            InlineValueLogCell::inline(width, payload_bytes)
         };
         let h = self.log.header();
         self.log.write_entry_with_header(
@@ -522,13 +523,13 @@ impl<M: Memory> EdgePayloadStore<M> {
         prev_head: i32,
         width: u16,
         payload_bytes: &[u8],
-    ) -> Result<u32, PayloadLogWriteError> {
+    ) -> Result<u32, InlineValueLogWriteError> {
         let h = self.log.header();
         let idx = self.log.read_idx_with_header(&h, leaf_segment);
         if idx < 0 || idx >= h.max_log_entries as i32 {
-            return Err(PayloadLogWriteError::SegmentLogFull);
+            return Err(InlineValueLogWriteError::SegmentLogFull);
         }
-        let entry_idx = u32::try_from(idx).map_err(|_| PayloadLogWriteError::SegmentLogFull)?;
+        let entry_idx = u32::try_from(idx).map_err(|_| InlineValueLogWriteError::SegmentLogFull)?;
         self.write_payload_log_entry(leaf_segment, entry_idx, prev_head, width, payload_bytes)?;
         Ok(entry_idx)
     }
@@ -539,25 +540,25 @@ impl<M: Memory> EdgePayloadStore<M> {
         entry_idx: u32,
         width: u16,
         out: &mut [u8],
-    ) -> Result<(), PayloadLogReadError> {
+    ) -> Result<(), InlineValueLogReadError> {
         let w = usize::from(width);
         if w == 0 || out.len() < w {
-            return Err(PayloadLogReadError::OutputTooSmall {
+            return Err(InlineValueLogReadError::OutputTooSmall {
                 width,
                 out_len: out.len(),
             });
         }
         if payload_log_uses_blob(width) {
-            let id = EdgePayloadBlobId::from_log_site(leaf_segment, entry_idx);
+            let id = EdgeInlineValueBlobId::from_log_site(leaf_segment, entry_idx);
             let mut buf = Vec::with_capacity(w);
             if !self.blobs.get_blob(id, &mut buf) {
-                return Err(PayloadLogReadError::MissingBlob {
+                return Err(InlineValueLogReadError::MissingBlob {
                     leaf_segment,
                     entry_idx,
                 });
             }
             if buf.len() != w {
-                return Err(PayloadLogReadError::BlobWidthMismatch {
+                return Err(InlineValueLogReadError::BlobWidthMismatch {
                     expected: width,
                     actual: buf.len(),
                 });
@@ -569,7 +570,7 @@ impl<M: Memory> EdgePayloadStore<M> {
         if cell.decode_inline(width, out).is_some() {
             return Ok(());
         }
-        Err(PayloadLogReadError::InvalidInlineCell { width })
+        Err(InlineValueLogReadError::InvalidInlineCell { width })
     }
 
     #[cfg(test)]
@@ -609,9 +610,9 @@ impl<M: Memory> EdgePayloadStore<M> {
         asc_log_index: u32,
         width: u16,
         out: &mut [u8],
-    ) -> Result<(), PayloadLogReadError> {
+    ) -> Result<(), InlineValueLogReadError> {
         let Some(&entry_idx) = payload_chain.get(asc_log_index as usize) else {
-            return Err(PayloadLogReadError::MissingAscLogIndex { asc_log_index });
+            return Err(InlineValueLogReadError::MissingAscLogIndex { asc_log_index });
         };
         self.read_payload_log_entry(leaf_segment, entry_idx, width, out)
     }
@@ -624,9 +625,9 @@ impl<M: Memory> EdgePayloadStore<M> {
         asc_log_index: u32,
         width: u16,
         out: &mut [u8],
-    ) -> Result<(), PayloadLogReadError> {
+    ) -> Result<(), InlineValueLogReadError> {
         if log_head < 0 || width == 0 {
-            return Err(PayloadLogReadError::MissingAscLogIndex { asc_log_index });
+            return Err(InlineValueLogReadError::MissingAscLogIndex { asc_log_index });
         }
         let chain = self.payload_log_chain_asc_indices(leaf_segment, log_head);
         self.read_payload_log_chain_entry(leaf_segment, &chain, asc_log_index, width, out)
@@ -827,8 +828,8 @@ mod tests {
         Rc::new(RefCell::new(Vec::new()))
     }
 
-    fn test_store() -> EdgePayloadStore<VectorMemory> {
-        EdgePayloadStore::new(mem(), mem(), mem(), mem(), mem(), 1024, 1).expect("store")
+    fn test_store() -> EdgeInlineValueStore<VectorMemory> {
+        EdgeInlineValueStore::new(mem(), mem(), mem(), mem(), mem(), 1024, 1).expect("store")
     }
 
     #[test]
@@ -871,7 +872,7 @@ mod tests {
         let mut out = [0u8; 3];
         assert_eq!(
             store.read_payload_log_entry(0, 0, 4, &mut out),
-            Err(PayloadLogReadError::OutputTooSmall {
+            Err(InlineValueLogReadError::OutputTooSmall {
                 width: 4,
                 out_len: 3
             })
@@ -888,7 +889,7 @@ mod tests {
         let mut out = [0u8; 9];
         assert_eq!(
             store.read_payload_log_entry(0, 0, 9, &mut out),
-            Err(PayloadLogReadError::MissingBlob {
+            Err(InlineValueLogReadError::MissingBlob {
                 leaf_segment: 0,
                 entry_idx: 0
             })
@@ -905,7 +906,7 @@ mod tests {
         let mut out = [0u8; 9];
         assert_eq!(
             store.read_payload_log_entry(0, 0, 9, &mut out),
-            Err(PayloadLogReadError::MissingBlob {
+            Err(InlineValueLogReadError::MissingBlob {
                 leaf_segment: 0,
                 entry_idx: 0
             })
@@ -920,12 +921,12 @@ mod tests {
             .expect("write");
         store
             .blobs
-            .put_blob(EdgePayloadBlobId::from_log_site(0, 0), &[1, 2, 3, 4, 5])
+            .put_blob(EdgeInlineValueBlobId::from_log_site(0, 0), &[1, 2, 3, 4, 5])
             .expect("overwrite blob");
         let mut out = [0u8; 9];
         assert_eq!(
             store.read_payload_log_entry(0, 0, 9, &mut out),
-            Err(PayloadLogReadError::BlobWidthMismatch {
+            Err(InlineValueLogReadError::BlobWidthMismatch {
                 expected: 9,
                 actual: 5
             })
@@ -933,7 +934,7 @@ mod tests {
     }
 
     #[test]
-    fn payload_slab_round_trips_bytes() {
+    fn inline_value_slab_round_trips_bytes() {
         let store = test_store();
         store.write_bytes(10, &[1, 2, 3, 4]).expect("write");
         let mut buf = [0u8; 4];
@@ -1021,7 +1022,7 @@ mod tests {
         let blobs = mem();
         let free_spans = mem();
         let by_start = mem();
-        EdgePayloadStore::new(
+        EdgeInlineValueStore::new(
             slab.clone(),
             log.clone(),
             blobs.clone(),
@@ -1033,7 +1034,7 @@ mod tests {
         .expect("store");
         // Slab, free-span pair populated, payload log wiped (miswired region).
         assert!(matches!(
-            EdgePayloadStore::init(slab, mem(), blobs, free_spans, by_start, 1024, 1),
+            EdgeInlineValueStore::init(slab, mem(), blobs, free_spans, by_start, 1024, 1),
             Err(InitError::PartialLayout)
         ));
     }
@@ -1045,7 +1046,7 @@ mod tests {
         let blobs = mem();
         let free_spans = mem();
         let by_start = mem();
-        EdgePayloadStore::new(
+        EdgeInlineValueStore::new(
             slab.clone(),
             log.clone(),
             blobs.clone(),
@@ -1055,7 +1056,9 @@ mod tests {
             1,
         )
         .expect("store");
-        assert!(EdgePayloadStore::init(slab, log, blobs, free_spans, by_start, 1024, 1).is_ok());
+        assert!(
+            EdgeInlineValueStore::init(slab, log, blobs, free_spans, by_start, 1024, 1).is_ok()
+        );
     }
 
     #[test]
@@ -1065,7 +1068,7 @@ mod tests {
         // is partial loss, not a fresh create.
         crate::safe_write(&blobs, 0, &[1]).expect("populate blob region");
         assert!(matches!(
-            EdgePayloadStore::init(mem(), mem(), blobs, mem(), mem(), 1024, 1),
+            EdgeInlineValueStore::init(mem(), mem(), blobs, mem(), mem(), 1024, 1),
             Err(InitError::PartialLayout)
         ));
     }
@@ -1077,7 +1080,7 @@ mod tests {
         let free_spans = mem();
         let by_start = mem();
         // Populate every required region; leave the blob region untouched.
-        EdgePayloadStore::new(
+        EdgeInlineValueStore::new(
             slab.clone(),
             log.clone(),
             mem(),
@@ -1089,7 +1092,9 @@ mod tests {
         .expect("store");
         // Reopen with an empty blob region: valid for a store that never wrote a
         // wide-payload blob.
-        assert!(EdgePayloadStore::init(slab, log, mem(), free_spans, by_start, 1024, 1).is_ok());
+        assert!(
+            EdgeInlineValueStore::init(slab, log, mem(), free_spans, by_start, 1024, 1).is_ok()
+        );
     }
 
     #[test]
@@ -1100,7 +1105,7 @@ mod tests {
         let free_spans = mem();
         let by_start = mem();
         // Fully populate every region with a payload-log segment_count of 2.
-        EdgePayloadStore::new(
+        EdgeInlineValueStore::new(
             slab.clone(),
             log.clone(),
             blobs.clone(),
@@ -1113,7 +1118,7 @@ mod tests {
         // Reopen claiming the edge store has three segments: a real layout
         // mismatch on an otherwise consistent, fully populated memory set.
         assert!(matches!(
-            EdgePayloadStore::init(slab, log, blobs, free_spans, by_start, 1024, 3),
+            EdgeInlineValueStore::init(slab, log, blobs, free_spans, by_start, 1024, 3),
             Err(InitError::PayloadLogLayoutMismatch)
         ));
     }

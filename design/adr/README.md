@@ -42,7 +42,7 @@ Last revised: YYYY-MM-DD
 | [0005](0005-vertex-identity.md) | Vertex/edge identity: global physical keys and encoded wire ids | accepted |
 | [0006](0006-pre-federation-foundation.md) | Pre-federation foundation: ShardId, catalogs, MemoryId, placement | accepted |
 | [0007](0007-stable-memory-layout.md) | Stable-memory layout policy and measured consolidation | accepted |
-| [0008](0008-edge-payload-profile-router-ssot.md) | Edge payload profile schema: router SSOT; retire graph `EDGE_PAYLOAD_PROFILES` | accepted |
+| [0008](0008-edge-inline-value-profile-router-ssot.md) | Edge payload profile schema: router SSOT; retire graph `EDGE_PAYLOAD_PROFILES` | accepted |
 | [0009](0009-edge-property-index-and-index-ddl.md) | Edge property index on graph-index; mixed intersection; opt-in `CREATE INDEX` / `DROP INDEX` DDL | accepted |
 | [0010](0010-index-sharding-extensibility.md) | Index sharding: defer split strategy; stable posting wire; router index resolution | accepted |
 | [0011](0011-gql-graph-resolution-and-catalog-scoping.md) | GQL graph resolution; `BidirectionalCatalog` for graph/index names; migrate stable keys to `GraphId` / `IndexNameId` | accepted |

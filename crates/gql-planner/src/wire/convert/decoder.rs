@@ -10,10 +10,10 @@ use gleaph_gql::token::Span;
 
 use super::PhysicalPlanWire;
 use super::helpers::{
-    decode_conditional_candidate, decode_edge_labels, decode_edge_payload_predicate,
-    decode_edge_vector_predicate, decode_index_scan_spec, decode_indexed_edge_equality,
-    decode_node_labels, decode_remove_item, decode_scan_value, decode_str_slice,
-    decode_yield_column, opt_edge_label, opt_node_label, opt_rc_str, rc_str,
+    decode_conditional_candidate, decode_edge_inline_value_predicate,
+    decode_edge_inline_vector_predicate, decode_edge_labels, decode_index_scan_spec,
+    decode_indexed_edge_equality, decode_node_labels, decode_remove_item, decode_scan_value,
+    decode_str_slice, decode_yield_column, opt_edge_label, opt_node_label, opt_rc_str, rc_str,
     shortest_mode_from_wire, var_len_from_wire, vec_rc_str,
 };
 use super::physical_plan_from_wire;
@@ -149,8 +149,8 @@ impl<'a> Decoder<'a> {
                 label_expr,
                 var_len,
                 indexed_edge_equality,
-                edge_payload_predicate,
-                edge_vector_predicate,
+                edge_inline_value_predicate,
+                edge_inline_vector_predicate,
                 edge_property_projection,
                 dst_property_projection,
                 hop_aux_binding,
@@ -168,8 +168,12 @@ impl<'a> Decoder<'a> {
                 label_expr: decode_opt_label_expr(self, *label_expr)?,
                 var_len: var_len.map(var_len_from_wire),
                 indexed_edge_equality: decode_indexed_edge_equality(indexed_edge_equality)?,
-                edge_payload_predicate: decode_edge_payload_predicate(edge_payload_predicate)?,
-                edge_vector_predicate: decode_edge_vector_predicate(edge_vector_predicate)?,
+                edge_inline_value_predicate: decode_edge_inline_value_predicate(
+                    edge_inline_value_predicate,
+                )?,
+                edge_inline_vector_predicate: decode_edge_inline_vector_predicate(
+                    edge_inline_vector_predicate,
+                )?,
                 edge_property_projection: decode_str_slice(edge_property_projection),
                 dst_property_projection: decode_str_slice(dst_property_projection),
                 hop_aux_binding: opt_rc_str(hop_aux_binding),
@@ -188,8 +192,8 @@ impl<'a> Decoder<'a> {
                 label_expr,
                 var_len,
                 indexed_edge_equality,
-                edge_payload_predicate,
-                edge_vector_predicate,
+                edge_inline_value_predicate,
+                edge_inline_vector_predicate,
                 dst_filter,
                 edge_property_projection,
                 dst_property_projection,
@@ -208,8 +212,12 @@ impl<'a> Decoder<'a> {
                 label_expr: decode_opt_label_expr(self, *label_expr)?,
                 var_len: var_len.map(var_len_from_wire),
                 indexed_edge_equality: decode_indexed_edge_equality(indexed_edge_equality)?,
-                edge_payload_predicate: decode_edge_payload_predicate(edge_payload_predicate)?,
-                edge_vector_predicate: decode_edge_vector_predicate(edge_vector_predicate)?,
+                edge_inline_value_predicate: decode_edge_inline_value_predicate(
+                    edge_inline_value_predicate,
+                )?,
+                edge_inline_vector_predicate: decode_edge_inline_vector_predicate(
+                    edge_inline_vector_predicate,
+                )?,
                 dst_filter: dst_filter
                     .iter()
                     .map(|id| self.expr(*id))

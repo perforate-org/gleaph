@@ -7,7 +7,7 @@ use gleaph_gql::Value;
 use gleaph_gql::ast::Expr;
 use gleaph_gql::types::{EdgeDirection, LabelExpr};
 use gleaph_gql_planner::plan::{
-    EdgePayloadPredicate, EdgeVectorPredicate, ScanValue, Str, VarLenSpec,
+    EdgeInlineValuePredicate, EdgeInlineVectorPredicate, ScanValue, Str, VarLenSpec,
 };
 use gleaph_graph_kernel::entry::EdgeLabelId;
 use ic_stable_lara::VertexId;
@@ -65,8 +65,8 @@ pub(crate) async fn execute_var_len_expand(
     path_var: Option<&Str>,
     emit_path_binding: bool,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_payload_predicate: Option<&EdgePayloadPredicate>,
-    edge_vector_predicate: Option<&EdgeVectorPredicate>,
+    edge_inline_value_predicate: Option<&EdgeInlineValuePredicate>,
+    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
 ) -> Result<Vec<PlanRow>, PlanQueryError> {
@@ -107,8 +107,8 @@ pub(crate) async fn execute_var_len_expand(
                     emit_path_binding,
                     ctx.parameters,
                     indexed_edge_equality,
-                    edge_payload_predicate,
-                    edge_vector_predicate,
+                    edge_inline_value_predicate,
+                    edge_inline_vector_predicate,
                     edge_property_projection,
                     dst_property_projection,
                     &evaluator,
@@ -141,8 +141,8 @@ pub(crate) fn collect_var_len_expand_rows(
     emit_path_binding: bool,
     parameters: &BTreeMap<String, Value>,
     indexed_edge_equality: Option<&(Str, ScanValue)>,
-    edge_payload_predicate: Option<&EdgePayloadPredicate>,
-    edge_vector_predicate: Option<&EdgeVectorPredicate>,
+    edge_inline_value_predicate: Option<&EdgeInlineValuePredicate>,
+    edge_inline_vector_predicate: Option<&EdgeInlineVectorPredicate>,
     edge_property_projection: Option<&[Str]>,
     dst_property_projection: Option<&[Str]>,
     evaluator: &super::super::context::QueryExprEvaluator<'_>,
@@ -217,8 +217,8 @@ pub(crate) fn collect_var_len_expand_rows(
             label_expr,
             EdgeSequenceOrder::Descending,
             indexed_edge_equality,
-            edge_payload_predicate,
-            edge_vector_predicate,
+            edge_inline_value_predicate,
+            edge_inline_vector_predicate,
             parameters,
             &mut candidates,
         )?;

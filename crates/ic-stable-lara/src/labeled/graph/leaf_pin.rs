@@ -659,7 +659,7 @@ mod tests {
         let edge_span_meta = mem();
         let edge_free_spans = mem();
         let edge_free_span_by_start = mem();
-        let payload_slab = mem();
+        let inline_value_slab = mem();
         let value_free_spans = mem();
         let value_free_span_by_start = mem();
         let payload_log = mem();
@@ -678,7 +678,7 @@ mod tests {
             edge_span_meta.clone(),
             edge_free_spans.clone(),
             edge_free_span_by_start.clone(),
-            payload_slab.clone(),
+            inline_value_slab.clone(),
             value_free_spans.clone(),
             value_free_span_by_start.clone(),
             payload_log.clone(),
@@ -711,7 +711,7 @@ mod tests {
             edge_span_meta,
             edge_free_spans,
             edge_free_span_by_start,
-            payload_slab,
+            inline_value_slab,
             value_free_spans,
             value_free_span_by_start,
             payload_log,
