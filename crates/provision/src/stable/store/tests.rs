@@ -702,3 +702,356 @@ fn stable_cell_singleton_writes_overwrite_previous_value() {
         test_principal(2)
     );
 }
+
+// === Artifact catalog store tests (Plan 0061a) ===============================
+
+use crate::stable::artifact::ProvisionArtifactStore;
+use crate::types::{
+    ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactUploadState,
+    CanisterKind, sha256,
+};
+
+fn router_artifact_id(version: &str, sha: [u8; 32]) -> ArtifactId {
+    ArtifactId::new(CanisterKind::Router, version.to_owned(), sha)
+}
+
+fn artifact_metadata(
+    id: ArtifactId,
+    byte_length: u64,
+    chunk_hashes: Vec<[u8; 32]>,
+) -> ArtifactMetadata {
+    ArtifactMetadata {
+        artifact_id: id,
+        byte_length,
+        chunk_hashes,
+        created_at_ns: 1,
+    }
+}
+
+/// (a) artifact_publish_metadata installs an immutable record.
+#[test]
+fn artifact_publish_metadata_installs_immutable_record() {
+    super::reset_all_maps();
+    let store = ProvisionArtifactStore::new();
+    let sha = sha256(b"v1");
+    let id = router_artifact_id("0.1.0", sha);
+    let metadata = artifact_metadata(id.clone(), 4, vec![sha256(b"chunk0")]);
+    let published = store.publish_metadata(metadata.clone()).unwrap();
+    assert_eq!(published.artifact_id, id);
+    assert_eq!(published.byte_length, 4);
+    assert_eq!(store.get_metadata(&id).unwrap().artifact_id, id);
+}
+
+/// (b) artifact_publish_metadata rejects a conflicting publish of the same ArtifactId.
+#[test]
+fn artifact_publish_metadata_rejects_conflicting_publish() {
+    super::reset_all_maps();
+    let store = ProvisionArtifactStore::new();
+    let sha = sha256(b"v1");
+    let id = router_artifact_id("0.1.0", sha);
+    let first = artifact_metadata(id.clone(), 4, vec![sha256(b"chunk0")]);
+    store.publish_metadata(first).unwrap();
+
+    let second = artifact_metadata(id.clone(), 8, vec![sha256(b"chunk0"), sha256(b"chunk1")]);
+    let err = store.publish_metadata(second).unwrap_err();
+    assert!(
+        matches!(err, crate::types::ArtifactError::ConflictingMetadata { ref existing, ref requested } if *existing == id && *requested == id),
+        "expected ConflictingMetadata, got {:?}",
+        err
+    );
+}
+
+/// (e) artifact_upload_chunk promotes to Verified on full SHA-256 match and rejects post-verify uploads.
+#[test]
+fn artifact_upload_chunk_promotes_to_verified_on_full_match() {
+    super::reset_all_maps();
+    use crate::canister::{
+        artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
+    };
+    use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
+    use crate::types::{ArtifactError, ArtifactUploadChunkArgs, ArtifactUploadState};
+    use candid::Principal;
+
+    let gov = Principal::from_slice(&[1; 29]);
+    ProvisionBootstrapAuthStore::new().set_authority(crate::types::BootstrapAuthorityRecord {
+        governance_principal: gov,
+        binding_version_at_seed: 1,
+        seeded_at_ns: 1,
+    });
+
+    let chunk0 = b"aaaa";
+    let chunk1 = b"bbbb";
+    let full = [chunk0.as_slice(), chunk1.as_slice()].concat();
+    let full_sha = sha256(&full);
+    let id = router_artifact_id("0.2.0", full_sha);
+
+    artifact_publish_metadata_with_caller(
+        gov,
+        crate::types::ArtifactPublishMetadataArgs {
+            canister_kind: CanisterKind::Router,
+            semantic_version: "0.2.0".to_owned(),
+            sha256: full_sha,
+            byte_length: full.len() as u64,
+            chunk_hashes: vec![sha256(chunk0), sha256(chunk1)],
+        },
+        1,
+    )
+    .unwrap();
+
+    artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 0,
+            bytes: chunk0.to_vec(),
+        },
+        2,
+    )
+    .unwrap();
+
+    let verified = artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 1,
+            bytes: chunk1.to_vec(),
+        },
+        3,
+    )
+    .unwrap();
+    assert!(matches!(
+        verified.state,
+        ArtifactUploadState::Verified { verified_at_ns: 3 }
+    ));
+
+    // Region 7 entry deleted.
+    let artifact_store = ProvisionArtifactStore::new();
+    assert_eq!(artifact_store.get_upload(&id), None);
+    // Region 8 chunks retained as verified canonical.
+    assert!(
+        artifact_store
+            .get_chunk(&ArtifactChunkKey {
+                artifact_id: id.clone(),
+                chunk_index: 0
+            })
+            .is_some()
+    );
+    assert!(
+        artifact_store
+            .get_chunk(&ArtifactChunkKey {
+                artifact_id: id.clone(),
+                chunk_index: 1
+            })
+            .is_some()
+    );
+
+    // Oracle-hardened: post-verify upload attempt must fail with ConflictingMetadata.
+    let post_verify = artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 0,
+            bytes: chunk0.to_vec(),
+        },
+        4,
+    );
+    assert!(
+        matches!(post_verify, Err(ArtifactError::ConflictingMetadata { .. })),
+        "expected ConflictingMetadata after verify, got {:?}",
+        post_verify
+    );
+    // Region 7 remains absent and region 8 unchanged.
+    assert_eq!(artifact_store.get_upload(&id), None);
+    assert_eq!(
+        artifact_store
+            .get_chunk(&ArtifactChunkKey {
+                artifact_id: id.clone(),
+                chunk_index: 0
+            })
+            .unwrap()
+            .bytes,
+        chunk0.to_vec()
+    );
+}
+
+/// (f) artifact_upload_chunk full SHA-256 mismatch returns error, preserves Failed state, cleans chunks.
+#[test]
+fn artifact_upload_chunk_full_sha256_mismatch_returns_error_and_preserves_state() {
+    super::reset_all_maps();
+    use crate::canister::{
+        artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
+    };
+    use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
+    use crate::types::{ArtifactError, ArtifactUploadChunkArgs, ArtifactUploadState};
+    use candid::Principal;
+
+    let gov = Principal::from_slice(&[1; 29]);
+    ProvisionBootstrapAuthStore::new().set_authority(crate::types::BootstrapAuthorityRecord {
+        governance_principal: gov,
+        binding_version_at_seed: 1,
+        seeded_at_ns: 1,
+    });
+
+    let chunk0 = b"aaaa";
+    let chunk1 = b"bbbb";
+    let bad_full_sha = sha256(b"not-the-real-bytes");
+    let id = router_artifact_id("0.3.0", bad_full_sha);
+
+    artifact_publish_metadata_with_caller(
+        gov,
+        crate::types::ArtifactPublishMetadataArgs {
+            canister_kind: CanisterKind::Router,
+            semantic_version: "0.3.0".to_owned(),
+            sha256: bad_full_sha,
+            byte_length: 8,
+            chunk_hashes: vec![sha256(chunk0), sha256(chunk1)],
+        },
+        1,
+    )
+    .unwrap();
+
+    artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 0,
+            bytes: chunk0.to_vec(),
+        },
+        2,
+    )
+    .unwrap();
+
+    let err = artifact_upload_chunk_with_caller(
+        gov,
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 1,
+            bytes: chunk1.to_vec(),
+        },
+        3,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, ArtifactError::FullSha256Mismatch { artifact_id: ref aid, .. } if *aid == id),
+        "expected FullSha256Mismatch, got {:?}",
+        err
+    );
+
+    let artifact_store = ProvisionArtifactStore::new();
+    let upload = artifact_store.get_upload(&id).unwrap();
+    assert!(matches!(upload.state, ArtifactUploadState::Failed { .. }));
+    assert!(
+        artifact_store
+            .get_chunk(&ArtifactChunkKey {
+                artifact_id: id.clone(),
+                chunk_index: 0
+            })
+            .is_none()
+    );
+    assert!(
+        artifact_store
+            .get_chunk(&ArtifactChunkKey {
+                artifact_id: id.clone(),
+                chunk_index: 1
+            })
+            .is_none()
+    );
+}
+
+/// (i) artifact stable layout uses separate MemoryIds for catalog, upload, and chunks.
+#[test]
+fn artifact_stable_layout_uses_separate_memory_ids() {
+    super::reset_all_maps();
+    use crate::stable::memory::{
+        StableArtifactCatalogMap, StableArtifactChunksMap, StableArtifactUploadMap,
+        init_artifact_catalog, init_artifact_chunks, init_artifact_upload,
+    };
+
+    let mut catalog: StableArtifactCatalogMap = init_artifact_catalog();
+    let mut upload: StableArtifactUploadMap = init_artifact_upload();
+    let mut chunks: StableArtifactChunksMap = init_artifact_chunks();
+
+    let id_a = router_artifact_id("1.0.0", sha256(b"a"));
+    let id_b = router_artifact_id("1.1.0", sha256(b"b"));
+    catalog.insert(id_a.clone(), artifact_metadata(id_a.clone(), 1, vec![]));
+    upload.insert(
+        id_b.clone(),
+        crate::types::ArtifactUpload {
+            artifact_id: id_b.clone(),
+            state: ArtifactUploadState::Receiving,
+            received_chunks: std::collections::BTreeSet::new(),
+            started_at_ns: 1,
+            verified_at_ns: None,
+        },
+    );
+    chunks.insert(
+        ArtifactChunkKey {
+            artifact_id: id_a.clone(),
+            chunk_index: 0,
+        },
+        ArtifactChunk { bytes: vec![0xAB] },
+    );
+
+    // Cross-region reads must not corrupt each other (R1).
+    assert!(catalog.get(&id_a).is_some());
+    assert!(upload.get(&id_b).is_some());
+    assert!(
+        chunks
+            .get(&ArtifactChunkKey {
+                artifact_id: id_a.clone(),
+                chunk_index: 0
+            })
+            .is_some()
+    );
+    assert!(catalog.get(&id_b).is_none());
+    assert!(upload.get(&id_a).is_none());
+    assert!(
+        chunks
+            .get(&ArtifactChunkKey {
+                artifact_id: id_b,
+                chunk_index: 0
+            })
+            .is_none()
+    );
+}
+
+/// (j) Storable round-trip for all stable artifact key/value types.
+#[test]
+fn artifact_metadata_round_trip_stable_encoding() {
+    use ic_stable_structures::Storable;
+
+    let id = router_artifact_id("2.0.0", sha256(b"rt"));
+    let metadata = artifact_metadata(id.clone(), 12, vec![sha256(b"c0"), sha256(b"c1")]);
+    let decoded = ArtifactMetadata::from_bytes(metadata.into_bytes().into());
+    assert_eq!(decoded.artifact_id, id);
+    assert_eq!(decoded.byte_length, 12);
+    assert_eq!(decoded.chunk_hashes.len(), 2);
+
+    let upload = crate::types::ArtifactUpload {
+        artifact_id: id.clone(),
+        state: ArtifactUploadState::Receiving,
+        received_chunks: [0u32, 1].into_iter().collect(),
+        started_at_ns: 5,
+        verified_at_ns: Some(10),
+    };
+    let upload_decoded = crate::types::ArtifactUpload::from_bytes(upload.into_bytes().into());
+    assert_eq!(upload_decoded.artifact_id, id);
+    assert_eq!(upload_decoded.received_chunks.len(), 2);
+
+    let chunk = ArtifactChunk {
+        bytes: vec![1, 2, 3, 4],
+    };
+    let chunk_decoded = ArtifactChunk::from_bytes(chunk.into_bytes().into());
+    assert_eq!(chunk_decoded.bytes, vec![1, 2, 3, 4]);
+
+    let id_decoded = ArtifactId::from_bytes(id.clone().into_bytes().into());
+    assert_eq!(id_decoded, id);
+
+    let chunk_key = ArtifactChunkKey {
+        artifact_id: id.clone(),
+        chunk_index: 7,
+    };
+    let chunk_key_decoded = ArtifactChunkKey::from_bytes(chunk_key.into_bytes().into());
+    assert_eq!(chunk_key_decoded.artifact_id, id);
+    assert_eq!(chunk_key_decoded.chunk_index, 7);
+}

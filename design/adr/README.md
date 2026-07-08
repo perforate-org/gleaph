@@ -70,7 +70,7 @@ Last revised: YYYY-MM-DD
 | [0033](0033-vector-rebuild-state-read-memoization.md) | Vector rebuild candidate pool storage and rebuild-state read cost: reject storage-layout change; adopt transient heap memoization | accepted (implementation deferred) |
 | [0034](0034-gleaph-gql-extension-syntax.md) | Gleaph GQL extension syntax surface: SEARCH, INLINE, IC values, and operational procedures | accepted (syntax design; implementation staged by feature) |
 | [0035](0035-provision-canister-and-issuance-protocol.md) | Provision canister and issuance protocol | Partially Implemented (Slice 3 ingress foundation + Slice 4 callable canister endpoints + Slice 5 Router outbound accept_envelope send + Slice 6 Router ack catalog commit + owner-identity locks + invocation-owned rollback + Slice 7 durable bootstrap authority region and post-init admin install) |
-| [0036](0036-versioned-wasm-artifact-catalog.md) | Versioned WASM artifact catalog | proposed |
+| [0036](0036-versioned-wasm-artifact-catalog.md) | Versioned WASM artifact catalog | Partially Implemented (Slice 8a: stable regions + publish/upload/status ingress; Slices 8b/8c deferred) |
 | [0037](0037-provisioned-canister-lifecycle-and-controllers.md) | Provisioned canister lifecycle and controllers | proposed |
 | [0038](0038-provisioning-authorization-and-cycles-funding.md) | Provisioning authorization and cycles funding | proposed |
 

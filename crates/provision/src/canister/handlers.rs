@@ -5,11 +5,16 @@
 //! `pub(crate)` so the 33+ unit tests and the candid export tests can drive every branch without WASM.
 
 use crate::canister::{
-    ProvisionIngressResult, ProvisionJobView, RouterAckResult, accept_envelope_with_caller,
-    admin_install_deployment_binding_with_caller, query_job_with_caller, router_ack_with_caller,
+    ArtifactUpload, ProvisionIngressResult, ProvisionJobView, RouterAckResult,
+    accept_envelope_with_caller, admin_install_deployment_binding_with_caller, artifact_get_status,
+    artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
+    query_job_with_caller, router_ack_with_caller,
 };
 use crate::stable::store::{DeploymentTrustStore, ProvisionJobStore};
-use crate::types::{AdminInstallDeploymentBindingArgs, ProvisionRequest, RouterProvisionAck};
+use crate::types::{
+    AdminInstallDeploymentBindingArgs, ArtifactError, ArtifactId, ArtifactMetadata,
+    ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, ProvisionRequest, RouterProvisionAck,
+};
 
 /// Bootstrap the deployment trust store from init args.
 pub fn init_handler(args: crate::canister::init::ProvisionInitArgs) {
@@ -59,4 +64,27 @@ pub fn admin_install_deployment_binding_handler(
 ) -> Result<crate::types::BootstrapAuthEntry, crate::types::ProvisionAdminError> {
     let caller = ic_cdk::api::msg_caller();
     admin_install_deployment_binding_with_caller(caller, args, crate::ic_time_ns())
+}
+
+/// Authorize `artifact_publish_metadata` from the IC runtime and forward to the handler.
+#[allow(clippy::result_large_err)]
+pub fn artifact_publish_metadata_handler(
+    args: ArtifactPublishMetadataArgs,
+) -> Result<ArtifactMetadata, ArtifactError> {
+    let caller = ic_cdk::api::msg_caller();
+    artifact_publish_metadata_with_caller(caller, args, crate::ic_time_ns())
+}
+
+/// Authorize `artifact_upload_chunk` from the IC runtime and forward to the handler.
+#[allow(clippy::result_large_err)]
+pub fn artifact_upload_chunk_handler(
+    args: ArtifactUploadChunkArgs,
+) -> Result<ArtifactUpload, ArtifactError> {
+    let caller = ic_cdk::api::msg_caller();
+    artifact_upload_chunk_with_caller(caller, args, crate::ic_time_ns())
+}
+
+/// Authorize `artifact_get_status` from the IC runtime and forward to the handler.
+pub fn artifact_get_status_handler(artifact_id: ArtifactId) -> Option<ArtifactUpload> {
+    artifact_get_status(artifact_id)
 }

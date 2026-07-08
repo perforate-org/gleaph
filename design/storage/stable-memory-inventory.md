@@ -348,6 +348,9 @@ secondary index and is commit-synced with Region 1 (`PROVISION_JOB_BY_REQUEST`).
 | 3 | `PROVISION_JOB_INTENT_LOCK` | `JOB_INTENT_LOCK` | `init_job_intent_lock` | canonical | intent lock held while a request targeting this intent is non-terminal (`ProvisioningIntentKey → ProvisionIntentLockMarker`) | — |
 | 4 | `PROVISION_BOOTSTRAP_AUTH` | `BOOTSTRAP_AUTH` | `ProvisionBootstrapAuthStore::init_authority` | canonical | durable bootstrap authority singleton (`StableCell<Option<BootstrapAuthorityRecord>>`) (ADR 0035 Slice 7) | — |
 | 5 | `PROVISION_BOOTSTRAP_AUDIT_LOG` | `BOOTSTRAP_AUDIT_LOG` | `ProvisionBootstrapAuthStore::put_record` | telemetry | per-governance audit log of admin-install decisions (`Principal → BootstrapAuthHistory`) (ADR 0035 Slice 7) | — |
+| 6 | `PROVISION_ARTIFACT_CATALOG` | `PROVISION_ARTIFACT_CATALOG` | `init_artifact_catalog` | canonical | immutable artifact catalog (`ArtifactId → ArtifactMetadata`) (ADR 0036 Slice 8a) | — |
+| 7 | `PROVISION_ARTIFACT_UPLOAD` | `PROVISION_ARTIFACT_UPLOAD` | `init_artifact_upload` | maintenance | mutable upload/verification scratch state (`ArtifactId → ArtifactUpload`), reclaimed on verify success (ADR 0036 Slice 8a) | — |
+| 8 | `PROVISION_ARTIFACT_CHUNKS` | `PROVISION_ARTIFACT_CHUNKS` | `init_artifact_chunks` | canonical | verified canonical artifact chunk bytes (`ArtifactChunkKey → ArtifactChunk`) retained until explicit GC (ADR 0036 Slice 8a) | — |
 
 ## Related documents
 

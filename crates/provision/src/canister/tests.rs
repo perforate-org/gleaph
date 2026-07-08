@@ -1444,3 +1444,169 @@ fn bootstrap_authority_singleton_survives_upgrade() {
     let second = auth_store.get_authority().unwrap();
     assert_eq!(first, second);
 }
+
+// === Artifact catalog handler tests (Plan 0061a) =============================
+
+use crate::canister::{
+    artifact_get_status, artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
+};
+use crate::stable::artifact::ProvisionArtifactStore;
+use crate::types::{
+    ArtifactError, ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs,
+    BootstrapAuthorityRecord, CanisterKind, sha256,
+};
+
+fn gov() -> Principal {
+    Principal::from_slice(&[100; 29])
+}
+
+fn artifact_id_router(version: &str, full_sha: [u8; 32]) -> ArtifactId {
+    ArtifactId::new(CanisterKind::Router, version.to_owned(), full_sha)
+}
+
+fn seed_bootstrap() {
+    crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore::new().set_authority(
+        BootstrapAuthorityRecord {
+            governance_principal: gov(),
+            binding_version_at_seed: 1,
+            seeded_at_ns: 1,
+        },
+    );
+}
+
+fn publish_args(
+    version: &str,
+    chunks: Vec<&[u8]>,
+) -> (ArtifactPublishMetadataArgs, ArtifactId, Vec<[u8; 32]>) {
+    let full: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+    let full_sha = sha256(&full);
+    let chunk_hashes: Vec<[u8; 32]> = chunks.iter().map(|c| sha256(c)).collect();
+    let id = artifact_id_router(version, full_sha);
+    (
+        ArtifactPublishMetadataArgs {
+            canister_kind: CanisterKind::Router,
+            semantic_version: version.to_owned(),
+            sha256: full_sha,
+            byte_length: full.len() as u64,
+            chunk_hashes: chunk_hashes.clone(),
+        },
+        id,
+        chunk_hashes,
+    )
+}
+
+/// (c) artifact_publish_metadata rejects non-bootstrap caller.
+#[test]
+fn artifact_publish_metadata_rejects_non_bootstrap_caller() {
+    reset_all_maps();
+    seed_bootstrap();
+    let (args, id, _) = publish_args("0.1.0", vec![b"chunk0"]);
+    let err = artifact_publish_metadata_with_caller(other_principal(), args, 1).unwrap_err();
+    assert_eq!(err, ArtifactError::Unauthorized);
+    assert!(ProvisionArtifactStore::new().get_metadata(&id).is_none());
+}
+
+/// (d) artifact_upload_chunk validates chunk hash.
+#[test]
+fn artifact_upload_chunk_validates_chunk_hash() {
+    reset_all_maps();
+    seed_bootstrap();
+    let (args, id, _) = publish_args("0.1.0", vec![b"chunk0"]);
+    artifact_publish_metadata_with_caller(gov(), args, 1).unwrap();
+
+    let err = artifact_upload_chunk_with_caller(
+        gov(),
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 0,
+            bytes: b"wrong".to_vec(),
+        },
+        2,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, ArtifactError::ChunkHashMismatch { artifact_id: ref aid, chunk_index: 0 } if *aid == id),
+        "expected ChunkHashMismatch, got {:?}",
+        err
+    );
+
+    // Region 7 stays Receiving (no upload entry created because no chunk was staged).
+    assert!(ProvisionArtifactStore::new().get_upload(&id).is_none());
+}
+
+/// (g) artifact_upload_chunk rejects out-of-range chunk index.
+#[test]
+fn artifact_upload_chunk_rejects_out_of_range_index() {
+    reset_all_maps();
+    seed_bootstrap();
+    let (args, id, _) = publish_args("0.1.0", vec![b"chunk0"]);
+    artifact_publish_metadata_with_caller(gov(), args, 1).unwrap();
+
+    let err = artifact_upload_chunk_with_caller(
+        gov(),
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 5,
+            bytes: b"chunk0".to_vec(),
+        },
+        2,
+    )
+    .unwrap_err();
+    assert!(
+        matches!(err, ArtifactError::ChunkOutOfRange { artifact_id: ref aid, chunk_index: 5, declared: 1 } if *aid == id),
+        "expected ChunkOutOfRange, got {:?}",
+        err
+    );
+}
+
+/// (h) artifact_get_status returns None for verified artifact (and after rejected post-verify attempt).
+#[test]
+fn artifact_get_status_returns_none_for_verified_artifact() {
+    reset_all_maps();
+    seed_bootstrap();
+    let (args, id, _) = publish_args("0.2.0", vec![b"aaaa", b"bbbb"]);
+    artifact_publish_metadata_with_caller(gov(), args, 1).unwrap();
+
+    artifact_upload_chunk_with_caller(
+        gov(),
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 0,
+            bytes: b"aaaa".to_vec(),
+        },
+        2,
+    )
+    .unwrap();
+    assert!(artifact_get_status(id.clone()).is_some());
+
+    // Complete verification.
+    artifact_upload_chunk_with_caller(
+        gov(),
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 1,
+            bytes: b"bbbb".to_vec(),
+        },
+        3,
+    )
+    .unwrap();
+
+    // Region 7 was deleted on verify success.
+    assert_eq!(artifact_get_status(id.clone()), None);
+
+    // Rejected post-verify upload also does not recreate region 7.
+    let rejected = artifact_upload_chunk_with_caller(
+        gov(),
+        ArtifactUploadChunkArgs {
+            artifact_id: id.clone(),
+            chunk_index: 0,
+            bytes: b"aaaa".to_vec(),
+        },
+        4,
+    );
+    assert!(matches!(
+        rejected,
+        Err(ArtifactError::ConflictingMetadata { .. })
+    ));
+    assert_eq!(artifact_get_status(id), None);
+}

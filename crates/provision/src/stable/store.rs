@@ -1,6 +1,8 @@
 //! Provision canister stable-memory store facades.
 
 #[cfg(test)]
+use super::artifact::reset_artifact_maps;
+#[cfg(test)]
 use super::bootstrap_auth::reset_bootstrap_auth_maps;
 use super::memory::{
     StableDeploymentTrustMap, StableJobByDeploymentMap, StableJobByRequestMap,
@@ -37,6 +39,7 @@ pub(crate) fn reset_all_maps() {
     JOB_BY_DEPLOYMENT.with_borrow_mut(|map| map.clear_new());
     INTENT_LOCK.with_borrow_mut(|map| map.clear_new());
     reset_bootstrap_auth_maps();
+    reset_artifact_maps();
     set_force_advance_error(false);
 }
 

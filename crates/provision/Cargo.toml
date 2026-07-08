@@ -14,6 +14,7 @@ ic-cdk-macros = { workspace = true }
 ic-stable-structures = { workspace = true }
 serde = { workspace = true }
 thiserror = { workspace = true }
+sha2 = "0.11"
 gleaph-graph-kernel = { workspace = true }
 
 [dev-dependencies]

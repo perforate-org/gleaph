@@ -4,6 +4,7 @@ use candid::{CandidType, Decode, Encode, Principal};
 use gleaph_graph_kernel::entry::GraphId;
 use ic_stable_structures::storable::{Bound as StorableBound, Storable};
 use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 
 // Re-exports for the catalog key and the lock key (P2-5, P2-A).
@@ -404,3 +405,216 @@ pub enum AdminInstallError {
 
 /// Internal alias used by handler code and unit tests.
 pub type ProvisionAdminError = AdminInstallError;
+
+// === Artifact catalog types (ADR 0036 Slice 8a) =============================
+
+/// Kind of canister that an artifact can be installed into.
+/// Provision itself is EXPLICITLY excluded — self-upgrade is forbidden per ADR 0036.
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
+)]
+pub enum CanisterKind {
+    Router,
+    Graph,
+    PropertyIndex,
+    VectorIndex,
+}
+
+/// Composite stable key identifying one published artifact.
+/// The SHA-256 is part of identity, not a value field.
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
+)]
+pub struct ArtifactId {
+    pub canister_kind: CanisterKind,
+    pub semantic_version: String,
+    pub sha256: [u8; 32],
+}
+
+impl ArtifactId {
+    pub fn new(canister_kind: CanisterKind, semantic_version: String, sha256: [u8; 32]) -> Self {
+        Self {
+            canister_kind,
+            semantic_version,
+            sha256,
+        }
+    }
+}
+
+/// Immutable artifact metadata published by governance.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ArtifactMetadata {
+    pub artifact_id: ArtifactId,
+    pub byte_length: u64,
+    pub chunk_hashes: Vec<[u8; 32]>,
+    pub created_at_ns: u64,
+}
+
+/// Mutable upload-progress state for an artifact. Reclaimed from stable memory once the artifact
+/// reaches `Verified`; verified canonical chunks remain in region 8 until explicit GC is designed.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ArtifactUpload {
+    pub artifact_id: ArtifactId,
+    pub state: ArtifactUploadState,
+    pub received_chunks: std::collections::BTreeSet<u32>,
+    pub started_at_ns: u64,
+    pub verified_at_ns: Option<u64>,
+}
+
+/// Composite stable key for one chunk of one artifact.
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
+)]
+pub struct ArtifactChunkKey {
+    pub artifact_id: ArtifactId,
+    pub chunk_index: u32,
+}
+
+/// Verified canonical chunk bytes. Named-field wrapper required by the stable Storable contract.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ArtifactChunk {
+    pub bytes: Vec<u8>,
+}
+
+/// Lifecycle of an artifact upload. Receiving -> Verifying -> (Verified | Failed).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ArtifactUploadState {
+    Receiving,
+    Verifying,
+    Verified { verified_at_ns: u64 },
+    Failed { reason: String },
+}
+
+/// Errors returned by artifact catalog ingress methods.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ArtifactError {
+    UnknownArtifact(ArtifactId),
+    ConflictingMetadata {
+        existing: ArtifactId,
+        requested: ArtifactId,
+    },
+    ChunkOutOfRange {
+        artifact_id: ArtifactId,
+        chunk_index: u32,
+        declared: u32,
+    },
+    ChunkHashMismatch {
+        artifact_id: ArtifactId,
+        chunk_index: u32,
+    },
+    FullSha256Mismatch {
+        artifact_id: ArtifactId,
+        expected: [u8; 32],
+        actual: [u8; 32],
+    },
+    Unauthorized,
+    NotProvision(CanisterKind),
+}
+
+/// Arguments for `artifact_publish_metadata`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ArtifactPublishMetadataArgs {
+    pub canister_kind: CanisterKind,
+    pub semantic_version: String,
+    pub sha256: [u8; 32],
+    pub byte_length: u64,
+    pub chunk_hashes: Vec<[u8; 32]>,
+}
+
+/// Arguments for `artifact_upload_chunk`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ArtifactUploadChunkArgs {
+    pub artifact_id: ArtifactId,
+    pub chunk_index: u32,
+    pub bytes: Vec<u8>,
+}
+
+// === Stable encodings for artifact catalog types ============================
+//
+// All stable-collection keys and values use Candid encoding with StorableBound::Unbounded
+// (Plan 0061a R10 composite stable-key compatibility; round-trip verified by test (j)).
+
+impl Storable for ArtifactId {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ArtifactId"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ArtifactId")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ArtifactId")
+    }
+}
+
+impl Storable for ArtifactMetadata {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ArtifactMetadata"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ArtifactMetadata")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ArtifactMetadata")
+    }
+}
+
+impl Storable for ArtifactUpload {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ArtifactUpload"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ArtifactUpload")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ArtifactUpload")
+    }
+}
+
+impl Storable for ArtifactChunkKey {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ArtifactChunkKey"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ArtifactChunkKey")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ArtifactChunkKey")
+    }
+}
+
+impl Storable for ArtifactChunk {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ArtifactChunk"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ArtifactChunk")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ArtifactChunk")
+    }
+}
+
+impl Storable for ArtifactUploadState {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ArtifactUploadState"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ArtifactUploadState")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ArtifactUploadState")
+    }
+}
+
+/// Compute the SHA-256 digest of `bytes`. Used by handlers and tests.
+pub fn sha256(bytes: &[u8]) -> [u8; 32] {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    hasher.finalize().into()
+}

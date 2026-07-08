@@ -1106,6 +1106,33 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             "Principal → BootstrapAuthHistory: durable audit trail of every admin-install attempt (success or reject)",
             RebuildPath::None,
         ),
+        // ADR 0036 Slice 8a: immutable artifact catalog (MemoryId 6).
+        region(
+            "PROVISION_ARTIFACT_CATALOG",
+            6,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "ArtifactId → ArtifactMetadata: immutable published artifact identity and chunk-hash declaration",
+            RebuildPath::None,
+        ),
+        // ADR 0036 Slice 8a: mutable upload-progress scratch state (MemoryId 7).
+        region(
+            "PROVISION_ARTIFACT_UPLOAD",
+            7,
+            StableMemoryClass::Maintenance,
+            "provisioning",
+            "ArtifactId → ArtifactUpload: in-progress upload/verification state; reclaimed on verify success",
+            RebuildPath::None,
+        ),
+        // ADR 0036 Slice 8a: verified canonical artifact chunk bytes (MemoryId 8).
+        region(
+            "PROVISION_ARTIFACT_CHUNKS",
+            8,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "ArtifactChunkKey → ArtifactChunk: verified canonical WASM chunk bytes retained until explicit GC",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1634,8 +1661,8 @@ mod tests {
     #[test]
     fn provision_layout_registry_matches_baseline() {
         assert_layout(&PROVISION_STABLE_LAYOUT);
-        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 6);
-        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(5));
+        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 9);
+        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(8));
         assert_eq!(
             PROVISION_STABLE_LAYOUT.regions[2].class,
             StableMemoryClass::Derived

@@ -68,6 +68,62 @@ mod tests {
             "admin_install_deployment_binding must not return Result<Null, AdminInstallError>"
         );
 
+        for required in [
+            "accept_envelope",
+            "query_job",
+            "router_ack",
+            "admin_install_deployment_binding",
+            "artifact_publish_metadata",
+            "artifact_upload_chunk",
+            "artifact_get_status",
+        ] {
+            assert!(
+                names.contains(&required),
+                "missing method {} in provision.did; got {:?}",
+                required,
+                names
+            );
+        }
+
+        for method_name in ["artifact_publish_metadata", "artifact_upload_chunk"] {
+            let method = methods
+                .iter()
+                .find(|(n, _)| n == method_name)
+                .map(|(_, ty)| ty.clone())
+                .unwrap_or_else(|| panic!("{} method type", method_name));
+            let rets = match method.as_ref() {
+                candid::types::TypeInner::Func(func) => &func.rets,
+                _ => panic!("{} must be a function", method_name),
+            };
+            assert_eq!(
+                rets.len(),
+                1,
+                "{} must return exactly one variant",
+                method_name
+            );
+            let ret = &rets[0];
+            let is_null_result = matches!(ret.as_ref(), candid::types::TypeInner::Var(name) if {
+                env.0.get(name).is_some_and(|ty| {
+                    if let candid::types::TypeInner::Variant(fields) = ty.as_ref() {
+                        fields.iter().any(|f| {
+                            f.id.to_string() == "Ok"
+                                && matches!(f.ty.as_ref(), candid::types::TypeInner::Var(inner) if env
+                                    .0
+                                    .get(inner.as_str())
+                                    .is_some_and(|t| matches!(t.as_ref(), candid::types::TypeInner::Null)))
+                        })
+                    } else {
+                        false
+                    }
+                })
+            });
+            assert!(
+                !is_null_result,
+                "{} must not return Result<Null, ArtifactError>",
+                method_name
+            );
+        }
+
         let declared_types: Vec<&str> = env.0.keys().map(|name| name.as_str()).collect();
         for required_type in [
             "CreatedResource",
@@ -84,6 +140,16 @@ mod tests {
             "BootstrapAuthHistory",
             "AdminInstallDeploymentBindingArgs",
             "AdminInstallError",
+            "CanisterKind",
+            "ArtifactId",
+            "ArtifactMetadata",
+            "ArtifactUpload",
+            "ArtifactChunkKey",
+            "ArtifactChunk",
+            "ArtifactUploadState",
+            "ArtifactError",
+            "ArtifactPublishMetadataArgs",
+            "ArtifactUploadChunkArgs",
         ] {
             assert!(
                 declared_types.contains(&required_type),

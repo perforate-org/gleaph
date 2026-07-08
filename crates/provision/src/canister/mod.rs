@@ -9,12 +9,15 @@ use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
 use crate::canister::init::binding_from_admin_args;
+use crate::stable::artifact::ProvisionArtifactStore;
 use crate::stable::store::{DeploymentTrustStore, ProvisionJobStore};
 use crate::types::{
-    AdminInstallDeploymentBindingArgs, BootstrapAuthAction, BootstrapAuthEntry, CreatedResource,
+    AdminInstallDeploymentBindingArgs, ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId,
+    ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs,
+    ArtifactUploadState, BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource,
     JobState, ProvisionAdminError, ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest,
     ProvisionResult, ProvisionResultOutcome, ProvisionableResourceKind, ProvisioningIntentKey,
-    ResourceJobEntry, RouterProvisionAck, state_name,
+    ResourceJobEntry, RouterProvisionAck, sha256, state_name,
 };
 
 pub mod handlers;
@@ -433,6 +436,181 @@ pub(crate) fn admin_install_deployment_binding_with_caller(
         auth_store.put_record(caller, entry);
         Err(ProvisionAdminError::UnknownDeployment(deployment_id))
     }
+}
+
+// === Artifact catalog handlers (ADR 0036 Slice 8a) =============================
+
+/// Publish immutable artifact metadata. Governance-only.
+#[allow(clippy::result_large_err)]
+pub(crate) fn artifact_publish_metadata_with_caller(
+    caller: Principal,
+    args: ArtifactPublishMetadataArgs,
+    now_ns: u64,
+) -> Result<ArtifactMetadata, ArtifactError> {
+    use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
+
+    let auth_store = ProvisionBootstrapAuthStore::new();
+    let authority = auth_store
+        .get_authority()
+        .ok_or(ArtifactError::Unauthorized)?
+        .governance_principal;
+    if caller != authority {
+        return Err(ArtifactError::Unauthorized);
+    }
+
+    // Explicit 4-variant allowlist; Provision self-upgrade is forbidden.
+    if !matches!(
+        args.canister_kind,
+        CanisterKind::Router
+            | CanisterKind::Graph
+            | CanisterKind::PropertyIndex
+            | CanisterKind::VectorIndex
+    ) {
+        return Err(ArtifactError::NotProvision(args.canister_kind));
+    }
+
+    let artifact_id = ArtifactId::new(args.canister_kind, args.semantic_version, args.sha256);
+    let store = ProvisionArtifactStore::new();
+    let metadata = ArtifactMetadata {
+        artifact_id: artifact_id.clone(),
+        byte_length: args.byte_length,
+        chunk_hashes: args.chunk_hashes,
+        created_at_ns: now_ns,
+    };
+
+    store.publish_metadata(metadata)
+}
+
+/// Upload one artifact chunk. Governance-only. Verifies per-chunk hash immediately and runs full
+/// SHA-256 verification once every declared chunk has been received.
+#[allow(clippy::result_large_err)]
+pub(crate) fn artifact_upload_chunk_with_caller(
+    caller: Principal,
+    args: ArtifactUploadChunkArgs,
+    now_ns: u64,
+) -> Result<ArtifactUpload, ArtifactError> {
+    use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
+
+    let auth_store = ProvisionBootstrapAuthStore::new();
+    let authority = auth_store
+        .get_authority()
+        .ok_or(ArtifactError::Unauthorized)?
+        .governance_principal;
+    if caller != authority {
+        return Err(ArtifactError::Unauthorized);
+    }
+
+    let artifact_store = ProvisionArtifactStore::new();
+    let metadata = artifact_store
+        .get_metadata(&args.artifact_id)
+        .ok_or(ArtifactError::UnknownArtifact(args.artifact_id.clone()))?;
+
+    let chunk_count = metadata.chunk_hashes.len() as u32;
+    if args.chunk_index >= chunk_count {
+        return Err(ArtifactError::ChunkOutOfRange {
+            artifact_id: args.artifact_id.clone(),
+            chunk_index: args.chunk_index,
+            declared: chunk_count,
+        });
+    }
+
+    let expected_chunk_hash = metadata.chunk_hashes[args.chunk_index as usize];
+    if sha256(&args.bytes) != expected_chunk_hash {
+        return Err(ArtifactError::ChunkHashMismatch {
+            artifact_id: args.artifact_id.clone(),
+            chunk_index: args.chunk_index,
+        });
+    }
+
+    // Pre-write rejection guards.
+    if let Some(upload) = artifact_store.get_upload(&args.artifact_id)
+        && matches!(upload.state, ArtifactUploadState::Failed { .. })
+    {
+        return Err(ArtifactError::ChunkHashMismatch {
+            artifact_id: args.artifact_id.clone(),
+            chunk_index: args.chunk_index,
+        });
+    }
+
+    // Derived verified predicate: if all declared chunks exist in region 8 and their concatenated
+    // SHA-256 matches the published metadata, the artifact is already verified.
+    let existing_chunks = artifact_store.chunks_in_order(&args.artifact_id, chunk_count);
+    if existing_chunks.len() == chunk_count as usize {
+        let mut full = Vec::with_capacity(metadata.byte_length as usize);
+        for chunk in &existing_chunks {
+            full.extend_from_slice(&chunk.bytes);
+        }
+        if sha256(&full) == metadata.artifact_id.sha256 {
+            return Err(ArtifactError::ConflictingMetadata {
+                existing: args.artifact_id.clone(),
+                requested: args.artifact_id.clone(),
+            });
+        }
+    }
+
+    // Stage the chunk in region 8.
+    let chunk_key = ArtifactChunkKey {
+        artifact_id: args.artifact_id.clone(),
+        chunk_index: args.chunk_index,
+    };
+    artifact_store.put_chunk(chunk_key, ArtifactChunk { bytes: args.bytes });
+
+    // Update mutable upload progress in region 7.
+    let mut upload = artifact_store.get_or_create_upload(&args.artifact_id, now_ns);
+    upload.received_chunks.insert(args.chunk_index);
+
+    if upload.received_chunks.len() < metadata.chunk_hashes.len() {
+        upload.state = ArtifactUploadState::Receiving;
+        artifact_store.put_upload(&args.artifact_id, upload.clone());
+        return Ok(upload);
+    }
+
+    // All chunks received: run full SHA-256 verification.
+    upload.state = ArtifactUploadState::Verifying;
+    artifact_store.put_upload(&args.artifact_id, upload.clone());
+
+    let staged_chunks = artifact_store.chunks_in_order(&args.artifact_id, chunk_count);
+    let mut full_bytes = Vec::with_capacity(metadata.byte_length as usize);
+    for chunk in &staged_chunks {
+        full_bytes.extend_from_slice(&chunk.bytes);
+    }
+
+    if sha256(&full_bytes) != metadata.artifact_id.sha256 {
+        // Verification failure: remove all staged chunks and mark upload Failed.
+        artifact_store.remove_all_chunks(&args.artifact_id);
+        let actual = sha256(&full_bytes);
+        upload.state = ArtifactUploadState::Failed {
+            reason: format!(
+                "full SHA-256 mismatch: expected {}, got {}",
+                hex_string(&metadata.artifact_id.sha256),
+                hex_string(&actual)
+            ),
+        };
+        artifact_store.put_upload(&args.artifact_id, upload.clone());
+        return Err(ArtifactError::FullSha256Mismatch {
+            artifact_id: args.artifact_id.clone(),
+            expected: metadata.artifact_id.sha256,
+            actual,
+        });
+    }
+
+    // Verification success: promote region 8 chunks to verified canonical and reclaim region 7.
+    upload.state = ArtifactUploadState::Verified {
+        verified_at_ns: now_ns,
+    };
+    upload.verified_at_ns = Some(now_ns);
+    artifact_store.remove_upload(&args.artifact_id);
+    Ok(upload)
+}
+
+/// Query the current mutable upload state. Any caller.
+pub(crate) fn artifact_get_status(artifact_id: ArtifactId) -> Option<ArtifactUpload> {
+    let store = ProvisionArtifactStore::new();
+    store.get_upload(&artifact_id)
+}
+
+fn hex_string(bytes: &[u8; 32]) -> String {
+    bytes.iter().map(|b| format!("{:02x}", b)).collect()
 }
 
 #[cfg(test)]

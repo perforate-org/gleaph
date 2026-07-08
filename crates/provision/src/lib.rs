@@ -16,7 +16,9 @@ mod candid;
 use crate::canister::{ProvisionIngressResult, ProvisionJobView, RouterAckResult, handlers};
 use crate::types::AdminInstallError;
 use crate::types::{
-    AdminInstallDeploymentBindingArgs, BootstrapAuthEntry, ProvisionRequest, RouterProvisionAck,
+    AdminInstallDeploymentBindingArgs, ArtifactError, ArtifactId, ArtifactMetadata,
+    ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry,
+    ProvisionRequest, RouterProvisionAck,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -50,6 +52,25 @@ fn admin_install_deployment_binding(
     args: AdminInstallDeploymentBindingArgs,
 ) -> Result<BootstrapAuthEntry, AdminInstallError> {
     handlers::admin_install_deployment_binding_handler(args)
+}
+
+#[allow(clippy::result_large_err)]
+#[update]
+fn artifact_publish_metadata(
+    args: ArtifactPublishMetadataArgs,
+) -> Result<ArtifactMetadata, ArtifactError> {
+    handlers::artifact_publish_metadata_handler(args)
+}
+
+#[allow(clippy::result_large_err)]
+#[update]
+fn artifact_upload_chunk(args: ArtifactUploadChunkArgs) -> Result<ArtifactUpload, ArtifactError> {
+    handlers::artifact_upload_chunk_handler(args)
+}
+
+#[query]
+fn artifact_get_status(artifact_id: ArtifactId) -> Option<ArtifactUpload> {
+    handlers::artifact_get_status_handler(artifact_id)
 }
 
 #[cfg(test)]

@@ -1,8 +1,8 @@
 # 0036. Versioned WASM artifact catalog
 
 Date: 2026-07-04
-Status: proposed
-Last revised: 2026-07-04
+Status: partially implemented
+Last revised: 2026-07-08
 Anchor timestamp: 2026-07-04 13:05:02 UTC +0000
 
 ## Context
@@ -98,11 +98,17 @@ reassembly and version skew.
 
 ## Implementation status
 
-**Proposed.** No artifact catalog, release manifest, active-release pointer, or chunk-transfer job
-exists yet.
+**Partially Implemented (2026-07-08).** Slice 8a adds three stable regions (MemoryId 6, 7, 8) for the
+artifact catalog, upload state, and verified canonical chunks, plus the `artifact_publish_metadata`,
+`artifact_upload_chunk`, and `artifact_get_status` public ingress methods. Reclaim policy: mutable
+upload state in region 7 is deleted on verify success; verified canonical chunks in region 8 are
+retained until explicit GC is designed. Release manifest, active-release pointer, install transfer,
+and management-canister chunk path are deferred to Slices 8b and 8c.
 
 ## Cross-links
 
 - [ADR 0035](0035-provision-canister-and-issuance-protocol.md) — jobs pin the selected release.
 - [ADR 0037](0037-provisioned-canister-lifecycle-and-controllers.md) — target controller policy.
 - [IC management canister](https://docs.internetcomputer.org/references/management-canister/) — authoritative chunk and install operations.
+- Plan 0061b (release manifest + active-release pointer + activation) — builds on Slice 8a.
+- Plan 0061c (install transfer + artifact audit log + PocketIC) — builds on Slices 8a and 8b.

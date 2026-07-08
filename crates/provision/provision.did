@@ -162,9 +162,78 @@ type AdminInstallError = variant {
 
 type Result = variant { Ok: BootstrapAuthEntry; Err: AdminInstallError };
 
+
+type CanisterKind = variant { Router; Graph; PropertyIndex; VectorIndex };
+
+type ArtifactId = record {
+    canister_kind: CanisterKind;
+    semantic_version: text;
+    sha256: vec nat8;
+};
+
+type ArtifactMetadata = record {
+    artifact_id: ArtifactId;
+    byte_length: nat64;
+    chunk_hashes: vec vec nat8;
+    created_at_ns: nat64;
+};
+
+type ArtifactUploadState = variant {
+    Receiving;
+    Verifying;
+    Verified: record { verified_at_ns: nat64 };
+    Failed: record { reason: text };
+};
+
+type ArtifactUpload = record {
+    artifact_id: ArtifactId;
+    state: ArtifactUploadState;
+    received_chunks: vec nat32;
+    started_at_ns: nat64;
+    verified_at_ns: opt nat64;
+};
+
+type ArtifactChunkKey = record {
+    artifact_id: ArtifactId;
+    chunk_index: nat32;
+};
+
+type ArtifactChunk = record { bytes: vec nat8 };
+
+type ArtifactError = variant {
+    UnknownArtifact: ArtifactId;
+    ConflictingMetadata: record { existing: ArtifactId; requested: ArtifactId };
+    ChunkOutOfRange: record { artifact_id: ArtifactId; chunk_index: nat32; declared: nat32 };
+    ChunkHashMismatch: record { artifact_id: ArtifactId; chunk_index: nat32 };
+    FullSha256Mismatch: record { artifact_id: ArtifactId; expected: vec nat8; actual: vec nat8 };
+    Unauthorized;
+    NotProvision: CanisterKind;
+};
+
+type ArtifactPublishMetadataArgs = record {
+    canister_kind: CanisterKind;
+    semantic_version: text;
+    sha256: vec nat8;
+    byte_length: nat64;
+    chunk_hashes: vec vec nat8;
+};
+
+type ArtifactUploadChunkArgs = record {
+    artifact_id: ArtifactId;
+    chunk_index: nat32;
+    bytes: vec nat8;
+};
+
+type Result_1 = variant { Ok: ArtifactMetadata; Err: ArtifactError };
+
+type Result_2 = variant { Ok: ArtifactUpload; Err: ArtifactError };
+
 service : (ProvisionInitArgs) -> {
     accept_envelope: (ProvisionRequest) -> (ProvisionIngressResult);
     query_job: (text, text) -> (opt ProvisionJobView) query;
     router_ack: (RouterProvisionAck) -> (RouterAckResult);
     admin_install_deployment_binding: (AdminInstallDeploymentBindingArgs) -> (Result);
+    artifact_publish_metadata: (ArtifactPublishMetadataArgs) -> (Result_1);
+    artifact_upload_chunk: (ArtifactUploadChunkArgs) -> (Result_2);
+    artifact_get_status: (ArtifactId) -> (opt ArtifactUpload) query;
 };
