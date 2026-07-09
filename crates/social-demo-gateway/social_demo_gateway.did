@@ -1,6 +1,6 @@
 type GatewayInitArgs = record { router_canister : principal };
 // Router read-path result: merged row count and optional materialized rows.
-//
+// 
 // `phase` is populated only for idempotent mutations, where Router tracks a federated
 // saga; it is `None` for read queries and for non-idempotent escape-hatch writes that
 // carry no tracked mutation record (ADR 0029).
@@ -15,7 +15,7 @@ type GqlQueryResult = record {
   phase : opt MutationLifecyclePhase;
 };
 // Federated mutation lifecycle phase (ADR 0029).
-//
+// 
 // Router owns the transitions; this is the wire projection a client receives for an
 // idempotent mutation. It is deliberately distinct from [`MutationJournalState`], which
 // only attests a *shard-local* replayable outcome and never describes cross-canister
@@ -35,7 +35,7 @@ type MutationLifecyclePhase = variant {
   CanonicalPending;
 };
 // Read-your-writes token for a federated mutation (ADR 0029 §5, Phase 2).
-//
+// 
 // Issued with an idempotent DML result. It names the mutation and the per-shard
 // projection watermarks a later read must reach to observe this mutation's effects.
 // It is deliberately **not** a global snapshot timestamp: graph-index freshness is
@@ -59,6 +59,10 @@ type Result = variant { Ok : GqlQueryResult; Err : SocialDemoGatewayError };
 type RouterError = variant {
   Internal : text;
   ShardNotRegistered;
+  // The Provision canister sent an ack with a registry version that differs from the
+  // version already committed by a previous `Completed` Router record. **Not retryable as
+  // written**: investigate the version mismatch before re-issuing.
+  AckConflict : record { stored : nat64 };
   // A federated update bundle contained more than one top-level DML statement. Federated
   // multi-DML bundles have no defined cross-shard partial-application contract yet
   // (ADR 0029 Phase 5), so the bundle is rejected before any shard dispatch — no canonical
@@ -74,9 +78,17 @@ type RouterError = variant {
   // stored and inspectable, but the Router never emits a non-empty embedding catalog or executes
   // backfill while blocked. **Not retryable** until the fencing slice activates dispatch.
   VectorDispatchActivationBlocked : VectorActivationBlockReason;
+  // The requested deployment is not bound in the Provision canister.
+  UnknownDeployment : text;
   NotFound : text;
+  // Candid encoding/decoding failed for a Router -> Provision call.
+  ProvisionEncodingFailed : text;
+  // A Router -> Provision cross-canister call failed at the IC transport layer.
+  ProvisionCallFailed : text;
   GraphUnavailable;
   NotAuthorized;
+  // The Provision canister rejected the envelope with a structured ingress error.
+  ProvisionRejected : text;
   // GQL program kind (read vs write) does not match the canister entrypoint (query vs update).
   ExecutionPathMismatch : record {
     remedy : text;
@@ -107,6 +119,12 @@ type RouterError = variant {
     current : nat64;
     watermark : text;
   };
+  // A provisioning request is in a state that does not allow the requested operation.
+  // Distinct from `InvalidArgument`: the request is well-formed but the target record is not
+  // in the expected lifecycle phase.
+  InvalidState : text;
+  // The Provision canister rejected the envelope because of a conflict.
+  ProvisionConflict : text;
   // A uniqueness constraint would be violated (ADR 0030). **Not retryable**: the value is already
   // committed, or the same mutation claims one value twice. Resubmitting is rejected identically.
   UniquenessViolation : text;
@@ -142,7 +160,7 @@ type VectorActivationBlockReason = variant {
   ShardsNotVectorAttached;
   // No delete-spanning monotonic incarnation/epoch fence exists yet, so the canonical-wins
   // repair reconcile can still lose to a "reverse-orphan" re-insert race. Dispatch stays off.
-  //
+  // 
   // Retained for wire stability; superseded in Slice 4, where the fence is implemented
   // (graph-owned `embedding_incarnation`) and dispatch is gated by the two reasons below.
   MissingEmbeddingIncarnationFence;
@@ -153,3 +171,4 @@ service : (GatewayInitArgs) -> {
       Result,
     ) composite_query;
 }
+
