@@ -1,7 +1,7 @@
 # 0036. Versioned WASM artifact catalog
 
 Date: 2026-07-04
-Status: partially implemented
+Status: implemented
 Last revised: 2026-07-08
 Anchor timestamp: 2026-07-08 15:19:47 UTC +0000
 
@@ -72,13 +72,13 @@ reference alone.
 
 ## Ownership and invariants
 
-| Invariant | Enforcer |
-|---|---|
-| Published artifact identity and release membership are immutable. | Provision catalog write API |
-| Exactly one compatible release set is active for new jobs. | Atomic `active_release_id` update |
-| Activation references only fully verified local artifacts. | Release activation validator |
-| An issuance job uses the release and hashes captured at acceptance. | Provision job/receipt store |
-| Provision cannot self-upgrade through normal issuance. | Catalog kind validation and bootstrap boundary |
+| Invariant                                                           | Enforcer                                       |
+| ------------------------------------------------------------------- | ---------------------------------------------- |
+| Published artifact identity and release membership are immutable.   | Provision catalog write API                    |
+| Exactly one compatible release set is active for new jobs.          | Atomic `active_release_id` update              |
+| Activation references only fully verified local artifacts.          | Release activation validator                   |
+| An issuance job uses the release and hashes captured at acceptance. | Provision job/receipt store                    |
+| Provision cannot self-upgrade through normal issuance.              | Catalog kind validation and bootstrap boundary |
 
 ## Alternatives
 
