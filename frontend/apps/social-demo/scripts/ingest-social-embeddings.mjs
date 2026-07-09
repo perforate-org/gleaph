@@ -9,13 +9,79 @@ const GRAPH_NAME = process.env.GLEAPH_DEMO_GRAPH_NAME || "gleaph.pocket_ic";
 const ROUTER_CANISTER = process.env.GLEAPH_DEMO_ROUTER_CANISTER || "gleaph-router";
 const EMBEDDING_NAME = process.env.GLEAPH_DEMO_EMBEDDING_NAME || "post_vec";
 
-function icp(args) {
-  return execFileSync("icp", args, {
+function injectIdentity(args, identityName) {
+  // For `icp <SUB> <ACTION> [SUB FLAGS] <CANISTER> [METHOD] [ARGS]`,
+  // the subcommand + action are the first two non-flag tokens. Sub-flags
+  // (e.g. `--json`, `-e local`, `--query`) come after them, and then the
+  // positional <CANISTER> argument.  icp's clap parser accepts `--identity
+  // <name>` only as a "Common Parameter", which means it must appear after
+  // <SUB> <ACTION> and before the positional <CANISTER>.
+  const out = [];
+  let stage = "pre-sub"; // pre-sub | sub | action | post-action
+  let inserted = false;
+  for (let i = 0; i < args.length; i++) {
+    const a = args[i];
+    if (a === "-e" || a === "--environment") {
+      out.push(a, args[i + 1]);
+      i++;
+      if (stage === "action" || stage === "sub") stage = "post-action";
+      continue;
+    }
+    if (a.startsWith("-")) {
+      out.push(a);
+      continue;
+    }
+    if (stage === "pre-sub") {
+      stage = "sub";
+    } else if (stage === "sub") {
+      stage = "action";
+    } else {
+      if (!inserted) {
+        out.push("--identity", identityName);
+        inserted = true;
+        stage = "post-action";
+      }
+    }
+    out.push(a);
+  }
+  if (!inserted) {
+    out.push("--identity", identityName);
+  }
+  return out;
+}
+
+// Call `icp canister call ...` and return the raw response as a Uint8Array
+// (Candid bytes).  icp-cli >=1.0 with `--output candid` prints the response
+// as a hex blob on stdout; we convert that back into bytes and let callers
+// IDL.decode it.
+function icpRaw(args) {
+  const identityName = process.env.ICP_IDENTITY_NAME;
+  let finalArgs = args;
+  if (identityName) {
+    finalArgs = injectIdentity(finalArgs, identityName);
+  }
+  if (!finalArgs.includes("--output") && !finalArgs.includes("-o")) {
+    finalArgs = [...finalArgs, "--output", "hex"];
+  }
+  const out = execFileSync("icp", finalArgs, {
     encoding: "utf8",
     stdio: ["pipe", "pipe", "inherit"],
     env: process.env,
   }).trim();
+  if (!out) {
+    throw new Error(`icp returned empty output for args: ${JSON.stringify(finalArgs)}`);
+  }
+  return Uint8Array.from(Buffer.from(out, "hex"));
 }
+
+// Convenience: call `icp canister call ...` and IDL.decode the response as
+// a single type.
+function icp(args, expectedType) {
+  const bytes = icpRaw(args);
+  const [decoded] = IDL.decode([expectedType], bytes);
+  return decoded;
+}
+
 
 function buildWireResultType() {
   const IcWirePathElement = IDL.Variant({
@@ -90,23 +156,30 @@ function extractBytes(row, column) {
 function resolveElementId(demoId) {
   const query = `MATCH (p:Post {demo_id: '${demoId}'}) RETURN ELEMENT_ID(p) AS element_id`;
   const argsText = `("${query}", vec {})`;
-  const output = icp([
-    "canister",
-    "call",
-    "--json",
-    "-e",
-    "local",
-    ROUTER_CANISTER,
-    "gql_query",
-    argsText,
-    "--query",
-  ]);
-  const parsed = JSON.parse(output);
-  const ok = parsed.Ok;
-  if (!ok) {
-    throw new Error(`gql_query failed for ${demoId}: ${JSON.stringify(parsed)}`);
-  }
-  const rowsBlob = ok.rows_blob;
+  const QueryGqlResult = IDL.Variant({
+    Ok: IDL.Record({
+      rows_blob: IDL.Opt(IDL.Vec(IDL.Nat8)),
+      token: IDL.Opt(IDL.Text),
+      row_count: IDL.Nat64,
+      phase: IDL.Opt(IDL.Text),
+    }),
+    Err: IDL.Record({ code: IDL.Text, message: IDL.Text }),
+  });
+  const ok = icp(
+    [
+      "canister",
+      "call",
+      "-e",
+      "local",
+      ROUTER_CANISTER,
+      "gql_query",
+      argsText,
+      "--query",
+    ],
+    QueryGqlResult,
+  );
+  if ("Err" in ok) { throw new Error(`gql_query failed for ${demoId}: ${JSON.stringify(ok.Err)}`); }
+  const rowsBlob = ok.Ok.rows_blob;
   if (!rowsBlob) {
     throw new Error(`No rows_blob for ${demoId}`);
   }
@@ -146,20 +219,31 @@ function ingestEmbedding(demoId, meta) {
       values = vec { ${values} };
     }
   )`;
-  const output = icp([
-    "canister",
-    "call",
-    "--json",
-    "-e",
-    "local",
-    ROUTER_CANISTER,
-    "admin_ingest_vertex_embedding",
-    argsText,
-  ]);
-  const parsed = JSON.parse(output);
-  if (!parsed.Ok) {
-    const errText = JSON.stringify(parsed);
-    if (errText.includes("Conflict") || errText.includes("already exists")) {
+  const IngestResult = IDL.Variant({
+    Ok: IDL.Null,
+    Err: IDL.Variant({
+      NotAuthorized: IDL.Null,
+      UnknownGraph: IDL.Text,
+      UnknownIndex: IDL.Text,
+      AlreadyExists: IDL.Null,
+      Invalid: IDL.Text,
+    }),
+  });
+  const parsed = icp(
+    [
+      "canister",
+      "call",
+      "-e",
+      "local",
+      ROUTER_CANISTER,
+      "admin_ingest_vertex_embedding",
+      argsText,
+    ],
+    IngestResult,
+  );
+  if ("Err" in parsed) {
+    const errText = JSON.stringify(parsed.Err);
+    if (errText.includes("AlreadyExists") || errText.includes("already exists")) {
       throw new Error(`already ingested ${demoId}: ${errText}`);
     }
     throw new Error(`admin_ingest_vertex_embedding failed for ${demoId}: ${errText}`);

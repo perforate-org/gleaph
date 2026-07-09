@@ -26,7 +26,18 @@ for (const seed of seeds) {
   const candid = `(\"${seed.gql}\", vec {}, \"${seed.key}\")`;
   const result = spawnSync(
     "icp",
-    ["canister", "call", "-e", "local", canisterName, methodName, candid],
+    [
+      "canister",
+      "call",
+      "-e",
+      "local",
+      ...(process.env.ICP_IDENTITY_NAME
+        ? ["--identity", process.env.ICP_IDENTITY_NAME]
+        : []),
+      canisterName,
+      methodName,
+      candid,
+    ],
     {
       env: icpEnv(),
       encoding: "utf8",

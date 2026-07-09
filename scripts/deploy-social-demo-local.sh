@@ -79,7 +79,31 @@ icp_call_expect_ok() {
   shift 2
 
   local output
-  if ! output="$(icp_cmd canister call "$@" 2>&1)"; then
+  local call_args=("$@")
+  if [[ -n "${ICP_DEPLOYER_IDENTITY:-}" ]]; then
+    # Inject --identity immediately after the first positional <CANISTER> arg
+    # (icp canister call requires --identity to follow any leading options but
+    # precede the positional <CANISTER> argument).  We also need --environment to
+    # be present; if not provided as a leading flag, append it from the default
+    # local env so the call never errors out.
+    if [[ " ${call_args[*]:-} " != *" -e "* && " ${call_args[*]:-} " != *" --environment "* ]]; then
+      call_args=("-e" "local" "${call_args[@]}")
+    fi
+    local injected=()
+    local inserted=0
+    for arg in "${call_args[@]}"; do
+      if [[ $inserted -eq 0 && "$arg" != -* && "$arg" != "-e" && "$arg" != "local" ]]; then
+        injected+=("--identity" "$ICP_DEPLOYER_IDENTITY")
+        inserted=1
+      fi
+      injected+=("$arg")
+    done
+    if [[ $inserted -eq 0 ]]; then
+      injected+=("--identity" "$ICP_DEPLOYER_IDENTITY")
+    fi
+    call_args=("${injected[@]}")
+  fi
+  if ! output="$(icp_cmd canister call "${call_args[@]}" 2>&1)"; then
     printf '%s\n' "$output"
     log "$description failed"
     exit 1
@@ -103,8 +127,17 @@ seed_social_graph() {
     "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json"
 
   log "Seeding social graph through Router GQL"
-  node "$ROOT/frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs" \
-    "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json"
+  env \
+    HOME="$ICP_CLI_HOME" \
+    COREPACK_HOME="$ICP_COREPACK_HOME" \
+    XDG_CACHE_HOME="$ICP_XDG_CACHE_HOME" \
+    XDG_DATA_HOME="$ICP_XDG_DATA_HOME" \
+    RUSTUP_HOME="$RUSTUP_HOME" \
+    CARGO_HOME="$CARGO_HOME" \
+    DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
+    ICP_IDENTITY_NAME="$deployer_id" \
+    node "$ROOT/frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs" \
+      "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json"
 }
 
 setup_vector_index() {
@@ -124,20 +157,32 @@ setup_vector_index() {
 }
 
 ingest_social_embeddings() {
+  if [[ "${GLEAPH_DEMO_SKIP_EMBEDDINGS:-0}" == "1" ]]; then
+    log "Skipping Post embeddings ingest (GLEAPH_DEMO_SKIP_EMBEDDINGS=1)"
+    return
+  fi
   log "Ingesting Post embeddings through Router"
-  env \
-    HOME="$ICP_CLI_HOME" \
-    COREPACK_HOME="$ICP_COREPACK_HOME" \
-    XDG_CACHE_HOME="$ICP_XDG_CACHE_HOME" \
-    XDG_DATA_HOME="$ICP_XDG_DATA_HOME" \
-    RUSTUP_HOME="$RUSTUP_HOME" \
-    CARGO_HOME="$CARGO_HOME" \
-    GLEAPH_DEMO_GRAPH_NAME="$GRAPH_NAME" \
-    GLEAPH_DEMO_ROUTER_CANISTER=gleaph-router \
-    GLEAPH_DEMO_EMBEDDING_NAME="$EMBEDDING_NAME" \
-    DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
-    node "$ROOT/frontend/apps/social-demo/scripts/ingest-social-embeddings.mjs" \
-      "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json"
+  if env \
+      HOME="$ICP_CLI_HOME" \
+      COREPACK_HOME="$ICP_COREPACK_HOME" \
+      XDG_CACHE_HOME="$ICP_XDG_CACHE_HOME" \
+      XDG_DATA_HOME="$ICP_XDG_DATA_HOME" \
+      RUSTUP_HOME="$RUSTUP_HOME" \
+      CARGO_HOME="$CARGO_HOME" \
+      GLEAPH_DEMO_GRAPH_NAME="$GRAPH_NAME" \
+      GLEAPH_DEMO_ROUTER_CANISTER=gleaph-router \
+      GLEAPH_DEMO_EMBEDDING_NAME="$EMBEDDING_NAME" \
+      ICP_IDENTITY_NAME="$deployer_id" \
+      DO_NOT_TRACK="${DO_NOT_TRACK:-1}" \
+      node "$ROOT/frontend/apps/social-demo/scripts/ingest-social-embeddings.mjs" \
+        "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json"
+  then
+    log "Embeddings ingest complete"
+  else
+    local rc=$?
+    log "WARN: embeddings ingest failed (rc=$rc); continuing without embeddings."
+    log "      Set GLEAPH_DEMO_SKIP_EMBEDDINGS=1 to silence this warning."
+  fi
 }
 
 register_social_prepared_queries() {
@@ -176,7 +221,27 @@ main() {
 
   local admin
   log "Resolving local deploy principal"
-  admin="$(icp_cmd identity principal)"
+  local deployer_id="gleaph-demo-deployer"
+  if ! icp_cmd identity list -q 2>/dev/null | grep -qx "$deployer_id"; then
+    log "Creating local deployer identity '$deployer_id' in sandbox (plaintext PEM storage)"
+    icp_cmd identity new --storage plaintext "$deployer_id" >/dev/null
+  fi
+  admin="$(icp_cmd identity principal --identity "$deployer_id" | head -n 1)"
+  admin="${admin//[$'\r\n ']/}"
+  if [[ -z "$admin" || "$admin" == "2vxsx-fae" ]]; then
+    log "ERROR: deployer identity '$deployer_id' resolved to an empty/anonymous principal"
+    exit 1
+  fi
+  if ! [[ "$admin" =~ ^[a-z0-9]{1,5}(-[a-z0-9]{1,5})+$ ]]; then
+    log "ERROR: deployer principal does not look like a valid Principal textual form: '$admin'"
+    exit 1
+  fi
+  log "Using deployer identity '$deployer_id' (principal: $admin)"
+
+  # Subsequent admin / prepared / execute / register calls must be signed by the
+  # same identity that was registered as the issuing principal, otherwise Router
+  # rejects them as NotAuthorized.
+  ICP_DEPLOYER_IDENTITY="$deployer_id"
 
   log "Building all canisters"
   icp_cmd build
