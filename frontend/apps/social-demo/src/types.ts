@@ -1,19 +1,19 @@
 import type { ScenarioDefinition } from "~/data/scenarios";
 
 export type FeedRow =
-  | { kind: "post"; postId: string; createdAt: bigint }
+  | { kind: "post"; postId: bigint; createdAt: bigint }
   | {
       kind: "topicPath";
-      postId: string;
+      postId: bigint;
       followsEdgeId: string;
       postedEdgeId: string;
       topicEdgeId: string;
-      topicId: string;
+      topicId: bigint;
       createdAt: bigint;
     }
   | {
       kind: "semanticPost";
-      postId: string;
+      postId: bigint;
       distance: number;
     };
 

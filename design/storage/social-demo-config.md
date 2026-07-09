@@ -33,6 +33,24 @@ config/
 └── scenarios/<id>.yaml
 ```
 
+## demo_id representation
+
+The per-file YAML keys (`alice`, `post-alice-1`, `community-ic`, `topic-graph`) remain
+human-readable text. At build time, `build-config.mjs` assigns a deterministic global
+numeric `demo_id` to every entity (stored as an Int64 in the graph, decoded as
+`bigint` on the Candid wire):
+
+- Users: `1..5` (sorted by directory name)
+- Communities: `6` (sorted by file stem)
+- Topics: `7..8` (sorted by file stem)
+- Posts: `9..15` (sorted by user directory, then post file stem)
+
+The emitted seed GQL strings use plain integer literals `demo_id: <N>` (no `: u64`
+cast — the graph mutation property-expression evaluator does not support
+`ExprKind::Cast`). The id-to-string mapping is emitted as `DEMO_ID_MAP` in
+`scenarios.generated.ts` so the React app can convert textual keys to numeric
+values when needed.
+
 ## YAML schemas
 
 ### `users/<user>/profile.yaml`
@@ -54,6 +72,9 @@ config/
 | `created_at` | nat64 (optional) | Defaults to a deterministic value derived from the file path. |
 | `is_public` | bool (optional) | Defaults to `true`; stored as `1`/`0` in the graph. |
 | `topics` | list of topic ids | Generates `HAS_TOPIC` edges. |
+
+The post YAML does not declare `demo_id` directly; `build-config.mjs` derives the
+numeric `demo_id` from the global allocator above.
 | `embedding` | object | `name`, `dims`, `metric`, `values`; required for deterministic seed equality. |
 
 ### `topics/<id>.yaml` and `communities/<id>.yaml`
@@ -122,6 +143,6 @@ Post nodes are ordered by `created_at` descending (ties broken by
 
 ## Out of scope
 
-This slice intentionally does not migrate `demo_id` to `u64`, persist `body` in
+This slice intentionally does not migrate `demo_id` from text to numeric, persist `body` in
 the graph, move the canister-side semantic query vector into YAML, or store
 edges as individual files. Those changes are tracked as follow-up plans.

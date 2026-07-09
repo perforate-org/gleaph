@@ -124,3 +124,10 @@ query scenarios) is now authored as per-file YAML under
 `frontend/apps/social-demo/scripts/build-config.mjs`. This is a configuration
 surface change, not a WASM artifact-catalog schema change, and is documented in
 detail in [`design/storage/social-demo-config.md`](../storage/social-demo-config.md).
+
+Per Plan 0063, social-demo `demo_id` values are now emitted as numeric
+(int64 storage, bigint on the wire) literals in the generated GQL seed and
+prepared-query strings. The per-file YAML keys remain text (alice,
+post-alice-1, community-ic, topic-graph); only the emitted GQL layer uses
+plain integer literals `demo_id: <N>` (no `: u64` cast). This is a
+literal-format migration, not a change to the artifact-catalog schema.

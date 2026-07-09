@@ -1,3 +1,4 @@
+import { displayPostId } from "~/data/scenarios";
 import type { FeedItemProps } from "~/types";
 
 export function FeedItem(props: FeedItemProps) {
@@ -11,7 +12,7 @@ export function FeedItem(props: FeedItemProps) {
         </div>
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
-            <span class="font-semibold text-slate-900">{row.postId}</span>
+            <span class="font-semibold text-slate-900">{displayPostId(row.postId)}</span>
             {row.kind === "post" && (
               <span class="text-sm text-slate-500">· {formatDate(row.createdAt)}</span>
             )}
@@ -55,13 +56,13 @@ export function FeedItem(props: FeedItemProps) {
                   <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">
                     {row.postedEdgeId}
                   </code>{" "}
-                  on <span class="font-medium">{row.postId}</span>
+                  on <span class="font-medium">{displayPostId(row.postId)}</span>
                 </li>
                 <li>
                   Post-topic edge{" "}
                   <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">
                     {row.topicEdgeId}</code>{" "}
-                  to topic <span class="font-medium">{row.topicId}</span>
+                  to topic <span class="font-medium">{displayPostId(row.topicId)}</span>
                 </li>
               </ul>
               <p class="mt-2 text-xs text-slate-500">

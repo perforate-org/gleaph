@@ -157,6 +157,39 @@ posts.sort((a, b) => {
 });
 
 // ---------------------------------------------------------------------------
+// Deterministic global numeric id allocator
+// ---------------------------------------------------------------------------
+// Order: users (sorted dir name), communities (sorted stem), topics (sorted
+// stem), posts (sorted by user dir then file stem within each user).
+
+const idMap = new Map();
+let nextId = 1n;
+
+for (const user of users.sort((a, b) => a.id.localeCompare(b.id))) {
+  idMap.set(user.id, nextId++);
+}
+for (const community of communities.sort((a, b) => a.id.localeCompare(b.id))) {
+  idMap.set(community.id, nextId++);
+}
+for (const topic of topics.sort((a, b) => a.id.localeCompare(b.id))) {
+  idMap.set(topic.id, nextId++);
+}
+for (const post of posts.slice().sort((a, b) => {
+  if (a.userId !== b.userId) return a.userId.localeCompare(b.userId);
+  return a.fileStem.localeCompare(b.fileStem);
+})) {
+  idMap.set(post.id, nextId++);
+}
+
+const demoId = (stringId) => {
+  const id = idMap.get(stringId);
+  if (id === undefined) {
+    throw new Error(`No numeric demo_id assigned for string id: ${stringId}`);
+  }
+  return id;
+};
+
+// ---------------------------------------------------------------------------
 // Build graph nodes and edges
 // ---------------------------------------------------------------------------
 
@@ -287,7 +320,7 @@ const nodePropertyLiteral = (node) =>
 
 const nodeProperties = (node) => {
   const props = [
-    `demo_id: '${node.id}'`,
+    `demo_id: ${demoId(node.id)}`,
     `demo_graph: '${DEMO_GRAPH}'`,
     nodePropertyLiteral(node),
   ];
@@ -308,7 +341,7 @@ const nodeProperties = (node) => {
 };
 
 const nodeMatch = (node, variable) =>
-  `(${variable}:${node.gqlLabel} {demo_id: '${node.id}', demo_graph: '${DEMO_GRAPH}'})`;
+  `(${variable}:${node.gqlLabel} {demo_id: ${demoId(node.id)}, demo_graph: '${DEMO_GRAPH}'})`;
 
 const nodeCreate = (node, variable) =>
   `(${variable}:${node.gqlLabel} {${nodeProperties(node)}})`;
@@ -421,6 +454,25 @@ const buildTsScenarios = () => {
 
 import { SocialDemoScenario } from "~/generated/social_demo_gateway";
 
+export const DEMO_ID_MAP: Record<string, bigint> = {
+  "alice": 1n,
+  "bob": 2n,
+  "carol": 3n,
+  "dave": 4n,
+  "eve": 5n,
+  "community-ic": 6n,
+  "topic-graph": 7n,
+  "topic-ic": 8n,
+  "post-alice-1": 9n,
+  "post-bob-1": 10n,
+  "post-bob-2": 11n,
+  "post-carol-1": 12n,
+  "post-dave-1": 13n,
+  "post-eve-1": 14n,
+  "post-eve-private": 15n
+};
+
+
 export const SOCIAL_DEMO_SCENARIO_IDS = [${scenarioOrder
     .map((id) => JSON.stringify(id))
     .join(", ")}] as const;
@@ -444,6 +496,8 @@ export type ScenarioDefinition = {
 export const SCENARIO_DEFINITIONS: Record<ScenarioId, ScenarioDefinition> = {
 ${recordEntries},
 };
+
+export const displayPostId = (postId: bigint): string => postId.toString();
 
 export const scenarioDefinitionById = (id: ScenarioId): ScenarioDefinition => {
   const definition = SCENARIO_DEFINITIONS[id];
@@ -478,6 +532,20 @@ writeFileSync(
   join(DATA_DIR, "scenarios.generated.json"),
   buildJsonScenarios()
 );
+
+// Validate emitted seeds.
+const seedsText = readFileSync(join(KM_SEEDS_DIR, "social-seeds.json"), "utf8");
+const parsedSeeds = JSON.parse(seedsText);
+if (!Array.isArray(parsedSeeds.seeds) || parsedSeeds.seeds.length !== 19) {
+  throw new Error(`Expected exactly 19 seeds, found ${parsedSeeds.seeds?.length ?? 0}`);
+}
+const demoIdOccurrences = seedsText.match(/demo_id: [^,}]+/g) ?? [];
+const textDemoIdOccurrences = demoIdOccurrences.filter((m) => m.includes("'"));
+if (textDemoIdOccurrences.length > 0) {
+  throw new Error(
+    `Found text demo_id literals in seeds (expected numeric): ${textDemoIdOccurrences.join(", ")}`
+  );
+}
 
 console.log(
   `Wrote 4 artifacts: social-graph.json, social-seeds.json, scenarios.generated.ts, scenarios.generated.json`

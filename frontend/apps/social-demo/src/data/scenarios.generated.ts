@@ -3,6 +3,25 @@
 
 import { SocialDemoScenario } from "~/generated/social_demo_gateway";
 
+export const DEMO_ID_MAP: Record<string, bigint> = {
+  "alice": 1n,
+  "bob": 2n,
+  "carol": 3n,
+  "dave": 4n,
+  "eve": 5n,
+  "community-ic": 6n,
+  "topic-graph": 7n,
+  "topic-ic": 8n,
+  "post-alice-1": 9n,
+  "post-bob-1": 10n,
+  "post-bob-2": 11n,
+  "post-carol-1": 12n,
+  "post-dave-1": 13n,
+  "post-eve-1": 14n,
+  "post-eve-private": 15n
+};
+
+
 export const SOCIAL_DEMO_SCENARIO_IDS = ["PublicTimeline", "AliceHomeFeed", "TopicPath", "SemanticDiscovery", "AliceSemanticFeed"] as const;
 
 export type ScenarioId = (typeof SOCIAL_DEMO_SCENARIO_IDS)[number];
@@ -44,7 +63,7 @@ export const SCENARIO_DEFINITIONS: Record<ScenarioId, ScenarioDefinition> = {
     explanationTitle: "Graph traversal",
     rdbSummary: "An RDB needs a follows join table and a two-hop join (follower → followee → posts). The query is still SQL-shaped, but the relationship is now a traversal, not a foreign-key lookup.",
     graphSummary: "Gleaph walks Alice → FOLLOWS → author → POSTED → Post as one bounded graph pattern. The feed is the natural result of the relationship shape, not an application-side assembly.",
-    preparedQuery: "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 'alice' AND p.is_public = 1 RETURN p.demo_id AS post_id, p.created_at AS created_at ORDER BY created_at DESC",
+    preparedQuery: "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = 1 RETURN p.demo_id AS post_id, p.created_at AS created_at ORDER BY created_at DESC",
     semanticVector: null,
     scenario: SocialDemoScenario.AliceHomeFeed,
   },
@@ -57,7 +76,7 @@ export const SCENARIO_DEFINITIONS: Record<ScenarioId, ScenarioDefinition> = {
     explanationTitle: "Explainable recommendation",
     rdbSummary: "Proving why a post was recommended requires re-running and documenting the joins: follow, post, topic. The answer is scattered across tables.",
     graphSummary: "Gleaph returns the same result plus the edge identities that caused it: alice-follows-bob, bob-posted-1, post-bob-1-topic-graph. The path is part of the query result.",
-    preparedQuery: "MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE t.demo_id = 'topic-graph' MATCH (u:User)-[follows:FOLLOWS]->(author:User)-[posted:POSTED]->(p) WHERE u.demo_id = 'alice' RETURN p.demo_id AS post_id, follows.demo_edge_id AS follows_edge_id, posted.demo_edge_id AS posted_edge_id, t.demo_id AS topic_id, has_topic.demo_edge_id AS topic_edge_id, p.created_at AS created_at ORDER BY created_at DESC",
+    preparedQuery: "MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE t.demo_id = 7 MATCH (u:User)-[follows:FOLLOWS]->(author:User)-[posted:POSTED]->(p) WHERE u.demo_id = 1 RETURN p.demo_id AS post_id, follows.demo_edge_id AS follows_edge_id, posted.demo_edge_id AS posted_edge_id, t.demo_id AS topic_id, has_topic.demo_edge_id AS topic_edge_id, p.created_at AS created_at ORDER BY created_at DESC",
     semanticVector: null,
     scenario: SocialDemoScenario.TopicPath,
   },
@@ -83,11 +102,13 @@ export const SCENARIO_DEFINITIONS: Record<ScenarioId, ScenarioDefinition> = {
     explanationTitle: "Hybrid retrieval",
     rdbSummary: "Combining vector similarity with a relational filter requires joining the vector result set back to followee authorship, usually in application code.",
     graphSummary: "Gleaph applies the same vector SEARCH inside the graph pattern `Alice → FOLLOWS → author → POSTED → Post`. `post-dave-1` is excluded despite being nearer because Dave is not a followee; only Bob and Carol's posts are returned, in semantic order.",
-    preparedQuery: "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 'alice' AND p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, distance ORDER BY distance ASC",
+    preparedQuery: "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, distance ORDER BY distance ASC",
     semanticVector: [8,0,0,0,0,0,0,0],
     scenario: SocialDemoScenario.AliceSemanticFeed,
   },
 };
+
+export const displayPostId = (postId: bigint): string => postId.toString();
 
 export const scenarioDefinitionById = (id: ScenarioId): ScenarioDefinition => {
   const definition = SCENARIO_DEFINITIONS[id];

@@ -130,3 +130,22 @@ export const expectDateTimeSeconds = (
   }
   throw new Error(`Missing or unsupported date column: ${column}`);
 };
+
+export const expectInt64 = (map: Map<string, WireValue>, column: string): bigint => {
+  const value = map.get(column);
+  if (value && "Int64" in value) {
+    return value.Int64;
+  }
+  throw new Error(`Missing or non-int64 column: ${column}`);
+};
+
+export const expectNat64 = (map: Map<string, WireValue>, column: string): bigint => {
+  const value = map.get(column);
+  if (value && "Uint64" in value) {
+    return value.Uint64;
+  }
+  if (value && "Int64" in value) {
+    return value.Int64;
+  }
+  throw new Error(`Missing or non-nat64 column: ${column}`);
+};

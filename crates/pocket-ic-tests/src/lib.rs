@@ -2359,17 +2359,32 @@ pub fn admin_fully_activate_social_vector_index(
         .expect("router attaches shard");
 }
 
+/// Map a canonical social Post text key (e.g. `post-alice-1`) to its deterministic
+/// numeric `demo_id` assigned by `frontend/apps/social-demo/scripts/build-config.mjs`.
+fn social_post_demo_id_to_numeric(demo_id: &str) -> i64 {
+    match demo_id {
+        "post-alice-1" => 9,
+        "post-bob-1" => 10,
+        "post-bob-2" => 11,
+        "post-carol-1" => 12,
+        "post-dave-1" => 13,
+        "post-eve-1" => 14,
+        "post-eve-private" => 15,
+        other => panic!("unknown social post demo_id: {other}"),
+    }
+}
+
 /// Resolve the opaque encoded `ELEMENT_ID` for one seeded Post by its `demo_id`.
 pub fn resolve_social_post_element_id(env: &FederationEnv, demo_id: &str) -> Vec<u8> {
+    let numeric_id = social_post_demo_id_to_numeric(demo_id);
     let query = format!(
-        "MATCH (p:Post {{demo_id: '{}'}}) RETURN ELEMENT_ID(p) AS element_id",
-        demo_id.replace('\\', "\\\\").replace('\'', "''")
+        "MATCH (p:Post {{demo_id: {}}}) RETURN ELEMENT_ID(p) AS element_id",
+        numeric_id
     );
     let result =
         gql_query_with_params_on_router(&env.pic, env.admin, env.router, &query, Vec::new());
     element_id_bytes_from_gql_result(&result, "element_id")
 }
-
 /// Encode a deterministic `f32` embedding vector into little-endian bytes.
 pub fn encode_f32_embedding(values: &[f32]) -> Vec<u8> {
     values

@@ -9,6 +9,7 @@ import {
   decodeWireRows,
   expectDateTimeSeconds,
   expectFloat64,
+  expectInt64,
   expectText,
   rowToColumnMap,
 } from "~/api/rowDecoder";
@@ -37,7 +38,7 @@ const decodeFeedResult = (
   const wire = decodeWireRows(rowsBlob);
   const rows: FeedRow[] = wire.rows.map((row) => {
     const map = rowToColumnMap(row);
-    const postId = expectText(map, "post_id");
+    const postId = expectInt64(map, "post_id");
 
     if (definition.id === "TopicPath") {
       return {
@@ -47,7 +48,7 @@ const decodeFeedResult = (
         followsEdgeId: expectText(map, "follows_edge_id"),
         postedEdgeId: expectText(map, "posted_edge_id"),
         topicEdgeId: expectText(map, "topic_edge_id"),
-        topicId: expectText(map, "topic_id"),
+        topicId: expectInt64(map, "topic_id"),
       };
     }
 
