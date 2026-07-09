@@ -1151,6 +1151,15 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             "StableCell<Option<ReleaseId>>: atomic active-release selection (non-retroactive)",
             RebuildPath::None,
         ),
+        // ADR 0036 Slice 8c: artifact audit log (MemoryId 11).
+        region(
+            "PROVISION_ARTIFACT_AUDIT_LOG",
+            11,
+            StableMemoryClass::Telemetry,
+            "provisioning",
+            "(Principal, u64) -> ArtifactAuditEntry: append-oriented audit trail of artifact/release operations",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1679,8 +1688,8 @@ mod tests {
     #[test]
     fn provision_layout_registry_matches_baseline() {
         assert_layout(&PROVISION_STABLE_LAYOUT);
-        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 11);
-        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(10));
+        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 12);
+        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(11));
         assert_eq!(
             PROVISION_STABLE_LAYOUT.regions[2].class,
             StableMemoryClass::Derived

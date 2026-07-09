@@ -6,16 +6,18 @@
 
 use crate::canister::{
     ArtifactUpload, ProvisionIngressResult, ProvisionJobView, RouterAckResult,
-    accept_envelope_with_caller, admin_install_deployment_binding_with_caller, artifact_get_status,
-    artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
-    query_job_with_caller, release_activate_with_caller, release_get_active,
-    release_publish_with_caller, router_ack_with_caller,
+    accept_envelope_with_caller, admin_install_deployment_binding_with_caller,
+    artifact_audit_history_with_caller, artifact_get_status, artifact_publish_metadata_with_caller,
+    artifact_upload_chunk_with_caller, query_job_with_caller, release_activate_with_caller,
+    release_get_active, release_install_with_caller, release_publish_with_caller,
+    router_ack_with_caller,
 };
 use crate::stable::store::{DeploymentTrustStore, ProvisionJobStore};
 use crate::types::{
-    AdminInstallDeploymentBindingArgs, ArtifactError, ArtifactId, ArtifactMetadata,
-    ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, ProvisionRequest, ReleaseActivateArgs,
-    ReleaseActivateResult, ReleaseError, ReleaseManifest, ReleasePublishArgs, RouterProvisionAck,
+    AdminInstallDeploymentBindingArgs, ArtifactAuditEntry, ArtifactError, ArtifactId,
+    ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, InstallError,
+    ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseInstallArgs,
+    ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs, RouterProvisionAck,
 };
 
 /// Bootstrap the deployment trust store from init args.
@@ -110,4 +112,20 @@ pub fn release_activate_handler(
 /// Return the currently active release, if any. Any caller.
 pub fn release_get_active_handler() -> Option<ReleaseActivateResult> {
     release_get_active()
+}
+
+/// Authorize `artifact_audit_history` from the IC runtime and forward to the handler.
+#[allow(clippy::result_large_err)]
+pub fn artifact_audit_history_handler() -> Result<Vec<ArtifactAuditEntry>, ArtifactError> {
+    let caller = ic_cdk::api::msg_caller();
+    artifact_audit_history_with_caller(caller)
+}
+
+/// Authorize `release_install` from the IC runtime and forward to the handler.
+#[allow(clippy::result_large_err)]
+pub async fn release_install_handler(
+    args: ReleaseInstallArgs,
+) -> Result<ReleaseInstallResult, InstallError> {
+    let caller = ic_cdk::api::msg_caller();
+    release_install_with_caller(caller, args, crate::ic_time_ns()).await
 }

@@ -98,13 +98,15 @@ reassembly and version skew.
 
 ## Implementation status
 
-**Partially Implemented (2026-07-08).** Slice 8a adds three stable regions (MemoryId 6, 7, 8) for the
-**Partially Implemented (2026-07-08).** Slice 8a added three stable regions (MemoryId 6, 7, 8) for the
-artifact catalog, upload state, and verified canonical chunks. Slice 8b adds two stable regions
+**Partially Implemented (2026-07-09).** Slice 8a added three stable regions (MemoryId 6, 7, 8) for the
+artifact catalog, upload state, and verified canonical chunks. Slice 8b added two stable regions
 (MemoryId 9, 10) for the release manifest and active release pointer, plus the `release_publish`,
-`release_activate`, and `release_get_active` public ingress methods. Release install
-(`release_install` handler that calls `upload_chunk` + `install_chunked_code`) and the artifact
-audit log (region 11) are deferred to Slice 8c.
+`release_activate`, and `release_get_active` public ingress methods. Slice 8c (2026-07-09) adds
+one stable region (MemoryId 11) for the artifact audit log using append-oriented (Principal,
+sequence) keys (R5 strict), plus the `release_install` public ingress method that performs the
+bounded cross-canister `upload_chunk` + `install_chunked_code` path against the IC management
+canister, and 4 new PocketIC E2E scenarios. ADR 0036 is now Fully Implemented modulo external
+archive / HTTP outcall (still deferred to a future slice).
 
 ## Cross-links
 

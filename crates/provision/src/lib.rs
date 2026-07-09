@@ -16,10 +16,11 @@ mod candid;
 use crate::canister::{ProvisionIngressResult, ProvisionJobView, RouterAckResult, handlers};
 use crate::types::AdminInstallError;
 use crate::types::{
-    AdminInstallDeploymentBindingArgs, ArtifactError, ArtifactId, ArtifactMetadata,
-    ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry,
-    ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseManifest,
-    ReleasePublishArgs, RouterProvisionAck,
+    AdminInstallDeploymentBindingArgs, ArtifactAuditEntry, ArtifactError, ArtifactId,
+    ArtifactMetadata, ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs,
+    BootstrapAuthEntry, InstallError, ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult,
+    ReleaseError, ReleaseInstallArgs, ReleaseInstallResult, ReleaseManifest, ReleasePublishArgs,
+    RouterProvisionAck,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -89,6 +90,18 @@ fn release_activate(args: ReleaseActivateArgs) -> Result<ReleaseActivateResult, 
 #[query]
 fn release_get_active() -> Option<ReleaseActivateResult> {
     handlers::release_get_active_handler()
+}
+
+#[allow(clippy::result_large_err)]
+#[query]
+fn artifact_audit_history() -> Result<Vec<ArtifactAuditEntry>, ArtifactError> {
+    handlers::artifact_audit_history_handler()
+}
+
+#[allow(clippy::result_large_err)]
+#[update]
+async fn release_install(args: ReleaseInstallArgs) -> Result<ReleaseInstallResult, InstallError> {
+    handlers::release_install_handler(args).await
 }
 
 #[cfg(test)]

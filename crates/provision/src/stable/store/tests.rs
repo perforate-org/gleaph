@@ -9,7 +9,9 @@ use crate::stable::artifact::ProvisionArtifactStore;
 use crate::stable::memory::{
     StableActiveReleaseCell, StableReleaseManifestMap, init_active_release, init_release_manifest,
 };
+use crate::stable::memory::{StableArtifactAuditLogMap, init_artifact_audit_log};
 use crate::stable::release::ProvisionReleaseStore;
+use crate::types::{ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome};
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
     ArtifactUploadChunkArgs, ArtifactUploadState, CanisterKind, ReleaseActivateArgs, ReleaseError,
@@ -1455,4 +1457,192 @@ fn release_stable_layout_uses_separate_memory_ids() {
 
     assert_eq!(manifest_map.get(&r).unwrap().release_id, r);
     assert_eq!(active_cell.get().clone(), Some(r));
+}
+
+/// (a) artifact audit append assigns monotonic sequence per principal.
+#[test]
+fn artifact_audit_append_assigns_monotonic_sequence() {
+    super::reset_all_maps();
+    let store = ProvisionArtifactStore::new();
+    let p = test_principal(1);
+    for i in 0..3 {
+        store.append_audit_entry(ArtifactAuditEntry {
+            caller: p,
+            action: ArtifactAuditAction::PublishArtifact,
+            artifact_id: None,
+            release_id: None,
+            deployment_id: None,
+            target_canister: None,
+            timestamp_ns: 100 + i as u64,
+            outcome: ArtifactAuditOutcome::Success,
+            reason: None,
+        });
+    }
+    let history = store.audit_history(p);
+    assert_eq!(history.len(), 3);
+    assert_eq!(history[0].timestamp_ns, 100);
+    assert_eq!(history[1].timestamp_ns, 101);
+    assert_eq!(history[2].timestamp_ns, 102);
+}
+
+/// (b) artifact audit append uses independent per-principal counters.
+#[test]
+fn artifact_audit_append_uses_independent_per_principal_counter() {
+    super::reset_all_maps();
+    let store = ProvisionArtifactStore::new();
+    let a = test_principal(1);
+    let b = test_principal(2);
+    for p in [a, b] {
+        for i in 0..2 {
+            store.append_audit_entry(ArtifactAuditEntry {
+                caller: p,
+                action: ArtifactAuditAction::UploadChunk,
+                artifact_id: None,
+                release_id: None,
+                deployment_id: None,
+                target_canister: None,
+                timestamp_ns: 200 + i as u64,
+                outcome: ArtifactAuditOutcome::Success,
+                reason: None,
+            });
+        }
+    }
+    let history_a = store.audit_history(a);
+    let history_b = store.audit_history(b);
+    assert_eq!(history_a.len(), 2);
+    assert_eq!(history_b.len(), 2);
+    assert_eq!(history_a[0].timestamp_ns, 200);
+    assert_eq!(history_a[1].timestamp_ns, 201);
+    assert_eq!(history_b[0].timestamp_ns, 200);
+    assert_eq!(history_b[1].timestamp_ns, 201);
+}
+
+/// (c) artifact audit cap enforces LRU eviction by sequence (R5 strict).
+#[test]
+fn artifact_audit_cap_enforces_eviction() {
+    use crate::stable::artifact::ARTIFACT_AUDIT_LOG_PER_PRINCIPAL_CAP;
+    super::reset_all_maps();
+    let store = ProvisionArtifactStore::new();
+    let p = test_principal(3);
+    let cap = ARTIFACT_AUDIT_LOG_PER_PRINCIPAL_CAP;
+    for i in 0..=cap {
+        store.append_audit_entry(ArtifactAuditEntry {
+            caller: p,
+            action: ArtifactAuditAction::PublishRelease,
+            artifact_id: None,
+            release_id: Some(ReleaseId(format!("r-{}", i))),
+            deployment_id: None,
+            target_canister: None,
+            timestamp_ns: 300 + i as u64,
+            outcome: ArtifactAuditOutcome::Success,
+            reason: None,
+        });
+    }
+    let history = store.audit_history(p);
+    assert_eq!(history.len(), cap, "oldest entry must be evicted");
+    assert_eq!(history[0].release_id, Some(ReleaseId("r-1".to_owned())));
+    assert_eq!(
+        history[cap - 1].release_id,
+        Some(ReleaseId(format!("r-{}", cap)))
+    );
+}
+
+/// (d) artifact audit history returns bounded range in sequence order.
+#[test]
+fn artifact_audit_history_returns_bounded_range() {
+    super::reset_all_maps();
+    let store = ProvisionArtifactStore::new();
+    let p = test_principal(4);
+    for i in 0..10 {
+        store.append_audit_entry(ArtifactAuditEntry {
+            caller: p,
+            action: ArtifactAuditAction::VerifyArtifact,
+            artifact_id: None,
+            release_id: None,
+            deployment_id: None,
+            target_canister: None,
+            timestamp_ns: 400 + i as u64,
+            outcome: ArtifactAuditOutcome::Success,
+            reason: None,
+        });
+    }
+    let history = store.audit_history(p);
+    assert_eq!(history.len(), 10);
+    for (i, entry) in history.iter().enumerate() {
+        assert_eq!(entry.timestamp_ns, 400 + i as u64);
+    }
+}
+
+/// (i) artifact audit stable layout uses separate MemoryId 11 (R1 carryover).
+#[test]
+fn artifact_audit_stable_layout_uses_separate_memory_id() {
+    super::reset_all_maps();
+    let mut audit_map: StableArtifactAuditLogMap = init_artifact_audit_log();
+    let mut catalog_map = crate::stable::memory::init_artifact_catalog();
+
+    let p = test_principal(5);
+    let entry = ArtifactAuditEntry {
+        caller: p,
+        action: ArtifactAuditAction::InstallRelease,
+        artifact_id: None,
+        release_id: Some(ReleaseId("r-i".to_owned())),
+        deployment_id: None,
+        target_canister: None,
+        timestamp_ns: 500,
+        outcome: ArtifactAuditOutcome::Success,
+        reason: None,
+    };
+    audit_map.insert((p, 0), entry.clone());
+
+    let artifact_id = mk_artifact_id(CanisterKind::Router, "0.0.0", sha256(b"i"));
+    let metadata = ArtifactMetadata {
+        artifact_id: artifact_id.clone(),
+        byte_length: 1,
+        chunk_hashes: vec![sha256(b"i")],
+        created_at_ns: 501,
+    };
+    catalog_map.insert(artifact_id.clone(), metadata.clone());
+
+    assert_eq!(audit_map.get(&(p, 0)).unwrap(), entry);
+    assert_eq!(catalog_map.get(&artifact_id).unwrap(), metadata);
+}
+
+/// (j) Storable round-trip for artifact audit types (R10 carryover).
+#[test]
+fn artifact_audit_round_trip_stable_encoding() {
+    let entry = ArtifactAuditEntry {
+        caller: test_principal(7),
+        action: ArtifactAuditAction::ActivateRelease,
+        artifact_id: Some(mk_artifact_id(CanisterKind::Graph, "0.1.0", sha256(b"j"))),
+        release_id: Some(ReleaseId("r-j".to_owned())),
+        deployment_id: Some("dep-j".to_owned()),
+        target_canister: Some(test_principal(8)),
+        timestamp_ns: 600,
+        outcome: ArtifactAuditOutcome::Rejected,
+        reason: Some("round-trip reason".to_owned()),
+    };
+    let encoded = entry.to_bytes();
+    let decoded = ArtifactAuditEntry::from_bytes(encoded);
+    assert_eq!(decoded, entry);
+
+    for action in [
+        ArtifactAuditAction::PublishArtifact,
+        ArtifactAuditAction::UploadChunk,
+        ArtifactAuditAction::VerifyArtifact,
+        ArtifactAuditAction::PublishRelease,
+        ArtifactAuditAction::ActivateRelease,
+        ArtifactAuditAction::InstallRelease,
+    ] {
+        let encoded = action.to_bytes();
+        assert_eq!(ArtifactAuditAction::from_bytes(encoded), action);
+    }
+
+    for outcome in [
+        ArtifactAuditOutcome::Success,
+        ArtifactAuditOutcome::Rejected,
+        ArtifactAuditOutcome::Failed,
+    ] {
+        let encoded = outcome.to_bytes();
+        assert_eq!(ArtifactAuditOutcome::from_bytes(encoded), outcome);
+    }
 }

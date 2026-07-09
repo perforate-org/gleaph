@@ -529,7 +529,73 @@ pub struct ArtifactUploadChunkArgs {
     pub bytes: Vec<u8>,
 }
 
-// === Stable encodings for artifact catalog types ============================
+// === Artifact audit log + release install types (ADR 0036 Slice 8c) ==========
+
+/// One durable audit row in PROVISION_ARTIFACT_AUDIT_LOG (MemoryId 11).
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ArtifactAuditEntry {
+    pub caller: Principal,
+    pub action: ArtifactAuditAction,
+    pub artifact_id: Option<ArtifactId>,
+    pub release_id: Option<ReleaseId>,
+    pub deployment_id: Option<String>,
+    pub target_canister: Option<Principal>,
+    pub timestamp_ns: u64,
+    pub outcome: ArtifactAuditOutcome,
+    pub reason: Option<String>,
+}
+
+/// Action recorded for every artifact/release plan-level operation.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum ArtifactAuditAction {
+    PublishArtifact,
+    UploadChunk,
+    VerifyArtifact,
+    PublishRelease,
+    ActivateRelease,
+    InstallRelease,
+}
+
+/// Outcome of an audited operation.
+#[derive(CandidType, Serialize, Deserialize, Clone, Debug, PartialEq, Eq)]
+pub enum ArtifactAuditOutcome {
+    Success,
+    Rejected,
+    Failed,
+}
+
+/// Arguments for `release_install`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ReleaseInstallArgs {
+    pub target_canister_kind: CanisterKind,
+    pub target_canister_id: Option<Principal>,
+    pub install_args: Vec<u8>,
+    pub registry_version: u64,
+}
+
+/// Return value of `release_install`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ReleaseInstallResult {
+    pub release_id: ReleaseId,
+    pub target_canister_id: Principal,
+    pub installed_chunks: u32,
+    pub install_chunked_code_hash: [u8; 32],
+    pub installed_at_ns: u64,
+}
+
+/// Errors returned by `release_install`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum InstallError {
+    NoActiveRelease,
+    ArtifactNotFound(ArtifactId),
+    ArtifactNotVerified(ArtifactId),
+    TargetCanisterKindForbidden(CanisterKind),
+    ManagementCanisterCallFailed(String),
+    ChunkStoreNotReconciled,
+    Unauthorized,
+    NoBootstrapAuthority,
+}
+
 // === Release manifest + active release types (ADR 0036 Slice 8b) =============
 
 /// Opaque release identifier (e.g. "release-2026-07-08").
@@ -677,7 +743,7 @@ impl Storable for ArtifactUploadState {
     }
 }
 
-// === Stable encodings for release types (ADR 0036 Slice 8b) ================
+// === Stable encodings for release types (ADR 0036 Slice 8b) =============
 
 impl Storable for ReleaseId {
     const BOUND: StorableBound = StorableBound::Unbounded;
@@ -728,6 +794,73 @@ impl Storable for ReleaseError {
     }
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         Decode!(bytes.as_ref(), Self).expect("decode ReleaseError")
+    }
+}
+
+// === Stable encodings for audit log + install types (ADR 0036 Slice 8c) ====
+
+impl Storable for ArtifactAuditEntry {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ArtifactAuditEntry"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ArtifactAuditEntry")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ArtifactAuditEntry")
+    }
+}
+
+impl Storable for ArtifactAuditAction {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ArtifactAuditAction"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ArtifactAuditAction")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ArtifactAuditAction")
+    }
+}
+
+impl Storable for ArtifactAuditOutcome {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ArtifactAuditOutcome"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ArtifactAuditOutcome")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ArtifactAuditOutcome")
+    }
+}
+
+impl Storable for ReleaseInstallResult {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ReleaseInstallResult"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ReleaseInstallResult")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ReleaseInstallResult")
+    }
+}
+
+impl Storable for InstallError {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode InstallError"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode InstallError")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode InstallError")
     }
 }
 

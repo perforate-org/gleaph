@@ -21,9 +21,39 @@ use crate::types::{
     ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseId, ReleaseManifest,
     ReleasePublishArgs, ResourceJobEntry, RouterProvisionAck, sha256, state_name,
 };
+use crate::types::{
+    ArtifactAuditAction, ArtifactAuditEntry, ArtifactAuditOutcome, InstallError,
+    ReleaseInstallArgs, ReleaseInstallResult,
+};
 
 pub mod handlers;
 pub mod init;
+
+/// Append one artifact/release audit row to PROVISION_ARTIFACT_AUDIT_LOG (MemoryId 11).
+#[allow(clippy::too_many_arguments)]
+fn append_artifact_audit(
+    caller: Principal,
+    action: ArtifactAuditAction,
+    artifact_id: Option<ArtifactId>,
+    release_id: Option<ReleaseId>,
+    target_canister: Option<Principal>,
+    outcome: ArtifactAuditOutcome,
+    reason: Option<String>,
+    timestamp_ns: u64,
+) {
+    let entry = ArtifactAuditEntry {
+        caller,
+        action,
+        artifact_id,
+        release_id,
+        deployment_id: None,
+        target_canister,
+        timestamp_ns,
+        outcome,
+        reason,
+    };
+    ProvisionArtifactStore::new().append_audit_entry(entry);
+}
 
 // Re-export the shared Candid wire surface from the neutral graph-kernel crate.
 // These types are single-sourced in `gleaph_graph_kernel::provisioning::wire` so the
@@ -480,7 +510,38 @@ pub(crate) fn artifact_publish_metadata_with_caller(
         created_at_ns: now_ns,
     };
 
-    store.publish_metadata(metadata)
+    let result = store.publish_metadata(metadata);
+    match &result {
+        Ok(m) => {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::PublishArtifact,
+                Some(m.artifact_id.clone()),
+                None,
+                None,
+                ArtifactAuditOutcome::Success,
+                None,
+                now_ns,
+            );
+        }
+        Err(e) => {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::PublishArtifact,
+                Some(artifact_id),
+                None,
+                None,
+                if matches!(e, ArtifactError::Unauthorized) {
+                    ArtifactAuditOutcome::Rejected
+                } else {
+                    ArtifactAuditOutcome::Failed
+                },
+                Some(format!("{e:?}")),
+                now_ns,
+            );
+        }
+    }
+    result
 }
 
 /// Upload one artifact chunk. Governance-only. Verifies per-chunk hash immediately and runs full
@@ -494,40 +555,106 @@ pub(crate) fn artifact_upload_chunk_with_caller(
     use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
 
     let auth_store = ProvisionBootstrapAuthStore::new();
-    let authority = auth_store
-        .get_authority()
-        .ok_or(ArtifactError::Unauthorized)?
-        .governance_principal;
+    let authority = match auth_store.get_authority() {
+        Some(record) => record.governance_principal,
+        None => {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::UploadChunk,
+                Some(args.artifact_id.clone()),
+                None,
+                None,
+                ArtifactAuditOutcome::Rejected,
+                Some("bootstrap authority not seeded".to_owned()),
+                now_ns,
+            );
+            return Err(ArtifactError::Unauthorized);
+        }
+    };
     if caller != authority {
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::UploadChunk,
+            Some(args.artifact_id.clone()),
+            None,
+            None,
+            ArtifactAuditOutcome::Rejected,
+            Some("caller is not bootstrap governance principal".to_owned()),
+            now_ns,
+        );
         return Err(ArtifactError::Unauthorized);
     }
 
     let artifact_store = ProvisionArtifactStore::new();
-    let metadata = artifact_store
-        .get_metadata(&args.artifact_id)
-        .ok_or(ArtifactError::UnknownArtifact(args.artifact_id.clone()))?;
+    let metadata = match artifact_store.get_metadata(&args.artifact_id) {
+        Some(m) => m,
+        None => {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::UploadChunk,
+                Some(args.artifact_id.clone()),
+                None,
+                None,
+                ArtifactAuditOutcome::Rejected,
+                Some("artifact metadata not found".to_owned()),
+                now_ns,
+            );
+            return Err(ArtifactError::UnknownArtifact(args.artifact_id.clone()));
+        }
+    };
 
     let chunk_count = metadata.chunk_hashes.len() as u32;
     if args.chunk_index >= chunk_count {
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::UploadChunk,
+            Some(args.artifact_id.clone()),
+            None,
+            None,
+            ArtifactAuditOutcome::Rejected,
+            Some(format!(
+                "chunk index {} out of range (declared {})",
+                args.chunk_index, chunk_count
+            )),
+            now_ns,
+        );
         return Err(ArtifactError::ChunkOutOfRange {
             artifact_id: args.artifact_id.clone(),
             chunk_index: args.chunk_index,
             declared: chunk_count,
         });
     }
-
     let expected_chunk_hash = metadata.chunk_hashes[args.chunk_index as usize];
     if sha256(&args.bytes) != expected_chunk_hash {
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::UploadChunk,
+            Some(args.artifact_id.clone()),
+            None,
+            None,
+            ArtifactAuditOutcome::Rejected,
+            Some(format!("chunk hash mismatch at index {}", args.chunk_index)),
+            now_ns,
+        );
         return Err(ArtifactError::ChunkHashMismatch {
             artifact_id: args.artifact_id.clone(),
             chunk_index: args.chunk_index,
         });
     }
-
     // Pre-write rejection guards.
     if let Some(upload) = artifact_store.get_upload(&args.artifact_id)
         && matches!(upload.state, ArtifactUploadState::Failed { .. })
     {
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::UploadChunk,
+            Some(args.artifact_id.clone()),
+            None,
+            None,
+            ArtifactAuditOutcome::Rejected,
+            Some("artifact upload is in Failed state".to_owned()),
+            now_ns,
+        );
         return Err(ArtifactError::ChunkHashMismatch {
             artifact_id: args.artifact_id.clone(),
             chunk_index: args.chunk_index,
@@ -543,6 +670,16 @@ pub(crate) fn artifact_upload_chunk_with_caller(
             full.extend_from_slice(&chunk.bytes);
         }
         if sha256(&full) == metadata.artifact_id.sha256 {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::UploadChunk,
+                Some(args.artifact_id.clone()),
+                None,
+                None,
+                ArtifactAuditOutcome::Rejected,
+                Some("artifact already verified".to_owned()),
+                now_ns,
+            );
             return Err(ArtifactError::ConflictingMetadata {
                 existing: args.artifact_id.clone(),
                 requested: args.artifact_id.clone(),
@@ -564,6 +701,16 @@ pub(crate) fn artifact_upload_chunk_with_caller(
     if upload.received_chunks.len() < metadata.chunk_hashes.len() {
         upload.state = ArtifactUploadState::Receiving;
         artifact_store.put_upload(&args.artifact_id, upload.clone());
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::UploadChunk,
+            Some(args.artifact_id.clone()),
+            None,
+            None,
+            ArtifactAuditOutcome::Success,
+            None,
+            now_ns,
+        );
         return Ok(upload);
     }
 
@@ -581,14 +728,25 @@ pub(crate) fn artifact_upload_chunk_with_caller(
         // Verification failure: remove all staged chunks and mark upload Failed.
         artifact_store.remove_all_chunks(&args.artifact_id);
         let actual = sha256(&full_bytes);
+        let reason = format!(
+            "full SHA-256 mismatch: expected {}, got {}",
+            hex_string(&metadata.artifact_id.sha256),
+            hex_string(&actual)
+        );
         upload.state = ArtifactUploadState::Failed {
-            reason: format!(
-                "full SHA-256 mismatch: expected {}, got {}",
-                hex_string(&metadata.artifact_id.sha256),
-                hex_string(&actual)
-            ),
+            reason: reason.clone(),
         };
         artifact_store.put_upload(&args.artifact_id, upload.clone());
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::VerifyArtifact,
+            Some(args.artifact_id.clone()),
+            None,
+            None,
+            ArtifactAuditOutcome::Failed,
+            Some(reason),
+            now_ns,
+        );
         return Err(ArtifactError::FullSha256Mismatch {
             artifact_id: args.artifact_id.clone(),
             expected: metadata.artifact_id.sha256,
@@ -602,6 +760,26 @@ pub(crate) fn artifact_upload_chunk_with_caller(
     };
     upload.verified_at_ns = Some(now_ns);
     artifact_store.remove_upload(&args.artifact_id);
+    append_artifact_audit(
+        caller,
+        ArtifactAuditAction::UploadChunk,
+        Some(args.artifact_id.clone()),
+        None,
+        None,
+        ArtifactAuditOutcome::Success,
+        None,
+        now_ns,
+    );
+    append_artifact_audit(
+        caller,
+        ArtifactAuditAction::VerifyArtifact,
+        Some(args.artifact_id.clone()),
+        None,
+        None,
+        ArtifactAuditOutcome::Success,
+        None,
+        now_ns,
+    );
     Ok(upload)
 }
 
@@ -706,13 +884,68 @@ pub(crate) fn release_publish_with_caller(
     args: ReleasePublishArgs,
     _now_ns: u64,
 ) -> Result<ReleaseManifest, ReleaseError> {
-    require_bootstrap_authority(caller)?;
+    if let Err(e) = require_bootstrap_authority(caller) {
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::PublishRelease,
+            None,
+            Some(args.release_id.clone()),
+            None,
+            ArtifactAuditOutcome::Rejected,
+            Some(format!("{e:?}")),
+            _now_ns,
+        );
+        return Err(e);
+    }
 
     let artifact_store = ProvisionArtifactStore::new();
-    let manifest = build_release_manifest(args.release_id, args.artifact_ids, &artifact_store)?;
+    let manifest =
+        match build_release_manifest(args.release_id.clone(), args.artifact_ids, &artifact_store) {
+            Ok(m) => m,
+            Err(e) => {
+                append_artifact_audit(
+                    caller,
+                    ArtifactAuditAction::PublishRelease,
+                    None,
+                    Some(args.release_id.clone()),
+                    None,
+                    ArtifactAuditOutcome::Rejected,
+                    Some(format!("{e:?}")),
+                    _now_ns,
+                );
+                return Err(e);
+            }
+        };
 
     let release_store = ProvisionReleaseStore::new();
-    release_store.publish_manifest(manifest)
+    let result = release_store.publish_manifest(manifest);
+    match &result {
+        Ok(m) => {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::PublishRelease,
+                None,
+                Some(m.release_id.clone()),
+                None,
+                ArtifactAuditOutcome::Success,
+                None,
+                _now_ns,
+            );
+        }
+        Err(e) => {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::PublishRelease,
+                None,
+                Some(args.release_id),
+                None,
+                ArtifactAuditOutcome::Rejected,
+                Some(format!("{e:?}")),
+                _now_ns,
+            );
+        }
+    }
+    result
 }
 
 /// Atomically activate a release after re-validating its artifacts. Governance-only.
@@ -722,12 +955,37 @@ pub(crate) fn release_activate_with_caller(
     args: ReleaseActivateArgs,
     now_ns: u64,
 ) -> Result<ReleaseActivateResult, ReleaseError> {
-    require_bootstrap_authority(caller)?;
+    if let Err(e) = require_bootstrap_authority(caller) {
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::ActivateRelease,
+            None,
+            Some(args.release_id.clone()),
+            None,
+            ArtifactAuditOutcome::Rejected,
+            Some(format!("{e:?}")),
+            now_ns,
+        );
+        return Err(e);
+    }
 
     let release_store = ProvisionReleaseStore::new();
-    let manifest = release_store
-        .get_manifest(&args.release_id)
-        .ok_or(ReleaseError::UnknownRelease(args.release_id.clone()))?;
+    let manifest = match release_store.get_manifest(&args.release_id) {
+        Some(m) => m,
+        None => {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::ActivateRelease,
+                None,
+                Some(args.release_id.clone()),
+                None,
+                ArtifactAuditOutcome::Rejected,
+                Some("release manifest not found".to_owned()),
+                now_ns,
+            );
+            return Err(ReleaseError::UnknownRelease(args.release_id.clone()));
+        }
+    };
 
     // Re-validate every referenced artifact against the derived verified predicate.
     let artifact_store = ProvisionArtifactStore::new();
@@ -737,22 +995,58 @@ pub(crate) fn release_activate_with_caller(
         &manifest.property_index_artifact,
         &manifest.vector_index_artifact,
     ] {
-        if artifact_id.canister_kind == CanisterKind::Router
-            || artifact_id.canister_kind == CanisterKind::Graph
-            || artifact_id.canister_kind == CanisterKind::PropertyIndex
-            || artifact_id.canister_kind == CanisterKind::VectorIndex
-        {
-            // defensive: these are the only allowed kinds
-        } else {
+        if !matches!(
+            artifact_id.canister_kind,
+            CanisterKind::Router
+                | CanisterKind::Graph
+                | CanisterKind::PropertyIndex
+                | CanisterKind::VectorIndex
+        ) {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::ActivateRelease,
+                Some((*artifact_id).clone()),
+                Some(manifest.release_id.clone()),
+                None,
+                ArtifactAuditOutcome::Rejected,
+                Some(format!(
+                    "forbidden canister kind: {:?}",
+                    artifact_id.canister_kind
+                )),
+                now_ns,
+            );
             return Err(ReleaseError::ProvisionKindForbidden((*artifact_id).clone()));
         }
-        let metadata = artifact_store
-            .get_metadata(artifact_id)
-            .ok_or(ReleaseError::ArtifactNotFound((*artifact_id).clone()))?;
+        let metadata = match artifact_store.get_metadata(artifact_id) {
+            Some(m) => m,
+            None => {
+                append_artifact_audit(
+                    caller,
+                    ArtifactAuditAction::ActivateRelease,
+                    Some((*artifact_id).clone()),
+                    Some(manifest.release_id.clone()),
+                    None,
+                    ArtifactAuditOutcome::Rejected,
+                    Some("artifact metadata not found".to_owned()),
+                    now_ns,
+                );
+                return Err(ReleaseError::ArtifactNotFound((*artifact_id).clone()));
+            }
+        };
 
         let chunk_count = metadata.chunk_hashes.len() as u32;
         let staged = artifact_store.chunks_in_order(artifact_id, chunk_count);
         if staged.len() != chunk_count as usize {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::ActivateRelease,
+                Some((*artifact_id).clone()),
+                Some(manifest.release_id.clone()),
+                None,
+                ArtifactAuditOutcome::Rejected,
+                Some("artifact chunks missing or incomplete".to_owned()),
+                now_ns,
+            );
             return Err(ReleaseError::ArtifactNotVerified((*artifact_id).clone()));
         }
         let mut full_bytes = Vec::with_capacity(metadata.byte_length as usize);
@@ -760,6 +1054,16 @@ pub(crate) fn release_activate_with_caller(
             full_bytes.extend_from_slice(&chunk.bytes);
         }
         if sha256(&full_bytes) != metadata.artifact_id.sha256 {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::ActivateRelease,
+                Some((*artifact_id).clone()),
+                Some(manifest.release_id.clone()),
+                None,
+                ArtifactAuditOutcome::Rejected,
+                Some("artifact full SHA-256 mismatch".to_owned()),
+                now_ns,
+            );
             return Err(ReleaseError::ArtifactNotVerified((*artifact_id).clone()));
         }
     }
@@ -767,11 +1071,22 @@ pub(crate) fn release_activate_with_caller(
     let previous_release_id = release_store.get_active();
     release_store.set_active(args.release_id.clone());
 
-    Ok(ReleaseActivateResult {
+    let result = ReleaseActivateResult {
         release_id: args.release_id,
         activated_at_ns: now_ns,
         previous_release_id,
-    })
+    };
+    append_artifact_audit(
+        caller,
+        ArtifactAuditAction::ActivateRelease,
+        None,
+        Some(result.release_id.clone()),
+        None,
+        ArtifactAuditOutcome::Success,
+        None,
+        now_ns,
+    );
+    Ok(result)
 }
 
 /// Read the active release id, if any. Any caller.
@@ -784,6 +1099,345 @@ pub(crate) fn release_get_active() -> Option<ReleaseActivateResult> {
             activated_at_ns: 0,
             previous_release_id: None,
         })
+}
+
+/// Return the artifact audit history for the caller. Governance-only.
+#[allow(clippy::result_large_err)]
+pub(crate) fn artifact_audit_history_with_caller(
+    caller: Principal,
+) -> Result<Vec<ArtifactAuditEntry>, ArtifactError> {
+    use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
+
+    let auth_store = ProvisionBootstrapAuthStore::new();
+    let authority = auth_store
+        .get_authority()
+        .ok_or(ArtifactError::Unauthorized)?
+        .governance_principal;
+    if caller != authority {
+        return Err(ArtifactError::Unauthorized);
+    }
+    Ok(ProvisionArtifactStore::new().audit_history(caller))
+}
+
+// === Release install handler (ADR 0036 Slice 8c) ===========
+
+const MAX_INSTALL_CHUNK_BYTES: usize = 1024 * 1024;
+
+#[cfg(target_family = "wasm")]
+async fn install_upload_chunk(
+    target_canister_id: Principal,
+    chunk_bytes: Vec<u8>,
+) -> Result<Vec<u8>, InstallError> {
+    if chunk_bytes.len() > MAX_INSTALL_CHUNK_BYTES {
+        return Err(InstallError::ManagementCanisterCallFailed(format!(
+            "chunk exceeds {} bytes",
+            MAX_INSTALL_CHUNK_BYTES
+        )));
+    }
+    use ic_cdk_management_canister::{UploadChunkArgs, upload_chunk};
+    let arg = UploadChunkArgs {
+        canister_id: target_canister_id,
+        chunk: chunk_bytes,
+    };
+    match upload_chunk(&arg).await {
+        Ok(result) => Ok(result.hash),
+        Err(err) => Err(InstallError::ManagementCanisterCallFailed(format!(
+            "upload_chunk: {err:?}"
+        ))),
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn install_upload_chunk(
+    _target_canister_id: Principal,
+    chunk_bytes: Vec<u8>,
+) -> Result<Vec<u8>, InstallError> {
+    if chunk_bytes.len() > MAX_INSTALL_CHUNK_BYTES {
+        return Err(InstallError::ManagementCanisterCallFailed(format!(
+            "chunk exceeds {} bytes",
+            MAX_INSTALL_CHUNK_BYTES
+        )));
+    }
+    Ok(sha256(&chunk_bytes).to_vec())
+}
+
+#[cfg(target_family = "wasm")]
+async fn install_chunked_code_call(
+    target_canister_id: Principal,
+    chunk_hashes: Vec<Vec<u8>>,
+    wasm_module_hash: [u8; 32],
+    install_args: Vec<u8>,
+) -> Result<(), InstallError> {
+    use ic_cdk_management_canister::{
+        CanisterInstallMode, ChunkHash, InstallChunkedCodeArgs, install_chunked_code,
+    };
+    let arg = InstallChunkedCodeArgs {
+        mode: CanisterInstallMode::Install,
+        target_canister: target_canister_id,
+        store_canister: Some(target_canister_id),
+        chunk_hashes_list: chunk_hashes
+            .into_iter()
+            .map(|h| ChunkHash { hash: h })
+            .collect(),
+        wasm_module_hash: wasm_module_hash.to_vec(),
+        arg: install_args,
+    };
+    match install_chunked_code(&arg).await {
+        Ok(()) => Ok(()),
+        Err(err) => Err(InstallError::ManagementCanisterCallFailed(format!(
+            "install_chunked_code: {err:?}"
+        ))),
+    }
+}
+
+#[cfg(not(target_family = "wasm"))]
+async fn install_chunked_code_call(
+    _target_canister_id: Principal,
+    _chunk_hashes: Vec<Vec<u8>>,
+    _wasm_module_hash: [u8; 32],
+    _install_args: Vec<u8>,
+) -> Result<(), InstallError> {
+    Ok(())
+}
+
+/// Install the artifact matching `args.target_canister_kind` into `args.target_canister_id`.
+/// Governance-only. Cross-canister upload_chunk + install_chunked_code.
+#[allow(clippy::result_large_err)]
+pub(crate) async fn release_install_with_caller(
+    caller: Principal,
+    args: ReleaseInstallArgs,
+    now_ns: u64,
+) -> Result<ReleaseInstallResult, InstallError> {
+    use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
+
+    let artifact_store = ProvisionArtifactStore::new();
+    let release_store = ProvisionReleaseStore::new();
+
+    let authority = match ProvisionBootstrapAuthStore::new().get_authority() {
+        Some(record) => record.governance_principal,
+        None => {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::InstallRelease,
+                None,
+                None,
+                None,
+                ArtifactAuditOutcome::Rejected,
+                Some("bootstrap authority not seeded".to_owned()),
+                now_ns,
+            );
+            return Err(InstallError::NoBootstrapAuthority);
+        }
+    };
+    if caller != authority {
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::InstallRelease,
+            None,
+            None,
+            None,
+            ArtifactAuditOutcome::Rejected,
+            Some("caller is not bootstrap governance principal".to_owned()),
+            now_ns,
+        );
+        return Err(InstallError::Unauthorized);
+    }
+
+    if !matches!(
+        args.target_canister_kind,
+        CanisterKind::Router
+            | CanisterKind::Graph
+            | CanisterKind::PropertyIndex
+            | CanisterKind::VectorIndex
+    ) {
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::InstallRelease,
+            None,
+            None,
+            None,
+            ArtifactAuditOutcome::Rejected,
+            Some(format!(
+                "forbidden target canister kind: {:?}",
+                args.target_canister_kind
+            )),
+            now_ns,
+        );
+        return Err(InstallError::TargetCanisterKindForbidden(
+            args.target_canister_kind,
+        ));
+    }
+
+    let target_canister_id = match args.target_canister_id {
+        Some(id) => id,
+        None => {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::InstallRelease,
+                None,
+                None,
+                None,
+                ArtifactAuditOutcome::Rejected,
+                Some("target_canister_id must be provided explicitly".to_owned()),
+                now_ns,
+            );
+            return Err(InstallError::ManagementCanisterCallFailed(
+                "target_canister_id is required".to_owned(),
+            ));
+        }
+    };
+
+    let active_release_id = match release_store.get_active() {
+        Some(id) => id,
+        None => {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::InstallRelease,
+                None,
+                None,
+                None,
+                ArtifactAuditOutcome::Failed,
+                Some("no active release".to_owned()),
+                now_ns,
+            );
+            return Err(InstallError::NoActiveRelease);
+        }
+    };
+
+    let manifest = match release_store.get_manifest(&active_release_id) {
+        Some(m) => m,
+        None => {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::InstallRelease,
+                None,
+                Some(active_release_id.clone()),
+                None,
+                ArtifactAuditOutcome::Failed,
+                Some("active release manifest not found".to_owned()),
+                now_ns,
+            );
+            return Err(InstallError::NoActiveRelease);
+        }
+    };
+
+    let artifact_id = match args.target_canister_kind {
+        CanisterKind::Router => &manifest.router_artifact,
+        CanisterKind::Graph => &manifest.graph_artifact,
+        CanisterKind::PropertyIndex => &manifest.property_index_artifact,
+        CanisterKind::VectorIndex => &manifest.vector_index_artifact,
+    };
+
+    let metadata = match artifact_store.get_metadata(artifact_id) {
+        Some(m) => m,
+        None => {
+            append_artifact_audit(
+                caller,
+                ArtifactAuditAction::InstallRelease,
+                Some(artifact_id.clone()),
+                Some(manifest.release_id.clone()),
+                Some(target_canister_id),
+                ArtifactAuditOutcome::Failed,
+                Some("artifact metadata not found".to_owned()),
+                now_ns,
+            );
+            return Err(InstallError::ArtifactNotFound(artifact_id.clone()));
+        }
+    };
+
+    let chunk_count = metadata.chunk_hashes.len() as u32;
+    let staged = artifact_store.chunks_in_order(artifact_id, chunk_count);
+    if staged.len() != chunk_count as usize {
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::InstallRelease,
+            Some(artifact_id.clone()),
+            Some(manifest.release_id.clone()),
+            Some(target_canister_id),
+            ArtifactAuditOutcome::Failed,
+            Some("artifact chunks missing or incomplete".to_owned()),
+            now_ns,
+        );
+        return Err(InstallError::ArtifactNotVerified(artifact_id.clone()));
+    }
+    let mut full_bytes = Vec::with_capacity(metadata.byte_length as usize);
+    for chunk in &staged {
+        full_bytes.extend_from_slice(&chunk.bytes);
+    }
+    if sha256(&full_bytes) != metadata.artifact_id.sha256 {
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::InstallRelease,
+            Some(artifact_id.clone()),
+            Some(manifest.release_id.clone()),
+            Some(target_canister_id),
+            ArtifactAuditOutcome::Failed,
+            Some("artifact full SHA-256 mismatch".to_owned()),
+            now_ns,
+        );
+        return Err(InstallError::ArtifactNotVerified(artifact_id.clone()));
+    }
+
+    let mut chunk_hashes = Vec::with_capacity(chunk_count as usize);
+    for chunk in &staged {
+        let hash = match install_upload_chunk(target_canister_id, chunk.bytes.clone()).await {
+            Ok(h) => h,
+            Err(e) => {
+                append_artifact_audit(
+                    caller,
+                    ArtifactAuditAction::InstallRelease,
+                    Some(artifact_id.clone()),
+                    Some(manifest.release_id.clone()),
+                    Some(target_canister_id),
+                    ArtifactAuditOutcome::Failed,
+                    Some(format!("{e:?}")),
+                    now_ns,
+                );
+                return Err(e);
+            }
+        };
+        chunk_hashes.push(hash);
+    }
+
+    if let Err(e) = install_chunked_code_call(
+        target_canister_id,
+        chunk_hashes,
+        metadata.artifact_id.sha256,
+        args.install_args,
+    )
+    .await
+    {
+        append_artifact_audit(
+            caller,
+            ArtifactAuditAction::InstallRelease,
+            Some(artifact_id.clone()),
+            Some(manifest.release_id.clone()),
+            Some(target_canister_id),
+            ArtifactAuditOutcome::Failed,
+            Some(format!("{e:?}")),
+            now_ns,
+        );
+        return Err(e);
+    }
+
+    let result = ReleaseInstallResult {
+        release_id: manifest.release_id.clone(),
+        target_canister_id,
+        installed_chunks: chunk_count,
+        install_chunked_code_hash: metadata.artifact_id.sha256,
+        installed_at_ns: now_ns,
+    };
+    append_artifact_audit(
+        caller,
+        ArtifactAuditAction::InstallRelease,
+        Some(artifact_id.clone()),
+        Some(result.release_id.clone()),
+        Some(target_canister_id),
+        ArtifactAuditOutcome::Success,
+        None,
+        now_ns,
+    );
+    Ok(result)
 }
 
 fn hex_string(bytes: &[u8; 32]) -> String {

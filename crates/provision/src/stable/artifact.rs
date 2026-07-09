@@ -1,22 +1,28 @@
-//! Provision canister artifact catalog facade (ADR 0036 Slice 8a).
+//! Provision canister artifact catalog facade (ADR 0036 Slice 8a + 8c).
 //!
-//! Wraps three dedicated stable regions:
+//! Wraps four dedicated stable regions:
 //! - `PROVISION_ARTIFACT_CATALOG` (MemoryId 6): immutable `ArtifactId -> ArtifactMetadata`.
 //! - `PROVISION_ARTIFACT_UPLOAD` (MemoryId 7): mutable `ArtifactId -> ArtifactUpload` scratch state.
 //! - `PROVISION_ARTIFACT_CHUNKS` (MemoryId 8): verified canonical `ArtifactChunkKey -> ArtifactChunk`.
+//! - `PROVISION_ARTIFACT_AUDIT_LOG` (MemoryId 11): append-oriented `(Principal, u64) -> ArtifactAuditEntry`.
 //!
 //! The facade is a regular struct (not a singleton) so handlers instantiate it per call.
 //! Bootstrap authority checks live in the handler, not on this facade.
 
 use super::memory::{
-    StableArtifactCatalogMap, StableArtifactChunksMap, StableArtifactUploadMap,
-    init_artifact_catalog, init_artifact_chunks, init_artifact_upload,
+    StableArtifactAuditLogMap, StableArtifactCatalogMap, StableArtifactChunksMap,
+    StableArtifactUploadMap, init_artifact_audit_log, init_artifact_catalog, init_artifact_chunks,
+    init_artifact_upload,
 };
 use crate::types::{
-    ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId, ArtifactMetadata, ArtifactUpload,
-    ArtifactUploadState,
+    ArtifactAuditEntry, ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId,
+    ArtifactMetadata, ArtifactUpload, ArtifactUploadState,
 };
+use candid::Principal;
 use std::cell::RefCell;
+
+/// Per-principal cap on artifact audit-log entries (R5 strict: bounded append-heavy log).
+pub(crate) const ARTIFACT_AUDIT_LOG_PER_PRINCIPAL_CAP: usize = 1024;
 
 thread_local! {
     static ARTIFACT_CATALOG: RefCell<StableArtifactCatalogMap> =
@@ -25,18 +31,27 @@ thread_local! {
         RefCell::new(init_artifact_upload());
     static ARTIFACT_CHUNKS: RefCell<StableArtifactChunksMap> =
         RefCell::new(init_artifact_chunks());
+    static ARTIFACT_AUDIT_LOG: RefCell<StableArtifactAuditLogMap> =
+        RefCell::new(init_artifact_audit_log());
 }
 
-/// Test-only helper to clear the three artifact stable maps. Must be called at the start of any
+/// Test-only helper to clear only the artifact audit log.
+#[cfg(test)]
+pub(crate) fn reset_artifact_audit_log() {
+    ARTIFACT_AUDIT_LOG.with_borrow_mut(|map| map.clear_new());
+}
+
+/// Test-only helper to clear the four artifact stable maps. Must be called at the start of any
 /// test that mutates artifact state to avoid thread-local interference.
 #[cfg(test)]
 pub(crate) fn reset_artifact_maps() {
     ARTIFACT_CATALOG.with_borrow_mut(|map| map.clear_new());
     ARTIFACT_UPLOAD.with_borrow_mut(|map| map.clear_new());
     ARTIFACT_CHUNKS.with_borrow_mut(|map| map.clear_new());
+    reset_artifact_audit_log();
 }
 
-/// Regular (non-singleton) facade for the artifact catalog, upload scratch, and chunk store.
+/// Regular (non-singleton) facade for the artifact catalog, upload scratch, chunk store, and audit log.
 #[derive(Clone, Copy, Debug, Default)]
 pub struct ProvisionArtifactStore;
 
@@ -163,5 +178,61 @@ impl ProvisionArtifactStore {
             }
         }
         out
+    }
+
+    /// Return the next monotonic sequence number for `principal` in the audit log.
+    pub fn next_sequence(&self, principal: Principal) -> u64 {
+        ARTIFACT_AUDIT_LOG.with_borrow(|map| {
+            let end = (principal, u64::MAX);
+            map.range((principal, 0u64)..=end)
+                .last()
+                .map(|e| e.key().1.saturating_add(1))
+                .unwrap_or(0)
+        })
+    }
+
+    /// Append one audit row for `entry.caller`. Enforces the per-principal cap by evicting the
+    /// oldest (lowest-sequence) entry when the bound is exceeded (R5 strict).
+    pub fn append_audit_entry(&self, entry: ArtifactAuditEntry) {
+        let principal = entry.caller;
+        let seq = self.next_sequence(principal);
+        ARTIFACT_AUDIT_LOG.with_borrow_mut(|map| {
+            map.insert((principal, seq), entry);
+
+            // Enforce per-principal cap: evict oldest entries first.
+            let start = (principal, 0u64);
+            let end = (principal, u64::MAX);
+            let count = map.range(start..=end).count();
+            if count > ARTIFACT_AUDIT_LOG_PER_PRINCIPAL_CAP {
+                let to_evict = count - ARTIFACT_AUDIT_LOG_PER_PRINCIPAL_CAP;
+                let evict_keys: Vec<u64> = map
+                    .range(start..=end)
+                    .map(|e| e.key().1)
+                    .take(to_evict)
+                    .collect();
+                for evict_seq in evict_keys {
+                    map.remove(&(principal, evict_seq));
+                }
+            }
+        });
+    }
+
+    /// Return the bounded audit history for `principal` in sequence order.
+    pub fn audit_history(&self, principal: Principal) -> Vec<ArtifactAuditEntry> {
+        ARTIFACT_AUDIT_LOG.with_borrow(|map| {
+            let start = (principal, 0u64);
+            let end = (principal, u64::MAX);
+            map.range(start..=end).map(|e| e.value().clone()).collect()
+        })
+    }
+
+    /// Return the latest audit entry for `principal`, if any.
+    pub fn latest_audit_entry(&self, principal: Principal) -> Option<ArtifactAuditEntry> {
+        ARTIFACT_AUDIT_LOG.with_borrow(|map| {
+            let end = (principal, u64::MAX);
+            map.range((principal, 0u64)..=end)
+                .last()
+                .map(|e| e.value().clone())
+        })
     }
 }

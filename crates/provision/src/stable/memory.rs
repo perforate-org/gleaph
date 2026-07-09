@@ -1,10 +1,11 @@
 //! Provision canister stable-memory map wiring.
 
 use crate::types::{
-    ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactUpload,
-    DeploymentBinding, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey,
-    ReleaseId, ReleaseManifest,
+    ArtifactAuditEntry, ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata,
+    ArtifactUpload, DeploymentBinding, ProvisionIntentLockMarker, ProvisionJobRecord,
+    ProvisionJobRequestKey, ReleaseId, ReleaseManifest,
 };
+use candid::Principal;
 use gleaph_graph_kernel::provisioning::ProvisioningIntentKey;
 use ic_stable_structures::{
     DefaultMemoryImpl, StableBTreeMap, StableCell,
@@ -40,6 +41,9 @@ pub(crate) const PROVISION_RELEASE_MANIFEST: MemoryId = MemoryId::new(9);
 // ADR 0036 Slice 8b: atomic active-release pointer (MemoryId 10).
 pub(crate) const PROVISION_ACTIVE_RELEASE: MemoryId = MemoryId::new(10);
 
+// ADR 0036 Slice 8c: artifact audit log (MemoryId 11).
+pub(crate) const PROVISION_ARTIFACT_AUDIT_LOG: MemoryId = MemoryId::new(11);
+
 pub(crate) type StableDeploymentTrustMap = StableBTreeMap<String, DeploymentBinding, Memory>;
 pub(crate) type StableJobByRequestMap =
     StableBTreeMap<ProvisionJobRequestKey, ProvisionJobRecord, Memory>;
@@ -56,6 +60,9 @@ pub(crate) type StableArtifactChunksMap = StableBTreeMap<ArtifactChunkKey, Artif
 
 pub(crate) type StableReleaseManifestMap = StableBTreeMap<ReleaseId, ReleaseManifest, Memory>;
 pub(crate) type StableActiveReleaseCell = StableCell<Option<ReleaseId>, Memory>;
+
+pub(crate) type StableArtifactAuditLogMap =
+    StableBTreeMap<(Principal, u64), ArtifactAuditEntry, Memory>;
 
 pub(crate) fn init_deployment_trust() -> StableDeploymentTrustMap {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(DEPLOYMENT_TRUST)))
@@ -94,4 +101,8 @@ pub(crate) fn init_active_release() -> StableActiveReleaseCell {
         MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_ACTIVE_RELEASE)),
         None,
     )
+}
+
+pub(crate) fn init_artifact_audit_log() -> StableArtifactAuditLogMap {
+    StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_ARTIFACT_AUDIT_LOG)))
 }

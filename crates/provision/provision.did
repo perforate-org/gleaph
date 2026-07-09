@@ -1,272 +1,325 @@
-type ProvisionableResourceKind = variant { GraphShard; PropertyIndex; VectorIndex };
-
-type ProvisionableResource = record {
-    kind: ProvisionableResourceKind;
-    logical_resource_key: text;
-};
-
-type CreatedResource = record {
-    kind: ProvisionableResourceKind;
-    canister_id: principal;
-    artifact_hash: text;
-};
-
-type ProvisionResultOutcome = variant {
-    Installed;
-    Conflict;
-    Failed: record { reason: text };
-};
-
-type ProvisionResult = record {
-    request_id: text;
-    request_fingerprint: text;
-    release_id: text;
-    created_resources: vec CreatedResource;
-    terminal_outcome: ProvisionResultOutcome;
-};
-
-type RouterProvisionAck = record {
-    deployment_id: text;
-    request_id: text;
-    accepted_registry_version: nat64;
-};
-
-type ProvisionRequest = record {
-    deployment_id: text;
-    request_id: text;
-    request_fingerprint: text;
-    intent_key: ProvisioningIntentKey;
-    reserved_graph_id: opt nat32;
-    graph_name: text;
-    requested_resources: vec ProvisionableResource;
-    authorized_caller: principal;
-    release_id: text;
-    router_callback_principal: principal;
-};
-
-type ProvisioningIntentKey = record {
-    resource_kind: ProvisionableResourceKind;
-    logical_resource_key: text;
-    deployment_id: text;
-};
-
-type DeploymentBinding = record {
-    deployment_id: text;
-    router_principal: principal;
-    governance_principal: principal;
-    binding_version: nat64;
-};
-
-type ResourceJobView = record {
-    resource_kind: ProvisionableResourceKind;
-    logical_resource_key: text;
-    canister_id: opt principal;
-    artifact_hash: opt text;
-};
-
-type ProvisionJobView = record {
-    request_id: text;
-    deployment_id: text;
-    request_fingerprint: text;
-    reserved_graph_id: opt nat32;
-    graph_name: text;
-    state_name: text;
-    active_resource_index: nat32;
-    completed_effect_count: nat32;
-    accepted_registry_version: opt nat64;
-    resources: vec ResourceJobView;
-    is_authorized_caller: bool;
-    has_router_callback: bool;
-};
-
-type ProvisionJobSummary = record {
-    request_id: text;
-    deployment_id: text;
-    state: text;
-    active_resource_index: nat32;
-    completed_effect_count: nat32;
-    accepted_registry_version: opt nat64;
-};
-
-type ProvisionAcceptResponse = variant {
-    Accepted: record { job_view: ProvisionJobSummary; intent_lock_count: nat32 };
-    Replay: record { job_view: ProvisionJobSummary; intent_lock_count: nat32 };
-};
-
-type ProvisionRouterAckResult = record {
-    completed: bool;
-    accepted_registry_version: nat64;
-};
-
-type ProvisionIngressError = variant {
-    NotAuthorized;
-    UnknownDeployment;
-    Conflict;
-    NotFound;
-    InvalidState;
-    StateAdvanceFailed;
-    ResultMappingError;
-    AckConflict: record { stored: nat64 };
-    IntentLockHeld;
-    InvalidResources: record { reason: text };
-};
-
-type ProvisionInitArgs = record { bootstrap_bindings: vec DeploymentBinding };
-
-type ProvisionIngressResult = variant {
-    Ok: ProvisionAcceptResponse;
-    Err: ProvisionIngressError;
-};
-
-type RouterAckResult = variant {
-    Ok: ProvisionRouterAckResult;
-    Err: ProvisionIngressError;
-};
-
-type BootstrapAuthAction = variant {
-    InitialSeed;
-    AdminInstall;
-    RejectUnknownDeployment;
-    RejectAlreadyExists;
-    RejectInvalidState;
-};
-
-type BootstrapAuthEntry = record {
-    caller: principal;
-    deployment_id: opt text;
-    action: BootstrapAuthAction;
-    timestamp_ns: nat64;
-    registry_version: opt nat64;
-};
-
-type BootstrapAuthorityRecord = record {
-    governance_principal: principal;
-    binding_version_at_seed: nat64;
-    seeded_at_ns: nat64;
-};
-
-type BootstrapAuthHistory = record { entries: vec BootstrapAuthEntry };
-
 type AdminInstallDeploymentBindingArgs = record {
-    deployment_id: text;
-    router_principal: principal;
-    governance_principal: principal;
-    binding_version: nat64;
+  binding_version : nat64;
+  router_principal : principal;
+  governance_principal : principal;
+  deployment_id : text;
 };
-
+// Error returned by `admin_install_deployment_binding`.
 type AdminInstallError = variant {
-    UnknownDeployment: text;
-    AlreadyExists: record { deployment_id: text; existing_governance: principal };
-    InvalidState: text;
+  UnknownDeployment : text;
+  AlreadyExists : record {
+    existing_governance : principal;
+    deployment_id : text;
+  };
+  InvalidState : text;
 };
-
-type Result = variant { Ok: BootstrapAuthEntry; Err: AdminInstallError };
-
-
-type CanisterKind = variant { Router; Graph; PropertyIndex; VectorIndex };
-
-type ArtifactId = record {
-    canister_kind: CanisterKind;
-    semantic_version: text;
-    sha256: vec nat8;
+// Action recorded for every artifact/release plan-level operation.
+type ArtifactAuditAction = variant {
+  PublishArtifact;
+  ActivateRelease;
+  PublishRelease;
+  UploadChunk;
+  VerifyArtifact;
+  InstallRelease;
 };
-
-type ArtifactMetadata = record {
-    artifact_id: ArtifactId;
-    byte_length: nat64;
-    chunk_hashes: vec vec nat8;
-    created_at_ns: nat64;
+// One durable audit row in PROVISION_ARTIFACT_AUDIT_LOG (MemoryId 11).
+type ArtifactAuditEntry = record {
+  action : ArtifactAuditAction;
+  timestamp_ns : nat64;
+  artifact_id : opt ArtifactId;
+  release_id : opt text;
+  target_canister : opt principal;
+  caller : principal;
+  outcome : ArtifactAuditOutcome;
+  deployment_id : opt text;
+  reason : opt text;
 };
-
-type ArtifactUploadState = variant {
-    Receiving;
-    Verifying;
-    Verified: record { verified_at_ns: nat64 };
-    Failed: record { reason: text };
-};
-
-type ArtifactUpload = record {
-    artifact_id: ArtifactId;
-    state: ArtifactUploadState;
-    received_chunks: vec nat32;
-    started_at_ns: nat64;
-    verified_at_ns: opt nat64;
-};
-
-type ArtifactChunkKey = record {
-    artifact_id: ArtifactId;
-    chunk_index: nat32;
-};
-
-type ArtifactChunk = record { bytes: vec nat8 };
-
+// Outcome of an audited operation.
+type ArtifactAuditOutcome = variant { Failed; Rejected; Success };
+// Errors returned by artifact catalog ingress methods.
 type ArtifactError = variant {
-    UnknownArtifact: ArtifactId;
-    ConflictingMetadata: record { existing: ArtifactId; requested: ArtifactId };
-    ChunkOutOfRange: record { artifact_id: ArtifactId; chunk_index: nat32; declared: nat32 };
-    ChunkHashMismatch: record { artifact_id: ArtifactId; chunk_index: nat32 };
-    FullSha256Mismatch: record { artifact_id: ArtifactId; expected: vec nat8; actual: vec nat8 };
-    Unauthorized;
-    NotProvision: CanisterKind;
+  NotProvision : CanisterKind;
+  UnknownArtifact : ArtifactId;
+  Unauthorized;
+  ChunkHashMismatch : record { chunk_index : nat32; artifact_id : ArtifactId };
+  ChunkOutOfRange : record {
+    chunk_index : nat32;
+    artifact_id : ArtifactId;
+    declared : nat32;
+  };
+  ConflictingMetadata : record {
+    requested : ArtifactId;
+    existing : ArtifactId;
+  };
+  FullSha256Mismatch : record {
+    actual : blob;
+    artifact_id : ArtifactId;
+    expected : blob;
+  };
 };
-
+// Composite stable key identifying one published artifact.
+// The SHA-256 is part of identity, not a value field.
+type ArtifactId = record {
+  sha256 : blob;
+  semantic_version : text;
+  canister_kind : CanisterKind;
+};
+// Immutable artifact metadata published by governance.
+type ArtifactMetadata = record {
+  artifact_id : ArtifactId;
+  chunk_hashes : vec blob;
+  byte_length : nat64;
+  created_at_ns : nat64;
+};
+// Arguments for `artifact_publish_metadata`.
 type ArtifactPublishMetadataArgs = record {
-    canister_kind: CanisterKind;
-    semantic_version: text;
-    sha256: vec nat8;
-    byte_length: nat64;
-    chunk_hashes: vec vec nat8;
+  sha256 : blob;
+  chunk_hashes : vec blob;
+  semantic_version : text;
+  byte_length : nat64;
+  canister_kind : CanisterKind;
 };
-
+// Mutable upload-progress state for an artifact. Reclaimed from stable memory once the artifact
+// reaches `Verified`; verified canonical chunks remain in region 8 until explicit GC is designed.
+type ArtifactUpload = record {
+  started_at_ns : nat64;
+  artifact_id : ArtifactId;
+  received_chunks : vec nat32;
+  verified_at_ns : opt nat64;
+  state : ArtifactUploadState;
+};
+// Arguments for `artifact_upload_chunk`.
 type ArtifactUploadChunkArgs = record {
-    artifact_id: ArtifactId;
-    chunk_index: nat32;
-    bytes: vec nat8;
+  chunk_index : nat32;
+  artifact_id : ArtifactId;
+  bytes : blob;
 };
-
-type Result_1 = variant { Ok: ArtifactMetadata; Err: ArtifactError };
-
-type Result_2 = variant { Ok: ArtifactUpload; Err: ArtifactError };
-type ReleaseId = record { text };
-type ReleaseManifest = record {
-    release_id: text;
-    router_artifact: ArtifactId;
-    graph_artifact: ArtifactId;
-    property_index_artifact: ArtifactId;
-    vector_index_artifact: ArtifactId;
+// Lifecycle of an artifact upload. Receiving -> Verifying -> (Verified | Failed).
+type ArtifactUploadState = variant {
+  Failed : record { reason : text };
+  Receiving;
+  Verified : record { verified_at_ns : nat64 };
+  Verifying;
 };
+// Action recorded for every bootstrap-authority decision.
+type BootstrapAuthAction = variant {
+  InitialSeed;
+  RejectAlreadyExists;
+  AdminInstall;
+  RejectUnknownDeployment;
+  RejectInvalidState;
+};
+// One durable audit row in PROVISION_BOOTSTRAP_AUDIT_LOG (MemoryId 5).
+type BootstrapAuthEntry = record {
+  action : BootstrapAuthAction;
+  timestamp_ns : nat64;
+  registry_version : opt nat64;
+  caller : principal;
+  deployment_id : opt text;
+};
+// Kind of canister that an artifact can be installed into.
+// Provision itself is EXPLICITLY excluded — self-upgrade is forbidden per ADR 0036.
+type CanisterKind = variant { Router; Graph; PropertyIndex; VectorIndex };
+// Bootstrap trust binding for a deployment. Written only by governance principal.
+// This is authentication configuration, not graph topology or tenancy.
+type DeploymentBinding = record {
+  // Registry version at time of binding install.
+  binding_version : nat64;
+  // Router principal authorized to send envelopes for this deployment.
+  router_principal : principal;
+  // Governance/recovery principal that can update this binding.
+  governance_principal : principal;
+  deployment_id : text;
+};
+// Errors returned by `release_install`.
+type InstallError = variant {
+  ArtifactNotFound : ArtifactId;
+  NoActiveRelease;
+  ManagementCanisterCallFailed : text;
+  ChunkStoreNotReconciled;
+  TargetCanisterKindForbidden : CanisterKind;
+  NoBootstrapAuthority;
+  ArtifactNotVerified : ArtifactId;
+  Unauthorized;
+};
+// Admission response returned by `accept_envelope`. Distinct from the
+// terminal `ProvisionResult` envelope so a successful first admission is never
+// reported as `Failed`.
+type ProvisionAcceptResponse = variant {
+  Replay : record { intent_lock_count : nat32; job_view : ProvisionJobSummary };
+  Accepted : record {
+    intent_lock_count : nat32;
+    job_view : ProvisionJobSummary;
+  };
+};
+// Failure modes returned by the Provision canister `accept_envelope` ingress path.
+type ProvisionIngressError = variant {
+  StateAdvanceFailed;
+  AckConflict : record { stored : nat64 };
+  UnknownDeployment;
+  ResultMappingError;
+  NotFound;
+  NotAuthorized;
+  InvalidResources : record { reason : text };
+  IntentLockHeld;
+  InvalidState;
+  Conflict;
+};
+// Candid wire Result for `accept_envelope`.
+type ProvisionIngressResult = variant {
+  Ok : ProvisionAcceptResponse;
+  Err : ProvisionIngressError;
+};
+// Bootstrap arguments for `init`.
+type ProvisionInitArgs = record { bootstrap_bindings : vec DeploymentBinding };
+// Redacted job summary for admission responses.
+type ProvisionJobSummary = record {
+  request_id : text;
+  active_resource_index : nat32;
+  completed_effect_count : nat32;
+  state : text;
+  accepted_registry_version : opt nat64;
+  deployment_id : text;
+};
+type ProvisionJobView = record {
+  request_id : text;
+  is_authorized_caller : bool;
+  active_resource_index : nat32;
+  request_fingerprint : text;
+  resources : vec ResourceJobView;
+  reserved_graph_id : opt nat32;
+  has_router_callback : bool;
+  completed_effect_count : nat32;
+  graph_name : text;
+  accepted_registry_version : opt nat64;
+  state_name : text;
+  deployment_id : text;
+};
+type ProvisionRequest = record {
+  request_id : text;
+  requested_resources : vec ProvisionableResource;
+  request_fingerprint : text;
+  reserved_graph_id : opt nat32;
+  router_callback_principal : principal;
+  release_id : text;
+  graph_name : text;
+  intent_key : ProvisioningIntentKey;
+  deployment_id : text;
+  authorized_caller : principal;
+};
+type ProvisionRouterAckResult = record {
+  completed : bool;
+  accepted_registry_version : nat64;
+};
+type ProvisionableResource = record {
+  kind : ProvisionableResourceKind;
+  logical_resource_key : text;
+};
+// Shared stable+wire resource kind. One-byte ordinal in stable memory.
+type ProvisionableResourceKind = variant {
+  PropertyIndex;
+  VectorIndex;
+  GraphShard;
+};
+// Intent lock key for Map 47: (deployment_id, resource_kind, logical_resource_key) → marker.
+// 
+// This key is used by Router Map 47 and by Provision Maps 2/3. The stable byte encoding is
+// preserved exactly across both canisters.
+type ProvisioningIntentKey = record {
+  resource_kind : ProvisionableResourceKind;
+  logical_resource_key : text;
+  deployment_id : text;
+};
+// Arguments for `release_activate`.
+type ReleaseActivateArgs = record { release_id : text };
+// Return value of `release_activate` confirming the active release that was swapped.
+// The `previous_release_id` field records the active release before the swap and
+// enforces the non-retroactivity invariant: no job/receipt region is mutated.
 type ReleaseActivateResult = record {
-    release_id: text;
-    activated_at_ns: nat64;
-    previous_release_id: opt text;
+  activated_at_ns : nat64;
+  previous_release_id : opt text;
+  release_id : text;
 };
+// Errors returned by release publish/activate ingress methods.
 type ReleaseError = variant {
-    UnknownRelease: text;
-    ConflictingRelease: record { existing: text; requested: text };
-    NoBootstrapAuthority;
-    Unauthorized;
-    ArtifactNotFound: ArtifactId;
-    ArtifactNotVerified: ArtifactId;
-    ProvisionKindForbidden: ArtifactId;
-    IncompleteManifest: record { release_id: text; missing: vec ArtifactId };
-    NotUniquePerKind: record { release_id: text; kind: CanisterKind; conflicting: vec ArtifactId };
+  ArtifactNotFound : ArtifactId;
+  IncompleteManifest : record { missing : vec ArtifactId; release_id : text };
+  ProvisionKindForbidden : ArtifactId;
+  NoBootstrapAuthority;
+  ArtifactNotVerified : ArtifactId;
+  Unauthorized;
+  UnknownRelease : text;
+  ConflictingRelease : record { requested : text; existing : text };
+  NotUniquePerKind : record {
+    kind : CanisterKind;
+    conflicting : vec ArtifactId;
+    release_id : text;
+  };
 };
-type ReleasePublishArgs = record { release_id: text; artifact_ids: vec ArtifactId };
-type ReleaseActivateArgs = record { release_id: text };
-
-type Result_3 = variant { Ok: ReleaseActivateResult; Err: ReleaseError };
-type Result_4 = variant { Ok: ReleaseManifest; Err: ReleaseError };
-
-
+// Arguments for `release_install`.
+type ReleaseInstallArgs = record {
+  target_canister_kind : CanisterKind;
+  registry_version : nat64;
+  install_args : blob;
+  target_canister_id : opt principal;
+};
+// Return value of `release_install`.
+type ReleaseInstallResult = record {
+  install_chunked_code_hash : blob;
+  release_id : text;
+  target_canister_id : principal;
+  installed_at_ns : nat64;
+  installed_chunks : nat32;
+};
+// Immutable release manifest: exactly one `ArtifactId` per non-Provision canister kind.
+type ReleaseManifest = record {
+  graph_artifact : ArtifactId;
+  vector_index_artifact : ArtifactId;
+  router_artifact : ArtifactId;
+  release_id : text;
+  property_index_artifact : ArtifactId;
+};
+// Arguments for `release_publish`.
+type ReleasePublishArgs = record {
+  artifact_ids : vec ArtifactId;
+  release_id : text;
+};
+type ResourceJobView = record {
+  artifact_hash : opt text;
+  canister_id : opt principal;
+  resource_kind : ProvisionableResourceKind;
+  logical_resource_key : text;
+};
+type Result = variant { Ok : BootstrapAuthEntry; Err : AdminInstallError };
+type Result_1 = variant { Ok : vec ArtifactAuditEntry; Err : ArtifactError };
+type Result_2 = variant { Ok : ArtifactMetadata; Err : ArtifactError };
+type Result_3 = variant { Ok : ArtifactUpload; Err : ArtifactError };
+type Result_4 = variant { Ok : ReleaseActivateResult; Err : ReleaseError };
+type Result_5 = variant { Ok : ReleaseInstallResult; Err : InstallError };
+type Result_6 = variant { Ok : ReleaseManifest; Err : ReleaseError };
+// Candid wire Result for `router_ack`.
+type RouterAckResult = variant {
+  Ok : ProvisionRouterAckResult;
+  Err : ProvisionIngressError;
+};
+type RouterProvisionAck = record {
+  request_id : text;
+  accepted_registry_version : nat64;
+  deployment_id : text;
+};
 service : (ProvisionInitArgs) -> {
-    accept_envelope: (ProvisionRequest) -> (ProvisionIngressResult);
-    query_job: (text, text) -> (opt ProvisionJobView) query;
-    router_ack: (RouterProvisionAck) -> (RouterAckResult);
-    admin_install_deployment_binding: (AdminInstallDeploymentBindingArgs) -> (Result);
-    artifact_publish_metadata: (ArtifactPublishMetadataArgs) -> (Result_1);
-    artifact_upload_chunk: (ArtifactUploadChunkArgs) -> (Result_2);
-    artifact_get_status: (ArtifactId) -> (opt ArtifactUpload) query;
-    release_activate: (ReleaseActivateArgs) -> (Result_3);
-    release_publish: (ReleasePublishArgs) -> (Result_4);
-    release_get_active: () -> (opt ReleaseActivateResult) query;
-};
+  accept_envelope : (ProvisionRequest) -> (ProvisionIngressResult);
+  admin_install_deployment_binding : (AdminInstallDeploymentBindingArgs) -> (
+      Result,
+    );
+  artifact_audit_history : () -> (Result_1) query;
+  artifact_get_status : (ArtifactId) -> (opt ArtifactUpload) query;
+  artifact_publish_metadata : (ArtifactPublishMetadataArgs) -> (Result_2);
+  artifact_upload_chunk : (ArtifactUploadChunkArgs) -> (Result_3);
+  query_job : (text, text) -> (opt ProvisionJobView) query;
+  release_activate : (ReleaseActivateArgs) -> (Result_4);
+  release_get_active : () -> (opt ReleaseActivateResult) query;
+  release_install : (ReleaseInstallArgs) -> (Result_5);
+  release_publish : (ReleasePublishArgs) -> (Result_6);
+  router_ack : (RouterProvisionAck) -> (RouterAckResult);
+}

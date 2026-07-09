@@ -1,6 +1,8 @@
 //! Provision canister stable-memory store facades.
 
 #[cfg(test)]
+use super::artifact::reset_artifact_audit_log;
+#[cfg(test)]
 use super::artifact::reset_artifact_maps;
 #[cfg(test)]
 use super::bootstrap_auth::reset_bootstrap_auth_maps;
@@ -43,6 +45,7 @@ pub(crate) fn reset_all_maps() {
     reset_bootstrap_auth_maps();
     reset_artifact_maps();
     reset_release_maps();
+    reset_artifact_audit_log();
     set_force_advance_error(false);
 }
 

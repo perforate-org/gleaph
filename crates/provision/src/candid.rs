@@ -79,6 +79,8 @@ mod tests {
             "release_publish",
             "release_activate",
             "release_get_active",
+            "release_install",
+            "artifact_audit_history",
         ] {
             assert!(
                 names.contains(&required),
@@ -127,7 +129,7 @@ mod tests {
             );
         }
 
-        for method_name in ["release_publish", "release_activate"] {
+        for method_name in ["release_publish", "release_activate", "release_install"] {
             let method = methods
                 .iter()
                 .find(|(n, _)| n == method_name)
@@ -161,16 +163,13 @@ mod tests {
             });
             assert!(
                 !is_null_result,
-                "{} must not return Result<Null, ReleaseError>",
+                "{} must not return Result<Null, Error>",
                 method_name
             );
         }
 
         let declared_types: Vec<&str> = env.0.keys().map(|name| name.as_str()).collect();
         for required_type in [
-            "CreatedResource",
-            "ProvisionResult",
-            "ProvisionResultOutcome",
             "ProvisioningIntentKey",
             "ProvisionIngressError",
             "ProvisionInitArgs",
@@ -178,26 +177,29 @@ mod tests {
             "RouterAckResult",
             "BootstrapAuthEntry",
             "BootstrapAuthAction",
-            "BootstrapAuthorityRecord",
-            "BootstrapAuthHistory",
             "AdminInstallDeploymentBindingArgs",
             "AdminInstallError",
             "CanisterKind",
             "ArtifactId",
             "ArtifactMetadata",
             "ArtifactUpload",
-            "ArtifactChunkKey",
-            "ArtifactChunk",
             "ArtifactUploadState",
             "ArtifactError",
             "ArtifactPublishMetadataArgs",
             "ArtifactUploadChunkArgs",
-            "ReleaseId",
             "ReleaseManifest",
             "ReleaseActivateResult",
             "ReleaseError",
             "ReleasePublishArgs",
             "ReleaseActivateArgs",
+            "ArtifactAuditEntry",
+            "ArtifactAuditAction",
+            "ArtifactAuditOutcome",
+            "ReleaseInstallArgs",
+            "ReleaseInstallResult",
+            "InstallError",
+            "Result_5",
+            "Result_6",
         ] {
             assert!(
                 declared_types.contains(&required_type),

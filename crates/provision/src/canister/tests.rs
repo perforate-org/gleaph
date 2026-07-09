@@ -6,8 +6,8 @@ use super::{
     admin_install_deployment_binding_with_caller, artifact_get_status,
     artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
     build_record_from_request, query_job_with_caller, record_to_result,
-    release_activate_with_caller, release_get_active, release_publish_with_caller,
-    router_ack_with_caller,
+    release_activate_with_caller, release_get_active, release_install_with_caller,
+    release_publish_with_caller, router_ack_with_caller,
 };
 use crate::canister::init;
 use crate::stable::artifact::ProvisionArtifactStore;
@@ -18,11 +18,14 @@ use crate::stable::store::{
 use crate::types::{
     AdminInstallDeploymentBindingArgs, ArtifactError, ArtifactId, ArtifactPublishMetadataArgs,
     ArtifactUploadChunkArgs, BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind,
-    DeploymentBinding, JobState, ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest,
-    ProvisionableResource, ProvisionableResourceKind, ProvisioningIntentKey, ReleaseActivateArgs,
-    ReleaseError, ReleaseId, ReleasePublishArgs, RouterProvisionAck, sha256,
+    DeploymentBinding, InstallError, JobState, ProvisionAdminError, ProvisionJobRequestKey,
+    ProvisionRequest, ProvisionableResource, ProvisionableResourceKind, ProvisioningIntentKey,
+    ReleaseActivateArgs, ReleaseError, ReleaseId, ReleaseInstallArgs, ReleasePublishArgs,
+    RouterProvisionAck, sha256,
 };
 use candid::Principal;
+use std::future::Future;
+use std::task::{Context, Poll, Waker};
 
 fn pid(id: u8) -> Principal {
     Principal::from_slice(&[id; 29])
@@ -1717,4 +1720,168 @@ fn release_get_active_returns_none_when_no_release() {
     assert_eq!(active.release_id, r);
     assert_eq!(active.activated_at_ns, 0);
     assert_eq!(active.previous_release_id, None);
+}
+
+/// Block on an immediately-ready future without adding an async runtime dependency.
+fn block_on<F: Future>(f: F) -> F::Output {
+    let waker = Waker::noop();
+    let mut cx = Context::from_waker(waker);
+    let mut f = Box::pin(f);
+    match f.as_mut().poll(&mut cx) {
+        Poll::Ready(v) => v,
+        Poll::Pending => panic!("future not ready"),
+    }
+}
+
+fn install_target() -> Principal {
+    Principal::from_slice(&[0xDD; 29])
+}
+
+/// (e) release_install rejects no active release and writes audit entry (R4).
+#[test]
+fn release_install_rejects_no_active_release() {
+    reset_all_maps();
+    seed_bootstrap();
+    let args = ReleaseInstallArgs {
+        target_canister_kind: CanisterKind::Router,
+        target_canister_id: Some(install_target()),
+        install_args: vec![],
+        registry_version: 1,
+    };
+    let result = block_on(release_install_with_caller(gov_principal(), args, 100));
+    assert_eq!(result, Err(InstallError::NoActiveRelease));
+    let history = ProvisionArtifactStore::new().audit_history(gov_principal());
+    assert_eq!(history.len(), 1);
+    assert_eq!(
+        history[0].action,
+        crate::types::ArtifactAuditAction::InstallRelease
+    );
+    assert_eq!(
+        history[0].outcome,
+        crate::types::ArtifactAuditOutcome::Failed
+    );
+}
+
+/// (f) release_install rejects unauthorized caller and writes audit entry (R4).
+#[test]
+fn release_install_rejects_unauthorized_caller() {
+    reset_all_maps();
+    seed_bootstrap();
+    let args = ReleaseInstallArgs {
+        target_canister_kind: CanisterKind::Router,
+        target_canister_id: Some(install_target()),
+        install_args: vec![],
+        registry_version: 1,
+    };
+    let caller = other_principal();
+    let result = block_on(release_install_with_caller(caller, args, 100));
+    assert_eq!(result, Err(InstallError::Unauthorized));
+    let history = ProvisionArtifactStore::new().audit_history(caller);
+    assert_eq!(history.len(), 1);
+    assert_eq!(
+        history[0].action,
+        crate::types::ArtifactAuditAction::InstallRelease
+    );
+    assert_eq!(
+        history[0].outcome,
+        crate::types::ArtifactAuditOutcome::Rejected
+    );
+}
+
+/// (g) release_install rejects unverified artifact and writes audit entry (R4).
+#[test]
+fn release_install_rejects_unverified_artifact() {
+    reset_all_maps();
+    seed_bootstrap();
+    let r = release_id("release-g-install");
+    let router = publish_verified_artifact_for_release(CanisterKind::Router, "0.1.0", vec![b"r0"]);
+    let graph = publish_verified_artifact_for_release(CanisterKind::Graph, "0.1.0", vec![b"g0"]);
+    let prop =
+        publish_verified_artifact_for_release(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]);
+    let vector =
+        publish_verified_artifact_for_release(CanisterKind::VectorIndex, "0.1.0", vec![b"v0"]);
+    release_publish_with_caller(
+        gov_principal(),
+        ReleasePublishArgs {
+            release_id: r.clone(),
+            artifact_ids: vec![router, graph, prop, vector.clone()],
+        },
+        100,
+    )
+    .unwrap();
+    release_activate_with_caller(
+        gov_principal(),
+        ReleaseActivateArgs {
+            release_id: r.clone(),
+        },
+        200,
+    )
+    .unwrap();
+
+    // Remove the verified chunks for the vector artifact to make it unverified at install time.
+    ProvisionArtifactStore::new().remove_all_chunks(&vector);
+
+    let args = ReleaseInstallArgs {
+        target_canister_kind: CanisterKind::VectorIndex,
+        target_canister_id: Some(install_target()),
+        install_args: vec![],
+        registry_version: 1,
+    };
+    let result = block_on(release_install_with_caller(gov_principal(), args, 300));
+    assert_eq!(
+        result,
+        Err(InstallError::ArtifactNotVerified(vector.clone()))
+    );
+    let history = ProvisionArtifactStore::new().audit_history(gov_principal());
+    let activate = history
+        .iter()
+        .find(|e| e.action == crate::types::ArtifactAuditAction::ActivateRelease)
+        .unwrap();
+    assert_eq!(
+        activate.outcome,
+        crate::types::ArtifactAuditOutcome::Success
+    );
+    let install = history
+        .iter()
+        .find(|e| e.action == crate::types::ArtifactAuditAction::InstallRelease)
+        .unwrap();
+    assert_eq!(install.outcome, crate::types::ArtifactAuditOutcome::Failed);
+    assert_eq!(install.artifact_id, Some(vector));
+}
+
+/// (h) release_install audit log survives successful handler return.
+#[test]
+fn release_install_audit_log_survives_handler_return() {
+    reset_all_maps();
+    seed_bootstrap();
+    let r = release_id("release-h-install");
+    publish_compatible_release(r.clone());
+    release_activate_with_caller(
+        gov_principal(),
+        ReleaseActivateArgs {
+            release_id: r.clone(),
+        },
+        200,
+    )
+    .unwrap();
+
+    let target = install_target();
+    let args = ReleaseInstallArgs {
+        target_canister_kind: CanisterKind::Router,
+        target_canister_id: Some(target),
+        install_args: vec![],
+        registry_version: 1,
+    };
+    let result = block_on(release_install_with_caller(gov_principal(), args, 300)).unwrap();
+    assert_eq!(result.release_id, r);
+    assert_eq!(result.target_canister_id, target);
+    assert_eq!(result.installed_chunks, 1);
+
+    let history = ProvisionArtifactStore::new().audit_history(gov_principal());
+    let install = history
+        .iter()
+        .find(|e| e.action == crate::types::ArtifactAuditAction::InstallRelease)
+        .unwrap();
+    assert_eq!(install.outcome, crate::types::ArtifactAuditOutcome::Success);
+    assert_eq!(install.target_canister, Some(target));
 }
