@@ -1,0 +1,26 @@
+1:
+  name: post_vec
+  dims: 8
+  metric: L2Squared
+  values:
+    - 0
+    - 8
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+private:
+  name: post_vec
+  dims: 8
+  metric: L2Squared
+  values:
+    - 0
+    - 0
+    - 8
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0

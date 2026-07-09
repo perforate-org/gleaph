@@ -75,3 +75,11 @@ Last revised: YYYY-MM-DD
 | [0038](0038-provisioning-authorization-and-cycles-funding.md) | Provisioning authorization and cycles funding | proposed |
 
 When adding an ADR, link it from the relevant design doc and update this table.
+
+## Design documents
+
+| Document | Purpose |
+|----------|---------|
+| [social-demo-config](../storage/social-demo-config.md) | Per-file YAML configuration for the social-demo sample graph and its emitted artifacts. |
+
+When adding a design document, link it from the relevant ADR and update this table.

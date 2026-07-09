@@ -1,6 +1,11 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+# Builds and deploys the social-demo canister set on a local IC network.
+# The social-demo data is authored as per-file YAML under
+# frontend/apps/social-demo/config/ and emitted by
+# frontend/apps/social-demo/scripts/build-config.mjs before seeding.
+
 ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 ORIGINAL_HOME="${HOME:-}"
 
@@ -120,13 +125,13 @@ icp_call_expect_ok() {
   fi
 }
 
-seed_social_graph() {
-  log "Generating social seed manifest"
-  node "$ROOT/frontend/apps/knowledge-map/scripts/generate-seeds.mjs" \
-    "$ROOT/frontend/apps/knowledge-map/seeds/social-graph.json" \
-    "$ROOT/frontend/apps/knowledge-map/seeds/social-seeds.json"
+build_social_config() {
+  log "Building social-demo configuration artifacts"
+  node "$ROOT/frontend/apps/social-demo/scripts/build-config.mjs"
+}
 
-  log "Seeding social graph through Router GQL"
+seed_social_graph() {
+  log "Seeding social graph through Router GQL (manifest emitted by build-config.mjs)"
   env \
     HOME="$ICP_CLI_HOME" \
     COREPACK_HOME="$ICP_COREPACK_HOME" \
@@ -188,20 +193,50 @@ ingest_social_embeddings() {
 register_social_prepared_queries() {
   log "Registering social demo prepared queries"
 
-  icp_call_expect_ok "Register public timeline prepared query" "Conflict" -e local gleaph-router prepared_register \
-    '("public_timeline", "MATCH (p:Post) WHERE p.is_public = 1 RETURN p.demo_id AS post_id, p.created_at AS created_at ORDER BY created_at DESC")'
+  local scenarios_dir="$ROOT/frontend/apps/social-demo/config/scenarios"
+  local yaml_module
+  yaml_module="$(node -e 'console.log(require.resolve("yaml", { paths: ["'"$ROOT"'/frontend/apps/social-demo/node_modules"] }))')"
 
-  icp_call_expect_ok "Register Alice home feed prepared query" "Conflict" -e local gleaph-router prepared_register \
-    '("alice_home_feed", "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = '\''alice'\'' AND p.is_public = 1 RETURN p.demo_id AS post_id, p.created_at AS created_at ORDER BY created_at DESC")'
+  local scenario_file
+  for scenario_file in "$scenarios_dir"/*.yaml; do
+    local scenario_id prepared_query_id prepared_query
+    scenario_id="$(node -e "
+const fs = require('fs');
+const YAML = require('"$yaml_module"');
+const doc = YAML.parse(fs.readFileSync(process.argv[1], 'utf8'));
+console.log(doc.id);
+" "$scenario_file")"
+    prepared_query_id="$(node -e "
+const fs = require('fs');
+const YAML = require('"$yaml_module"');
+const doc = YAML.parse(fs.readFileSync(process.argv[1], 'utf8'));
+console.log(doc.preparedQueryId);
+" "$scenario_file")"
+    prepared_query="$(node -e "
+const fs = require('fs');
+const YAML = require('"$yaml_module"');
+const doc = YAML.parse(fs.readFileSync(process.argv[1], 'utf8'));
+console.log(doc.preparedQuery);
+" "$scenario_file")"
+    icp_call_expect_ok "Register $scenario_id scenario" "Conflict" -e local gleaph-router prepared_register \
+      "(\"$prepared_query_id\", \"$prepared_query\")"
+  done
 
-  icp_call_expect_ok "Register topic path prepared query" "Conflict" -e local gleaph-router prepared_register \
-    '("topic_path_explanation", "MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE t.demo_id = '\''topic-graph'\'' MATCH (u:User)-[follows:FOLLOWS]->(author:User)-[posted:POSTED]->(p) WHERE u.demo_id = '\''alice'\'' RETURN p.demo_id AS post_id, follows.demo_edge_id AS follows_edge_id, posted.demo_edge_id AS posted_edge_id, t.demo_id AS topic_id, has_topic.demo_edge_id AS topic_edge_id, p.created_at AS created_at ORDER BY created_at DESC")'
-
-  icp_call_expect_ok "Register semantic discovery prepared query" "Conflict" -e local gleaph-router prepared_register \
-    '("semantic_discovery", "MATCH (p:Post) WHERE p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, distance ORDER BY distance ASC")'
-
-  icp_call_expect_ok "Register Alice semantic feed prepared query" "Conflict" -e local gleaph-router prepared_register \
-    '("alice_semantic_feed", "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = '\''alice'\'' AND p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, distance ORDER BY distance ASC")'
+  node -e "
+const fs = require('fs');
+const path = require('path');
+const YAML = require('"$yaml_module"');
+const lib = fs.readFileSync('$ROOT/crates/social-demo-gateway/src/lib.rs', 'utf8');
+const match = lib.match(/fn semantic_query_vector\\(\\)[^}]*?vec!\\[([^\\]]+)\\]/s);
+if (!match) { console.error('WARN: could not parse semantic_query_vector'); process.exit(0); }
+const canonical = match[1].split(',').map(s => parseFloat(s.trim())).filter(n => !Number.isNaN(n));
+for (const f of fs.readdirSync('$scenarios_dir').filter(x => x.endsWith('.yaml')).sort()) {
+  const doc = YAML.parse(fs.readFileSync(path.join('$scenarios_dir', f), 'utf8'));
+  if (!Array.isArray(doc.semanticVector)) continue;
+  const drift = doc.semanticVector.some((v, i) => Math.abs(v - (canonical[i] || 0)) > 1e-6);
+  if (drift) console.log('WARN: semanticVector in ' + doc.id + ' drifted from crates/social-demo-gateway/src/lib.rs::semantic_query_vector()');
+}
+"
 }
 
 verify_social_demo_scenarios() {
@@ -318,10 +353,11 @@ main() {
   log "Installing gleaph-social-demo-gateway"
   icp_cmd canister install -e local -y --mode "$INSTALL_MODE" gleaph-social-demo-gateway --args "(
     record {
-      router_canister = principal \"$router_id\";
+     router_canister = principal \"$router_id\";
     }
   )"
 
+  build_social_config
   seed_social_graph
   setup_vector_index "$vector_id"
   ingest_social_embeddings

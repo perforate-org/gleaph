@@ -1,0 +1,8 @@
+id: alice
+name: Alice
+bio: Demo user Alice
+follows:
+  - bob
+  - carol
+memberships:
+  - community-ic

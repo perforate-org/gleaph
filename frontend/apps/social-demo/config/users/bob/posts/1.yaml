@@ -1,0 +1,6 @@
+id: post-bob-1
+body: Bob's topic note
+created_at: 202607030300
+is_public: true
+topics:
+- topic-graph

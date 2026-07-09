@@ -2,8 +2,8 @@
 
 Date: 2026-07-04
 Status: implemented
-Last revised: 2026-07-08
-Anchor timestamp: 2026-07-08 15:19:47 UTC +0000
+Last revised: 2026-07-09
+Anchor timestamp: 2026-07-09 15:33:09 UTC +0000
 
 ## Context
 
@@ -115,3 +115,12 @@ archive / HTTP outcall (still deferred to a future slice).
 - [IC management canister](https://docs.internetcomputer.org/references/management-canister/) — authoritative chunk and install operations.
 - Plan 0061b (release manifest + active-release pointer + activation) — builds on Slice 8a.
 - Plan 0061c (install transfer + artifact audit log + PocketIC) — builds on Slices 8a and 8b.
+
+## Social-demo configuration note
+
+The social-demo sample data (users, posts, topics, communities, and prepared
+query scenarios) is now authored as per-file YAML under
+`frontend/apps/social-demo/config/` and emitted by
+`frontend/apps/social-demo/scripts/build-config.mjs`. This is a configuration
+surface change, not a WASM artifact-catalog schema change, and is documented in
+detail in [`design/storage/social-demo-config.md`](../storage/social-demo-config.md).

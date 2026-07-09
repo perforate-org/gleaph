@@ -7,6 +7,7 @@
     "generate-gateway-bindings": "icp-bindgen --did-file ../../../crates/social-demo-gateway/social_demo_gateway.did --out-dir ./src/generated --force",
     "check": "$PWD/../../../scripts/check-social-demo-gateway-candid.sh && icp-bindgen --did-file ../../../crates/social-demo-gateway/social_demo_gateway.did --out-dir ./src/generated --force && tsc --noEmit",
     "build": "$PWD/../../../scripts/check-social-demo-gateway-candid.sh && icp-bindgen --did-file ../../../crates/social-demo-gateway/social_demo_gateway.did --out-dir ./src/generated --force && vite build",
+    "build:config": "node scripts/build-config.mjs",
     "dev": "vite",
     "preview": "vite preview"
   },
@@ -22,6 +23,7 @@
     "tailwindcss": "^3.4.17",
     "typescript": "^5.8.3",
     "vite": "^6.3.5",
-    "vite-plugin-solid": "^2.11.6"
+    "vite-plugin-solid": "^2.11.6",
+    "yaml": "^2.6.1"
   }
 }

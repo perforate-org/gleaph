@@ -1,0 +1,26 @@
+1:
+  name: post_vec
+  dims: 8
+  metric: L2Squared
+  values:
+    - 5
+    - 3
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+2:
+  name: post_vec
+  dims: 8
+  metric: L2Squared
+  values:
+    - 7
+    - 1
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0
+    - 0

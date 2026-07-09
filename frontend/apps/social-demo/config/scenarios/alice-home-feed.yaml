@@ -1,0 +1,13 @@
+id: AliceHomeFeed
+preparedQueryId: alice_home_feed
+label: Alice home feed
+shortLabel: Home
+feedTitle: Alice's home feed
+explanationTitle: Graph traversal
+rdbSummary: |-
+  An RDB needs a follows join table and a two-hop join (follower → followee → posts). The query is still SQL-shaped, but the relationship is now a traversal, not a foreign-key lookup.
+graphSummary: |-
+  Gleaph walks Alice → FOLLOWS → author → POSTED → Post as one bounded graph pattern. The feed is the natural result of the relationship shape, not an application-side assembly.
+preparedQuery: |-
+  MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 'alice' AND p.is_public = 1 RETURN p.demo_id AS post_id, p.created_at AS created_at ORDER BY created_at DESC
+semanticVector: null

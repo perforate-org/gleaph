@@ -1,0 +1,21 @@
+id: SemanticDiscovery
+preparedQueryId: semantic_discovery
+label: Semantic discovery
+shortLabel: Semantic
+feedTitle: Vector-only semantic discovery
+explanationTitle: Vector retrieval
+rdbSummary: |-
+  Pure vector search has no join table: it scores every public Post against a fixed query vector and returns the nearest neighbors by L2-squared distance.
+graphSummary: |-
+  Gleaph stores canonical Post embeddings on the Graph shard and routes vector SEARCH through the derived index. `post-dave-1` is deliberately the nearest public Post even though Alice does not follow Dave.
+preparedQuery: |-
+  MATCH (p:Post) WHERE p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, distance ORDER BY distance ASC
+semanticVector:
+  - 8
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
+  - 0
