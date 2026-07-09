@@ -183,11 +183,22 @@ function resolveElementId(demoId) {
   if (!rowsBlob) {
     throw new Error(`No rows_blob for ${demoId}`);
   }
+  // rowsBlob is a Uint8Array (an `opt vec nat8` decoded as Some). Some older
+  // @icp-sdk/core versions returned the inner vec as a JS array of numbers; in
+  // that case rowsBlob is a plain Array whose first element may be a nested
+  // Array (i.e. the wrapped inner array, when the decoder unwraps Some
+  // transparently). Handle both shapes.
   let bytes;
-  if (Array.isArray(rowsBlob) && Array.isArray(rowsBlob[0])) {
-    bytes = rowsBlob[0];
-  } else if (Array.isArray(rowsBlob)) {
+  if (rowsBlob instanceof Uint8Array) {
     bytes = rowsBlob;
+  } else if (Array.isArray(rowsBlob) && rowsBlob[0] instanceof Uint8Array) {
+    // Opt<Vec<Nat8>> decoded as Some(innerBytes) — Array wrapping a single
+    // Uint8Array. Take the inner buffer.
+    bytes = rowsBlob[0];
+  } else if (Array.isArray(rowsBlob) && Array.isArray(rowsBlob[0])) {
+    bytes = new Uint8Array(rowsBlob[0]);
+  } else if (Array.isArray(rowsBlob)) {
+    bytes = Uint8Array.from(rowsBlob);
   } else {
     throw new Error(`Unexpected rows_blob shape for ${demoId}: ${JSON.stringify(rowsBlob)}`);
   }
@@ -210,7 +221,7 @@ function blobText(bytes) {
 
 function ingestEmbedding(demoId, meta) {
   const elementId = resolveElementId(demoId);
-  const values = meta.values.map((v) => `${Number(v)} : float32`).join("; ");
+  const values = meta.values.map((v) => `${Number(v).toFixed(1)} : float32`).join("; ");
   const argsText = `(
     record {
       logical_graph_name = "${GRAPH_NAME}";
@@ -219,15 +230,20 @@ function ingestEmbedding(demoId, meta) {
       values = vec { ${values} };
     }
   )`;
+  // admin_ingest_vertex_embedding returns Result<VertexEmbeddingIngestionResult, RouterError>.
+  // The Ok variant is a record { embedding_version: nat64; projection_outcome: Variant{Applied, DeferredForRepair} }.
+  // The Err variant can be any RouterError variant (NotAuthorized, NotFound, Conflict,
+  // InvalidArgument, GraphUnavailable, Internal, …). Use an empty Variant to allow any shape;
+  // we detect Err by key presence and look for the AlreadyExists-style conflict text.
   const IngestResult = IDL.Variant({
-    Ok: IDL.Null,
-    Err: IDL.Variant({
-      NotAuthorized: IDL.Null,
-      UnknownGraph: IDL.Text,
-      UnknownIndex: IDL.Text,
-      AlreadyExists: IDL.Null,
-      Invalid: IDL.Text,
+    Ok: IDL.Record({
+      embedding_version: IDL.Nat64,
+      projection_outcome: IDL.Variant({
+        Applied: IDL.Null,
+        DeferredForRepair: IDL.Null,
+      }),
     }),
+    Err: IDL.Variant({}),
   });
   const parsed = icp(
     [
@@ -243,7 +259,7 @@ function ingestEmbedding(demoId, meta) {
   );
   if ("Err" in parsed) {
     const errText = JSON.stringify(parsed.Err);
-    if (errText.includes("AlreadyExists") || errText.includes("already exists")) {
+    if (/AlreadyExists|already exists|Conflict|conflict/i.test(errText)) {
       throw new Error(`already ingested ${demoId}: ${errText}`);
     }
     throw new Error(`admin_ingest_vertex_embedding failed for ${demoId}: ${errText}`);
