@@ -3,18 +3,24 @@
 use super::{
     ProvisionAcceptResponse, ProvisionIngressError, ProvisionQueryError, ProvisionResult,
     ProvisionResultOutcome, accept_envelope_with_caller,
-    admin_install_deployment_binding_with_caller, build_record_from_request, query_job_with_caller,
-    record_to_result, router_ack_with_caller,
+    admin_install_deployment_binding_with_caller, artifact_get_status,
+    artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
+    build_record_from_request, query_job_with_caller, record_to_result,
+    release_activate_with_caller, release_get_active, release_publish_with_caller,
+    router_ack_with_caller,
 };
 use crate::canister::init;
+use crate::stable::artifact::ProvisionArtifactStore;
 use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
 use crate::stable::store::{
     DeploymentTrustStore, ProvisionJobStore, reset_all_maps, set_force_advance_error,
 };
 use crate::types::{
-    AdminInstallDeploymentBindingArgs, BootstrapAuthAction, DeploymentBinding, JobState,
-    ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest, ProvisionableResource,
-    ProvisionableResourceKind, ProvisioningIntentKey, RouterProvisionAck,
+    AdminInstallDeploymentBindingArgs, ArtifactError, ArtifactId, ArtifactPublishMetadataArgs,
+    ArtifactUploadChunkArgs, BootstrapAuthAction, BootstrapAuthorityRecord, CanisterKind,
+    DeploymentBinding, JobState, ProvisionAdminError, ProvisionJobRequestKey, ProvisionRequest,
+    ProvisionableResource, ProvisionableResourceKind, ProvisioningIntentKey, ReleaseActivateArgs,
+    ReleaseError, ReleaseId, ReleasePublishArgs, RouterProvisionAck, sha256,
 };
 use candid::Principal;
 
@@ -1447,15 +1453,6 @@ fn bootstrap_authority_singleton_survives_upgrade() {
 
 // === Artifact catalog handler tests (Plan 0061a) =============================
 
-use crate::canister::{
-    artifact_get_status, artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
-};
-use crate::stable::artifact::ProvisionArtifactStore;
-use crate::types::{
-    ArtifactError, ArtifactId, ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs,
-    BootstrapAuthorityRecord, CanisterKind, sha256,
-};
-
 fn gov() -> Principal {
     Principal::from_slice(&[100; 29])
 }
@@ -1609,4 +1606,115 @@ fn artifact_get_status_returns_none_for_verified_artifact() {
         Err(ArtifactError::ConflictingMetadata { .. })
     ));
     assert_eq!(artifact_get_status(id), None);
+}
+
+// === Release manifest + active release handler tests (Plan 0061b) ==========
+
+fn release_id(name: &str) -> ReleaseId {
+    ReleaseId(name.to_owned())
+}
+
+fn artifact_id_for_kind(kind: CanisterKind, version: &str, full_sha: [u8; 32]) -> ArtifactId {
+    ArtifactId::new(kind, version.to_owned(), full_sha)
+}
+
+fn publish_verified_artifact_for_release(
+    kind: CanisterKind,
+    version: &str,
+    chunks: Vec<&[u8]>,
+) -> ArtifactId {
+    let full: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+    let full_sha = sha256(&full);
+    let chunk_hashes: Vec<[u8; 32]> = chunks.iter().map(|c| sha256(c)).collect();
+    let id = artifact_id_for_kind(kind.clone(), version, full_sha);
+
+    artifact_publish_metadata_with_caller(
+        gov(),
+        ArtifactPublishMetadataArgs {
+            canister_kind: kind,
+            semantic_version: version.to_owned(),
+            sha256: full_sha,
+            byte_length: full.len() as u64,
+            chunk_hashes: chunk_hashes.clone(),
+        },
+        1,
+    )
+    .unwrap();
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        artifact_upload_chunk_with_caller(
+            gov(),
+            ArtifactUploadChunkArgs {
+                artifact_id: id.clone(),
+                chunk_index: i as u32,
+                bytes: chunk.to_vec(),
+            },
+            2 + i as u64,
+        )
+        .unwrap();
+    }
+    id
+}
+
+fn publish_compatible_release(r: ReleaseId) {
+    let ids = vec![
+        publish_verified_artifact_for_release(CanisterKind::Router, "0.1.0", vec![b"r0"]),
+        publish_verified_artifact_for_release(CanisterKind::Graph, "0.1.0", vec![b"g0"]),
+        publish_verified_artifact_for_release(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
+        publish_verified_artifact_for_release(CanisterKind::VectorIndex, "0.1.0", vec![b"v0"]),
+    ];
+    release_publish_with_caller(
+        gov(),
+        ReleasePublishArgs {
+            release_id: r,
+            artifact_ids: ids,
+        },
+        100,
+    )
+    .unwrap();
+}
+
+/// (h) release_activate rejects a non-bootstrap caller and leaves the active pointer unchanged.
+#[test]
+fn release_activate_rejects_non_bootstrap_caller() {
+    reset_all_maps();
+    seed_bootstrap();
+
+    let r = release_id("release-h");
+    publish_compatible_release(r.clone());
+
+    let err = release_activate_with_caller(
+        other_principal(),
+        ReleaseActivateArgs { release_id: r },
+        200,
+    )
+    .unwrap_err();
+
+    assert_eq!(err, ReleaseError::Unauthorized);
+    assert!(release_get_active().is_none());
+}
+
+/// (i) release_get_active returns None initially and Some after activation with sentinel fields.
+#[test]
+fn release_get_active_returns_none_when_no_release() {
+    reset_all_maps();
+    assert!(release_get_active().is_none());
+
+    seed_bootstrap();
+    let r = release_id("release-i");
+    publish_compatible_release(r.clone());
+
+    release_activate_with_caller(
+        gov_principal(),
+        ReleaseActivateArgs {
+            release_id: r.clone(),
+        },
+        200,
+    )
+    .unwrap();
+
+    let active = release_get_active().unwrap();
+    assert_eq!(active.release_id, r);
+    assert_eq!(active.activated_at_ns, 0);
+    assert_eq!(active.previous_release_id, None);
 }

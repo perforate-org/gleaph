@@ -2,8 +2,8 @@
 
 Date: 2026-06-12
 Status: accepted
-Last revised: 2026-07-06
-Anchor timestamp: 2026-07-07 04:52:11 UTC +0000
+Last revised: 2026-07-08
+Anchor timestamp: 2026-07-08 15:19:47 UTC +0000
 
 ## Revision history
 
@@ -36,6 +36,7 @@ Anchor timestamp: 2026-07-07 04:52:11 UTC +0000
 | 2026-06-24 | ADR 0031 slice 7: added `graph-vector-index` `VECTOR_REBUILD_STATE` (12), a derived per-index bounded shadow-version rebuild lifecycle; `SubjectMapEntry` gained `shadow_slot` (serde-default, no repack) for atomic publish; `VECTOR_INDEX_STABLE_LAYOUT` **13** regions (0–12).                                                                                                                                         |
 | 2026-06-25 | ADR 0031 slice 10: added `graph-vector-index` `VECTOR_MAINTENANCE_STATE` (14), a maintenance/operational execution state for per-index page-health scans (persists across upgrade, cleared only on init/reset); `VECTOR_INDEX_STABLE_LAYOUT` **15** regions (0–14). Added Router `ROUTER_VECTOR_MAINTENANCE_POLICIES` (44), the Router-owned maintenance policy catalog (default disabled); router **45** regions (0–44). |
 | 2026-07-08 | ADR 0036 Slice 8a: add `PROVISION_ARTIFACT_CATALOG` (MemoryId 6, Canonical), `PROVISION_ARTIFACT_UPLOAD` (MemoryId 7, Maintenance), and `PROVISION_ARTIFACT_CHUNKS` (MemoryId 8, Canonical). Provision region count 6 → 9, max id 5 → 8.                                                                                                                  |
+| 2026-07-08 | ADR 0036 Slice 8b: add `PROVISION_RELEASE_MANIFEST` (MemoryId 9, Canonical) and `PROVISION_ACTIVE_RELEASE` (MemoryId 10, Canonical). Provision region count 9 → 11, max id 8 → 10.                                                                                                                                  |
 | 2026-06-25 | Corrected `VECTOR_MAINTENANCE_STATE` classification in the revision history: it is `StableMemoryClass::Maintenance` with `RebuildPath::None`, not derived.                                                                                                                                                                                                                                                                |
 | 2026-06-25 | Marked the Context region-count paragraph as historical background and directed readers to the typed registry and §2 summary table for current counts.                                                                                                                                                                                                                                                                    |
 

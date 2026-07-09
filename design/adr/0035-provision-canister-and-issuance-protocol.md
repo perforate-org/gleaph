@@ -173,3 +173,4 @@ Slice 7 (2026-07-07) implements the durable bootstrap authority region (`PROVISI
 - [ADR 0036](0036-versioned-wasm-artifact-catalog.md) — compatible release selection and artifacts.
 - [ADR 0037](0037-provisioned-canister-lifecycle-and-controllers.md) — cleanup and controllers.
 - [ADR 0038](0038-provisioning-authorization-and-cycles-funding.md) — admission and cycle reservation.
+- Plan 0061b (release manifest + active-release pointer + activation) and Plan 0061c (install transfer + artifact audit log + PocketIC) build on the artifact catalog.

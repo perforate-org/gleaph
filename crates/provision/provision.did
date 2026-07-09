@@ -227,6 +227,36 @@ type ArtifactUploadChunkArgs = record {
 type Result_1 = variant { Ok: ArtifactMetadata; Err: ArtifactError };
 
 type Result_2 = variant { Ok: ArtifactUpload; Err: ArtifactError };
+type ReleaseId = record { text };
+type ReleaseManifest = record {
+    release_id: text;
+    router_artifact: ArtifactId;
+    graph_artifact: ArtifactId;
+    property_index_artifact: ArtifactId;
+    vector_index_artifact: ArtifactId;
+};
+type ReleaseActivateResult = record {
+    release_id: text;
+    activated_at_ns: nat64;
+    previous_release_id: opt text;
+};
+type ReleaseError = variant {
+    UnknownRelease: text;
+    ConflictingRelease: record { existing: text; requested: text };
+    NoBootstrapAuthority;
+    Unauthorized;
+    ArtifactNotFound: ArtifactId;
+    ArtifactNotVerified: ArtifactId;
+    ProvisionKindForbidden: ArtifactId;
+    IncompleteManifest: record { release_id: text; missing: vec ArtifactId };
+    NotUniquePerKind: record { release_id: text; kind: CanisterKind; conflicting: vec ArtifactId };
+};
+type ReleasePublishArgs = record { release_id: text; artifact_ids: vec ArtifactId };
+type ReleaseActivateArgs = record { release_id: text };
+
+type Result_3 = variant { Ok: ReleaseActivateResult; Err: ReleaseError };
+type Result_4 = variant { Ok: ReleaseManifest; Err: ReleaseError };
+
 
 service : (ProvisionInitArgs) -> {
     accept_envelope: (ProvisionRequest) -> (ProvisionIngressResult);
@@ -236,4 +266,7 @@ service : (ProvisionInitArgs) -> {
     artifact_publish_metadata: (ArtifactPublishMetadataArgs) -> (Result_1);
     artifact_upload_chunk: (ArtifactUploadChunkArgs) -> (Result_2);
     artifact_get_status: (ArtifactId) -> (opt ArtifactUpload) query;
+    release_activate: (ReleaseActivateArgs) -> (Result_3);
+    release_publish: (ReleasePublishArgs) -> (Result_4);
+    release_get_active: () -> (opt ReleaseActivateResult) query;
 };

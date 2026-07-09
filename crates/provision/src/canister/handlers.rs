@@ -8,12 +8,14 @@ use crate::canister::{
     ArtifactUpload, ProvisionIngressResult, ProvisionJobView, RouterAckResult,
     accept_envelope_with_caller, admin_install_deployment_binding_with_caller, artifact_get_status,
     artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
-    query_job_with_caller, router_ack_with_caller,
+    query_job_with_caller, release_activate_with_caller, release_get_active,
+    release_publish_with_caller, router_ack_with_caller,
 };
 use crate::stable::store::{DeploymentTrustStore, ProvisionJobStore};
 use crate::types::{
     AdminInstallDeploymentBindingArgs, ArtifactError, ArtifactId, ArtifactMetadata,
-    ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, ProvisionRequest, RouterProvisionAck,
+    ArtifactPublishMetadataArgs, ArtifactUploadChunkArgs, ProvisionRequest, ReleaseActivateArgs,
+    ReleaseActivateResult, ReleaseError, ReleaseManifest, ReleasePublishArgs, RouterProvisionAck,
 };
 
 /// Bootstrap the deployment trust store from init args.
@@ -87,4 +89,25 @@ pub fn artifact_upload_chunk_handler(
 /// Authorize `artifact_get_status` from the IC runtime and forward to the handler.
 pub fn artifact_get_status_handler(artifact_id: ArtifactId) -> Option<ArtifactUpload> {
     artifact_get_status(artifact_id)
+}
+
+/// Authorize `release_publish` from the IC runtime and forward to the handler.
+#[allow(clippy::result_large_err)]
+pub fn release_publish_handler(args: ReleasePublishArgs) -> Result<ReleaseManifest, ReleaseError> {
+    let caller = ic_cdk::api::msg_caller();
+    release_publish_with_caller(caller, args, crate::ic_time_ns())
+}
+
+/// Authorize `release_activate` from the IC runtime and forward to the handler.
+#[allow(clippy::result_large_err)]
+pub fn release_activate_handler(
+    args: ReleaseActivateArgs,
+) -> Result<ReleaseActivateResult, ReleaseError> {
+    let caller = ic_cdk::api::msg_caller();
+    release_activate_with_caller(caller, args, crate::ic_time_ns())
+}
+
+/// Return the currently active release, if any. Any caller.
+pub fn release_get_active_handler() -> Option<ReleaseActivateResult> {
+    release_get_active()
 }

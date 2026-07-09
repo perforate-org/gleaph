@@ -9,6 +9,8 @@ use super::memory::{
     StableJobIntentLockMap, init_deployment_trust, init_job_by_deployment, init_job_by_request,
     init_job_intent_lock,
 };
+#[cfg(test)]
+use super::release::reset_release_maps;
 use crate::types::{
     DeploymentBinding, JobState, ProvisionIntentLockMarker, ProvisionJobRecord,
     ProvisionJobRequestKey, ProvisioningIntentKey, is_legal_transition, is_terminal_state,
@@ -40,6 +42,7 @@ pub(crate) fn reset_all_maps() {
     INTENT_LOCK.with_borrow_mut(|map| map.clear_new());
     reset_bootstrap_auth_maps();
     reset_artifact_maps();
+    reset_release_maps();
     set_force_advance_error(false);
 }
 

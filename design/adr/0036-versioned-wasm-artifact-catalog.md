@@ -3,7 +3,7 @@
 Date: 2026-07-04
 Status: partially implemented
 Last revised: 2026-07-08
-Anchor timestamp: 2026-07-04 13:05:02 UTC +0000
+Anchor timestamp: 2026-07-08 15:19:47 UTC +0000
 
 ## Context
 
@@ -99,11 +99,12 @@ reassembly and version skew.
 ## Implementation status
 
 **Partially Implemented (2026-07-08).** Slice 8a adds three stable regions (MemoryId 6, 7, 8) for the
-artifact catalog, upload state, and verified canonical chunks, plus the `artifact_publish_metadata`,
-`artifact_upload_chunk`, and `artifact_get_status` public ingress methods. Reclaim policy: mutable
-upload state in region 7 is deleted on verify success; verified canonical chunks in region 8 are
-retained until explicit GC is designed. Release manifest, active-release pointer, install transfer,
-and management-canister chunk path are deferred to Slices 8b and 8c.
+**Partially Implemented (2026-07-08).** Slice 8a added three stable regions (MemoryId 6, 7, 8) for the
+artifact catalog, upload state, and verified canonical chunks. Slice 8b adds two stable regions
+(MemoryId 9, 10) for the release manifest and active release pointer, plus the `release_publish`,
+`release_activate`, and `release_get_active` public ingress methods. Release install
+(`release_install` handler that calls `upload_chunk` + `install_chunked_code`) and the artifact
+audit log (region 11) are deferred to Slice 8c.
 
 ## Cross-links
 

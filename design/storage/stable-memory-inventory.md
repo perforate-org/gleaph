@@ -1,8 +1,8 @@
 # Stable-memory inventory
 
-Last updated: 2026-07-07
-Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline value schema record + ADR 0035 Slice 1 provisioning-request catalog + Slice 5 Router outbound accept_envelope send (ROUTER_PROVISION_CONFIG durable binding) + Slice 6 owner-identity-bound intent lock release on Completed and four-branch invocation-owned rollback on send failure (only if current operation inserted the record and it is still AwaitingAck) (no new regions) (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 49 regions, 0–48; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) = 6 regions, 0–5)
-Anchor timestamp: 2026-07-07 16:55:03 UTC +0000
+Last updated: 2026-07-08
+Status: Implemented (graph: sequential LARA MemoryIds 0–31 + facade 32–45 = 46 regions, incl. ADR 0030 unique-effect outbox + slice-10 shard-local unique values + ADR 0031 canonical vertex embeddings + Slice 4 embedding incarnations; router repack ADR 0011/0018/0019 + ADR 0030 constraint catalog + reservation table + slice-6 reverse index + pending-effect discovery index + ADR 0031 Slice 3 embedding-name catalog + vector-index definition catalog + Slice 4 vector dispatch activation flag + Slice 10 vector maintenance policy catalog + ADR 0034 Slice 20 + Slice 24 edge inline value schema record + ADR 0035 Slice 1 provisioning-request catalog + Slice 5 Router outbound accept_envelope send (ROUTER_PROVISION_CONFIG durable binding) + Slice 6 owner-identity-bound intent lock release on Completed and four-branch invocation-owned rollback on send failure (only if current operation inserted the record and it is still AwaitingAck) (no new regions) (development stable data must be wiped when this format changes because backward compatibility is not maintained) = 49 regions, 0–48; graph-vector-index: ADR 0031 Slice 2 + Slice 6 reverse subject map + Slice 7 rebuild state + ADR 0032 slab page store + Slice 10 maintenance scan state = 15 regions, 0–14; provision: ADR 0035 Slice 2 + Slice 4 callable canister endpoints + Slice 7 durable bootstrap authority singleton (MemoryId 4) and per-governance audit log (MemoryId 5) + ADR 0036 Slice 8a artifact catalog (MemoryId 6), upload state (MemoryId 7), verified chunk bytes (MemoryId 8) + Slice 8b release manifest (MemoryId 9) and active release pointer (MemoryId 10) = 11 regions, 0–10)
+Anchor timestamp: 2026-07-08 15:19:47 UTC +0000
 
 Layout change policy: [ADR 0007](../adr/0007-stable-memory-layout.md).
 
@@ -34,7 +34,7 @@ this document and [ADR 0007](../adr/0007-stable-memory-layout.md) in the same pa
 | Router | 49 | 0–48 | `ROUTER_STABLE_LAYOUT` — `router_layout_registry_matches_baseline` |
 | Graph-index | 7 | 0–6 | `INDEX_STABLE_LAYOUT` — `index_layout_registry_matches_baseline` |
 | Graph-vector-index | 12 | 0–11 | `VECTOR_INDEX_STABLE_LAYOUT` — `vector_index_layout_registry_matches_baseline` |
-| Provision | 6 | 0–5 | `PROVISION_STABLE_LAYOUT` — `provision_layout_registry_matches_baseline` |
+| Provision | 11 | 0–10 | `PROVISION_STABLE_LAYOUT` — `provision_layout_registry_matches_baseline` |
 
 The canonical/derived split for the router registry projections is pinned by
 `router_registry_canonical_derived_split_matches_inventory`.
@@ -335,7 +335,7 @@ deferred.
 
 ## Provision canister — stable regions
 
-New in ADR 0035 Slice 2. **4 regions (MemoryId 0–3).** Code source of truth for runtime `MemoryId`
+New in ADR 0035 Slice 2. **11 regions (MemoryId 0–10).** Code source of truth for runtime `MemoryId`
 constants: `crates/provision/src/stable/memory.rs`. Typed registry and rebuild path:
 `PROVISION_STABLE_LAYOUT` in `crates/graph-kernel/src/stable_layout.rs`. Region 2 is a derived
 secondary index and is commit-synced with Region 1 (`PROVISION_JOB_BY_REQUEST`).
@@ -351,6 +351,8 @@ secondary index and is commit-synced with Region 1 (`PROVISION_JOB_BY_REQUEST`).
 | 6 | `PROVISION_ARTIFACT_CATALOG` | `PROVISION_ARTIFACT_CATALOG` | `init_artifact_catalog` | canonical | immutable artifact catalog (`ArtifactId → ArtifactMetadata`) (ADR 0036 Slice 8a) | — |
 | 7 | `PROVISION_ARTIFACT_UPLOAD` | `PROVISION_ARTIFACT_UPLOAD` | `init_artifact_upload` | maintenance | mutable upload/verification scratch state (`ArtifactId → ArtifactUpload`), reclaimed on verify success (ADR 0036 Slice 8a) | — |
 | 8 | `PROVISION_ARTIFACT_CHUNKS` | `PROVISION_ARTIFACT_CHUNKS` | `init_artifact_chunks` | canonical | verified canonical artifact chunk bytes (`ArtifactChunkKey → ArtifactChunk`) retained until explicit GC (ADR 0036 Slice 8a) | — |
+| 9 | `PROVISION_RELEASE_MANIFEST` | `RELEASE_MANIFEST_MAP` | `init_release_manifest` | canonical | immutable release manifest (`ReleaseId → ReleaseManifest`) (ADR 0036 Slice 8b) | — |
+| 10 | `PROVISION_ACTIVE_RELEASE` | `ACTIVE_RELEASE_CELL` | `init_active_release` | canonical | atomic active-release pointer (`StableCell<Option<ReleaseId>>`) (ADR 0036 Slice 8b) | — |
 
 ## Related documents
 

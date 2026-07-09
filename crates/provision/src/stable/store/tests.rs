@@ -1,6 +1,20 @@
 //! Unit tests for `DeploymentTrustStore` and `ProvisionJobStore`.
 
 use super::{DeploymentTrustStore, ProvisionJobStore};
+use crate::canister::{
+    artifact_publish_metadata_with_caller, artifact_upload_chunk_with_caller,
+    release_activate_with_caller, release_publish_with_caller,
+};
+use crate::stable::artifact::ProvisionArtifactStore;
+use crate::stable::memory::{
+    StableActiveReleaseCell, StableReleaseManifestMap, init_active_release, init_release_manifest,
+};
+use crate::stable::release::ProvisionReleaseStore;
+use crate::types::{
+    ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactPublishMetadataArgs,
+    ArtifactUploadChunkArgs, ArtifactUploadState, CanisterKind, ReleaseActivateArgs, ReleaseError,
+    ReleaseId, ReleaseManifest, ReleasePublishArgs, sha256,
+};
 use crate::types::{
     DeploymentBinding, JobState, ProvisionIntentLockMarker, ProvisionJobRecord,
     ProvisionJobRequestKey, ProvisionableResourceKind, ProvisioningIntentKey, ResourceJobEntry,
@@ -705,12 +719,6 @@ fn stable_cell_singleton_writes_overwrite_previous_value() {
 
 // === Artifact catalog store tests (Plan 0061a) ===============================
 
-use crate::stable::artifact::ProvisionArtifactStore;
-use crate::types::{
-    ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactUploadState,
-    CanisterKind, sha256,
-};
-
 fn router_artifact_id(version: &str, sha: [u8; 32]) -> ArtifactId {
     ArtifactId::new(CanisterKind::Router, version.to_owned(), sha)
 }
@@ -1054,4 +1062,397 @@ fn artifact_metadata_round_trip_stable_encoding() {
     let chunk_key_decoded = ArtifactChunkKey::from_bytes(chunk_key.into_bytes().into());
     assert_eq!(chunk_key_decoded.artifact_id, id);
     assert_eq!(chunk_key_decoded.chunk_index, 7);
+}
+
+// === Release manifest + active release tests (Plan 0061b) ================
+
+fn release_test_principal() -> Principal {
+    Principal::from_slice(&[1; 29])
+}
+
+fn release_seed_bootstrap() {
+    crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore::new().set_authority(
+        crate::types::BootstrapAuthorityRecord {
+            governance_principal: release_test_principal(),
+            binding_version_at_seed: 1,
+            seeded_at_ns: 1,
+        },
+    );
+}
+
+fn mk_artifact_id(kind: CanisterKind, version: &str, full_sha: [u8; 32]) -> ArtifactId {
+    ArtifactId::new(kind, version.to_owned(), full_sha)
+}
+
+fn publish_verified_artifact(kind: CanisterKind, version: &str, chunks: Vec<&[u8]>) -> ArtifactId {
+    let full: Vec<u8> = chunks.iter().flat_map(|c| c.iter().copied()).collect();
+    let full_sha = sha256(&full);
+    let chunk_hashes: Vec<[u8; 32]> = chunks.iter().map(|c| sha256(c)).collect();
+    let id = mk_artifact_id(kind.clone(), version, full_sha);
+
+    artifact_publish_metadata_with_caller(
+        release_test_principal(),
+        ArtifactPublishMetadataArgs {
+            canister_kind: kind,
+            semantic_version: version.to_owned(),
+            sha256: full_sha,
+            byte_length: full.len() as u64,
+            chunk_hashes: chunk_hashes.clone(),
+        },
+        1,
+    )
+    .unwrap();
+
+    for (i, chunk) in chunks.iter().enumerate() {
+        artifact_upload_chunk_with_caller(
+            release_test_principal(),
+            ArtifactUploadChunkArgs {
+                artifact_id: id.clone(),
+                chunk_index: i as u32,
+                bytes: chunk.to_vec(),
+            },
+            2 + i as u64,
+        )
+        .unwrap();
+    }
+    id
+}
+
+fn mk_release_id(name: &str) -> ReleaseId {
+    ReleaseId(name.to_owned())
+}
+
+/// (a) release_publish installs an immutable manifest.
+#[test]
+fn release_publish_installs_immutable_manifest() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+
+    let r = mk_release_id("release-a");
+    let ids = vec![
+        publish_verified_artifact(CanisterKind::Router, "0.1.0", vec![b"r0"]),
+        publish_verified_artifact(CanisterKind::Graph, "0.1.0", vec![b"g0"]),
+        publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
+        publish_verified_artifact(CanisterKind::VectorIndex, "0.1.0", vec![b"v0"]),
+    ];
+
+    let result = release_publish_with_caller(
+        release_test_principal(),
+        ReleasePublishArgs {
+            release_id: r.clone(),
+            artifact_ids: ids.clone(),
+        },
+        100,
+    )
+    .unwrap();
+
+    assert_eq!(result.release_id, r);
+    assert_eq!(result.router_artifact, ids[0]);
+    assert_eq!(result.graph_artifact, ids[1]);
+    assert_eq!(result.property_index_artifact, ids[2]);
+    assert_eq!(result.vector_index_artifact, ids[3]);
+
+    let stored = ProvisionReleaseStore::new().get_manifest(&r).unwrap();
+    assert_eq!(stored.release_id, r);
+    assert_eq!(stored.router_artifact, ids[0]);
+}
+
+/// (b) release_publish rejects a conflicting publish of the same ReleaseId.
+#[test]
+fn release_publish_rejects_conflicting_publish() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+
+    let r = mk_release_id("release-b");
+    let ids = vec![
+        publish_verified_artifact(CanisterKind::Router, "0.1.0", vec![b"r0"]),
+        publish_verified_artifact(CanisterKind::Graph, "0.1.0", vec![b"g0"]),
+        publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
+        publish_verified_artifact(CanisterKind::VectorIndex, "0.1.0", vec![b"v0"]),
+    ];
+
+    release_publish_with_caller(
+        release_test_principal(),
+        ReleasePublishArgs {
+            release_id: r.clone(),
+            artifact_ids: ids.clone(),
+        },
+        100,
+    )
+    .unwrap();
+
+    let second = release_publish_with_caller(
+        release_test_principal(),
+        ReleasePublishArgs {
+            release_id: r.clone(),
+            artifact_ids: ids,
+        },
+        101,
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            second,
+            ReleaseError::ConflictingRelease { ref existing, ref requested }
+            if *existing == r && *requested == r
+        ),
+        "expected ConflictingRelease, got {:?}",
+        second
+    );
+}
+
+/// (c) release_publish rejects an incomplete manifest (not exactly 4 ArtifactIds).
+#[test]
+fn release_publish_rejects_incomplete_manifest() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+
+    let r = mk_release_id("release-c");
+    let ids = vec![
+        publish_verified_artifact(CanisterKind::Router, "0.1.0", vec![b"r0"]),
+        publish_verified_artifact(CanisterKind::Graph, "0.1.0", vec![b"g0"]),
+        publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
+    ];
+
+    let err = release_publish_with_caller(
+        release_test_principal(),
+        ReleasePublishArgs {
+            release_id: r.clone(),
+            artifact_ids: ids,
+        },
+        100,
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, ReleaseError::IncompleteManifest { release_id: ref rid, .. } if *rid == r),
+        "expected IncompleteManifest, got {:?}",
+        err
+    );
+}
+
+/// (d) release_publish rejects non-unique per kind.
+#[test]
+fn release_publish_rejects_non_unique_per_kind() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+
+    let router_a = publish_verified_artifact(CanisterKind::Router, "0.1.0", vec![b"ra"]);
+    let router_b = publish_verified_artifact(CanisterKind::Router, "0.2.0", vec![b"rb"]);
+    let graph = publish_verified_artifact(CanisterKind::Graph, "0.1.0", vec![b"g0"]);
+    let prop = publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]);
+
+    let r = mk_release_id("release-d");
+    let err = release_publish_with_caller(
+        release_test_principal(),
+        ReleasePublishArgs {
+            release_id: r.clone(),
+            artifact_ids: vec![router_a.clone(), router_b.clone(), graph, prop],
+        },
+        100,
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(
+            err,
+            ReleaseError::NotUniquePerKind {
+                release_id: ref rid,
+                kind: CanisterKind::Router,
+                ref conflicting
+            }
+            if *rid == r && conflicting.len() == 2
+        ),
+        "expected NotUniquePerKind Router, got {:?}",
+        err
+    );
+}
+
+/// (e) release_publish rejects an unknown artifact reference.
+#[test]
+fn release_publish_rejects_unknown_artifact() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+
+    let known = vec![
+        publish_verified_artifact(CanisterKind::Router, "0.1.0", vec![b"r0"]),
+        publish_verified_artifact(CanisterKind::Graph, "0.1.0", vec![b"g0"]),
+        publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
+    ];
+    let unknown = mk_artifact_id(CanisterKind::VectorIndex, "0.9.0", sha256(b"missing"));
+
+    let r = mk_release_id("release-e");
+    let err = release_publish_with_caller(
+        release_test_principal(),
+        ReleasePublishArgs {
+            release_id: r.clone(),
+            artifact_ids: [known, vec![unknown.clone()]].concat(),
+        },
+        100,
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, ReleaseError::ArtifactNotFound(ref aid) if *aid == unknown),
+        "expected ArtifactNotFound, got {:?}",
+        err
+    );
+}
+
+/// (f) release_activate atomically swaps the active pointer and preserves existing jobs.
+#[test]
+fn release_activate_atomically_swaps_pointer_and_preserves_jobs() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+
+    // Seed a pre-existing job in the job regions (R9 non-retroactivity witness).
+    let job_store = ProvisionJobStore::new();
+    let pre_job = test_record("req-f", "dep-f", "fp-f");
+    job_store.insert_or_idempotent(pre_job.clone()).unwrap();
+
+    let r1 = mk_release_id("release-f1");
+    let r2 = mk_release_id("release-f2");
+    let ids1 = vec![
+        publish_verified_artifact(CanisterKind::Router, "0.1.0", vec![b"r0"]),
+        publish_verified_artifact(CanisterKind::Graph, "0.1.0", vec![b"g0"]),
+        publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]),
+        publish_verified_artifact(CanisterKind::VectorIndex, "0.1.0", vec![b"v0"]),
+    ];
+    let ids2 = vec![
+        publish_verified_artifact(CanisterKind::Router, "0.2.0", vec![b"r1"]),
+        publish_verified_artifact(CanisterKind::Graph, "0.2.0", vec![b"g1"]),
+        publish_verified_artifact(CanisterKind::PropertyIndex, "0.2.0", vec![b"p1"]),
+        publish_verified_artifact(CanisterKind::VectorIndex, "0.2.0", vec![b"v1"]),
+    ];
+
+    release_publish_with_caller(
+        release_test_principal(),
+        ReleasePublishArgs {
+            release_id: r1.clone(),
+            artifact_ids: ids1,
+        },
+        100,
+    )
+    .unwrap();
+    release_publish_with_caller(
+        release_test_principal(),
+        ReleasePublishArgs {
+            release_id: r2.clone(),
+            artifact_ids: ids2,
+        },
+        101,
+    )
+    .unwrap();
+
+    let first = release_activate_with_caller(
+        release_test_principal(),
+        ReleaseActivateArgs {
+            release_id: r1.clone(),
+        },
+        200,
+    )
+    .unwrap();
+    assert_eq!(first.release_id, r1);
+    assert_eq!(first.previous_release_id, None);
+
+    let second = release_activate_with_caller(
+        release_test_principal(),
+        ReleaseActivateArgs {
+            release_id: r2.clone(),
+        },
+        201,
+    )
+    .unwrap();
+    assert_eq!(second.release_id, r2);
+    assert_eq!(second.previous_release_id, Some(r1.clone()));
+
+    // Non-retroactivity: the pre-existing job is untouched.
+    assert_eq!(job_store.get_by_request("req-f", "dep-f"), Some(pre_job));
+}
+
+/// (g) release_activate rejects an unverified artifact and leaves the active pointer unchanged.
+#[test]
+fn release_activate_rejects_unverified_artifact() {
+    super::reset_all_maps();
+    release_seed_bootstrap();
+
+    let r = mk_release_id("release-g");
+    let router = publish_verified_artifact(CanisterKind::Router, "0.1.0", vec![b"r0"]);
+    let graph = publish_verified_artifact(CanisterKind::Graph, "0.1.0", vec![b"g0"]);
+    let prop = publish_verified_artifact(CanisterKind::PropertyIndex, "0.1.0", vec![b"p0"]);
+    // Publish metadata but do not upload chunks for the vector artifact.
+    let unverified_sha = sha256(b"never-uploaded");
+    let unverified = mk_artifact_id(CanisterKind::VectorIndex, "0.9.0", unverified_sha);
+    artifact_publish_metadata_with_caller(
+        release_test_principal(),
+        ArtifactPublishMetadataArgs {
+            canister_kind: CanisterKind::VectorIndex,
+            semantic_version: "0.9.0".to_owned(),
+            sha256: unverified_sha,
+            byte_length: 14,
+            chunk_hashes: vec![sha256(b"never-uploaded")],
+        },
+        1,
+    )
+    .unwrap();
+
+    release_publish_with_caller(
+        release_test_principal(),
+        ReleasePublishArgs {
+            release_id: r.clone(),
+            artifact_ids: vec![router, graph, prop, unverified.clone()],
+        },
+        100,
+    )
+    .unwrap();
+
+    let err = release_activate_with_caller(
+        release_test_principal(),
+        ReleaseActivateArgs {
+            release_id: r.clone(),
+        },
+        200,
+    )
+    .unwrap_err();
+
+    assert!(
+        matches!(err, ReleaseError::ArtifactNotVerified(ref aid) if *aid == unverified),
+        "expected ArtifactNotVerified, got {:?}",
+        err
+    );
+    assert_eq!(ProvisionReleaseStore::new().get_active(), None);
+}
+
+/// (j) release stable layout uses separate MemoryIds for manifest and active pointer.
+#[test]
+fn release_stable_layout_uses_separate_memory_ids() {
+    super::reset_all_maps();
+
+    let mut manifest_map: StableReleaseManifestMap = init_release_manifest();
+    let mut active_cell: StableActiveReleaseCell = init_active_release();
+
+    let r = mk_release_id("release-j");
+    manifest_map.insert(
+        r.clone(),
+        ReleaseManifest {
+            release_id: r.clone(),
+            router_artifact: mk_artifact_id(CanisterKind::Router, "0.0.0", sha256(b"j-r")),
+            graph_artifact: mk_artifact_id(CanisterKind::Graph, "0.0.0", sha256(b"j-g")),
+            property_index_artifact: mk_artifact_id(
+                CanisterKind::PropertyIndex,
+                "0.0.0",
+                sha256(b"j-p"),
+            ),
+            vector_index_artifact: mk_artifact_id(
+                CanisterKind::VectorIndex,
+                "0.0.0",
+                sha256(b"j-v"),
+            ),
+        },
+    );
+    active_cell.set(Some(r.clone()));
+
+    assert_eq!(manifest_map.get(&r).unwrap().release_id, r);
+    assert_eq!(active_cell.get().clone(), Some(r));
 }

@@ -530,6 +530,71 @@ pub struct ArtifactUploadChunkArgs {
 }
 
 // === Stable encodings for artifact catalog types ============================
+// === Release manifest + active release types (ADR 0036 Slice 8b) =============
+
+/// Opaque release identifier (e.g. "release-2026-07-08").
+#[derive(
+    Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize, Deserialize, CandidType,
+)]
+pub struct ReleaseId(pub String);
+
+/// Immutable release manifest: exactly one `ArtifactId` per non-Provision canister kind.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ReleaseManifest {
+    pub release_id: ReleaseId,
+    pub router_artifact: ArtifactId,
+    pub graph_artifact: ArtifactId,
+    pub property_index_artifact: ArtifactId,
+    pub vector_index_artifact: ArtifactId,
+}
+
+/// Return value of `release_activate` confirming the active release that was swapped.
+/// The `previous_release_id` field records the active release before the swap and
+/// enforces the non-retroactivity invariant: no job/receipt region is mutated.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ReleaseActivateResult {
+    pub release_id: ReleaseId,
+    pub activated_at_ns: u64,
+    pub previous_release_id: Option<ReleaseId>,
+}
+
+/// Errors returned by release publish/activate ingress methods.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub enum ReleaseError {
+    UnknownRelease(ReleaseId),
+    ConflictingRelease {
+        existing: ReleaseId,
+        requested: ReleaseId,
+    },
+    NoBootstrapAuthority,
+    Unauthorized,
+    ArtifactNotFound(ArtifactId),
+    ArtifactNotVerified(ArtifactId),
+    ProvisionKindForbidden(ArtifactId),
+    IncompleteManifest {
+        release_id: ReleaseId,
+        missing: Vec<ArtifactId>,
+    },
+    NotUniquePerKind {
+        release_id: ReleaseId,
+        kind: CanisterKind,
+        conflicting: Vec<ArtifactId>,
+    },
+}
+
+/// Arguments for `release_publish`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ReleasePublishArgs {
+    pub release_id: ReleaseId,
+    pub artifact_ids: Vec<ArtifactId>,
+}
+
+/// Arguments for `release_activate`.
+#[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize, CandidType)]
+pub struct ReleaseActivateArgs {
+    pub release_id: ReleaseId,
+}
+
 //
 // All stable-collection keys and values use Candid encoding with StorableBound::Unbounded
 // (Plan 0061a R10 composite stable-key compatibility; round-trip verified by test (j)).
@@ -609,6 +674,60 @@ impl Storable for ArtifactUploadState {
     }
     fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
         Decode!(bytes.as_ref(), Self).expect("decode ArtifactUploadState")
+    }
+}
+
+// === Stable encodings for release types (ADR 0036 Slice 8b) ================
+
+impl Storable for ReleaseId {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ReleaseId"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ReleaseId")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ReleaseId")
+    }
+}
+
+impl Storable for ReleaseManifest {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ReleaseManifest"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ReleaseManifest")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ReleaseManifest")
+    }
+}
+
+impl Storable for ReleaseActivateResult {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ReleaseActivateResult"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ReleaseActivateResult")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ReleaseActivateResult")
+    }
+}
+
+impl Storable for ReleaseError {
+    const BOUND: StorableBound = StorableBound::Unbounded;
+    fn to_bytes(&self) -> Cow<'_, [u8]> {
+        Cow::Owned(Encode!(self).expect("encode ReleaseError"))
+    }
+    fn into_bytes(self) -> Vec<u8> {
+        Encode!(&self).expect("encode ReleaseError")
+    }
+    fn from_bytes(bytes: Cow<'_, [u8]>) -> Self {
+        Decode!(bytes.as_ref(), Self).expect("decode ReleaseError")
     }
 }
 

@@ -76,6 +76,9 @@ mod tests {
             "artifact_publish_metadata",
             "artifact_upload_chunk",
             "artifact_get_status",
+            "release_publish",
+            "release_activate",
+            "release_get_active",
         ] {
             assert!(
                 names.contains(&required),
@@ -124,6 +127,45 @@ mod tests {
             );
         }
 
+        for method_name in ["release_publish", "release_activate"] {
+            let method = methods
+                .iter()
+                .find(|(n, _)| n == method_name)
+                .map(|(_, ty)| ty.clone())
+                .unwrap_or_else(|| panic!("{} method type", method_name));
+            let rets = match method.as_ref() {
+                candid::types::TypeInner::Func(func) => &func.rets,
+                _ => panic!("{} must be a function", method_name),
+            };
+            assert_eq!(
+                rets.len(),
+                1,
+                "{} must return exactly one variant",
+                method_name
+            );
+            let ret = &rets[0];
+            let is_null_result = matches!(ret.as_ref(), candid::types::TypeInner::Var(name) if {
+                env.0.get(name).is_some_and(|ty| {
+                    if let candid::types::TypeInner::Variant(fields) = ty.as_ref() {
+                        fields.iter().any(|f| {
+                            f.id.to_string() == "Ok"
+                                && matches!(f.ty.as_ref(), candid::types::TypeInner::Var(inner) if env
+                                    .0
+                                    .get(inner.as_str())
+                                    .is_some_and(|t| matches!(t.as_ref(), candid::types::TypeInner::Null)))
+                        })
+                    } else {
+                        false
+                    }
+                })
+            });
+            assert!(
+                !is_null_result,
+                "{} must not return Result<Null, ReleaseError>",
+                method_name
+            );
+        }
+
         let declared_types: Vec<&str> = env.0.keys().map(|name| name.as_str()).collect();
         for required_type in [
             "CreatedResource",
@@ -150,6 +192,12 @@ mod tests {
             "ArtifactError",
             "ArtifactPublishMetadataArgs",
             "ArtifactUploadChunkArgs",
+            "ReleaseId",
+            "ReleaseManifest",
+            "ReleaseActivateResult",
+            "ReleaseError",
+            "ReleasePublishArgs",
+            "ReleaseActivateArgs",
         ] {
             assert!(
                 declared_types.contains(&required_type),
@@ -188,7 +236,17 @@ mod tests {
                 .collect(),
         );
 
-        let generated_did = candid::pretty::candid::compile(&generated_env, &generated_actor);
+        let generated_reachable = reachable_type_names(&generated_env, &generated_actor);
+        let pruned_generated_env = candid::TypeEnv(
+            generated_env
+                .0
+                .iter()
+                .filter(|(name, _)| generated_reachable.contains(name.as_str()))
+                .map(|(name, ty)| (name.clone(), ty.clone()))
+                .collect(),
+        );
+        let generated_did =
+            candid::pretty::candid::compile(&pruned_generated_env, &generated_actor);
         let handwritten_did = candid::pretty::candid::compile(&pruned_env, &handwritten_actor);
         assert_eq!(
             generated_did, handwritten_did,

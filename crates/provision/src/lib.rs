@@ -18,7 +18,8 @@ use crate::types::AdminInstallError;
 use crate::types::{
     AdminInstallDeploymentBindingArgs, ArtifactError, ArtifactId, ArtifactMetadata,
     ArtifactPublishMetadataArgs, ArtifactUpload, ArtifactUploadChunkArgs, BootstrapAuthEntry,
-    ProvisionRequest, RouterProvisionAck,
+    ProvisionRequest, ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseManifest,
+    ReleasePublishArgs, RouterProvisionAck,
 };
 use ic_cdk_macros::{init, post_upgrade, query, update};
 
@@ -71,6 +72,23 @@ fn artifact_upload_chunk(args: ArtifactUploadChunkArgs) -> Result<ArtifactUpload
 #[query]
 fn artifact_get_status(artifact_id: ArtifactId) -> Option<ArtifactUpload> {
     handlers::artifact_get_status_handler(artifact_id)
+}
+
+#[allow(clippy::result_large_err)]
+#[update]
+fn release_publish(args: ReleasePublishArgs) -> Result<ReleaseManifest, ReleaseError> {
+    handlers::release_publish_handler(args)
+}
+
+#[allow(clippy::result_large_err)]
+#[update]
+fn release_activate(args: ReleaseActivateArgs) -> Result<ReleaseActivateResult, ReleaseError> {
+    handlers::release_activate_handler(args)
+}
+
+#[query]
+fn release_get_active() -> Option<ReleaseActivateResult> {
+    handlers::release_get_active_handler()
 }
 
 #[cfg(test)]

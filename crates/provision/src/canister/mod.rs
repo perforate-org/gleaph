@@ -10,6 +10,7 @@ use std::collections::HashSet;
 
 use crate::canister::init::binding_from_admin_args;
 use crate::stable::artifact::ProvisionArtifactStore;
+use crate::stable::release::ProvisionReleaseStore;
 use crate::stable::store::{DeploymentTrustStore, ProvisionJobStore};
 use crate::types::{
     AdminInstallDeploymentBindingArgs, ArtifactChunk, ArtifactChunkKey, ArtifactError, ArtifactId,
@@ -17,7 +18,8 @@ use crate::types::{
     ArtifactUploadState, BootstrapAuthAction, BootstrapAuthEntry, CanisterKind, CreatedResource,
     JobState, ProvisionAdminError, ProvisionJobRecord, ProvisionJobRequestKey, ProvisionRequest,
     ProvisionResult, ProvisionResultOutcome, ProvisionableResourceKind, ProvisioningIntentKey,
-    ResourceJobEntry, RouterProvisionAck, sha256, state_name,
+    ReleaseActivateArgs, ReleaseActivateResult, ReleaseError, ReleaseId, ReleaseManifest,
+    ReleasePublishArgs, ResourceJobEntry, RouterProvisionAck, sha256, state_name,
 };
 
 pub mod handlers;
@@ -607,6 +609,181 @@ pub(crate) fn artifact_upload_chunk_with_caller(
 pub(crate) fn artifact_get_status(artifact_id: ArtifactId) -> Option<ArtifactUpload> {
     let store = ProvisionArtifactStore::new();
     store.get_upload(&artifact_id)
+}
+
+// === Release manifest + active release handlers (ADR 0036 Slice 8b) ===========
+
+fn require_bootstrap_authority(caller: Principal) -> Result<Principal, ReleaseError> {
+    use crate::stable::bootstrap_auth::ProvisionBootstrapAuthStore;
+
+    let auth_store = ProvisionBootstrapAuthStore::new();
+    let authority = auth_store
+        .get_authority()
+        .ok_or(ReleaseError::NoBootstrapAuthority)?
+        .governance_principal;
+    if caller != authority {
+        return Err(ReleaseError::Unauthorized);
+    }
+    Ok(authority)
+}
+
+/// Canonicalize a `Vec<ArtifactId>` into the four-field release manifest.
+fn build_release_manifest(
+    release_id: ReleaseId,
+    artifact_ids: Vec<ArtifactId>,
+    artifact_store: &ProvisionArtifactStore,
+) -> Result<ReleaseManifest, ReleaseError> {
+    if artifact_ids.len() != 4 {
+        return Err(ReleaseError::IncompleteManifest {
+            release_id,
+            missing: vec![],
+        });
+    }
+
+    use std::collections::BTreeMap;
+    let mut by_kind: BTreeMap<CanisterKind, ArtifactId> = BTreeMap::new();
+    for artifact_id in &artifact_ids {
+        if !matches!(
+            artifact_id.canister_kind,
+            CanisterKind::Router
+                | CanisterKind::Graph
+                | CanisterKind::PropertyIndex
+                | CanisterKind::VectorIndex
+        ) {
+            return Err(ReleaseError::ProvisionKindForbidden(artifact_id.clone()));
+        }
+        if artifact_store.get_metadata(artifact_id).is_none() {
+            return Err(ReleaseError::ArtifactNotFound(artifact_id.clone()));
+        }
+        if let Some(existing) =
+            by_kind.insert(artifact_id.canister_kind.clone(), artifact_id.clone())
+        {
+            return Err(ReleaseError::NotUniquePerKind {
+                release_id: release_id.clone(),
+                kind: artifact_id.canister_kind.clone(),
+                conflicting: vec![existing, artifact_id.clone()],
+            });
+        }
+    }
+
+    let required = [
+        CanisterKind::Router,
+        CanisterKind::Graph,
+        CanisterKind::PropertyIndex,
+        CanisterKind::VectorIndex,
+    ];
+    let mut missing = Vec::new();
+    for kind in &required {
+        if !by_kind.contains_key(kind) {
+            missing.push(
+                by_kind
+                    .get(kind)
+                    .cloned()
+                    .unwrap_or_else(|| ArtifactId::new(kind.clone(), "".to_owned(), [0u8; 32])),
+            );
+        }
+    }
+    if !missing.is_empty() {
+        return Err(ReleaseError::IncompleteManifest {
+            release_id,
+            missing,
+        });
+    }
+
+    Ok(ReleaseManifest {
+        release_id,
+        router_artifact: by_kind.remove(&CanisterKind::Router).unwrap(),
+        graph_artifact: by_kind.remove(&CanisterKind::Graph).unwrap(),
+        property_index_artifact: by_kind.remove(&CanisterKind::PropertyIndex).unwrap(),
+        vector_index_artifact: by_kind.remove(&CanisterKind::VectorIndex).unwrap(),
+    })
+}
+
+/// Publish an immutable release manifest. Governance-only.
+#[allow(clippy::result_large_err)]
+pub(crate) fn release_publish_with_caller(
+    caller: Principal,
+    args: ReleasePublishArgs,
+    _now_ns: u64,
+) -> Result<ReleaseManifest, ReleaseError> {
+    require_bootstrap_authority(caller)?;
+
+    let artifact_store = ProvisionArtifactStore::new();
+    let manifest = build_release_manifest(args.release_id, args.artifact_ids, &artifact_store)?;
+
+    let release_store = ProvisionReleaseStore::new();
+    release_store.publish_manifest(manifest)
+}
+
+/// Atomically activate a release after re-validating its artifacts. Governance-only.
+#[allow(clippy::result_large_err)]
+pub(crate) fn release_activate_with_caller(
+    caller: Principal,
+    args: ReleaseActivateArgs,
+    now_ns: u64,
+) -> Result<ReleaseActivateResult, ReleaseError> {
+    require_bootstrap_authority(caller)?;
+
+    let release_store = ProvisionReleaseStore::new();
+    let manifest = release_store
+        .get_manifest(&args.release_id)
+        .ok_or(ReleaseError::UnknownRelease(args.release_id.clone()))?;
+
+    // Re-validate every referenced artifact against the derived verified predicate.
+    let artifact_store = ProvisionArtifactStore::new();
+    for artifact_id in [
+        &manifest.router_artifact,
+        &manifest.graph_artifact,
+        &manifest.property_index_artifact,
+        &manifest.vector_index_artifact,
+    ] {
+        if artifact_id.canister_kind == CanisterKind::Router
+            || artifact_id.canister_kind == CanisterKind::Graph
+            || artifact_id.canister_kind == CanisterKind::PropertyIndex
+            || artifact_id.canister_kind == CanisterKind::VectorIndex
+        {
+            // defensive: these are the only allowed kinds
+        } else {
+            return Err(ReleaseError::ProvisionKindForbidden((*artifact_id).clone()));
+        }
+        let metadata = artifact_store
+            .get_metadata(artifact_id)
+            .ok_or(ReleaseError::ArtifactNotFound((*artifact_id).clone()))?;
+
+        let chunk_count = metadata.chunk_hashes.len() as u32;
+        let staged = artifact_store.chunks_in_order(artifact_id, chunk_count);
+        if staged.len() != chunk_count as usize {
+            return Err(ReleaseError::ArtifactNotVerified((*artifact_id).clone()));
+        }
+        let mut full_bytes = Vec::with_capacity(metadata.byte_length as usize);
+        for chunk in &staged {
+            full_bytes.extend_from_slice(&chunk.bytes);
+        }
+        if sha256(&full_bytes) != metadata.artifact_id.sha256 {
+            return Err(ReleaseError::ArtifactNotVerified((*artifact_id).clone()));
+        }
+    }
+
+    let previous_release_id = release_store.get_active();
+    release_store.set_active(args.release_id.clone());
+
+    Ok(ReleaseActivateResult {
+        release_id: args.release_id,
+        activated_at_ns: now_ns,
+        previous_release_id,
+    })
+}
+
+/// Read the active release id, if any. Any caller.
+pub(crate) fn release_get_active() -> Option<ReleaseActivateResult> {
+    let release_store = ProvisionReleaseStore::new();
+    release_store
+        .get_active()
+        .map(|release_id| ReleaseActivateResult {
+            release_id,
+            activated_at_ns: 0,
+            previous_release_id: None,
+        })
 }
 
 fn hex_string(bytes: &[u8; 32]) -> String {

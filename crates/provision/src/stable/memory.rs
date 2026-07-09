@@ -3,10 +3,11 @@
 use crate::types::{
     ArtifactChunk, ArtifactChunkKey, ArtifactId, ArtifactMetadata, ArtifactUpload,
     DeploymentBinding, ProvisionIntentLockMarker, ProvisionJobRecord, ProvisionJobRequestKey,
+    ReleaseId, ReleaseManifest,
 };
 use gleaph_graph_kernel::provisioning::ProvisioningIntentKey;
 use ic_stable_structures::{
-    DefaultMemoryImpl, StableBTreeMap,
+    DefaultMemoryImpl, StableBTreeMap, StableCell,
     memory_manager::{MemoryId, MemoryManager, VirtualMemory},
 };
 use std::cell::RefCell;
@@ -34,6 +35,11 @@ pub(crate) const PROVISION_ARTIFACT_UPLOAD: MemoryId = MemoryId::new(7);
 // ADR 0036 Slice 8a: verified canonical artifact chunk bytes (MemoryId 8).
 pub(crate) const PROVISION_ARTIFACT_CHUNKS: MemoryId = MemoryId::new(8);
 
+// ADR 0036 Slice 8b: immutable release manifest (MemoryId 9).
+pub(crate) const PROVISION_RELEASE_MANIFEST: MemoryId = MemoryId::new(9);
+// ADR 0036 Slice 8b: atomic active-release pointer (MemoryId 10).
+pub(crate) const PROVISION_ACTIVE_RELEASE: MemoryId = MemoryId::new(10);
+
 pub(crate) type StableDeploymentTrustMap = StableBTreeMap<String, DeploymentBinding, Memory>;
 pub(crate) type StableJobByRequestMap =
     StableBTreeMap<ProvisionJobRequestKey, ProvisionJobRecord, Memory>;
@@ -47,6 +53,9 @@ pub(crate) type StableJobIntentLockMap =
 pub(crate) type StableArtifactCatalogMap = StableBTreeMap<ArtifactId, ArtifactMetadata, Memory>;
 pub(crate) type StableArtifactUploadMap = StableBTreeMap<ArtifactId, ArtifactUpload, Memory>;
 pub(crate) type StableArtifactChunksMap = StableBTreeMap<ArtifactChunkKey, ArtifactChunk, Memory>;
+
+pub(crate) type StableReleaseManifestMap = StableBTreeMap<ReleaseId, ReleaseManifest, Memory>;
+pub(crate) type StableActiveReleaseCell = StableCell<Option<ReleaseId>, Memory>;
 
 pub(crate) fn init_deployment_trust() -> StableDeploymentTrustMap {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(DEPLOYMENT_TRUST)))
@@ -74,4 +83,15 @@ pub(crate) fn init_artifact_upload() -> StableArtifactUploadMap {
 
 pub(crate) fn init_artifact_chunks() -> StableArtifactChunksMap {
     StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_ARTIFACT_CHUNKS)))
+}
+
+pub(crate) fn init_release_manifest() -> StableReleaseManifestMap {
+    StableBTreeMap::init(MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_RELEASE_MANIFEST)))
+}
+
+pub(crate) fn init_active_release() -> StableActiveReleaseCell {
+    StableCell::new(
+        MEMORY_MANAGER.with(|mm| mm.borrow().get(PROVISION_ACTIVE_RELEASE)),
+        None,
+    )
 }

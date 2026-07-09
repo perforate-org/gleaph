@@ -1133,6 +1133,24 @@ pub static PROVISION_STABLE_LAYOUT: StableCanisterLayout = StableCanisterLayout 
             "ArtifactChunkKey → ArtifactChunk: verified canonical WASM chunk bytes retained until explicit GC",
             RebuildPath::None,
         ),
+        // ADR 0036 Slice 8b: immutable release manifest (MemoryId 9).
+        region(
+            "PROVISION_RELEASE_MANIFEST",
+            9,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "ReleaseId → ReleaseManifest: immutable compatible artifact set membership",
+            RebuildPath::None,
+        ),
+        // ADR 0036 Slice 8b: atomic active-release pointer (MemoryId 10).
+        region(
+            "PROVISION_ACTIVE_RELEASE",
+            10,
+            StableMemoryClass::Canonical,
+            "provisioning",
+            "StableCell<Option<ReleaseId>>: atomic active-release selection (non-retroactive)",
+            RebuildPath::None,
+        ),
     ],
 };
 
@@ -1661,8 +1679,8 @@ mod tests {
     #[test]
     fn provision_layout_registry_matches_baseline() {
         assert_layout(&PROVISION_STABLE_LAYOUT);
-        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 9);
-        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(8));
+        assert_eq!(PROVISION_STABLE_LAYOUT.region_count(), 11);
+        assert_eq!(PROVISION_STABLE_LAYOUT.max_memory_id(), Some(10));
         assert_eq!(
             PROVISION_STABLE_LAYOUT.regions[2].class,
             StableMemoryClass::Derived
