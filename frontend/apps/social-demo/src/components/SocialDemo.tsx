@@ -44,6 +44,7 @@ const decodeFeedResult = (
       return {
         kind: "topicPath",
         postId,
+        body: expectText(map, "body"),
         createdAt: expectDateTimeSeconds(map, "created_at"),
         followsEdgeId: expectText(map, "follows_edge_id"),
         postedEdgeId: expectText(map, "posted_edge_id"),
@@ -56,11 +57,12 @@ const decodeFeedResult = (
       return {
         kind: "semanticPost",
         postId,
+        body: expectText(map, "body"),
         distance: expectFloat64(map, "distance"),
       };
     }
 
-    return { kind: "post", postId, createdAt: expectDateTimeSeconds(map, "created_at") };
+    return { kind: "post", postId, body: expectText(map, "body"), createdAt: expectDateTimeSeconds(map, "created_at") };
   });
 
   return { rows, rowCount: BigInt(rows.length) };

@@ -9,5 +9,5 @@ rdbSummary: |-
 graphSummary: |-
   The graph stores the same Post vertices and answers the same scan. The value here is not speed; it is that the same vertex model will later power relationship-aware feeds without a new schema.
 preparedQuery: |-
-  MATCH (p:Post) WHERE p.is_public = 1 RETURN p.demo_id AS post_id, p.created_at AS created_at ORDER BY created_at DESC
+  MATCH (p:Post) WHERE p.is_public = 1 RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at ORDER BY created_at DESC
 semanticVector: null

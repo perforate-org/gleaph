@@ -2660,6 +2660,43 @@ pub fn seed_social_graph(env: &FederationEnv) {
         let row_count = gql_execute_idempotent_as_admin(env, gql, key);
         assert_eq!(row_count, 0, "seed {key} should not return rows");
     }
+
+    // Verify every seeded Post body is readable from the graph.
+    use gleaph_gql::Value;
+    use gleaph_gql_ic::IcWirePlanQueryResult;
+
+    let expected_bodies: std::collections::HashMap<&str, &str> = [
+        ("post-alice-1", "Alice's public reply"),
+        ("post-bob-1", "Bob's topic note"),
+        ("post-bob-2", "Bob's second note"),
+        ("post-carol-1", "Carol's public note"),
+        ("post-dave-1", "Dave's public note"),
+        ("post-eve-1", "Eve's public note"),
+        ("post-eve-private", "Eve's draft"),
+    ]
+    .into_iter()
+    .collect();
+    for (post_id, expected_body) in expected_bodies {
+        let numeric_id = social_post_demo_id_to_numeric(post_id);
+        let query = format!("MATCH (p:Post {{demo_id: {}}}) RETURN p.body AS body LIMIT 1", numeric_id);
+        let result = gql_query_with_params_on_router(&env.pic, env.admin, env.router, &query, Vec::new());
+        let rows_blob = result.rows_blob.as_ref().expect("body query should return rows_blob");
+        let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode body rows");
+        assert_eq!(
+            wire.rows.len(),
+            1,
+            "body query for {post_id} should return exactly one row"
+        );
+        let row = wire.rows.into_iter().next().expect("one row").try_into_value_row().expect("wire row to value row");
+        let body = match row.get("body").unwrap_or_else(|| panic!("missing body column for {post_id}")) {
+            Value::Text(value) => value.as_str(),
+            other => panic!("expected Text body for {post_id}, got {other:?}"),
+        };
+        assert_eq!(
+            body, expected_body,
+            "body mismatch for {post_id}"
+        );
+    }
 }
 
 #[cfg(test)]

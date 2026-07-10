@@ -9,7 +9,7 @@ rdbSummary: |-
 graphSummary: |-
   Gleaph applies the same vector SEARCH inside the graph pattern `Alice → FOLLOWS → author → POSTED → Post`. `post-dave-1` is excluded despite being nearer because Dave is not a followee; only Bob and Carol's posts are returned, in semantic order.
 preparedQuery: |-
-  MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, distance ORDER BY distance ASC
+  MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC
 semanticVector:
   - 8
   - 0

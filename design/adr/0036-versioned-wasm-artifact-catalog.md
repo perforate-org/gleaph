@@ -131,3 +131,11 @@ prepared-query strings. The per-file YAML keys remain text (alice,
 post-alice-1, community-ic, topic-graph); only the emitted GQL layer uses
 plain integer literals `demo_id: <N>` (no `: u64` cast). This is a
 literal-format migration, not a change to the artifact-catalog schema.
+
+Per Plan 0064, the 5 prepared queries RETURN `p.body AS body` so the frontend
+renders the post text, and the two semantic scenarios load their query vectors
+at canister init time from `frontend/apps/social-demo/src/data/scenarios.generated.json`
+via Rust `include_str!` (parsed with `serde_json::from_str`). The vector is
+authored in per-scenario YAML, emitted by `build-config.mjs`, and consumed at
+compile time by `crates/social-demo-gateway/src/lib.rs`. The candid interface is
+unchanged.

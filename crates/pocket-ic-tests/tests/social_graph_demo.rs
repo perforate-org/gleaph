@@ -29,13 +29,13 @@ use gleaph_social_demo_gateway::SocialDemoScenario;
 const PUBLIC_TIMELINE_QUERY: &str = "\
 MATCH (p:Post) \
 WHERE p.is_public = 1 \
-RETURN p.demo_id AS post_id, p.created_at AS created_at \
+RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at \
 ORDER BY created_at DESC";
 
 const ALICE_HOME_FEED_QUERY: &str = "\
 MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) \
 WHERE u.demo_id = 1 AND p.is_public = 1 \
-RETURN p.demo_id AS post_id, p.created_at AS created_at \
+RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at \
 ORDER BY created_at DESC";
 
 const TOPIC_PATH_QUERY: &str = "\
@@ -48,6 +48,7 @@ RETURN p.demo_id AS post_id, \
        posted.demo_edge_id AS posted_edge_id, \
        t.demo_id AS topic_id, \
        has_topic.demo_edge_id AS topic_edge_id, \
+       p.body AS body, \
        p.created_at AS created_at \
 ORDER BY created_at DESC";
 
@@ -55,9 +56,9 @@ const SEMANTIC_EMBEDDING_NAME: &str = "post_vec";
 const SEMANTIC_INDEX_ID: u32 = 1;
 const SEMANTIC_DIMS: u16 = 8;
 
-const SEMANTIC_DISCOVERY_QUERY: &str = "MATCH (p:Post) WHERE p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, distance ORDER BY distance ASC";
+const SEMANTIC_DISCOVERY_QUERY: &str = "MATCH (p:Post) WHERE p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC";
 
-const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, distance ORDER BY distance ASC";
+const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC";
 
 const SOCIAL_SEEDS_JSON: &str =
     include_str!("../../../frontend/apps/knowledge-map/seeds/social-seeds.json");
@@ -226,6 +227,11 @@ fn assert_topic_path_explanation_through_gateway(
         text(row, "topic_edge_id"),
         "post-bob-1-topic-graph",
         "HAS_TOPIC edge identity should explain the path"
+    );
+    assert_eq!(
+        text(row, "body"),
+        "Bob's topic note",
+        "topic path should surface the Post body"
     );
 
     for row in &rows {

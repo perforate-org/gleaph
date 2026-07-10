@@ -1415,6 +1415,7 @@ dependencies = [
  "ic-cdk",
  "ic-cdk-macros",
  "serde",
+ "serde_json",
 ]
 
 [[package]]

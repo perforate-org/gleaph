@@ -533,6 +533,22 @@ writeFileSync(
   buildJsonScenarios()
 );
 
+// Validate generated scenario JSON semanticVector shape.
+const scenariosJsonText = readFileSync(join(DATA_DIR, "scenarios.generated.json"), "utf8");
+const parsedScenariosJson = JSON.parse(scenariosJsonText);
+if (!Array.isArray(parsedScenariosJson.scenarios)) {
+  throw new Error("Expected scenarios.generated.json to contain a scenarios array");
+}
+const semanticVectors = parsedScenariosJson.scenarios.map((s) => s.semanticVector);
+const nonNullVectors = semanticVectors.filter((v) => Array.isArray(v) && v.length === EMBEDDING_DIMS);
+const nullVectors = semanticVectors.filter((v) => v === null);
+if (nonNullVectors.length !== 2) {
+  throw new Error(`Expected exactly 2 non-null semanticVector arrays of length ${EMBEDDING_DIMS}, found ${nonNullVectors.length}`);
+}
+if (nullVectors.length !== 3) {
+  throw new Error(`Expected exactly 3 null semanticVector entries, found ${nullVectors.length}`);
+}
+
 // Validate emitted seeds.
 const seedsText = readFileSync(join(KM_SEEDS_DIR, "social-seeds.json"), "utf8");
 const parsedSeeds = JSON.parse(seedsText);

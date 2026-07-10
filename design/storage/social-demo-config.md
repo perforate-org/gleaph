@@ -141,8 +141,39 @@ Post nodes are ordered by `created_at` descending (ties broken by
   first 8 bytes of `SHA-256("social-demo:<userId>:<postId>")`, scaled to
   `[-1, 1]`.
 
+## Prepared query columns
+
+The 5 scenario `preparedQuery` strings share a common set of RETURN columns:
+
+| Column | Type | Source | Use |
+|--------|------|--------|-----|
+| `post_id` | numeric (Int64 in graph, `bigint` on wire) | `p.demo_id` | Stable deterministic post id from the global allocator. |
+| `body` | text | `p.body` | The post content rendered by the React app. |
+| `created_at` | nat64 | `p.created_at` | Chronological ordering for non-semantic scenarios. |
+| `distance` | float32 | vector SEARCH | L2-squared distance for semantic scenarios only. |
+| `follows_edge_id`, `posted_edge_id`, `topic_edge_id` | text | edge `demo_edge_id` | Relationship-trail explanation in `TopicPath`. |
+| `topic_id` | numeric (Int64 in graph, `bigint` on wire) | `t.demo_id` | Stable topic id in `TopicPath`. |
+
+All columns except `distance` are stored graph properties or edge properties; the
+GQL layer simply projects them. The `body` column was added to the seed GQL in
+Plan 0062 and surfaced in the prepared queries in Plan 0064.
+
+## Semantic vector at runtime
+
+The two semantic scenarios (`SemanticDiscovery`, `AliceSemanticFeed`) use an
+8-dimensional query vector. The vector is authored in the per-scenario YAML
+(`config/scenarios/{semantic-discovery,alice-semantic-feed}.yaml`) under
+`semanticVector:` and emitted into `scenarios.generated.json` by
+`build-config.mjs`.
+
+The `social-demo-gateway` canister loads the vector at init time through Rust
+`include_str!` on `frontend/apps/social-demo/src/data/scenarios.generated.json`
+(no separate `build.rs`). The JSON is parsed once with `serde_json::from_str` and
+stored in a thread-local; `scenario_to_request` selects the vector for the active
+scenario and encodes it as a compact-binary GQL parameter blob. Updating the
+vector therefore requires only changing the YAML and rebuilding the canister
+(after regenerating the JSON artifact).
+
 ## Out of scope
 
-This slice intentionally does not migrate `demo_id` from text to numeric, persist `body` in
-the graph, move the canister-side semantic query vector into YAML, or store
-edges as individual files. Those changes are tracked as follow-up plans.
+This slice intentionally does not store edges as individual files. That change is tracked as a follow-up plan.

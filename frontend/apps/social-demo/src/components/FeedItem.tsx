@@ -12,19 +12,16 @@ export function FeedItem(props: FeedItemProps) {
         </div>
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
-            <span class="font-semibold text-slate-900">{displayPostId(row.postId)}</span>
-            {row.kind === "post" && (
-              <span class="text-sm text-slate-500">· {formatDate(row.createdAt)}</span>
-            )}
-            {row.kind === "topicPath" && (
+            {row.kind !== "semanticPost" && (
               <span class="text-sm text-slate-500">· {formatDate(row.createdAt)}</span>
             )}
             {row.kind === "semanticPost" && (
               <span class="text-sm text-slate-500"> · L2-squared distance</span>
             )}
           </div>
-          <p class="mt-1 text-sm text-slate-600">
-            Returned by the <strong>{definition.label}</strong> Gateway scenario.
+          <p class="mt-1 text-base text-slate-900">{row.body}</p>
+          <p class="mt-1 text-xs text-slate-500">
+            Post {displayPostId(row.postId)} · returned by <strong>{definition.label}</strong>
           </p>
 
           {row.kind === "semanticPost" && (
@@ -56,7 +53,7 @@ export function FeedItem(props: FeedItemProps) {
                   <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">
                     {row.postedEdgeId}
                   </code>{" "}
-                  on <span class="font-medium">{displayPostId(row.postId)}</span>
+                  on <span class="font-medium">{row.body}</span>
                 </li>
                 <li>
                   Post-topic edge{" "}
