@@ -341,12 +341,11 @@ fn assert_alice_semantic_feed_through_gateway(
             ("10", 18.0),
         ],
     );
-    // Plan 0067 regression: AliceSemanticFeed's body column returns Null because the
-    // Router-issued resolved_properties table for SEARCH subplans omits the RETURN-clause
-    // properties. The fix lives in crates/router/src/gql_search.rs and is tracked under
-    // Plan 0068. The body assertion is therefore exercised in a separate `#[ignore]`-marked
-    // test below (`alice_semantic_feed_body_regression`) so the main contract test stays
-    // green while the bug is being fixed.
+    // Plan 0068 fixed AliceSemanticFeed's body column by extending the planner's
+    // property_uses collection to include row-local operator expressions (Project, etc.).
+    // The body assertion for this scenario lives in `alice_semantic_feed_body_regression`
+    // below so the main contract test and the SEARCH-subplan regression are independently
+    // observable.
 }
 
 fn assert_exact_distances(
@@ -478,16 +477,10 @@ fn distance_f64(row: &std::collections::BTreeMap<String, Value>, column: &str) -
 
 /// Plan 0067 / Plan 0068 regression target.
 ///
-/// This test is `#[ignore]`-marked and is **expected to fail** until Plan 0068 fixes the
-/// Router SEARCH-subplan property resolution. Run it explicitly with:
-///
-///   cargo test -p gleaph-pocket-ic-tests --test social_graph_demo \
-///     -- --ignored alice_semantic_feed_body_regression
-///
-/// It exercises the same AliceSemanticFeed Gateway path as the main contract test and
-/// asserts that every row's `body` column is a Text value (not Null).
+/// Exercises the AliceSemanticFeed Gateway path and asserts that every row's `body`
+/// column is a Text value (not Null). Enabled once Plan 0068 extended the planner's
+/// property_uses collection to include row-local operator expressions such as Project.
 #[test]
-#[ignore = "Plan 0068: Router SEARCH-subplan resolved_properties must include RETURN-clause properties"]
 fn alice_semantic_feed_body_regression() {
     let (env, gateway) = install_single_shard_federation_with_gateway();
 

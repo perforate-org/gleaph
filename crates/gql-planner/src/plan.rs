@@ -1094,6 +1094,51 @@ fn collect_property_uses_in_ops(ops: &[PlanOp], uses: &mut PlanPropertyUses) {
                     collect_read_properties_from_expr(filter, uses);
                 }
             }
+            // Plan 0068: row-local operators can reference graph properties in their
+            // column/order/aggregate/let/for expressions. Previously these were only
+            // collected via property_projection on scan/expand operators, so the Router-
+            // resolved property table for SEARCH subplans omitted RETURN-clause properties
+            // such as `body` (captured by the Plan 0067 ignored regression test
+            // `alice_semantic_feed_body_regression` in crates/pocket-ic-tests/tests/social_graph_demo.rs).
+            PlanOp::Project { columns, .. } | PlanOp::Materialize { columns, .. } => {
+                for column in columns {
+                    collect_read_properties_from_expr(&column.expr, uses);
+                }
+            }
+            PlanOp::Sort { order_by } | PlanOp::TopK { order_by, .. } => {
+                for item in &order_by.items {
+                    collect_read_properties_from_expr(&item.expr, uses);
+                }
+            }
+            PlanOp::Aggregate { group_by, aggregates } => {
+                for expr in group_by {
+                    collect_read_properties_from_expr(expr, uses);
+                }
+                for spec in aggregates {
+                    if let Some(expr) = &spec.expr {
+                        collect_read_properties_from_expr(expr, uses);
+                    }
+                    if let Some(expr2) = &spec.expr2 {
+                        collect_read_properties_from_expr(expr2, uses);
+                    }
+                    if let Some(filter) = &spec.filter {
+                        collect_read_properties_from_expr(filter, uses);
+                    }
+                    if let Some(order_by) = &spec.order_by {
+                        for item in &order_by.items {
+                            collect_read_properties_from_expr(&item.expr, uses);
+                        }
+                    }
+                }
+            }
+            PlanOp::For { list, .. } => {
+                collect_read_properties_from_expr(list, uses);
+            }
+            PlanOp::Let { bindings } => {
+                for binding in bindings {
+                    collect_read_properties_from_expr(&binding.value, uses);
+                }
+            }
             _ => {}
         }
     }
@@ -1446,7 +1491,8 @@ pub enum AnchorSource {
 mod property_uses_tests {
     use super::*;
     use gleaph_gql::Value;
-    use gleaph_gql::ast::{CmpOp, Expr, ExprKind};
+    use gleaph_gql::ast::{CmpOp, Expr, ExprKind, SortItem};
+    use gleaph_gql::token::Span;
 
     #[test]
     fn property_filter_contributes_read_property_uses() {
@@ -1574,4 +1620,177 @@ mod property_uses_tests {
             "record field 'score' must not be a graph property use"
         );
     }
+
+
+    fn node_scan(var: &str) -> PlanOp {
+        PlanOp::NodeScan {
+            variable: var.into(),
+            label: None,
+            property_projection: None,
+        }
+    }
+
+    fn prop(var: &str, property: &str) -> Expr {
+        Expr::new(ExprKind::PropertyAccess {
+            expr: Box::new(Expr::new(ExprKind::Variable(var.into()))),
+            property: property.into(),
+        })
+    }
+
+    fn sort_by(expr: Expr) -> OrderByClause {
+        OrderByClause {
+            span: Span { start: 0, end: 0 },
+            items: vec![SortItem {
+                span: Span { start: 0, end: 0 },
+                expr,
+                direction: None,
+                null_order: None,
+            }],
+        }
+    }
+
+    #[test]
+    fn project_column_property_use_contributes_read_existing() {
+        let plan = PhysicalPlan::from_ops(vec![
+            node_scan("p"),
+            PlanOp::Project {
+                columns: vec![ProjectColumn {
+                    expr: prop("p", "body"),
+                    alias: Some("body".into()),
+                }],
+                distinct: false,
+            },
+        ]);
+        let uses = plan.property_uses();
+        assert_eq!(
+            uses.properties.get("body" as &str),
+            Some(&PropertyUseIntent::ReadExisting),
+            "Project column p.body must be collected as ReadExisting"
+        );
+    }
+
+    #[test]
+    fn materialize_column_property_use_contributes_read_existing() {
+        let plan = PhysicalPlan::from_ops(vec![
+            node_scan("p"),
+            PlanOp::Materialize {
+                columns: vec![ProjectColumn {
+                    expr: prop("p", "body"),
+                    alias: Some("body".into()),
+                }],
+                distinct: false,
+            },
+        ]);
+        let uses = plan.property_uses();
+        assert_eq!(
+            uses.properties.get("body" as &str),
+            Some(&PropertyUseIntent::ReadExisting),
+            "Materialize column p.body must be collected as ReadExisting"
+        );
+    }
+
+    #[test]
+    fn sort_order_property_use_contributes_read_existing() {
+        let plan = PhysicalPlan::from_ops(vec![
+            node_scan("p"),
+            PlanOp::Sort {
+                order_by: sort_by(prop("p", "created_at")),
+            },
+        ]);
+        let uses = plan.property_uses();
+        assert_eq!(
+            uses.properties.get("created_at" as &str),
+            Some(&PropertyUseIntent::ReadExisting),
+            "Sort expression p.created_at must be collected as ReadExisting"
+        );
+    }
+
+    #[test]
+    fn topk_order_property_use_contributes_read_existing() {
+        let plan = PhysicalPlan::from_ops(vec![
+            node_scan("p"),
+            PlanOp::TopK {
+                order_by: sort_by(prop("p", "created_at")),
+                k: Expr::new(ExprKind::Literal(Value::Int64(5))),
+                offset: None,
+            },
+        ]);
+        let uses = plan.property_uses();
+        assert_eq!(
+            uses.properties.get("created_at" as &str),
+            Some(&PropertyUseIntent::ReadExisting),
+            "TopK ORDER BY expression must be collected as ReadExisting"
+        );
+    }
+
+    #[test]
+    fn aggregate_group_by_and_spec_property_uses_contribute_read_existing() {
+        let plan = PhysicalPlan::from_ops(vec![
+            node_scan("p"),
+            PlanOp::Aggregate {
+                group_by: vec![prop("p", "author")],
+                aggregates: vec![AggregateSpec {
+                    func: AggregateFunc::Sum,
+                    expr: Some(prop("p", "score")),
+                    expr2: None,
+                    distinct: false,
+                    filter: Some(Expr::new(ExprKind::Compare {
+                        left: Box::new(prop("p", "is_public")),
+                        op: CmpOp::Eq,
+                        right: Box::new(Expr::new(ExprKind::Literal(Value::Bool(true)))),
+                    })),
+                    order_by: Some(sort_by(prop("p", "rank"))),
+                    alias: Some("total".into()),
+                }],
+            },
+        ]);
+        let uses = plan.property_uses();
+        for name in ["author", "score", "is_public", "rank"] {
+            assert_eq!(
+                uses.properties.get(name as &str),
+                Some(&PropertyUseIntent::ReadExisting),
+                "aggregate expression p.{name} must be collected"
+            );
+        }
+    }
+
+    #[test]
+    fn for_list_property_use_contributes_read_existing() {
+        let plan = PhysicalPlan::from_ops(vec![
+            node_scan("p"),
+            PlanOp::For {
+                variable: "item".into(),
+                list: prop("p", "tags"),
+                ordinality: None,
+                offset_keyword: false,
+            },
+        ]);
+        let uses = plan.property_uses();
+        assert_eq!(
+            uses.properties.get("tags" as &str),
+            Some(&PropertyUseIntent::ReadExisting),
+            "FOR list expression p.tags must be collected as ReadExisting"
+        );
+    }
+
+    #[test]
+    fn let_binding_property_use_contributes_read_existing() {
+        let plan = PhysicalPlan::from_ops(vec![
+            node_scan("p"),
+            PlanOp::Let {
+                bindings: vec![LetBinding {
+                    span: Span { start: 0, end: 0 },
+                    variable: "b".into(),
+                    value: prop("p", "body"),
+                }],
+            },
+        ]);
+        let uses = plan.property_uses();
+        assert_eq!(
+            uses.properties.get("body" as &str),
+            Some(&PropertyUseIntent::ReadExisting),
+            "LET binding value p.body must be collected as ReadExisting"
+        );
+    }
+
 }

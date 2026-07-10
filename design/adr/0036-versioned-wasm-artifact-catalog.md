@@ -144,3 +144,11 @@ Per Plan 0065, social-demo's `is_public` property is stored and compared as a
 native GQL `BOOL` instead of `Int64` `1`/`0`. Seed GQL writes
 `is_public: TRUE`/`FALSE`, prepared queries compare with `p.is_public = TRUE`/`FALSE`,
 and `social-graph.json` stores JSON `true`/`false`. No canister or candid change.
+
+Per Plan 0068 (2026-07-10), the GQL planner's `PhysicalPlan::property_uses()` now
+includes graph properties referenced by row-local operators (`Project`, `Materialize`,
+`Sort`, `TopK`, `Aggregate`, `For`, `Let`). This ensures the Router-resolved property
+table consumed by Graph execution carries RETURN-clause properties such as `body`
+for SEARCH subplans, fixing the AliceSemanticFeed body=Null regression captured by
+Plan 0067. The planner remains the single source of truth for the semantic inventory
+of property names; Router and Graph consume it through existing APIs.
