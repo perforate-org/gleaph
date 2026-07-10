@@ -2,6 +2,8 @@
 import { readFileSync } from "node:fs";
 import { execFileSync } from "node:child_process";
 import { IDL } from "@icp-sdk/core/candid";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 
 const ROOT = process.cwd();
 const MANIFEST_PATH = process.argv[2] || `${ROOT}/frontend/apps/knowledge-map/seeds/social-seeds.json`;
@@ -134,6 +136,55 @@ function buildWireResultType() {
 
 const WIRE_RESULT_TYPE = buildWireResultType();
 
+// RouterError: full variant from router canister (router.did line 425-).
+// Mirrors the RouterError shape so IDL.decode succeeds on Err payloads; the
+// previous placeholders `Err: IDL.Record({code, message})` (gql_query) and
+// `Err: IDL.Variant({})` (admin_ingest_vertex_embedding) both failed to decode
+// the wire shape and surfaced as opaque "CandidDecodeError: non-record type"
+// failures that hid the real router error.
+const RouterError = IDL.Variant({
+  Internal: IDL.Text,
+  ShardNotRegistered: IDL.Null,
+  AckConflict: IDL.Record({ stored: IDL.Nat64 }),
+  UnsupportedMultiDmlBundle: IDL.Record({ dml_statements: IDL.Nat32, shard_count: IDL.Nat32 }),
+  VectorDispatchActivationBlocked: IDL.Variant({
+    DispatchNotActivated: IDL.Null,
+    ShardsNotVectorAttached: IDL.Null,
+    MissingEmbeddingIncarnationFence: IDL.Null,
+  }),
+  UnknownDeployment: IDL.Text,
+  NotFound: IDL.Text,
+  ProvisionEncodingFailed: IDL.Text,
+  ProvisionCallFailed: IDL.Text,
+  GraphUnavailable: IDL.Null,
+  NotAuthorized: IDL.Null,
+  ProvisionRejected: IDL.Text,
+  ExecutionPathMismatch: IDL.Record({
+    remedy: IDL.Text,
+    entrypoint: IDL.Text,
+    program_kind: IDL.Text,
+    call_kind: IDL.Text,
+  }),
+  UniquenessReservationInFlight: IDL.Text,
+  InvalidArgument: IDL.Text,
+  GraphContextMismatch: IDL.Record({ resolved_graph: IDL.Text, api_graph: IDL.Text }),
+  NotImplemented: IDL.Text,
+  IdExhausted: IDL.Text,
+  Forbidden: IDL.Null,
+  ShardAlreadyRegistered: IDL.Null,
+  ProjectionLag: IDL.Record({
+    shard_id: IDL.Nat32,
+    required: IDL.Nat64,
+    current: IDL.Nat64,
+    watermark: IDL.Text,
+  }),
+  InvalidState: IDL.Text,
+  ProvisionConflict: IDL.Text,
+  UniquenessViolation: IDL.Text,
+  Conflict: IDL.Text,
+});
+
+
 function decodeRowsBlob(bytes) {
   const [decoded] = IDL.decode([WIRE_RESULT_TYPE], Uint8Array.from(bytes));
   return decoded.rows;
@@ -153,8 +204,39 @@ function extractBytes(row, column) {
   throw new Error(`Missing bytes column ${column}`);
 }
 
+function readDemoIdMap() {
+  // scripts/ingest-social-embeddings.mjs -> ../src/data/scenarios.generated.json
+  const scenariosPath = join(
+    dirname(fileURLToPath(import.meta.url)),
+    "..",
+    "src",
+    "data",
+    "scenarios.generated.json"
+  );
+  const text = readFileSync(scenariosPath, "utf8");
+  const parsed = JSON.parse(text);
+  if (!parsed || !parsed.demoIdMap || typeof parsed.demoIdMap !== "object") {
+    throw new Error(
+      "scenarios.generated.json must contain a 'demoIdMap' object; rerun `pnpm -C frontend/apps/social-demo run build:config`."
+    );
+  }
+  return new Map(Object.entries(parsed.demoIdMap));
+}
+
 function resolveElementId(demoId) {
-  const query = `MATCH (p:Post {demo_id: '${demoId}'}) RETURN ELEMENT_ID(p) AS element_id`;
+  // Resolve the canonical Int64 demo_id for this post.  The map is
+  // emitted by build-config.mjs alongside the scenarios JSON.  Falls back
+  // to a parse-time error if the map is missing (which would indicate a stale
+  // build:config run).
+  const demoIdMap = readDemoIdMap();
+  const numericId = demoIdMap.get(demoId);
+  if (numericId === undefined) {
+    throw new Error(`No demo_id mapping for post '${demoId}' in scenarios.generated.json`);
+  }
+  // Use a bare Int64 literal (no quotes); the graph runtime stores demo_id as
+  // Int64 (Plan 0063), and a Text literal here is reported as "incomparable
+  // values in query expression for 'query'".
+  const query = `MATCH (p:Post) WHERE p.demo_id = ${numericId} RETURN ELEMENT_ID(p) AS element_id`;
   const argsText = `("${query}", vec {})`;
   const QueryGqlResult = IDL.Variant({
     Ok: IDL.Record({
@@ -163,7 +245,7 @@ function resolveElementId(demoId) {
       row_count: IDL.Nat64,
       phase: IDL.Opt(IDL.Text),
     }),
-    Err: IDL.Record({ code: IDL.Text, message: IDL.Text }),
+    Err: RouterError,
   });
   const ok = icp(
     [
@@ -243,7 +325,7 @@ function ingestEmbedding(demoId, meta) {
         DeferredForRepair: IDL.Null,
       }),
     }),
-    Err: IDL.Variant({}),
+    Err: RouterError,
   });
   const parsed = icp(
     [

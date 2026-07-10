@@ -511,8 +511,20 @@ export const scenarioDefinitionById = (id: ScenarioId): ScenarioDefinition => {
 `;
 };
 
-const buildJsonScenarios = () =>
-  `${JSON.stringify({ scenarios }, null, 2)}\n`;
+const buildJsonScenarios = () => {
+  // Include the postId -> demo_id (Int64) map so the embeddings ingest script
+  // (and any other non-TypeScript client) can resolve the canonical integer
+  // id for each post without re-parsing the seed GQL strings.  Mirrors
+  // `DEMO_ID_MAP` in scenarios.generated.ts; the keys are the post file stems
+  // and the values are the same Int64 values used in the GQL seeds.
+  // idMap is a Map<string, bigint>; serialize the values as JSON numbers
+  // (Int64 in graph storage).  Number is safe here because the social-demo
+  // demo_id space is well below 2^53.
+  const demoIdMap = Object.fromEntries(
+    Array.from(idMap.entries()).map(([k, v]) => [k, Number(v)])
+  );
+  return `${JSON.stringify({ scenarios, demoIdMap }, null, 2)}\n`;
+};
 
 // ---------------------------------------------------------------------------
 // Emit artifacts

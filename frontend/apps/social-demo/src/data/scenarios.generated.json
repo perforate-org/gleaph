@@ -78,5 +78,22 @@
         0
       ]
     }
-  ]
+  ],
+  "demoIdMap": {
+    "alice": 1,
+    "bob": 2,
+    "carol": 3,
+    "dave": 4,
+    "eve": 5,
+    "community-ic": 6,
+    "topic-graph": 7,
+    "topic-ic": 8,
+    "post-alice-1": 9,
+    "post-bob-1": 10,
+    "post-bob-2": 11,
+    "post-carol-1": 12,
+    "post-dave-1": 13,
+    "post-eve-1": 14,
+    "post-eve-private": 15
+  }
 }
