@@ -9,7 +9,7 @@
       "explanationTitle": "Relational baseline",
       "rdbSummary": "A chronological list of public rows is exactly what an RDB does well: one index on created_at, a simple visibility predicate, and no joins.",
       "graphSummary": "The graph stores the same Post vertices and answers the same scan. The value here is not speed; it is that the same vertex model will later power relationship-aware feeds without a new schema.",
-      "preparedQuery": "MATCH (p:Post) WHERE p.is_public = 1 RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at ORDER BY created_at DESC",
+      "preparedQuery": "MATCH (p:Post) WHERE p.is_public = TRUE RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at ORDER BY created_at DESC",
       "semanticVector": null
     },
     {
@@ -21,7 +21,7 @@
       "explanationTitle": "Graph traversal",
       "rdbSummary": "An RDB needs a follows join table and a two-hop join (follower → followee → posts). The query is still SQL-shaped, but the relationship is now a traversal, not a foreign-key lookup.",
       "graphSummary": "Gleaph walks Alice → FOLLOWS → author → POSTED → Post as one bounded graph pattern. The feed is the natural result of the relationship shape, not an application-side assembly.",
-      "preparedQuery": "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = 1 RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at ORDER BY created_at DESC",
+      "preparedQuery": "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = TRUE RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at ORDER BY created_at DESC",
       "semanticVector": null
     },
     {
@@ -45,7 +45,7 @@
       "explanationTitle": "Vector retrieval",
       "rdbSummary": "Pure vector search has no join table: it scores every public Post against a fixed query vector and returns the nearest neighbors by L2-squared distance.",
       "graphSummary": "Gleaph stores canonical Post embeddings on the Graph shard and routes vector SEARCH through the derived index. `post-dave-1` is deliberately the nearest public Post even though Alice does not follow Dave.",
-      "preparedQuery": "MATCH (p:Post) WHERE p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC",
+      "preparedQuery": "MATCH (p:Post) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC",
       "semanticVector": [
         8,
         0,
@@ -66,7 +66,7 @@
       "explanationTitle": "Hybrid retrieval",
       "rdbSummary": "Combining vector similarity with a relational filter requires joining the vector result set back to followee authorship, usually in application code.",
       "graphSummary": "Gleaph applies the same vector SEARCH inside the graph pattern `Alice → FOLLOWS → author → POSTED → Post`. `post-dave-1` is excluded despite being nearer because Dave is not a followee; only Bob and Carol's posts are returned, in semantic order.",
-      "preparedQuery": "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC",
+      "preparedQuery": "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC",
       "semanticVector": [
         8,
         0,

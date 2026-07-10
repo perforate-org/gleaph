@@ -28,13 +28,13 @@ use gleaph_social_demo_gateway::SocialDemoScenario;
 
 const PUBLIC_TIMELINE_QUERY: &str = "\
 MATCH (p:Post) \
-WHERE p.is_public = 1 \
+WHERE p.is_public = TRUE \
 RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at \
 ORDER BY created_at DESC";
 
 const ALICE_HOME_FEED_QUERY: &str = "\
 MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) \
-WHERE u.demo_id = 1 AND p.is_public = 1 \
+WHERE u.demo_id = 1 AND p.is_public = TRUE \
 RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at \
 ORDER BY created_at DESC";
 
@@ -56,9 +56,9 @@ const SEMANTIC_EMBEDDING_NAME: &str = "post_vec";
 const SEMANTIC_INDEX_ID: u32 = 1;
 const SEMANTIC_DIMS: u16 = 8;
 
-const SEMANTIC_DISCOVERY_QUERY: &str = "MATCH (p:Post) WHERE p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC";
+const SEMANTIC_DISCOVERY_QUERY: &str = "MATCH (p:Post) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC";
 
-const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = 1 SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC";
+const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC";
 
 const SOCIAL_SEEDS_JSON: &str =
     include_str!("../../../frontend/apps/knowledge-map/seeds/social-seeds.json");

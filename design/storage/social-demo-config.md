@@ -70,7 +70,7 @@ values when needed.
 | `id` | string (optional) | Post `demo_id`; defaults to `post-<user>-<stem>`. |
 | `body` | string | Post `body` property and display label. |
 | `created_at` | nat64 (optional) | Defaults to a deterministic value derived from the file path. |
-| `is_public` | bool (optional) | Defaults to `true`; stored as `1`/`0` in the graph. |
+| `is_public` | bool (optional) | Defaults to `true`; stored as a native GQL BOOL in the graph (compare with `= TRUE` / `= FALSE`). |
 | `topics` | list of topic ids | Generates `HAS_TOPIC` edges. |
 
 The post YAML does not declare `demo_id` directly; `build-config.mjs` derives the

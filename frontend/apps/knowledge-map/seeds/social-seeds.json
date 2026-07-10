@@ -46,31 +46,31 @@
     },
     {
       "key": "social-seed-edge-alice-posted-1",
-      "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 9, demo_graph: 'social', body: 'Alice''s public reply', created_at: 202607030600, is_public: 1})"
+      "gql": "MATCH (a:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'alice-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 9, demo_graph: 'social', body: 'Alice''s public reply', created_at: 202607030600, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-bob-posted-2",
-      "gql": "MATCH (a:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 11, demo_graph: 'social', body: 'Bob''s second note', created_at: 202607030500, is_public: 1})"
+      "gql": "MATCH (a:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-2', demo_kind: 'posted'}]->(b:Post {demo_id: 11, demo_graph: 'social', body: 'Bob''s second note', created_at: 202607030500, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-carol-posted-1",
-      "gql": "MATCH (a:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'carol-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 12, demo_graph: 'social', body: 'Carol''s public note', created_at: 202607030400, is_public: 1})"
+      "gql": "MATCH (a:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'carol-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 12, demo_graph: 'social', body: 'Carol''s public note', created_at: 202607030400, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-bob-posted-1",
-      "gql": "MATCH (a:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 10, demo_graph: 'social', body: 'Bob''s topic note', created_at: 202607030300, is_public: 1})"
+      "gql": "MATCH (a:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'bob-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 10, demo_graph: 'social', body: 'Bob''s topic note', created_at: 202607030300, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-eve-posted-1",
-      "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 14, demo_graph: 'social', body: 'Eve''s public note', created_at: 202607030200, is_public: 1})"
+      "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 14, demo_graph: 'social', body: 'Eve''s public note', created_at: 202607030200, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-dave-posted-1",
-      "gql": "MATCH (a:User {demo_id: 4, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'dave-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 13, demo_graph: 'social', body: 'Dave''s public note', created_at: 202607030100, is_public: 1})"
+      "gql": "MATCH (a:User {demo_id: 4, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'dave-posted-1', demo_kind: 'posted'}]->(b:Post {demo_id: 13, demo_graph: 'social', body: 'Dave''s public note', created_at: 202607030100, is_public: TRUE})"
     },
     {
       "key": "social-seed-edge-eve-posted-private",
-      "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-private', demo_kind: 'posted'}]->(b:Post {demo_id: 15, demo_graph: 'social', body: 'Eve''s draft', created_at: 202607030000, is_public: 0})"
+      "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-private', demo_kind: 'posted'}]->(b:Post {demo_id: 15, demo_graph: 'social', body: 'Eve''s draft', created_at: 202607030000, is_public: FALSE})"
     },
     {
       "key": "social-seed-edge-post-bob-1-topic-graph",

@@ -139,3 +139,8 @@ via Rust `include_str!` (parsed with `serde_json::from_str`). The vector is
 authored in per-scenario YAML, emitted by `build-config.mjs`, and consumed at
 compile time by `crates/social-demo-gateway/src/lib.rs`. The candid interface is
 unchanged.
+
+Per Plan 0065, social-demo's `is_public` property is stored and compared as a
+native GQL `BOOL` instead of `Int64` `1`/`0`. Seed GQL writes
+`is_public: TRUE`/`FALSE`, prepared queries compare with `p.is_public = TRUE`/`FALSE`,
+and `social-graph.json` stores JSON `true`/`false`. No canister or candid change.

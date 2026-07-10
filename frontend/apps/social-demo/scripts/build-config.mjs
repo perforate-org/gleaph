@@ -231,7 +231,7 @@ for (const topic of topics) {
 for (const post of posts) {
   const properties = {};
   properties.created_at = post.createdAt;
-  properties.is_public = post.isPublic ? 1 : 0;
+  properties.is_public = post.isPublic;
 
   nodes.push({
     id: post.id,
@@ -328,7 +328,9 @@ const nodeProperties = (node) => {
     for (const [key, value] of Object.entries(node.properties)) {
       if (typeof value === "string") {
         props.push(`${key}: '${escapeGqlString(value)}'`);
-      } else if (typeof value === "number" || typeof value === "boolean") {
+      } else if (typeof value === "boolean") {
+        props.push(`${key}: ${value ? "TRUE" : "FALSE"}`);
+      } else if (typeof value === "number") {
         props.push(`${key}: ${value}`);
       } else {
         throw new Error(

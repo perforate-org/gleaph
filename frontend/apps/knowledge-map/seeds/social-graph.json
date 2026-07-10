@@ -73,7 +73,7 @@
       "property": "body",
       "properties": {
         "created_at": 202607030600,
-        "is_public": 1
+        "is_public": true
       },
       "embedding": {
         "name": "post_vec",
@@ -100,7 +100,7 @@
       "property": "body",
       "properties": {
         "created_at": 202607030500,
-        "is_public": 1
+        "is_public": true
       },
       "embedding": {
         "name": "post_vec",
@@ -127,7 +127,7 @@
       "property": "body",
       "properties": {
         "created_at": 202607030400,
-        "is_public": 1
+        "is_public": true
       },
       "embedding": {
         "name": "post_vec",
@@ -154,7 +154,7 @@
       "property": "body",
       "properties": {
         "created_at": 202607030300,
-        "is_public": 1
+        "is_public": true
       },
       "embedding": {
         "name": "post_vec",
@@ -181,7 +181,7 @@
       "property": "body",
       "properties": {
         "created_at": 202607030200,
-        "is_public": 1
+        "is_public": true
       },
       "embedding": {
         "name": "post_vec",
@@ -208,7 +208,7 @@
       "property": "body",
       "properties": {
         "created_at": 202607030100,
-        "is_public": 1
+        "is_public": true
       },
       "embedding": {
         "name": "post_vec",
@@ -235,7 +235,7 @@
       "property": "body",
       "properties": {
         "created_at": 202607030000,
-        "is_public": 0
+        "is_public": false
       },
       "embedding": {
         "name": "post_vec",

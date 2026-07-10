@@ -80,6 +80,6 @@ When adding an ADR, link it from the relevant design doc and update this table.
 
 | Document | Purpose |
 |----------|---------|
-| [social-demo-config](../storage/social-demo-config.md) | Per-file YAML configuration for the social-demo sample graph and its emitted artifacts. Updated by Plan 0064 to document RETURN columns and runtime semantic-vector loading. |
+| [social-demo-config](../storage/social-demo-config.md) | Per-file YAML configuration for the social-demo sample graph and its emitted artifacts. Updated by Plan 0064 to document RETURN columns and runtime semantic-vector loading; updated by Plan 0065 to document native BOOL `is_public`. |
 
 When adding a design document, link it from the relevant ADR and update this table.
