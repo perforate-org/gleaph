@@ -364,6 +364,8 @@ environment pattern with knowledge-map, but it does not reuse knowledge-map-spec
 Router-row adapters, SVG graph components, or playback machinery. The Gateway owns the scenario
 contract and row shape; the frontend owns presentation, fail-closed decoding, and comparison copy.
 
+In `pnpm --filter @gleaph/social-demo dev`, `scripts/deploy-social-demo-local.sh` writes `frontend/apps/social-demo/.env.local` with the deployed Gateway id and the local replica URL; the file is gitignored. Set `GLEAPH_DEMO_SKIP_VITE_ENV=1` to opt out.
+
 When Phase 2/3 add vector comparison and GraphRAG orchestration, the same dedicated application
 should extend only through new Gateway scenarios and application-owned orchestration calls, not by
 adding arbitrary query controls or Router GQL entrypoints to the public UI.

@@ -78,6 +78,61 @@ console.log(status.gateway_url || status.api_url || "");
 '
 }
 
+write_social_demo_vite_env() {
+  local env_path="$ROOT/frontend/apps/social-demo/.env.local"
+
+  # GLEAPH_DEMO_SKIP_VITE_ENV=1 disables writing the social-demo Vite .env.local
+  # so the script can be used in CI without touching a developer tree.
+  if [[ "${GLEAPH_DEMO_SKIP_VITE_ENV:-0}" == "1" ]]; then
+    log "Skipping Vite .env.local write (GLEAPH_DEMO_SKIP_VITE_ENV=1)"
+    return 1
+  fi
+
+  local api_url
+  api_url="$(icp_cmd network status local --json | node -e '
+const fs = require("node:fs");
+const raw = fs.readFileSync(0, "utf8");
+const status = JSON.parse(raw);
+const u = status.api_url || status.gateway_url || "";
+process.stdout.write(u.replace(/\/+$/, ""));
+')"
+  if [[ -z "$api_url" ]]; then
+    log "WARN: could not resolve local api_url; .env.local not written"
+    return 1
+  fi
+
+  if [[ ! -f "$env_path" ]]; then
+    cat > "$env_path" <<EOF
+VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID=$gateway_id
+VITE_IC_HOST=$api_url
+VITE_FETCH_ROOT_KEY=true
+EOF
+    log "Wrote $env_path (gateway=$gateway_id, host=$api_url)"
+    printf "%s\n" "$env_path"
+    return 0
+  fi
+
+  # File exists: replace only the VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID line,
+  # leaving every other line (VITE_IC_HOST, VITE_FETCH_ROOT_KEY, comments,
+  # blank lines) untouched. Treat the empty value as missing and update it.
+  local tmp_path
+  tmp_path="$(mktemp "${TMPDIR:-/tmp}/gleaph-vite-env.XXXXXX")"
+  awk -v new_id="$gateway_id" '
+    /^[[:space:]]*#/ { print; next }
+    /^[[:space:]]*VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID[[:space:]]*=/ {
+      print "VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID=" new_id
+      found = 1
+      next
+    }
+    { print }
+    END { if (found == 0) print "VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID=" new_id }
+  ' "$env_path" > "$tmp_path"
+  mv "$tmp_path" "$env_path"
+  log "Updated VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID in $env_path (gateway=$gateway_id)"
+  printf "%s\n" "$env_path"
+  return 0
+}
+
 icp_call_expect_ok() {
   local description="$1"
   local allowed_error="$2"
@@ -357,6 +412,9 @@ main() {
     }
   )"
 
+  log "Writing social-demo Vite .env.local"
+  vite_env_path="$(write_social_demo_vite_env || true)"
+
   build_social_config
   seed_social_graph
   setup_vector_index "$vector_id"
@@ -390,6 +448,12 @@ main() {
       "$frontend_id" \
       "$(node -e 'console.log(new URL(process.argv[1]).hostname)' "$gateway")" \
       "$(node -e 'const u = new URL(process.argv[1]); console.log(u.port ? `:${u.port}` : "")' "$gateway")"
+  fi
+
+  if [[ "${GLEAPH_DEMO_SKIP_VITE_ENV:-0}" == "1" ]]; then
+    printf '  Vite env file:  (skipped)\n'
+  elif [[ -n "${vite_env_path:-}" ]]; then
+    printf '  Vite env file:  %s\n' "$vite_env_path"
   fi
 }
 

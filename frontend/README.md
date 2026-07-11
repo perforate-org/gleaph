@@ -68,6 +68,8 @@ VITE_FETCH_ROOT_KEY=true
 
 When deployed from an IC asset canister, the app first reads `PUBLIC_CANISTER_ID:gleaph-router` or `PUBLIC_CANISTER_ID:router` from the `ic_env` cookie injected by `icp deploy`.
 
+`@gleaph/social-demo` reads the deployed Gateway canister id from `PUBLIC_CANISTER_ID:gleaph-social-demo-gateway` (asset-canister cookie) or, in `pnpm --filter @gleaph/social-demo dev`, from `frontend/apps/social-demo/.env.local`. `scripts/deploy-social-demo-local.sh` writes that file automatically after deploying the Gateway; set `GLEAPH_DEMO_SKIP_VITE_ENV=1` to opt out (the file is gitignored, so this only matters for shared checkouts that want to keep `.env.local` untouched across runs).
+
 The repository root `icp.yaml` builds the `knowledge-map` asset canister and the Gleaph Router/Index/Graph canisters. `scripts/deploy-knowledge-map-local.sh` starts the local IC network, installs the Rust canisters with the required init args, registers the demo graph/shard through Router, seeds the Alice fan-out knowledge-map graph (24 nodes, 26 edges) through Router GQL, and deploys the asset canister.
 
 If the local network is already managed outside the script, set `GLEAPH_DEMO_SKIP_NETWORK_START=1`; the script will require the `local` environment to be running before it proceeds.
