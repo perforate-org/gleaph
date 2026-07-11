@@ -83,9 +83,22 @@ write_social_demo_vite_env() {
 
   # GLEAPH_DEMO_SKIP_VITE_ENV=1 disables writing the social-demo Vite .env.local
   # so the script can be used in CI without touching a developer tree.
+  #
+  # GLEAPH_DEMO_FORCE_VITE_IC_HOST=1 additionally overwrites the cached
+  # VITE_IC_HOST in the existing .env.local to the new local replica URL.
+  # Default keeps VITE_IC_HOST untouched (CI checkouts that hand-pin the
+  # host stay stable). This flag has no effect when SKIP=1 or when the
+  # listen check below fails.
+  #
+  # Listen check: when the resolved api_url does not respond on
+  # $api_url/api/v2/status within 1s, .env.local is left as-is (the
+  # previously-written file is preserved so the developer does not lose
+  # their last good state). 4xx/5xx still counts as "listening"; only
+  # connection-refused / timeout triggers the no-op path.
   if [[ "${GLEAPH_DEMO_SKIP_VITE_ENV:-0}" == "1" ]]; then
     log "Skipping Vite .env.local write (GLEAPH_DEMO_SKIP_VITE_ENV=1)"
-    return 1
+    printf "skipped\n"
+    return 0
   fi
 
   local api_url
@@ -98,7 +111,20 @@ process.stdout.write(u.replace(/\/+$/, ""));
 ')"
   if [[ -z "$api_url" ]]; then
     log "WARN: could not resolve local api_url; .env.local not written"
-    return 1
+    printf "unreachable\n"
+    return 0
+  fi
+
+  # Listen check: refuse to write when the local replica is not actually
+  # reachable on the host port, so a stale or half-up URL never poisons
+  # .env.local. 4xx/5xx still counts as "listening" (curl -f only fails on
+  # 5xx+ connection errors when combined with -sS, and we only need to
+  # confirm the port accepts connections; HTTP 4xx on /api/v2/status is
+  # itself a valid signal that the replica is up).
+  if ! curl -fsS --max-time 1 -o /dev/null "$api_url/api/v2/status" 2>/dev/null; then
+    log "WARN: $api_url/api/v2/status did not respond within 1s; .env.local not written"
+    printf "unreachable\n"
+    return 0
   fi
 
   if [[ ! -f "$env_path" ]]; then
@@ -108,28 +134,49 @@ VITE_IC_HOST=$api_url
 VITE_FETCH_ROOT_KEY=true
 EOF
     log "Wrote $env_path (gateway=$gateway_id, host=$api_url)"
-    printf "%s\n" "$env_path"
+    printf "ok %s\n" "$env_path"
     return 0
   fi
 
-  # File exists: replace only the VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID line,
-  # leaving every other line (VITE_IC_HOST, VITE_FETCH_ROOT_KEY, comments,
-  # blank lines) untouched. Treat the empty value as missing and update it.
+  # File exists: replace the VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID line in
+  # place, and (when GLEAPH_DEMO_FORCE_VITE_IC_HOST=1) also overwrite
+  # VITE_IC_HOST. Every other line (VITE_FETCH_ROOT_KEY, comments, blank
+  # lines, unrelated entries) is preserved verbatim. Treat the empty value
+  # for either managed line as missing and update it; append at the end if
+  # the managed line is absent.
   local tmp_path
   tmp_path="$(mktemp "${TMPDIR:-/tmp}/gleaph-vite-env.XXXXXX")"
-  awk -v new_id="$gateway_id" '
+  local force_host="${GLEAPH_DEMO_FORCE_VITE_IC_HOST:-0}"
+  awk \
+      -v new_id="$gateway_id" \
+      -v new_host="$api_url" \
+      -v force_host="$force_host" '
     /^[[:space:]]*#/ { print; next }
     /^[[:space:]]*VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID[[:space:]]*=/ {
       print "VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID=" new_id
-      found = 1
+      found_id = 1
+      next
+    }
+    /^[[:space:]]*VITE_IC_HOST[[:space:]]*=/ {
+      if (force_host == "1") print "VITE_IC_HOST=" new_host
+      else print
+      found_host = 1
       next
     }
     { print }
-    END { if (found == 0) print "VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID=" new_id }
+    END {
+      if (found_id == 0) print "VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID=" new_id
+      if (found_host == 0 && force_host == "1") print "VITE_IC_HOST=" new_host
+    }
   ' "$env_path" > "$tmp_path"
   mv "$tmp_path" "$env_path"
-  log "Updated VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID in $env_path (gateway=$gateway_id)"
-  printf "%s\n" "$env_path"
+
+  if [[ "$force_host" == "1" ]]; then
+    log "Updated VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID and VITE_IC_HOST in $env_path (gateway=$gateway_id, host=$api_url, force=true)"
+  else
+    log "Updated VITE_SOCIAL_DEMO_GATEWAY_CANISTER_ID in $env_path (gateway=$gateway_id)"
+  fi
+  printf "ok %s\n" "$env_path"
   return 0
 }
 
@@ -450,10 +497,13 @@ main() {
       "$(node -e 'const u = new URL(process.argv[1]); console.log(u.port ? `:${u.port}` : "")' "$gateway")"
   fi
 
-  if [[ "${GLEAPH_DEMO_SKIP_VITE_ENV:-0}" == "1" ]]; then
-    printf '  Vite env file:  (skipped)\n'
-  elif [[ -n "${vite_env_path:-}" ]]; then
-    printf '  Vite env file:  %s\n' "$vite_env_path"
+  case "${vite_env_path:-}" in
+    ok\ *)        printf '  Vite env file:  %s\n' "${vite_env_path#ok }" ;;
+    skipped)      printf '  Vite env file:  (skipped)\n' ;;
+    unreachable)  printf '  Vite env file:  (unreachable)\n' ;;
+  esac
+  if [[ "${GLEAPH_DEMO_FORCE_VITE_IC_HOST:-0}" == "1" && "${vite_env_path:-}" == ok\ * ]]; then
+    printf '  Vite env file:  forced VITE_IC_HOST overwrite\n'
   fi
 }
 
