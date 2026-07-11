@@ -164,7 +164,9 @@ Ordered steps; each should keep `mixed_label_hub_*` regressions green:
 4. **Retire old leaf physical block via single `release_span`** (segment footprint), not per-vertex peel.
 5. **Remove per-vertex `stored_slots` append-at-tail** for normal labeled rows once leaf slide covers growth (bypass mode may keep core vertex path).
 
-**Status:** Phase A–E implemented (pinned leaf, PMA density, in-window slide, single leaf `release_span` on relocate, rewrite-path growth via leaf relocate). Interim: `rebalance_vertex_edge_span` on new-bucket placement may still tail-append.
+**Failure-atomic growth and promotion.** Core LARA `grow_segment_tree_to` and labeled `promote_bypass_to_bucket_mode` use a preflight/commit split: all fallible backing-memory growth (`counts_store`, `span_meta`, `log`, bucket slab, free-span records, free-span by-start index) completes before the first canonical metadata write. After that point no recoverable `Memory::grow` error remains. Physical preallocation is non-canonical and safe to retain after a rejected mutation.
+
+**Status:** Phase A–E implemented (pinned leaf, PMA density, in-window slide, single leaf `release_span` on relocate, rewrite-path growth via leaf relocate). Failure-atomic preflight is implemented for `grow_segment_tree_to` and `promote_bypass_to_bucket_mode`. Interim: `rebalance_vertex_edge_span` on new-bucket placement may still tail-append.
 
 ---
 

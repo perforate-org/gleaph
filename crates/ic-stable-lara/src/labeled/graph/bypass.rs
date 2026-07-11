@@ -136,27 +136,45 @@ where
             return Ok(());
         }
 
-        // Bucket collection must not read edge slots while bypass is still active.
-        self.set_labeled_vertex(src, LabeledVertex::default())?;
-
+        // Plan the segment-bucket rewrite without allocating or mutating anything.
         let new_alloc = DEFAULT_SEGMENT_SIZE.max(stored_slots);
-        let (_, rewrote_bucket_segment) = self.buckets.insert_label_bucket_at(
+        let mut plan = self.buckets.plan_promote_bypass_to_bucket_mode(
             &self.vertices,
             src,
             LabelBucket::from_parts(bypass_label, edge_start, logical_degree, stored_slots, -1),
-            0,
+            new_alloc,
         )?;
-        if rewrote_bucket_segment {
-            self.invalidate_bucket_lookup_caches_for_bucket_segment(src)?;
+
+        // Verify the segment-count tree already covers `src` before any
+        // fallible allocation. This is the only remaining check inside
+        // `bump_vertex_segment_counts` and it cannot grow the store, so checking
+        // it here keeps the subsequent reserve and commit infallible.
+        let edge_layout = crate::lara::edge::EdgeLayout::from(self.edges.header());
+        let leaf = Self::leaf_index_for_vid(src, edge_layout.segment_size);
+        let counts_idx = leaf
+            .checked_add(edge_layout.segment_count)
+            .ok_or(LaraOperationError::CollectAllocationOverflow)?;
+        if counts_idx as u64 >= self.edges.counts_store().len() {
+            return Err(LaraOperationError::SegmentCountsTreeTooSmall.into());
         }
-        let updated = self
-            .vertices
-            .get(src)
-            .with_degree(1)
-            .with_stored_slots(new_alloc);
-        self.set_labeled_vertex(src, updated)?;
+
+        // Reserve all fallible backing capacity while the bypass row is still the
+        // canonical interpretation. No vertex row is mutated until reservation
+        // succeeds.
+        self.buckets
+            .reserve_promote_bypass_to_bucket_mode(&mut plan)?;
+
+        // Commit: publish the bucket-mode row. The first vertex write is the
+        // source row ceasing to be a valid bypass interpretation; every
+        // subsequent operation below was preflighted and cannot return a
+        // recoverable error.
+        self.buckets
+            .commit_promote_bypass_to_bucket_mode(&self.vertices, plan)?;
+        self.invalidate_bucket_lookup_caches_for_bucket_segment(src)
+            .expect("commit: cache invalidation must succeed after preflight");
         self.edges
-            .bump_vertex_segment_counts(src, 0, i64::from(new_alloc))?;
+            .bump_vertex_segment_counts(src, 0, i64::from(new_alloc))
+            .expect("commit: segment count bump must succeed after preflight");
         Ok(())
     }
 }
@@ -166,7 +184,67 @@ mod tests {
     use super::super::test_support::*;
     use super::super::*;
     use super::*;
-    use crate::VertexId;
+    use crate::{
+        VertexId,
+        test_support::{FailpointMemory, failpoint_labeled_memories},
+    };
+
+    fn failpoint_labeled_graph(
+        default_label: BucketLabelKey,
+    ) -> (
+        LabeledLaraGraph<TestEdge, FailpointMemory>,
+        [FailpointMemory; 15],
+    ) {
+        let mems = failpoint_labeled_memories();
+        let graph = LabeledLaraGraph::<TestEdge, _>::new(
+            mems[0].clone(),
+            mems[1].clone(),
+            mems[2].clone(),
+            mems[3].clone(),
+            mems[4].clone(),
+            mems[5].clone(),
+            mems[6].clone(),
+            mems[7].clone(),
+            mems[8].clone(),
+            mems[9].clone(),
+            mems[10].clone(),
+            mems[11].clone(),
+            mems[12].clone(),
+            mems[13].clone(),
+            mems[14].clone(),
+            256,
+            default_label,
+        )
+        .unwrap();
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        (graph, mems)
+    }
+
+    fn reopen_failpoint_labeled_graph(
+        mems: &[FailpointMemory; 15],
+        default_label: BucketLabelKey,
+    ) -> LabeledLaraGraph<TestEdge, FailpointMemory> {
+        LabeledLaraGraph::<TestEdge, _>::init(
+            mems[0].clone(),
+            mems[1].clone(),
+            mems[2].clone(),
+            mems[3].clone(),
+            mems[4].clone(),
+            mems[5].clone(),
+            mems[6].clone(),
+            mems[7].clone(),
+            mems[8].clone(),
+            mems[9].clone(),
+            mems[10].clone(),
+            mems[11].clone(),
+            mems[12].clone(),
+            mems[13].clone(),
+            mems[14].clone(),
+            256,
+            default_label,
+        )
+        .unwrap()
+    }
 
     #[test]
     fn homogeneous_bypass_append_extends_edge_capacity() {
@@ -552,5 +630,378 @@ mod tests {
                 .unwrap()
                 .is_empty()
         );
+    }
+
+    /// Fills the bucket slab by promoting vertices until a direct
+    /// bypass-to-bucket-mode promotion of the next vertex requires a bucket-slab
+    /// grow.
+    ///
+    /// Returns that vertex. It is still in homogeneous bypass mode, so a
+    /// subsequent call to [`LabeledLaraGraph::promote_bypass_to_bucket_mode`] will
+    /// hit the same bucket-slab grow that we failed above.
+    fn fill_bucket_slab_to_next_grow(
+        graph: &LabeledLaraGraph<TestEdge, FailpointMemory>,
+        mems: &[FailpointMemory; 15],
+        default: BucketLabelKey,
+    ) -> VertexId {
+        let mut next: u32 = 1;
+        loop {
+            let vid = VertexId::from(next);
+            while graph.vertices().len() <= next {
+                graph.push_vertex(LabeledVertex::default()).unwrap();
+            }
+            // Give the vertex a single default-label bypass edge so the vertex is
+            // eligible for bypass promotion.
+            graph
+                .insert_edge(vid, default, TestEdge { target: next + 1 })
+                .unwrap();
+
+            // Try to promote the vertex directly with the next bucket-slab grow failed.
+            // If promotion succeeds, the slab still has slack; continue. If it fails,
+            // the vertex is unchanged and its next real promotion will require the grow.
+            let grow_before = mems[1].grow_count();
+            mems[1].fail_at_grow(grow_before.saturating_add(1));
+            let result = graph.promote_bypass_to_bucket_mode(vid);
+            mems[1].fail_never();
+
+            if result.is_err() {
+                return vid;
+            }
+
+            next += 1;
+            assert!(
+                next <= 2000,
+                "bucket slab did not reach a grow boundary in reasonable vertex count"
+            );
+        }
+    }
+
+    #[test]
+    fn bypass_promotion_failure_atomic_at_bucket_slab_allocation() {
+        let default = BucketLabelKey::directed_from_index(1);
+        let (graph, mems) = failpoint_labeled_graph(default);
+        for target in 1..=4 {
+            graph
+                .insert_edge(VertexId::from(0), default, TestEdge { target })
+                .unwrap();
+        }
+
+        let source = fill_bucket_slab_to_next_grow(&graph, &mems, default);
+        let before_vertex = graph.vertices().get(source);
+        assert!(before_vertex.is_default_edge_labeled());
+        let before_edges = graph.iter_edges_for_label(source, default).unwrap();
+        let before_labels = graph.out_edge_label_ids(source).unwrap();
+
+        mems[1].fail_at_grow(mems[1].grow_count().saturating_add(1));
+        let result = graph.promote_bypass_to_bucket_mode(source);
+        assert!(result.is_err(), "expected bucket-slab grow to fail");
+
+        let after_vertex = graph.vertices().get(source);
+        assert_eq!(after_vertex, before_vertex, "bypass row must be unchanged");
+        assert_eq!(
+            graph.iter_edges_for_label(source, default).unwrap(),
+            before_edges,
+            "default-label edges must be unchanged"
+        );
+        assert_eq!(
+            graph.out_edge_label_ids(source).unwrap(),
+            before_labels,
+            "out-edge labels must be unchanged"
+        );
+
+        let reopened = reopen_failpoint_labeled_graph(&mems, default);
+        assert_eq!(reopened.vertices().get(source), before_vertex);
+        assert_eq!(
+            reopened.iter_edges_for_label(source, default).unwrap(),
+            before_edges
+        );
+    }
+
+    #[test]
+    fn bypass_promotion_success_after_rejected_bucket_slab_allocation() {
+        let default = BucketLabelKey::directed_from_index(1);
+        let (graph, mems) = failpoint_labeled_graph(default);
+        for target in 1..=4 {
+            graph
+                .insert_edge(VertexId::from(0), default, TestEdge { target })
+                .unwrap();
+        }
+
+        let source = fill_bucket_slab_to_next_grow(&graph, &mems, default);
+        let before_edges = graph.iter_edges_for_label(source, default).unwrap();
+
+        mems[1].fail_at_grow(mems[1].grow_count().saturating_add(1));
+        assert!(
+            graph.promote_bypass_to_bucket_mode(source).is_err(),
+            "expected first promotion to be rejected"
+        );
+
+        mems[1].fail_never();
+        graph
+            .promote_bypass_to_bucket_mode(source)
+            .expect("retry after rejected bucket-slab allocation");
+
+        // After promotion succeeds, add a new non-default label through the public API
+        // to show the promoted vertex is fully usable.
+        let road = BucketLabelKey::directed_from_index(5001);
+        graph
+            .insert_edge(source, road, TestEdge { target: 99 })
+            .expect("insert after successful promotion");
+
+        let vertex = graph.vertices().get(source);
+        assert!(!vertex.is_default_edge_labeled());
+        let labels = graph.out_edge_label_ids(source).unwrap();
+        assert!(
+            labels.contains(&default),
+            "default label must still be present"
+        );
+        assert!(labels.contains(&road), "new label must be present");
+        assert_eq!(
+            graph.iter_edges_for_label(source, default).unwrap(),
+            before_edges,
+            "default-label edges must survive retry"
+        );
+        assert_eq!(
+            graph.iter_edges_for_label(source, road).unwrap(),
+            vec![TestEdge { target: 99 }]
+        );
+
+        let reopened = reopen_failpoint_labeled_graph(&mems, default);
+        let mut reopened_labels = reopened.out_edge_label_ids(source).unwrap();
+        reopened_labels.sort();
+        let mut expected_labels = vec![default, road];
+        expected_labels.sort();
+        assert_eq!(reopened_labels, expected_labels);
+        assert_eq!(
+            reopened.iter_edges_for_label(source, road).unwrap(),
+            vec![TestEdge { target: 99 }]
+        );
+    }
+
+    /// Fills the bucket free-span record store (mems[2]) until the next record
+    /// allocation would require a memory grow. The first span establishes the
+    /// initial page; subsequent spans fill the page until the next record would
+    /// force a grow. That final grow is failed deliberately, leaving the store
+    /// exactly at the page boundary with no mutation performed.
+    fn fill_bucket_free_spans_to_next_records_grow(
+        graph: &LabeledLaraGraph<TestEdge, FailpointMemory>,
+        mems: &[FailpointMemory; 15],
+    ) {
+        // Establish the initial free-span record page. This also lets the
+        // by-start index acquire the pages it needs for the relatively small
+        // number of records we are about to add, so the next grow we hit is
+        // the record store itself.
+        graph
+            .buckets()
+            .release_span(10_000_000, 1)
+            .expect("first release establishes the record page");
+
+        let mut released: u64 = 1;
+        loop {
+            let slot = 10_000_000u64 + released.saturating_mul(2);
+            let grow_before = mems[2].grow_count();
+            mems[2].fail_at_grow(grow_before + 1);
+            let result = graph.buckets().release_span(slot, 1);
+            mems[2].fail_never();
+
+            match result {
+                Ok(()) => {
+                    released += 1;
+                    assert!(
+                        released <= 2_000,
+                        "record store did not reach a grow boundary in reasonable releases"
+                    );
+                }
+                Err(_) => {
+                    assert_eq!(
+                        mems[2].grow_count(),
+                        grow_before + 1,
+                        "expected the record-store grow to be attempted"
+                    );
+                    return;
+                }
+            }
+        }
+    }
+
+    #[test]
+    fn bypass_promotion_failure_atomic_at_free_span_reservation() {
+        let default = BucketLabelKey::directed_from_index(1);
+        let (graph, mems) = failpoint_labeled_graph(default);
+        for target in 1..=4 {
+            graph
+                .insert_edge(VertexId::from(0), default, TestEdge { target })
+                .unwrap();
+        }
+
+        // Seed a peer vertex in the same segment that is already in bucket mode.
+        // Promoting the source will rewrite the whole segment, so the peer's old
+        // bucket span becomes a free-span release that reserve_for_releases must
+        // accommodate.
+        let road = BucketLabelKey::directed_from_index(2);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph
+            .insert_edge(VertexId::from(1), road, TestEdge { target: 100 })
+            .unwrap();
+
+        fill_bucket_free_spans_to_next_records_grow(&graph, &mems);
+
+        let source = VertexId::from(0);
+        let before_vertex = graph.vertices().get(source);
+        assert!(before_vertex.is_default_edge_labeled());
+        let before_edges = graph.iter_edges_for_label(source, default).unwrap();
+        let before_labels = graph.out_edge_label_ids(source).unwrap();
+        let before_segment_count = graph.edges.header().segment_count;
+        let before_counts_len = graph.edges.counts_store().len();
+        let before_slab_grow_count = mems[1].grow_count();
+
+        mems[2].fail_at_grow(mems[2].grow_count().saturating_add(1));
+        let result = graph.promote_bypass_to_bucket_mode(source);
+        assert!(
+            result.is_err(),
+            "expected free-span reservation grow to fail"
+        );
+        mems[2].fail_never();
+
+        let after_vertex = graph.vertices().get(source);
+        assert_eq!(after_vertex, before_vertex, "bypass row must be unchanged");
+        assert_eq!(
+            graph.iter_edges_for_label(source, default).unwrap(),
+            before_edges,
+            "default-label edges must be unchanged"
+        );
+        assert_eq!(
+            graph.out_edge_label_ids(source).unwrap(),
+            before_labels,
+            "out-edge labels must be unchanged"
+        );
+        assert_eq!(
+            graph.edges.header().segment_count,
+            before_segment_count,
+            "segment count must be unchanged"
+        );
+        assert_eq!(
+            graph.edges.counts_store().len(),
+            before_counts_len,
+            "counts store length must be unchanged"
+        );
+        assert_eq!(
+            mems[1].grow_count(),
+            before_slab_grow_count,
+            "bucket-slab allocation must not occur"
+        );
+
+        let reopened = reopen_failpoint_labeled_graph(&mems, default);
+        assert_eq!(reopened.vertices().get(source), before_vertex);
+        assert_eq!(
+            reopened.iter_edges_for_label(source, default).unwrap(),
+            before_edges
+        );
+        assert_eq!(reopened.out_edge_label_ids(source).unwrap(), before_labels);
+    }
+
+    #[test]
+    fn bypass_promotion_success_after_rejected_free_span_reservation() {
+        let default = BucketLabelKey::directed_from_index(1);
+        let (graph, mems) = failpoint_labeled_graph(default);
+        for target in 1..=4 {
+            graph
+                .insert_edge(VertexId::from(0), default, TestEdge { target })
+                .unwrap();
+        }
+
+        let road = BucketLabelKey::directed_from_index(2);
+        graph.push_vertex(LabeledVertex::default()).unwrap();
+        graph
+            .insert_edge(VertexId::from(1), road, TestEdge { target: 100 })
+            .unwrap();
+
+        fill_bucket_free_spans_to_next_records_grow(&graph, &mems);
+
+        let source = VertexId::from(0);
+        let before_edges = graph.iter_edges_for_label(source, default).unwrap();
+
+        mems[2].fail_at_grow(mems[2].grow_count().saturating_add(1));
+        assert!(
+            graph.promote_bypass_to_bucket_mode(source).is_err(),
+            "expected first promotion to be rejected"
+        );
+        mems[2].fail_never();
+
+        graph
+            .promote_bypass_to_bucket_mode(source)
+            .expect("retry after rejected free-span reservation");
+
+        let vertex = graph.vertices().get(source);
+        assert!(!vertex.is_default_edge_labeled());
+        let labels = graph.out_edge_label_ids(source).unwrap();
+        assert!(
+            labels.contains(&default),
+            "default label must still be present"
+        );
+        assert_eq!(
+            graph.iter_edges_for_label(source, default).unwrap(),
+            before_edges,
+            "default-label edges must survive retry"
+        );
+        // The peer label lives on vertex 1, not on the promoted source.
+        assert_eq!(
+            graph.iter_edges_for_label(VertexId::from(1), road).unwrap(),
+            vec![TestEdge { target: 100 }],
+            "peer label bucket must survive segment rewrite"
+        );
+
+        let reopened = reopen_failpoint_labeled_graph(&mems, default);
+        assert!(
+            reopened
+                .out_edge_label_ids(source)
+                .unwrap()
+                .contains(&default)
+        );
+        assert_eq!(
+            reopened
+                .iter_edges_for_label(VertexId::from(1), road)
+                .unwrap(),
+            vec![TestEdge { target: 100 }]
+        );
+    }
+    #[test]
+    fn undirected_homogeneous_bypass_promotion_failure_atomic_at_bucket_slab_allocation() {
+        let undirected_default = BucketLabelKey::UNLABELED_UNDIRECTED;
+        let (graph, mems) = failpoint_labeled_graph(undirected_default);
+        for target in 1..=3 {
+            graph
+                .insert_edge(VertexId::from(0), undirected_default, TestEdge { target })
+                .unwrap();
+        }
+
+        let source = fill_bucket_slab_to_next_grow(&graph, &mems, undirected_default);
+        let before_vertex = graph.vertices().get(source);
+        assert!(before_vertex.is_default_edge_labeled());
+        assert!(before_vertex.is_bypass_undirected());
+        let before_edges = graph
+            .iter_edges_for_label(source, undirected_default)
+            .unwrap();
+
+        mems[1].fail_at_grow(mems[1].grow_count().saturating_add(1));
+        let result = graph.promote_bypass_to_bucket_mode(source);
+        assert!(result.is_err(), "expected bucket-slab grow to fail");
+
+        let after_vertex = graph.vertices().get(source);
+        assert_eq!(after_vertex, before_vertex, "bypass row must be unchanged");
+        assert!(
+            after_vertex.is_bypass_undirected(),
+            "undirected bypass flag must be preserved"
+        );
+        assert_eq!(
+            graph
+                .iter_edges_for_label(source, undirected_default)
+                .unwrap(),
+            before_edges,
+            "default undirected edges must be unchanged"
+        );
+
+        let reopened = reopen_failpoint_labeled_graph(&mems, undirected_default);
+        assert_eq!(reopened.vertices().get(source), before_vertex);
     }
 }

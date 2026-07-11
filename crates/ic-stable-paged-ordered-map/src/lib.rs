@@ -163,8 +163,10 @@ impl std::error::Error for Error {}
 
 #[derive(Debug, PartialEq, Eq)]
 pub struct GrowFailed {
-    current_size: u64,
-    delta: u64,
+    /// Current memory size in WebAssembly pages when the grow failed.
+    pub current_size: u64,
+    /// Number of additional WebAssembly pages requested.
+    pub delta: u64,
 }
 
 impl fmt::Display for GrowFailed {
@@ -349,6 +351,26 @@ impl<M: Memory> StablePagedOrderedMap<M> {
                 }
             }
         }
+    }
+
+    /// Grows the backing memory so the map can absorb `additional_entries` more
+    /// key/value pairs without allocating additional pages during the commit phase.
+    ///
+    /// This is a preflight primitive: after a successful reservation, a sequence
+    /// of `insert` calls that adds at most `additional_entries` total entries
+    /// will not fail with [`Error::OutOfMemory`] from page allocation, provided
+    /// no other concurrent mutation interferes.
+    pub fn reserve_for_inserts(&self, additional_entries: u64) -> Result<(), GrowFailed> {
+        let h = self.header();
+        // Worst case: every new entry causes a page split, allocating one new
+        // page. Over-reserving physical pages is safe because pages are only
+        // linked into the map when they are actually allocated by `alloc_page`.
+        let target_pages = h.page_count.saturating_add(additional_entries);
+        let need = PAGES_START.saturating_add(target_pages.saturating_mul(PAGE_STRIDE));
+        if need == 0 {
+            return Ok(());
+        }
+        safe_write(&self.memory, need - 1, &[0])
     }
 
     /// Removes `key` and returns the former value, or `Ok(None)` when the key was not present.

@@ -114,6 +114,13 @@ This is the **rope**: the leaf physical interval, not individual vertex rows.
 
 **Why LARA has this and DGAP does not (as explicitly):** DGAP often recovers space through `resize_V1` and implicit segment totals on a PMEM heap. LARA targets **incremental** relocation — `segment_slide`, in-place expansion into adjacent free gaps (`try_expand_segment_in_place`), and reuse without rewriting the entire slab on every cascade. The free-span store is the retirement pool that makes localized relocation safe and reusable.
 
+**Failure-atomic stable mutations.** Two owner-level mutations are split into an infallible validation phase, a preflight phase that only grows backing memory, and a commit phase that publishes logical metadata:
+
+1. `EdgeStore::grow_segment_tree_to` reserves `counts_store`, `span_meta`, and overflow-log capacity before it migrates counts, appends span-meta rows, resets new log indexes, and writes the edge header.
+2. `LabeledLaraGraph::promote_bypass_to_bucket_mode` reserves bucket-slab and free-span capacity (via `LabelBucketStore::plan_promote_bypass_to_bucket_mode` and `LabelBucketStore::reserve_promote_bypass_to_bucket_mode`) before it writes the bucket-mode vertex row, releases the old bypass span, and bumps PMA segment counts.
+
+After the first commit write, no recoverable `Memory::grow` or allocation error remains. Physical capacity reserved during preflight is not canonical graph state: retaining it after an error is safe, and the pre-error logical layout reopens unchanged.
+
 **Commit order invariant** (from `lara.rs`): relocate and rewrite all live pointers first; **only then** `release_span` old physical ranges. Queries never observe free-span slots as live adjacency.
 
 **Labeled note:** per-vertex `release_vertex_edge_span_footprint` on routine growth is **not** this contract; see [ADR 0001](../adr/0001-labeled-segment-slide.md).
@@ -176,6 +183,7 @@ Use this when reviewing LARA PRs:
 - [ ] Segment relocate releases **one** retired leaf footprint after commit
 - [ ] `FreeSpanStore` allocation is best-fit / coalesce, not scan-visible
 - [ ] `FreeSpanStore` allocation never reports "no fit" while a fitting span exists (bounded scan has a first-fit fallback)
+- [ ] `grow_segment_tree_to` and `promote_bypass_to_bucket_mode` reserve all fallible backing capacity before the first canonical write
 - [ ] Composite/paired stable regions reopen all-or-nothing; partial layouts are rejected, not recreated
 - [ ] Labeled changes do not deepen per-vertex tail-append + peel without ADR exception
 

@@ -1,8 +1,8 @@
 # Storage: LARA and graph facade
 
-**Status:** Implemented (facade); Partially Implemented (LARA labeled physical layer — see [lara-dgap-contract.md](./lara-dgap-contract.md))
+**Status:** Implemented (facade); Partially Implemented (LARA labeled physical layer — see [lara-dgap-contract.md](./lara-dgap-contract.md)). Failure-atomic stable mutations for `EdgeStore::grow_segment_tree_to` and `LabeledLaraGraph::promote_bypass_to_bucket_mode` are implemented.
 
-Last updated: 2026-06-11
+Last updated: 2026-07-11
 
 ## Purpose
 

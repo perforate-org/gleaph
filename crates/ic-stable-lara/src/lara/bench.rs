@@ -2,7 +2,12 @@ use std::hint::black_box;
 
 use canbench_rs::bench;
 
-use crate::{LaraGraph, VertexId, bench as helper, lara::vertex::Vertex, test_support::TestEdge};
+use crate::{
+    LaraGraph, VertexId, bench as helper,
+    lara::edge::EdgeStore,
+    lara::vertex::Vertex,
+    test_support::{TestEdge, vector_memory},
+};
 
 /// Measures repeated public `LaraGraph::insert_edge` calls when most inserts can
 /// append into existing vertex spans. This is the broad update-path smoke signal
@@ -100,6 +105,34 @@ fn bench_lara_graph_clean_scan_slot_order_single_row_1024() -> canbench_rs::Benc
 /// Measures the root-saturation path that relocates a hot segment to fresh tail
 /// space. This protects the expensive resize/relocation boundary where span
 /// metadata, counts, and free-span release are all updated together.
+/// Measures one large segment-tree growth step after a representative pre-grown
+/// tree. This protects the preflight/commit boundary where counts, span metadata,
+/// and the overflow log are reserved before the edge header is published.
+#[bench(raw)]
+fn bench_lara_edge_store_segment_tree_grow() -> canbench_rs::BenchResult {
+    let store = EdgeStore::<TestEdge, _>::new(
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        64,
+        1,
+        0,
+    )
+    .expect("edge store");
+    store.grow_segment_tree_to(4096).expect("setup growth");
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("edge_store_segment_tree_grow");
+        store.grow_segment_tree_to(8192).expect("grow segment tree");
+        black_box(store.header().segment_count);
+    })
+}
+
+/// Measures repeated relocation of a saturated root segment to fresh tail space.
+/// This protects the expensive resize/relocation boundary where span metadata,
+/// counts, and free-span release are all updated together.
 #[bench(raw)]
 fn bench_lara_graph_root_relocation_1() -> canbench_rs::BenchResult {
     canbench_rs::bench_fn(|| {

@@ -261,6 +261,23 @@ impl<E: CsrEdge, M: Memory> SegmentEdgeCountsStore<E, M> {
         Ok(())
     }
 
+    /// Grows the backing memory so the vector can hold `target_len` entries
+    /// without changing the persisted logical length.
+    ///
+    /// This is a preflight primitive: callers complete all reservation before the
+    /// first canonical mutation, so the commit-phase `push`/`set` operations
+    /// cannot encounter a grow failure.
+    pub(crate) fn reserve_to(&self, target_len: u64) -> Result<(), GrowFailed> {
+        let len = self.len();
+        if target_len <= len {
+            return Ok(());
+        }
+        let last_byte = Self::entry_offset(target_len - 1)
+            .saturating_add(Self::entry_size())
+            .saturating_sub(1);
+        safe_write(&self.memory, last_byte, &[0])
+    }
+
     /// Removes and returns the last entry, or `None` if the vector is empty.
     ///
     /// Complexity: one read plus updating length. Does not shrink reserved stable memory.

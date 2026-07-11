@@ -17,7 +17,7 @@ use crate::{
     traits::{CsrEdge, CsrEdgeTombstone, CsrVertex},
 };
 use canbench_rs::{bench, bench_fn};
-use std::hint::black_box;
+use std::{cell::Cell, hint::black_box};
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 struct BenchEdge(u32);
@@ -1419,3 +1419,54 @@ detach_delete_satellite_bench!(
     bench_labeled_stage2_detach_delete_satellite_of_hub_4096,
     4096u32
 );
+
+#[bench(raw)]
+fn bench_labeled_bypass_promotion() -> canbench_rs::BenchResult {
+    const N: u32 = 512;
+    let default = BucketLabelKey::directed_from_index(1);
+    let graph = LabeledLaraGraph::<BenchEdge, _>::new(
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        vector_memory(),
+        256,
+        default,
+    )
+    .expect("labeled graph");
+
+    for i in 0..N {
+        graph
+            .push_vertex(LabeledVertex::default())
+            .expect("push vertex");
+        graph
+            .insert_edge(VertexId::from(i), default, BenchEdge(i))
+            .expect("default edge");
+    }
+
+    let next = Cell::new(0u32);
+    canbench_rs::bench_fn(|| {
+        let _scope = canbench_rs::bench_scope("labeled_bypass_promotion");
+        let i = next.get();
+        if i >= N {
+            return;
+        }
+        let vid = VertexId::from(i);
+        let road = BucketLabelKey::directed_from_index((i as u16).wrapping_add(1000));
+        graph
+            .insert_edge(vid, road, BenchEdge(u32::MAX))
+            .expect("promote bypass");
+        next.set(i + 1);
+        black_box(graph.vertices().get(vid));
+    })
+}

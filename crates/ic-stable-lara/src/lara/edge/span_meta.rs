@@ -226,6 +226,23 @@ impl<M: Memory> SegmentSpanMetaStore<M> {
         Ok(())
     }
 
+    /// Grows the backing memory so the store can hold `target_len` rows
+    /// without changing the persisted logical length.
+    ///
+    /// This is a preflight primitive: callers complete all reservation before the
+    /// first canonical mutation, so the commit-phase `push` cannot encounter a
+    /// grow failure.
+    pub(crate) fn reserve_to(&self, target_len: u64) -> Result<(), GrowFailed> {
+        let len = self.len();
+        if target_len <= len {
+            return Ok(());
+        }
+        let last_byte = Self::entry_offset(target_len - 1)
+            .saturating_add(ENTRY_SIZE)
+            .saturating_sub(1);
+        safe_write(&self.memory, last_byte, &[0])
+    }
+
     fn set_len(&self, new_len: u64) {
         write_u64(&self.memory, Address::from(LEN_OFFSET), new_len);
         self.header_len_mirror.set(new_len);

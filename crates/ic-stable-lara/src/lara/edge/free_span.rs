@@ -11,6 +11,7 @@ use std::{cell::RefCell, fmt};
 use ic_stable_paged_ordered_map::StablePagedOrderedMap;
 use ic_stable_structures::Memory;
 
+use crate::safe_write;
 use crate::{GrowFailed, types::Address};
 
 #[cfg(feature = "canbench")]
@@ -285,6 +286,35 @@ impl<M: Memory> FreeSpanStore<M> {
     /// Returns `true` when no free spans are available.
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    /// Grows the backing memories so the store can absorb `additional_active`
+    /// more released spans without a grow failure during the commit phase.
+    ///
+    /// This is a preflight primitive for [`release`](Self::release): after a
+    /// successful reservation, a sequence of releases adding at most
+    /// `additional_active` total spans will not fail with a grow error, provided
+    /// no other concurrent mutation interferes.
+    pub(crate) fn reserve_for_releases(&self, additional_active: u64) -> Result<(), GrowFailed> {
+        let header = self.header();
+        let target_slots = header.record_slots.saturating_add(additional_active);
+        let need_records =
+            RECORDS_OFFSET.saturating_add(target_slots.saturating_mul(RECORD_STRIDE));
+        if need_records > self.store.size().saturating_mul(crate::WASM_PAGE_SIZE) {
+            safe_write(&self.store, need_records - 1, &[0])?;
+        }
+        self.by_start
+            .borrow()
+            .reserve_for_inserts(additional_active)
+            .map_err(|err| Self::map_paged_grow_failed(err))?;
+        Ok(())
+    }
+
+    fn map_paged_grow_failed(err: ic_stable_paged_ordered_map::GrowFailed) -> GrowFailed {
+        GrowFailed {
+            current_size: err.current_size,
+            delta: err.delta,
+        }
     }
 
     /// Checks internal bin, record, and by-start index invariants.
@@ -1158,6 +1188,7 @@ fn read_u8_at<M: Memory>(memory: &M, offset: u64) -> u8 {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::test_support::FailpointMemory;
     use ic_stable_structures::DefaultMemoryImpl;
     use ic_stable_structures::memory_manager::{MemoryId, MemoryManager, VirtualMemory};
 
@@ -1534,5 +1565,44 @@ mod tests {
             len: 1,
         };
         assert_eq!(s.release(span), Err(FreeSpanError::SpanOverflow { span }));
+    }
+
+    #[test]
+    fn reserve_for_releases_fails_atomically_on_records_grow() {
+        let store_mem = FailpointMemory::new();
+        let by_start_mem = FailpointMemory::new();
+        let store = FreeSpanStore::new(store_mem.clone(), by_start_mem.clone()).unwrap();
+        store.release_span(0, 10).unwrap();
+        let active = store.len();
+
+        store_mem.fail_at_grow(store_mem.grow_count().saturating_add(1));
+        let result = store.reserve_for_releases(10_000);
+        assert!(result.is_err(), "expected records-memory grow to fail");
+        assert_eq!(store.len(), active, "no new active spans may be recorded");
+
+        store_mem.fail_never();
+        store.reserve_for_releases(10_000).unwrap();
+        // The store must still accept a real release after the reservation.
+        store.release_span(20, 5).unwrap();
+        assert_eq!(store.len(), active + 1);
+    }
+
+    #[test]
+    fn reserve_for_releases_fails_atomically_on_by_start_grow() {
+        let store_mem = FailpointMemory::new();
+        let by_start_mem = FailpointMemory::new();
+        let store = FreeSpanStore::new(store_mem.clone(), by_start_mem.clone()).unwrap();
+        store.release_span(0, 10).unwrap();
+        let active = store.len();
+
+        by_start_mem.fail_at_grow(by_start_mem.grow_count().saturating_add(1));
+        let result = store.reserve_for_releases(10_000);
+        assert!(result.is_err(), "expected by-start-memory grow to fail");
+        assert_eq!(store.len(), active, "no new active spans may be recorded");
+
+        by_start_mem.fail_never();
+        store.reserve_for_releases(10_000).unwrap();
+        store.release_span(30, 5).unwrap();
+        assert_eq!(store.len(), active + 1);
     }
 }

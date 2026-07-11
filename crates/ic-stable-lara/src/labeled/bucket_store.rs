@@ -35,6 +35,29 @@ use crate::{
 use ic_stable_structures::Memory;
 use std::fmt;
 
+/// Reservation token for a bypass-to-bucket-mode promotion.
+///
+/// Captures the segment rewrite needed to add the source vertex's first label
+/// bucket while preserving all fallible allocation until the source vertex row
+/// ceases to be a valid bypass row.
+pub(crate) struct BypassPromotionPlan {
+    /// Vertex stored_slots to publish after the promotion.
+    pub(crate) new_alloc: u32,
+    /// First slot of the newly allocated segment-bucket span. `None` until
+    /// [`LabelBucketStore::reserve_promote_bypass_to_bucket_mode`] fills it in,
+    /// so a caller that skips the reserve step cannot silently commit an
+    /// unallocated placeholder.
+    pub(crate) new_base: Option<u64>,
+    /// Rows of the rewritten vertex segment, in vertex order.
+    pub(crate) rows: Vec<(u32, LabeledVertex, Vec<LabelBucket>, u32)>,
+    /// Old physical spans to release after the rewrite.
+    pub(crate) old_spans: Vec<(u64, u64)>,
+    /// Total physical slots in the new span.
+    pub(crate) total_physical: u64,
+    /// Ordinal of the promoted vertex within `rows`.
+    pub(crate) source_v_ord: u32,
+}
+
 /// Errors returned when reopening a [`LabelBucketStore`].
 #[derive(Debug)]
 pub enum InitError {
@@ -737,6 +760,161 @@ impl<M: Memory> LabelBucketStore<M> {
             .checked_add(inserted_index)
             .ok_or(LaraOperationError::CollectAllocationOverflow)?;
         Ok((out_slot, true))
+    }
+
+    /// Computes the segment-bucket rewrite for promoting a bypass-mode vertex
+    /// to bucket mode without mutating any vertex row or allocating slab space.
+    ///
+    /// This is the infallible planning step: it derives the target rows,
+    /// physical span, old spans to release, and source-vertex updated fields.
+    /// All fallible backing-memory reservation is performed by
+    /// [`Self::reserve_promote_bypass_to_bucket_mode`] after any caller-side
+    /// validation, so an error leaves the graph observable through its normal
+    /// read API.
+    pub(crate) fn plan_promote_bypass_to_bucket_mode<V>(
+        &self,
+        vertices: &V,
+        vid: VertexId,
+        bucket: LabelBucket,
+        new_alloc: u32,
+    ) -> Result<BypassPromotionPlan, LaraOperationError>
+    where
+        V: VertexAccess<LabeledVertex>,
+    {
+        let source_v_ord = u32::from(vid);
+        let (start, end) = self.segment_vertex_bounds(vertices, vid)?;
+        let mut rows = Vec::new();
+        let mut source_index = None;
+        for v_ord in start..end {
+            let v = vertices.get(VertexId::from(v_ord));
+            if v_ord == source_v_ord {
+                let physical = Self::grow_label_bucket_descriptor_span(0, 1)?;
+                source_index = Some(rows.len());
+                rows.push((v_ord, v, vec![bucket], physical));
+            } else if !v.is_default_edge_labeled() {
+                let physical = Self::label_bucket_descriptor_span(v)?;
+                let deg = v.degree();
+                let buckets = if deg == 0 {
+                    Vec::new()
+                } else {
+                    self.read_label_bucket_slots_contiguous(v.base_slot_start(), deg)
+                        .ok_or(LaraOperationError::CollectAllocationOverflow)?
+                };
+                if physical > 0 || !buckets.is_empty() {
+                    rows.push((v_ord, v, buckets, physical));
+                }
+            }
+        }
+        let _source_index = source_index.ok_or(LaraOperationError::CollectAllocationOverflow)?;
+
+        let total: u64 = rows
+            .iter()
+            .map(|(_, _, _, physical)| u64::from(*physical))
+            .sum();
+        let mut old_spans = Vec::new();
+        for (_, v, _, _) in &rows {
+            if v.is_default_edge_labeled() {
+                // The source had no bucket span before promotion.
+                continue;
+            }
+            let physical = Self::label_bucket_descriptor_span(*v)?;
+            if physical > 0 {
+                old_spans.push((v.base_slot_start(), u64::from(physical)));
+            }
+        }
+        old_spans.sort_unstable_by_key(|(start, _)| *start);
+
+        let new_base = None;
+
+        Ok(BypassPromotionPlan {
+            new_alloc,
+            new_base,
+            rows,
+            old_spans,
+            total_physical: total,
+            source_v_ord,
+        })
+    }
+
+    /// Reserves bucket-slab and free-span capacity for a planned bypass promotion.
+    ///
+    /// This is the fallible preflight step: it allocates the target slab span
+    /// and reserves free-span record capacity, but does not mutate any vertex
+    /// row or canonical metadata.
+    pub(crate) fn reserve_promote_bypass_to_bucket_mode(
+        &self,
+        plan: &mut BypassPromotionPlan,
+    ) -> Result<(), LaraOperationError> {
+        self.free_spans
+            .reserve_for_releases(plan.old_spans.len() as u64)
+            .map_err(|_| self.map_free_span_err())?;
+
+        let total = plan.total_physical;
+        plan.new_base = Some(if total == 0 {
+            0
+        } else {
+            self.allocate_span(total)?
+        });
+        Ok(())
+    }
+
+    /// Commits a prepared and reserved bypass promotion.
+    ///
+    /// # Failure atomicity
+    ///
+    /// Every fallible grow/allocation was preflighted by
+    /// [`reserve_promote_bypass_to_bucket_mode`](Self::reserve_promote_bypass_to_bucket_mode),
+    /// and every structural invariant was validated by
+    /// [`plan_promote_bypass_to_bucket_mode`](Self::plan_promote_bypass_to_bucket_mode).
+    /// The first canonical mutation here (writing the source vertex row) is
+    /// therefore not followed by any recoverable error. Remaining internal
+    /// errors are treated as invariant violations and panic in debug builds.
+    pub(crate) fn commit_promote_bypass_to_bucket_mode<V>(
+        &self,
+        vertices: &V,
+        plan: BypassPromotionPlan,
+    ) -> Result<(), LaraOperationError>
+    where
+        V: VertexAccess<LabeledVertex>,
+    {
+        let new_base = plan
+            .new_base
+            .expect("commit: new_base must be allocated by reserve");
+        let mut cursor = new_base;
+        for (v_ord, v, buckets, physical) in plan.rows {
+            let row_base = cursor;
+            self.write_label_bucket_slots_contiguous(cursor, &buckets)
+                .expect("commit: bucket slab write must succeed after reserve");
+            cursor = row_base
+                .checked_add(u64::from(physical))
+                .expect("commit: physical span cursor overflow should have been rejected by plan");
+            let live = buckets.len() as u32;
+            let slack = Self::slack_for_physical_span(live, physical)
+                .expect("commit: slack should fit after plan");
+            let updated = if v_ord == plan.source_v_ord {
+                v.with_default_edge_labeled(false)
+                    .try_with_bucket_row_and_slack(row_base, live, slack)
+                    .expect("commit: source row fields should fit after plan")
+                    .with_stored_slots(plan.new_alloc)
+            } else {
+                v.try_with_bucket_row_and_slack(row_base, live, slack)
+                    .expect("commit: peer row fields should fit after plan")
+            };
+            vertices.set(VertexId::from(v_ord), &updated);
+        }
+        for (start, len) in plan.old_spans {
+            self.release_span(start, len)
+                .expect("commit: old-span release must succeed after reserve");
+        }
+        if plan.total_physical > 0 {
+            let last = new_base
+                .checked_add(plan.total_physical)
+                .and_then(|end| end.checked_sub(1))
+                .expect("commit: allocation end should fit after reserve");
+            self.record_allocation(last)
+                .expect("commit: allocation record must succeed after reserve");
+        }
+        Ok(())
     }
 }
 

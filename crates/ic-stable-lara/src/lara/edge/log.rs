@@ -402,6 +402,22 @@ impl<E: CsrEdge, M: Memory> LogStore<E, M> {
         }
         Ok(())
     }
+
+    /// Grows the backing memory so the log can hold `new_count` segments
+    /// without changing the persisted header or segment indexes.
+    ///
+    /// This is a preflight primitive for [`grow_segment_count_to`]: after a
+    /// successful reservation the commit-phase header/index writes cannot grow
+    /// the memory and therefore cannot fail.
+    pub(crate) fn reserve_segment_count_to(&self, new_count: u32) -> Result<(), GrowFailed> {
+        let h = self.header();
+        if new_count <= h.segment_count {
+            return Ok(());
+        }
+        let mut new_h = h;
+        new_h.segment_count = new_count;
+        self.grow_for_header(&new_h)
+    }
 }
 
 #[inline]
