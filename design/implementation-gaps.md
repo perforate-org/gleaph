@@ -1,7 +1,7 @@
 # Discovered Implementation Gaps
 
-Last updated: 2026-07-04
-Anchor timestamp: 2026-07-04 01:39:31 UTC +0000
+Last updated: 2026-07-11
+Anchor timestamp: 2026-07-11 07:55:50 UTC +0000
 
 ## Status
 
@@ -46,6 +46,59 @@ Resolved entries remain in the ledger with the fixing commit and owning test. Th
 defect from being rediscovered without its prior reasoning.
 
 ## Open gaps
+
+### GAP-2026-07-11-005 — `FreeSpanStore` reopen validation has no production-scale cost bound
+
+- **Status:** Open
+- **Severity:** P2 operational scalability risk
+- **Owner:** `ic-stable-lara` free-span persistence and Graph upgrade preflight
+- **Observed behavior:** `FreeSpanStore::init` validates the records/bin ↔ `by_start` bijection by
+  collecting all active `(start_slot, id)` pairs, sorting them in heap, and comparing them with the
+  ordered index. The algorithm is `O(active log active)` with `O(active)` transient heap. Existing
+  canbench coverage measures at most 4,096 active spans.
+- **Expected or needed behavior:** before production durable upgrades are claimed, the owner must
+  define and measure a maximum supported fragmentation level, reopen instruction ceiling, and
+  transient-heap ceiling. Reopen must remain fail-closed; performance work must not weaken the
+  bin/index bijection.
+- **Evidence:** `crates/ic-stable-lara/src/lara/edge/free_span.rs::validate`;
+  `crates/ic-stable-lara/src/lara/edge/free_span/bench.rs::bench_reopen`;
+  [storage/lara.md](storage/lara.md) “Reopen integrity”; and ADR 0039 “Upgrade preflight” plus
+  “Performance and capacity gates”.
+- **Impact:** a highly fragmented long-lived graph could make `post_upgrade` exceed its instruction
+  or heap budget even though its stable layout is valid, preventing the new Wasm from serving.
+- **Next decision:** first add scale-probing benchmarks beyond 4,096 spans and predeclare acceptance
+  limits. If the current validator exceeds them, compare bounded incremental validation, persisted
+  validation summaries with generation fencing, and an explicit hard fragmentation cap. Any change
+  to the fail-closed validation contract requires an ADR 0007/0039 amendment.
+- **Related contracts:** [ADR 0007](adr/0007-stable-memory-layout.md),
+  [ADR 0039](adr/0039-production-stable-memory-evolution-and-upgrade-safety.md),
+  [storage/lara.md](storage/lara.md)
+
+### GAP-2026-07-11-004 — Non-tail homogeneous bypass insertion rewrites successor origins in `O(V)`
+
+- **Status:** Open
+- **Severity:** P2 performance risk
+- **Owner:** `ic-stable-lara` labeled adjacency geometry
+- **Observed behavior:** after a homogeneous bypass edge insert,
+  `bump_successor_origins_after_bypass_end` scans every later vertex row and rewrites each later
+  bypass origin that falls before the new region end. A bypass vertex that ceases to be the tail as
+  more vertices are appended can therefore make one later edge insert proportional to the number of
+  successor vertices.
+- **Expected or needed behavior:** insertion cost must remain bounded by the owning PMA leaf/segment
+  or the system must explicitly prohibit or promote non-tail bypass rows before they enter this hot
+  path. Scan semantics and the direct vertex-row lookup contract must remain unchanged unless a
+  reviewed representation decision replaces them.
+- **Evidence:** `crates/ic-stable-lara/src/labeled/graph/bypass.rs::insert_homogeneous_bypass_edge`
+  and `bump_successor_origins_after_bypass_end`; existing bypass canbench coverage does not isolate
+  repeated inserts into an old bypass vertex across increasing successor counts.
+- **Impact:** repeated insertion into an early bypass vertex can grow toward `O(EV)` work and stable
+  row writes, creating an instruction-limit cliff not represented by current benchmark gates.
+- **Next decision:** add vertex-count scaling benchmarks first. Prefer an existing leaf-owned
+  geometry update or eager promotion if it meets the measured bound. Write a dedicated adjacency
+  representation ADR only if the chosen fix changes persisted row meaning, scan geometry, or PMA
+  ownership; a local bounded optimization needs only a plan plus design/benchmark sync.
+- **Related contracts:** [ADR 0001](adr/0001-labeled-segment-slide.md),
+  [ADR 0022](adr/0022-degree-driven-hub-edge-storage.md), [storage/lara.md](storage/lara.md)
 
 ### GAP-2026-07-04-001 — Prepared execution still requires graph visibility
 

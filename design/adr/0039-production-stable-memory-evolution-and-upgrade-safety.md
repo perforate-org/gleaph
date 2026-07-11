@@ -201,6 +201,35 @@ Unknown region or record versions fail closed with a typed compatibility error d
 migration. Normal read APIs must not discover an expected old version for the first time through an
 unclassified `expect` panic.
 
+### Persist every datum required to interpret Durable Core bytes
+
+A value that changes the meaning of persisted Durable Core bytes is durable interpretation
+metadata, even when the current implementation supplies it as a constructor argument or compile-time
+constant. Its owning stable store or canister metadata must persist it as a first-class datum and
+validate it during reopen before any row is interpreted. Heap configuration, init arguments,
+collection order, and a repeated binary constant are not independent sources of truth for persisted
+meaning.
+
+For each such datum, a concrete implementation plan must choose one of:
+
+- encode it in the owning store header and include it in that header's compatibility check;
+- persist it in an existing owner metadata record whose lifecycle is all-or-nothing with the store;
+  or
+- add a dedicated stable region only when neither existing owner can represent the invariant without
+  mixing responsibilities.
+
+Changing an interpretation datum is a stable-format change. It requires explicit compatibility or
+migration classification under the preceding section; routine `post_upgrade` must not silently
+substitute the new binary's default.
+
+**Open Graph application (verified 2026-07-11 UTC):** `LabeledLaraGraph::default_label` determines
+how default/bypass vertex rows are interpreted, but `LabeledLaraGraph::init` currently accepts it as
+an argument and stores it only in heap state. Reopening the same memories with a different value is
+not rejected. Before the production-readiness gate closes, the Graph/LARA owner must select its
+durable representation, define the legacy adoption or migration rule, and add mismatch plus N-1
+reopen coverage. The exact representation remains **planned**; this ADR does not preselect a new
+`MemoryId`.
+
 ### Bounded, resumable canonical migration
 
 Durable Core canonical state is never wiped or treated as rebuildable. Its migration is a bounded
@@ -454,6 +483,7 @@ for ownership and recovery rationale, but executable registry checks own the num
 | Mixed Router/Graph epochs remain a supported cluster state. | Release compatibility matrix and Router rollout gate |
 | Derived state has one named canonical rebuild source. | Typed layout registry and owning backfill driver |
 | Heap state and timers are not authority. | Durable owner plus lifecycle reconstruction |
+| Every datum required to interpret Durable Core bytes is persisted and checked on reopen. | Owning store header or owner metadata; fixed-header epoch fences incompatible changes |
 | Init authority is not replayed on upgrade. | Separate init and optional upgrade argument types |
 | A release proves N-1 data compatibility. | Versioned Wasm/fixture upgrade matrix in CI |
 | Region numbers have one mechanical source of truth. | Typed stable-layout registry |
@@ -561,8 +591,9 @@ to Durable Core is a separate future decision, not an implicit consequence of th
 **Proposed (2026-07-11).** Existing reopen checks, typed layout registries, and selected same-Wasm
 upgrade tests are foundations only. Router empty-argument upgrade compatibility, fixed Durable Core
 headers, owner-specific bounded migration support, core record-version classification, and core
-N-1 fixtures are not yet implemented. Property Index and Vector Index remain Rebuildable Derived;
-Provision remains Experimental Control Plane.
+N-1 fixtures are not yet implemented. Durable Graph interpretation metadata, including LARA's
+`default_label`, is also not yet bound to persisted state. Property Index and Vector Index remain
+Rebuildable Derived; Provision remains Experimental Control Plane.
 
 ## Cross-links
 

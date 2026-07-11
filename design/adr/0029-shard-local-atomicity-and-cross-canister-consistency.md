@@ -2,7 +2,7 @@
 
 Date: 2026-06-21
 Status: accepted
-Last revised: 2026-06-21
+Last revised: 2026-07-11
 
 ## Context
 
@@ -49,6 +49,38 @@ committed in the same message segment where the relevant invariant requires all-
 Code must fetch remote inputs before entering the canonical mutation segment. If a mutation reads
 state before an `await` and writes after it, the write boundary must revalidate an owner-controlled
 revision or equivalent precondition.
+
+#### Shard-local preflight and commit discipline
+
+IC message rollback is the owning failure-atomicity mechanism; Gleaph does not add a second
+intra-canister transaction manager. Storage and facade APIs must nevertheless preserve the
+distinction between a recoverable rejection and an invariant-violating trap:
+
+1. perform validation, conflict checks, encoding checks, and all fallible backing-capacity
+   reservation before the first canonical write;
+2. treat physical capacity reserved without publishing a logical row, header, pointer, or index
+   entry as non-canonical and safe to retain after rejection;
+3. after the first canonical write, do not return a recoverable `Err`; an impossible post-preflight
+   failure is an invariant violation and must trap so the whole message segment rolls back;
+4. return `Err` only when the caller-observable canonical and derived state remains logically
+   unchanged; and
+5. make retry converge on the same logical mutation rather than duplicate an edge or erase
+   pre-existing derived state.
+
+The owner applies this rule at each nested boundary. LARA owns adjacency layout, allocation,
+relocation, and reopen invariants. `GraphStore` owns the co-update of canonical adjacency with
+same-canister reverse rows, edge aliases, edge properties, local indexes, and maintenance intent.
+The lower layer exposes narrow plan/reserve/commit operations; the facade must not reconstruct LARA
+storage rules or compensate by directly editing its internal stores.
+
+**Implementation status (verified 2026-07-11 UTC):** plan 0071 and commit `e347a54d` implement this
+discipline for `EdgeStore::grow_segment_tree_to` and
+`LabeledLaraGraph::promote_bypass_to_bucket_mode`, including deterministic grow-failure, reopen, and
+retry tests. The Graph facade edge mutation boundary remains **planned**: directed/undirected insert
+currently writes LARA before fallible handle lookup and post-insert maintenance, while delete clears
+sidecars before it proves and removes the canonical edge. The next Graph-owned slice must preflight
+stale handles and every derived-row identity, then co-write adjacency and sidecars without a
+recoverable post-commit error.
 
 ### 2. Treat cross-canister state as an asynchronous projection
 
@@ -304,6 +336,8 @@ across a commit point. This guard is expected when a second inter-canister path 
 | Invariant | Owner | Enforcement point |
 |-----------|-------|-------------------|
 | Canonical graph state changes atomically within the supported local boundary | Graph | Synchronous canonical mutation segment |
+| A recoverable shard-local mutation error leaves canonical and same-canister derived state logically unchanged | Owning LARA store or `GraphStore` facade | Preflight before the first canonical write; trap on impossible post-preflight failure |
+| Canonical adjacency, reverse rows, aliases, properties, local indexes, and maintenance intent have one Graph-owned update path | Graph | `GraphStore` mutation facade; storage details remain encapsulated in LARA |
 | The canonical mutation segment carries no inter-canister call/commit point, including after graph-shard splitting | Graph | Segment constructed without a cross-canister client handle today; path-independent "no active segment" guard once a peer-shard client exists |
 | A committed canonical mutation has durable replay/repair metadata before cross-canister work can be lost | Graph | Mutation journal and projection-intent write boundary |
 | One client key and fingerprint reuse one mutation identity | Router | Client mutation reservation |
@@ -376,3 +410,4 @@ The phased implementation and acceptance gates are defined in
 - [ADR 0024: Mutation journal completion vs index flush](0024-mutation-journal-completion-vs-index-flush.md)
 - [ADR 0025: Client mutation journal retention](0025-client-mutation-journal-retention-sweep.md)
 - [ADR 0027: Graph mutation journal retention](0027-graph-mutation-journal-retention.md)
+- [ADR 0039: Production stable-memory evolution and canister upgrade safety](0039-production-stable-memory-evolution-and-upgrade-safety.md)
