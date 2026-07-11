@@ -2,13 +2,14 @@
 
 Date: 2026-06-12
 Status: accepted
-Last revised: 2026-07-09
-Anchor timestamp: 2026-07-09 03:39:22 UTC +0000
+Last revised: 2026-07-11
+Anchor timestamp: 2026-07-11 04:55:51 UTC +0000
 
 ## Revision history
 
 | Date       | Change                                                                                                                                                                                                                                                                                                                                                                                                                    |
 | ---------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| 2026-07-11 | ADR 0039 defines the planned production stable-layout manifest, bounded migration, upgrade preflight, and N-1 compatibility gate. This ADR continues to govern physical region allocation; its earlier development-only wipe policy does not define production evolution. |
 | 2026-07-07 | ADR 0035 Slice 7: Provision gains `PROVISION_BOOTSTRAP_AUTH` (MemoryId 4) StableCell singleton and `PROVISION_BOOTSTRAP_AUDIT_LOG` (MemoryId 5) StableBTreeMap audit log; Provision **6 regions (0–5)**. |
 | 2026-07-05 | ADR 0035 Slice 3: `ProvisionJobRecord` schema growth (`accepted_registry_version: Option<u64>`) inside the existing `PROVISION_JOB_BY_REQUEST` region; no new stable-memory regions. |
 | 2026-07-05 | ADR 0035 Slice 2: new Provision canister with `PROVISION_DEPLOYMENT_TRUST` (0), `PROVISION_JOB_BY_REQUEST` (1), `PROVISION_JOB_BY_DEPLOYMENT` (2), `PROVISION_JOB_INTENT_LOCK` (3); Provision **4 regions (0–3)**. |
@@ -168,7 +169,7 @@ label posting merge on graph-index, router label stats merge into placement.
 | Policy               | Choice                                                                                                                                                    |
 | -------------------- | --------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | Development data     | **Intentionally discarded** on layout change; reinstall or wipe stable memory                                                                             |
-| Production migration | Not in scope until a product migration ADR exists                                                                                                         |
+| Production migration | Governed by proposed [ADR 0039](0039-production-stable-memory-evolution-and-upgrade-safety.md); until its readiness gate closes, deployments retain the development-only wipe limitation |
 | Reopen tests         | Required for any id reassignment or region merge; use existing facade reopen tests per canister                                                           |
 | Partial corruption   | Separate regions limit blast radius; merged regions must document shared fate                                                                             |
 | Upgrade              | Ephemeral queues (pending postings, prepared plans) lost on upgrade by design; backfill covers historical derived state; indexed catalog survives upgrade |

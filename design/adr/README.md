@@ -73,6 +73,7 @@ Last revised: YYYY-MM-DD
 | [0036](0036-versioned-wasm-artifact-catalog.md) | Versioned WASM artifact catalog | Partially Implemented (Slice 8a: artifact catalog regions + publish/upload/status; Slice 8b: release manifest + active-release pointer + activation; Slice 8c: install transfer + artifact audit log + PocketIC; fully implemented modulo external archive / HTTP outcall) |
 | [0037](0037-provisioned-canister-lifecycle-and-controllers.md) | Provisioned canister lifecycle and controllers | proposed |
 | [0038](0038-provisioning-authorization-and-cycles-funding.md) | Provisioning authorization and cycles funding | proposed |
+| [0039](0039-production-stable-memory-evolution-and-upgrade-safety.md) | Production stable-memory evolution and canister upgrade safety | proposed |
 
 When adding an ADR, link it from the relevant design doc and update this table.
 
