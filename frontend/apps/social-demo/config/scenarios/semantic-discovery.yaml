@@ -9,7 +9,7 @@ rdbSummary: |-
 graphSummary: |-
   Gleaph stores canonical Post embeddings on the Graph shard and routes vector SEARCH through the derived index. `post-dave-1` is deliberately the nearest public Post even though Alice does not follow Dave.
 preparedQuery: |-
-  MATCH (p:Post) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC
+  MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC
 semanticVector:
   - 8
   - 0

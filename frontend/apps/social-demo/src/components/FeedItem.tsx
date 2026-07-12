@@ -8,10 +8,11 @@ export function FeedItem(props: FeedItemProps) {
     <article class="rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
       <div class="flex items-start gap-3">
         <div class="flex h-10 w-10 shrink-0 items-center justify-center rounded-full bg-indigo-100 font-semibold text-indigo-700">
-          {definition.shortLabel.charAt(0)}
+          {row.authorName.charAt(0)}
         </div>
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
+            <span class="font-medium text-slate-900">{row.authorName}</span>
             {row.kind !== "semanticPost" && (
               <span class="text-sm text-slate-500">· {formatDate(row.createdAt)}</span>
             )}
@@ -30,7 +31,7 @@ export function FeedItem(props: FeedItemProps) {
                 Vector distance
               </h3>
               <p class="mt-1 text-sm text-slate-700">
-                L2-squared distance: {" "}
+                L2-squared distance:{" "}
                 <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">{row.distance}</code>
               </p>
             </div>
@@ -44,27 +45,21 @@ export function FeedItem(props: FeedItemProps) {
               <ul class="mt-2 space-y-1 text-sm text-slate-700">
                 <li>
                   Follower edge{" "}
-                  <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">
-                    {row.followsEdgeId}
-                  </code>
+                  <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">{row.followsEdgeId}</code>
                 </li>
                 <li>
                   Author-post edge{" "}
-                  <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">
-                    {row.postedEdgeId}
-                  </code>{" "}
+                  <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">{row.postedEdgeId}</code>{" "}
                   on <span class="font-medium">{row.body}</span>
                 </li>
                 <li>
                   Post-topic edge{" "}
-                  <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">
-                    {row.topicEdgeId}</code>{" "}
-                  to topic <span class="font-medium">{displayPostId(row.topicId)}</span>
+                  <code class="rounded bg-slate-200 px-1 py-0.5 text-xs">{row.topicEdgeId}</code> to
+                  topic <span class="font-medium">{displayPostId(row.topicId)}</span>
                 </li>
               </ul>
               <p class="mt-2 text-xs text-slate-500">
-                Labels reflect the fixed social-graph seed. Update them if the seed
-                subject changes.
+                Labels reflect the fixed social-graph seed. Update them if the seed subject changes.
               </p>
             </div>
           )}

@@ -150,6 +150,65 @@ fn executes_planner_one_hop_expand() {
 }
 
 #[test]
+fn executes_planner_chained_expand_with_author_name() {
+    let store = GraphStore::new();
+    let feed = store
+        .insert_vertex_named(["SocialDemoFeed"], [("demo_id", Value::Int64(16))])
+        .expect("insert feed");
+    let post = store
+        .insert_vertex_named(
+            ["SocialDemoPost"],
+            [
+                ("body", Value::Text("hello world".into())),
+                ("created_at", Value::Int64(20260712)),
+            ],
+        )
+        .expect("insert post");
+    let author = store
+        .insert_vertex_named(["SocialDemoUser"], [("name", Value::Text("Alice".into()))])
+        .expect("insert author");
+    store
+        .insert_directed_edge_named(
+            post,
+            feed,
+            Some("SocialDemoInPublicFeed"),
+            Vec::<(&str, Value)>::new(),
+        )
+        .expect("feed edge");
+    store
+        .insert_directed_edge_named(
+            author,
+            post,
+            Some("SocialDemoPosted"),
+            Vec::<(&str, Value)>::new(),
+        )
+        .expect("posted edge");
+
+    let plan = plan_gql(
+        "MATCH (feed:SocialDemoFeed {demo_id: 16})<-[:SocialDemoInPublicFeed]-(p:SocialDemoPost)<-[:SocialDemoPosted]-(author:SocialDemoUser) \
+         RETURN author.name AS author_name, p.body AS body, p.created_at AS created_at LIMIT 20",
+    );
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute chained expand");
+
+    assert_eq!(result.rows.len(), 1);
+    assert_eq!(
+        result.rows[0].get("author_name"),
+        Some(&Value::Text("Alice".into()))
+    );
+    assert_eq!(
+        result.rows[0].get("body"),
+        Some(&Value::Text("hello world".into()))
+    );
+    assert_eq!(
+        result.rows[0].get("created_at"),
+        Some(&Value::Int64(20260712))
+    );
+}
+
+#[test]
 fn executes_planner_union_label_expr_expand() {
     let store = GraphStore::new();
     let a = store

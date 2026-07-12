@@ -103,6 +103,47 @@ fn collect_search_bindings(rest: &[PlanOp], tail: &[&[PlanOp]]) -> BTreeSet<Stri
     out
 }
 
+/// Collect variables used as the source or destination of a later traversal
+/// (`Expand`, `ExpandFilter`, or `ShortestPath`). Those bindings must remain
+/// full vertex bindings so the executor can resolve them against the local CSR.
+fn collect_traversal_source_bindings(rest: &[PlanOp], tail: &[&[PlanOp]]) -> BTreeSet<String> {
+    let mut out = BTreeSet::new();
+    fn scan_physical(plan: &PhysicalPlan, out: &mut BTreeSet<String>) {
+        scan(&plan.ops, out);
+    }
+    fn scan(ops: &[PlanOp], out: &mut BTreeSet<String>) {
+        for op in ops {
+            match op {
+                PlanOp::Expand { src, .. } | PlanOp::ExpandFilter { src, .. } => {
+                    out.insert(src.to_string());
+                }
+                PlanOp::ShortestPath { src, dst, .. } => {
+                    out.insert(src.to_string());
+                    out.insert(dst.to_string());
+                }
+                PlanOp::OptionalMatch { sub_plan } => scan(sub_plan, out),
+                PlanOp::HashJoin { left, right, .. }
+                | PlanOp::CartesianProduct { left, right, .. } => {
+                    scan(left, out);
+                    scan(right, out);
+                }
+                PlanOp::SetOperation { right, .. } => scan_physical(right, out),
+                PlanOp::InlineProcedureCall { sub_plan, .. } => scan_physical(sub_plan, out),
+                PlanOp::UseGraph {
+                    sub_plan: Some(sub),
+                    ..
+                } => scan(sub, out),
+                _ => {}
+            }
+        }
+    }
+    scan(rest, &mut out);
+    for seg in tail {
+        scan(seg, &mut out);
+    }
+    out
+}
+
 fn apply_recursive(ops: &mut [PlanOp], tail: &[&[PlanOp]]) {
     let n = ops.len();
     let mut patches: Vec<OpProjectionPatch> = Vec::with_capacity(n);
@@ -117,8 +158,14 @@ fn apply_recursive(ops: &mut [PlanOp], tail: &[&[PlanOp]]) {
             }
         }
         let search_bindings = collect_search_bindings(&ops[i + 1..], tail);
+        let traversal_source_bindings = collect_traversal_source_bindings(&ops[i + 1..], tail);
         let patch = if projection_inference_may_be_needed(&ops[i], &expr_refs) {
-            op_projection_patch(&ops[i], &expr_refs, &search_bindings)
+            op_projection_patch(
+                &ops[i],
+                &expr_refs,
+                &search_bindings,
+                &traversal_source_bindings,
+            )
         } else {
             OpProjectionPatch::all_empty()
         };
@@ -211,37 +258,63 @@ fn op_projection_patch(
     op: &PlanOp,
     exprs: &[&Expr],
     search_bindings: &BTreeSet<String>,
+    traversal_source_bindings: &BTreeSet<String>,
 ) -> OpProjectionPatch {
+    let must_remain_vertex =
+        |var: &str| search_bindings.contains(var) || traversal_source_bindings.contains(var);
+
     let mut p = OpProjectionPatch::noop();
     match op {
         PlanOp::NodeScan { variable, .. } => {
-            p.vertex_scan = infer_vertex_scan_patch(exprs, variable.as_ref());
+            p.vertex_scan = if must_remain_vertex(variable.as_ref()) {
+                ScanProjectionPatch::FullProperties
+            } else {
+                infer_vertex_scan_patch(exprs, variable.as_ref())
+            };
         }
         PlanOp::IndexScan {
             variable, property, ..
         } => {
-            p.vertex_scan = indexed_entity_scan_patch(exprs, variable.as_ref(), property.as_ref());
+            p.vertex_scan = if must_remain_vertex(variable.as_ref()) {
+                ScanProjectionPatch::FullProperties
+            } else {
+                indexed_entity_scan_patch(exprs, variable.as_ref(), property.as_ref())
+            };
         }
         PlanOp::IndexIntersection {
             variable, scans, ..
-        } => match infer_projection_names(exprs, variable.as_ref()) {
-            None => p.vertex_scan = ScanProjectionPatch::FullProperties,
-            Some(mut set) => {
-                for s in scans {
-                    set.insert(s.property.to_string());
+        } => {
+            p.vertex_scan = if must_remain_vertex(variable.as_ref()) {
+                ScanProjectionPatch::FullProperties
+            } else {
+                match infer_projection_names(exprs, variable.as_ref()) {
+                    None => ScanProjectionPatch::FullProperties,
+                    Some(mut set) => {
+                        for s in scans {
+                            set.insert(s.property.to_string());
+                        }
+                        ScanProjectionPatch::Projected(names_to_rc(set))
+                    }
                 }
-                p.vertex_scan = ScanProjectionPatch::Projected(names_to_rc(set));
-            }
-        },
+            };
+        }
         PlanOp::ConditionalIndexScan {
             fallback_variable, ..
         } => {
-            p.vertex_scan = infer_vertex_scan_patch(exprs, fallback_variable.as_ref());
+            p.vertex_scan = if must_remain_vertex(fallback_variable.as_ref()) {
+                ScanProjectionPatch::FullProperties
+            } else {
+                infer_vertex_scan_patch(exprs, fallback_variable.as_ref())
+            };
         }
         PlanOp::EdgeIndexScan {
             variable, property, ..
         } => {
-            p.edge_scan = indexed_entity_scan_patch(exprs, variable.as_ref(), property.as_ref());
+            p.edge_scan = if must_remain_vertex(variable.as_ref()) {
+                ScanProjectionPatch::FullProperties
+            } else {
+                indexed_entity_scan_patch(exprs, variable.as_ref(), property.as_ref())
+            };
         }
         PlanOp::Expand {
             edge,
@@ -253,7 +326,7 @@ fn op_projection_patch(
                 .as_ref()
                 .map(|(prop, _)| prop.as_ref());
             p.expand_edge = expand_edge_patch(exprs, edge.as_ref(), idx_prop);
-            p.expand_dst = if search_bindings.contains(dst.as_ref()) {
+            p.expand_dst = if must_remain_vertex(dst.as_ref()) {
                 ScanProjectionPatch::FullProperties
             } else {
                 infer_vertex_scan_patch(exprs, dst.as_ref())
@@ -272,19 +345,19 @@ fn op_projection_patch(
             p.expand_edge = expand_edge_patch(exprs, edge.as_ref(), idx_prop);
             let mut dst_exprs: Vec<&Expr> = dst_filter.iter().collect();
             dst_exprs.extend(exprs.iter().copied());
-            p.expand_dst = if search_bindings.contains(dst.as_ref()) {
+            p.expand_dst = if must_remain_vertex(dst.as_ref()) {
                 ScanProjectionPatch::FullProperties
             } else {
                 infer_vertex_scan_patch(&dst_exprs, dst.as_ref())
             };
         }
         PlanOp::EdgeBindEndpoints { near, far, .. } => {
-            p.bind_near = if search_bindings.contains(near.as_ref()) {
+            p.bind_near = if must_remain_vertex(near.as_ref()) {
                 ScanProjectionPatch::FullProperties
             } else {
                 infer_vertex_scan_patch(exprs, near.as_ref())
             };
-            p.bind_far = if search_bindings.contains(far.as_ref()) {
+            p.bind_far = if must_remain_vertex(far.as_ref()) {
                 ScanProjectionPatch::FullProperties
             } else {
                 infer_vertex_scan_patch(exprs, far.as_ref())
@@ -734,5 +807,78 @@ mod tests {
         };
         assert!(matches!(edge_property_projection, Some(rc) if rc.is_empty()));
         assert!(matches!(dst_property_projection, Some(rc) if rc.is_empty()));
+    }
+
+    #[test]
+    fn downstream_expand_source_keeps_destination_vertex_full() {
+        let mut ops = vec![
+            PlanOp::NodeScan {
+                variable: "a".into(),
+                label: Some("Person".into()),
+                property_projection: None,
+            },
+            PlanOp::Expand {
+                src: "a".into(),
+                edge: "e1".into(),
+                dst: "b".into(),
+                direction: EdgeDirection::PointingRight,
+                label: Some("KNOWS".into()),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: None,
+                edge_inline_value_predicate: None,
+                edge_inline_vector_predicate: None,
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+                emit_edge_binding: true,
+                near_group_var: None,
+                far_group_var: None,
+                path_var: None,
+                emit_path_binding: false,
+            },
+            PlanOp::Expand {
+                src: "b".into(),
+                edge: "e2".into(),
+                dst: "c".into(),
+                direction: EdgeDirection::PointingRight,
+                label: Some("KNOWS".into()),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: None,
+                edge_inline_value_predicate: None,
+                edge_inline_vector_predicate: None,
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+                emit_edge_binding: true,
+                near_group_var: None,
+                far_group_var: None,
+                path_var: None,
+                emit_path_binding: false,
+            },
+            PlanOp::Project {
+                columns: vec![crate::plan::ProjectColumn {
+                    expr: Expr::new(ExprKind::PropertyAccess {
+                        expr: Box::new(Expr::new(ExprKind::Variable("c".into()))),
+                        property: "name".into(),
+                    }),
+                    alias: Some("c_name".into()),
+                }],
+                distinct: false,
+            },
+        ];
+        apply_node_property_projections(&mut ops);
+        let PlanOp::Expand {
+            dst_property_projection,
+            ..
+        } = &ops[1]
+        else {
+            panic!("expected first Expand");
+        };
+        assert!(
+            dst_property_projection.is_none(),
+            "dst 'b' must stay a full vertex because it is used as a later expand source"
+        );
     }
 }

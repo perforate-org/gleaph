@@ -28,14 +28,14 @@ use gleaph_pocket_ic_tests::{
 use gleaph_social_demo_gateway::SocialDemoScenario;
 
 const PUBLIC_TIMELINE_QUERY: &str = "\
-MATCH (feed:Feed {demo_id: 16})<-[:IN_PUBLIC_FEED]-(p:Post) \
-RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at \
+MATCH (feed:Feed {demo_id: 16})<-[:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) \
+RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
 LIMIT 20";
 
 const ALICE_HOME_FEED_QUERY: &str = "\
-MATCH (u:User {demo_id: 1})<-[:IN_HOME_FEED]-(p:Post) \
+MATCH (u:User {demo_id: 1})<-[:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) \
 WHERE p.is_public = TRUE \
-RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at \
+RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
 LIMIT 20";
 
 const TOPIC_PATH_QUERY: &str = "\
@@ -44,6 +44,7 @@ WHERE t.demo_id = 7 \
 MATCH (u:User)-[follows:FOLLOWS]->(author:User)-[posted:POSTED]->(p) \
 WHERE u.demo_id = 1 \
 RETURN p.demo_id AS post_id, \
+       author.name AS author_name, \
        follows.demo_edge_id AS follows_edge_id, \
        posted.demo_edge_id AS posted_edge_id, \
        t.demo_id AS topic_id, \
@@ -56,9 +57,9 @@ const SEMANTIC_EMBEDDING_NAME: &str = "post_vec";
 const SEMANTIC_INDEX_ID: u32 = 1;
 const SEMANTIC_DIMS: u16 = 8;
 
-const SEMANTIC_DISCOVERY_QUERY: &str = "MATCH (p:Post) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC";
+const SEMANTIC_DISCOVERY_QUERY: &str = "MATCH (p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC";
 
-const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, p.body AS body, distance ORDER BY distance ASC";
+const ALICE_SEMANTIC_FEED_QUERY: &str = "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = TRUE SEARCH p IN (VECTOR INDEX post_vec FOR $query LIMIT 10) DISTANCE AS distance RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, distance ORDER BY distance ASC";
 
 const SOCIAL_SEEDS_JSON: &str =
     include_str!("../../../frontend/apps/knowledge-map/seeds/social-seeds.json");
@@ -144,6 +145,41 @@ fn assert_public_timeline_through_gateway(
     );
     for row in &rows {
         assert_body_is_text(row, "public timeline should surface body");
+        assert_author_name_is_text(row, "public timeline should surface author name");
+    }
+    assert_author_names(
+        &rows,
+        &[
+            ("9", "Alice"),
+            ("11", "Bob"),
+            ("12", "Carol"),
+            ("10", "Bob"),
+            ("14", "Eve"),
+            ("13", "Dave"),
+        ],
+    );
+}
+
+fn assert_author_names(
+    rows: &[std::collections::BTreeMap<String, Value>],
+    expected: &[(&str, &str)],
+) {
+    assert_eq!(
+        rows.len(),
+        expected.len(),
+        "author name assertion row count mismatch"
+    );
+    for (row, (post_id, expected_author)) in rows.iter().zip(expected.iter()) {
+        assert_eq!(
+            &demo_id_text(row, "post_id"),
+            post_id,
+            "author name order post_id mismatch"
+        );
+        let author = text(row, "author_name");
+        assert_eq!(
+            author, *expected_author,
+            "author name for {post_id} expected {expected_author}, got {author}"
+        );
     }
 }
 
@@ -177,7 +213,9 @@ fn assert_alice_home_feed_through_gateway(
     }
     for row in &rows {
         assert_body_is_text(row, "home feed should surface body");
+        assert_author_name_is_text(row, "home feed should surface author name");
     }
+    assert_author_names(&rows, &[("11", "Bob"), ("12", "Carol"), ("10", "Bob")]);
 }
 
 fn assert_topic_path_explanation_through_gateway(
@@ -227,6 +265,11 @@ fn assert_topic_path_explanation_through_gateway(
         "Bob's topic note",
         "topic path should surface the Post body"
     );
+    assert_eq!(
+        text(row, "author_name"),
+        "Bob",
+        "topic path should surface the author name"
+    );
 
     for row in &rows {
         assert_ne!(
@@ -265,7 +308,19 @@ fn assert_semantic_discovery_through_gateway(
     );
     for row in &rows {
         assert_body_is_text(row, "semantic discovery should surface body");
+        assert_author_name_is_text(row, "semantic discovery should surface author name");
     }
+    assert_author_names(
+        &rows,
+        &[
+            ("13", "Dave"),
+            ("11", "Bob"),
+            ("12", "Carol"),
+            ("10", "Bob"),
+            ("9", "Alice"),
+            ("14", "Eve"),
+        ],
+    );
 
     assert_exact_distances(
         &rows,
@@ -310,6 +365,7 @@ fn assert_alice_semantic_feed_through_gateway(
     }
 
     assert_exact_distances(&rows, &[("11", 2.0), ("12", 8.0), ("10", 18.0)]);
+    assert_author_names(&rows, &[("11", "Bob"), ("12", "Carol"), ("10", "Bob")]);
     // Plan 0068 fixed AliceSemanticFeed's body column by extending the planner's
     // property_uses collection to include row-local operator expressions (Project, etc.).
     // The body assertion for this scenario lives in `alice_semantic_feed_body_regression`
@@ -392,6 +448,16 @@ fn intern_social_schema(env: &gleaph_pocket_ic_tests::FederationEnv) {
     }
 }
 
+fn assert_author_name_is_text(row: &std::collections::BTreeMap<String, Value>, context: &str) {
+    match row
+        .get("author_name")
+        .unwrap_or_else(|| panic!("{context}: missing author_name column"))
+    {
+        Value::Text(_) => {}
+        other => panic!("{context}: expected Text author_name, got {other:?}"),
+    }
+}
+
 fn assert_body_is_text(row: &std::collections::BTreeMap<String, Value>, context: &str) {
     match row
         .get("body")
@@ -401,6 +467,7 @@ fn assert_body_is_text(row: &std::collections::BTreeMap<String, Value>, context:
         other => panic!("{context}: expected Text body, got {other:?}"),
     }
 }
+
 fn decode_rows(
     result: &gleaph_graph_kernel::plan_exec::GqlQueryResult,
 ) -> Vec<std::collections::BTreeMap<String, Value>> {
@@ -488,5 +555,6 @@ fn alice_semantic_feed_body_regression() {
             row,
             "Alice semantic feed should surface body (Plan 0067/0068 regression)",
         );
+        assert_author_name_is_text(row, "Alice semantic feed should surface author name");
     }
 }

@@ -31,10 +31,7 @@ import { ScenarioNav } from "~/components/ScenarioNav";
 const isSemanticScenario = (definition: ScenarioDefinition): boolean =>
   definition.id === "SemanticDiscovery" || definition.id === "AliceSemanticFeed";
 
-const decodeFeedResult = (
-  definition: ScenarioDefinition,
-  rowsBlob: Uint8Array,
-): FeedResult => {
+const decodeFeedResult = (definition: ScenarioDefinition, rowsBlob: Uint8Array): FeedResult => {
   const wire = decodeWireRows(rowsBlob);
   const rows: FeedRow[] = wire.rows.map((row) => {
     const map = rowToColumnMap(row);
@@ -44,6 +41,7 @@ const decodeFeedResult = (
       return {
         kind: "topicPath",
         postId,
+        authorName: expectText(map, "author_name"),
         body: expectText(map, "body"),
         createdAt: expectDateTimeSeconds(map, "created_at"),
         followsEdgeId: expectText(map, "follows_edge_id"),
@@ -57,12 +55,19 @@ const decodeFeedResult = (
       return {
         kind: "semanticPost",
         postId,
+        authorName: expectText(map, "author_name"),
         body: expectText(map, "body"),
         distance: expectFloat64(map, "distance"),
       };
     }
 
-    return { kind: "post", postId, body: expectText(map, "body"), createdAt: expectDateTimeSeconds(map, "created_at") };
+    return {
+      kind: "post",
+      postId,
+      authorName: expectText(map, "author_name"),
+      body: expectText(map, "body"),
+      createdAt: expectDateTimeSeconds(map, "created_at"),
+    };
   });
 
   return { rows, rowCount: BigInt(rows.length) };
@@ -97,8 +102,7 @@ const formatDate = (seconds: bigint): string => {
 };
 
 export function SocialDemo() {
-  const [activeScenarioId, setActiveScenarioId] =
-    createSignal<ScenarioId>("PublicTimeline");
+  const [activeScenarioId, setActiveScenarioId] = createSignal<ScenarioId>("PublicTimeline");
 
   const options = getGatewayClientOptions();
   const client = options ? createGatewayClient(options) : undefined;
@@ -130,25 +134,17 @@ export function SocialDemo() {
       <main class="mx-auto grid max-w-6xl gap-6 px-4 py-6 lg:grid-cols-[16rem_1fr_20rem]">
         <aside class="hidden lg:block">
           <div class="sticky top-20 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <ScenarioNav
-              active={activeScenarioId()}
-              onSelect={setActiveScenarioId}
-            />
+            <ScenarioNav active={activeScenarioId()} onSelect={setActiveScenarioId} />
           </div>
         </aside>
 
         <section class="min-w-0">
           <div class="mb-4 lg:hidden">
-            <ScenarioNav
-              active={activeScenarioId()}
-              onSelect={setActiveScenarioId}
-            />
+            <ScenarioNav active={activeScenarioId()} onSelect={setActiveScenarioId} />
           </div>
 
           <div class="mb-4 rounded-xl border border-slate-200 bg-white p-4 shadow-sm">
-            <h1 class="text-lg font-semibold text-slate-900">
-              {activeDefinition().feedTitle}
-            </h1>
+            <h1 class="text-lg font-semibold text-slate-900">{activeDefinition().feedTitle}</h1>
             <p class="text-sm text-slate-500">
               {activeDefinition().label} · Anonymous read-only demo
             </p>
@@ -180,10 +176,7 @@ export function SocialDemo() {
   );
 }
 
-function FeedList(props: {
-  result: FeedResult | undefined;
-  definition: ScenarioDefinition;
-}) {
+function FeedList(props: { result: FeedResult | undefined; definition: ScenarioDefinition }) {
   return (
     <div class="space-y-4">
       <Show
@@ -195,13 +188,7 @@ function FeedList(props: {
         }
       >
         <For each={props.result!.rows}>
-          {(row) => (
-            <FeedItem
-              row={row}
-              definition={props.definition}
-              formatDate={formatDate}
-            />
-          )}
+          {(row) => <FeedItem row={row} definition={props.definition} formatDate={formatDate} />}
         </For>
       </Show>
     </div>

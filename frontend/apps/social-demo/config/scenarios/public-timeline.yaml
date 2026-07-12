@@ -9,5 +9,5 @@ rdbSummary: |-
 graphSummary: |-
   The graph materializes `IN_PUBLIC_FEED` edges from every public Post to a dedicated Feed vertex at seed time. Gleaph's labeled-edge insertion order becomes the chronological key, so a single fixed-label expansion with `LIMIT` returns newest-first without an explicit `ORDER BY`. The value is not speed; it is that the same vertex model will later power relationship-aware feeds without a new schema.
 preparedQuery: |-
-  MATCH (feed:Feed {demo_id: 16})<-[:IN_PUBLIC_FEED]-(p:Post) RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at LIMIT 20
+  MATCH (feed:Feed {demo_id: 16})<-[:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at LIMIT 20
 semanticVector: null
