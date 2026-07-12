@@ -1755,6 +1755,8 @@ dependencies = [
 [[package]]
 name = "ic-stable-roaring"
 version = "0.1.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "0e5e35d7cd4b1ec8a4dd6ed5419cef8c6330f587a3eb807e8c818ec3f3f54f63"
 dependencies = [
  "ic-stable-structures",
  "roaring",
