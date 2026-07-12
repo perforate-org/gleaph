@@ -15,6 +15,9 @@ pub fn parse_date(s: &str) -> Option<i32> {
 }
 
 /// Parse "HH:MM:SS[.nanos]" -> nanoseconds since midnight.
+///
+/// This is the raw time parser used for both UTC/no-offset `TIME` and
+/// `LOCAL_TIME`; callers decide which `Value` variant to construct.
 pub fn parse_time(s: &str) -> Option<u64> {
     let b = s.as_bytes();
     if b.len() < 8 || b[2] != b':' || b[5] != b':' {
@@ -39,6 +42,15 @@ pub fn parse_time(s: &str) -> Option<u64> {
         nanos += frac_val;
     }
     Some(nanos)
+}
+
+/// Parse "HH:MM:SS[.nanos]" as a local time.
+///
+/// Local time uses the same nanoseconds-since-midnight representation as
+/// `parse_time`; the distinction is in the `Value` variant produced by the
+/// caller (`Value::LocalTime` vs `Value::Time`).
+pub fn parse_local_time(s: &str) -> Option<u64> {
+    parse_time(s)
 }
 
 /// Parse "YYYY-MM-DDTHH:MM:SS[.frac][Z|+HH:MM|-HH:MM]" -> (unix_seconds, subsec_nanos).
@@ -435,6 +447,17 @@ mod tests {
         assert_eq!(parse_time("14:30:00"), Some(52_200_000_000_000));
         assert_eq!(parse_time("14:30:00.5"), Some(52_200_500_000_000));
         assert_eq!(parse_time("14:30:00.123456789"), Some(52_200_123_456_789));
+    }
+
+    #[test]
+    fn parse_local_time_basic() {
+        assert_eq!(parse_local_time("00:00:00"), Some(0));
+        assert_eq!(parse_local_time("14:30:00"), Some(52_200_000_000_000));
+        assert_eq!(
+            parse_local_time("14:30:00.123456789"),
+            Some(52_200_123_456_789)
+        );
+        assert!(parse_local_time("25:00:00").is_none());
     }
 
     #[test]

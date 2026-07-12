@@ -4,7 +4,9 @@ use std::collections::BTreeMap;
 
 use crate::edge_inline_value_scalar_codec::decode_edge_inline_value_scalar;
 use gleaph_gql::Value;
-use gleaph_gql::ast::{AggregateFunc, CmpOp, Expr, ExprKind, ObjectName, TruthValue};
+use gleaph_gql::ast::{
+    AggregateFunc, CmpOp, DurationQualifier, Expr, ExprKind, ObjectName, TruthValue,
+};
 use gleaph_gql::types::LabelExpr;
 use gleaph_gql_planner::plan::{ProjectColumn, Str};
 use gleaph_graph_kernel::entry::{
@@ -801,10 +803,132 @@ impl QueryExprEvaluator<'_> {
             ExprKind::CurrentDate => Ok(current_date_value()),
             ExprKind::CurrentTime => Ok(current_time_value()),
             ExprKind::CurrentLocalTime => Ok(current_local_time_value()),
+            ExprKind::DateLiteral(args) | ExprKind::DateFunction(args) => self
+                .eval_temporal_constructor(row, args, "DATE", |s| {
+                    gleaph_gql::temporal::parse_date(s).map(Value::Date)
+                }),
+            ExprKind::TimeLiteral(args) => self.eval_temporal_constructor(row, args, "TIME", |s| {
+                gleaph_gql::temporal::parse_time(s).map(Value::Time)
+            }),
+            ExprKind::LocalTimeFunction(args) => {
+                self.eval_temporal_constructor(row, args, "LOCAL_TIME", |s| {
+                    gleaph_gql::temporal::parse_local_time(s).map(Value::LocalTime)
+                })
+            }
+            ExprKind::ZonedTimeFunction(args) => {
+                self.eval_temporal_constructor(row, args, "ZONED_TIME", |s| {
+                    gleaph_gql::temporal::parse_zoned_time(s)
+                        .map(|(nanos, tz)| Value::ZonedTime(nanos, tz))
+                })
+            }
+            ExprKind::DatetimeLiteral(args) => {
+                self.eval_temporal_constructor(row, args, "DATETIME", |s| {
+                    gleaph_gql::temporal::parse_datetime(s)
+                        .map(|(secs, nanos)| Value::DateTime(secs, nanos))
+                })
+            }
+            ExprKind::LocalDatetimeFunction(args) => {
+                self.eval_temporal_constructor(row, args, "LOCAL_DATETIME", |s| {
+                    gleaph_gql::temporal::parse_local_datetime(s)
+                        .map(|(secs, nanos)| Value::LocalDateTime(secs, nanos))
+                })
+            }
+            ExprKind::ZonedDatetimeFunction(args) => {
+                self.eval_temporal_constructor(row, args, "ZONED_DATETIME", |s| {
+                    gleaph_gql::temporal::parse_zoned_datetime(s)
+                        .map(|(secs, nanos, tz)| Value::ZonedDateTime(secs, nanos, tz))
+                })
+            }
+            ExprKind::TimestampLiteral(args) => {
+                self.eval_temporal_constructor(row, args, "TIMESTAMP", |s| {
+                    gleaph_gql::temporal::parse_datetime(s)
+                        .map(|(secs, nanos)| Value::DateTime(secs, nanos))
+                })
+            }
+            ExprKind::DurationLiteral(args) | ExprKind::DurationFunction(args) => self
+                .eval_temporal_constructor(row, args, "DURATION", |s| {
+                    gleaph_gql::temporal::parse_duration(s)
+                        .map(|(months, nanos)| Value::Duration(months, nanos))
+                }),
+            ExprKind::DurationBetween {
+                left,
+                right,
+                qualifier,
+            } => self.eval_duration_between(row, left, right, qualifier.as_ref()),
             _ => Err(PlanQueryError::UnsupportedExpression {
                 expression: format!("{:?}", expr.kind),
             }),
         }
+    }
+
+    /// Evaluate a temporal constructor expression that expects exactly one string
+    /// argument (possibly wrapped in `ExprKind::Literal(Value::Text(...))`).
+    fn eval_temporal_constructor(
+        &self,
+        row: &PlanRow,
+        args: &[Expr],
+        name: &str,
+        parse: impl FnOnce(&str) -> Option<Value>,
+    ) -> Result<Value, PlanQueryError> {
+        if args.len() != 1 {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: format!("{name} expects exactly one string argument"),
+            });
+        }
+        let value = self.eval_expr(row, &args[0])?;
+        let Value::Text(s) = value else {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: format!("{name} expects a string argument, got {value:?}"),
+            });
+        };
+        parse(&s).ok_or_else(|| PlanQueryError::InvalidExpressionValue {
+            expression: format!("{name} could not parse '{s}'"),
+        })
+    }
+
+    fn eval_duration_between(
+        &self,
+        row: &PlanRow,
+        left: &Expr,
+        right: &Expr,
+        qualifier: Option<&DurationQualifier>,
+    ) -> Result<Value, PlanQueryError> {
+        let left = self.eval_expr(row, left)?;
+        let right = self.eval_expr(row, right)?;
+
+        // Convert both operands to a nanosecond-scale instant so the subtraction
+        // is uniform across Date / DateTime / LocalDateTime / ZonedDateTime.
+        let left_nanos = temporal_instant_to_nanos(
+            &left,
+            "DURATION_BETWEEN left operand is not a temporal instant",
+        )?;
+        let right_nanos = temporal_instant_to_nanos(
+            &right,
+            "DURATION_BETWEEN right operand is not a temporal instant",
+        )?;
+
+        let diff_nanos = right_nanos - left_nanos;
+        let (months, nanos) = match qualifier {
+            Some(DurationQualifier::YearToMonth) => {
+                // Approximate month component from whole days; days themselves are
+                // discarded because the qualifier only keeps the year-month part.
+                let days = diff_nanos / NANOS_PER_DAY;
+                let months = (days / 30) as i32;
+                (months, 0)
+            }
+            Some(DurationQualifier::DayToSecond) => {
+                // Discard the month component; keep only the day-time portion.
+                let days_nanos = (diff_nanos / NANOS_PER_DAY) * NANOS_PER_DAY;
+                (0, days_nanos)
+            }
+            None => {
+                // GQL (ISO/IEC 39075) specifies that an omitted qualifier defaults
+                // to DAY TO SECOND.
+                let days_nanos = (diff_nanos / NANOS_PER_DAY) * NANOS_PER_DAY;
+                (0, days_nanos)
+            }
+        };
+        Ok(Value::Duration(months, nanos))
     }
 
     fn eval_is_labeled(
@@ -1229,6 +1353,29 @@ fn property_from_value(value: &Value, property: &str) -> Value {
     }
 }
 
+const NANOS_PER_DAY: i64 = 86_400_000_000_000;
+
+fn temporal_instant_to_nanos(value: &Value, message: &str) -> Result<i64, PlanQueryError> {
+    let nanos = match value {
+        Value::Date(days) => (*days as i64) * NANOS_PER_DAY,
+        Value::DateTime(secs, subsec) | Value::LocalDateTime(secs, subsec) => {
+            secs * 1_000_000_000 + *subsec as i64
+        }
+        Value::ZonedDateTime(secs, subsec, _) => secs * 1_000_000_000 + *subsec as i64,
+        Value::Time(nanos) | Value::LocalTime(nanos) => *nanos as i64,
+        Value::ZonedTime(nanos, tz) => {
+            // Normalize to UTC instant for a uniform duration.
+            (*nanos as i64) - (*tz as i64) * 1_000_000_000
+        }
+        _ => {
+            return Err(PlanQueryError::InvalidExpressionValue {
+                expression: message.to_owned(),
+            });
+        }
+    };
+    Ok(nanos)
+}
+
 fn vertex_matches_label_expr(
     store: &GraphStore,
     resolved_labels: Option<&ResolvedLabelTable>,
@@ -1369,6 +1516,256 @@ mod tests {
         assert!(
             matches!(t, Value::LocalTime(_)),
             "expected LocalTime, got {t:?}"
+        );
+    }
+
+    #[test]
+    fn executes_planner_date_literal() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["DateLiteralProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan = plan_gql("MATCH (n:DateLiteralProbe) RETURN DATE '2025-07-13' AS d");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute date literal");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("d"),
+            Some(&Value::Date(
+                gleaph_gql::temporal::parse_date("2025-07-13").unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn executes_planner_time_constructor() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["TimeConstructorProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan = plan_gql("MATCH (n:TimeConstructorProbe) RETURN TIME '14:30:00.123456789' AS t");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute time constructor");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("t"),
+            Some(&Value::Time(
+                gleaph_gql::temporal::parse_time("14:30:00.123456789").unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn executes_planner_local_time_constructor() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["LocalTimeConstructorProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan =
+            plan_gql("MATCH (n:LocalTimeConstructorProbe) RETURN LOCAL_TIME('14:30:00') AS t");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute local time constructor");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("t"),
+            Some(&Value::LocalTime(
+                gleaph_gql::temporal::parse_local_time("14:30:00").unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn executes_planner_zoned_time_constructor() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["ZonedTimeConstructorProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan = plan_gql(
+            "MATCH (n:ZonedTimeConstructorProbe) RETURN ZONED_TIME('14:30:00+09:00') AS t",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute zoned time constructor");
+        assert_eq!(result.rows.len(), 1);
+        let (nanos, tz) = gleaph_gql::temporal::parse_zoned_time("14:30:00+09:00").unwrap();
+        assert_eq!(result.rows[0].get("t"), Some(&Value::ZonedTime(nanos, tz)));
+    }
+
+    #[test]
+    fn executes_planner_datetime_literal() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["DatetimeLiteralProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan =
+            plan_gql("MATCH (n:DatetimeLiteralProbe) RETURN DATETIME '2025-07-13T14:30:00' AS dt");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute datetime literal");
+        assert_eq!(result.rows.len(), 1);
+        let (secs, nanos) = gleaph_gql::temporal::parse_datetime("2025-07-13T14:30:00").unwrap();
+        assert_eq!(
+            result.rows[0].get("dt"),
+            Some(&Value::DateTime(secs, nanos))
+        );
+    }
+
+    #[test]
+    fn executes_planner_local_datetime_constructor() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["LocalDatetimeConstructorProbe"],
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("insert probe vertex");
+        let plan = plan_gql(
+            "MATCH (n:LocalDatetimeConstructorProbe) RETURN LOCAL_DATETIME('2025-07-13T14:30:00') AS dt",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute local datetime constructor");
+        assert_eq!(result.rows.len(), 1);
+        let (secs, nanos) =
+            gleaph_gql::temporal::parse_local_datetime("2025-07-13T14:30:00").unwrap();
+        assert_eq!(
+            result.rows[0].get("dt"),
+            Some(&Value::LocalDateTime(secs, nanos))
+        );
+    }
+
+    #[test]
+    fn executes_planner_zoned_datetime_constructor() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["ZonedDatetimeConstructorProbe"],
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("insert probe vertex");
+        let plan = plan_gql(
+            "MATCH (n:ZonedDatetimeConstructorProbe) RETURN ZONED_DATETIME('2025-07-13T14:30:00+09:00') AS dt",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute zoned datetime constructor");
+        assert_eq!(result.rows.len(), 1);
+        let (secs, nanos, tz) =
+            gleaph_gql::temporal::parse_zoned_datetime("2025-07-13T14:30:00+09:00").unwrap();
+        assert_eq!(
+            result.rows[0].get("dt"),
+            Some(&Value::ZonedDateTime(secs, nanos, tz))
+        );
+    }
+
+    #[test]
+    fn executes_planner_timestamp_literal() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["TimestampLiteralProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan = plan_gql(
+            "MATCH (n:TimestampLiteralProbe) RETURN TIMESTAMP '2025-07-13T14:30:00' AS ts",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute timestamp literal");
+        assert_eq!(result.rows.len(), 1);
+        let (secs, nanos) = gleaph_gql::temporal::parse_datetime("2025-07-13T14:30:00").unwrap();
+        assert_eq!(
+            result.rows[0].get("ts"),
+            Some(&Value::DateTime(secs, nanos))
+        );
+    }
+
+    #[test]
+    fn executes_planner_duration_constructor() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["DurationConstructorProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan =
+            plan_gql("MATCH (n:DurationConstructorProbe) RETURN DURATION 'P1DT2H3M4.5S' AS dur");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute duration constructor");
+        assert_eq!(result.rows.len(), 1);
+        let (months, nanos) = gleaph_gql::temporal::parse_duration("P1DT2H3M4.5S").unwrap();
+        assert_eq!(
+            result.rows[0].get("dur"),
+            Some(&Value::Duration(months, nanos))
+        );
+    }
+
+    #[test]
+    fn executes_planner_duration_between_dates() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["DurationBetweenProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan = plan_gql(
+            "MATCH (n:DurationBetweenProbe) RETURN DURATION_BETWEEN(DATE '2025-01-01', DATE '2025-02-15') AS dur",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute duration between");
+        assert_eq!(result.rows.len(), 1);
+        // With the default (omitted) qualifier, GQL treats DURATION_BETWEEN as
+        // DAY TO SECOND. 2025-01-01 -> 2025-02-15 is 45 days, so months=0 and
+        // nanos holds exactly 45 days.
+        assert_eq!(
+            result.rows[0].get("dur"),
+            Some(&Value::Duration(0, 45 * 86_400_000_000_000i64))
+        );
+    }
+
+    #[test]
+    fn executes_planner_duration_between_year_to_month() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["DurationBetweenYearToMonthProbe"],
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("insert probe vertex");
+        let plan = plan_gql(
+            "MATCH (n:DurationBetweenYearToMonthProbe) RETURN DURATION_BETWEEN(DATE '2024-01-01', DATE '2025-07-13') YEAR TO MONTH AS dur",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute duration between year to month");
+        assert_eq!(result.rows.len(), 1);
+        let diff_days = gleaph_gql::temporal::parse_date("2025-07-13").unwrap()
+            - gleaph_gql::temporal::parse_date("2024-01-01").unwrap();
+        let expected_months = (diff_days as i64 / 30) as i32;
+        assert_eq!(
+            result.rows[0].get("dur"),
+            Some(&Value::Duration(expected_months, 0))
+        );
+    }
+
+    #[test]
+    fn executes_planner_duration_between_day_to_second() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["DurationBetweenDayToSecondProbe"],
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("insert probe vertex");
+        let plan = plan_gql(
+            "MATCH (n:DurationBetweenDayToSecondProbe) RETURN DURATION_BETWEEN(DATE '2025-01-01', DATE '2025-01-03') DAY TO SECOND AS dur",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute duration between day to second");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("dur"),
+            Some(&Value::Duration(0, 2 * 86_400_000_000_000i64))
         );
     }
 
