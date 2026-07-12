@@ -1197,6 +1197,98 @@ fn gleaph_sequence_asc_pages_labeled_edges_in_insertion_order() {
 }
 
 #[test]
+fn gleaph_sequence_order_after_intermediate_unnamed_expand() {
+    // Regression for social-demo-style queries: the edge variable used in
+    // `GLEAPH.SEQUENCE(e)` is bound by an earlier expand, while a later
+    // unnamed expand walks a different relationship. The sort must skip the
+    // intermediate expand and still recognize that `e` is bound.
+    let store = GraphStore::new();
+    let feed = store
+        .insert_vertex_named(["SeqFeed"], Vec::<(&str, Value)>::new())
+        .expect("insert feed");
+    let mut posts = Vec::new();
+    let mut authors = Vec::new();
+    for i in 0..3 {
+        let post = store
+            .insert_vertex_named(
+                ["SeqFeedPost"],
+                [("title", Value::Text(format!("post {i}")))],
+            )
+            .expect("insert post");
+        let author = store
+            .insert_vertex_named(
+                ["SeqFeedAuthor"],
+                [("name", Value::Text(format!("author {i}")))],
+            )
+            .expect("insert author");
+        store
+            .insert_directed_edge_named(post, feed, Some("IN_FEED"), Vec::<(&str, Value)>::new())
+            .expect("insert feed edge");
+        store
+            .insert_directed_edge_named(author, post, Some("POSTED"), Vec::<(&str, Value)>::new())
+            .expect("insert posted edge");
+        posts.push(post);
+        authors.push(author);
+    }
+
+    let plan = plan_gql(
+        "MATCH (feed:SeqFeed)<-[e:IN_FEED]-(p:SeqFeedPost)<-[:POSTED]-(author:SeqFeedAuthor) \
+             RETURN author.name AS author_name ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 2",
+    );
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute sequence order after intermediate expand");
+
+    assert_eq!(
+        text_column(&result, "author_name"),
+        vec!["author 2", "author 1"]
+    );
+}
+
+#[test]
+fn previous_op_binds_edge_uses_most_recent_binding_for_rebound_variable() {
+    // If the same edge variable is bound by a later expand, the sequence order
+    // must apply to the later binding, not the earlier one.
+    let store = GraphStore::new();
+    let a = store
+        .insert_vertex_named(["SeqRebindA"], Vec::<(&str, Value)>::new())
+        .expect("insert a");
+    let b = store
+        .insert_vertex_named(["SeqRebindB"], Vec::<(&str, Value)>::new())
+        .expect("insert b");
+    let c = store
+        .insert_vertex_named(["SeqRebindC"], Vec::<(&str, Value)>::new())
+        .expect("insert c");
+    let d = store
+        .insert_vertex_named(["SeqRebindD"], [("name", Value::Text("d".to_owned()))])
+        .expect("insert d");
+
+    // a-[e:First]->b, b-[e:Second]->c, c-[f:Third]->d
+    store
+        .insert_directed_edge_named(a, b, Some("First"), Vec::<(&str, Value)>::new())
+        .expect("insert first edge");
+    store
+        .insert_directed_edge_named(b, c, Some("Second"), Vec::<(&str, Value)>::new())
+        .expect("insert second edge");
+    store
+        .insert_directed_edge_named(c, d, Some("Third"), Vec::<(&str, Value)>::new())
+        .expect("insert third edge");
+
+    let plan = plan_gql(
+        "MATCH (a:SeqRebindA)-[e:First]->(b:SeqRebindB)-[e:Second]->(c:SeqRebindC)-[f:Third]->(d:SeqRebindD) \
+             RETURN d.name AS name ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 1",
+    );
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute rebind sequence order");
+
+    // There is only one path, and e is bound to the single Second edge.
+    assert_eq!(text_column(&result, "name"), vec!["d"]);
+}
+
+#[test]
 fn gleaph_sequence_desc_matches_default_labeled_edge_order() {
     let store = GraphStore::new();
     let src = store

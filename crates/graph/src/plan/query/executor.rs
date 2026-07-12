@@ -467,7 +467,11 @@ fn previous_op_binds_edge(ops: &[PlanOp], op_idx: usize, edge_var: &str) -> bool
     for op in ops[..op_idx].iter().rev() {
         match op {
             PlanOp::Expand { edge, .. } | PlanOp::ExpandFilter { edge, .. } => {
-                return edge.as_ref() == edge_var;
+                if edge.as_ref() == edge_var {
+                    return true;
+                }
+                // A different edge variable (or an unnamed edge) does not invalidate
+                // earlier bindings; keep scanning backwards for the target variable.
             }
             PlanOp::Aggregate { .. }
             | PlanOp::ShortestPath { .. }
