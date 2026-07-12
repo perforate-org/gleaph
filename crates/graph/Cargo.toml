@@ -59,7 +59,7 @@ ic-stable-roaring.workspace = true
 ic-stable-structures.workspace = true
 jiff.workspace = true
 nohash-hasher.workspace = true
-pollster = "0.4"
+pollster.workspace = true
 rapidhash.workspace = true
 serde = { workspace = true, features = ["derive"] }
 

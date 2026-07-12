@@ -42,4 +42,4 @@ pocket-ic-e2e = []
 candid.workspace = true
 candid_parser = "0.4.0"
 futures.workspace = true
-pollster = "0.4"
+pollster.workspace = true
