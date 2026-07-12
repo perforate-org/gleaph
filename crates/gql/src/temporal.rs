@@ -1,6 +1,10 @@
 //! Lightweight ISO-8601 parser and formatter for temporal types.
 //!
-//! No external dependencies (chrono/time crates) -- suitable for wasm32-unknown-unknown.
+//! Parsing and formatting keep the historical integer representation used by
+//! `Value`. Calendar-aware arithmetic and duration conversion are backed by
+//! `jiff` via the interop helpers at the bottom of the module.
+
+use jiff::{Span, Timestamp, Zoned, civil, tz};
 
 /// Parse "YYYY-MM-DD" -> days since 1970-01-01.
 pub fn parse_date(s: &str) -> Option<i32> {
@@ -404,6 +408,139 @@ fn parse_tz_offset(s: &str) -> Option<i64> {
     let h: i64 = rest[..2].parse().ok()?;
     let m: i64 = rest[3..5].parse().ok()?;
     Some(sign * (h * 3600 + m * 60))
+}
+
+// ---- jiff interop helpers ----
+
+/// Convert a `Value::Date` days count to a `jiff::civil::Date`.
+pub fn date_to_jiff(days: i32) -> Option<civil::Date> {
+    let (y, m, d) = days_to_ymd(days);
+    civil::Date::new(y as i16, m as i8, d as i8).ok()
+}
+
+/// Convert nanoseconds since midnight to a `jiff::civil::Time`.
+pub fn time_to_jiff(nanos: u64) -> Option<civil::Time> {
+    let total_secs = nanos / 1_000_000_000;
+    let sub = (nanos % 1_000_000_000) as i32;
+    let h = (total_secs / 3600) as i8;
+    let m = ((total_secs % 3600) / 60) as i8;
+    let s = (total_secs % 60) as i8;
+    civil::Time::new(h, m, s, sub).ok()
+}
+
+/// Convert `(unix_seconds, subsec_nanos)` to a `jiff::civil::DateTime`.
+pub fn datetime_to_jiff(secs: i64, sub: u32) -> Option<civil::DateTime> {
+    let date = date_to_jiff((secs / 86_400) as i32)?;
+    let time = time_to_jiff((secs.rem_euclid(86_400) as u64) * 1_000_000_000 + sub as u64)?;
+    Some(civil::DateTime::from_parts(date, time))
+}
+
+/// Convert a zoned datetime value to a `jiff::Zoned` with a fixed offset.
+pub fn zoned_datetime_to_jiff(secs: i64, sub: u32, offset_secs: i32) -> Option<Zoned> {
+    let ts = Timestamp::new(secs, sub as i32).ok()?;
+    let tz = tz::Offset::from_seconds(offset_secs).ok()?.to_time_zone();
+    Some(Zoned::new(ts, tz))
+}
+
+/// Convert a `Value::Duration` to a `jiff::Span`.
+pub fn duration_to_jiff(months: i32, nanos: i64) -> Option<Span> {
+    if months == 0 && nanos == 0 {
+        return Some(Span::new());
+    }
+    let sign = if months != 0 {
+        months.signum() as i64
+    } else {
+        nanos.signum()
+    };
+    let mut span = Span::new();
+    if months != 0 {
+        let abs = months.unsigned_abs() as i64;
+        let years = abs / 12;
+        let rem = abs % 12;
+        span = span.years(years * sign).months(rem * sign);
+    }
+    if nanos != 0 {
+        let abs_nanos = nanos.unsigned_abs();
+        let days = (abs_nanos / (86_400 * 1_000_000_000)) as i64;
+        let rem = abs_nanos % (86_400 * 1_000_000_000);
+        let hours = (rem / (3_600 * 1_000_000_000)) as i64;
+        let rem = rem % (3_600 * 1_000_000_000);
+        let minutes = (rem / (60 * 1_000_000_000)) as i64;
+        let rem = rem % (60 * 1_000_000_000);
+        let seconds = (rem / 1_000_000_000) as i64;
+        let rem = rem % 1_000_000_000;
+        let millis = (rem / 1_000_000) as i64;
+        let rem = rem % 1_000_000;
+        let micros = (rem / 1_000) as i64;
+        let nanos_unit = (rem % 1_000) as i64;
+        span = span
+            .days(days * sign)
+            .hours(hours * sign)
+            .minutes(minutes * sign)
+            .seconds(seconds * sign)
+            .milliseconds(millis * sign)
+            .microseconds(micros * sign)
+            .nanoseconds(nanos_unit * sign);
+    }
+    Some(span)
+}
+
+/// Convert a `jiff::Span` to a `(months, nanos)` duration value.
+pub fn jiff_span_to_duration(span: Span) -> (i32, i64) {
+    let months = span.get_years() as i32 * 12 + span.get_months();
+    let nanos = span.get_weeks() as i64 * 7 * 86_400 * 1_000_000_000
+        + span.get_days() as i64 * 86_400 * 1_000_000_000
+        + span.get_hours() as i64 * 3_600 * 1_000_000_000
+        + span.get_minutes() * 60 * 1_000_000_000
+        + span.get_seconds() * 1_000_000_000
+        + span.get_milliseconds() * 1_000_000
+        + span.get_microseconds() * 1_000
+        + span.get_nanoseconds();
+    (months, nanos)
+}
+
+/// Convert a `jiff::civil::Date` to a days-since-epoch count.
+pub fn jiff_date_to_days(date: civil::Date) -> i32 {
+    ymd_to_days(date.year() as i32, date.month() as u32, date.day() as u32)
+        .expect("jiff date is valid")
+}
+
+/// Convert a `jiff::civil::Time` to nanoseconds since midnight.
+pub fn jiff_time_to_nanos(time: civil::Time) -> u64 {
+    let total = (time.hour() as i64 * 3600 + time.minute() as i64 * 60 + time.second() as i64)
+        * 1_000_000_000
+        + time.subsec_nanosecond() as i64;
+    total as u64
+}
+
+/// Convert a `jiff::civil::DateTime` to `(unix_seconds, subsec_nanos)`.
+pub fn jiff_datetime_to_unix(dt: civil::DateTime) -> (i64, u32) {
+    let days = jiff_date_to_days(dt.date());
+    let nanos = jiff_time_to_nanos(dt.time());
+    let secs = days as i64 * 86_400 + nanos as i64 / 1_000_000_000;
+    (secs, dt.subsec_nanosecond() as u32)
+}
+
+/// Normalize a `Value::ZonedTime` (local nanoseconds since midnight + offset) to
+/// UTC nanoseconds since midnight, wrapping across day boundaries.
+pub fn zoned_time_to_utc_nanos(nanos: u64, offset_secs: i32) -> Option<i64> {
+    let time = time_to_jiff(nanos)?;
+    let date = civil::Date::new(1970, 1, 1).ok()?;
+    let dt = civil::DateTime::from_parts(date, time);
+    let tz = tz::Offset::from_seconds(offset_secs).ok()?.to_time_zone();
+    let zdt = dt.to_zoned(tz).ok()?;
+    let ts = zdt.timestamp();
+    Some((ts.as_second().rem_euclid(86_400)) * 1_000_000_000 + ts.subsec_nanosecond() as i64)
+}
+
+/// Convert a `jiff::Zoned` to `(unix_seconds_utc, subsec_nanos, tz_offset_seconds)`.
+pub fn jiff_zoned_to_value(zdt: &Zoned) -> (i64, u32, i32) {
+    let ts = zdt.timestamp();
+    (
+        ts.as_second(),
+        ts.subsec_nanosecond() as u32,
+        zdt.offset().seconds(),
+    )
 }
 
 #[cfg(test)]

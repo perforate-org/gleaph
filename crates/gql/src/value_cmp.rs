@@ -5,8 +5,7 @@ use std::cmp::Ordering;
 
 use crate::Value;
 use crate::numeric_order::compare_normalized_numeric;
-
-const NANOS_PER_DAY: i64 = 86_400_000_000_000;
+use crate::temporal::zoned_time_to_utc_nanos;
 
 fn compare_value_slices(left: &[Value], right: &[Value]) -> Option<Ordering> {
     for (l, r) in left.iter().zip(right) {
@@ -67,8 +66,7 @@ fn compare_path_slices(
 }
 
 fn normalize_zoned_time_utc(nanos: u64, tz_seconds: i32) -> i64 {
-    let utc = nanos as i64 - (tz_seconds as i64) * 1_000_000_000;
-    utc.rem_euclid(NANOS_PER_DAY)
+    zoned_time_to_utc_nanos(nanos, tz_seconds).expect("zoned time value is valid")
 }
 
 /// Compares two [`Value`]s and returns their ordering, or `None` if the types

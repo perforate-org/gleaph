@@ -181,6 +181,7 @@ pub(super) fn validate_expr(
         | ExprKind::DateLiteral(items)
         | ExprKind::DateFunction(items)
         | ExprKind::TimeLiteral(items)
+        | ExprKind::TimeFunction(items)
         | ExprKind::DatetimeLiteral(items)
         | ExprKind::TimestampLiteral(items)
         | ExprKind::DurationLiteral(items)

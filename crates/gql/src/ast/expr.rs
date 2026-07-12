@@ -315,6 +315,8 @@ pub enum ExprKind {
     DateFunction(Vec<Expr>),
     /// TIME 'string' — §20.25 timeLiteral (not a function; no parens form)
     TimeLiteral(Vec<Expr>),
+    /// TIME( args... ) — alias for LOCAL_TIME(...)
+    TimeFunction(Vec<Expr>),
     /// DATETIME 'string' — §20.25 datetimeLiteral
     DatetimeLiteral(Vec<Expr>),
     /// TIMESTAMP 'string' — §20.25 datetimeLiteral

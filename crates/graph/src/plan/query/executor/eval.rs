@@ -2,6 +2,8 @@
 
 use std::collections::BTreeMap;
 
+use jiff::Unit;
+
 use crate::edge_inline_value_scalar_codec::decode_edge_inline_value_scalar;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{
@@ -807,9 +809,10 @@ impl QueryExprEvaluator<'_> {
                 .eval_temporal_constructor(row, args, "DATE", |s| {
                     gleaph_gql::temporal::parse_date(s).map(Value::Date)
                 }),
-            ExprKind::TimeLiteral(args) => self.eval_temporal_constructor(row, args, "TIME", |s| {
-                gleaph_gql::temporal::parse_time(s).map(Value::Time)
-            }),
+            ExprKind::TimeLiteral(args) | ExprKind::TimeFunction(args) => self
+                .eval_temporal_constructor(row, args, "TIME", |s| {
+                    gleaph_gql::temporal::parse_time(s).map(Value::LocalTime)
+                }),
             ExprKind::LocalTimeFunction(args) => {
                 self.eval_temporal_constructor(row, args, "LOCAL_TIME", |s| {
                     gleaph_gql::temporal::parse_local_time(s).map(Value::LocalTime)
@@ -841,8 +844,8 @@ impl QueryExprEvaluator<'_> {
             }
             ExprKind::TimestampLiteral(args) => {
                 self.eval_temporal_constructor(row, args, "TIMESTAMP", |s| {
-                    gleaph_gql::temporal::parse_datetime(s)
-                        .map(|(secs, nanos)| Value::DateTime(secs, nanos))
+                    gleaph_gql::temporal::parse_local_datetime(s)
+                        .map(|(secs, nanos)| Value::LocalDateTime(secs, nanos))
                 })
             }
             ExprKind::DurationLiteral(args) | ExprKind::DurationFunction(args) => self
@@ -896,39 +899,17 @@ impl QueryExprEvaluator<'_> {
         let left = self.eval_expr(row, left)?;
         let right = self.eval_expr(row, right)?;
 
-        // Convert both operands to a nanosecond-scale instant so the subtraction
-        // is uniform across Date / DateTime / LocalDateTime / ZonedDateTime.
-        let left_nanos = temporal_instant_to_nanos(
-            &left,
-            "DURATION_BETWEEN left operand is not a temporal instant",
-        )?;
-        let right_nanos = temporal_instant_to_nanos(
-            &right,
-            "DURATION_BETWEEN right operand is not a temporal instant",
-        )?;
-
-        let diff_nanos = right_nanos - left_nanos;
-        let (months, nanos) = match qualifier {
+        match qualifier {
             Some(DurationQualifier::YearToMonth) => {
-                // Approximate month component from whole days; days themselves are
-                // discarded because the qualifier only keeps the year-month part.
-                let days = diff_nanos / NANOS_PER_DAY;
-                let months = (days / 30) as i32;
-                (months, 0)
+                let months = temporal_year_month_span(&left, &right)?;
+                Ok(Value::Duration(months, 0))
             }
-            Some(DurationQualifier::DayToSecond) => {
-                // Discard the month component; keep only the day-time portion.
-                let days_nanos = (diff_nanos / NANOS_PER_DAY) * NANOS_PER_DAY;
-                (0, days_nanos)
+            Some(DurationQualifier::DayToSecond) | None => {
+                // ISO/IEC 39075 defaults an omitted qualifier to DAY TO SECOND.
+                let nanos = temporal_nanos_between(&left, &right)?;
+                Ok(Value::Duration(0, nanos))
             }
-            None => {
-                // GQL (ISO/IEC 39075) specifies that an omitted qualifier defaults
-                // to DAY TO SECOND.
-                let days_nanos = (diff_nanos / NANOS_PER_DAY) * NANOS_PER_DAY;
-                (0, days_nanos)
-            }
-        };
-        Ok(Value::Duration(months, nanos))
+        }
     }
 
     fn eval_is_labeled(
@@ -1353,27 +1334,108 @@ fn property_from_value(value: &Value, property: &str) -> Value {
     }
 }
 
-const NANOS_PER_DAY: i64 = 86_400_000_000_000;
-
-fn temporal_instant_to_nanos(value: &Value, message: &str) -> Result<i64, PlanQueryError> {
-    let nanos = match value {
-        Value::Date(days) => (*days as i64) * NANOS_PER_DAY,
-        Value::DateTime(secs, subsec) | Value::LocalDateTime(secs, subsec) => {
-            secs * 1_000_000_000 + *subsec as i64
-        }
-        Value::ZonedDateTime(secs, subsec, _) => secs * 1_000_000_000 + *subsec as i64,
-        Value::Time(nanos) | Value::LocalTime(nanos) => *nanos as i64,
-        Value::ZonedTime(nanos, tz) => {
-            // Normalize to UTC instant for a uniform duration.
-            (*nanos as i64) - (*tz as i64) * 1_000_000_000
-        }
-        _ => {
-            return Err(PlanQueryError::InvalidExpressionValue {
-                expression: message.to_owned(),
-            });
-        }
+/// Compute the calendar-aware span between two matching temporal instant values.
+///
+/// Operands must be the same kind (`Date`/`Date`, `LocalDateTime`/`LocalDateTime`,
+/// `ZonedDateTime`/`ZonedDateTime`). Time-only values and mixed types are rejected.
+fn temporal_year_month_span(left: &Value, right: &Value) -> Result<i32, PlanQueryError> {
+    use gleaph_gql::temporal::{date_to_jiff, datetime_to_jiff, zoned_datetime_to_jiff};
+    let invalid = || PlanQueryError::InvalidExpressionValue {
+        expression: "DURATION_BETWEEN operands must be matching temporal instant types".to_owned(),
     };
-    Ok(nanos)
+    let span = match (left, right) {
+        (Value::Date(d1), Value::Date(d2)) => {
+            let date1 = date_to_jiff(*d1).ok_or_else(invalid)?;
+            let date2 = date_to_jiff(*d2).ok_or_else(invalid)?;
+            date1
+                .until(
+                    jiff::civil::DateDifference::new(date2)
+                        .largest(Unit::Year)
+                        .smallest(Unit::Month),
+                )
+                .map_err(|e| PlanQueryError::InvalidExpressionValue {
+                    expression: format!("DURATION_BETWEEN date year-month span error: {e}"),
+                })?
+        }
+        (Value::LocalDateTime(s1, n1), Value::LocalDateTime(s2, n2)) => {
+            let dt1 = datetime_to_jiff(*s1, *n1).ok_or_else(invalid)?;
+            let dt2 = datetime_to_jiff(*s2, *n2).ok_or_else(invalid)?;
+            dt1.until(
+                jiff::civil::DateTimeDifference::new(dt2)
+                    .largest(Unit::Year)
+                    .smallest(Unit::Month),
+            )
+            .map_err(|e| PlanQueryError::InvalidExpressionValue {
+                expression: format!("DURATION_BETWEEN local datetime year-month span error: {e}"),
+            })?
+        }
+        (Value::ZonedDateTime(s1, n1, tz1), Value::ZonedDateTime(s2, n2, tz2)) => {
+            // Normalize both to UTC fixed-offset so span arithmetic is unambiguous.
+            let zdt1 = zoned_datetime_to_jiff(*s1, *n1, *tz1)
+                .map(|zdt| {
+                    let ts = zdt.timestamp();
+                    zoned_datetime_to_jiff(ts.as_second(), ts.subsec_nanosecond() as u32, 0)
+                        .expect("UTC zoned datetime is valid")
+                })
+                .ok_or_else(invalid)?;
+            let zdt2 = zoned_datetime_to_jiff(*s2, *n2, *tz2)
+                .map(|zdt| {
+                    let ts = zdt.timestamp();
+                    zoned_datetime_to_jiff(ts.as_second(), ts.subsec_nanosecond() as u32, 0)
+                        .expect("UTC zoned datetime is valid")
+                })
+                .ok_or_else(invalid)?;
+            zdt1.until(
+                jiff::ZonedDifference::new(&zdt2)
+                    .largest(Unit::Year)
+                    .smallest(Unit::Month),
+            )
+            .map_err(|e| PlanQueryError::InvalidExpressionValue {
+                expression: format!("DURATION_BETWEEN zoned datetime year-month span error: {e}"),
+            })?
+        }
+        _ => return Err(invalid()),
+    };
+    Ok(span.get_years() as i32 * 12 + span.get_months())
+}
+
+fn temporal_nanos_between(left: &Value, right: &Value) -> Result<i64, PlanQueryError> {
+    use gleaph_gql::temporal::{date_to_jiff, datetime_to_jiff, zoned_datetime_to_jiff};
+    let invalid = || PlanQueryError::InvalidExpressionValue {
+        expression: "DURATION_BETWEEN operands must be matching temporal instant types".to_owned(),
+    };
+    let duration = match (left, right) {
+        (Value::Date(d1), Value::Date(d2)) => {
+            let date1 = date_to_jiff(*d1).ok_or_else(invalid)?;
+            let date2 = date_to_jiff(*d2).ok_or_else(invalid)?;
+            date1.duration_until(date2)
+        }
+        (Value::LocalDateTime(s1, n1), Value::LocalDateTime(s2, n2)) => {
+            let dt1 = datetime_to_jiff(*s1, *n1).ok_or_else(invalid)?;
+            let dt2 = datetime_to_jiff(*s2, *n2).ok_or_else(invalid)?;
+            dt1.duration_until(dt2)
+        }
+        (Value::ZonedDateTime(s1, n1, tz1), Value::ZonedDateTime(s2, n2, tz2)) => {
+            // Normalize both to UTC fixed-offset so duration arithmetic is unambiguous.
+            let zdt1 = zoned_datetime_to_jiff(*s1, *n1, *tz1)
+                .map(|zdt| {
+                    let ts = zdt.timestamp();
+                    zoned_datetime_to_jiff(ts.as_second(), ts.subsec_nanosecond() as u32, 0)
+                        .expect("UTC zoned datetime is valid")
+                })
+                .ok_or_else(invalid)?;
+            let zdt2 = zoned_datetime_to_jiff(*s2, *n2, *tz2)
+                .map(|zdt| {
+                    let ts = zdt.timestamp();
+                    zoned_datetime_to_jiff(ts.as_second(), ts.subsec_nanosecond() as u32, 0)
+                        .expect("UTC zoned datetime is valid")
+                })
+                .ok_or_else(invalid)?;
+            zdt1.duration_until(&zdt2)
+        }
+        _ => return Err(invalid()),
+    };
+    Ok(duration.as_secs() * 1_000_000_000 + duration.subsec_nanos() as i64)
 }
 
 fn vertex_matches_label_expr(
@@ -1480,7 +1542,10 @@ mod tests {
             .expect("execute current time");
         assert_eq!(result.rows.len(), 1);
         let t = result.rows[0].get("t").expect("t column");
-        assert!(matches!(t, Value::Time(_)), "expected Time, got {t:?}");
+        assert!(
+            matches!(t, Value::ZonedTime(_, _)),
+            "expected ZonedTime, got {t:?}"
+        );
     }
 
     #[test]
@@ -1551,8 +1616,27 @@ mod tests {
         assert_eq!(result.rows.len(), 1);
         assert_eq!(
             result.rows[0].get("t"),
-            Some(&Value::Time(
+            Some(&Value::LocalTime(
                 gleaph_gql::temporal::parse_time("14:30:00.123456789").unwrap()
+            ))
+        );
+    }
+
+    #[test]
+    fn executes_planner_time_function_alias() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["TimeFunctionProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan = plan_gql("MATCH (n:TimeFunctionProbe) RETURN TIME('14:30:00') AS t");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute time function alias");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(
+            result.rows[0].get("t"),
+            Some(&Value::LocalTime(
+                gleaph_gql::temporal::parse_time("14:30:00").unwrap()
             ))
         );
     }
@@ -1674,10 +1758,11 @@ mod tests {
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute timestamp literal");
         assert_eq!(result.rows.len(), 1);
-        let (secs, nanos) = gleaph_gql::temporal::parse_datetime("2025-07-13T14:30:00").unwrap();
+        let (secs, nanos) =
+            gleaph_gql::temporal::parse_local_datetime("2025-07-13T14:30:00").unwrap();
         assert_eq!(
             result.rows[0].get("ts"),
-            Some(&Value::DateTime(secs, nanos))
+            Some(&Value::LocalDateTime(secs, nanos))
         );
     }
 
@@ -1738,13 +1823,7 @@ mod tests {
             .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
             .expect("execute duration between year to month");
         assert_eq!(result.rows.len(), 1);
-        let diff_days = gleaph_gql::temporal::parse_date("2025-07-13").unwrap()
-            - gleaph_gql::temporal::parse_date("2024-01-01").unwrap();
-        let expected_months = (diff_days as i64 / 30) as i32;
-        assert_eq!(
-            result.rows[0].get("dur"),
-            Some(&Value::Duration(expected_months, 0))
-        );
+        assert_eq!(result.rows[0].get("dur"), Some(&Value::Duration(18, 0)));
     }
 
     #[test]
@@ -1766,6 +1845,66 @@ mod tests {
         assert_eq!(
             result.rows[0].get("dur"),
             Some(&Value::Duration(0, 2 * 86_400_000_000_000i64))
+        );
+    }
+
+    #[test]
+    fn executes_planner_duration_between_calendar_month() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["DurationBetweenCalendarMonthProbe"],
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("insert probe vertex");
+        let plan = plan_gql(
+            "MATCH (n:DurationBetweenCalendarMonthProbe) RETURN DURATION_BETWEEN(DATE '2025-01-31', DATE '2025-02-28') YEAR TO MONTH AS dur",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute duration between calendar month");
+        assert_eq!(result.rows.len(), 1);
+        assert_eq!(result.rows[0].get("dur"), Some(&Value::Duration(1, 0)));
+    }
+
+    #[test]
+    fn executes_planner_duration_between_local_datetime_day_to_second() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(
+                ["DurationBetweenLocalDatetimeProbe"],
+                Vec::<(&str, Value)>::new(),
+            )
+            .expect("insert probe vertex");
+        let plan = plan_gql(
+            "MATCH (n:DurationBetweenLocalDatetimeProbe) RETURN DURATION_BETWEEN(LOCAL_DATETIME('2025-01-01T10:00:00'), LOCAL_DATETIME('2025-01-02T12:30:45.5')) AS dur",
+        );
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute duration between local datetime");
+        assert_eq!(result.rows.len(), 1);
+        // 1 day + 2h 30m 45.5s = 95,445.5 seconds
+        assert_eq!(
+            result.rows[0].get("dur"),
+            Some(&Value::Duration(0, 95_445_500_000_000i64,))
+        );
+    }
+
+    #[test]
+    fn executes_planner_duration_between_rejects_mixed_types() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["DurationBetweenMixedProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan = plan_gql(
+            "MATCH (n:DurationBetweenMixedProbe) RETURN DURATION_BETWEEN(DATE '2025-01-01', DATETIME '2025-01-02T00:00:00') AS dur",
+        );
+        let err = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect_err("mixed-type DURATION_BETWEEN should fail");
+        assert!(
+            matches!(err, PlanQueryError::InvalidExpressionValue { .. }),
+            "expected InvalidExpressionValue, got {err:?}"
         );
     }
 

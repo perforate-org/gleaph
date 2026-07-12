@@ -31,7 +31,11 @@ sql-compat = ["gleaph-gql/sql-compat", "gleaph-gql-planner/sql-compat"]
 # canister build: the router parses incoming GQL without cypher, so these
 # constructs never reach the graph shard. Kept behind a feature so the executor
 # support can be re-enabled without rewriting it.
-cypher = ["gleaph-gql/cypher", "gleaph-gql-planner/cypher", "gleaph-gql-extension-integration/cypher"]
+cypher = [
+    "gleaph-gql/cypher",
+    "gleaph-gql-planner/cypher",
+    "gleaph-gql-extension-integration/cypher",
+]
 # Test-only canister methods for PocketIC multi-canister E2E (not enabled in release benches).
 pocket-ic-e2e = []
 
@@ -53,6 +57,7 @@ ic-cdk-timers.workspace = true
 ic-stable-lara.workspace = true
 ic-stable-roaring.workspace = true
 ic-stable-structures.workspace = true
+jiff.workspace = true
 nohash-hasher.workspace = true
 pollster = "0.4"
 rapidhash.workspace = true

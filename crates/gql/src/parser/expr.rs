@@ -1884,6 +1884,7 @@ impl Parser<'_> {
         dt_fn!("ZONED_TIME", ZonedTimeFunction);
         dt_fn!("ZONED_DATETIME", ZonedDatetimeFunction);
         dt_fn!("LOCAL_TIME", LocalTimeFunction);
+        dt_fn!("TIME", TimeFunction);
         dt_fn!("LOCAL_DATETIME", LocalDatetimeFunction);
         dt_fn!("DURATION", DurationFunction);
 

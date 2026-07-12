@@ -175,6 +175,9 @@ pub(crate) fn infer_expr(env: &TypeEnv<'_>, expr: &Expr) -> Type {
         // Datetime constructors
         ExprKind::DateLiteral(_) | ExprKind::DateFunction(_) => Type::Scalar(ValueType::Date),
         ExprKind::TimeLiteral(_) => Type::Scalar(ValueType::Time),
+        ExprKind::TimeFunction(_) => Type::Scalar(ValueType::LocalTime {
+            keyword: Keyword::new("LOCAL_TIME"),
+        }),
         ExprKind::DatetimeLiteral(_) => Type::Scalar(ValueType::DateTime),
         ExprKind::TimestampLiteral(_) => Type::Scalar(ValueType::Timestamp),
         ExprKind::ZonedTimeFunction(_) => Type::Scalar(ValueType::ZonedTime {

@@ -1194,6 +1194,7 @@ pub(super) fn expr_is_group_compatible(expr: &Expr, group_items: &[Expr]) -> boo
         | ExprKind::DateLiteral(items)
         | ExprKind::DateFunction(items)
         | ExprKind::TimeLiteral(items)
+        | ExprKind::TimeFunction(items)
         | ExprKind::DatetimeLiteral(items)
         | ExprKind::TimestampLiteral(items)
         | ExprKind::DurationLiteral(items)
