@@ -254,7 +254,11 @@ for (const topic of topics) {
 // Post nodes are layer 1.
 for (const post of posts) {
   const properties = {};
-  properties.created_at = post.createdAt;
+  // The deterministic integer previously used for created_at is now used for
+  // stable ordering; the wall-clock timestamp comes from CURRENT_TIMESTAMP at
+  // seed execution time so the frontend can render relative time.
+  properties.order_index = post.createdAt;
+  properties.created_at = { raw: "CURRENT_TIMESTAMP" };
   properties.is_public = post.isPublic;
 
   nodes.push({
@@ -432,7 +436,9 @@ const nodeProperties = (node) => {
   ];
   if (node.properties) {
     for (const [key, value] of Object.entries(node.properties)) {
-      if (typeof value === "string") {
+      if (value && typeof value === "object" && "raw" in value) {
+        props.push(`${key}: ${value.raw}`);
+      } else if (typeof value === "string") {
         props.push(`${key}: '${escapeGqlString(value)}'`);
       } else if (typeof value === "boolean") {
         props.push(`${key}: ${value ? "TRUE" : "FALSE"}`);

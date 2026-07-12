@@ -2,6 +2,7 @@ use super::super::test_support::*;
 use super::execute_var_len_expand;
 use super::predicates::{PreparedEdgeInlineValuePredicate, PreparedEdgeInlineVectorThreshold};
 use crate::federation::{TraversalExpandSource, resolve_traversal_expand_source};
+use crate::plan::time::current_datetime_value;
 use gleaph_gql_planner::plan::{
     EdgeInlineValuePredicate, EdgeInlineVectorPredicate, EdgeVectorMetric,
 };
@@ -160,7 +161,7 @@ fn executes_planner_chained_expand_with_author_name() {
             ["SocialDemoPost"],
             [
                 ("body", Value::Text("hello world".into())),
-                ("created_at", Value::Int64(20260712)),
+                ("created_at", current_datetime_value()),
             ],
         )
         .expect("insert post");
@@ -202,9 +203,12 @@ fn executes_planner_chained_expand_with_author_name() {
         result.rows[0].get("body"),
         Some(&Value::Text("hello world".into()))
     );
-    assert_eq!(
-        result.rows[0].get("created_at"),
-        Some(&Value::Int64(20260712))
+    assert!(
+        matches!(
+            result.rows[0].get("created_at"),
+            Some(Value::DateTime(_, _))
+        ),
+        "expected DateTime created_at"
     );
 }
 

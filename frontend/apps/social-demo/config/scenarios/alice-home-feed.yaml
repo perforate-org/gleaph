@@ -9,5 +9,5 @@ rdbSummary: |-
 graphSummary: |-
   Gleaph materializes `IN_HOME_FEED` edges from every public Post to each follower User at seed time, so Alice's feed is a single bounded expansion from her user vertex. The feed is the natural result of the relationship shape, not an application-side assembly, and the default descending labeled-edge scan returns newest posts first with no runtime sort key.
 preparedQuery: |-
-  MATCH (u:User {demo_id: 1})<-[:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at LIMIT 20
+  MATCH (u:User {demo_id: 1})<-[:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) WHERE p.is_public = TRUE RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at ORDER BY p.order_index DESC LIMIT 20
 semanticVector: null

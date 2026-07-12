@@ -93,13 +93,46 @@ const loadScenario = async (
   return decodeFeedResult(definition, rowsBlob);
 };
 
-const formatDate = (seconds: bigint): string => {
-  try {
-    return new Date(Number(seconds) * 1000).toLocaleString();
-  } catch {
-    return String(seconds);
+const MS_PER_SECOND = 1000;
+const SECONDS_PER_MINUTE = 60;
+const SECONDS_PER_HOUR = 60 * SECONDS_PER_MINUTE;
+const SECONDS_PER_DAY = 24 * SECONDS_PER_HOUR;
+
+const formatRelativeDate = (seconds: bigint, nowMs = Date.now()): string => {
+  const postMs = Number(seconds) * MS_PER_SECOND;
+  const diffSeconds = Math.floor((nowMs - postMs) / MS_PER_SECOND);
+
+  // Treat future posts as having happened "now"; they should not appear in normal feeds.
+  if (diffSeconds < 0) {
+    const postDate = new Date(postMs);
+    return `${postDate.getMonth() + 1}/${postDate.getDate()}/${postDate.getFullYear()}`;
   }
+
+  if (diffSeconds < SECONDS_PER_MINUTE) {
+    return "just now";
+  }
+  if (diffSeconds < SECONDS_PER_HOUR) {
+    return `${Math.floor(diffSeconds / SECONDS_PER_MINUTE)}m ago`;
+  }
+  if (diffSeconds < SECONDS_PER_DAY) {
+    return `${Math.floor(diffSeconds / SECONDS_PER_HOUR)}h ago`;
+  }
+  if (diffSeconds < 2 * SECONDS_PER_DAY) {
+    return "yesterday";
+  }
+
+  const postDate = new Date(postMs);
+  const nowDate = new Date(nowMs);
+  const month = postDate.getMonth() + 1;
+  const day = postDate.getDate();
+
+  if (postDate.getFullYear() === nowDate.getFullYear()) {
+    return `${month}/${day}`;
+  }
+  return `${month}/${day}/${postDate.getFullYear()}`;
 };
+
+const formatDate = (seconds: bigint): string => formatRelativeDate(seconds);
 
 export function SocialDemo() {
   const [activeScenarioId, setActiveScenarioId] = createSignal<ScenarioId>("PublicTimeline");

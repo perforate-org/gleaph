@@ -41,6 +41,10 @@ use crate::plan::expr_evaluator::{
     eval_sqrt_expr, eval_tan_expr, eval_tanh_expr, eval_unary_expr, eval_xor_expr,
     searched_case_when_outcome,
 };
+use crate::plan::time::{
+    current_date_value, current_datetime_value, current_local_datetime_value,
+    current_local_time_value, current_time_value,
+};
 
 pub(crate) fn eval_sort_expr(
     evaluator: &QueryExprEvaluator<'_>,
@@ -792,6 +796,11 @@ impl QueryExprEvaluator<'_> {
                     Err(e) => Err(e.into()),
                 }
             }
+            ExprKind::CurrentTimestamp => Ok(current_datetime_value()),
+            ExprKind::CurrentLocalTimestamp => Ok(current_local_datetime_value()),
+            ExprKind::CurrentDate => Ok(current_date_value()),
+            ExprKind::CurrentTime => Ok(current_time_value()),
+            ExprKind::CurrentLocalTime => Ok(current_local_time_value()),
             _ => Err(PlanQueryError::UnsupportedExpression {
                 expression: format!("{:?}", expr.kind),
             }),
@@ -1275,6 +1284,93 @@ mod tests {
         ResolvedEdgeLabel, ResolvedInlineSchema, ResolvedInlineStructField, ResolvedLabelTable,
     };
     use half::f16;
+
+    #[test]
+    fn executes_planner_current_timestamp() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["CurrentTimestampProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan = plan_gql("MATCH (n:CurrentTimestampProbe) RETURN CURRENT_TIMESTAMP AS now");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute current timestamp");
+        assert_eq!(result.rows.len(), 1);
+        let now = result.rows[0].get("now").expect("now column");
+        assert!(
+            matches!(now, Value::DateTime(_, _)),
+            "expected DateTime, got {now:?}"
+        );
+    }
+
+    #[test]
+    fn executes_planner_current_date() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["CurrentDateProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan = plan_gql("MATCH (n:CurrentDateProbe) RETURN CURRENT_DATE AS today");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute current date");
+        assert_eq!(result.rows.len(), 1);
+        let today = result.rows[0].get("today").expect("today column");
+        assert!(
+            matches!(today, Value::Date(_)),
+            "expected Date, got {today:?}"
+        );
+    }
+
+    #[test]
+    fn executes_planner_current_time() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["CurrentTimeProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan = plan_gql("MATCH (n:CurrentTimeProbe) RETURN CURRENT_TIME AS t");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute current time");
+        assert_eq!(result.rows.len(), 1);
+        let t = result.rows[0].get("t").expect("t column");
+        assert!(matches!(t, Value::Time(_)), "expected Time, got {t:?}");
+    }
+
+    #[test]
+    fn executes_planner_local_timestamp() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["LocalTimestampProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan = plan_gql("MATCH (n:LocalTimestampProbe) RETURN LOCAL_TIMESTAMP AS now");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute local timestamp");
+        assert_eq!(result.rows.len(), 1);
+        let now = result.rows[0].get("now").expect("now column");
+        assert!(
+            matches!(now, Value::LocalDateTime(_, _)),
+            "expected LocalDateTime, got {now:?}"
+        );
+    }
+
+    #[test]
+    fn executes_planner_local_time() {
+        let store = GraphStore::new();
+        store
+            .insert_vertex_named(["LocalTimeProbe"], Vec::<(&str, Value)>::new())
+            .expect("insert probe vertex");
+        let plan = plan_gql("MATCH (n:LocalTimeProbe) RETURN LOCAL_TIME AS t");
+        let result = store
+            .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+            .expect("execute local time");
+        assert_eq!(result.rows.len(), 1);
+        let t = result.rows[0].get("t").expect("t column");
+        assert!(
+            matches!(t, Value::LocalTime(_)),
+            "expected LocalTime, got {t:?}"
+        );
+    }
 
     #[test]
     fn executes_planner_match_return_property() {

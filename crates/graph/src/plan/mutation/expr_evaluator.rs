@@ -10,6 +10,10 @@ use crate::plan::expr_evaluator::{
     eval_compare_expr, eval_concat_expr, eval_not_expr, eval_or_expr, eval_unary_expr,
     eval_xor_expr,
 };
+use crate::plan::time::{
+    current_date_value, current_datetime_value, current_local_datetime_value,
+    current_local_time_value, current_time_value,
+};
 use candid::Principal;
 use gleaph_gql::Value;
 use gleaph_gql::ast::{Expr, ExprKind, TruthValue};
@@ -142,6 +146,11 @@ impl<'a> MutationPropertyExprEvaluator<'a> {
                 .map(|(name, expr)| self.eval(property, expr).map(|value| (name.clone(), value)))
                 .collect::<Result<Vec<_>, _>>()
                 .map(Value::Record),
+            ExprKind::CurrentTimestamp => Ok(current_datetime_value()),
+            ExprKind::CurrentLocalTimestamp => Ok(current_local_datetime_value()),
+            ExprKind::CurrentDate => Ok(current_date_value()),
+            ExprKind::CurrentTime => Ok(current_time_value()),
+            ExprKind::CurrentLocalTime => Ok(current_local_time_value()),
             ExprKind::FunctionCall {
                 name,
                 args,

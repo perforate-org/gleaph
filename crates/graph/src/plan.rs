@@ -4,6 +4,7 @@ mod expr_evaluator;
 mod ic_wire;
 pub mod mutation;
 pub mod query;
+pub(crate) mod time;
 
 pub use ic_wire::{
     IcWirePlanQueryResult, IcWirePlanQueryRow, ic_wire_from_plan_query_result,

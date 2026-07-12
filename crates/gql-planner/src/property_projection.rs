@@ -810,6 +810,102 @@ mod tests {
     }
 
     #[test]
+    fn downstream_expandfilter_source_keeps_destination_vertex_full() {
+        use crate::plan::EdgeLabelRef;
+        use gleaph_gql::types::LabelExpr;
+
+        let mut ops = vec![
+            PlanOp::NodeScan {
+                variable: "feed".into(),
+                label: Some("Feed".into()),
+                property_projection: None,
+            },
+            PlanOp::ExpandFilter {
+                src: "feed".into(),
+                edge: "e1".into(),
+                dst: "p".into(),
+                direction: gleaph_gql::types::EdgeDirection::PointingLeft,
+                label: Some(EdgeLabelRef::new("IN_PUBLIC_FEED")),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: None,
+                edge_inline_value_predicate: None,
+                edge_inline_vector_predicate: None,
+                dst_filter: vec![Expr::new(ExprKind::IsLabeled {
+                    expr: Box::new(Expr::new(ExprKind::Variable("p".into()))),
+                    label: LabelExpr::Name("Post".into()),
+                    negated: false,
+                })],
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+                emit_edge_binding: false,
+                near_group_var: None,
+                far_group_var: None,
+                path_var: None,
+                emit_path_binding: false,
+            },
+            PlanOp::ExpandFilter {
+                src: "p".into(),
+                edge: "e2".into(),
+                dst: "author".into(),
+                direction: gleaph_gql::types::EdgeDirection::PointingLeft,
+                label: Some(EdgeLabelRef::new("POSTED")),
+                label_expr: None,
+                var_len: None,
+                indexed_edge_equality: None,
+                edge_inline_value_predicate: None,
+                edge_inline_vector_predicate: None,
+                dst_filter: vec![Expr::new(ExprKind::IsLabeled {
+                    expr: Box::new(Expr::new(ExprKind::Variable("author".into()))),
+                    label: LabelExpr::Name("User".into()),
+                    negated: false,
+                })],
+                edge_property_projection: None,
+                dst_property_projection: None,
+                hop_aux_binding: None,
+                emit_edge_binding: false,
+                near_group_var: None,
+                far_group_var: None,
+                path_var: None,
+                emit_path_binding: false,
+            },
+            PlanOp::Project {
+                columns: vec![
+                    crate::plan::ProjectColumn {
+                        expr: Expr::new(ExprKind::PropertyAccess {
+                            expr: Box::new(Expr::new(ExprKind::Variable("p".into()))),
+                            property: "demo_id".into(),
+                        }),
+                        alias: Some("post_id".into()),
+                    },
+                    crate::plan::ProjectColumn {
+                        expr: Expr::new(ExprKind::PropertyAccess {
+                            expr: Box::new(Expr::new(ExprKind::Variable("author".into()))),
+                            property: "name".into(),
+                        }),
+                        alias: Some("author_name".into()),
+                    },
+                ],
+                distinct: false,
+            },
+        ];
+        apply_node_property_projections(&mut ops);
+        let PlanOp::ExpandFilter {
+            dst_property_projection,
+            ..
+        } = &ops[1]
+        else {
+            panic!("expected first ExpandFilter");
+        };
+        assert!(
+            dst_property_projection.is_none(),
+            "dst 'p' must stay a full vertex because it is used as a later expand source, got {:?}",
+            dst_property_projection
+        );
+    }
+
+    #[test]
     fn downstream_expand_source_keeps_destination_vertex_full() {
         let mut ops = vec![
             PlanOp::NodeScan {
