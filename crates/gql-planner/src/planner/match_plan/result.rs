@@ -13,6 +13,39 @@ pub(crate) fn plan_result_statement(result: &ResultStatement, ops: &mut Vec<Plan
     }
 }
 
+/// Build a map from `RETURN`/`SELECT` alias name to the aliased expression.
+fn return_aliases(items: &[ReturnItem]) -> BTreeMap<String, Expr> {
+    items
+        .iter()
+        .filter_map(|item| {
+            let alias = item.alias.as_ref()?;
+            Some((alias.clone(), item.expr.clone()))
+        })
+        .collect()
+}
+
+/// Expand `ORDER BY` keys that reference `RETURN`/`SELECT` aliases into the underlying
+/// expressions. This keeps sort keys resolvable on graph bindings so that the late-
+/// projection pass can still push `Project` after `Sort`/`TopK`.
+fn rewrite_order_by_with_return_aliases(
+    order_by: &OrderByClause,
+    aliases: &BTreeMap<String, Expr>,
+) -> OrderByClause {
+    OrderByClause {
+        span: order_by.span,
+        items: order_by
+            .items
+            .iter()
+            .map(|item| SortItem {
+                span: item.span,
+                expr: substitute_return_aliases_in_expr(&item.expr, aliases),
+                direction: item.direction,
+                null_order: item.null_order,
+            })
+            .collect(),
+    }
+}
+
 fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
     let distinct = ret.set_quantifier == SetQuantifier::Distinct;
     match &ret.body {
@@ -39,8 +72,13 @@ fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
             limit,
             offset,
         } => {
+            let aliases = return_aliases(items);
             let having_rw = rewrite_having_with_return_aliases(items, having.as_ref());
-            // Aggregation.
+            let having_has_aggregate = having_rw.as_ref().is_some_and(expr_contains_aggregate);
+            let is_aggregate = group_by.is_some()
+                || items.iter().any(|item| expr_contains_aggregate(&item.expr))
+                || having_has_aggregate;
+
             if let Some(gb) = group_by {
                 let (agg_specs, proj_cols) = extract_aggregates(items, having_rw.as_ref());
                 ops.push(PlanOp::Aggregate {
@@ -54,9 +92,7 @@ fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
                     columns: proj_cols,
                     distinct,
                 });
-            } else if items.iter().any(|item| expr_contains_aggregate(&item.expr))
-                || having_rw.as_ref().is_some_and(expr_contains_aggregate)
-            {
+            } else if is_aggregate {
                 // Implicit whole-result aggregation (no GROUP BY): executor needs `Aggregate`
                 // before `Project`; bare `Aggregate` exprs in `Project` are not evaluable.
                 let (agg_specs, proj_cols) = extract_aggregates(items, having_rw.as_ref());
@@ -82,10 +118,19 @@ fn plan_return(ret: &ReturnStatement, ops: &mut Vec<PlanOp>) {
                 ops.push(PlanOp::Project { columns, distinct });
             }
 
+            // Expand return aliases in ORDER BY so that sorting can run on graph bindings
+            // before the late-projection optimization moves `Project` after `Sort`/`TopK`.
+            // Aggregation paths keep aliases because the sort runs on aggregate/result rows.
+            let order_by = if is_aggregate {
+                order_by.clone()
+            } else {
+                order_by
+                    .as_ref()
+                    .map(|ob| rewrite_order_by_with_return_aliases(ob, &aliases))
+            };
+
             if let Some(ob) = order_by {
-                ops.push(PlanOp::Sort {
-                    order_by: ob.clone(),
-                });
+                ops.push(PlanOp::Sort { order_by: ob });
             }
 
             if limit.is_some() || offset.is_some() {
@@ -169,10 +214,25 @@ fn plan_select(sel: &SelectStatement, ops: &mut Vec<PlanOp>) {
         });
     }
 
+    // Expand SELECT aliases into ORDER BY sort keys on graph bindings, except for
+    // aggregation paths where sorting runs on aggregate/result rows.
+    let order_by = if let Some(items) = items {
+        let aliases = return_aliases(items);
+        let is_aggregate =
+            group_by.is_some() || items.iter().any(|item| expr_contains_aggregate(&item.expr));
+        if is_aggregate {
+            order_by.clone()
+        } else {
+            order_by
+                .as_ref()
+                .map(|ob| rewrite_order_by_with_return_aliases(ob, &aliases))
+        }
+    } else {
+        order_by.clone()
+    };
+
     if let Some(ob) = order_by {
-        ops.push(PlanOp::Sort {
-            order_by: ob.clone(),
-        });
+        ops.push(PlanOp::Sort { order_by: ob });
     }
 
     if limit.is_some() || offset.is_some() {
@@ -299,5 +359,81 @@ pub(super) fn flatten_disjunction(expr: &Expr) -> Vec<Expr> {
             result
         }
         _ => vec![expr.clone()],
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use gleaph_gql::ast::{Expr, ExprKind, OrderByClause, SortItem};
+    use gleaph_gql::token::Span;
+
+    fn prop(var: &str, property: &str) -> Expr {
+        Expr::new(ExprKind::PropertyAccess {
+            expr: Box::new(Expr::var(var)),
+            property: property.into(),
+        })
+    }
+
+    #[test]
+    fn order_by_alias_expands_to_source_expression() {
+        let aliases = BTreeMap::from([("b_name".to_string(), prop("b", "name"))]);
+        let order_by = OrderByClause {
+            span: Span::DUMMY,
+            items: vec![SortItem {
+                span: Span::DUMMY,
+                expr: Expr::var("b_name"),
+                direction: None,
+                null_order: None,
+            }],
+        };
+
+        let rewritten = rewrite_order_by_with_return_aliases(&order_by, &aliases);
+
+        assert_eq!(rewritten.items.len(), 1);
+        assert_eq!(rewritten.items[0].expr, prop("b", "name"));
+    }
+
+    #[test]
+    fn order_by_alias_follows_chain_of_aliases() {
+        let aliases = BTreeMap::from([
+            ("x".to_string(), prop("n", "name")),
+            ("y".to_string(), Expr::var("x")),
+        ]);
+        let order_by = OrderByClause {
+            span: Span::DUMMY,
+            items: vec![SortItem {
+                span: Span::DUMMY,
+                expr: Expr::var("y"),
+                direction: Some(gleaph_gql::ast::SortDirection::Desc),
+                null_order: None,
+            }],
+        };
+
+        let rewritten = rewrite_order_by_with_return_aliases(&order_by, &aliases);
+
+        assert_eq!(rewritten.items[0].expr, prop("n", "name"));
+        assert_eq!(
+            rewritten.items[0].direction,
+            Some(gleaph_gql::ast::SortDirection::Desc)
+        );
+    }
+
+    #[test]
+    fn order_by_unmatched_alias_left_as_variable() {
+        let aliases = BTreeMap::from([("b_name".to_string(), prop("b", "name"))]);
+        let order_by = OrderByClause {
+            span: Span::DUMMY,
+            items: vec![SortItem {
+                span: Span::DUMMY,
+                expr: Expr::var("other"),
+                direction: None,
+                null_order: None,
+            }],
+        };
+
+        let rewritten = rewrite_order_by_with_return_aliases(&order_by, &aliases);
+
+        assert_eq!(rewritten.items[0].expr, Expr::var("other"));
     }
 }
