@@ -14,16 +14,13 @@ export function FeedItem(props: FeedItemProps) {
           <div class="flex items-center gap-2">
             <span class="font-medium text-slate-900">{row.authorName}</span>
             {row.kind !== "semanticPost" && (
-              <span class="text-sm text-slate-500">· {formatDate(row.createdAt)}</span>
+              <span class="text-sm text-slate-500"> {formatDate(row.createdAt)}</span>
             )}
             {row.kind === "semanticPost" && (
-              <span class="text-sm text-slate-500"> · L2-squared distance</span>
+              <span class="text-sm text-slate-500"> L2-squared distance</span>
             )}
           </div>
           <p class="mt-1 text-base text-slate-900">{row.body}</p>
-          <p class="mt-1 text-xs text-slate-500">
-            Post {displayPostId(row.postId)} · returned by <strong>{definition.label}</strong>
-          </p>
 
           {row.kind === "semanticPost" && (
             <div class="mt-3 rounded-lg bg-slate-50 p-3">
