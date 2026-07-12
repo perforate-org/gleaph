@@ -75,23 +75,27 @@ pub fn apply_ev_fusion(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations)
     }
 }
 
-/// LateProject: ensure Project appears after all Filter/ExpandFilter ops.
-/// If Project is found before any filtering op, move it after the last one.
+/// LateProject: ensure Project appears after all Filter/ExpandFilter/Sort/TopK ops.
+/// If Project is found before any of those ops, move it after the last one.
+/// This keeps sort keys (e.g. `ORDER BY p.order_index`) resolvable on graph
+/// bindings rather than projected values that may have been dropped.
 pub fn apply_late_project(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotations) {
     let project_idx = ops
         .iter()
         .position(|op| matches!(op, PlanOp::Project { .. }));
-    let last_filter_idx = ops.iter().rposition(|op| {
+    let last_blocking_idx = ops.iter().rposition(|op| {
         matches!(
             op,
             PlanOp::PropertyFilter { .. }
                 | PlanOp::Filter { .. }
                 | PlanOp::ExpandFilter { .. }
                 | PlanOp::Expand { .. }
+                | PlanOp::Sort { .. }
+                | PlanOp::TopK { .. }
         )
     });
 
-    if let (Some(pi), Some(fi)) = (project_idx, last_filter_idx) {
+    if let (Some(pi), Some(fi)) = (project_idx, last_blocking_idx) {
         if pi < fi {
             let project_op = ops.remove(pi);
             // fi shifted by -1 since we removed an element before it.
