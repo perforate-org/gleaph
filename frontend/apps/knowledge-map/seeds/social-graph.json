@@ -252,6 +252,14 @@
           0
         ]
       }
+    },
+    {
+      "id": "public-feed",
+      "label": "Public feed",
+      "kind": "feed",
+      "gqlLabel": "Feed",
+      "layer": 0,
+      "property": "name"
     }
   ],
   "edges": [
@@ -324,6 +332,69 @@
       "target": "post-eve-private",
       "gqlLabel": "POSTED",
       "displayLabel": "posted"
+    },
+    {
+      "id": "post-post-dave-1-in-public-feed",
+      "source": "post-dave-1",
+      "target": "public-feed",
+      "gqlLabel": "IN_PUBLIC_FEED",
+      "displayLabel": "in public feed"
+    },
+    {
+      "id": "post-post-eve-1-in-public-feed",
+      "source": "post-eve-1",
+      "target": "public-feed",
+      "gqlLabel": "IN_PUBLIC_FEED",
+      "displayLabel": "in public feed"
+    },
+    {
+      "id": "post-post-bob-1-in-public-feed",
+      "source": "post-bob-1",
+      "target": "public-feed",
+      "gqlLabel": "IN_PUBLIC_FEED",
+      "displayLabel": "in public feed"
+    },
+    {
+      "id": "post-post-carol-1-in-public-feed",
+      "source": "post-carol-1",
+      "target": "public-feed",
+      "gqlLabel": "IN_PUBLIC_FEED",
+      "displayLabel": "in public feed"
+    },
+    {
+      "id": "post-post-bob-2-in-public-feed",
+      "source": "post-bob-2",
+      "target": "public-feed",
+      "gqlLabel": "IN_PUBLIC_FEED",
+      "displayLabel": "in public feed"
+    },
+    {
+      "id": "post-post-alice-1-in-public-feed",
+      "source": "post-alice-1",
+      "target": "public-feed",
+      "gqlLabel": "IN_PUBLIC_FEED",
+      "displayLabel": "in public feed"
+    },
+    {
+      "id": "post-bob-1-in-home-alice",
+      "source": "post-bob-1",
+      "target": "alice",
+      "gqlLabel": "IN_HOME_FEED",
+      "displayLabel": "in home feed"
+    },
+    {
+      "id": "post-carol-1-in-home-alice",
+      "source": "post-carol-1",
+      "target": "alice",
+      "gqlLabel": "IN_HOME_FEED",
+      "displayLabel": "in home feed"
+    },
+    {
+      "id": "post-bob-2-in-home-alice",
+      "source": "post-bob-2",
+      "target": "alice",
+      "gqlLabel": "IN_HOME_FEED",
+      "displayLabel": "in home feed"
     },
     {
       "id": "post-bob-1-topic-graph",

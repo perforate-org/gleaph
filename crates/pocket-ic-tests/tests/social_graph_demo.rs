@@ -22,21 +22,21 @@ use gleaph_pocket_ic_tests::{
     admin_fully_activate_social_vector_index, admin_ingest_social_embeddings,
     admin_intern_edge_label, admin_intern_property, admin_intern_vertex_label,
     execute_social_demo_scenario_as, gql_query_as, install_single_shard_federation_with_gateway,
-    install_vector_canister, prepared_register_as_admin, seed_social_graph,
+    install_vector_canister, prepared_register_as_admin,
+    seed_social_graph_and_assert_feed_edge_order,
 };
 use gleaph_social_demo_gateway::SocialDemoScenario;
 
 const PUBLIC_TIMELINE_QUERY: &str = "\
-MATCH (p:Post) \
-WHERE p.is_public = TRUE \
+MATCH (feed:Feed {demo_id: 16})<-[:IN_PUBLIC_FEED]-(p:Post) \
 RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at \
-ORDER BY created_at DESC";
+LIMIT 20";
 
 const ALICE_HOME_FEED_QUERY: &str = "\
-MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) \
-WHERE u.demo_id = 1 AND p.is_public = TRUE \
+MATCH (u:User {demo_id: 1})<-[:IN_HOME_FEED]-(p:Post) \
+WHERE p.is_public = TRUE \
 RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at \
-ORDER BY created_at DESC";
+LIMIT 20";
 
 const TOPIC_PATH_QUERY: &str = "\
 MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) \
@@ -71,7 +71,7 @@ fn social_graph_demo_gateway_contract() {
     let (env, gateway) = install_single_shard_federation_with_gateway();
 
     intern_social_schema(&env);
-    seed_social_graph(&env);
+    seed_social_graph_and_assert_feed_edge_order(&env);
 
     prepared_register_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
     prepared_register_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
@@ -135,14 +135,7 @@ fn assert_public_timeline_through_gateway(
     let ids: Vec<String> = rows.iter().map(|r| demo_id_text(r, "post_id")).collect();
     assert_eq!(
         ids,
-        vec![
-            "9",
-            "11",
-            "12",
-            "10",
-            "14",
-            "13",
-        ],
+        vec!["9", "11", "12", "10", "14", "13",],
         "public posts should be in exact reverse chronological order"
     );
     assert!(
@@ -176,12 +169,7 @@ fn assert_alice_home_feed_through_gateway(
         vec!["11", "12", "10"],
         "home feed should be in exact reverse chronological order"
     );
-    for adversary in [
-        "13",
-        "14",
-        "15",
-        "9",
-    ] {
+    for adversary in ["13", "14", "15", "9"] {
         assert!(
             !ids.contains(&adversary.to_string()),
             "home feed must exclude public but unfollowed or non-followee post {adversary}"
@@ -268,14 +256,7 @@ fn assert_semantic_discovery_through_gateway(
     let ids: Vec<String> = rows.iter().map(|r| demo_id_text(r, "post_id")).collect();
     assert_eq!(
         ids,
-        vec![
-            "13",
-            "11",
-            "12",
-            "10",
-            "9",
-            "14",
-        ],
+        vec!["13", "11", "12", "10", "9", "14",],
         "vector-only results must be in exact L2-squared distance order"
     );
     assert!(
@@ -321,26 +302,14 @@ fn assert_alice_semantic_feed_through_gateway(
         vec!["11", "12", "10"],
         "graph-constrained semantic results must exclude the nearer unfollowed post"
     );
-    for adversary in [
-        "13",
-        "14",
-        "15",
-        "9",
-    ] {
+    for adversary in ["13", "14", "15", "9"] {
         assert!(
             !ids.contains(&adversary.to_string()),
             "Alice's semantic feed must exclude {adversary}"
         );
     }
 
-    assert_exact_distances(
-        &rows,
-        &[
-            ("11", 2.0),
-            ("12", 8.0),
-            ("10", 18.0),
-        ],
-    );
+    assert_exact_distances(&rows, &[("11", 2.0), ("12", 8.0), ("10", 18.0)]);
     // Plan 0068 fixed AliceSemanticFeed's body column by extending the planner's
     // property_uses collection to include row-local operator expressions (Project, etc.).
     // The body assertion for this scenario lives in `alice_semantic_feed_body_regression`
@@ -423,9 +392,11 @@ fn intern_social_schema(env: &gleaph_pocket_ic_tests::FederationEnv) {
     }
 }
 
-
 fn assert_body_is_text(row: &std::collections::BTreeMap<String, Value>, context: &str) {
-    match row.get("body").unwrap_or_else(|| panic!("{context}: missing body column")) {
+    match row
+        .get("body")
+        .unwrap_or_else(|| panic!("{context}: missing body column"))
+    {
         Value::Text(_) => {}
         other => panic!("{context}: expected Text body, got {other:?}"),
     }
@@ -485,7 +456,7 @@ fn alice_semantic_feed_body_regression() {
     let (env, gateway) = install_single_shard_federation_with_gateway();
 
     intern_social_schema(&env);
-    seed_social_graph(&env);
+    seed_social_graph_and_assert_feed_edge_order(&env);
 
     prepared_register_as_admin(&env, "public_timeline", PUBLIC_TIMELINE_QUERY);
     prepared_register_as_admin(&env, "alice_home_feed", ALICE_HOME_FEED_QUERY);
@@ -507,7 +478,11 @@ fn alice_semantic_feed_body_regression() {
         SocialDemoScenario::AliceSemanticFeed,
     );
     let rows = decode_rows(&result);
-    assert_eq!(rows.len(), 3, "Alice semantic feed should return exactly 3 rows");
+    assert_eq!(
+        rows.len(),
+        3,
+        "Alice semantic feed should return exactly 3 rows"
+    );
     for row in &rows {
         assert_body_is_text(
             row,

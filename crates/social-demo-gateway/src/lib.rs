@@ -13,8 +13,8 @@
 // JSON. Cargo tracks `include_str!` inputs automatically, so the canister rebuilds when the
 // frontend config changes without needing a separate `build.rs`.
 #[allow(dead_code)]
-const _: &str = include_str!("../../../frontend/apps/social-demo/src/data/scenarios.generated.json");
-
+const _: &str =
+    include_str!("../../../frontend/apps/social-demo/src/data/scenarios.generated.json");
 
 use candid::{CandidType, Deserialize, Principal};
 use gleaph_cdk::call_prepared_query;
@@ -126,10 +126,7 @@ fn load_semantic_vectors() -> Vec<Vec<f32>> {
             .unwrap_or_else(|| panic!("semantic vector missing for {scenario_id}"))
     };
 
-    vec![
-        lookup("SemanticDiscovery"),
-        lookup("AliceSemanticFeed"),
-    ]
+    vec![lookup("SemanticDiscovery"), lookup("AliceSemanticFeed")]
 }
 
 /// Return the semantic query vector for a scenario, if any.
@@ -173,12 +170,14 @@ fn scenario_to_request(scenario: SocialDemoScenario) -> (&'static str, Vec<u8>) 
         SocialDemoScenario::PublicTimeline => ("public_timeline", Vec::new()),
         SocialDemoScenario::AliceHomeFeed => ("alice_home_feed", Vec::new()),
         SocialDemoScenario::TopicPath => ("topic_path_explanation", Vec::new()),
-        SocialDemoScenario::SemanticDiscovery => {
-            ("semantic_discovery", encode_semantic_query_params_for(SocialDemoScenario::SemanticDiscovery))
-        }
-        SocialDemoScenario::AliceSemanticFeed => {
-            ("alice_semantic_feed", encode_semantic_query_params_for(SocialDemoScenario::AliceSemanticFeed))
-        }
+        SocialDemoScenario::SemanticDiscovery => (
+            "semantic_discovery",
+            encode_semantic_query_params_for(SocialDemoScenario::SemanticDiscovery),
+        ),
+        SocialDemoScenario::AliceSemanticFeed => (
+            "alice_semantic_feed",
+            encode_semantic_query_params_for(SocialDemoScenario::AliceSemanticFeed),
+        ),
     }
 }
 
@@ -247,7 +246,8 @@ mod tests {
             .collect();
         assert_eq!(
             values,
-            semantic_query_vector_for(SocialDemoScenario::SemanticDiscovery).expect("discovery vector")
+            semantic_query_vector_for(SocialDemoScenario::SemanticDiscovery)
+                .expect("discovery vector")
         );
 
         let (_, alice_params) = scenario_to_request(SocialDemoScenario::AliceSemanticFeed);

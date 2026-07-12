@@ -2650,6 +2650,84 @@ pub fn seed_knowledge_map_graph(env: &FederationEnv) {
 pub fn knowledge_map_live_query() -> &'static str {
     KNOWLEDGE_MAP_LIVE_QUERY
 }
+/// Seed the social demo graph through Router `gql_execute_idempotent`, then assert
+/// that the materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges were inserted
+/// in oldest-first order so the default descending fixed-label scan returns
+/// newest-first without an ORDER BY.
+pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
+    seed_social_graph(env);
+
+    // Default descending fixed-label scan returns the latest inserted edge first.
+    // Feed edges are materialized oldest-first, so the default scan yields newest posts first.
+    let query = "\
+    MATCH (p:Post)-[e:IN_PUBLIC_FEED]->(f:Feed {demo_id: 16}) \
+    RETURN p.demo_id AS post_id, e.demo_edge_id AS edge_id";
+    let result =
+        gql_query_with_params_on_router(&env.pic, env.admin, env.router, query, Vec::new());
+    let rows = decode_rows_for_feed_assertions(&result);
+    let public_ids: Vec<String> = rows
+        .iter()
+        .map(|r| feed_assertion_text(r, "post_id"))
+        .collect();
+    assert_eq!(
+        public_ids,
+        vec!["9", "11", "12", "10", "14", "13"],
+        "IN_PUBLIC_FEED default descending scan should return newest posts first"
+    );
+
+    let query = "\
+    MATCH (p:Post)-[e:IN_HOME_FEED]->(u:User {demo_id: 1}) \
+    RETURN p.demo_id AS post_id, e.demo_edge_id AS edge_id";
+    let result =
+        gql_query_with_params_on_router(&env.pic, env.admin, env.router, query, Vec::new());
+    let rows = decode_rows_for_feed_assertions(&result);
+    let home_ids: Vec<String> = rows
+        .iter()
+        .map(|r| feed_assertion_text(r, "post_id"))
+        .collect();
+    assert_eq!(
+        home_ids,
+        vec!["11", "12", "10"],
+        "IN_HOME_FEED default descending scan should return newest posts first"
+    );
+}
+
+fn decode_rows_for_feed_assertions(
+    result: &gleaph_graph_kernel::plan_exec::GqlQueryResult,
+) -> Vec<std::collections::HashMap<String, gleaph_gql::Value>> {
+    use gleaph_gql_ic::IcWirePlanQueryResult;
+    let rows_blob = result
+        .rows_blob
+        .as_ref()
+        .expect("feed edge order query should return rows_blob");
+    let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode feed order rows");
+    wire.rows
+        .into_iter()
+        .map(|r| {
+            r.try_into_value_row()
+                .expect("wire row to value row")
+                .into_iter()
+                .collect()
+        })
+        .collect()
+}
+
+fn feed_assertion_text(
+    row: &std::collections::HashMap<String, gleaph_gql::Value>,
+    column: &str,
+) -> String {
+    use gleaph_gql::Value;
+    match row
+        .get(column)
+        .unwrap_or_else(|| panic!("missing column {column}"))
+    {
+        Value::Text(value) => value.clone(),
+        Value::Uint64(value) => value.to_string(),
+        Value::Int64(value) => value.to_string(),
+        other => panic!("expected Text/Int in column {column}, got {other:?}"),
+    }
+}
+
 /// Seed the social demo graph through Router `gql_execute_idempotent`.
 pub fn seed_social_graph(env: &FederationEnv) {
     let parsed: serde_json::Value =
@@ -2678,24 +2756,37 @@ pub fn seed_social_graph(env: &FederationEnv) {
     .collect();
     for (post_id, expected_body) in expected_bodies {
         let numeric_id = social_post_demo_id_to_numeric(post_id);
-        let query = format!("MATCH (p:Post {{demo_id: {}}}) RETURN p.body AS body LIMIT 1", numeric_id);
-        let result = gql_query_with_params_on_router(&env.pic, env.admin, env.router, &query, Vec::new());
-        let rows_blob = result.rows_blob.as_ref().expect("body query should return rows_blob");
+        let query = format!(
+            "MATCH (p:Post {{demo_id: {}}}) RETURN p.body AS body LIMIT 1",
+            numeric_id
+        );
+        let result =
+            gql_query_with_params_on_router(&env.pic, env.admin, env.router, &query, Vec::new());
+        let rows_blob = result
+            .rows_blob
+            .as_ref()
+            .expect("body query should return rows_blob");
         let wire = IcWirePlanQueryResult::decode_blob(rows_blob).expect("decode body rows");
         assert_eq!(
             wire.rows.len(),
             1,
             "body query for {post_id} should return exactly one row"
         );
-        let row = wire.rows.into_iter().next().expect("one row").try_into_value_row().expect("wire row to value row");
-        let body = match row.get("body").unwrap_or_else(|| panic!("missing body column for {post_id}")) {
+        let row = wire
+            .rows
+            .into_iter()
+            .next()
+            .expect("one row")
+            .try_into_value_row()
+            .expect("wire row to value row");
+        let body = match row
+            .get("body")
+            .unwrap_or_else(|| panic!("missing body column for {post_id}"))
+        {
             Value::Text(value) => value.as_str(),
             other => panic!("expected Text body for {post_id}, got {other:?}"),
         };
-        assert_eq!(
-            body, expected_body,
-            "body mismatch for {post_id}"
-        );
+        assert_eq!(body, expected_body, "body mismatch for {post_id}");
     }
 }
 

@@ -43,7 +43,12 @@ const fallbackEmbedding = (postId) => {
     const byte = parseInt(hash.slice(i * 2, i * 2 + 2), 16);
     values.push(byte / 127.5 - 1.0);
   }
-  return { name: EMBEDDING_NAME, dims: EMBEDDING_DIMS, metric: EMBEDDING_METRIC, values };
+  return {
+    name: EMBEDDING_NAME,
+    dims: EMBEDDING_DIMS,
+    metric: EMBEDDING_METRIC,
+    values,
+  };
 };
 
 const readYaml = (path) => YAML.parse(readFileSync(path, "utf8"));
@@ -77,7 +82,7 @@ for (const userName of sortedDirNames(userDir)) {
   const profile = readYaml(profilePath);
   if (profile.id !== userName) {
     throw new Error(
-      `User directory ${userName} does not match profile id ${profile.id}`
+      `User directory ${userName} does not match profile id ${profile.id}`,
     );
   }
   users.push(profile);
@@ -99,7 +104,10 @@ for (const userName of sortedDirNames(userDir)) {
 
     const userEmbeddings = userEmbeddingsById.get(userName);
     let embedding;
-    if (userEmbeddings && Object.prototype.hasOwnProperty.call(userEmbeddings, stem)) {
+    if (
+      userEmbeddings &&
+      Object.prototype.hasOwnProperty.call(userEmbeddings, stem)
+    ) {
       const e = userEmbeddings[stem];
       embedding = {
         name: e.name ?? EMBEDDING_NAME,
@@ -131,7 +139,9 @@ for (const topicFile of sortedYamlFiles(topicsDir)) {
   const doc = readYaml(join(topicsDir, topicFile));
   const stem = fileStem(topicFile);
   if (doc.id !== stem) {
-    throw new Error(`Topic file ${topicFile} does not match topic id ${doc.id}`);
+    throw new Error(
+      `Topic file ${topicFile} does not match topic id ${doc.id}`,
+    );
   }
   topics.push(doc);
 }
@@ -143,10 +153,21 @@ for (const communityFile of sortedYamlFiles(communitiesDir)) {
   const stem = fileStem(communityFile);
   if (doc.id !== stem) {
     throw new Error(
-      `Community file ${communityFile} does not match community id ${doc.id}`
+      `Community file ${communityFile} does not match community id ${doc.id}`,
     );
   }
   communities.push(doc);
+}
+
+const feeds = [];
+const feedsDir = join(CONFIG_DIR, "feeds");
+for (const feedFile of sortedYamlFiles(feedsDir)) {
+  const doc = readYaml(join(feedsDir, feedFile));
+  const stem = fileStem(feedFile);
+  if (doc.id !== stem && doc.id !== `${stem}-feed`) {
+    throw new Error(`Feed file ${feedFile} does not match feed id ${doc.id}`);
+  }
+  feeds.push(doc);
 }
 
 // Sort posts by created_at descending (ties broken by file path) to keep the
@@ -179,6 +200,9 @@ for (const post of posts.slice().sort((a, b) => {
   return a.fileStem.localeCompare(b.fileStem);
 })) {
   idMap.set(post.id, nextId++);
+}
+for (const feed of feeds.sort((a, b) => a.id.localeCompare(b.id))) {
+  idMap.set(feed.id, nextId++);
 }
 
 const demoId = (stringId) => {
@@ -245,6 +269,18 @@ for (const post of posts) {
   });
 }
 
+// Feed nodes are layer 0 and allocated after posts so existing demo_id values stay stable.
+for (const feed of feeds) {
+  nodes.push({
+    id: feed.id,
+    label: feed.name,
+    kind: "feed",
+    gqlLabel: feed.gqlLabel,
+    layer: 0,
+    property: "name",
+  });
+}
+
 const nodeById = new Map(nodes.map((node) => [node.id, node]));
 
 const validateEndpoint = (id, kind, edgeId) => {
@@ -293,6 +329,76 @@ for (const post of posts) {
   });
 }
 
+// Materialized feed edges are derived from canonical POSTED, FOLLOWS, and is_public.
+// They are emitted oldest-first so the default descending fixed-label scan returns
+// newest posts first without an ORDER BY.
+const publicFeed = feeds.find((feed) => feed.id === "public-feed");
+if (!publicFeed) {
+  throw new Error("Missing public-feed definition");
+}
+
+const followsByTarget = new Map();
+for (const user of users) {
+  for (const target of user.follows ?? []) {
+    if (!followsByTarget.has(target)) {
+      followsByTarget.set(target, []);
+    }
+    followsByTarget.get(target).push(user.id);
+  }
+}
+
+const feedEdgeOrder = (a, b) => {
+  if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+  return `${a.userId}/${a.fileStem}`.localeCompare(`${b.userId}/${b.fileStem}`);
+};
+
+const publicFeedPosts = posts
+  .filter((post) => post.isPublic)
+  .slice()
+  .sort(feedEdgeOrder);
+for (const post of publicFeedPosts) {
+  validateEndpoint(post.id, "post", `post-${post.id}-in-public-feed`);
+  validateEndpoint(publicFeed.id, "feed", `post-${post.id}-in-public-feed`);
+  edges.push({
+    id: `post-${post.id}-in-public-feed`,
+    source: post.id,
+    target: publicFeed.id,
+    gqlLabel: "IN_PUBLIC_FEED",
+    displayLabel: "in public feed",
+  });
+}
+
+const homeFeedEntries = [];
+for (const post of posts) {
+  if (!post.isPublic) continue;
+  for (const followerId of followsByTarget.get(post.userId) ?? []) {
+    homeFeedEntries.push({
+      postId: post.id,
+      followerId,
+      createdAt: post.createdAt,
+      userId: post.userId,
+      fileStem: post.fileStem,
+    });
+  }
+}
+homeFeedEntries.sort((a, b) => {
+  if (a.createdAt !== b.createdAt) return a.createdAt - b.createdAt;
+  return `${a.userId}/${a.fileStem}`.localeCompare(`${b.userId}/${b.fileStem}`);
+});
+
+for (const entry of homeFeedEntries) {
+  const edgeId = `${entry.postId}-in-home-${entry.followerId}`;
+  validateEndpoint(entry.postId, "post", edgeId);
+  validateEndpoint(entry.followerId, "user", edgeId);
+  edges.push({
+    id: edgeId,
+    source: entry.postId,
+    target: entry.followerId,
+    gqlLabel: "IN_HOME_FEED",
+    displayLabel: "in home feed",
+  });
+}
+
 // HAS_TOPIC edges last.
 for (const post of posts) {
   for (const topicId of post.topics) {
@@ -334,7 +440,7 @@ const nodeProperties = (node) => {
         props.push(`${key}: ${value}`);
       } else {
         throw new Error(
-          `Unsupported property type for ${node.id}.${key}: ${typeof value}`
+          `Unsupported property type for ${node.id}.${key}: ${typeof value}`,
         );
       }
     }
@@ -360,7 +466,9 @@ for (const node of graph.nodes.filter((entry) => entry.layer === 0)) {
   });
 }
 
-const created = new Set(graph.nodes.filter((entry) => entry.layer === 0).map((entry) => entry.id));
+const created = new Set(
+  graph.nodes.filter((entry) => entry.layer === 0).map((entry) => entry.id),
+);
 
 for (const edge of graph.edges) {
   const source = nodeById.get(edge.source);
@@ -388,7 +496,9 @@ for (const edge of graph.edges) {
   created.add(edge.target);
 }
 
-const hasPostEmbeddings = graph.nodes.some((node) => node.kind === "post" && node.embedding);
+const hasPostEmbeddings = graph.nodes.some(
+  (node) => node.kind === "post" && node.embedding,
+);
 const embeddings = {};
 for (const node of graph.nodes) {
   if (node.embedding) {
@@ -451,31 +561,21 @@ const buildTsScenarios = () => {
     })
     .join(",\n");
 
+  const demoIdMapEntries = Array.from(idMap.entries())
+    .sort((a, b) => {
+      if (a[1] < b[1]) return -1;
+      if (a[1] > b[1]) return 1;
+      return 0;
+    })
+    .map(([k, v]) => `  ${JSON.stringify(k)}: ${v}n`)
+    .join(",\n");
+
   return `// Generated by frontend/apps/social-demo/scripts/build-config.mjs.
 // Do not edit manually; change the YAML files under config/ and rerun the build.
 
 import { SocialDemoScenario } from "~/generated/social_demo_gateway";
 
-export const DEMO_ID_MAP: Record<string, bigint> = {
-  "alice": 1n,
-  "bob": 2n,
-  "carol": 3n,
-  "dave": 4n,
-  "eve": 5n,
-  "community-ic": 6n,
-  "topic-graph": 7n,
-  "topic-ic": 8n,
-  "post-alice-1": 9n,
-  "post-bob-1": 10n,
-  "post-bob-2": 11n,
-  "post-carol-1": 12n,
-  "post-dave-1": 13n,
-  "post-eve-1": 14n,
-  "post-eve-private": 15n
-};
-
-
-export const SOCIAL_DEMO_SCENARIO_IDS = [${scenarioOrder
+export const DEMO_ID_MAP: Record<string, bigint> = {\n${demoIdMapEntries}\n};\n\n\nexport const SOCIAL_DEMO_SCENARIO_IDS = [${scenarioOrder
     .map((id) => JSON.stringify(id))
     .join(", ")}] as const;
 
@@ -521,7 +621,7 @@ const buildJsonScenarios = () => {
   // (Int64 in graph storage).  Number is safe here because the social-demo
   // demo_id space is well below 2^53.
   const demoIdMap = Object.fromEntries(
-    Array.from(idMap.entries()).map(([k, v]) => [k, Number(v)])
+    Array.from(idMap.entries()).map(([k, v]) => [k, Number(v)]),
   );
   return `${JSON.stringify({ scenarios, demoIdMap }, null, 2)}\n`;
 };
@@ -532,51 +632,63 @@ const buildJsonScenarios = () => {
 
 writeFileSync(
   join(KM_SEEDS_DIR, "social-graph.json"),
-  `${JSON.stringify(graph, null, 2)}\n`
+  `${JSON.stringify(graph, null, 2)}\n`,
 );
 
 writeFileSync(
   join(KM_SEEDS_DIR, "social-seeds.json"),
-  `${JSON.stringify({ seeds, embeddings }, null, 2)}\n`
+  `${JSON.stringify({ seeds, embeddings }, null, 2)}\n`,
 );
 
 writeFileSync(join(DATA_DIR, "scenarios.generated.ts"), buildTsScenarios());
 
-writeFileSync(
-  join(DATA_DIR, "scenarios.generated.json"),
-  buildJsonScenarios()
-);
+writeFileSync(join(DATA_DIR, "scenarios.generated.json"), buildJsonScenarios());
 
 // Validate generated scenario JSON semanticVector shape.
-const scenariosJsonText = readFileSync(join(DATA_DIR, "scenarios.generated.json"), "utf8");
+const scenariosJsonText = readFileSync(
+  join(DATA_DIR, "scenarios.generated.json"),
+  "utf8",
+);
 const parsedScenariosJson = JSON.parse(scenariosJsonText);
 if (!Array.isArray(parsedScenariosJson.scenarios)) {
-  throw new Error("Expected scenarios.generated.json to contain a scenarios array");
+  throw new Error(
+    "Expected scenarios.generated.json to contain a scenarios array",
+  );
 }
-const semanticVectors = parsedScenariosJson.scenarios.map((s) => s.semanticVector);
-const nonNullVectors = semanticVectors.filter((v) => Array.isArray(v) && v.length === EMBEDDING_DIMS);
+const semanticVectors = parsedScenariosJson.scenarios.map(
+  (s) => s.semanticVector,
+);
+const nonNullVectors = semanticVectors.filter(
+  (v) => Array.isArray(v) && v.length === EMBEDDING_DIMS,
+);
 const nullVectors = semanticVectors.filter((v) => v === null);
 if (nonNullVectors.length !== 2) {
-  throw new Error(`Expected exactly 2 non-null semanticVector arrays of length ${EMBEDDING_DIMS}, found ${nonNullVectors.length}`);
+  throw new Error(
+    `Expected exactly 2 non-null semanticVector arrays of length ${EMBEDDING_DIMS}, found ${nonNullVectors.length}`,
+  );
 }
 if (nullVectors.length !== 3) {
-  throw new Error(`Expected exactly 3 null semanticVector entries, found ${nullVectors.length}`);
+  throw new Error(
+    `Expected exactly 3 null semanticVector entries, found ${nullVectors.length}`,
+  );
 }
 
 // Validate emitted seeds.
 const seedsText = readFileSync(join(KM_SEEDS_DIR, "social-seeds.json"), "utf8");
 const parsedSeeds = JSON.parse(seedsText);
-if (!Array.isArray(parsedSeeds.seeds) || parsedSeeds.seeds.length !== 19) {
-  throw new Error(`Expected exactly 19 seeds, found ${parsedSeeds.seeds?.length ?? 0}`);
+if (!Array.isArray(parsedSeeds.seeds) || parsedSeeds.seeds.length !== 29) {
+  throw new Error(
+    `Expected exactly 29 seeds, found ${parsedSeeds.seeds?.length ?? 0}`,
+  );
 }
 const demoIdOccurrences = seedsText.match(/demo_id: [^,}]+/g) ?? [];
 const textDemoIdOccurrences = demoIdOccurrences.filter((m) => m.includes("'"));
 if (textDemoIdOccurrences.length > 0) {
   throw new Error(
-    `Found text demo_id literals in seeds (expected numeric): ${textDemoIdOccurrences.join(", ")}`
+    `Found text demo_id literals in seeds (expected numeric): ${textDemoIdOccurrences.join(", ")}`,
   );
 }
 
 console.log(
-  `Wrote 4 artifacts: social-graph.json, social-seeds.json, scenarios.generated.ts, scenarios.generated.json`
+  `Wrote 4 artifacts: social-graph.json, social-seeds.json, scenarios.generated.ts, scenarios.generated.json`,
 );

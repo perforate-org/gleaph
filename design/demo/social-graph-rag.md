@@ -1,18 +1,21 @@
 # Social Graph and GraphRAG Comparison Demo
 
-Last updated: 2026-07-04
-Anchor timestamp: 2026-07-04 04:51:03 UTC +0000
+Last updated: 2026-07-11
+Anchor timestamp: 2026-07-11 10:51:54 UTC +0000
 
 ## Status
 
-**Partially Implemented** — Phase 1 and Phase 2 are implemented. A canonical social graph manifest with deterministic Post embeddings, reproducible Router seed operations, and the public-timeline, Alice home-feed, topic-path, vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts are verified end-to-end through the application-owned `gleaph-social-demo-gateway` canister, with anonymous callers invoking the five fixed scenarios and the Gateway principal acting as the graph-visible default-Executor caller. The social-demo frontend now renders all five scenarios, including vector distance values and a comparison of vector-only versus graph-constrained results. The local `icp` deployment bootstrap (`scripts/deploy-social-demo-local.sh`) installs and wires the vector canister, ingests Post embeddings, and registers all prepared queries. Internet Identity, LLM calls, GraphRAG orchestration, and authenticated ownership remain explicitly planned and out of scope for this slice.
+**Partially Implemented** — Phase 1 and Phase 2 are implemented. A canonical social graph manifest with deterministic Post embeddings, reproducible Router seed operations, and the public-timeline, Alice home-feed, topic-path, vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts are verified end-to-end through the application-owned `gleaph-social-demo-gateway` canister, with anonymous callers invoking the five fixed scenarios and the Gateway principal acting as the graph-visible default-Executor caller. As of 2026-07-11 the timeline and home feed use materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges so the read path is a single fixed-label expansion with no runtime sort key. The social-demo frontend now renders all five scenarios, including vector distance values and a comparison of vector-only versus graph-constrained results. The local `icp` deployment bootstrap (`scripts/deploy-social-demo-local.sh`) installs and wires the vector canister, ingests Post embeddings, and registers all prepared queries. Internet Identity, LLM calls, GraphRAG orchestration, authenticated ownership, runtime feed maintenance, and celebrity/hybrid feed strategies remain explicitly planned and out of scope for this slice.
 
 ## Phase 1 implementation note
 
-As of 2026-07-04 03:28:04 UTC +0000:
+As of 2026-07-11 10:51:54 UTC +0000:
 
 - Canonical manifest: `frontend/apps/knowledge-map/seeds/social-graph.json`.
 - Generated seed artifact: `frontend/apps/knowledge-map/seeds/social-seeds.json`.
+- Config-driven build: `frontend/apps/social-demo/scripts/build-config.mjs`.
+- The seed graph now includes a `public-feed` Feed vertex and materialized `IN_PUBLIC_FEED` /
+  `IN_HOME_FEED` edges so the public timeline and home feed read paths need no runtime sort key.
 - Seed generator: `frontend/apps/knowledge-map/scripts/generate-seeds.mjs` now accepts arbitrary
   manifest/output paths while preserving the existing knowledge-map output by default.
 - Seed applier: `frontend/apps/knowledge-map/scripts/apply-knowledge-map-seeds.mjs` now accepts
@@ -294,19 +297,26 @@ work must update the relevant active design contracts when a status changes.
 
 ### Scenario A: public timeline baseline
 
-Show public posts in reverse chronological order. Explain that this is intentionally a case where
-the relational and graph solutions are both straightforward.
+Show public posts in reverse chronological order. For the graph variant the demo materializes
+`IN_PUBLIC_FEED` edges from every public Post to a dedicated `public-feed` vertex at seed time;
+the default descending fixed-label scan returns newest posts first with no explicit sort key.
+Explain that this is intentionally a case where the relational and graph solutions are both
+straightforward, and that the materialized-edge approach trades a small amount of write
+amplification for a zero-sort-key read path.
 
 ### Scenario B: graph-native home and discovery
 
 Select Alice as a scenario subject and show:
 
-- followed authors' posts;
+- followed authors' posts via materialized `IN_HOME_FEED` edges (Alice already follows Bob and Carol
+  in the seed data);
 - mutual connections;
 - two-hop author discovery;
 - the exact paths that explain each result.
 
-The selection is presentation state, not authentication.
+The selection is presentation state, not authentication. The home feed uses materialized edges so
+the read path is a single fixed-label expansion from Alice's user vertex rather than a runtime
+`FOLLOWS -> POSTED` two-hop traversal.
 
 ### Scenario C: topic and discussion propagation
 
@@ -356,6 +366,26 @@ Internet Identity is intentionally absent from the initial topology. A later aut
 application topology inserts Internet Identity between the viewer and the application's
 identity-bearing agent; it does not insert Internet Identity inside Gleaph.
 
+## Materialized feed trade-offs
+
+The current (Phase 1) timeline and home feed use materialized feed edges authored at seed time:
+
+- `IN_PUBLIC_FEED` attaches each public Post to a dedicated `public-feed` vertex.
+- `IN_HOME_FEED` attaches each public Post to every follower User of its author.
+
+This lets `PublicTimeline` and `AliceHomeFeed` fetch the latest posts with a single fixed-label
+expansion and `LIMIT`, relying on Gleaph's labeled-edge insertion order and default descending
+scan for newest-first results. The trade-offs are:
+
+- **Write amplification:** `n` followers produce `n` `IN_HOME_FEED` edges per public Post.
+- **Hot vertex:** every public Post points at the same `public-feed` vertex, so that vertex can
+  become a hot spot as the dataset grows.
+- **No runtime mutations:** the current demo is read-only; adding posts, follows, or visibility
+  changes requires updating or re-deriving feed edges.
+
+Follow-up slices will introduce runtime feed maintenance, a celebrity/hybrid read-time merge
+strategy, and time-bucketed public feeds to address the hot-vertex concern.
+
 ## Frontend and reuse strategy
 
 The public comparison is implemented as a dedicated `frontend/apps/social-demo` Solid application.
@@ -388,6 +418,8 @@ adding arbitrary query controls or Router GQL entrypoints to the public UI.
 ### Phase 1: deterministic graph comparison
 
 - Define a small social seed graph with memorable users, posts, topics, replies, and communities.
+- Add a public Feed vertex and materialize `IN_PUBLIC_FEED` / `IN_HOME_FEED` edges so the public
+  timeline and Alice's home feed are single fixed-label expansions with no runtime sort key.
 - Add public timeline, home/discovery, and propagation scenarios.
 - Execute every query through Router.
 - Reuse the existing knowledge-map visualization and deployment path where practical.

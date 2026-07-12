@@ -2,7 +2,8 @@
 
 Date: 2026-07-09
 Status: Implemented
-Anchor timestamp: 2026-07-09 15:33:09 UTC +0000
+Anchor timestamp: 2026-07-11 10:51:54 UTC +0000
+Last updated: 2026-07-11 UTC
 
 ## Purpose
 
@@ -30,6 +31,7 @@ config/
 │   └── posts/<stem>.yaml
 ├── topics/<id>.yaml
 ├── communities/<id>.yaml
+├── feeds/<id>.yaml
 └── scenarios/<id>.yaml
 ```
 
@@ -44,6 +46,7 @@ numeric `demo_id` to every entity (stored as an Int64 in the graph, decoded as
 - Communities: `6` (sorted by file stem)
 - Topics: `7..8` (sorted by file stem)
 - Posts: `9..15` (sorted by user directory, then post file stem)
+- Feeds: `16` (sorted by file stem, allocated after posts so existing ids stay stable)
 
 The emitted seed GQL strings use plain integer literals `demo_id: <N>` (no `: u64`
 cast — the graph mutation property-expression evaluator does not support
@@ -55,23 +58,23 @@ values when needed.
 
 ### `users/<user>/profile.yaml`
 
-| Field | Type | Use |
-|-------|------|-----|
-| `id` | string | User `demo_id`; must match the directory name. |
-| `name` | string | `User.name` property and display label. |
-| `bio` | string (optional) | Display-only; not seeded into the graph in this slice. |
-| `follows` | list of user ids | Generates `FOLLOWS` edges. |
-| `memberships` | list of community ids | Generates `MEMBER_OF` edges. |
+| Field         | Type                  | Use                                                    |
+| ------------- | --------------------- | ------------------------------------------------------ |
+| `id`          | string                | User `demo_id`; must match the directory name.         |
+| `name`        | string                | `User.name` property and display label.                |
+| `bio`         | string (optional)     | Display-only; not seeded into the graph in this slice. |
+| `follows`     | list of user ids      | Generates `FOLLOWS` edges.                             |
+| `memberships` | list of community ids | Generates `MEMBER_OF` edges.                           |
 
 ### `users/<user>/posts/<stem>.yaml`
 
-| Field | Type | Use |
-|-------|------|-----|
-| `id` | string (optional) | Post `demo_id`; defaults to `post-<user>-<stem>`. |
-| `body` | string | Post `body` property and display label. |
-| `created_at` | nat64 (optional) | Defaults to a deterministic value derived from the file path. |
-| `is_public` | bool (optional) | Defaults to `true`; stored as a native GQL BOOL in the graph (compare with `= TRUE` / `= FALSE`). |
-| `topics` | list of topic ids | Generates `HAS_TOPIC` edges. |
+| Field        | Type              | Use                                                                                               |
+| ------------ | ----------------- | ------------------------------------------------------------------------------------------------- |
+| `id`         | string (optional) | Post `demo_id`; defaults to `post-<user>-<stem>`.                                                 |
+| `body`       | string            | Post `body` property and display label.                                                           |
+| `created_at` | nat64 (optional)  | Defaults to a deterministic value derived from the file path.                                     |
+| `is_public`  | bool (optional)   | Defaults to `true`; stored as a native GQL BOOL in the graph (compare with `= TRUE` / `= FALSE`). |
+| `topics`     | list of topic ids | Generates `HAS_TOPIC` edges.                                                                      |
 
 The post YAML does not declare `demo_id` directly; `build-config.mjs` derives the
 numeric `demo_id` from the global allocator above.
@@ -79,25 +82,33 @@ numeric `demo_id` from the global allocator above.
 
 ### `topics/<id>.yaml` and `communities/<id>.yaml`
 
-| Field | Type | Use |
-|-------|------|-----|
-| `id` | string | `demo_id`; must match the filename. |
+| Field  | Type   | Use                                       |
+| ------ | ------ | ----------------------------------------- |
+| `id`   | string | `demo_id`; must match the filename.       |
 | `name` | string | `Topic.name` / `Community.name` property. |
+
+### `feeds/<id>.yaml`
+
+| Field      | Type   | Use                                      |
+| ---------- | ------ | ---------------------------------------- |
+| `id`       | string | Feed `demo_id`; must match the filename. |
+| `name`     | string | `Feed.name` property and display label.  |
+| `gqlLabel` | string | GQL vertex label (currently `Feed`).     |
 
 ### `scenarios/<id>.yaml`
 
-| Field | Type | Use |
-|-------|------|-----|
-| `id` | string | PascalCase `SocialDemoScenario` variant name. |
-| `preparedQueryId` | string | snake_case name sent to `prepared_register`. |
-| `label` | string | Display label. |
-| `shortLabel` | string | Short display label. |
-| `feedTitle` | string | Feed panel title. |
-| `explanationTitle` | string | Explanation panel title. |
-| `rdbSummary` | string | Relational summary text. |
-| `graphSummary` | string | Graph summary text. |
-| `preparedQuery` | string | GQL string for `prepared_register`. |
-| `semanticVector` | list of floats or `null` | Optional reference vector for semantic scenarios. |
+| Field              | Type                     | Use                                               |
+| ------------------ | ------------------------ | ------------------------------------------------- |
+| `id`               | string                   | PascalCase `SocialDemoScenario` variant name.     |
+| `preparedQueryId`  | string                   | snake_case name sent to `prepared_register`.      |
+| `label`            | string                   | Display label.                                    |
+| `shortLabel`       | string                   | Short display label.                              |
+| `feedTitle`        | string                   | Feed panel title.                                 |
+| `explanationTitle` | string                   | Explanation panel title.                          |
+| `rdbSummary`       | string                   | Relational summary text.                          |
+| `graphSummary`     | string                   | Graph summary text.                               |
+| `preparedQuery`    | string                   | GQL string for `prepared_register`.               |
+| `semanticVector`   | list of floats or `null` | Optional reference vector for semantic scenarios. |
 
 ## Build pipeline
 
@@ -108,10 +119,14 @@ truth for the emitted artifacts:
    and Post vertices.
 2. Walk `config/topics/*.yaml` and `config/communities/*.yaml` for layer-0
    nodes.
-3. Derive all edges from `follows`, `memberships`, and `topics` fields.
-4. Emit `social-graph.json` and `social-seeds.json` in the exact shape consumed
+3. Walk `config/feeds/*.yaml` for layer-0 Feed nodes.
+4. Derive all canonical edges from `follows`, `memberships`, and `topics` fields.
+5. Derive materialized feed edges `IN_PUBLIC_FEED` and `IN_HOME_FEED` from
+   canonical `POSTED`, `FOLLOWS`, and `is_public` facts, emitting them oldest-first
+   so the Graph's default descending fixed-label scan returns newest posts first.
+6. Emit `social-graph.json` and `social-seeds.json` in the exact shape consumed
    by the existing apply-knowledge-map-seeds path.
-5. Emit `scenarios.generated.ts` and `scenarios.generated.json` from the
+7. Emit `scenarios.generated.ts` and `scenarios.generated.json` from the
    scenario YAMLs.
 
 ## Deterministic post id allocator and ordering
@@ -132,6 +147,30 @@ Post nodes are ordered by `created_at` descending (ties broken by
   stripped from the target id.
 - `POSTED`: `<source>-posted-<fileStem>` (the file stem, not the post id).
 - `HAS_TOPIC`: `<postId>-<topicId>`.
+- `IN_PUBLIC_FEED`: `post-<postId>-in-public-feed`.
+- `IN_HOME_FEED`: `<postId>-in-home-<followerId>`.
+
+Feed edge ids are stable so re-running the build does not duplicate edges in an
+idempotent seed.
+
+## Materialized feed edges
+
+`IN_PUBLIC_FEED` and `IN_HOME_FEED` are derived from the canonical graph, not authored
+by hand:
+
+- `IN_PUBLIC_FEED`: for every public Post, emit one edge from Post to the `public-feed` Feed.
+- `IN_HOME_FEED`: for every public Post, for every User that follows the Post's author,
+  emit one edge from Post to that follower User.
+
+Both labels are materialized oldest-first (sorted by `created_at`, ties broken by
+`<user>/<fileStem>`). The seed executor inserts edges in manifest order, so Gleaph's
+labeled-edge store records insertion order. The default descending fixed-label scan
+(`OutEdgeOrder::Descending`) then returns newest posts first without an explicit
+`ORDER BY`. `ORDER BY created_at DESC` is therefore no longer required in the
+`PublicTimeline` and `AliceHomeFeed` prepared queries.
+
+The `AliceHomeFeed` query retains the redundant `WHERE p.is_public = TRUE` predicate
+to preserve the visible read contract and fail closed if the derivation rule ever changes.
 
 ## Fallbacks for optional fields
 
@@ -145,14 +184,14 @@ Post nodes are ordered by `created_at` descending (ties broken by
 
 The 5 scenario `preparedQuery` strings share a common set of RETURN columns:
 
-| Column | Type | Source | Use |
-|--------|------|--------|-----|
-| `post_id` | numeric (Int64 in graph, `bigint` on wire) | `p.demo_id` | Stable deterministic post id from the global allocator. |
-| `body` | text | `p.body` | The post content rendered by the React app. |
-| `created_at` | nat64 | `p.created_at` | Chronological ordering for non-semantic scenarios. |
-| `distance` | float32 | vector SEARCH | L2-squared distance for semantic scenarios only. |
-| `follows_edge_id`, `posted_edge_id`, `topic_edge_id` | text | edge `demo_edge_id` | Relationship-trail explanation in `TopicPath`. |
-| `topic_id` | numeric (Int64 in graph, `bigint` on wire) | `t.demo_id` | Stable topic id in `TopicPath`. |
+| Column                                               | Type                                       | Source              | Use                                                     |
+| ---------------------------------------------------- | ------------------------------------------ | ------------------- | ------------------------------------------------------- |
+| `post_id`                                            | numeric (Int64 in graph, `bigint` on wire) | `p.demo_id`         | Stable deterministic post id from the global allocator. |
+| `body`                                               | text                                       | `p.body`            | The post content rendered by the React app.             |
+| `created_at`                                         | nat64                                      | `p.created_at`      | Chronological ordering for non-semantic scenarios.      |
+| `distance`                                           | float32                                    | vector SEARCH       | L2-squared distance for semantic scenarios only.        |
+| `follows_edge_id`, `posted_edge_id`, `topic_edge_id` | text                                       | edge `demo_edge_id` | Relationship-trail explanation in `TopicPath`.          |
+| `topic_id`                                           | numeric (Int64 in graph, `bigint` on wire) | `t.demo_id`         | Stable topic id in `TopicPath`.                         |
 
 All columns except `distance` are stored graph properties or edge properties; the
 GQL layer simply projects them. The `body` column was added to the seed GQL in

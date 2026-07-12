@@ -1110,7 +1110,10 @@ fn collect_property_uses_in_ops(ops: &[PlanOp], uses: &mut PlanPropertyUses) {
                     collect_read_properties_from_expr(&item.expr, uses);
                 }
             }
-            PlanOp::Aggregate { group_by, aggregates } => {
+            PlanOp::Aggregate {
+                group_by,
+                aggregates,
+            } => {
                 for expr in group_by {
                     collect_read_properties_from_expr(expr, uses);
                 }
@@ -1621,7 +1624,6 @@ mod property_uses_tests {
         );
     }
 
-
     fn node_scan(var: &str) -> PlanOp {
         PlanOp::NodeScan {
             variable: var.into(),
@@ -1792,5 +1794,4 @@ mod property_uses_tests {
             "LET binding value p.body must be collected as ReadExisting"
         );
     }
-
 }

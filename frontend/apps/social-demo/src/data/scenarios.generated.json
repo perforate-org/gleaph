@@ -8,8 +8,8 @@
       "feedTitle": "Public posts",
       "explanationTitle": "Relational baseline",
       "rdbSummary": "A chronological list of public rows is exactly what an RDB does well: one index on created_at, a simple visibility predicate, and no joins.",
-      "graphSummary": "The graph stores the same Post vertices and answers the same scan. The value here is not speed; it is that the same vertex model will later power relationship-aware feeds without a new schema.",
-      "preparedQuery": "MATCH (p:Post) WHERE p.is_public = TRUE RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at ORDER BY created_at DESC",
+      "graphSummary": "The graph materializes `IN_PUBLIC_FEED` edges from every public Post to a dedicated Feed vertex at seed time. Gleaph's labeled-edge insertion order becomes the chronological key, so a single fixed-label expansion with `LIMIT` returns newest-first without an explicit `ORDER BY`. The value is not speed; it is that the same vertex model will later power relationship-aware feeds without a new schema.",
+      "preparedQuery": "MATCH (feed:Feed {demo_id: 16})<-[:IN_PUBLIC_FEED]-(p:Post) RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at LIMIT 20",
       "semanticVector": null
     },
     {
@@ -20,8 +20,8 @@
       "feedTitle": "Alice's home feed",
       "explanationTitle": "Graph traversal",
       "rdbSummary": "An RDB needs a follows join table and a two-hop join (follower → followee → posts). The query is still SQL-shaped, but the relationship is now a traversal, not a foreign-key lookup.",
-      "graphSummary": "Gleaph walks Alice → FOLLOWS → author → POSTED → Post as one bounded graph pattern. The feed is the natural result of the relationship shape, not an application-side assembly.",
-      "preparedQuery": "MATCH (u:User)-[:FOLLOWS]->(author:User)-[:POSTED]->(p:Post) WHERE u.demo_id = 1 AND p.is_public = TRUE RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at ORDER BY created_at DESC",
+      "graphSummary": "Gleaph materializes `IN_HOME_FEED` edges from every public Post to each follower User at seed time, so Alice's feed is a single bounded expansion from her user vertex. The feed is the natural result of the relationship shape, not an application-side assembly, and the default descending labeled-edge scan returns newest posts first with no runtime sort key.",
+      "preparedQuery": "MATCH (u:User {demo_id: 1})<-[:IN_HOME_FEED]-(p:Post) WHERE p.is_public = TRUE RETURN p.demo_id AS post_id, p.body AS body, p.created_at AS created_at LIMIT 20",
       "semanticVector": null
     },
     {
@@ -94,6 +94,7 @@
     "post-carol-1": 12,
     "post-dave-1": 13,
     "post-eve-1": 14,
-    "post-eve-private": 15
+    "post-eve-private": 15,
+    "public-feed": 16
   }
 }
