@@ -28,15 +28,15 @@ use gleaph_pocket_ic_tests::{
 use gleaph_social_demo_gateway::SocialDemoScenario;
 
 const PUBLIC_TIMELINE_QUERY: &str = "\
-MATCH (feed:Feed {demo_id: 16})<-[:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) \
+MATCH (feed:Feed {demo_id: 16})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) \
 RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
-ORDER BY p.order_index DESC LIMIT 20";
+ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20";
 
 const ALICE_HOME_FEED_QUERY: &str = "\
-MATCH (u:User {demo_id: 1})<-[:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) \
+MATCH (u:User {demo_id: 1})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) \
 WHERE p.is_public = TRUE \
 RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
-ORDER BY p.order_index DESC LIMIT 20";
+ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20";
 
 const TOPIC_PATH_QUERY: &str = "\
 MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) \
@@ -50,8 +50,7 @@ RETURN p.demo_id AS post_id, \
        t.demo_id AS topic_id, \
        has_topic.demo_edge_id AS topic_edge_id, \
        p.body AS body, \
-       p.created_at AS created_at \
-ORDER BY p.order_index DESC";
+       p.created_at AS created_at";
 
 const SEMANTIC_EMBEDDING_NAME: &str = "post_vec";
 const SEMANTIC_INDEX_ID: u32 = 1;
@@ -441,7 +440,6 @@ fn intern_social_schema(env: &gleaph_pocket_ic_tests::FederationEnv) {
         "demo_kind",
         "name",
         "body",
-        "order_index",
         "created_at",
         "is_public",
     ] {

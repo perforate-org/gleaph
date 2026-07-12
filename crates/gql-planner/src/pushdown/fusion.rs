@@ -106,3 +106,168 @@ pub fn apply_late_project(ops: &mut Vec<PlanOp>, annotations: &mut PlanAnnotatio
         }
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::plan::{PlanOp, ProjectColumn};
+    use gleaph_gql::ast::{Expr, ExprKind, ObjectName, OrderByClause, SortItem};
+    use gleaph_gql::types::EdgeDirection;
+
+    fn node_scan(variable: &str, label: &str) -> PlanOp {
+        PlanOp::NodeScan {
+            variable: variable.into(),
+            label: Some(label.into()),
+            property_projection: None,
+        }
+    }
+
+    fn expand(src: &str, edge: &str, dst: &str, label: &str) -> PlanOp {
+        PlanOp::Expand {
+            src: src.into(),
+            edge: edge.into(),
+            dst: dst.into(),
+            direction: EdgeDirection::PointingLeft,
+            label: Some(label.into()),
+            label_expr: None,
+            var_len: None,
+            indexed_edge_equality: None,
+            edge_inline_value_predicate: None,
+            edge_inline_vector_predicate: None,
+            edge_property_projection: None,
+            dst_property_projection: None,
+            hop_aux_binding: None,
+            emit_edge_binding: true,
+            near_group_var: None,
+            far_group_var: None,
+            path_var: None,
+            emit_path_binding: false,
+        }
+    }
+
+    fn project(columns: Vec<ProjectColumn>) -> PlanOp {
+        PlanOp::Project {
+            columns,
+            distinct: false,
+        }
+    }
+
+    fn sort_by(expr: Expr) -> PlanOp {
+        PlanOp::Sort {
+            order_by: OrderByClause {
+                span: gleaph_gql::token::Span::default(),
+                items: vec![SortItem {
+                    span: gleaph_gql::token::Span::default(),
+                    expr,
+                    direction: None,
+                    null_order: None,
+                }],
+            },
+        }
+    }
+
+    fn topk(expr: Expr) -> PlanOp {
+        PlanOp::TopK {
+            order_by: OrderByClause {
+                span: gleaph_gql::token::Span::default(),
+                items: vec![SortItem {
+                    span: gleaph_gql::token::Span::default(),
+                    expr,
+                    direction: None,
+                    null_order: None,
+                }],
+            },
+            k: Expr::new(ExprKind::Literal(gleaph_gql::Value::Int64(10))),
+            offset: None,
+        }
+    }
+
+    fn sequence_expr(edge_var: &str) -> Expr {
+        Expr::new(ExprKind::FunctionCall {
+            name: ObjectName::qualified(vec!["GLEAPH".into(), "SEQUENCE".into()]),
+            args: vec![Expr::new(ExprKind::Variable(edge_var.into()))],
+            distinct: false,
+        })
+    }
+
+    #[test]
+    fn late_project_moves_project_after_sort() {
+        let mut ops = vec![
+            node_scan("feed", "Feed"),
+            expand("feed", "e", "p", "IN_PUBLIC_FEED"),
+            project(vec![ProjectColumn {
+                expr: Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable("p".into()))),
+                    property: "demo_id".into(),
+                }),
+                alias: Some("post_id".into()),
+            }]),
+            sort_by(sequence_expr("e")),
+        ];
+        let mut annotations = PlanAnnotations::default();
+        apply_late_project(&mut ops, &mut annotations);
+        assert!(annotations.optimizer.late_project_applied);
+        assert!(
+            matches!(&ops[2], PlanOp::Sort { .. }),
+            "Sort should stay before Project"
+        );
+        assert!(
+            matches!(&ops[3], PlanOp::Project { .. }),
+            "Project should be moved after Sort"
+        );
+    }
+
+    #[test]
+    fn late_project_moves_project_after_topk() {
+        let mut ops = vec![
+            node_scan("feed", "Feed"),
+            expand("feed", "e", "p", "IN_PUBLIC_FEED"),
+            project(vec![ProjectColumn {
+                expr: Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable("p".into()))),
+                    property: "demo_id".into(),
+                }),
+                alias: Some("post_id".into()),
+            }]),
+            topk(sequence_expr("e")),
+        ];
+        let mut annotations = PlanAnnotations::default();
+        apply_late_project(&mut ops, &mut annotations);
+        assert!(annotations.optimizer.late_project_applied);
+        assert!(
+            matches!(&ops[2], PlanOp::TopK { .. }),
+            "TopK should stay before Project"
+        );
+        assert!(
+            matches!(&ops[3], PlanOp::Project { .. }),
+            "Project should be moved after TopK"
+        );
+    }
+
+    #[test]
+    fn late_project_keeps_project_after_last_blocking_op() {
+        let mut ops = vec![
+            node_scan("feed", "Feed"),
+            expand("feed", "e", "p", "IN_PUBLIC_FEED"),
+            sort_by(sequence_expr("e")),
+            project(vec![ProjectColumn {
+                expr: Expr::new(ExprKind::PropertyAccess {
+                    expr: Box::new(Expr::new(ExprKind::Variable("p".into()))),
+                    property: "demo_id".into(),
+                }),
+                alias: Some("post_id".into()),
+            }]),
+        ];
+        let mut annotations = PlanAnnotations::default();
+        apply_late_project(&mut ops, &mut annotations);
+        assert!(annotations.optimizer.late_project_applied);
+        assert!(
+            matches!(&ops[2], PlanOp::Sort { .. }),
+            "Sort should stay before Project"
+        );
+        assert!(
+            matches!(&ops[3], PlanOp::Project { .. }),
+            "Project already after Sort should not move"
+        );
+    }
+}

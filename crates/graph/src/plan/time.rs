@@ -5,6 +5,7 @@
 //! exercised without a running canister.
 
 use gleaph_gql::Value;
+#[cfg(not(target_family = "wasm"))]
 use std::time::{SystemTime, UNIX_EPOCH};
 
 fn ic_now_ns() -> u64 {

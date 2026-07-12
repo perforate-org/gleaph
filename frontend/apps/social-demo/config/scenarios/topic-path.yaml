@@ -9,5 +9,5 @@ rdbSummary: |-
 graphSummary: |-
   Gleaph returns the same result plus the edge identities that caused it: alice-follows-bob, bob-posted-1, post-bob-1-topic-graph. The path is part of the query result.
 preparedQuery: |-
-  MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE t.demo_id = 7 MATCH (u:User)-[follows:FOLLOWS]->(author:User)-[posted:POSTED]->(p) WHERE u.demo_id = 1 RETURN p.demo_id AS post_id, author.name AS author_name, follows.demo_edge_id AS follows_edge_id, posted.demo_edge_id AS posted_edge_id, t.demo_id AS topic_id, has_topic.demo_edge_id AS topic_edge_id, p.body AS body, p.created_at AS created_at ORDER BY p.order_index DESC
+  MATCH (p:Post)-[has_topic:HAS_TOPIC]->(t:Topic) WHERE t.demo_id = 7 MATCH (u:User)-[follows:FOLLOWS]->(author:User)-[posted:POSTED]->(p) WHERE u.demo_id = 1 RETURN p.demo_id AS post_id, author.name AS author_name, follows.demo_edge_id AS follows_edge_id, posted.demo_edge_id AS posted_edge_id, t.demo_id AS topic_id, has_topic.demo_edge_id AS topic_edge_id, p.body AS body, p.created_at AS created_at
 semanticVector: null

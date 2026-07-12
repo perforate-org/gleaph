@@ -72,7 +72,6 @@
       "layer": 1,
       "property": "body",
       "properties": {
-        "order_index": 202607030600,
         "created_at": {
           "raw": "CURRENT_TIMESTAMP"
         },
@@ -102,7 +101,6 @@
       "layer": 1,
       "property": "body",
       "properties": {
-        "order_index": 202607030500,
         "created_at": {
           "raw": "CURRENT_TIMESTAMP"
         },
@@ -132,7 +130,6 @@
       "layer": 1,
       "property": "body",
       "properties": {
-        "order_index": 202607030400,
         "created_at": {
           "raw": "CURRENT_TIMESTAMP"
         },
@@ -162,7 +159,6 @@
       "layer": 1,
       "property": "body",
       "properties": {
-        "order_index": 202607030300,
         "created_at": {
           "raw": "CURRENT_TIMESTAMP"
         },
@@ -192,7 +188,6 @@
       "layer": 1,
       "property": "body",
       "properties": {
-        "order_index": 202607030200,
         "created_at": {
           "raw": "CURRENT_TIMESTAMP"
         },
@@ -222,7 +217,6 @@
       "layer": 1,
       "property": "body",
       "properties": {
-        "order_index": 202607030100,
         "created_at": {
           "raw": "CURRENT_TIMESTAMP"
         },
@@ -252,7 +246,6 @@
       "layer": 1,
       "property": "body",
       "properties": {
-        "order_index": 202607030000,
         "created_at": {
           "raw": "CURRENT_TIMESTAMP"
         },
