@@ -57,7 +57,7 @@ mod vector_sync;
 mod vertex_property_backfill;
 
 pub use facade::store::RouterStore;
-pub use init::RouterInitArgs;
+pub use init::{RouterInitArgs, RouterUpgradeArgs};
 pub use state::RouterError;
 
 use candid::Principal;
@@ -74,8 +74,8 @@ fn init(args: RouterInitArgs) {
 }
 
 #[post_upgrade]
-fn post_upgrade() {
-    canister::post_upgrade();
+fn post_upgrade(args: Option<RouterUpgradeArgs>) {
+    canister::post_upgrade(args.unwrap_or_default());
 }
 
 #[query]

@@ -281,18 +281,13 @@ fn router_outbound_accept_envelope_fresh_admission_replay_and_upgrade_durability
         "expected UnknownDeployment, got {missing_result:?}"
     );
 
-    // Scenario 3: upgrade the Router with `provision_canister: None`; the durable stable
-    // binding must keep the outbound path reachable.
+    // Scenario 3: upgrade the Router with empty args; the durable stable
+    // binding must keep the outbound path reachable (ADR 0039).
     env.pic
         .upgrade_canister(
             env.router,
             wasm_bytes("ROUTER_WASM"),
-            Encode!(&RouterInitArgs {
-                issuing_principal: env.admin,
-                initial_admins: vec![],
-                provision_canister: None,
-            })
-            .expect("encode router upgrade args"),
+            Encode!(&()).expect("encode empty router upgrade args"),
             None,
         )
         .expect("upgrade router canister");

@@ -3,7 +3,7 @@
 use crate::facade::auth;
 use crate::facade::store::RouterStore;
 use crate::index_ddl::IndexTarget;
-use crate::init::RouterInitArgs;
+use crate::init::{RouterInitArgs, RouterUpgradeArgs};
 use crate::state::RouterError;
 use crate::types::{
     AdminAttachVectorIndexShardArgs, AdminEdgeBackfillStepArgs, AdminEdgeBackfillStepResult,
@@ -18,6 +18,7 @@ use crate::types::{
     VectorIndexInfo, VectorMaintenancePolicyView, VectorMaintenanceStatusView,
     VectorMaintenanceStepOutcome, VertexLabelId, VertexPropertyBackfillShardStatus,
 };
+#[cfg(test)]
 use candid::Decode;
 use candid::Principal;
 use gleaph_gql_ic::graph_registry::GraphStatus;
@@ -51,12 +52,7 @@ pub(crate) fn init(args: RouterInitArgs) {
     );
 }
 
-pub(crate) fn post_upgrade() {
-    let args: RouterInitArgs = match candid::Decode!(&ic_cdk::api::msg_arg_data(), RouterInitArgs) {
-        Ok(args) => args,
-        Err(_) => ic_cdk::trap("post_upgrade: invalid init args"),
-    };
-
+pub(crate) fn post_upgrade(args: RouterUpgradeArgs) {
     let durable = crate::facade::stable::provision_config::load_provision_runtime_config();
     let provision_canister =
         match resolve_provision_canister_for_upgrade(args.provision_canister, &durable) {
@@ -68,6 +64,22 @@ pub(crate) fn post_upgrade() {
     // Timers do not survive an upgrade; re-arm the recovery driver so non-terminal sagas
     // persisted across the upgrade still converge (ADR 0029 Phase 4).
     crate::recovery::arm_if_needed();
+}
+
+/// Decode Router upgrade args from Candid bytes.
+///
+/// Empty arg data is accepted as the stable "preserve durable configuration" form.
+/// A non-empty payload must decode as [`RouterUpgradeArgs`]; anything else traps so
+/// an operator cannot accidentally feed init args into an upgrade (ADR 0039).
+#[cfg(test)]
+pub(crate) fn decode_upgrade_args(arg_data: &[u8]) -> Option<RouterUpgradeArgs> {
+    if arg_data.is_empty() {
+        return None;
+    }
+    match candid::Decode!(arg_data, RouterUpgradeArgs) {
+        Ok(args) => Some(args),
+        Err(_) => ic_cdk::trap("post_upgrade: invalid upgrade args"),
+    }
 }
 
 pub(crate) fn resolve_provision_canister_for_upgrade(
@@ -1656,5 +1668,49 @@ mod provision_config_upgrade_tests {
         let result =
             resolve_provision_canister_for_upgrade(None, &load_provision_runtime_config()).unwrap();
         assert_eq!(result, Some(canonical));
+    }
+
+    mod upgrade_arg_decode_tests {
+        use super::*;
+        use crate::init::RouterInitArgs;
+        use candid::Encode;
+
+        #[test]
+        fn valid_upgrade_args_decodes() {
+            let principal = Principal::self_authenticating([1; 32]);
+            let bytes = Encode!(&RouterUpgradeArgs {
+                provision_canister: Some(principal),
+            })
+            .expect("encode");
+            let decoded = decode_upgrade_args(&bytes).expect("decoded");
+            assert_eq!(decoded.provision_canister, Some(principal));
+        }
+
+        #[test]
+        fn absent_provision_decodes_to_none_override() {
+            let bytes = Encode!(&RouterUpgradeArgs {
+                provision_canister: None,
+            })
+            .expect("encode");
+            let decoded = decode_upgrade_args(&bytes).expect("decoded");
+            assert_eq!(decoded.provision_canister, None);
+        }
+
+        #[test]
+        fn router_init_args_decode_ignores_init_only_fields() {
+            // Candid record subtyping lets a RouterInitArgs payload decode as
+            // RouterUpgradeArgs: extra fields (issuing_principal, initial_admins)
+            // are ignored. Only the provision_canister override matters.
+            let admin = Principal::self_authenticating([2; 32]);
+            let provision = Principal::self_authenticating([3; 32]);
+            let bytes = Encode!(&RouterInitArgs {
+                issuing_principal: admin,
+                initial_admins: vec![],
+                provision_canister: Some(provision),
+            })
+            .expect("encode");
+            let decoded = decode_upgrade_args(&bytes).expect("decoded");
+            assert_eq!(decoded.provision_canister, Some(provision));
+        }
     }
 }

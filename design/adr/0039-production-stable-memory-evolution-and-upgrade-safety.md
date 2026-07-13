@@ -588,10 +588,12 @@ to Durable Core is a separate future decision, not an implicit consequence of th
 
 ## Implementation status
 
-**Proposed (2026-07-11).** Existing reopen checks, typed layout registries, and selected same-Wasm
-upgrade tests are foundations only. Router empty-argument upgrade compatibility, fixed Durable Core
-headers, owner-specific bounded migration support, core record-version classification, and core
-N-1 fixtures are not yet implemented. Durable Graph interpretation metadata, including LARA's
+**In progress (last verified 2026-07-13 UTC).** Router now accepts `Option<RouterUpgradeArgs>` in
+`post_upgrade`; empty `()` is interpreted as "preserve durable configuration" and only the
+`provision_canister` override is applied. Existing reopen checks, typed layout registries, and
+selected same-Wasm upgrade tests are foundations only. Fixed Durable Core headers, owner-specific
+bounded migration support, core record-version classification, and core N-1 fixtures are not yet
+implemented. Durable Graph interpretation metadata, including LARA's
 `default_label`, is also not yet bound to persisted state. Property Index and Vector Index remain
 Rebuildable Derived; Provision remains Experimental Control Plane.
 

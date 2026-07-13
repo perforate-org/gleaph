@@ -23,6 +23,18 @@ pub struct RouterInitArgs {
     pub provision_canister: Option<Principal>,
 }
 
+/// Upgrade-only args for the router canister (ADR 0039).
+///
+/// Init-only authority, bootstrap principals, and initial administrators must not be
+/// replayed on a routine upgrade. The only operator override exposed here is the
+/// provision-canister binding; absence means "preserve the durable stable binding".
+#[derive(CandidType, Deserialize, Clone, Debug, PartialEq, Default)]
+pub struct RouterUpgradeArgs {
+    /// Optional provision-canister override.
+    #[serde(default)]
+    pub provision_canister: Option<Principal>,
+}
+
 #[cfg(test)]
 mod canbench_init_hex {
     use super::*;
