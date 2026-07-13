@@ -11,6 +11,7 @@ import {
   expectFloat64,
   expectInt64,
   expectText,
+  optionalInt64,
   rowToColumnMap,
 } from "~/api/rowDecoder";
 import {
@@ -26,6 +27,7 @@ import { DemoNotice } from "~/components/DemoNotice";
 import { ErrorCard } from "~/components/ErrorCard";
 import { ExplanationPanel } from "~/components/ExplanationPanel";
 import { FeedItem } from "~/components/FeedItem";
+import { ReplyTree } from "~/components/ReplyTree";
 import { ScenarioNav } from "~/components/ScenarioNav";
 
 const isSemanticScenario = (definition: ScenarioDefinition): boolean =>
@@ -62,9 +64,10 @@ const decodeFeedResult = (definition: ScenarioDefinition, rowsBlob: Uint8Array):
     }
 
     return {
-      kind: "post",
-      postId,
-      authorName: expectText(map, "author_name"),
+        kind: "post",
+        postId,
+        parentPostId: optionalInt64(map, "parent_post_id"),
+        authorName: expectText(map, "author_name"),
       body: expectText(map, "body"),
       createdAt: expectDateTimeSeconds(map, "created_at"),
     };
@@ -220,9 +223,20 @@ function FeedList(props: { result: FeedResult | undefined; definition: ScenarioD
           </div>
         }
       >
-        <For each={props.result!.rows}>
-          {(row) => <FeedItem row={row} definition={props.definition} formatDate={formatDate} />}
-        </For>
+        <Show
+          when={props.result!.rows.every((row) => row.kind === "post")}
+          fallback={
+            <For each={props.result!.rows}>
+              {(row) => <FeedItem row={row} definition={props.definition} formatDate={formatDate} />}
+            </For>
+          }
+        >
+          <ReplyTree
+            rows={props.result!.rows.filter((row) => row.kind === "post")}
+            definition={props.definition}
+            formatDate={formatDate}
+          />
+        </Show>
       </Show>
     </div>
   );

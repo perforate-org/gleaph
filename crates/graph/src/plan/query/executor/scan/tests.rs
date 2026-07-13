@@ -1247,6 +1247,86 @@ fn gleaph_sequence_order_after_intermediate_unnamed_expand() {
 }
 
 #[test]
+fn gleaph_sequence_order_survives_non_rebinding_optional_match() {
+    // Regression for the social-demo reply tree: `e` is bound by the materialized feed edge,
+    // then an OPTIONAL MATCH may bind a different reply edge before the final sequence order.
+    let store = GraphStore::new();
+    let feed = store
+        .insert_vertex_named(["SeqOptionalFeed"], Vec::<(&str, Value)>::new())
+        .expect("insert feed");
+    let parent = store
+        .insert_vertex_named(
+            ["SeqOptionalPost"],
+            [("name", Value::Text("parent".to_owned()))],
+        )
+        .expect("insert parent");
+    let first = store
+        .insert_vertex_named(
+            ["SeqOptionalPost"],
+            [("name", Value::Text("first".to_owned()))],
+        )
+        .expect("insert first post");
+    let second = store
+        .insert_vertex_named(
+            ["SeqOptionalPost"],
+            [("name", Value::Text("second".to_owned()))],
+        )
+        .expect("insert second post");
+    store
+        .insert_directed_edge_named(first, feed, Some("IN_FEED"), Vec::<(&str, Value)>::new())
+        .expect("insert first feed edge");
+    store
+        .insert_directed_edge_named(second, feed, Some("IN_FEED"), Vec::<(&str, Value)>::new())
+        .expect("insert second feed edge");
+    store
+        .insert_directed_edge_named(
+            second,
+            parent,
+            Some("REPLY_TO"),
+            Vec::<(&str, Value)>::new(),
+        )
+        .expect("insert reply edge");
+
+    let plan = plan_gql(
+        "MATCH (feed:SeqOptionalFeed)<-[e:IN_FEED]-(p:SeqOptionalPost) \
+         OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:SeqOptionalPost) \
+         RETURN p.name AS name, parent.name AS parent_name \
+         ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 2",
+    );
+
+    let result = store
+        .execute_plan_query(&plan, &params(), GqlExecutionContext::default())
+        .expect("execute sequence order after optional reply match");
+
+    assert_eq!(text_column(&result, "name"), vec!["second", "first"]);
+    assert_eq!(
+        result.rows[0].get("parent_name"),
+        Some(&Value::Text("parent".to_owned()))
+    );
+    assert_eq!(result.rows[1].get("parent_name"), Some(&Value::Null));
+}
+
+#[test]
+fn optional_match_edge_binding_detection_preserves_rebinding_boundary() {
+    let rebind = plan_gql("MATCH (a:SeqOptionalRebindA)-[e:SeqOptionalRebindRel]->(b) RETURN e");
+    let different_edge =
+        plan_gql("MATCH (a:SeqOptionalRebindA)-[r:SeqOptionalRebindRel]->(b) RETURN r");
+
+    assert!(super::super::ops_bind_edge_variable(
+        &[PlanOp::OptionalMatch {
+            sub_plan: rebind.ops,
+        }],
+        "e",
+    ));
+    assert!(!super::super::ops_bind_edge_variable(
+        &[PlanOp::OptionalMatch {
+            sub_plan: different_edge.ops,
+        }],
+        "e",
+    ));
+}
+
+#[test]
 fn previous_op_binds_edge_uses_most_recent_binding_for_rebound_variable() {
     // If the same edge variable is bound by a later expand, the sequence order
     // must apply to the later binding, not the earlier one.

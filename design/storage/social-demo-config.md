@@ -1,9 +1,9 @@
 # social-demo-config
 
-Date: 2026-07-09
+Date: 2026-07-13
 Status: Implemented
-Anchor timestamp: 2026-07-11 10:51:54 UTC +0000
-Last updated: 2026-07-11 UTC
+Anchor timestamp: 2026-07-13 07:31:19 UTC +0000
+Last updated: 2026-07-13 UTC
 
 ## Purpose
 
@@ -75,6 +75,7 @@ values when needed.
 | `created_at` | nat64 (optional)  | Defaults to a deterministic value derived from the file path.                                     |
 | `is_public`  | bool (optional)   | Defaults to `true`; stored as a native GQL BOOL in the graph (compare with `= TRUE` / `= FALSE`). |
 | `topics`     | list of topic ids | Generates `HAS_TOPIC` edges.                                                                      |
+| `reply_to`   | post id (optional) | Generates one canonical outgoing `REPLY_TO` edge to the parent Post.                            |
 
 The post YAML does not declare `demo_id` directly; `build-config.mjs` derives the
 numeric `demo_id` from the global allocator above.
@@ -120,7 +121,7 @@ truth for the emitted artifacts:
 2. Walk `config/topics/*.yaml` and `config/communities/*.yaml` for layer-0
    nodes.
 3. Walk `config/feeds/*.yaml` for layer-0 Feed nodes.
-4. Derive all canonical edges from `follows`, `memberships`, and `topics` fields.
+4. Derive all canonical edges from `follows`, `memberships`, `topics`, and `reply_to` fields.
 5. Derive materialized feed edges `IN_PUBLIC_FEED` and `IN_HOME_FEED` from
    canonical `POSTED`, `FOLLOWS`, and `is_public` facts, emitting them oldest-first
    so the Graph's default descending fixed-label scan returns newest posts first.
@@ -146,6 +147,7 @@ Post nodes are ordered by `created_at` descending (ties broken by
 - `MEMBER_OF`: `<source>-member-of-<target>` with the `community-` prefix
   stripped from the target id.
 - `POSTED`: `<source>-posted-<fileStem>` (the file stem, not the post id).
+- `REPLY_TO`: `<replyPostId>-reply-to-<parentPostId>`.
 - `HAS_TOPIC`: `<postId>-<topicId>`.
 - `IN_PUBLIC_FEED`: `post-<postId>-in-public-feed`.
 - `IN_HOME_FEED`: `<postId>-in-home-<followerId>`.
@@ -159,8 +161,9 @@ idempotent seed.
 by hand:
 
 - `IN_PUBLIC_FEED`: for every public Post, emit one edge from Post to the `public-feed` Feed.
-- `IN_HOME_FEED`: for every public Post, for every User that follows the Post's author,
-  emit one edge from Post to that follower User.
+- `IN_HOME_FEED`: for every public Post, emit one edge from Post to its author and one edge to
+  every User that follows that author. Recipient ids are de-duplicated, so a self-follow cannot
+  create a duplicate home-feed edge.
 
 Both labels are materialized oldest-first (sorted by `created_at`, ties broken by
 `<user>/<fileStem>`). The seed executor inserts edges in manifest order, so Gleaph's
@@ -171,6 +174,15 @@ labeled-edge store records insertion order. The default descending fixed-label s
 
 The `AliceHomeFeed` query retains the redundant `WHERE p.is_public = TRUE` predicate
 to preserve the visible read contract and fail closed if the derivation rule ever changes.
+
+## Reply threads
+
+`reply_to` is authored on the replying Post and is the only configuration source for a reply
+relationship. The generator validates that it resolves to a Post and emits `(reply)-[:REPLY_TO]->(parent)`
+after all `POSTED` edges have created their Post endpoints. The public timeline and Alice home-feed
+prepared queries project `parent_post_id` through `OPTIONAL MATCH`, preserving root posts as `NULL`.
+The frontend reconstructs the visible tree only from rows returned by that feed; a reply whose
+parent is absent from the current feed remains visible as a root rather than being dropped.
 
 ## Fallbacks for optional fields
 
@@ -189,6 +201,7 @@ The 5 scenario `preparedQuery` strings share a common set of RETURN columns:
 | `post_id`                                            | numeric (Int64 in graph, `bigint` on wire) | `p.demo_id`         | Stable deterministic post id from the global allocator. |
 | `body`                                               | text                                       | `p.body`            | The post content rendered by the React app.             |
 | `created_at`                                         | nat64                                      | `p.created_at`      | Chronological ordering for non-semantic scenarios.      |
+| `parent_post_id`                                     | numeric or `NULL`                          | `parent.demo_id`    | Optional canonical reply parent for timeline tree display. |
 | `distance`                                           | float32                                    | vector SEARCH       | L2-squared distance for semantic scenarios only.        |
 | `follows_edge_id`, `posted_edge_id`, `topic_edge_id` | text                                       | edge `demo_edge_id` | Relationship-trail explanation in `TopicPath`.          |
 | `topic_id`                                           | numeric (Int64 in graph, `bigint` on wire) | `t.demo_id`         | Stable topic id in `TopicPath`.                         |

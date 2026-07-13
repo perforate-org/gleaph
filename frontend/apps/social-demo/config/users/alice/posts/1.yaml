@@ -3,3 +3,4 @@ body: Alice's public reply
 created_at: 202607030600
 is_public: true
 topics: []
+reply_to: post-bob-1

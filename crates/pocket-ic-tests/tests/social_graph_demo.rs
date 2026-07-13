@@ -29,13 +29,15 @@ use gleaph_social_demo_gateway::SocialDemoScenario;
 
 const PUBLIC_TIMELINE_QUERY: &str = "\
 MATCH (feed:Feed {demo_id: 16})<-[e:IN_PUBLIC_FEED]-(p:Post)<-[:POSTED]-(author:User) \
-RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
+OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post) \
+RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
 ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20";
 
 const ALICE_HOME_FEED_QUERY: &str = "\
 MATCH (u:User {demo_id: 1})<-[e:IN_HOME_FEED]-(p:Post)<-[:POSTED]-(author:User) \
 WHERE p.is_public = TRUE \
-RETURN p.demo_id AS post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
+OPTIONAL MATCH (p)-[:REPLY_TO]->(parent:Post) \
+RETURN p.demo_id AS post_id, parent.demo_id AS parent_post_id, author.name AS author_name, p.body AS body, p.created_at AS created_at \
 ORDER BY GLEAPH.SEQUENCE(e) DESC LIMIT 20";
 
 const TOPIC_PATH_QUERY: &str = "\
@@ -157,6 +159,7 @@ fn assert_public_timeline_through_gateway(
             ("13", "Dave"),
         ],
     );
+    assert_parent_post_ids(&rows, &[("9", "10"), ("11", "10")]);
 }
 
 fn assert_author_names(
@@ -195,26 +198,52 @@ fn assert_alice_home_feed_through_gateway(
     let rows = decode_rows(&result);
     assert_eq!(
         rows.len(),
-        3,
-        "Alice's home feed should return exactly the posts by followees (Bob and Carol)"
+        4,
+        "Alice's home feed should return her own public post plus the posts by followees (Bob and Carol)"
     );
     let ids: Vec<String> = rows.iter().map(|r| demo_id_text(r, "post_id")).collect();
     assert_eq!(
         ids,
-        vec!["11", "12", "10"],
+        vec!["9", "11", "12", "10"],
         "home feed should be in exact reverse chronological order"
     );
-    for adversary in ["13", "14", "15", "9"] {
+    for adversary in ["13", "14", "15"] {
         assert!(
             !ids.contains(&adversary.to_string()),
-            "home feed must exclude public but unfollowed or non-followee post {adversary}"
+            "home feed must exclude private or public posts by unfollowed, non-author users: {adversary}"
         );
     }
     for row in &rows {
         assert_body_is_text(row, "home feed should surface body");
         assert_author_name_is_text(row, "home feed should surface author name");
     }
-    assert_author_names(&rows, &[("11", "Bob"), ("12", "Carol"), ("10", "Bob")]);
+    assert_author_names(
+        &rows,
+        &[
+            ("9", "Alice"),
+            ("11", "Bob"),
+            ("12", "Carol"),
+            ("10", "Bob"),
+        ],
+    );
+    assert_parent_post_ids(&rows, &[("9", "10"), ("11", "10")]);
+}
+
+fn assert_parent_post_ids(
+    rows: &[std::collections::BTreeMap<String, Value>],
+    expected: &[(&str, &str)],
+) {
+    for (post_id, parent_post_id) in expected {
+        let row = rows
+            .iter()
+            .find(|row| demo_id_text(row, "post_id") == *post_id)
+            .unwrap_or_else(|| panic!("missing post {post_id}"));
+        assert_eq!(
+            demo_id_text(row, "parent_post_id"),
+            *parent_post_id,
+            "reply {post_id} should project its canonical parent id"
+        );
+    }
 }
 
 fn assert_topic_path_explanation_through_gateway(
@@ -430,7 +459,7 @@ fn intern_social_schema(env: &gleaph_pocket_ic_tests::FederationEnv) {
     for label in ["User", "Post", "Topic", "Community"] {
         admin_intern_vertex_label(env, label);
     }
-    for label in ["FOLLOWS", "POSTED", "HAS_TOPIC", "MEMBER_OF"] {
+    for label in ["FOLLOWS", "POSTED", "REPLY_TO", "HAS_TOPIC", "MEMBER_OF"] {
         admin_intern_edge_label(env, label);
     }
     for prop in [

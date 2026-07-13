@@ -139,6 +139,17 @@ export const expectInt64 = (map: Map<string, WireValue>, column: string): bigint
   throw new Error(`Missing or non-int64 column: ${column}`);
 };
 
+export const optionalInt64 = (map: Map<string, WireValue>, column: string): bigint | undefined => {
+  const value = map.get(column);
+  if (!value || "Null" in value) {
+    return undefined;
+  }
+  if ("Int64" in value) {
+    return value.Int64;
+  }
+  throw new Error(`Non-int64 optional column: ${column}`);
+};
+
 export const expectNat64 = (map: Map<string, WireValue>, column: string): bigint => {
   const value = map.get(column);
   if (value && "Uint64" in value) {

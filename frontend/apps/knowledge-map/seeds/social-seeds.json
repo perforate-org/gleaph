@@ -77,6 +77,14 @@
       "gql": "MATCH (a:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:POSTED {demo_edge_id: 'eve-posted-private', demo_kind: 'posted'}]->(b:Post {demo_id: 15, demo_graph: 'social', body: 'Eve''s draft', created_at: CURRENT_TIMESTAMP, is_public: FALSE})"
     },
     {
+      "key": "social-seed-edge-post-alice-1-reply-to-post-bob-1",
+      "gql": "MATCH (a:Post {demo_id: 9, demo_graph: 'social'}), (b:Post {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'post-alice-1-reply-to-post-bob-1', demo_kind: 'reply to'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-bob-2-reply-to-post-bob-1",
+      "gql": "MATCH (a:Post {demo_id: 11, demo_graph: 'social'}), (b:Post {demo_id: 10, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:REPLY_TO {demo_edge_id: 'post-bob-2-reply-to-post-bob-1', demo_kind: 'reply to'}]->(b)"
+    },
+    {
       "key": "social-seed-edge-post-post-dave-1-in-public-feed",
       "gql": "MATCH (a:Post {demo_id: 13, demo_graph: 'social'}), (b:Feed {demo_id: 16, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-post-dave-1-in-public-feed', demo_kind: 'in public feed'}]->(b)"
     },
@@ -101,16 +109,40 @@
       "gql": "MATCH (a:Post {demo_id: 9, demo_graph: 'social'}), (b:Feed {demo_id: 16, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_PUBLIC_FEED {demo_edge_id: 'post-post-alice-1-in-public-feed', demo_kind: 'in public feed'}]->(b)"
     },
     {
+      "key": "social-seed-edge-post-dave-1-in-home-dave",
+      "gql": "MATCH (a:Post {demo_id: 13, demo_graph: 'social'}), (b:User {demo_id: 4, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-dave-1-in-home-dave', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-eve-1-in-home-eve",
+      "gql": "MATCH (a:Post {demo_id: 14, demo_graph: 'social'}), (b:User {demo_id: 5, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-eve-1-in-home-eve', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-bob-1-in-home-bob",
+      "gql": "MATCH (a:Post {demo_id: 10, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-bob-1-in-home-bob', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
       "key": "social-seed-edge-post-bob-1-in-home-alice",
       "gql": "MATCH (a:Post {demo_id: 10, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-bob-1-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-carol-1-in-home-carol",
+      "gql": "MATCH (a:Post {demo_id: 12, demo_graph: 'social'}), (b:User {demo_id: 3, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-carol-1-in-home-carol', demo_kind: 'in home feed'}]->(b)"
     },
     {
       "key": "social-seed-edge-post-carol-1-in-home-alice",
       "gql": "MATCH (a:Post {demo_id: 12, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-carol-1-in-home-alice', demo_kind: 'in home feed'}]->(b)"
     },
     {
+      "key": "social-seed-edge-post-bob-2-in-home-bob",
+      "gql": "MATCH (a:Post {demo_id: 11, demo_graph: 'social'}), (b:User {demo_id: 2, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-bob-2-in-home-bob', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
       "key": "social-seed-edge-post-bob-2-in-home-alice",
       "gql": "MATCH (a:Post {demo_id: 11, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-bob-2-in-home-alice', demo_kind: 'in home feed'}]->(b)"
+    },
+    {
+      "key": "social-seed-edge-post-alice-1-in-home-alice",
+      "gql": "MATCH (a:Post {demo_id: 9, demo_graph: 'social'}), (b:User {demo_id: 1, demo_graph: 'social'}) RETURN a NEXT INSERT (a)-[:IN_HOME_FEED {demo_edge_id: 'post-alice-1-in-home-alice', demo_kind: 'in home feed'}]->(b)"
     },
     {
       "key": "social-seed-edge-post-bob-1-topic-graph",

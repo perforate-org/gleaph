@@ -128,6 +128,7 @@ for (const userName of sortedDirNames(userDir)) {
       createdAt,
       isPublic,
       topics: doc.topics ?? [],
+      replyTo: doc.reply_to,
       embedding,
     });
   }
@@ -333,6 +334,20 @@ for (const post of posts) {
   });
 }
 
+// REPLY_TO is canonical social state authored by the reply post. Emit it only
+// after every Post exists, so replies can target posts created by any author.
+for (const post of posts) {
+  if (!post.replyTo) continue;
+  validateEndpoint(post.replyTo, "post", `${post.id}-reply-to-${post.replyTo}`);
+  edges.push({
+    id: `${post.id}-reply-to-${post.replyTo}`,
+    source: post.id,
+    target: post.replyTo,
+    gqlLabel: "REPLY_TO",
+    displayLabel: "reply to",
+  });
+}
+
 // Materialized feed edges are derived from canonical POSTED, FOLLOWS, and is_public.
 // They are emitted oldest-first so the default descending fixed-label scan returns
 // newest posts first without an ORDER BY.
@@ -375,10 +390,11 @@ for (const post of publicFeedPosts) {
 const homeFeedEntries = [];
 for (const post of posts) {
   if (!post.isPublic) continue;
-  for (const followerId of followsByTarget.get(post.userId) ?? []) {
+  const homeFeedRecipients = new Set([post.userId, ...(followsByTarget.get(post.userId) ?? [])]);
+  for (const recipientId of homeFeedRecipients) {
     homeFeedEntries.push({
       postId: post.id,
-      followerId,
+      recipientId,
       createdAt: post.createdAt,
       userId: post.userId,
       fileStem: post.fileStem,
@@ -391,13 +407,13 @@ homeFeedEntries.sort((a, b) => {
 });
 
 for (const entry of homeFeedEntries) {
-  const edgeId = `${entry.postId}-in-home-${entry.followerId}`;
+  const edgeId = `${entry.postId}-in-home-${entry.recipientId}`;
   validateEndpoint(entry.postId, "post", edgeId);
-  validateEndpoint(entry.followerId, "user", edgeId);
+  validateEndpoint(entry.recipientId, "user", edgeId);
   edges.push({
     id: edgeId,
     source: entry.postId,
-    target: entry.followerId,
+    target: entry.recipientId,
     gqlLabel: "IN_HOME_FEED",
     displayLabel: "in home feed",
   });
@@ -682,9 +698,9 @@ if (nullVectors.length !== 3) {
 // Validate emitted seeds.
 const seedsText = readFileSync(join(KM_SEEDS_DIR, "social-seeds.json"), "utf8");
 const parsedSeeds = JSON.parse(seedsText);
-if (!Array.isArray(parsedSeeds.seeds) || parsedSeeds.seeds.length !== 29) {
+if (!Array.isArray(parsedSeeds.seeds) || parsedSeeds.seeds.length !== 37) {
   throw new Error(
-    `Expected exactly 29 seeds, found ${parsedSeeds.seeds?.length ?? 0}`,
+    `Expected exactly 37 seeds, found ${parsedSeeds.seeds?.length ?? 0}`,
   );
 }
 const demoIdOccurrences = seedsText.match(/demo_id: [^,}]+/g) ?? [];

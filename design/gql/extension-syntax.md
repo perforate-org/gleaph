@@ -299,6 +299,11 @@ RETURN b
 ORDER BY GLEAPH.SEQUENCE(e) DESC
 ```
 
+An `OPTIONAL MATCH` between the binding of `e` and its `ORDER BY` is supported when that optional
+subplan does not bind `e` itself. The outer edge binding remains present on both match and miss
+rows, so Graph preserves its scan order. An optional subplan that binds `e` is a new ordering
+boundary and is not lowered as an order on the earlier edge.
+
 This function must be classified separately from `GLEAPH.WEIGHT(e)` and `GLEAPH.VECTOR.*` in the Rust
 manifest. Those helpers read or score fixed-width edge inline value bytes; `GLEAPH.SEQUENCE(e)` reads
 Graph-owned edge ordering metadata.

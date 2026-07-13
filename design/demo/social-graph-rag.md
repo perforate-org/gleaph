@@ -1,11 +1,11 @@
 # Social Graph and GraphRAG Comparison Demo
 
-Last updated: 2026-07-11
-Anchor timestamp: 2026-07-11 10:51:54 UTC +0000
+Last updated: 2026-07-13
+Anchor timestamp: 2026-07-13 07:31:19 UTC +0000
 
 ## Status
 
-**Partially Implemented** — Phase 1 and Phase 2 are implemented. A canonical social graph manifest with deterministic Post embeddings, reproducible Router seed operations, and the public-timeline, Alice home-feed, topic-path, vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts are verified end-to-end through the application-owned `gleaph-social-demo-gateway` canister, with anonymous callers invoking the five fixed scenarios and the Gateway principal acting as the graph-visible default-Executor caller. As of 2026-07-11 the timeline and home feed use materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges so the read path is a single fixed-label expansion with no runtime sort key. The social-demo frontend now renders all five scenarios, including vector distance values and a comparison of vector-only versus graph-constrained results. The local `icp` deployment bootstrap (`scripts/deploy-social-demo-local.sh`) installs and wires the vector canister, ingests Post embeddings, and registers all prepared queries. Internet Identity, LLM calls, GraphRAG orchestration, authenticated ownership, runtime feed maintenance, and celebrity/hybrid feed strategies remain explicitly planned and out of scope for this slice.
+**Partially Implemented** — Phase 1 and Phase 2 are implemented. A canonical social graph manifest with deterministic Post embeddings, reproducible Router seed operations, and the public-timeline, Alice home-feed, topic-path, vector-only semantic discovery, and Alice graph-constrained semantic feed prepared-query contracts are verified end-to-end through the application-owned `gleaph-social-demo-gateway` canister, with anonymous callers invoking the five fixed scenarios and the Gateway principal acting as the graph-visible default-Executor caller. As of 2026-07-13 the timeline and home feed use materialized `IN_PUBLIC_FEED` and `IN_HOME_FEED` edges so the read path is a single fixed-label expansion with no runtime sort key, and canonical `REPLY_TO` edges drive a Twitter-like reply tree in the frontend. The social-demo frontend now renders all five scenarios, including vector distance values and a comparison of vector-only versus graph-constrained results. The local `icp` deployment bootstrap (`scripts/deploy-social-demo-local.sh`) installs and wires the vector canister, ingests Post embeddings, and registers all prepared queries. Internet Identity, LLM calls, GraphRAG orchestration, authenticated ownership, runtime feed maintenance, and celebrity/hybrid feed strategies remain explicitly planned and out of scope for this slice.
 
 ## Phase 1 implementation note
 
@@ -49,7 +49,8 @@ As of 2026-07-11 10:51:54 UTC +0000:
     and including a deliberately nearer unfollowed post (`post-dave-1`);
   - Alice graph-constrained semantic feed excluding the nearer unfollowed post and returning
     followed authors' Posts in semantic order;
-  - Alice home feed through `FOLLOWS -> POSTED`, excluding public but unfollowed authors,
+  - Alice home feed through materialized own-author and `FOLLOWS -> POSTED` delivery, excluding
+    public posts by unfollowed, non-author users,
     executed by an anonymous caller through the Gateway;
   - topic explanation path through a followee's post, returning the node and edge identities
     that explain why the result was selected, with a non-matching topic adversary excluded,
@@ -308,8 +309,8 @@ amplification for a zero-sort-key read path.
 
 Select Alice as a scenario subject and show:
 
-- followed authors' posts via materialized `IN_HOME_FEED` edges (Alice already follows Bob and Carol
-  in the seed data);
+- Alice's own posts and followed authors' posts via materialized `IN_HOME_FEED` edges (Alice already
+  follows Bob and Carol in the seed data);
 - mutual connections;
 - two-hop author discovery;
 - the exact paths that explain each result.
@@ -371,13 +372,14 @@ identity-bearing agent; it does not insert Internet Identity inside Gleaph.
 The current (Phase 1) timeline and home feed use materialized feed edges authored at seed time:
 
 - `IN_PUBLIC_FEED` attaches each public Post to a dedicated `public-feed` vertex.
-- `IN_HOME_FEED` attaches each public Post to every follower User of its author.
+- `IN_HOME_FEED` attaches each public Post to its author and every follower User of its author.
 
 This lets `PublicTimeline` and `AliceHomeFeed` fetch the latest posts with a single fixed-label
 expansion and `LIMIT`, relying on Gleaph's labeled-edge insertion order and default descending
 scan for newest-first results. The trade-offs are:
 
-- **Write amplification:** `n` followers produce `n` `IN_HOME_FEED` edges per public Post.
+- **Write amplification:** `n` followers produce up to `n + 1` `IN_HOME_FEED` edges per public
+  Post (the author delivery plus followers, with duplicate recipients removed).
 - **Hot vertex:** every public Post points at the same `public-feed` vertex, so that vertex can
   become a hot spot as the dataset grows.
 - **No runtime mutations:** the current demo is read-only; adding posts, follows, or visibility

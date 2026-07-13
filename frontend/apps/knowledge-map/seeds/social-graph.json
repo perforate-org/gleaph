@@ -348,6 +348,20 @@
       "displayLabel": "posted"
     },
     {
+      "id": "post-alice-1-reply-to-post-bob-1",
+      "source": "post-alice-1",
+      "target": "post-bob-1",
+      "gqlLabel": "REPLY_TO",
+      "displayLabel": "reply to"
+    },
+    {
+      "id": "post-bob-2-reply-to-post-bob-1",
+      "source": "post-bob-2",
+      "target": "post-bob-1",
+      "gqlLabel": "REPLY_TO",
+      "displayLabel": "reply to"
+    },
+    {
       "id": "post-post-dave-1-in-public-feed",
       "source": "post-dave-1",
       "target": "public-feed",
@@ -390,9 +404,37 @@
       "displayLabel": "in public feed"
     },
     {
+      "id": "post-dave-1-in-home-dave",
+      "source": "post-dave-1",
+      "target": "dave",
+      "gqlLabel": "IN_HOME_FEED",
+      "displayLabel": "in home feed"
+    },
+    {
+      "id": "post-eve-1-in-home-eve",
+      "source": "post-eve-1",
+      "target": "eve",
+      "gqlLabel": "IN_HOME_FEED",
+      "displayLabel": "in home feed"
+    },
+    {
+      "id": "post-bob-1-in-home-bob",
+      "source": "post-bob-1",
+      "target": "bob",
+      "gqlLabel": "IN_HOME_FEED",
+      "displayLabel": "in home feed"
+    },
+    {
       "id": "post-bob-1-in-home-alice",
       "source": "post-bob-1",
       "target": "alice",
+      "gqlLabel": "IN_HOME_FEED",
+      "displayLabel": "in home feed"
+    },
+    {
+      "id": "post-carol-1-in-home-carol",
+      "source": "post-carol-1",
+      "target": "carol",
       "gqlLabel": "IN_HOME_FEED",
       "displayLabel": "in home feed"
     },
@@ -404,8 +446,22 @@
       "displayLabel": "in home feed"
     },
     {
+      "id": "post-bob-2-in-home-bob",
+      "source": "post-bob-2",
+      "target": "bob",
+      "gqlLabel": "IN_HOME_FEED",
+      "displayLabel": "in home feed"
+    },
+    {
       "id": "post-bob-2-in-home-alice",
       "source": "post-bob-2",
+      "target": "alice",
+      "gqlLabel": "IN_HOME_FEED",
+      "displayLabel": "in home feed"
+    },
+    {
+      "id": "post-alice-1-in-home-alice",
+      "source": "post-alice-1",
       "target": "alice",
       "gqlLabel": "IN_HOME_FEED",
       "displayLabel": "in home feed"

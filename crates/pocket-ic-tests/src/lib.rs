@@ -2687,7 +2687,7 @@ pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
         .collect();
     assert_eq!(
         home_ids,
-        vec!["11", "12", "10"],
+        vec!["9", "11", "12", "10"],
         "IN_HOME_FEED default descending scan should return newest posts first"
     );
 }

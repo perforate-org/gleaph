@@ -451,11 +451,13 @@ pub(crate) fn gleaph_sequence_order_after_expand(
             {
                 break;
             }
+            PlanOp::OptionalMatch { sub_plan } if ops_bind_edge_variable(sub_plan, edge_var) => {
+                break;
+            }
             PlanOp::Aggregate { .. }
             | PlanOp::ShortestPath { .. }
             | PlanOp::HashJoin { .. }
             | PlanOp::CartesianProduct { .. }
-            | PlanOp::OptionalMatch { .. }
             | PlanOp::Materialize { .. } => break,
             _ => {}
         }
@@ -473,16 +475,65 @@ fn previous_op_binds_edge(ops: &[PlanOp], op_idx: usize, edge_var: &str) -> bool
                 // A different edge variable (or an unnamed edge) does not invalidate
                 // earlier bindings; keep scanning backwards for the target variable.
             }
+            PlanOp::OptionalMatch { sub_plan } if ops_bind_edge_variable(sub_plan, edge_var) => {
+                return false;
+            }
             PlanOp::Aggregate { .. }
             | PlanOp::ShortestPath { .. }
             | PlanOp::HashJoin { .. }
             | PlanOp::CartesianProduct { .. }
-            | PlanOp::OptionalMatch { .. }
             | PlanOp::Materialize { .. } => return false,
             _ => {}
         }
     }
     false
+}
+
+/// Whether an operation sequence can overwrite a named edge binding from an outer row.
+///
+/// `OptionalMatch` executes its sub-plan against each input row and preserves that input row on a
+/// miss. It therefore does not invalidate an outer edge binding unless its sub-plan itself binds
+/// the same name. Sequence-order lowering uses this distinction so `GLEAPH.SEQUENCE(e)` remains
+/// Graph-owned ordering rather than falling through to generic expression evaluation.
+fn ops_bind_edge_variable(ops: &[PlanOp], edge_var: &str) -> bool {
+    ops.iter().any(|op| op_binds_edge_variable(op, edge_var))
+}
+
+fn op_binds_edge_variable(op: &PlanOp, edge_var: &str) -> bool {
+    match op {
+        PlanOp::Expand {
+            edge,
+            emit_edge_binding,
+            ..
+        }
+        | PlanOp::ExpandFilter {
+            edge,
+            emit_edge_binding,
+            ..
+        }
+        | PlanOp::ShortestPath {
+            edge,
+            emit_edge_binding,
+            ..
+        } => *emit_edge_binding && edge.as_ref() == edge_var,
+        PlanOp::EdgeIndexScan { variable, .. } => variable.as_ref() == edge_var,
+        PlanOp::WorstCaseOptimalJoin { edges, .. } => {
+            edges.iter().any(|edge| edge.variable.as_ref() == edge_var)
+        }
+        PlanOp::OptionalMatch { sub_plan }
+        | PlanOp::UseGraph {
+            sub_plan: Some(sub_plan),
+            ..
+        } => ops_bind_edge_variable(sub_plan, edge_var),
+        PlanOp::HashJoin { left, right, .. } | PlanOp::CartesianProduct { left, right } => {
+            ops_bind_edge_variable(left, edge_var) || ops_bind_edge_variable(right, edge_var)
+        }
+        PlanOp::InlineProcedureCall { sub_plan, .. } => {
+            ops_bind_edge_variable(&sub_plan.ops, edge_var)
+        }
+        PlanOp::SetOperation { right, .. } => ops_bind_edge_variable(&right.ops, edge_var),
+        _ => false,
+    }
 }
 
 pub(crate) fn gleaph_sequence_sort(
