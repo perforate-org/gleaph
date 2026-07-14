@@ -69,6 +69,7 @@ type WireValue =
   | { Int64: bigint }
   | { Uint64: bigint }
   | { Float64: number }
+  | { Bytes: number[] | Uint8Array }
   | { DateTime: { seconds: bigint; nanos: number } }
   | { Date: number }
   | { Time: bigint }
@@ -89,12 +90,6 @@ const toUint8Array = (bytes: number[] | Uint8Array): Uint8Array => {
 
 export const decodeWireRows = (rowsBlob: number[] | Uint8Array): WireResult => {
   let bytes = toUint8Array(rowsBlob);
-  // Candid's @icp-sdk/core decoder rejects Node Buffer views even though they
-  // subclass Uint8Array. Copy into a plain Uint8Array to avoid the magic-number
-  // mismatch error.
-  if (typeof Buffer !== "undefined" && Buffer.isBuffer(bytes)) {
-    bytes = new Uint8Array(bytes);
-  }
   // Some callers pass the full Candid-encoded GqlQueryResult (variant/record
   // wrapper) instead of the inner rows_blob. The wrapper's inner bytes start at
   // the second DIDL magic because the outer type table references the blob.
