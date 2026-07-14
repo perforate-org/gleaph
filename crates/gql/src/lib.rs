@@ -14,6 +14,8 @@
 //! - `sql-compat` -- Enables SQL-compatible syntax extensions (e.g. SQL-style expressions and operators).
 //! - `gleaph` -- Enables Gleaph-specific GQL syntax extensions such as `SEARCH ... IN (VECTOR INDEX ...)`.
 //!   This feature is **non-default**; standard-GQL consumers should not enable it.
+//! - `format` -- Enables the AST-based query formatter (`crate::format`). Does not imply `gleaph`;
+//!   select both features to format Gleaph-specific syntax.
 //! - `f128` -- Enables `Value::Float128` using `std::f128` (requires nightly).
 //! - `f256` -- Enables `Value::Float256` using the `f256` crate.
 //! - `ast-rkyv-no-span` -- Derives `rkyv::Archive` / `Serialize` / `Deserialize` for AST types and related
@@ -37,6 +39,8 @@ pub use gleaph_gql_macros::define_gql_extension as gql_extension;
 pub mod ast;
 pub mod error;
 pub mod extensions;
+#[cfg(feature = "format")]
+pub mod format;
 pub mod lexer;
 /// Identifier length limits for properties, labels, and graph-type names.
 pub mod name_limits;
@@ -68,6 +72,12 @@ pub use value_index_key::{
     ValueIndexKeyError, index_key_bytes_to_value, numeric_range_bounds, value_to_index_key_bytes,
 };
 pub use value_join_hash::{hash_path_element_for_join, hash_value_for_join};
+
+#[cfg(feature = "format")]
+pub use format::{
+    ClauseBreakPolicy, FormatError, FormatOptions, ItemBreakPolicy, KeywordCase, format_program,
+    format_query,
+};
 
 #[cfg(feature = "ast-rkyv-no-span")]
 pub use rkyv_support::{

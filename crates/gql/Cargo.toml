@@ -38,3 +38,6 @@ f256 = ["dep:f256"]
 # Gleaph-specific GQL dialect (e.g. `SEARCH ... VECTOR INDEX ...`).
 # Non-default: standard-GQL consumers do not need to enable it.
 gleaph = []
+# AST-based query formatter. Does not imply `gleaph`; format-only consumers
+# may enable it alone. Gleaph syntax formatting requires both `format` and `gleaph`.
+format = []
