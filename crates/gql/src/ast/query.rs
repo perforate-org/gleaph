@@ -340,7 +340,8 @@ pub enum SimpleQueryStatement {
     Filter(FilterStatement),
     Let(LetStatement),
     For(ForStatement),
-    Search(SearchStatement),
+    #[cfg(feature = "gleaph")]
+    Search(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] SearchStatement),
     OrderBy(OrderByClause),
     Limit(LimitClause),
     Offset(OffsetClause),
@@ -397,6 +398,7 @@ pub struct MatchStatement {
 }
 
 /// A `SEARCH` clause binding a graph variable to a search provider result.
+#[cfg(feature = "gleaph")]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "ast-rkyv-no-span",
@@ -426,6 +428,7 @@ pub struct SearchStatement {
 }
 
 /// Search provider in a `SEARCH` clause.
+#[cfg(feature = "gleaph")]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "ast-rkyv-no-span",
@@ -449,6 +452,7 @@ pub enum SearchProvider {
     VectorIndex(#[cfg_attr(feature = "ast-rkyv-no-span", rkyv(omit_bounds))] VectorSearchSpec),
 }
 
+#[cfg(feature = "gleaph")]
 impl SearchProvider {
     pub fn query(&self) -> &Expr {
         match self {
@@ -470,6 +474,7 @@ impl SearchProvider {
 }
 
 /// `VECTOR INDEX` search specification inside a `SEARCH` clause.
+#[cfg(feature = "gleaph")]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "ast-rkyv-no-span",
@@ -500,6 +505,7 @@ pub struct VectorSearchSpec {
 }
 
 /// Output alias for a `SEARCH` clause: `SCORE AS alias` or `DISTANCE AS alias`.
+#[cfg(feature = "gleaph")]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "ast-rkyv-no-span",
@@ -525,6 +531,7 @@ pub struct SearchOutputBinding {
 }
 
 /// Whether a `SEARCH` output alias represents a score or a distance.
+#[cfg(feature = "gleaph")]
 #[derive(Clone, Debug, PartialEq)]
 #[cfg_attr(
     feature = "ast-rkyv-no-span",

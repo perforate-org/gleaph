@@ -139,6 +139,7 @@ impl ConstraintSet {
             SimpleQueryStatement::For(f) => {
                 self.collect_from_expr_constraints(env, &f.list);
             }
+            #[cfg(feature = "gleaph")]
             SimpleQueryStatement::Search(s) => {
                 self.collect_from_expr_constraints(env, s.provider.query());
                 self.collect_from_expr_constraints(env, s.provider.limit());

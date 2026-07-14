@@ -460,6 +460,7 @@ fn check_simple_query(env: &mut TypeEnv<'_>, sq: &SimpleQueryStatement) {
                 );
             }
         }
+        #[cfg(feature = "gleaph")]
         SimpleQueryStatement::Search(s) => {
             let binding_ty = env.get(&s.binding);
             match binding_kind_from_type(&binding_ty) {

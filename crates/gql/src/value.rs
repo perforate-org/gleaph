@@ -25,6 +25,7 @@ mod enum_;
 mod impls;
 
 pub use enum_::Value;
+#[cfg(feature = "f128")]
 pub use impls::f128_is_finite;
 
 /// Error returned when one [`Value`] cannot be encoded to, or decoded from,

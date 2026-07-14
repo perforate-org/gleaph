@@ -17,12 +17,13 @@ Provides lexing, parsing, AST construction, type checking, and validation for qu
 
 ## Feature flags
 
-| Flag         | Description                                      |
-| ------------ | ------------------------------------------------ |
-| `cypher`     | Cypher-compatible syntax extensions              |
-| `sql-compat` | SQL-compatible syntax extensions                 |
-| `f128`       | 128-bit float via `std::f128` (requires nightly) |
-| `f256`       | 256-bit float via the `f256` crate               |
+| Flag         | Description                                                                       |
+| ------------ | --------------------------------------------------------------------------------- |
+| `cypher`     | Cypher-compatible syntax extensions                                               |
+| `sql-compat` | SQL-compatible syntax extensions                                                  |
+| `gleaph`     | Gleaph-specific GQL extensions (e.g. `SEARCH ... VECTOR INDEX ...`). Non-default. |
+| `f128`       | 128-bit float via `std::f128` (requires nightly)                                  |
+| `f256`       | 256-bit float via the `f256` crate                                                |
 
 ## Usage
 

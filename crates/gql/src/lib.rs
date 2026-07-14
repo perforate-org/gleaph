@@ -12,6 +12,8 @@
 //!
 //! - `cypher` -- Enables Cypher-compatible syntax extensions (e.g. relationship patterns, property access).
 //! - `sql-compat` -- Enables SQL-compatible syntax extensions (e.g. SQL-style expressions and operators).
+//! - `gleaph` -- Enables Gleaph-specific GQL syntax extensions such as `SEARCH ... IN (VECTOR INDEX ...)`.
+//!   This feature is **non-default**; standard-GQL consumers should not enable it.
 //! - `f128` -- Enables `Value::Float128` using `std::f128` (requires nightly).
 //! - `f256` -- Enables `Value::Float256` using the `f256` crate.
 //! - `ast-rkyv-no-span` -- Derives `rkyv::Archive` / `Serialize` / `Deserialize` for AST types and related

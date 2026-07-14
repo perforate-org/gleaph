@@ -647,6 +647,7 @@ fn binding_table_nested_query_definition_prefix() {
     parse_ok("TABLE t = { MATCH (n) RETURN n } RETURN t");
 }
 
+#[cfg(feature = "gleaph")]
 #[test]
 fn focused_search_body_exports_alias() {
     // Regression: the parser must place SEARCH inside the Focused body, so
@@ -664,6 +665,7 @@ fn focused_search_body_exports_alias() {
     );
 }
 
+#[cfg(feature = "gleaph")]
 #[test]
 fn focused_search_body_unbound_alias_fails() {
     // Same shape as above but the focused body only binds `d` and does not
@@ -680,6 +682,7 @@ fn focused_search_body_unbound_alias_fails() {
     );
 }
 
+#[cfg(feature = "gleaph")]
 #[test]
 fn focused_search_with_use_block_exports_alias() {
     // Focused block form (InlineProcedureCall with use_graph) parses the body
@@ -693,6 +696,7 @@ fn focused_search_with_use_block_exports_alias() {
     );
 }
 
+#[cfg(feature = "gleaph")]
 #[test]
 fn inline_call_with_focused_search_body_exports_alias() {
     // Ordered collector path through an inline call where the focused body is

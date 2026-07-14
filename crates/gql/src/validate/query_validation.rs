@@ -80,6 +80,7 @@ fn validate_linear_query(
             }
             SimpleQueryStatement::Limit(lim) => validate_expr(&lim.count, &scope, &graph_scope)?,
             SimpleQueryStatement::Offset(off) => validate_expr(&off.count, &scope, &graph_scope)?,
+            #[cfg(feature = "gleaph")]
             SimpleQueryStatement::Search(s) => {
                 if !scope.contains(&s.binding) {
                     return Err(verr(&format!(
@@ -159,6 +160,7 @@ fn validate_linear_query(
                                 }
                             }
                         }
+                        #[cfg(feature = "gleaph")]
                         SimpleQueryStatement::Search(s) => {
                             if !scope.contains(&s.binding) {
                                 return Err(verr(&format!(
@@ -664,6 +666,7 @@ fn collect_linear_query_scopes(
                     scope.insert(ord.variable.clone());
                 }
             }
+            #[cfg(feature = "gleaph")]
             SimpleQueryStatement::Search(s) => {
                 scope.insert(s.output.alias.clone());
             }
@@ -707,6 +710,7 @@ fn collect_linear_query_scopes(
                                 }
                             }
                         }
+                        #[cfg(feature = "gleaph")]
                         SimpleQueryStatement::Search(s) => {
                             scope.insert(s.output.alias.clone());
                         }
@@ -769,6 +773,7 @@ fn collect_linear_query_scopes_with_order(
                     replace_visible_binding(scope, order, &ord.variable);
                 }
             }
+            #[cfg(feature = "gleaph")]
             SimpleQueryStatement::Search(s) => {
                 replace_visible_binding(scope, order, &s.output.alias);
             }
@@ -832,6 +837,7 @@ fn collect_linear_query_scopes_with_order(
                                 }
                             }
                         }
+                        #[cfg(feature = "gleaph")]
                         SimpleQueryStatement::Search(s) => {
                             replace_visible_binding(scope, order, &s.output.alias);
                         }

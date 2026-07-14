@@ -35,3 +35,6 @@ cypher = []
 sql-compat = []
 f128 = []
 f256 = ["dep:f256"]
+# Gleaph-specific GQL dialect (e.g. `SEARCH ... VECTOR INDEX ...`).
+# Non-default: standard-GQL consumers do not need to enable it.
+gleaph = []

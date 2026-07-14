@@ -759,6 +759,7 @@ fn infer_value_subquery_type(env: &TypeEnv<'_>, cq: &CompositeQueryExpr) -> Type
                 };
                 forked.bind(f.variable.clone(), elem_ty);
             }
+            #[cfg(feature = "gleaph")]
             SimpleQueryStatement::Search(s) => {
                 // The output alias is a scalar score/distance, represented as FLOAT64
                 // in the plan until metric-specific typing lands.

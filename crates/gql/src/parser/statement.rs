@@ -7,10 +7,13 @@ use crate::ast::{
     InlineProcedureCall, InlineProcedureScope, InsertStatement, IsOrColon, LetBinding,
     LetStatement, LinearQueryStatement, MatchStatement, NextStatement, ObjectName,
     ProcedureBindingDefinition, ProcedureBindingInitializer, ProcedureBindingKind, RemoveItem,
-    RemoveStatement, ResultStatement, SchemaReference, SearchOutputBinding, SearchOutputKind,
-    SearchProvider, SearchStatement, SetItem, SetOp, SetQuantifier, SetStatement,
+    RemoveStatement, ResultStatement, SchemaReference, SetItem, SetOp, SetQuantifier, SetStatement,
     SimpleQueryStatement, Statement, StatementBlock, TransactionActivity, TransactionEnd,
-    TypedPrefix, VectorSearchSpec,
+    TypedPrefix,
+};
+#[cfg(feature = "gleaph")]
+use crate::ast::{
+    SearchOutputBinding, SearchOutputKind, SearchProvider, SearchStatement, VectorSearchSpec,
 };
 use crate::error::GqlError;
 use crate::parser::helpers::Parser;
@@ -800,6 +803,7 @@ impl Parser<'_> {
         }
 
         // SEARCH.
+        #[cfg(feature = "gleaph")]
         if self.at_keyword("SEARCH") {
             return Ok(Some(SimpleQueryStatement::Search(
                 self.parse_search_statement()?,
@@ -881,6 +885,7 @@ impl Parser<'_> {
     ///   LIMIT expr
     /// ) (SCORE | DISTANCE) AS bindingVariable
     /// ```
+    #[cfg(feature = "gleaph")]
     pub fn parse_search_statement(&mut self) -> Result<SearchStatement, GqlError> {
         let start = self.save();
         self.expect_keyword("SEARCH")?;
@@ -898,6 +903,7 @@ impl Parser<'_> {
         })
     }
 
+    #[cfg(feature = "gleaph")]
     fn parse_search_provider(&mut self) -> Result<SearchProvider, GqlError> {
         self.expect_keyword("VECTOR")?;
         self.expect_keyword("INDEX")?;
@@ -919,6 +925,7 @@ impl Parser<'_> {
         }))
     }
 
+    #[cfg(feature = "gleaph")]
     fn parse_search_output_binding(&mut self) -> Result<SearchOutputBinding, GqlError> {
         let kind = if self.eat_keyword("SCORE") {
             SearchOutputKind::Score
@@ -1338,6 +1345,38 @@ impl Parser<'_> {
 }
 
 #[cfg(test)]
+#[cfg(all(test, not(feature = "gleaph")))]
+mod search_feature_boundary_tests {
+    use crate::parser;
+
+    #[test]
+    fn search_vector_index_rejected_without_gleaph_feature() {
+        let err = parser::parse(
+            "MATCH (d:Document) \
+             SEARCH d IN ( \
+               VECTOR INDEX document_embedding \
+               FOR $query \
+               LIMIT 100 \
+             ) SCORE AS similarity \
+             RETURN d, similarity",
+        )
+        .expect_err("SEARCH should be rejected when the gleaph feature is disabled");
+        let msg = err.to_string();
+        assert!(
+            msg.contains("SEARCH") || msg.contains("RETURN") || msg.contains("expected"),
+            "unexpected error message: {msg}"
+        );
+    }
+
+    #[test]
+    fn standard_gql_parses_without_gleaph_feature() {
+        let program = parser::parse("MATCH (n:Person) WHERE n.age > 18 RETURN n.name")
+            .expect("standard GQL should parse without the gleaph feature");
+        assert!(program.transaction_activity.is_some());
+    }
+}
+
+#[cfg(all(test, feature = "gleaph"))]
 mod search_parser_tests {
     use super::*;
     use crate::ast::{
