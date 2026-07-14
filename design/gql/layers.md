@@ -36,7 +36,7 @@ Policy: **`AGENT.md`** — Gleaph/IC-specific behavior stays out of `gql` and `g
 
 ## AST formatting boundary
 
-**Status:** Partially implemented by [ADR 0040](../adr/0040-gql-ast-formatter-and-social-demo-wasm-integration.md).
+**Status:** Implemented by [ADR 0040](../adr/0040-gql-ast-formatter-and-social-demo-wasm-integration.md).
 
 `gleaph-gql` may provide an optional, feature-gated AST formatter because formatting
 is a portable GQL language concern owned by the parser's AST. The `format` feature is
@@ -47,10 +47,9 @@ canister semantics. `FormatOptions` owns presentation policy, while unsupported 
 forms are reported explicitly during the staged rollout.
 
 The Rust formatter and feature boundary are implemented. The social demo's thin WASM
-adapter remains planned for the following integration slice; it will own browser
-bindings and packaging and must not become a second source of GQL formatting rules.
-Future CLI, query-log, administration-console, and LSP consumers may use the same Rust
-API directly or through their own integration adapter.
+adapter owns browser bindings and packaging and does not become a second source of GQL
+formatting rules. Future CLI, query-log, administration-console, and LSP consumers may
+use the same Rust API directly or through their own integration adapter.
 
 ## End-to-end read path
 

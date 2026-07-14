@@ -1,9 +1,9 @@
 # 0040. GQL AST formatter and social-demo WASM integration
 
 Date: 2026-07-14
-Status: Partially Implemented
+Status: Implemented
 Last revised: 2026-07-14
-Anchor timestamp: 2026-07-14 22:38:14 UTC +0000
+Anchor timestamp: 2026-07-14 23:09:57 UTC +0000
 
 ## Context
 
@@ -330,10 +330,12 @@ The phase is successful when:
 
 ## Implementation status
 
-**Partially implemented.** The `format` feature, public formatter API, AST-based
-read-query formatter, explicit unsupported-shape errors, and feature-focused tests are
-implemented in `gleaph-gql`. The social-demo WASM adapter and QueryPanel replacement
-remain planned for Slice 0081.
+**Implemented.** The `format` feature, public formatter API, AST-based read-query
+formatter, explicit unsupported-shape errors, feature-focused tests, social-demo WASM
+adapter, generated browser bindings, and QueryPanel integration are implemented. The
+adapter selects `format,gleaph` with `default-features = false`, maps formatter error
+categories across the JavaScript boundary, and fails closed in the query panel when
+formatting is unavailable.
 
 ## Related documents
 

@@ -1,0 +1,17 @@
+[package]
+name = "gleaph-social-demo-gql-formatter"
+version = "0.1.0"
+edition = "2024"
+publish = false
+
+[workspace]
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+gleaph-gql = { path = "../../../../crates/gql", default-features = false, features = ["format", "gleaph"] }
+js-sys = "=0.3.95"
+wasm-bindgen = "=0.2.118"
+
+[dev-dependencies]
