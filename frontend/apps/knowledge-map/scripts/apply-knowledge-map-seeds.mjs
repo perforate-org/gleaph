@@ -22,8 +22,10 @@ const icpEnv = () => ({
   DO_NOT_TRACK: process.env.DO_NOT_TRACK ?? "1",
 });
 
+const escapeCandidText = (s) => s.replace(/\\/g, "\\\\").replace(/"/g, '\\"');
+
 for (const seed of seeds) {
-  const candid = `(\"${seed.gql}\", vec {}, \"${seed.key}\")`;
+  const candid = `(\"${escapeCandidText(seed.gql)}\", vec {}, \"${escapeCandidText(seed.key)}\")`;
   const result = spawnSync(
     "icp",
     [

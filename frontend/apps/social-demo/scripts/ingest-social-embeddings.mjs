@@ -220,7 +220,10 @@ function readDemoIdMap() {
       "scenarios.generated.json must contain a 'demoIdMap' object; rerun `pnpm -C frontend/apps/social-demo run build:config`."
     );
   }
-  return new Map(Object.entries(parsed.demoIdMap));
+  // support both opaque p_... keys and numeric demo_id values for backwards
+  // compatibility with older social-seeds.json manifests that index embeddings
+  // by the integer demo_id.
+  return new Map(Object.entries(parsed.demoIdMap).map(([k, v]) => [k, BigInt(v)]));
 }
 
 function resolveElementId(demoId) {
@@ -229,7 +232,12 @@ function resolveElementId(demoId) {
   // to a parse-time error if the map is missing (which would indicate a stale
   // build:config run).
   const demoIdMap = readDemoIdMap();
-  const numericId = demoIdMap.get(demoId);
+  let numericId = demoIdMap.get(demoId);
+  if (numericId === undefined) {
+    // embeddings may be keyed by integer demo_id; try reverse lookup by value.
+    const target = BigInt(demoId);
+    numericId = Array.from(demoIdMap.values()).find((v) => v === target);
+  }
   if (numericId === undefined) {
     throw new Error(`No demo_id mapping for post '${demoId}' in scenarios.generated.json`);
   }

@@ -82,11 +82,29 @@ type WireResult = {
   rows: WireRow[];
 };
 
-const toUint8Array = (bytes: number[] | Uint8Array): Uint8Array =>
-  bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+const toUint8Array = (bytes: number[] | Uint8Array): Uint8Array => {
+  if (bytes instanceof Uint8Array) return bytes;
+  return Uint8Array.from(bytes);
+};
 
 export const decodeWireRows = (rowsBlob: number[] | Uint8Array): WireResult => {
-  const [decoded] = IDL.decode([IcWirePlanQueryResult], toUint8Array(rowsBlob));
+  let bytes = toUint8Array(rowsBlob);
+  // Candid's @icp-sdk/core decoder rejects Node Buffer views even though they
+  // subclass Uint8Array. Copy into a plain Uint8Array to avoid the magic-number
+  // mismatch error.
+  if (typeof Buffer !== "undefined" && Buffer.isBuffer(bytes)) {
+    bytes = new Uint8Array(bytes);
+  }
+  // Some callers pass the full Candid-encoded GqlQueryResult (variant/record
+  // wrapper) instead of the inner rows_blob. The wrapper's inner bytes start at
+  // the second DIDL magic because the outer type table references the blob.
+  if (bytes.length > 8 && bytes[0] === 0x44 && bytes[1] === 0x49 && bytes[2] === 0x44 && bytes[3] === 0x4c) {
+    const next = bytes.indexOf(0x44, 4);
+    if (next > 0 && bytes[next + 1] === 0x49 && bytes[next + 2] === 0x44 && bytes[next + 3] === 0x4c) {
+      bytes = bytes.subarray(next);
+    }
+  }
+  const [decoded] = IDL.decode([IcWirePlanQueryResult], bytes);
   return decoded as WireResult;
 };
 
@@ -100,10 +118,20 @@ export const rowToColumnMap = (row: WireRow): Map<string, WireValue> => {
 
 export const expectText = (map: Map<string, WireValue>, column: string): string => {
   const value = map.get(column);
-  if (!value || !("Text" in value)) {
-    throw new Error(`Missing or non-text column: ${column}`);
+  if (value && "Text" in value) {
+    return value.Text;
   }
-  return value.Text;
+  if (value && "Bytes" in value) {
+    return bytesToHex(value.Bytes);
+  }
+  throw new Error(`Missing or non-text column: ${column}`);
+};
+
+const bytesToHex = (bytes: number[] | Uint8Array): string => {
+  const arr = bytes instanceof Uint8Array ? bytes : Uint8Array.from(bytes);
+  return Array.from(arr)
+    .map((b) => b.toString(16).padStart(2, "0"))
+    .join("");
 };
 
 export const expectFloat64 = (map: Map<string, WireValue>, column: string): number => {

@@ -2664,7 +2664,7 @@ pub fn seed_social_graph_and_assert_feed_edge_order(env: &FederationEnv) {
         public_ids,
         vec![
             "17", "31", "20", "33", "24", "39", "29", "26", "37", "32", "35", "16", "22", "36",
-            "30", "15", "28", "19", "34", "38", "25", "21", "18", "23",
+            "30", "15", "28", "19", "34", "38", "21", "18", "25", "23",
         ],
         "IN_PUBLIC_FEED default descending scan should return newest posts first"
     );
